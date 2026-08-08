@@ -108,8 +108,8 @@ Details: `specs/architecture/gate-a-b-governance.md`.
 
 ### Model layer and structured extraction
 
-- One provider-neutral gateway over ReqLLM with four Account-level roles:
-  `embedder`, `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`.
+- One provider-neutral gateway with five Account-level roles: `embedder`, local
+  `reranker`, `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`.
   Only secret references are persisted.
 - Local Ortex/ONNX `AshAi.EmbeddingModel` by default plus an API embedding
   adapter. Embedding identity is provider, model, version, and dimensions; a

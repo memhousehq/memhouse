@@ -68,7 +68,7 @@ provenance and immutable document history remain intact.
 `GET /api/health` remains the frozen baseline liveness contract.
 `GET /api/ready` adds the versioned `f10-1` operator contract (a historical
 version tag, not a roadmap phase) and returns 200 only when the app,
-database, Oban supervisor, queue query, and four model-role configurations are
+database, Oban supervisor, queue query, and five model-role configurations are
 healthy; failures return content-safe error classes with 503.
 
 Every authenticated HTTP request emits an exact `UsageEvent`; ingest requests

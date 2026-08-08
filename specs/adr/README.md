@@ -21,6 +21,7 @@ settled by the blueprint specs.
 | `0012-deterministic-gate-a-evidence.md` | Gate A automates only schema-derived source evidence, never model confidence. |
 | `0013-dream-time-knowledge-consolidation.md` | Dream-time merges corroborated facts and derives bounded set aggregates. |
 | `0014-lifecycle-sweep-scheduling.md` | Cron starts Account-scoped, replay-safe expiry and revalidation runs. |
+| `0015-local-cross-encoder-reranking.md` | Dedicated local cross-encoder role for deadline-bounded reranking. |
 
 Conventions for future ADRs:
 

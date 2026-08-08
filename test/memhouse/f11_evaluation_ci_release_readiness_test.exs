@@ -322,7 +322,7 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
   # Every field here is load-bearing for reproducibility, which is why validation rejects a
   # report missing any of them: the application version, the exact retrieval profile version,
   # any strategy override, the deadline setting, the run limits, the dataset identity with
-  # its digest and split, all four model-role identities, and how the answers were graded.
+  # its digest and split, all five model-role identities, and how the answers were graded.
   # Together they are the complete recipe for re-running the measurement.
   defp valid_report do
     %{
@@ -345,7 +345,7 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
         "split" => "release-evaluation"
       },
       "model_roles" =>
-        Map.new(~w(embedder ingest_extractor dream_reasoner dialectic_agent), fn role ->
+        Map.new(~w(embedder reranker ingest_extractor dream_reasoner dialectic_agent), fn role ->
           {role,
            %{
              "provider" => "deterministic",

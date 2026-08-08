@@ -191,10 +191,13 @@ defmodule MemHouse.Model.Providers.ReqLLM do
 
       {:error, %ReqLLM.Error.Invalid.Parameter{parameter: parameter}}
       when is_binary(parameter) ->
-        if String.ends_with?(parameter, "does not support reranking operations") do
+        if String.ends_with?(parameter, "does not support reranking operations") and
+             not Keyword.get(opts, :deadline?, false) do
           rerank_with_structured_generation(config, query, documents, opts)
         else
-          {:error, %ReqLLM.Error.Invalid.Parameter{parameter: parameter}}
+          # Structured generation is deliberately available for offline analysis,
+          # but is an expensive fallback and cannot sit inside a retrieval deadline.
+          {:error, :rerank_endpoint_required_within_deadline}
         end
 
       {:error, error} ->

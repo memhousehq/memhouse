@@ -128,7 +128,7 @@ connection while it resolves its model role and records usage, and an erasure
 runs the same rebuild from inside its own transaction, so keep the value well
 below `POOL_SIZE`.
 
-There are exactly four Account-level model roles: `embedder`,
+There are exactly five Account-level model roles: `embedder`, `reranker`,
 `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`. Only secret
 *references* are persisted, never secret values.
 
@@ -173,6 +173,29 @@ mask-aware last-token pooling. Documents are embedded as supplied; retrieval
 queries receive the configured instruction prefix. A switch from the former
 384-dimensional identity requires a full, resumable re-embed. Until it
 finishes, old vectors are intentionally absent from semantic retrieval.
+
+## Reranker
+
+`thorough` uses the `reranker` role. It defaults to the local
+`BAAI/bge-reranker-v2-m3` ONNX cross-encoder. Supply its classifier and tokenizer
+from revision `b9a8f459d786a86f171264d4b075572506495226`. The model outputs an
+unbounded relevance logit; MemHouse uses the score only to order candidates.
+Keep `onnx/model.onnx_data` beside `onnx/model.onnx`.
+
+| Variable | Example | Meaning |
+| --- | --- | --- |
+| `MEMHOUSE_RERANKER_PROVIDER` | `ortex` | `ortex` or a hosted rerank provider |
+| `MEMHOUSE_RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Model identity |
+| `MEMHOUSE_RERANKER_VERSION` | `onnx-1-bge-reranker-v2-m3` | Artifact identity |
+| `MEMHOUSE_RERANKER_ORTEX_MODEL_PATH` | absolute path | Classifier `.onnx` file |
+| `MEMHOUSE_RERANKER_ORTEX_TOKENIZER_PATH` | absolute path | Pair tokenizer JSON file |
+| `MEMHOUSE_RERANKER_ORTEX_EXECUTION_PROVIDERS` | `cpu` | ONNX Runtime execution providers |
+
+| File | SHA-256 at the pinned revision |
+| --- | --- |
+| `onnx/model.onnx` | `7653075f97489878c7c6c39425de5010b001869d2f4e5e3bf20ab0dee7324f61` |
+| `onnx/model.onnx_data` | `9a748c82efb2079d24650c489e053dbb3c71d8acbbcf04d7b2340db66f2748f7` |
+| `tokenizer.json` | `69564b696052886ed0ac63fa393e928384e0f8caada38c1f4864a9bfbf379c15` |
 
 ### DiskANN
 
@@ -277,7 +300,7 @@ because they are behaviour rather than infrastructure. The shipped values:
 
 Fusion uses reciprocal rank with `k = 60`. `enabled_strategies` is a
 deployment-level allowlist: a strategy absent from it never runs, whatever a
-profile asks for. `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `750`.
+profile asks for. `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `120`.
 It is the most time reranking may use, but the request's remaining profile
 deadline always wins when it is smaller. Raising it can improve thorough-search
 ranking at the cost of tail latency; it cannot extend the 1500 ms hard ceiling.

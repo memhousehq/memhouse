@@ -4,7 +4,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   @moduledoc """
   Pins the provider-neutral gateway and structured-extraction contract.
 
-  The suite fixes four model roles and provider callbacks; offline embedder
+  The suite fixes five model roles and provider callbacks; offline embedder
   behavior; secret-reference storage; bounded schema repair; independent
   subject resolution; complete model provenance; exact usage emission;
   explicit vector re-embedding; and retryable provider failure.
@@ -56,11 +56,11 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     :ok
   end
 
-  test "four pinned roles and one provider behaviour form the injection seam" do
-    # The role set is closed and ordered. Adding a fifth role, or renaming one, changes what
+  test "five pinned roles and one provider behaviour form the injection seam" do
+    # The role set is closed and ordered. Adding or renaming a role changes what
     # every account must configure and what the readiness endpoint reports.
     assert Model.Config.roles() ==
-             [:embedder, :ingest_extractor, :dream_reasoner, :dialectic_agent]
+             [:embedder, :reranker, :ingest_extractor, :dream_reasoner, :dialectic_agent]
 
     callbacks = MemHouse.Model.Provider.behaviour_info(:callbacks)
 
@@ -79,6 +79,9 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # rely on the default embedding path never leaving the machine.
     assert {:error, {:model_artifact_missing, :model_path}} =
              MemHouse.Model.Embedding.Ortex.generate(["offline"], dimensions: 384)
+
+    assert {:error, {:model_artifact_missing, :model_path}} =
+             MemHouse.Model.Reranking.Ortex.score([{"query", "document"}], [])
 
     # Role options hold secret *references* only. A literal credential in the options map is
     # rejected at the changeset, before it can reach the database, an export, or a log line.

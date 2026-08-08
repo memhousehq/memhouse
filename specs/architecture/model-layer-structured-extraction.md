@@ -9,13 +9,14 @@ the model-outage portion of `NFR-8`.
 
 ## Role and provider boundary
 
-`MemHouse.Model.Config` resolves exactly four Account-level roles:
+`MemHouse.Model.Config` resolves five Account-level roles:
 
 | Role | Capability | Default |
 | --- | --- | --- |
 | `embedder` | Pinned vector generation | Local Qwen3-Embedding-0.6B through Ortex/ONNX, 1024 dimensions |
+| `reranker` | Query-document precision ranking | Local BAAI/bge-reranker-v2-m3 cross-encoder through Ortex/ONNX |
 | `ingest_extractor` | Fast structured observation extraction | ReqLLM generation role |
-| `dream_reasoner` | Slow structured reasoning and optional rerank | ReqLLM reasoning role |
+| `dream_reasoner` | Slow structured reasoning | ReqLLM reasoning role |
 | `dialectic_agent` | Grounded structured answers | ReqLLM dialectic role |
 
 An active, versioned `ModelRoleConfig` record wins over runtime defaults.
@@ -107,6 +108,15 @@ knowledge/document vector columns, resumable Account-wide re-embedding,
 1024-dimensional DiskANN indexes, semantic strategy, and tiny-corpus Nx
 baseline. The shipped Qwen3 identity uses `input_ids` plus `attention_mask`,
 mask-aware last-token pooling, and a query-only instruction prefix.
+
+## Reranking
+
+`MemHouse.Model.Reranking.Ortex` scores tokenized query-document pairs with a
+pinned classifier and returns its unbounded relevance logits. It never downloads
+artifacts. Reranking has a dedicated `:reranker` role so slow reasoning does not
+consume the retrieval budget. Native hosted rerank endpoints remain supported;
+structured generation is available only when retrieval deadlines are disabled.
+ADR 0015 records the boundary.
 
 ## Provenance, metering, and safety
 

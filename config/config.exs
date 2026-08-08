@@ -246,10 +246,10 @@ config :memhouse, :retrieval_profiles,
   # profile. Bounds rerank token cost and latency; the tail below rank 20 keeps
   # its fusion order.
   rerank_head: 20,
-  # Maximum milliseconds independently offered to reranking. The engine clamps
+  # Maximum milliseconds independently offered to local reranking. The engine clamps
   # this to the request's remaining hard deadline, so it reserves useful model
   # time without ever extending the overall request ceiling.
-  rerank_timeout_ms: 750,
+  rerank_timeout_ms: 120,
   # After this many incremental delta merges, a projection is rebuilt in full
   # rather than merged again. Unit: delta updates. Bounds drift and unbounded
   # growth of merged projection content.
@@ -330,7 +330,7 @@ config :memhouse, :documents,
   # Connector adapters are registered per deployment; none ship enabled.
   connector_adapters: %{}
 
-# The four Account-level model roles. Every model call in the system is made on behalf of
+# The five Account-level model roles. Every model call in the system is made on behalf of
 # exactly one of them, through the single model gateway; no pipeline, retrieval, web, or
 # governance module talks to a provider directly.
 #
@@ -361,6 +361,22 @@ config :memhouse, :model_roles,
       "pooling" => "last_token",
       "query_instruction" =>
         "Given a web search query, retrieve relevant passages that answer the query"
+    }
+  },
+  reranker: %{
+    # The cross-encoder uses independent classifier artifacts. It never shares
+    # the embedder session, because pair scoring and vector generation have
+    # different graph outputs and tokenizer input shapes.
+    provider: "ortex",
+    model: "BAAI/bge-reranker-v2-m3",
+    model_version: "onnx-1-bge-reranker-v2-m3",
+    prompt_version: "pair-v1",
+    pipeline_version: "f7-1",
+    options: %{
+      "input_order" => ["input_ids", "attention_mask"],
+      "max_length" => 512,
+      "output_index" => 0,
+      "positive_class_index" => 0
     }
   },
   ingest_extractor: %{

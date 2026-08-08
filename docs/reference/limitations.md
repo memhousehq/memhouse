@@ -69,7 +69,7 @@ Committed fixtures are smoke-scale; recorded reports are historical baselines,
 not current performance claims.
 
 Published quality numbers require application version, retrieval profile and
-version, four model-role versions, dataset id/SHA-256/split, deadline, date,
+version, five model-role versions, dataset id/SHA-256/split, deadline, date,
 judge, strategy override, and run limits.
 
 ## Operational gaps worth planning around

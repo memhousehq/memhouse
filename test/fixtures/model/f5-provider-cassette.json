@@ -78,7 +78,7 @@
       },
       {
         "operation": "rerank",
-        "role": "dream_reasoner",
+        "role": "reranker",
         "task": null,
         "value": [
           {"index": 1, "relevance_score": 0.9, "document": "second"},

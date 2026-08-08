@@ -41,7 +41,7 @@ skill-readiness helpers as complete SDKs.
 `MemHouse.Eval.Adapter` now supports MemHouse, LoCoMo, LongMemEval, ConvoMem,
 and BEAM source shapes. Every input carries a SHA-256. `Runner` records the
 application version, date, dataset id/hash/split, profile and exact version,
-strategy override, deadline setting, four model-role identities, judge method,
+strategy override, deadline setting, five model-role identities, judge method,
 limits, and per-question evidence.
 
 `Scorer` retains deterministic correctness, abstention, and citation measures

@@ -172,7 +172,7 @@ mix memhouse.eval.verify /tmp/memhouse-eval.json
 
 Checks that a report carries enough provenance to be quotable: application
 version, timestamp, benchmark, retrieval profile and version, deadline,
-strategy override, run limits, dataset id with SHA-256 and split, all four
+strategy override, run limits, dataset id with SHA-256 and split, all five
 model-role identities, judge, and metrics.
 
 Provenance only — it re-runs nothing and compares nothing to a floor.

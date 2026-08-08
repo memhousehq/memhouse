@@ -196,7 +196,7 @@ The committed fixtures are deliberately smoke-scale. Anchors: `AD-EVAL-3`,
 - [ ] Tune fusion weights using the held-out split only, and cite the tuning
   report in the PR that changes them.
 - [ ] Publish comparative claims only with application version, retrieval
-  profile version, all four model-role versions, dataset id/SHA-256/split,
+  profile version, all five model-role versions, dataset id/SHA-256/split,
   deadline setting, date, judge identity, strategy override, and run limits.
 - [ ] Extend deterministic coverage into applied dream-time deductions and
   projection builds.

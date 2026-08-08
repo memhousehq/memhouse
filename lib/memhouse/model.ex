@@ -5,12 +5,13 @@ defmodule MemHouse.Model do
   Provider-neutral model capabilities and versioned per-Account role configuration.
 
   Every call goes through this module or `MemHouse.Model.Gateway` for
-  provenance, metering, provider substitution, and deterministic tests. The four
+  provenance, metering, provider substitution, and deterministic tests. The five
   Account-level roles are:
 
   - `:embedder` — pinned vector generation. Defaults to a local ONNX model.
+  - `:reranker` — bounded local cross-encoder ranking for retrieval candidates.
   - `:ingest_extractor` — fast structured extraction of observations.
-  - `:dream_reasoner` — slow background reasoning, and reranking.
+  - `:dream_reasoner` — slow background reasoning.
   - `:dialectic_agent` — grounded structured answers to questions.
 
   Roles do not vary by scope. Account-aware calls require `:account_id` and
@@ -74,7 +75,7 @@ defmodule MemHouse.Model do
   defdelegate embed(texts, context, opts \\ []), to: MemHouse.Model.Embedding
 
   @doc """
-  Reranks candidate documents against a query using the `:dream_reasoner` role.
+  Reranks candidate documents against a dedicated `:reranker` role.
 
   Returns `{:ok, ranked, provenance_map}` where `ranked` is the provider's
   result list, or `{:error, reason}`. Reranking is an optional quality step:
@@ -145,8 +146,8 @@ defmodule MemHouse.Model.ModelRoleConfig do
   @moduledoc """
   One durable, versioned model-role configuration row for an Account.
 
-  The highest active version overrides runtime defaults for one of four roles: `embedder`,
-  `ingest_extractor`, `dream_reasoner`, or `dialectic_agent`.
+  The highest active version overrides runtime defaults for one of five roles: `embedder`,
+  `reranker`, `ingest_extractor`, `dream_reasoner`, or `dialectic_agent`.
 
   ## Versioning rather than mutation
 
@@ -198,7 +199,11 @@ defmodule MemHouse.Model.ModelRoleConfig do
       ]
 
       # Reject unknown roles instead of creating an unreachable row.
-      validate attribute_in(:role, ~w(embedder ingest_extractor dream_reasoner dialectic_agent))
+      validate attribute_in(
+                 :role,
+                 ~w(embedder reranker ingest_extractor dream_reasoner dialectic_agent)
+               )
+
       # Options may hold credential references only, never credentials.
       validate MemHouse.Model.ValidateSecretReferences
     end
@@ -221,7 +226,11 @@ defmodule MemHouse.Model.ModelRoleConfig do
         :active
       ]
 
-      validate attribute_in(:role, ~w(embedder ingest_extractor dream_reasoner dialectic_agent))
+      validate attribute_in(
+                 :role,
+                 ~w(embedder reranker ingest_extractor dream_reasoner dialectic_agent)
+               )
+
       validate MemHouse.Model.ValidateSecretReferences
     end
   end

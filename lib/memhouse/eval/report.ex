@@ -9,10 +9,10 @@ defmodule MemHouse.Eval.Report do
   identity is versioned independently from the application.
   """
 
-  # The four Account-level model roles. All of them must be identified in a report, even
+  # The five Account-level model roles. All of them must be identified in a report, even
   # the ones a given benchmark never invokes, because the configuration as a whole is what
   # was under test.
-  @roles ~w(embedder ingest_extractor dream_reasoner dialectic_agent)
+  @roles ~w(embedder reranker ingest_extractor dream_reasoner dialectic_agent)
 
   # Overall metrics that must be present and numeric for a report to be usable. Anything
   # missing here means the report cannot be compared against another one.

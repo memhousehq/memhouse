@@ -11,6 +11,13 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- `thorough` retrieval now uses a dedicated `reranker` model role. The default
+  is the local, checksum-pinned BAAI/bge-reranker-v2-m3 ONNX cross-encoder with a
+  120 ms allowance. Hosted rerank endpoints remain supported; the expensive
+  structured-generation fallback cannot run inside a retrieval deadline. ADR
+  0015 records the artifact and deadline boundary. The `f7-1` response shape
+  and profile identity are unchanged.
+
 - Lexical question analysis no longer expands a query through a hand-written
   synonym group. The analyzer is now `lexical-question-v2` and retains only
   supplied non-boilerplate terms for plain-text lexical matching. The `f7-1`

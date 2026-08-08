@@ -27,7 +27,7 @@
 
 - **EV-REPRO-1 — Versioned evidence.** Every report records report schema,
   MemHouse semantic version, execution date, dataset id/SHA-256/split, retrieval
-  profile and exact profile version, deadline setting, all four model-role
+  profile and exact profile version, deadline setting, all five model-role
   identities, judge identity, run limits, and strategy override.
 - **EV-REPRO-2 — Dataset immutability.** Dataset bytes are identified by
   SHA-256. A changed fixture is a new input even when its filename is unchanged.

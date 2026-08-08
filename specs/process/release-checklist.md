@@ -13,7 +13,7 @@ This checklist is the evaluation, CI, and release-readiness gate for
 - [ ] Confirm README, AGENTS, roadmap, architecture, operations, and eval docs
   describe the same release.
 - [ ] Confirm every public quality number has dataset id/hash/split, date,
-  profile/version, deadline, four model-role identities, judge method, and run
+  profile/version, deadline, five model-role identities, judge method, and run
   limits.
 - [ ] Confirm tuning used only the held-out split.
 
