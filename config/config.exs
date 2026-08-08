@@ -352,9 +352,8 @@ config :memhouse, :model_roles,
     model_version: "onnx-1-qwen3-1024",
     prompt_version: "none",
     pipeline_version: "f5-1",
-    # Must equal the model's real output width. 1024 is the width the shipped
-    # DiskANN indexes are built for; another width still stores and searches,
-    # but on the unindexed query path.
+    # Must equal the model's real output width and a shipped DiskANN index.
+    # This release supports 1024 dimensions only.
     embedding_dimensions: 1024,
     options: %{
       "input_order" => ["input_ids", "attention_mask"],

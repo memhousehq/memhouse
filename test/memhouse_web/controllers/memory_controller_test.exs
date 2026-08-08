@@ -86,6 +86,50 @@ defmodule MemHouseWeb.MemoryControllerTest do
     assert_trace_id(conn)
   end
 
+  test "GET /api/ready reports the matching embedding index", %{conn: conn} do
+    conn = get(conn, ~p"/api/ready")
+
+    assert %{
+             "status" => "ready",
+             "checks" => %{
+               "embedding_index" => %{
+                 "status" => "ok",
+                 "configured_dimensions" => 1024,
+                 "indexed_dimensions" => [1024]
+               }
+             }
+           } = json_response(conn, 200)
+
+    assert_trace_id(conn)
+  end
+
+  test "GET /api/ready reports an embedding-index mismatch without sensitive data", %{conn: conn} do
+    original_roles = Application.fetch_env!(:memhouse, :model_roles)
+
+    roles =
+      Keyword.update!(original_roles, :embedder, fn config ->
+        Map.put(config, :embedding_dimensions, 384)
+      end)
+
+    Application.put_env(:memhouse, :model_roles, roles)
+    on_exit(fn -> Application.put_env(:memhouse, :model_roles, original_roles) end)
+
+    conn = get(conn, ~p"/api/ready")
+
+    assert %{
+             "status" => "not_ready",
+             "checks" => %{
+               "embedding_index" => %{
+                 "status" => "error",
+                 "configured_dimensions" => 384,
+                 "indexed_dimensions" => [1024]
+               }
+             }
+           } = json_response(conn, 503)
+
+    assert_trace_id(conn)
+  end
+
   # The only write path an agent has. Note that the scope path in the body does
   # not exist yet: missing scopes, the session, and their links are created on
   # demand, so a client never has to provision topology before speaking.

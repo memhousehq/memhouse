@@ -18,7 +18,8 @@ Point orchestrator **liveness** probes here.
 
 ## Readiness: `GET /api/ready`
 
-Unauthenticated. Checks the database, Oban, queue depth, and model roles.
+Unauthenticated. Checks the database, Oban, queue depth, model roles, and the
+configured embedding index.
 Returns 200 when all are `ok`; otherwise 503.
 
 The body is the whole check map: per-component status, queue depths by queue
@@ -36,6 +37,10 @@ Point orchestrator **readiness** probes here.
     allowed. Credentials, secrets, and stored content are not, because anyone
     who can reach the port can read this without authenticating. Adding a field
     here is a disclosure decision.
+
+`checks.embedding_index` reports the embedder provider, model, version,
+configured dimensions, and installed index dimensions. It is `error` when the
+configured width has no installed index, and the endpoint returns 503.
 
 ### Reading queue depth
 

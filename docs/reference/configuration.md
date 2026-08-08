@@ -148,7 +148,7 @@ avoids models that intermittently ignore forced tool calls.
 | `MEMHOUSE_EMBEDDING_PROVIDER` | `ortex` | `ortex` (local ONNX) or `openai-compatible` |
 | `MEMHOUSE_EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Model identity |
 | `MEMHOUSE_EMBEDDING_VERSION` | `onnx-1-qwen3-1024` | **The vector-space version** |
-| `MEMHOUSE_EMBEDDING_DIMENSIONS` | `1024` | Vector width |
+| `MEMHOUSE_EMBEDDING_DIMENSIONS` | `1024` | Vector width. Must match an installed vector index. |
 | `MEMHOUSE_ORTEX_MODEL_PATH` | absolute path | Operator-supplied `.onnx` file |
 | `MEMHOUSE_ORTEX_TOKENIZER_PATH` | absolute path | Operator-supplied `tokenizer.json` |
 | `MEMHOUSE_ORTEX_POOLING` | `last_token` | Pooling strategy |
@@ -196,6 +196,11 @@ Keep `onnx/model.onnx_data` beside `onnx/model.onnx`.
 | `onnx/model.onnx` | `7653075f97489878c7c6c39425de5010b001869d2f4e5e3bf20ab0dee7324f61` |
 | `onnx/model.onnx_data` | `9a748c82efb2079d24650c489e053dbb3c71d8acbbcf04d7b2340db66f2748f7` |
 | `tokenizer.json` | `69564b696052886ed0ac63fa393e928384e0f8caada38c1f4864a9bfbf379c15` |
+
+This release installs 1024-dimensional vector indexes only. Boot fails when
+`MEMHOUSE_EMBEDDING_DIMENSIONS` is another width. To support another width,
+add a reviewed index migration, re-embed all derived vectors, verify
+`GET /api/ready`, and update this configuration contract.
 
 ### DiskANN
 

@@ -53,7 +53,8 @@ defmodule MemHouse.Operations.Health do
       oban: oban_check(),
       queues: queue_check(),
       lifecycle_sweeps: lifecycle_sweeps_check(),
-      model_roles: model_roles_check()
+      model_roles: model_roles_check(),
+      embedding_index: embedding_index_check()
     }
 
     status =
@@ -234,6 +235,15 @@ defmodule MemHouse.Operations.Health do
       end)
 
     %{status: "ok", configured: roles}
+  rescue
+    error -> %{status: "error", error_class: error_class(error)}
+  end
+
+  # The index contract is configuration-only so it remains available before a
+  # database connection exists. It names the configured identity, never vectors,
+  # index definitions, or credentials.
+  defp embedding_index_check do
+    MemHouse.RuntimeConfig.embedding_index_check()
   rescue
     error -> %{status: "error", error_class: error_class(error)}
   end
