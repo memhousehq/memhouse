@@ -4,8 +4,8 @@ defmodule MemHouse.Model.Config do
   @moduledoc """
   Resolves the one pinned configuration in force for each model role.
 
-  It resolves the provider, model, versions, provenance, and embedding identity for exactly four
-  Account-level roles: `:embedder`, `:ingest_extractor`, `:dream_reasoner`, and
+  It resolves the provider, model, versions, provenance, and embedding identity for five
+  Account-level roles: `:embedder`, `:reranker`, `:ingest_extractor`, `:dream_reasoner`, and
   `:dialectic_agent`.
 
   Resolution order is fixed:
@@ -30,9 +30,9 @@ defmodule MemHouse.Model.Config do
 
   ## Mistakes to avoid
 
-  - Do not add a fifth role name. The resource validates the four names on
-    create and update, `normalize_role/1` raises on anything else, and startup
-    configuration validation requires all four to be present.
+  - Do not add an unreviewed role name. The resource validates the closed role
+    set on create and update, `normalize_role/1` raises on anything else, and
+    startup configuration validation requires every role to be present.
   - Do not treat a `"deterministic"` provider as a usable production model. It
     is an offline stand-in for tests and local development; ask
     `local_fallback?/1` before letting its output stand in for a real answer.
@@ -42,15 +42,14 @@ defmodule MemHouse.Model.Config do
 
   require Ash.Query
 
-  @roles ~w(embedder ingest_extractor dream_reasoner dialectic_agent)a
+  @roles ~w(embedder reranker ingest_extractor dream_reasoner dialectic_agent)a
 
-  # Call-site conveniences, not extra roles. Reranking deliberately shares the
-  # slow reasoning role rather than getting a budget of its own.
+  # Call-site conveniences, not extra roles.
   @aliases %{
     ingest: :ingest_extractor,
     dream: :dream_reasoner,
     ask: :dialectic_agent,
-    reranker: :dream_reasoner
+    rerank: :reranker
   }
 
   defmodule Role do
@@ -89,7 +88,7 @@ defmodule MemHouse.Model.Config do
   end
 
   @doc """
-  The four canonical role atoms, in a stable order.
+  The canonical role atoms, in a stable order.
 
   Used by startup configuration validation, which refuses to boot a deployment
   that is missing a role or a role's provider, model, or version strings.

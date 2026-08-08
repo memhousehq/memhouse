@@ -74,8 +74,8 @@ sensitivity, subject, provenance, lifecycle state, and timestamps.
 `superseded`, `expired`, `stale`, `rejected`, `redacted`, `retracted`.
 Retrieval filters on it.
 
-**Model role** — one of exactly four Account-level roles: `embedder`,
-`ingest_extractor`, `dream_reasoner`, `dialectic_agent`.
+**Model role** — one of exactly five Account-level roles: `embedder`,
+`reranker`, `ingest_extractor`, `dream_reasoner`, `dialectic_agent`.
 
 **Peer** — one participant: a human, or an agent holding an API key.
 

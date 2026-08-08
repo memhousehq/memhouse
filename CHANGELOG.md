@@ -11,6 +11,13 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- `thorough` retrieval now uses a dedicated `reranker` model role. The default
+  is the local, checksum-pinned BAAI/bge-reranker-v2-m3 ONNX cross-encoder with a
+  120 ms allowance. Hosted rerank endpoints remain supported; the expensive
+  structured-generation fallback cannot run inside a retrieval deadline. ADR
+  0015 records the artifact and deadline boundary. The `f7-1` response shape
+  and profile identity are unchanged.
+
 - Boot now rejects an embedding width without a matching installed vector
   index. `GET /api/ready` reports the content-safe embedding-index contract
   and returns 503 for that mismatch. This release supports 1024 dimensions.

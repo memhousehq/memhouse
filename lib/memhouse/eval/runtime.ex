@@ -31,7 +31,10 @@ defmodule MemHouse.Eval.Runtime do
         # The embedder is absent from this list on purpose. Its provider, model, version,
         # and dimension identity has to keep matching the installed vector indexes, so
         # swapping it for a stub would break retrieval rather than make the run offline.
-        {role, config} when role in [:ingest_extractor, :dream_reasoner, :dialectic_agent] ->
+        # Reranking has no durable coordinate identity, so deterministic evaluation can
+        # exercise the completed thorough-stage contract without local artifacts.
+        {role, config}
+        when role in [:reranker, :ingest_extractor, :dream_reasoner, :dialectic_agent] ->
           {role,
            config
            |> Map.put(:provider, "deterministic")

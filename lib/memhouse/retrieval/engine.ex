@@ -272,10 +272,15 @@ defmodule MemHouse.Retrieval.Engine do
       # The model layer scopes its own reads and usage writes; do not hold a database connection
       # during the external call.
       call = fn ->
-        Gateway.rerank(query.text, documents, %{
-          account_id: query.account_id,
-          actor: query.actor
-        })
+        Gateway.rerank(
+          query.text,
+          documents,
+          %{
+            account_id: query.account_id,
+            actor: query.actor
+          },
+          deadline?: budget.deadline?
+        )
       end
 
       allowance = rerank_allowance(remaining)

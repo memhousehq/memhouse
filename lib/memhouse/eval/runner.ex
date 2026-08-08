@@ -428,7 +428,7 @@ defmodule MemHouse.Eval.Runner do
     end
   end
 
-  # All four model roles are recorded, including the ones a given benchmark never invokes.
+  # All five model roles are recorded, including the ones a given benchmark never invokes.
   # The configuration as a whole is what was under test, and a later reader comparing two
   # reports needs to see that an unused role was also unchanged.
   defp model_role_versions do

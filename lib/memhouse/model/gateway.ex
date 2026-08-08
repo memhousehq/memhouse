@@ -117,16 +117,15 @@ defmodule MemHouse.Model.Gateway do
   end
 
   @doc """
-  Reranks `documents` against `query` using the `:dream_reasoner` role.
+  Reranks `documents` against `query` using the dedicated `:reranker` role.
 
-  Reranking shares the slow reasoning role rather than having a role of its own,
-  so its cost lands in the same budget. Returns `{:ok, results, provenance_map}`
+  Returns `{:ok, results, provenance_map}`
   or `{:error, reason}`; the result shape is the provider's, so callers must
   tolerate a provider that cannot rerank at all and keep their existing order.
   """
   def rerank(query, documents, context, opts \\ [])
       when is_binary(query) and is_list(documents) do
-    config = Config.resolve(:dream_reasoner, context)
+    config = Config.resolve(:reranker, context)
 
     case invoke(:rerank, config, context, opts, fn provider ->
            provider.rerank(config, query, documents, opts)

@@ -469,7 +469,7 @@ config :req_llm,
   stream_pool_count: model_stream_pool_count,
   stream_pool_timeout: model_pool_timeout
 
-# The four model roles. Any OpenAI-compatible endpoint, including a self-hosted
+# The five model roles. Any OpenAI-compatible endpoint, including a self-hosted
 # one, can serve the generation roles by pointing the base URL at it — no role is
 # tied to a specific vendor.
 #
@@ -520,6 +520,28 @@ config :memhouse, :model_roles,
         |> String.split(",", trim: true)
     }
   },
+  reranker: %{
+    # A local cross-encoder scores query-document pairs. It requires its own
+    # classifier artifacts and never downloads them at runtime.
+    provider: env_get.("MEMHOUSE_RERANKER_PROVIDER", "ortex"),
+    model: env_get.("MEMHOUSE_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
+    model_version: env_get.("MEMHOUSE_RERANKER_VERSION", "onnx-1-bge-reranker-v2-m3"),
+    prompt_version: "pair-v1",
+    pipeline_version: "f7-1",
+    options: %{
+      "api_key_ref" => "env:MEMHOUSE_RERANKER_API_KEY",
+      "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", nil),
+      "model_path" => env_get.("MEMHOUSE_RERANKER_ORTEX_MODEL_PATH", nil),
+      "tokenizer_path" => env_get.("MEMHOUSE_RERANKER_ORTEX_TOKENIZER_PATH", nil),
+      "input_order" => ["input_ids", "attention_mask"],
+      "max_length" => env_integer.("MEMHOUSE_RERANKER_MAX_LENGTH", "512"),
+      "output_index" => env_integer.("MEMHOUSE_RERANKER_OUTPUT_INDEX", "0"),
+      "positive_class_index" => env_integer.("MEMHOUSE_RERANKER_POSITIVE_CLASS_INDEX", "0"),
+      "execution_providers" =>
+        env_get.("MEMHOUSE_RERANKER_ORTEX_EXECUTION_PROVIDERS", "cpu")
+        |> String.split(",", trim: true)
+    }
+  },
   # Turns raw observations into structured candidate knowledge. Its output still
   # passes validation and governance before anything becomes usable memory.
   ingest_extractor: %{
@@ -530,8 +552,7 @@ config :memhouse, :model_roles,
     pipeline_version: "f5-1",
     options: generation_options
   },
-  # Background reasoning over already-governed knowledge. It also serves two
-  # foreground uses: reranking the fused retrieval head and entity resolution.
+  # Background reasoning over already-governed knowledge and entity resolution.
   dream_reasoner: %{
     provider: generation_provider,
     model: generation_model.("MEMHOUSE_MODEL_DREAM", "openai/gpt-oss-120b"),

@@ -47,7 +47,7 @@ single-Account, self-hosted memory system:
   external Postgres as a connection-string change, stock Postgres in containers,
   no Redis, no second engine runtime (`FR-PLAT-2`, `FR-PLAT-4`,
   `FR-PLAT-5`, `AD-CFG-2`).
-- Provider-neutral models: four account-level model roles over ReqLLM,
+- Provider-neutral models: five account-level model roles over ReqLLM,
   OpenAI-compatible and self-hosted endpoints, Ortex/ONNX default embeddings,
   pinned embedding versions, and usage metering by role (`FR-API-17` to
   `FR-API-20`, `AD-MODEL-*`, `FR-PLAT-8`).

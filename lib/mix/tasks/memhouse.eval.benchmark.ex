@@ -53,10 +53,10 @@ defmodule Mix.Tasks.Memhouse.Eval.Benchmark do
     dataset_path = Keyword.get(opts, :dataset) || Mix.raise("--dataset is required")
 
     # Ordering matters and is easy to "tidy" into a bug: switching to deterministic models
-    # rewrites application environment (job execution becomes manual, the ingest-extractor,
-    # dream-reasoner, and dialectic-agent roles point at the local fallback, and provider
-    # keys are cleared; the embedder role is left alone so vectors stay compatible with the
-    # installed indexes). The supervision tree reads that environment once, at boot, so the
+    # rewrites application environment. Job execution becomes manual. The reranker,
+    # ingest-extractor, dream-reasoner, and dialectic-agent roles use the local fallback.
+    # Provider keys are cleared. The embedder stays unchanged so vectors remain compatible
+    # with installed indexes. The supervision tree reads that environment once at boot, so the
     # rewrite has to happen before app.start or the run will still reach a live provider.
     if Keyword.get(opts, :no_model, false), do: Runtime.use_deterministic_models()
     Mix.Task.run("app.start")

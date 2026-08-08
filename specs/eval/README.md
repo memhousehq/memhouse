@@ -113,7 +113,7 @@ Every `f11-1` report records:
 - dataset id, SHA-256, and split;
 - profile and exact profile version;
 - strategy override and deadline setting;
-- provider/model/version/prompt/pipeline identity for all four roles;
+- provider/model/version/prompt/pipeline identity for all five roles;
 - deterministic or model judge identity;
 - exact/contains/token-F1, abstention, citation, RAG-triad, latency, token
   efficiency, category, scale, and BEAM degradation measures.

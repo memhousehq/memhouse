@@ -126,7 +126,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
 
     # Readiness is a deployment gate, so it must check everything the app needs to actually
     # serve: the database connection, the job supervisor, the ability to query queue depth,
-    # and that all four model roles resolve. A readiness check that only pings the web
+    # and that all five model roles resolve. A readiness check that only pings the web
     # process reports "ready" for an instance that cannot process a single ingest.
     assert result.status == "ready"
     assert result.checks.database.status == "ok"
@@ -154,8 +154,8 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
              :crontab
            )
 
-    # All four roles, and their identities only — never their credentials.
-    assert map_size(result.checks.model_roles.configured) == 4
+    # All five roles, and their identities only — never their credentials.
+    assert map_size(result.checks.model_roles.configured) == 5
   end
 
   test "embedding index rejects an embedder width without an installed index" do
