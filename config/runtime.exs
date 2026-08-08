@@ -513,7 +513,7 @@ config :memhouse, :model_roles,
       "query_instruction" =>
         env_get.(
           "MEMHOUSE_ORTEX_QUERY_INSTRUCTION",
-          "Given a web search query, retrieve relevant passages that answer the query"
+          "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
         ),
       # Comma-separated ONNX Runtime execution providers, in preference order.
       "execution_providers" =>

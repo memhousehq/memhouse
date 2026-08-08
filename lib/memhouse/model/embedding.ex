@@ -29,6 +29,7 @@ defmodule MemHouse.Model.Embedding do
   """
 
   alias MemHouse.Model.Config
+  alias MemHouse.Model.Embedding.QueryCache
   alias MemHouse.Model.Gateway
 
   defmodule Result do
@@ -70,18 +71,63 @@ defmodule MemHouse.Model.Embedding do
     # pin on `config` asserts the gateway embedded with the very configuration
     # whose identity was just validated and is about to be returned — a
     # different one would mean the returned identity describes the wrong space.
-    with :ok <- ensure_compatible(Keyword.get(opts, :stored_identity), current),
-         {:ok, vectors, ^config} <- Gateway.embed_with_config(config, texts, context, opts),
-         :ok <- ensure_dimensions(vectors, current.dimensions) do
-      {:ok,
-       %Result{
-         vectors: vectors,
-         provider: current.provider,
-         model: current.model,
-         version: current.version,
-         dimensions: current.dimensions
-       }}
+    with :ok <- ensure_compatible(Keyword.get(opts, :stored_identity), current) do
+      embed_with_cache(texts, context, opts, config, current)
     end
+  end
+
+  defp embed_with_cache([text], %{account_id: account_id} = context, opts, config, current)
+       when is_binary(text) and is_binary(account_id) do
+    if Keyword.get(opts, :input_type, :passage) == :query do
+      key = {account_id, query_identity(current, config), :crypto.hash(:sha256, text)}
+
+      case QueryCache.fetch(key) do
+        {:ok, vector} ->
+          with :ok <- ensure_dimensions([vector], current.dimensions) do
+            {:ok, result([vector], current)}
+          end
+
+        :error ->
+          embed_and_cache(key, [text], context, opts, config, current)
+      end
+    else
+      embed_with_config([text], context, opts, config, current)
+    end
+  end
+
+  defp embed_with_cache(texts, context, opts, config, current),
+    do: embed_with_config(texts, context, opts, config, current)
+
+  defp embed_and_cache(key, texts, context, opts, config, current) do
+    with {:ok, %Result{vectors: [vector]} = result} <-
+           embed_with_config(texts, context, opts, config, current) do
+      :ok = QueryCache.put(key, vector)
+      {:ok, result}
+    end
+  end
+
+  defp embed_with_config(texts, context, opts, config, current) do
+    with {:ok, vectors, ^config} <- Gateway.embed_with_config(config, texts, context, opts),
+         :ok <- ensure_dimensions(vectors, current.dimensions) do
+      {:ok, result(vectors, current)}
+    end
+  end
+
+  defp result(vectors, current) do
+    %Result{
+      vectors: vectors,
+      provider: current.provider,
+      model: current.model,
+      version: current.version,
+      dimensions: current.dimensions
+    }
+  end
+
+  # Query instructions change query coordinates without changing the stored
+  # corpus vector identity. Their digest keeps a changed prefix from reusing an
+  # old query result while retaining the four-part stored-vector identity.
+  defp query_identity(current, config) do
+    {identity(current), :crypto.hash(:sha256, Map.get(config.options, "query_instruction", ""))}
   end
 
   @doc """

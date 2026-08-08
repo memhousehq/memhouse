@@ -273,17 +273,19 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              [[2.0, 0.0], [5.0, 0.0]]
   end
 
-  test "Qwen3 instruction is applied to queries but not stored text" do
-    options = %{"query_instruction" => "retrieve relevant passages"}
+  test "configured query prefix is applied only to query embeddings" do
+    options = %{
+      "query_instruction" => "Represent this sentence for searching relevant passages: "
+    }
 
     assert OrtexProvider.apply_query_instruction(["where is the runbook?"], options,
-             purpose: :query
+             input_type: :query
            ) == [
-             "Instruct: retrieve relevant passages\nQuery: where is the runbook?"
+             "Represent this sentence for searching relevant passages: where is the runbook?"
            ]
 
     assert OrtexProvider.apply_query_instruction(["The runbook is in docs."], options,
-             purpose: :document
+             input_type: :passage
            ) == [
              "The runbook is in docs."
            ]
