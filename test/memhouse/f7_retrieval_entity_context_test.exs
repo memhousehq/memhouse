@@ -755,7 +755,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end
   end
 
-  test "lexical question analysis ranks subject and intent evidence above conversational noise" do
+  test "lexical question analysis ranks supplied terms above unrelated expansions" do
     melanie =
       seed_active!(
         "f7-question-ranking",
@@ -768,7 +768,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       seed_active!(
         "f7-question-ranking",
         "/f7/question-ranking",
-        "Therapeutic pottery helps Melanie relax after difficult days.",
+        "Therapeutic pottery helps Caroline relax after difficult days.",
         "ranking-pottery"
       )
 
@@ -810,10 +810,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       |> Enum.map(& &1["id"])
 
     assert Enum.find_index(melanie_ids, &(&1 == melanie.knowledge.id)) < 12
-    assert Enum.find_index(melanie_ids, &(&1 == pottery.knowledge.id)) < 12
+    refute pottery.knowledge.id in melanie_ids
     assert Enum.find_index(caroline_ids, &(&1 == caroline.knowledge.id)) < 12
 
-    assert %{lexical_analyzer: "lexical-question-v1"} =
+    assert %{lexical_analyzer: "lexical-question-v2"} =
              MemHouse.Retrieval.Diagnostics.latest(melanie.account.id)
   end
 

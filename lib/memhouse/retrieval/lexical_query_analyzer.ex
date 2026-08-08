@@ -9,12 +9,11 @@ defmodule MemHouse.Retrieval.LexicalQueryAnalyzer do
   phrases and negation keep PostgreSQL's documented semantics.
   """
 
-  @version "lexical-question-v1"
+  @version "lexical-question-v2"
   @websearch_operators ~r/"|(?:^|\s)-\S|(?:^|\s)or(?:\s|$)/i
   @boilerplate MapSet.new(
                  ~w(a an are could did do does for from how is me tell that the to was what when where which who why would you your)
                )
-  @synonym_groups [~w(destress stress relax calming therapeutic)]
 
   # Proximity fan-out. `tsquery`'s `<N>` operator matches an *exact* lexeme distance, so "near"
   # has to be spelled as a disjunction of every distance in the window, in both orders, for each
@@ -46,12 +45,10 @@ defmodule MemHouse.Retrieval.LexicalQueryAnalyzer do
         |> tokens()
         |> Enum.reject(&(String.downcase(&1) in @boilerplate))
 
-      expanded = terms ++ Enum.flat_map(terms, &synonyms/1)
-
       %{
         version: @version,
         mode: :normalized,
-        matching_text: expanded |> Enum.uniq_by(&String.downcase/1) |> Enum.join(" "),
+        matching_text: terms |> Enum.uniq_by(&String.downcase/1) |> Enum.join(" "),
         proximity_text: terms |> Enum.take(@proximity_terms) |> proximity_text()
       }
     end
@@ -60,14 +57,6 @@ defmodule MemHouse.Retrieval.LexicalQueryAnalyzer do
   def analyze(_text), do: analyze("")
 
   defp tokens(text), do: Regex.scan(~r/[\p{L}\p{N}][\p{L}\p{N}'-]*/u, text) |> List.flatten()
-
-  defp synonyms(term) do
-    normalized = String.downcase(term)
-
-    Enum.find_value(@synonym_groups, [], fn group ->
-      if normalized in group, do: List.delete(group, normalized)
-    end)
-  end
 
   # Terms are interpolated as `tsquery` text, never as SQL. `tokens/1` admits only letters,
   # digits, `'`, and `-`, none of which open a quoted lexeme or an operator once a token starts

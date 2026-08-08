@@ -11,6 +11,11 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Lexical question analysis no longer expands a query through a hand-written
+  synonym group. The analyzer is now `lexical-question-v2` and retains only
+  supplied non-boilerplate terms for plain-text lexical matching. The `f7-1`
+  retrieval contract is unchanged.
+
 - The Cartulary product name is now fully migrated to MemHouse. Source and test
   paths, Phoenix modules, Mix task files, release launchers, database defaults,
   telemetry labels, and configuration variables now use `memhouse`,
