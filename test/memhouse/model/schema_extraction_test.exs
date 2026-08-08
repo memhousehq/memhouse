@@ -16,13 +16,16 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
   @account_id Ecto.UUID.generate()
   @scope_id Ecto.UUID.generate()
+  @message_id Ecto.UUID.generate()
+  @other_message_id Ecto.UUID.generate()
 
   defp context do
     %{
       account_id: @account_id,
       scope_id: @scope_id,
       known_peer_keys: ["avery"],
-      source_peer_key: "avery"
+      source_peer_key: "avery",
+      window_message_ids: [@message_id, @other_message_id]
     }
   end
 
@@ -98,6 +101,23 @@ defmodule MemHouse.Model.SchemaExtractionTest do
     assert {:ok, [candidate]} = cast_item(item(90))
     assert candidate.evidence_level == "direct"
     assert candidate.confidence == 0.9
+  end
+
+  test "accepts source ids from the supplied conversation window" do
+    candidate = item(90) |> Map.put("source_message_ids", [@message_id, @other_message_id])
+
+    assert {:ok, [casted]} = cast_item(candidate)
+    assert casted.source_message_ids == [@message_id, @other_message_id]
+  end
+
+  test "rejects a source id outside the supplied conversation window" do
+    candidate = item(90) |> Map.put("source_message_ids", [Ecto.UUID.generate()])
+
+    assert {:error,
+            [
+              "items[0].source_message_ids must be unique ids from the supplied observation window"
+            ]} =
+             cast_item(candidate)
   end
 
   test "derives indirect evidence and its discount from source and subject" do

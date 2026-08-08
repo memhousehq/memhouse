@@ -73,6 +73,9 @@ Each candidate also includes:
 - `add`, `merge`, `supersede_candidate`, or `no_op`;
 - schema-derived direct or indirect source evidence with a confidence discount; and
 - expiry, revalidation, and valid-time bounds.
+- message source ids from the bounded same-session extraction window. The
+  validator rejects ids outside that window; each retained id becomes durable
+  provenance for the knowledge item.
 
 Subjects are limited to known Peers or the current scope. New items enter
 `proposed` and pass Gate A/B. The reasoning
@@ -112,7 +115,9 @@ mask-aware last-token pooling, and a query-only instruction prefix.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-4` and pipeline `f5-1`. Its prompt explicitly requires
+prompt `extract-5` and pipeline `f5-1`. Message extraction uses a trailing
+six-message same-session window, with the target message as its explicit
+anchor. Its prompt explicitly requires
 confidence as a JSON fraction from `0.0` through `1.0`; the Ash-derived JSON
 schema independently enforces the same numeric bounds.
 
