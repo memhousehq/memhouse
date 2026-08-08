@@ -13,7 +13,7 @@
 #
 # Inputs
 #   model_mode (manual runs only) — "deterministic" (default) or "live".
-#   OPENROUTER_API_KEY (repository secret) and CARTULARY_EVAL_JUDGE_MODEL (repository
+#   OPENROUTER_API_KEY (repository secret) and MEMHOUSE_EVAL_JUDGE_MODEL (repository
 #   variable) — required only for live mode. Scheduled runs never need them.
 #
 # Outputs
@@ -59,7 +59,7 @@ jobs:
       # real database with vector and full-text search — the same image CI and the
       # container deployment use.
       postgres:
-        image: pgvector/pgvector:pg18-bookworm
+        image: timescale/timescaledb-ha:pg18-all-oss@sha256:0aaf407844b3cc9adc4e86b326a16de5dbe26a087f09560837f9343c279a6dd5
         env:
           POSTGRES_DB: postgres
           POSTGRES_USER: postgres
@@ -73,10 +73,10 @@ jobs:
           --health-retries 20
     env:
       MIX_ENV: test
-      CARTULARY_DATABASE_MODE: external
+      MEMHOUSE_DATABASE_MODE: external
       # Distinct database name so a nightly run cannot disturb, or be disturbed by, any
       # other lane sharing a runner. The embedded historical tag is only part of the name.
-      CARTULARY_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/cartulary_f11_nightly
+      MEMHOUSE_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/memhouse_f11_nightly
       # Empty on a scheduled run and on any run where the secret is not configured; the
       # step below checks for that before attempting live mode.
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -85,7 +85,7 @@ jobs:
       # answers — a model grading its own output is not a measurement — and the evaluation
       # task rejects the run if it is not. A repository variable rather than a secret,
       # because a model name is not confidential and the report has to name it anyway.
-      CARTULARY_MODEL_DREAM: ${{ vars.CARTULARY_EVAL_JUDGE_MODEL }}
+      MEMHOUSE_MODEL_DREAM: ${{ vars.MEMHOUSE_EVAL_JUDGE_MODEL }}
     steps:
       - uses: actions/checkout@v6
       - uses: erlef/setup-beam@v1
@@ -117,8 +117,8 @@ jobs:
           args=(--assert-thresholds --run-id "nightly-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --output /tmp/memhouse-f11-nightly.json)
           if [ "$mode" = deterministic ]; then
             args+=(--no-model)
-          elif [ -z "$OPENROUTER_API_KEY" ] || [ -z "$CARTULARY_MODEL_DREAM" ]; then
-            echo "::error::OPENROUTER_API_KEY and CARTULARY_EVAL_JUDGE_MODEL are required for live model mode"
+          elif [ -z "$OPENROUTER_API_KEY" ] || [ -z "$MEMHOUSE_MODEL_DREAM" ]; then
+            echo "::error::OPENROUTER_API_KEY and MEMHOUSE_EVAL_JUDGE_MODEL are required for live model mode"
             exit 1
           else
             args+=(--judge model)

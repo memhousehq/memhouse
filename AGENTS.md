@@ -1,7 +1,7 @@
 # MemHouse agent contract
 
 Applies to the repository unless a nested `AGENTS.md` overrides it. MemHouse
-is a `0.3.0` community beta. The old `F0`–`F11` phase names are retired.
+is a `0.4.0` community beta. The old `F0`–`F11` phase names are retired.
 
 ## Before editing
 
@@ -183,7 +183,7 @@ writes, lifecycle insertion, deterministic fallback, and normalized eval
 fixtures must not regress. Evidence:
 
 - `test/memhouse/poc_contract_test.exs`
-- `test/cartulary_web/controllers/memory_controller_test.exs`
+- `test/memhouse_web/controllers/memory_controller_test.exs`
 - `test/memhouse/eval/fixture_contract_test.exs`
 - `test/fixtures/eval/poc-contract-baseline.json`
 
@@ -259,10 +259,10 @@ Evidence: `test/memhouse/f7_retrieval_entity_context_test.exs`.
 ### Browser console
 
 One human password session covers `/console/*`; curator/admin roles also reach
-`/governance`. Machines establish neither. `CartularyWeb.Console.Access` owns
+`/governance`. Machines establish neither. `MemHouseWeb.Console.Access` owns
 visibility: provisional statements are subject-only even for admins; settled
 state and curator visibility follow its narrowing rules. All reads go through
-`CartularyWeb.Console.Loader` inside `DataLayer.with_actor/2`; role-only reads
+`MemHouseWeb.Console.Loader` inside `DataLayer.with_actor/2`; role-only reads
 are pre-gated. Writes delegate to the operation layer, which reauthorizes them.
 
 Never expose entities, vectors, chunks, hashes, or secrets, except an entity
@@ -270,9 +270,9 @@ card's scope-local label and recomputed kind. Keep styles in
 `console.css`, use no inline script/style, and render deterministic server-side
 SVG without randomness or wall clock.
 
-Evidence: `test/cartulary_web/live/console_live_test.exs`,
-`test/cartulary_web/console/access_test.exs`,
-`test/cartulary_web/console/graph_test.exs`.
+Evidence: `test/memhouse_web/live/console_live_test.exs`,
+`test/memhouse_web/console/access_test.exs`,
+`test/memhouse_web/console/graph_test.exs`.
 
 ### Skills, portability, and operations
 

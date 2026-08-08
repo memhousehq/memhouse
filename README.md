@@ -7,7 +7,7 @@ Agents submit observations. A pipeline extracts candidate knowledge, governance
 decides what survives and who can see it, and retrieval returns scoped answers
 with citations. Agents never write knowledge directly.
 
-**Status:** community beta `0.3.0`. The memory engine, governance, retrieval,
+**Status:** community beta `0.4.0`. The memory engine, governance, retrieval,
 documents, browser console, packaging, and release checks are implemented.
 Integration surfaces, gateway proxy, and generated SDKs are not.
 
@@ -70,8 +70,9 @@ generation can use any ReqLLM-supported or OpenAI-compatible endpoint.
 
 ### Downloaded release
 
-Download the archive and `.sha256` file for Linux x86_64, macOS Apple Silicon,
-macOS Intel, or Windows x86_64 from [GitHub Releases](https://github.com/memhousehq/memhouse/releases).
+Download the archive and `.sha256` file for glibc Linux x86_64/ARM64 or macOS Apple Silicon
+from [GitHub Releases](https://github.com/memhousehq/memhouse/releases).
+Windows, Intel macOS, and Linux musl use external PostgreSQL or the container.
 Verify the checksum, unpack the archive, then run:
 
 ```bash
@@ -81,7 +82,7 @@ curl -fsS http://127.0.0.1:4000/api/ready
 
 The launcher creates its data directory, starts pg0, migrates the database, and
 starts the API. The [release installation guide](https://memhousehq.github.io/memhouse/getting-started/install-release/)
-has architecture selection, download, checksum, Windows, macOS Gatekeeper, and
+has architecture selection, download, checksum, macOS Gatekeeper, and
 a recommended local setup block with signed automatic patch/minor updates.
 
 ### Source checkout
@@ -158,13 +159,13 @@ SDKs. Remaining work is tracked in
 | `lib/memhouse/context/`, `lib/memhouse/skills/` | Context and readiness |
 | `lib/memhouse/portability/` | Logical Account export and import |
 | `lib/memhouse/eval/` | Evaluation harness and reports |
-| `lib/cartulary_web/` | HTTP, authentication, telemetry, and LiveView |
+| `lib/memhouse_web/` | HTTP, authentication, telemetry, and LiveView |
 | `lib/mix/tasks/` | Operator and evaluation commands |
 | `test/` | Regression and contract evidence |
 | `docs/` | Published user documentation |
 | `specs/` | Requirements, architecture, decisions, plans, and evidence |
 
-Start reading at `lib/cartulary_web/router.ex`, then
+Start reading at `lib/memhouse_web/router.ex`, then
 `lib/memhouse/memory.ex`, `lib/memhouse/knowledge.ex`,
 `lib/memhouse/governance/engine.ex`, and
 `lib/memhouse/retrieval/strategy.ex`.

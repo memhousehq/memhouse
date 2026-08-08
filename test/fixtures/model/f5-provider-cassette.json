@@ -16,8 +16,7 @@
               "confidence_percentage": 150,
               "sensitivity": "internal",
               "target_level": "peer",
-              "update_operation": "add",
-              "hearsay": false
+              "update_operation": "add"
             }
           ]
         },
@@ -39,7 +38,6 @@
               "sensitivity": "internal",
               "target_level": "peer",
               "update_operation": "add",
-              "hearsay": false,
               "expires_at": null,
               "revalidate_after": "2026-10-01T00:00:00Z",
               "relevant_from": null,

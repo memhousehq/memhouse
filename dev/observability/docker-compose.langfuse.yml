@@ -10,7 +10,7 @@ services:
     volumes:
       - ./otel-collector-langfuse.yml:/etc/otelcol/config.yml:ro
     ports:
-      - "${CARTULARY_OTEL_HTTP_PORT:-14318}:4318"
+      - "${MEMHOUSE_OTEL_HTTP_PORT:-14318}:4318"
       - "8888:8888"
       - "8889:8889"
     depends_on:

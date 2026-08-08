@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule CartularyWeb.ConnCase do
+defmodule MemHouseWeb.ConnCase do
   @moduledoc """
   ExUnit case template for tests that drive the HTTP surface.
 
@@ -10,19 +10,19 @@ defmodule CartularyWeb.ConnCase do
 
   use ExUnit.CaseTemplate
 
-  # Injected into every module that does `use CartularyWeb.ConnCase`.
+  # Injected into every module that does `use MemHouseWeb.ConnCase`.
   using do
     quote do
       # Phoenix.ConnTest request macros such as get/post/delete read @endpoint
       # from the calling module, so this attribute is what makes request calls
       # resolve at all. Removing it breaks every request helper in the module.
-      @endpoint CartularyWeb.Endpoint
+      @endpoint MemHouseWeb.Endpoint
 
-      use CartularyWeb, :verified_routes
+      use MemHouseWeb, :verified_routes
 
       import Plug.Conn
       import Phoenix.ConnTest
-      import CartularyWeb.ConnCase
+      import MemHouseWeb.ConnCase
     end
   end
 

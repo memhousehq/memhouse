@@ -67,7 +67,7 @@ config :memhouse, :database,
   # The role the running node's connections switch to, so that the row-level
   # security policies on every tenant table are enforced rather than skipped.
   # `config/runtime.exs` documents both settings in full.
-  app_role: "cartulary_app",
+  app_role: "memhouse_app",
   allow_unrestricted_role: false,
   pg0: [
     # Placeholder path only. Startup validation refuses to boot in pg0 mode
@@ -79,6 +79,8 @@ config :memhouse, :database,
     # version bundled in the pinned pg0 asset; that asset's own version and its
     # per-platform SHA-256 digests live in `rel/pg0/`.
     postgres_version: "18.1.0",
+    installation_root: "/private/tmp/pg0-installation",
+    vectorscale_dir: "/private/tmp/pgvectorscale",
     data_dir: Path.join(System.tmp_dir!(), "memhouse-pg0"),
     # TCP port for the supervised instance. When the launcher has to start a new
     # instance it refuses to boot if something already listens here rather than
@@ -346,21 +348,26 @@ config :memhouse, :model_roles,
     # Nothing is downloaded and no text leaves the host; a missing artifact is
     # an error rather than a trigger to fetch one.
     provider: "ortex",
-    model: "BAAI/bge-small-en-v1.5",
-    model_version: "onnx-1",
+    model: "Qwen/Qwen3-Embedding-0.6B",
+    model_version: "onnx-1-qwen3-1024",
     prompt_version: "none",
     pipeline_version: "f5-1",
-    # Must equal the model's real output width. 384 is the width the shipped
-    # HNSW indexes are built for; another width still stores and searches, but
-    # on the unindexed query path.
-    embedding_dimensions: 384,
-    options: %{}
+    # Must equal the model's real output width. 1024 is the width the shipped
+    # DiskANN indexes are built for; another width still stores and searches,
+    # but on the unindexed query path.
+    embedding_dimensions: 1024,
+    options: %{
+      "input_order" => ["input_ids", "attention_mask"],
+      "pooling" => "last_token",
+      "query_instruction" =>
+        "Given a web search query, retrieve relevant passages that answer the query"
+    }
   },
   ingest_extractor: %{
     provider: "deterministic",
     model: "local-structured-fallback",
     model_version: "1",
-    prompt_version: "extract-3",
+    prompt_version: "extract-4",
     pipeline_version: "f5-1",
     options: %{}
   },
@@ -381,6 +388,18 @@ config :memhouse, :model_roles,
     options: %{}
   }
 
+# StreamingDiskANN settings are infrastructure tuning, not retrieval semantics.
+# Changing build settings requires an explicit index rebuild. Query settings are
+# applied transaction-locally by the retrieval store and reset on checkout.
+config :memhouse, :diskann,
+  storage_layout: "memory_optimized",
+  num_neighbors: 50,
+  search_list_size: 100,
+  max_alpha: 1.2,
+  num_dimensions: 0,
+  query_search_list_size: 100,
+  query_rescore: 50
+
 # Legacy single-credential configuration, predating per-role settings. The
 # ReqLLM provider still consults it at call time, and an `api_key` set here
 # wins over a role's own `api_key_ref`. It ships as nil, and only a *reference*
@@ -389,13 +408,13 @@ config :memhouse, :model_roles,
 config :memhouse, :models, api_key: nil, api_key_ref: "env:OPENROUTER_API_KEY"
 
 # Configure the endpoint
-config :memhouse, CartularyWeb.Endpoint,
+config :memhouse, MemHouseWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   # Errors render as JSON only. This is an API-first surface; there is no HTML
   # error view to fall back to, and adding one must not leak internals.
   render_errors: [
-    formats: [json: CartularyWeb.ErrorJSON],
+    formats: [json: MemHouseWeb.ErrorJSON],
     layout: false
   ],
   pubsub_server: MemHouse.PubSub,

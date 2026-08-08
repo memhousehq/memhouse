@@ -67,7 +67,7 @@ blob snapshot *together*, then starting the prior release.
 | Governed knowledge | Entity rows and mentions |
 | Document versions and original blobs | Document chunks |
 | Hash-chain audit log | Vector and full-text indexes |
-| Usage ledger | HNSW state, ETS counters |
+| Usage ledger | DiskANN indexes, ETS counters |
 
 ## Content safety
 

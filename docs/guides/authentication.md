@@ -41,7 +41,9 @@ Authorization: Bearer <token>
 ## Agent API keys
 
 Agents send a per-peer API key in the same header. MemHouse stores only its
-hash, so record the plaintext when issued.
+hash, so record the plaintext when issued. New keys start with `memhouse_`.
+Keys issued during the Cartulary beta keep their `cartulary_` prefix and remain
+valid.
 
 An API key is enough for the memory routes and MCP. It is **not** enough for:
 

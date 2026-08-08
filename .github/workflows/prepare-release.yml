@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: pgvector/pgvector:pg18-bookworm
+        image: timescale/timescaledb-ha:pg18-all-oss@sha256:0aaf407844b3cc9adc4e86b326a16de5dbe26a087f09560837f9343c279a6dd5
         env:
           POSTGRES_DB: postgres
           POSTGRES_USER: postgres
@@ -51,8 +51,8 @@ jobs:
           --health-retries 20
     env:
       MIX_ENV: test
-      CARTULARY_DATABASE_MODE: external
-      CARTULARY_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/cartulary_release_prepare
+      MEMHOUSE_DATABASE_MODE: external
+      MEMHOUSE_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/memhouse_release_prepare
     steps:
       - uses: actions/checkout@v6
         with:
@@ -158,7 +158,7 @@ jobs:
           branch="release/${TAG}"
 
           if [[ "$REPLACE" == "true" ]]; then
-            branch="${branch}/repair"
+            branch="${branch}-repair"
           fi
 
           if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then

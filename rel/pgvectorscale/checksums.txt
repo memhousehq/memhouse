@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
+# One reviewed source archive is used for each native target. These target keys
+# make the supported matrix explicit. Built files receive a package-local
+# manifest, and the release workflow publishes a checksum for each archive.
+ed8347b7a5fe62763ecc13fafac04289b50615e284ffc297f9cc0f195a878906  pgvectorscale-c66cae4b621664b68546587da9fafd80b791e643-darwin-aarch64.tar.gz
+ed8347b7a5fe62763ecc13fafac04289b50615e284ffc297f9cc0f195a878906  pgvectorscale-c66cae4b621664b68546587da9fafd80b791e643-linux-aarch64-gnu.tar.gz
+ed8347b7a5fe62763ecc13fafac04289b50615e284ffc297f9cc0f195a878906  pgvectorscale-c66cae4b621664b68546587da9fafd80b791e643-linux-x86_64-gnu.tar.gz

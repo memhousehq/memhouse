@@ -13,23 +13,26 @@ actions, migrations, queues, and behavior.
 
 ## Deployment boundary
 
-`CARTULARY_DATABASE_MODE` is exactly `pg0` or `external`. Runtime validation
+`MEMHOUSE_DATABASE_MODE` is exactly `pg0` or `external`. Runtime validation
 rejects an unsupported mode, a missing external `DATABASE_URL`, a conflicting
 pg0 `DATABASE_URL`, an invalid port, a missing or non-executable pg0 binary, a
 relative data/blob path, incomplete S3 configuration, and structurally invalid
 model roles before the durable services start.
 
-The no-container release stages pg0 v0.14.2, PostgreSQL 18.1.0, and pgvector
-0.8.1 from the platform-specific upstream asset. `rel/pg0/checksums.txt`
-contains the reviewed SHA-256 digest for every supported asset. The release
+The no-container release stages pg0 v0.14.2, PostgreSQL 18.1.0, pgvector 0.8.1,
+and pgvectorscale 0.9.0. Packaging builds pgvectorscale against pg0's extracted
+`pg_config`, verifies the pinned source digest, and records a package-local
+manifest for every staged file. At boot, pg0 verifies and copies those files
+into its versioned installation before Repo starts. The release
 supervisor starts pg0 before `MemHouse.Repo`, runs migrations before serving,
 detects a conflicting port, moves a dead `postmaster.pid` aside instead of
 deleting it, attaches to a live data directory, and stops its named instance on
-orderly shutdown. The Unix and Windows server launchers create a private,
-persistent local data root and signing secret on first run.
+orderly shutdown. The Unix launcher creates a private, persistent local data
+root and signing secret on first run. Packaged pg0 supports glibc Linux
+x86_64/ARM64 and Apple Silicon.
 
 The container image deliberately contains no pg0. `compose.yml` runs the same
-release against stock `pgvector/pgvector:pg18-bookworm`, uses durable database
+release against the digest-pinned `timescale/timescaledb-ha:pg18-all-oss`, uses durable database
 and blob volumes, and offers an `observability` profile for the OpenTelemetry
 Collector, Jaeger, and Prometheus. Redis and a second worker runtime remain
 absent.

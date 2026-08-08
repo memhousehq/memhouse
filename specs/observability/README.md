@@ -16,7 +16,7 @@ logs.
 ## What Is Wired
 
 - OpenTelemetry SDK/exporter dependencies are installed and disabled by default.
-- `CARTULARY_OTEL_ENABLED=true` enables batch OTLP/HTTP trace export.
+- `MEMHOUSE_OTEL_ENABLED=true` enables batch OTLP/HTTP trace export.
 - Span categories are configurable. The default development shape enables HTTP
   request spans, Phoenix route naming, manual memory/model spans, and Oban job
   spans. Ecto deep-detail spans are opt-in because they add many low-level
@@ -62,29 +62,29 @@ docker compose -f dev/observability/docker-compose.yml up
 Enable app export in `.env`:
 
 ```bash
-CARTULARY_OTEL_ENABLED=true
+MEMHOUSE_OTEL_ENABLED=true
 OTEL_SERVICE_NAME=memhouse-dev
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:14318
-CARTULARY_EXPERIMENT_NAME=local-dev
-CARTULARY_EXPERIMENT_RUN_ID=manual
-CARTULARY_RETRIEVAL_VARIANT=poc-baseline
+MEMHOUSE_EXPERIMENT_NAME=local-dev
+MEMHOUSE_EXPERIMENT_RUN_ID=manual
+MEMHOUSE_RETRIEVAL_VARIANT=poc-baseline
 
-CARTULARY_OTEL_HTTP_SPANS_ENABLED=true
-CARTULARY_OTEL_PHOENIX_SPANS_ENABLED=true
-CARTULARY_OTEL_MEMORY_SPANS_ENABLED=true
-CARTULARY_OTEL_MODEL_SPANS_ENABLED=true
-CARTULARY_OTEL_DOCUMENT_SPANS_ENABLED=true
-CARTULARY_OTEL_OBAN_SPANS_ENABLED=true
-CARTULARY_OTEL_OBAN_SPAN_RELATIONSHIP=child
-CARTULARY_OTEL_ECTO_SPANS_ENABLED=false
+MEMHOUSE_OTEL_HTTP_SPANS_ENABLED=true
+MEMHOUSE_OTEL_PHOENIX_SPANS_ENABLED=true
+MEMHOUSE_OTEL_MEMORY_SPANS_ENABLED=true
+MEMHOUSE_OTEL_MODEL_SPANS_ENABLED=true
+MEMHOUSE_OTEL_DOCUMENT_SPANS_ENABLED=true
+MEMHOUSE_OTEL_OBAN_SPANS_ENABLED=true
+MEMHOUSE_OTEL_OBAN_SPAN_RELATIONSHIP=child
+MEMHOUSE_OTEL_ECTO_SPANS_ENABLED=false
 ```
 
-`CARTULARY_RETRIEVAL_VARIANT=poc-baseline` repeats the current default value in
+`MEMHOUSE_RETRIEVAL_VARIANT=poc-baseline` repeats the current default value in
 `config/runtime.exs`. That label is historical and kept for comparability with
 recorded runs; its rename is tracked in `specs/roadmap/beta-roadmap.md`.
 
 The collector receives OTLP/HTTP from the host on port `14318` and forwards it
-to the standard container port `4318`. Override `CARTULARY_OTEL_HTTP_PORT`
+to the standard container port `4318`. Override `MEMHOUSE_OTEL_HTTP_PORT`
 before running Compose if your machine needs a different host port.
 
 Then run the app or evals normally:
@@ -111,7 +111,7 @@ mix memhouse.eval.benchmark \
 | Traces | Jaeger | `http://localhost:16686`, service `memhouse-dev` |
 | Collector and exported metrics | Prometheus | `http://localhost:9090`, scrape jobs `otel-collector` |
 | Eval reports | Repository files or chosen output path | `specs/eval/results/`, `specs/eval/minimal-benchmark-results.md`, or `--output ...` |
-| Database behavior | Ecto spans in Jaeger | Set `CARTULARY_OTEL_ECTO_SPANS_ENABLED=true`, then look for `memhouse.repo.query:*` spans under request/eval traces. |
+| Database behavior | Ecto spans in Jaeger | Set `MEMHOUSE_OTEL_ECTO_SPANS_ENABLED=true`, then look for `memhouse.repo.query:*` spans under request/eval traces. |
 | Background jobs | Oban spans in Jaeger | Look for extraction job spans once async paths are exercised. |
 | Model calls | `memhouse.model.*` spans and `usage_events` | Filter traces by `memhouse.model.role`, provider, and `gen_ai.request.model`; use the database ledger for exact totals. |
 
@@ -121,15 +121,15 @@ Use these flags to tune Jaeger noise for a given debugging session:
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `CARTULARY_OTEL_HTTP_SPANS_ENABLED` | `true` | One server trace per HTTP request. |
-| `CARTULARY_OTEL_MEMORY_SPANS_ENABLED` | `true` | Manual memory workflow spans and safe retrieval attributes. |
-| `CARTULARY_OTEL_MODEL_SPANS_ENABLED` | `true` | Model call spans and token counts, without prompt or answer text. |
-| `CARTULARY_OTEL_DOCUMENT_SPANS_ENABLED` | `true` | Document parsing, chunking, extraction, and connector spans with content-safe counts and identifiers. |
-| `CARTULARY_OTEL_OBAN_SPANS_ENABLED` | `true` | Background extraction job spans. |
-| `CARTULARY_OTEL_OBAN_SPAN_RELATIONSHIP` | `child` | `child` keeps queued jobs in the request trace; `link` creates a separate linked trace; `none` disables propagation. |
-| `CARTULARY_OTEL_PHOENIX_SPANS_ENABLED` | `true` | Phoenix route/controller span naming and framework context. |
-| `CARTULARY_OTEL_ECTO_SPANS_ENABLED` | `false` | Extra database spans for SQL latency debugging. |
-| `CARTULARY_OTEL_DB_STATEMENT_ENABLED` | `false` | Adds SQL statements to Ecto spans; keep disabled unless using scrubbed local data. |
+| `MEMHOUSE_OTEL_HTTP_SPANS_ENABLED` | `true` | One server trace per HTTP request. |
+| `MEMHOUSE_OTEL_MEMORY_SPANS_ENABLED` | `true` | Manual memory workflow spans and safe retrieval attributes. |
+| `MEMHOUSE_OTEL_MODEL_SPANS_ENABLED` | `true` | Model call spans and token counts, without prompt or answer text. |
+| `MEMHOUSE_OTEL_DOCUMENT_SPANS_ENABLED` | `true` | Document parsing, chunking, extraction, and connector spans with content-safe counts and identifiers. |
+| `MEMHOUSE_OTEL_OBAN_SPANS_ENABLED` | `true` | Background extraction job spans. |
+| `MEMHOUSE_OTEL_OBAN_SPAN_RELATIONSHIP` | `child` | `child` keeps queued jobs in the request trace; `link` creates a separate linked trace; `none` disables propagation. |
+| `MEMHOUSE_OTEL_PHOENIX_SPANS_ENABLED` | `true` | Phoenix route/controller span naming and framework context. |
+| `MEMHOUSE_OTEL_ECTO_SPANS_ENABLED` | `false` | Extra database spans for SQL latency debugging. |
+| `MEMHOUSE_OTEL_DB_STATEMENT_ENABLED` | `false` | Adds SQL statements to Ecto spans; keep disabled unless using scrubbed local data. |
 
 ## What To Measure
 
@@ -154,9 +154,9 @@ quality but destroys latency, abstention, or cost visibility is not done.
 
 For every retrieval, model, gate, or projection experiment:
 
-1. Set `CARTULARY_EXPERIMENT_NAME` to the experiment family.
-2. Set `CARTULARY_EXPERIMENT_RUN_ID` to the run id used in eval output.
-3. Set `CARTULARY_RETRIEVAL_VARIANT` to the strategy/profile variant under test.
+1. Set `MEMHOUSE_EXPERIMENT_NAME` to the experiment family.
+2. Set `MEMHOUSE_EXPERIMENT_RUN_ID` to the run id used in eval output.
+3. Set `MEMHOUSE_RETRIEVAL_VARIANT` to the strategy/profile variant under test.
 4. Run one deterministic baseline with `--no-model`.
 5. Run the live-model path only after the deterministic baseline is recorded.
 6. Keep the eval JSON report, trace time window, model role versions, profile
@@ -196,7 +196,7 @@ docker compose -f dev/observability/docker-compose.langfuse.yml up
 Keep the app pointed at the local collector:
 
 ```bash
-CARTULARY_OTEL_ENABLED=true
+MEMHOUSE_OTEL_ENABLED=true
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:14318
 ```
 
@@ -204,17 +204,17 @@ Direct app-to-Langfuse export is also possible, but it skips local Jaeger and
 collector debug logs. Use it only when the collector is not needed:
 
 ```bash
-CARTULARY_OTEL_ENABLED=true
+MEMHOUSE_OTEL_ENABLED=true
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://cloud.langfuse.com/api/public/otel/v1/traces
 OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Basic <base64-public-key-colon-secret-key>,x-langfuse-ingestion-version=4
 ```
 
 ## Safety Defaults
 
-- `CARTULARY_OTEL_ENABLED=false` by default.
+- `MEMHOUSE_OTEL_ENABLED=false` by default.
 - Ecto spans are disabled by default to keep Jaeger focused on workflow traces
   instead of many standalone database traces.
-- `CARTULARY_OTEL_DB_STATEMENT_ENABLED=false` by default because SQL statements
+- `MEMHOUSE_OTEL_DB_STATEMENT_ENABLED=false` by default because SQL statements
   can include sensitive values.
 - Dev Repo query logging is disabled by default for the same reason; use Ecto
   spans for query timing and table-level source metadata.

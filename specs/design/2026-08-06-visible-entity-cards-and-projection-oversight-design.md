@@ -270,7 +270,7 @@ never from a request parameter. A list that enumerates by scope bypasses that
 guard, and peer profiles are the only kind that stores provisional content.
 
 `/console/*` remains subject-only for every role, and
-`CartularyWeb.Console.Access.visible_knowledge?` does not change. Oversight lives
+`MemHouseWeb.Console.Access.visible_knowledge?` does not change. Oversight lives
 on a separate, role-gated surface.
 
 ### Audit
@@ -348,9 +348,9 @@ becomes user-visible in the console. It is pre-existing, and ADR 0011 records it
 | `test/memhouse/context/entity_label_test.exs` (new) | Selection order; rejection rules; closed-class list; kind precedence |
 | `test/memhouse/context/builder_test.exs` (new) | A label never draws on a statement outside the card's sources; both thresholds; null summary and provenance at two sources |
 | `test/memhouse/f7_retrieval_entity_context_test.exs` | Payload members; per-scope cap and its ordering |
-| `test/cartulary_web/console/graph_test.exs` | Hub labels; ordinal fallback for collapsed groups |
-| `test/cartulary_web/live/console_live_test.exs` | Panel rendering; `:entity_id` absent from the cluster map, unchanged; a `peer_profile` row in a drawn scope never reaches the graph payload |
-| `test/cartulary_web/console/access_test.exs` | `/console/*` provisional rule unchanged |
+| `test/memhouse_web/console/graph_test.exs` | Hub labels; ordinal fallback for collapsed groups |
+| `test/memhouse_web/live/console_live_test.exs` | Panel rendering; `:entity_id` absent from the cluster map, unchanged; a `peer_profile` row in a drawn scope never reaches the graph payload |
+| `test/memhouse_web/console/access_test.exs` | `/console/*` provisional rule unchanged |
 
 ## Delivery
 

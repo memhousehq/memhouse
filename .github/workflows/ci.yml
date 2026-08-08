@@ -64,10 +64,9 @@ jobs:
     # longer, default job limit.
     timeout-minutes: 40
     services:
-      # Stock upstream PostgreSQL with pgvector compiled in — the same image the container
-      # deployment uses, so CI is not testing against a different database than production.
+      # PostgreSQL with pgvector and pgvectorscale — the same image as Compose.
       postgres:
-        image: pgvector/pgvector:pg18-bookworm
+        image: timescale/timescaledb-ha:pg18-all-oss@sha256:0aaf407844b3cc9adc4e86b326a16de5dbe26a087f09560837f9343c279a6dd5
         env:
           POSTGRES_DB: postgres
           POSTGRES_USER: postgres
@@ -82,13 +81,13 @@ jobs:
           --health-timeout 3s
           --health-retries 20
     env:
-      CARTULARY_DATABASE_MODE: external
+      MEMHOUSE_DATABASE_MODE: external
       # A lane-specific database name keeps this job from colliding with the other lanes
       # and workflows that use the same runner image. The name embeds a historical tag and
       # carries no meaning beyond uniqueness. The test environment reads its connection
       # string from this variable rather than DATABASE_URL, so an ambient DATABASE_URL can
       # never point the suite at a real database.
-      CARTULARY_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/cartulary_f11_external
+      MEMHOUSE_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/memhouse_f11_external
     steps:
       - uses: actions/checkout@v6
       - uses: erlef/setup-beam@v1
@@ -130,6 +129,8 @@ jobs:
       # Quality, latency, and token efficiency beyond those two floors are reported for
       # comparison but deliberately do not gate, so ordinary variance cannot block a merge.
       - name: Deterministic release evaluation
+        env:
+          MIX_ENV: test
         run: >-
           mix memhouse.eval.release
           --no-model
