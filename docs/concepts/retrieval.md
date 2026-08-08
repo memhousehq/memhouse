@@ -26,6 +26,17 @@ flowchart LR
 Each strategy applies Account, scope, lifecycle, provisional-subject, and source
 filters **inside its query**. The API does not post-filter candidates.
 
+## How semantic retrieval embeds a query
+
+The configured embedder can set a model-specific query prefix. MemHouse adds it
+only to query embeddings. Stored statements and document chunks remain unchanged.
+For BGE retrieval models, set the prefix to `Represent this sentence for searching
+relevant passages: `. Exact repeated queries reuse a bounded node-local vector
+cache keyed by Account, embedder identity, and a text digest. The cache contains
+no raw query text and is discarded on restart. Change the retrieval profile
+version when you change the prefix, so evaluation reports identify the ranking
+configuration.
+
 ## How the lexical strategy reads your query
 
 Plain text matches statements sharing **any** of its terms, ranked by how many

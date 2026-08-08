@@ -360,7 +360,7 @@ config :memhouse, :model_roles,
       "input_order" => ["input_ids", "attention_mask"],
       "pooling" => "last_token",
       "query_instruction" =>
-        "Given a web search query, retrieve relevant passages that answer the query"
+        "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
     }
   },
   reranker: %{
@@ -383,7 +383,7 @@ config :memhouse, :model_roles,
     provider: "deterministic",
     model: "local-structured-fallback",
     model_version: "1",
-    prompt_version: "extract-4",
+    prompt_version: "extract-5",
     pipeline_version: "f5-1",
     options: %{}
   },

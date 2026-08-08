@@ -18,6 +18,12 @@ changelog entry and contract-version transition.
   0015 records the artifact and deadline boundary. The `f7-1` response shape
   and profile identity are unchanged.
 
+- Message extraction now uses a bounded six-message same-session window. The
+  extractor identifies each retained candidate with the message ids that support
+  it, and validation rejects ids outside the supplied window. The durable
+  knowledge item and provenance rows retain all cited messages. The prompt is
+  now `extract-5`; the `f5-1` pipeline contract is unchanged.
+
 - Lexical question analysis no longer expands a query through a hand-written
   synonym group. The analyzer is now `lexical-question-v2` and retains only
   supplied non-boilerplate terms for plain-text lexical matching. The `f7-1`

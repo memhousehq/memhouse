@@ -119,6 +119,9 @@ Details: `specs/architecture/gate-a-b-governance.md`.
   validate-and-repair. Extraction resolves subject independently of source,
   discounts third-party claims, and proposes confidence, sensitivity, target, and temporal
   fields plus an update operation.
+- Message extraction reads a trailing six-message window in the same session
+  and scope. Candidate source ids are limited to that window and become durable
+  provenance rows.
 - Complete model provenance — provider, model, version, prompt version,
   pipeline version, embedding model and version — and one durable usage ledger
   for tokens, embeddings, latency, role, Account, and scope.

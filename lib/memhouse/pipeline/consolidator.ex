@@ -209,9 +209,9 @@ defmodule MemHouse.Pipeline.Consolidator do
   defp retire_prior_aggregate!(first, subject, noun, actor) do
     first.account_id
     |> active_items(first.scope_id, actor)
-    |> Enum.filter(&derived_aggregate?/1)
     |> Enum.filter(fn item ->
-      String.starts_with?(item.statement, "#{subject} has #{pluralize(noun)}:")
+      derived_aggregate?(item) and
+        String.starts_with?(item.statement, "#{subject} has #{pluralize(noun)}:")
     end)
     |> Enum.map(fn item ->
       Engine.transition!(

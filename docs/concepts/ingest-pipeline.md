@@ -92,14 +92,18 @@ Extraction also does four things a naive extractor gets wrong:
 - **Derives source evidence.** A statement from its own peer subject is direct;
   every other source-to-subject relationship is indirect and receives the
   third-party confidence discount.
+- **Uses bounded conversation evidence.** Message extraction sends the target
+  message and up to five earlier messages from the same session and scope. A
+  candidate can cite only ids from that window. Each cited id becomes durable
+  provenance.
 - **Records complete provenance.** Provider, model, version, prompt, and
   pipeline identity travel with the result.
 
 ### Replay is safe
 
-Deterministic idempotency keys make replay merge provenance instead of creating
-duplicate statements. The reconciler finds durable records whose jobs never
-ran. Account administrators can enqueue it independently with
+Deterministic idempotency keys make replay and overlapping message windows merge
+provenance instead of creating duplicate statements. The reconciler finds durable
+records whose jobs never ran. Account administrators can enqueue it independently with
 `POST /api/v1/operations/reconcile`.
 
 ### A provider outage delays freshness; it does not lose data

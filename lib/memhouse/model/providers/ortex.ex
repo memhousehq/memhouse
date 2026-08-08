@@ -38,8 +38,7 @@ defmodule MemHouse.Model.Providers.Ortex do
     opts = embedding_opts(config)
     texts = apply_query_instruction(texts, config.options, request_opts)
 
-    with {:ok, vectors} <- Ortex.generate(texts, opts),
-         {:ok, tokens} <- Ortex.token_count(texts, opts) do
+    with {:ok, vectors, tokens} <- Ortex.generate(texts, opts) do
       {:ok,
        %Result{
          value: vectors,
@@ -124,7 +123,7 @@ defmodule MemHouse.Model.Providers.Ortex do
   defp execution_provider(_provider), do: :cpu
 
   @doc """
-  Applies the configured Qwen3 instruction to query embeddings only.
+  Applies the configured instruction prefix to query embeddings only.
 
   Stored statements and document chunks must stay unprefixed. Their vectors are
   the retrieval corpus, not queries.
@@ -132,8 +131,10 @@ defmodule MemHouse.Model.Providers.Ortex do
   def apply_query_instruction(texts, options, opts) do
     instruction = Map.get(options, "query_instruction")
 
-    if Keyword.get(opts, :purpose) == :query and is_binary(instruction) and instruction != "" do
-      Enum.map(texts, &"Instruct: #{instruction}\nQuery: #{&1}")
+    if Keyword.get(opts, :input_type, :passage) == :query and is_binary(instruction) and
+         instruction != "" do
+      prefix = String.replace(instruction, "\\n", "\n")
+      Enum.map(texts, &(prefix <> &1))
     else
       texts
     end

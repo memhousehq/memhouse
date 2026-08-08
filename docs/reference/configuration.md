@@ -152,7 +152,7 @@ avoids models that intermittently ignore forced tool calls.
 | `MEMHOUSE_ORTEX_MODEL_PATH` | absolute path | Operator-supplied `.onnx` file |
 | `MEMHOUSE_ORTEX_TOKENIZER_PATH` | absolute path | Operator-supplied `tokenizer.json` |
 | `MEMHOUSE_ORTEX_POOLING` | `last_token` | Pooling strategy |
-| `MEMHOUSE_ORTEX_QUERY_INSTRUCTION` | Qwen3 retrieval instruction | Applied to query embeddings only |
+| `MEMHOUSE_ORTEX_QUERY_INSTRUCTION` | Qwen3 retrieval prefix | Literal prefix applied to query embeddings only; set the BGE prefix to `Represent this sentence for searching relevant passages: ` and advance the retrieval profile version |
 | `MEMHOUSE_ORTEX_EXECUTION_PROVIDERS` | `cpu` | ONNX Runtime execution providers |
 | `MEMHOUSE_EMBEDDING_BASE_URL` / `_API_KEY` | — | For an API embedder instead |
 

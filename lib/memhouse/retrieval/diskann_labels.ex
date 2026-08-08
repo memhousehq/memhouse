@@ -92,6 +92,8 @@ defmodule MemHouse.Retrieval.DiskannLabels do
     |> Map.fetch!(:diskann_label)
   end
 
+  # SQL is static and every value is a UUID or a fixed label bound passed as a parameter.
+  # sobelow_skip ["SQL.Query"]
   defp next_free_label!(account_id) do
     sql = """
     SELECT candidate::smallint

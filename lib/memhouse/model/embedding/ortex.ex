@@ -54,7 +54,7 @@ defmodule MemHouse.Model.Embedding.Ortex do
   def dimensions(opts), do: Keyword.fetch!(opts, :dimensions)
 
   @doc """
-  Embeds a list of texts, returning `{:ok, vectors}` in input order.
+  Embeds a list of texts, returning `{:ok, vectors, token_count}` in input order.
 
   Options: `:model_path` and `:tokenizer_path` (both required, and both must
   point at existing files), `:cache_key`, `:execution_providers`, `:max_length`,
@@ -79,30 +79,12 @@ defmodule MemHouse.Model.Embedding.Ortex do
              cache_key
            ),
          {:ok, encoded} <- encode(tokenizer, texts, opts) do
-      run(model, encoded, opts)
+      with {:ok, vectors} <- run(model, encoded, opts) do
+        {:ok, vectors, encoded.attention_mask |> List.flatten() |> Enum.sum()}
+      end
     end
   rescue
     error -> {:error, {:ortex_inference_failed, error.__struct__}}
-  end
-
-  @doc """
-  Counts the tokens the same encoding pass would produce for `texts`.
-
-  Sums the attention masks, so padding is excluded and the number reflects real
-  tokens rather than padded tensor width. Takes the same options as
-  `generate/2`, but only reads the tokenizer, so its one artifact failure is
-  `{:error, {:model_artifact_missing, :tokenizer_path}}`. Otherwise returns
-  `{:ok, count}`.
-
-  Reported to the usage ledger so local embedding spend is measured, not
-  estimated, even though local tokens cost nothing to buy.
-  """
-  def token_count(texts, opts) do
-    with {:ok, tokenizer_path} <- artifact(opts, :tokenizer_path),
-         {:ok, tokenizer} <- cached_tokenizer(tokenizer_path, Keyword.get(opts, :cache_key)),
-         {:ok, encoded} <- encode(tokenizer, texts, opts) do
-      {:ok, encoded.attention_mask |> List.flatten() |> Enum.sum()}
-    end
   end
 
   # Requires an existing regular file. A missing artifact is an error, never an

@@ -175,7 +175,7 @@ defmodule MemHouse.Retrieval.EntityResolver do
       actor: actor
     }
 
-    case Embedding.embed([surface], context, purpose: :query) do
+    case Embedding.embed([surface], context, input_type: :query) do
       {:ok, result} ->
         [surface_embedding] = result.vectors
 
