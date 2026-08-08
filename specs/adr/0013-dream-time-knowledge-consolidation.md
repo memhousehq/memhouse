@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
-# ADR 0012: Dream-time knowledge consolidation
+# ADR 0013: Dream-time knowledge consolidation
 
 Status: Accepted.
 
@@ -12,7 +12,7 @@ Dream-time consolidates active knowledge inside one Account and one scope. It:
   identities and cosine similarity of at least `0.97`;
 - retires absorbed rows as `superseded`, retains their source provenance, and
   sets corroboration from distinct source observations; and
-- creates a derived `aggregate` fact for the unambiguous set-membership form
+- creates a derived aggregate fact for the unambiguous set-membership form
   `subject has a noun named member` when two or more active members exist.
 
 The aggregate is an ordinary governed knowledge row. It records every source
