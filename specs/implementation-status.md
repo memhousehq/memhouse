@@ -43,8 +43,10 @@ Details: `specs/architecture/ash-domain-backbone.md`.
 - Eleven AshOban lanes cover extraction, dream-time, revalidation, expiry,
   projection and entity refresh, connector sync, portability rebuild,
   reconciliation, and governance continuations.
-- Ash.Reactor flows own ingest extraction, dream-time reasoning, validation
-  continuation, and transcript answer correlation.
+- Ash.Reactor flows own ingest extraction, dream-time reasoning, and transcript
+  answer correlation. Legacy validation-continuation jobs remain executable so
+  upgrades can drain them, but current gate decisions create validation rows
+  inline and do not enqueue that no-op lane.
 - Deterministic idempotency keys and Account-local advisory locks make replays
   safe: a replay merges attribution and provenance instead of duplicating
   knowledge.
