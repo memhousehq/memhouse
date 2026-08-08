@@ -21,7 +21,7 @@ Eight persisted Ash resources raise the durable count from 28 to 36:
 
 | Resource | Purpose |
 | --- | --- |
-| `GateRule` | Versioned confidence × target × sensitivity matrix cell |
+| `GateRule` | Versioned evidence × target × sensitivity matrix cell |
 | `ValidationItem` | Common curator/peer queue and conflict bundle |
 | `GateDecision` | Immutable automatic and human gate history |
 | `Consent` | Subject-owned, target-specific upward personal consent |
@@ -40,6 +40,12 @@ it rather than becoming a second knowledge store.
 Every newly extracted item starts as `proposed`. The matrix lookup uses the
 nearest exact scope row, then the Account default row, then the conservative
 built-in human rule.
+
+Gate A uses the persisted, schema-derived source evidence level. Only a source
+Peer speaking about itself is `direct`; every other source-to-subject relation
+is `indirect`. Model confidence remains reviewer metadata and is never an
+automatic Gate A input. Gate B never automatically places `personal` or
+`restricted` knowledge.
 
 Gate A produces one of:
 
@@ -73,7 +79,7 @@ Two off-by-default switches enable that declaration:
 
 - Account-scoped `Account.consent_mode="auto"`, restricted to `account_admin`
   and audited with `MemHouse.Governance.Changes.AuditResource`.
-- Deployment-wide `CARTULARY_GOVERNANCE_UNATTENDED`, loaded by
+- Deployment-wide `MEMHOUSE_GOVERNANCE_UNATTENDED`, loaded by
   `MemHouse.Governance.UnattendedMode`, logged at boot, and reported by
   `GET /api/ready`.
 
@@ -82,8 +88,9 @@ with `status: "granted"`, `verified: true`, and channel
 `"auto:account_mode"` or `"auto:unattended_deployment"`. Existing readers need
 no special case, and the channel keeps the declaration auditable.
 
-When ordinary ingest supplies no `target_scope_id`, `resolve_consent/5` uses
-the item's `scope_id`; `Consent.target_scope_id` never receives `nil`.
+When ordinary ingest supplies no `target_scope_id` for a scope-level proposal,
+the gate uses the item's `scope_id` for the hold, validation item, and consent;
+none of those target fields receives `nil`.
 
 Full design: `specs/design/2026-07-30-unattended-governance-consent-design.md`.
 Decision record: `specs/adr/0007-unattended-governance-consent.md`.
@@ -161,11 +168,13 @@ advances retrieval and context profiles to `f7-1`.
   `test/memhouse/f4_real_gate_a_b_governance_test.exs`
 - Updated baseline contract evidence:
   `test/memhouse/poc_contract_test.exs` and
-  `test/cartulary_web/controllers/memory_controller_test.exs`
+  `test/memhouse_web/controllers/memory_controller_test.exs`
 - Operation layer: `lib/memhouse/governance/`
-- Human and self-service adapters: `lib/cartulary_web/`
+- Human and self-service adapters: `lib/memhouse_web/`
 - Declared-auto consent: `lib/memhouse/governance/unattended_mode.ex`,
   `MemHouse.Governance.Engine.resolve_consent/5` in
   `lib/memhouse/governance/engine.ex`, and `consent_mode`/`configure_governance`
   on `MemHouse.Accounts.Account` in `lib/memhouse/accounts.ex`; regression
   and RBAC evidence in `test/memhouse/f4_real_gate_a_b_governance_test.exs`
+- Deterministic Gate A evidence: ADR 0012 and
+  `test/cartulary/model/schema_extraction_test.exs`

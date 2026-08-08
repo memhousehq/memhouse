@@ -114,7 +114,7 @@ Backups preserve the left column; erasure and recovery may rebuild the right.
 | Governed knowledge | Entity rows and mentions |
 | Document versions and their original blobs | Document chunks |
 | The hash-chain audit log | Vector and full-text indexes |
-| Usage ledger entries | HNSW state, ETS counters |
+| Usage ledger entries | DiskANN indexes, ETS counters |
 
 
 ## Where to go next

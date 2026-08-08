@@ -43,7 +43,7 @@ structurally unrequestable for this path, only for `request_promotion/3`."
    - `MemHouse.Accounts.Account.consent_mode` — `"subject_required"`
      (default) | `"auto"`. Per-account, admin-set, audited.
    - `config :memhouse, :governance, unattended: boolean`
-     (`CARTULARY_GOVERNANCE_UNATTENDED`, default `false`). Per-deployment
+     (`MEMHOUSE_GOVERNANCE_UNATTENDED`, default `false`). Per-deployment
      process, no Account row required.
 2. Neither switch touches `GateRule.requires_consent`, which stays exactly as
    inert as its moduledoc already states. This is a new, separate mechanism —
@@ -112,7 +112,7 @@ this; only a human declares an account synthetic.
 ```elixir
 # config/runtime.exs
 config :memhouse, :governance,
-  unattended: System.get_env("CARTULARY_GOVERNANCE_UNATTENDED") == "true"
+  unattended: System.get_env("MEMHOUSE_GOVERNANCE_UNATTENDED") == "true"
 ```
 
 Read through a small accessor, not `Application.get_env/3` scattered inline:
@@ -129,7 +129,7 @@ defmodule MemHouse.Governance.UnattendedMode do
   A/B automation, which is governed entirely by `GateRule` as before.
   """
 
-  @doc "True when CARTULARY_GOVERNANCE_UNATTENDED was set at boot."
+  @doc "True when MEMHOUSE_GOVERNANCE_UNATTENDED was set at boot."
   def enabled?, do: Application.get_env(:memhouse, :governance, [])[:unattended] || false
 end
 ```
@@ -229,7 +229,7 @@ multitenant — it *is* the tenant — the same reason
 
 - `consent_mode` changes are `account_admin`-only and hash-chain audited
   (category `"configuration"`), matching `GateRule`.
-- `CARTULARY_GOVERNANCE_UNATTENDED` is boot-time only (no runtime toggle),
+- `MEMHOUSE_GOVERNANCE_UNATTENDED` is boot-time only (no runtime toggle),
   logged loudly, and visible on `/api/ready` — an operator or auditor can
   always tell, without reading source, whether a given deployment process has
   disabled subject consent.
@@ -256,7 +256,7 @@ Extend `test/memhouse/f4_real_gate_a_b_governance_test.exs`:
   `target_scope_id` supplied) and the `request_promotion/3` path; the
   resulting `Consent` row has `status: "granted"`, `verified: true`, and a
   `channel` starting `"auto:"`.
-- `CARTULARY_GOVERNANCE_UNATTENDED=true` unblocks regardless of
+- `MEMHOUSE_GOVERNANCE_UNATTENDED=true` unblocks regardless of
   `consent_mode`, and its `channel` reads `"auto:unattended_deployment"`.
 - Only `account_admin` may call `configure_governance`; `curator` and a
   machine (`api_key`) credential are both rejected.
@@ -266,7 +266,7 @@ Extend `test/memhouse/f4_real_gate_a_b_governance_test.exs`:
 ## 6. Documentation
 
 - `docs/reference/configuration.md` and `.env.example` —
-  `CARTULARY_GOVERNANCE_UNATTENDED`.
+  `MEMHOUSE_GOVERNANCE_UNATTENDED`.
 - `docs/concepts/` governance page — the two switches, what they do and do
   not affect, and that this is off by default.
 - `specs/architecture/gate-a-b-governance.md` — consent section gains the

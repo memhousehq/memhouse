@@ -33,16 +33,16 @@ bulk selection targets only already-visible rows.
 
 | Module | Owns |
 | --- | --- |
-| `CartularyWeb.ConsoleAuth` | Mount-time authentication: valid session token, password identity kind. No role check. |
-| `CartularyWeb.GovernanceAuth` | The same, narrowed to `curator` and `account-admin`. Unchanged. |
-| `CartularyWeb.SessionController` | `/sign-in` for any human role; `/sign-out`; the bare-origin redirect. |
-| `CartularyWeb.Console.Access` | The two visibility rules and the action gates. Pure. |
-| `CartularyWeb.Console.Loader` | Every database read the console performs. |
-| `CartularyWeb.Console.Graph` | Deterministic radial layout. Pure. |
-| `CartularyWeb.ConsoleComponents` | Shell, navigation, tiles, badges, tables, panels, tabs, filter chips, pager, disclosures. Stateless. |
+| `MemHouseWeb.ConsoleAuth` | Mount-time authentication: valid session token, password identity kind. No role check. |
+| `MemHouseWeb.GovernanceAuth` | The same, narrowed to `curator` and `account-admin`. Unchanged. |
+| `MemHouseWeb.SessionController` | `/sign-in` for any human role; `/sign-out`; the bare-origin redirect. |
+| `MemHouseWeb.Console.Access` | The two visibility rules and the action gates. Pure. |
+| `MemHouseWeb.Console.Loader` | Every database read the console performs. |
+| `MemHouseWeb.Console.Graph` | Deterministic radial layout. Pure. |
+| `MemHouseWeb.ConsoleComponents` | Shell, navigation, tiles, badges, tables, panels, tabs, filter chips, pager, disclosures. Stateless. |
 | `priv/static/assets/governance.js` | The whole client: the LiveView socket and the `Copy` hook. Hand-written, same-origin, no bundler. |
-| `CartularyWeb.ConsoleLive.Tools` | Forms for the MCP allowlist; dispatches the same non-persisted Ash actions and renders the latest result. |
-| `CartularyWeb.ConsoleLive.*` | Ten pages: rendering and event dispatch only. |
+| `MemHouseWeb.ConsoleLive.Tools` | Forms for the MCP allowlist; dispatches the same non-persisted Ash actions and renders the latest result. |
+| `MemHouseWeb.ConsoleLive.*` | Ten pages: rendering and event dispatch only. |
 
 Both browser surfaces retain the historical `governance_token` session key so
 one sign-in opens both and existing sessions remain valid.
@@ -351,12 +351,12 @@ disclose which knowledge exists about them in scopes the reader may not hold.
 
 ## Evidence
 
-- `test/cartulary_web/console/access_test.exs` — the visibility matrix and the
+- `test/memhouse_web/console/access_test.exs` — the visibility matrix and the
   action gates, including that a machine credential holds no console authority.
-- `test/cartulary_web/console/graph_test.exs` — layout determinism, frame
+- `test/memhouse_web/console/graph_test.exs` — layout determinism, frame
   bounds, focus centring, depth measured from the focus, edge kinds, dropped
   dangling edges and clusters, hub clearance, and the absence of entity nodes.
-- `test/cartulary_web/live/console_live_test.exs` — real sign-in, every page
+- `test/memhouse_web/live/console_live_test.exs` — real sign-in, every page
   rendering against a seeded Account, an API key refused, a member denied the
   operations page, a scope the member holds no grant on absent rather than
   empty, the two explorer modes and their four empty states, the clamps on page

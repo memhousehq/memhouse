@@ -99,11 +99,11 @@ with a digest of strategies, weights, and rerank configuration. Deployment
 configuration can constrain enabled strategy modules and the three deadline
 ceilings through:
 
-- `CARTULARY_RETRIEVAL_ENABLED_STRATEGIES`;
-- `CARTULARY_RETRIEVAL_FAST_DEADLINE_MS`;
-- `CARTULARY_RETRIEVAL_BALANCED_DEADLINE_MS`; and
-- `CARTULARY_RETRIEVAL_THOROUGH_DEADLINE_MS`.
-- `CARTULARY_RETRIEVAL_RERANK_TIMEOUT_MS`.
+- `MEMHOUSE_RETRIEVAL_ENABLED_STRATEGIES`;
+- `MEMHOUSE_RETRIEVAL_FAST_DEADLINE_MS`;
+- `MEMHOUSE_RETRIEVAL_BALANCED_DEADLINE_MS`; and
+- `MEMHOUSE_RETRIEVAL_THOROUGH_DEADLINE_MS`.
+- `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS`.
 
 Raw strategy lists and rerank overrides remain restricted to internal/system and
 eval callers. The one browser path into that seam is
@@ -126,19 +126,21 @@ Knowledge and document chunk embeddings are real PostgreSQL `vector` values,
 not float-array stand-ins. Every vector retains provider, model, version, and
 dimensions. The retrieval migration adds:
 
-- HNSW cosine indexes for the pinned 384-dimensional knowledge, chunk, and
-  entity collections;
+- StreamingDiskANN cosine expression indexes for the pinned 1024-dimensional
+  knowledge, chunk, and entity collections;
 - a generated document-chunk `tsvector` and GIN index;
 - the existing knowledge-statement GIN index as the lexical path; and
 - expansion lookup indexes for mentions and knowledge relations.
 
-The production 384-dimensional semantic query uses the matching HNSW
-expression. Other explicitly configured dimensions remain valid and use the
+The production 1024-dimensional semantic query uses the matching DiskANN
+expression. The query applies transaction-local search-list and rescore
+settings. Other explicitly configured dimensions remain valid and use the
 small-corpus path until their own reviewed index migration is installed.
 `MemHouse.Retrieval.Vector` provides the deterministic Nx cosine baseline for
 tiny eval corpora and entity candidate comparison. A pinned-identity mismatch
 still follows the model layer's explicit re-embed plan; vectors are never
-silently reused.
+silently reused. DiskANN post-filters Account, scope, lifecycle, and embedding
+identity; it does not weaken those authorization filters.
 
 `projection_refresh` is the replay-safe rebuild job. It backfills knowledge
 vectors, resolves entities, and refreshes projections. Document import already

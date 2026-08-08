@@ -12,7 +12,7 @@ flowchart TB
     subgraph One["One Mix release"]
         APP[MemHouse application]
     end
-    APP --> M{CARTULARY_DATABASE_MODE}
+    APP --> M{MEMHOUSE_DATABASE_MODE}
     M -->|pg0| E["Supervised pg0<br/>started, migrated, and stopped<br/>by the release itself"]
     M -->|external| X["Operator-run PostgreSQL 18<br/>with pgvector"]
     E --> G[(Same schema · same Oban engine<br/>same pgvector · same FTS)]
@@ -49,19 +49,19 @@ Container images never include pg0; containers use external PostgreSQL.
 
 ## Operator-run PostgreSQL
 
-Set `CARTULARY_DATABASE_MODE=external` and `DATABASE_URL`. Requirements:
+Set `MEMHOUSE_DATABASE_MODE=external` and `DATABASE_URL`. Requirements:
 
 - PostgreSQL 18 with pgvector available;
 - full-text search (built in);
 - permission to create the extensions the migrations declare;
 - `DATABASE_URL`'s role either has `CREATEROLE` (MemHouse provisions and
   switches to a restricted role itself) or is already `NOSUPERUSER
-  NOBYPASSRLS` (see `CARTULARY_DATABASE_APP_ROLE` in
+  NOBYPASSRLS` (see `MEMHOUSE_DATABASE_APP_ROLE` in
   [Configuration](../reference/configuration.md)). PostgreSQL skips row-level
   security entirely for a superuser or a `BYPASSRLS` role, and MemHouse
   refuses to boot without one of these two paths available.
 
-Migrations can run as a supervised startup step (`CARTULARY_AUTO_MIGRATE=true`)
+Migrations can run as a supervised startup step (`MEMHOUSE_AUTO_MIGRATE=true`)
 or as a separate `bin/migrate` invocation when change control demands it. Both
 paths run migrations over the unrestricted connecting role — the restricted
 role owns nothing and cannot alter the schema — and re-grant its rights over

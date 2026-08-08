@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Builds the production release and runs it unprivileged against external PostgreSQL.
-# DATABASE_URL and CARTULARY_AUTH_SIGNING_SECRET are required at runtime; builds consume
+# DATABASE_URL and MEMHOUSE_AUTH_SIGNING_SECRET are required at runtime; builds consume
 # no secrets. Keep build and runtime images on the same pinned Debian release.
 
 ARG ELIXIR_IMAGE=hexpm/elixir:1.18.4-erlang-27.3.4-debian-bookworm-20250428-slim
@@ -77,9 +77,9 @@ ENV HOME=/home/memhouse
 # Starts the Phoenix endpoint.
 ENV PHX_SERVER=true
 # Containers always use operator-run PostgreSQL.
-ENV CARTULARY_DATABASE_MODE=external
+ENV MEMHOUSE_DATABASE_MODE=external
 # Multi-replica deployments must run migrations as a separate operator step.
-ENV CARTULARY_AUTO_MIGRATE=false
+ENV MEMHOUSE_AUTO_MIGRATE=false
 EXPOSE 4000
 # Readiness is content-safe. Timings are seconds: 10 interval, 3 timeout, 30 startup,
 # and 5 consecutive failures.

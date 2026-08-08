@@ -39,8 +39,8 @@ jobs:
           tag="${RELEASE_BRANCH#release/}"
           repair=false
 
-          if [[ "$tag" == */repair ]]; then
-            tag="${tag%/repair}"
+          if [[ "$tag" == *-repair ]]; then
+            tag="${tag%-repair}"
             repair=true
           fi
 
@@ -71,6 +71,8 @@ jobs:
             git push origin ":refs/tags/$tag"
           fi
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "Release $tag"
           git push origin "refs/tags/$tag"
           gh release create "$tag" --title "MemHouse $tag" --generate-notes

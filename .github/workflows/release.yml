@@ -5,7 +5,7 @@
 # Purpose
 #   Repeat every blocking check against the exact tagged commit, confirm that the tag, the
 #   declared version, the changelog, the shipped documentation, and the evaluation evidence
-#   all describe the same release, then build verified Linux, macOS, and Windows packages
+#   all describe the same release, then build verified Linux and macOS packages
 #   with their checksums and rebuild the container image.
 #
 # Why the checks are repeated rather than trusted from the merge gate
@@ -19,8 +19,8 @@
 #   attaches every generated artifact to that release.
 #
 # Outputs
-#   A GitHub Release holding Linux x86_64, macOS Apple Silicon, macOS Intel, and Windows
-#   x86_64 packages, their SHA-256 files, and the evaluation report; plus the tagged
+#   A GitHub Release holding Linux x86_64, Linux ARM64, and macOS Apple Silicon
+#   packages, their SHA-256 files, and the evaluation report; plus the tagged
 #   production container in this repository's GHCR package.
 name: Release
 
@@ -55,7 +55,7 @@ jobs:
       packages: write
     services:
       postgres:
-        image: pgvector/pgvector:pg18-bookworm
+        image: timescale/timescaledb-ha:pg18-all-oss@sha256:0aaf407844b3cc9adc4e86b326a16de5dbe26a087f09560837f9343c279a6dd5
         env:
           POSTGRES_DB: postgres
           POSTGRES_USER: postgres
@@ -69,10 +69,10 @@ jobs:
           --health-retries 20
     env:
       MIX_ENV: test
-      CARTULARY_DATABASE_MODE: external
+      MEMHOUSE_DATABASE_MODE: external
       # Own database name so this workflow cannot collide with a concurrent lane. The
       # embedded historical tag is only part of the name and means nothing here.
-      CARTULARY_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/cartulary_f11_release
+      MEMHOUSE_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/memhouse_f11_release
     steps:
       # Explicit ref: the event workflow itself may be read from the default branch, while
       # the release checks must certify the commit selected by this GitHub Release's tag.
@@ -167,9 +167,36 @@ jobs:
             /tmp/memhouse-f11-release.json
           retention-days: 90
 
-  # A Mix release contains ERTS and native libraries, so one Mac archive cannot serve both
-  # CPU families. Build and boot-test on the matching native GitHub runner instead of cross
-  # compiling or asking Apple Silicon users to install Rosetta.
+  # Build and boot-test the glibc Linux ARM64 package on a native runner.
+  linux-arm64:
+    name: Build Linux ARM64
+    needs: linux
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.18"
+      - name: Confirm native runner architecture
+        run: test "$(uname -m)" = "aarch64"
+      - run: mix deps.get
+      - name: Verify packaged pg0 lane and build platform release
+        run: ./scripts/ci-pg0-lane
+      - run: tar -C _build/prod/rel -czf /tmp/memhouse-linux-arm64.tar.gz memhouse
+      - run: cd /tmp && shasum -a 256 memhouse-linux-arm64.tar.gz > memhouse-linux-arm64.tar.gz.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: memhouse-release-linux-arm64-${{ github.run_id }}
+          path: |
+            /tmp/memhouse-linux-arm64.tar.gz
+            /tmp/memhouse-linux-arm64.tar.gz.sha256
+          retention-days: 90
+
+  # Build and boot-test the Apple Silicon package on its matching native runner.
   macos:
     name: Build macOS ${{ matrix.asset_arch }}
     needs: linux
@@ -182,9 +209,6 @@ jobs:
           - runner: macos-26
             machine_arch: arm64
             asset_arch: arm64
-          - runner: macos-26-intel
-            machine_arch: x86_64
-            asset_arch: x86_64
     steps:
       - uses: actions/checkout@v6
         with:
@@ -216,64 +240,16 @@ jobs:
             /tmp/memhouse-macos-${{ matrix.asset_arch }}.tar.gz.sha256
           retention-days: 90
 
-  # Windows packaging has its own PowerShell verification because the release
-  # launcher and pg0 executable are native Windows binaries. It proves the same
-  # cold-boot/readiness/full-suite contract as the Unix lanes before publishing.
-  windows:
-    name: Build Windows x86_64
-    needs: linux
-    runs-on: windows-2025
-    timeout-minutes: 75
-    env:
-      # ExtractousEx only publishes a GNU Windows NIF, but the official BEAM
-      # distribution on this runner targets MSVC. Build the bundled Rust source
-      # for that ABI so the shipped release contains a loadable Windows NIF.
-      EXTRACTOUS_EX_BUILD: "true"
-      RUSTUP_TOOLCHAIN: 1.85.1-x86_64-pc-windows-msvc
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
-      - uses: erlef/setup-beam@v1
-        with:
-          otp-version: "27"
-          elixir-version: "1.18"
-      - name: Install pinned Rust toolchain for the MSVC NIF
-        shell: pwsh
-        run: |
-          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
-          rustc --version
-          cargo --version
-      - run: mix deps.get
-      - name: Verify packaged pg0 lane and build Windows release
-        shell: pwsh
-        run: .\scripts\ci-pg0-lane.ps1
-      - name: Archive Windows release
-        shell: pwsh
-        run: |
-          $archive = "memhouse-windows-x86_64.zip"
-          $release = "_build\prod\rel\memhouse"
-          Compress-Archive -Path $release -DestinationPath (Join-Path $env:TEMP $archive)
-          $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $env:TEMP $archive)).Hash.ToLowerInvariant()
-          "$hash  $archive" | Set-Content -NoNewline (Join-Path $env:TEMP "$archive.sha256")
-      - uses: actions/upload-artifact@v7
-        with:
-          name: memhouse-release-windows-x86_64-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/memhouse-windows-x86_64.zip
-            ${{ runner.temp }}/memhouse-windows-x86_64.zip.sha256
-          retention-days: 90
-
   # Fan in all platform outputs only after every package has booted and passed its checks,
   # then add them to the GitHub Release the maintainer published to start this workflow.
   publish:
     name: Publish release artifacts
-    needs: [linux, macos, windows]
+    needs: [linux, linux-arm64, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
-      CARTULARY_RELEASE_SIGNING_KEY: ${{ secrets.CARTULARY_RELEASE_SIGNING_KEY }}
+      MEMHOUSE_RELEASE_SIGNING_KEY: ${{ secrets.MEMHOUSE_RELEASE_SIGNING_KEY }}
     steps:
       - uses: erlef/setup-beam@v1
         with:
@@ -292,34 +268,30 @@ jobs:
         run: |
           tag="${{ github.event.release.tag_name || inputs.tag }}"
           version="${tag#v}"
-          test -n "$CARTULARY_RELEASE_SIGNING_KEY"
+          test -n "$MEMHOUSE_RELEASE_SIGNING_KEY"
           cd /tmp/memhouse-release
           jq -n \
             --arg version "$version" \
             --arg linux "$(cut -d' ' -f1 memhouse-linux-x86_64.tar.gz.sha256)" \
+            --arg linux_arm "$(cut -d' ' -f1 memhouse-linux-arm64.tar.gz.sha256)" \
             --arg mac_arm "$(cut -d' ' -f1 memhouse-macos-arm64.tar.gz.sha256)" \
-            --arg mac_intel "$(cut -d' ' -f1 memhouse-macos-x86_64.tar.gz.sha256)" \
-            --arg windows "$(cut -d' ' -f1 memhouse-windows-x86_64.zip.sha256)" \
             '{schema: "memhouse-release-1", version: $version, automatic_eligible: true, assets: [
               {platform: "linux-x86_64", name: "memhouse-linux-x86_64.tar.gz", sha256: $linux},
-              {platform: "macos-arm64", name: "memhouse-macos-arm64.tar.gz", sha256: $mac_arm},
-              {platform: "macos-x86_64", name: "memhouse-macos-x86_64.tar.gz", sha256: $mac_intel},
-              {platform: "windows-x86_64", name: "memhouse-windows-x86_64.zip", sha256: $windows}
+              {platform: "linux-arm64", name: "memhouse-linux-arm64.tar.gz", sha256: $linux_arm},
+              {platform: "macos-arm64", name: "memhouse-macos-arm64.tar.gz", sha256: $mac_arm}
             ]}' > release-manifest-v1.json
           elixir -e '
-            key = System.fetch_env!("CARTULARY_RELEASE_SIGNING_KEY") |> Base.decode64!()
+            key = System.fetch_env!("MEMHOUSE_RELEASE_SIGNING_KEY") |> Base.decode64!()
             bytes = File.read!("release-manifest-v1.json")
             :crypto.sign(:eddsa, :none, bytes, [key, :ed25519]) |> Base.encode64() |> IO.write()
           ' > release-manifest-v1.json.sig
           assets=(
             /tmp/memhouse-release/memhouse-linux-x86_64.tar.gz
             /tmp/memhouse-release/memhouse-linux-x86_64.tar.gz.sha256
+            /tmp/memhouse-release/memhouse-linux-arm64.tar.gz
+            /tmp/memhouse-release/memhouse-linux-arm64.tar.gz.sha256
             /tmp/memhouse-release/memhouse-macos-arm64.tar.gz
             /tmp/memhouse-release/memhouse-macos-arm64.tar.gz.sha256
-            /tmp/memhouse-release/memhouse-macos-x86_64.tar.gz
-            /tmp/memhouse-release/memhouse-macos-x86_64.tar.gz.sha256
-            /tmp/memhouse-release/memhouse-windows-x86_64.zip
-            /tmp/memhouse-release/memhouse-windows-x86_64.zip.sha256
             /tmp/memhouse-release/memhouse-f11-release.json
             /tmp/memhouse-release/release-manifest-v1.json
             /tmp/memhouse-release/release-manifest-v1.json.sig

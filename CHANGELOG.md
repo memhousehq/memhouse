@@ -9,7 +9,36 @@ changelog entry and contract-version transition.
 
 ## [Unreleased]
 
+### Changed
+
+- The Cartulary product name is now fully migrated to MemHouse. Source and test
+  paths, Phoenix modules, Mix task files, release launchers, database defaults,
+  telemetry labels, and configuration variables now use `memhouse`,
+  `MemHouseWeb`, or the `MEMHOUSE_` prefix. Operators must rename existing
+  `CARTULARY_*` environment variables before upgrade. Existing
+  `cartulary_` API keys and immutable `f11-1` evidence remain valid; new keys
+  and `f11-2` reports use MemHouse names.
+
+- Local semantic retrieval now uses Qwen3-Embedding-0.6B at 1024 dimensions
+  and pgvectorscale 0.9.0 StreamingDiskANN indexes. Packaged pg0 builds are
+  limited to glibc Linux x86_64/ARM64 and Apple Silicon. Existing installations
+  can enqueue the resumable `mix memhouse.reembed` transition; old vectors are
+  absent from semantic retrieval until their batches complete.
+
+## [0.4.0] - 2026-08-08
+
 ### Fixed
+
+- Gate A no longer automates from a model's self-reported confidence. The
+  extractor now derives and persists `direct` or `indirect` source evidence
+  from the schema-validated speaker and subject. Matrix rows use that stable
+  evidence level for `auto_keep`; `minimum_confidence` remains recorded policy
+  metadata only. Hearsay discounting uses the same resolved relationship, not
+  the model's label. Gate B also requires a human placement for personal and
+  restricted knowledge, and the operations console reports content-safe gate
+  outcome totals. ADR 0012 records the `f4-1` governance change.
+  Extracted provenance records prompt `extract-4`; the pipeline contract
+  remains `f5-1`.
 
 - One flaky entity-card summary call no longer aborts a whole scope rebuild.
   `MemHouse.Context.Builder` raised on any failed summary generation, and that

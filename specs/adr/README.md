@@ -18,6 +18,7 @@ settled by the blueprint specs.
 | `0009-scope-bounded-entity-cards.md` | Per-scope entity summaries are projections over governed statements, never content on the entity cache. |
 | `0010-query-independent-retrieval-applicability.md` | Query-independent retrieval runs only for explicit temporal or blank-context requests. |
 | `0011-scope-local-entity-card-labels.md` | A card names its referent with a surface form from its own scope, and recomputes the kind rather than reading the entity row. |
+| `0012-deterministic-gate-a-evidence.md` | Gate A automates only schema-derived source evidence, never model confidence. |
 
 Conventions for future ADRs:
 
