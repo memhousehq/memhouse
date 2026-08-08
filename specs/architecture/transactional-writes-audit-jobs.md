@@ -64,7 +64,7 @@ hook keeps the long Reactor outside that transaction.
 
 A transaction holds one pooled connection. `MemHouse.Repo` keeps
 DBConnection's 15,000 ms ownership timeout, while a model call may take 120,000
-ms (`CARTULARY_MODEL_RECEIVE_TIMEOUT_MS`) and structured generation permits two
+ms (`MEMHOUSE_MODEL_RECEIVE_TIMEOUT_MS`) and structured generation permits two
 repairs. Keeping that call in a transaction can close the connection, discard
 the post-call write, retry billed work, and charge the Account twice.
 

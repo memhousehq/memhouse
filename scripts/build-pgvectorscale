@@ -1,0 +1,167 @@
+#!/bin/sh
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
+#
+# Build pgvectorscale against pg0's extracted PostgreSQL and stage the package
+# for the Mix release. The source commit and digest are reviewed repository
+# inputs. The output manifest protects every file copied at application boot.
+set -eu
+
+if [ "$#" -ne 2 ]; then
+  echo "usage: scripts/build-pgvectorscale PG0_BINARY OUTPUT_DIR" >&2
+  exit 2
+fi
+
+pg0_binary=$1
+output_dir=$2
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+expected_output_dir="$repo_root/rel/overlays/pgvectorscale"
+if [ "$output_dir" != "$expected_output_dir" ]; then
+  echo "pgvectorscale output must be $expected_output_dir" >&2
+  exit 2
+fi
+postgres_version=18.1.0
+rust_toolchain=1.86.0
+vectorscale_version=$(tr -d '[:space:]' < "$repo_root/rel/pgvectorscale/VERSION")
+source_commit=$(tr -d '[:space:]' < "$repo_root/rel/pgvectorscale/SOURCE_COMMIT")
+source_url="https://github.com/timescale/pgvectorscale/archive/$source_commit.tar.gz"
+build_root=$(mktemp -d "${TMPDIR:-/tmp}/memhouse-pgvectorscale.XXXXXX")
+instance="memhouse-pgvectorscale-$$"
+instance_started=false
+
+cleanup() {
+  if [ "$instance_started" = true ]; then
+    "$pg0_binary" stop --name "$instance" --timeout 30 >/dev/null 2>&1 || true
+  fi
+  rm -rf "$build_root"
+}
+trap cleanup EXIT INT TERM
+
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64)
+    platform=darwin-aarch64
+    # pg0's pg_config records the SDK path from its build host. Bindgen must use
+    # the current host SDK when that exact Xcode directory is not installed.
+    memhouse_macos_sdk=$(xcrun --sdk macosx --show-sdk-path)
+    export SDKROOT="$memhouse_macos_sdk"
+    export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$memhouse_macos_sdk"
+    ;;
+  Linux:x86_64|Linux:amd64) platform=linux-x86_64-gnu ;;
+  Linux:aarch64|Linux:arm64) platform=linux-aarch64-gnu ;;
+  Darwin:x86_64)
+    echo "pgvectorscale does not support Intel macOS; use external PostgreSQL" >&2
+    exit 1
+    ;;
+  *)
+    echo "pgvectorscale is not available for this single-node platform" >&2
+    exit 1
+    ;;
+esac
+
+source_asset="pgvectorscale-$source_commit-$platform.tar.gz"
+expected=$(awk -v asset="$source_asset" '$2 == asset {print $1}' "$repo_root/rel/pgvectorscale/checksums.txt")
+
+if [ "$(uname -s)" = Linux ] && ldd --version 2>&1 | grep -qi musl; then
+  echo "pgvectorscale pg0 packaging is not supported on musl" >&2
+  exit 1
+fi
+
+export CARGO_TARGET_DIR="$repo_root/_build/pgvectorscale/extension-$(uname -s)-$(uname -m)"
+
+"$pg0_binary" start \
+  --name "$instance" \
+  --version "$postgres_version" \
+  --data-dir "$build_root/data" \
+  --username postgres \
+  --password postgres \
+  --database postgres >/dev/null
+instance_started=true
+
+real_pg_config_path="${HOME:?}/.pg0/installation/$postgres_version/bin/pg_config"
+if [ ! -x "$real_pg_config_path" ]; then
+  echo "pg0 did not extract pg_config at $real_pg_config_path" >&2
+  exit 1
+fi
+
+pg_config_path="$real_pg_config_path"
+if [ "$(uname -s)" = Darwin ]; then
+  # The upstream pg0 asset records its build host's Xcode SDK in --cppflags
+  # and --ldflags. A wrapper replaces only that unavailable SDK path while all
+  # ABI-relevant paths and values still come from pg0's pg_config.
+  export MEMHOUSE_REAL_PG_CONFIG="$real_pg_config_path"
+  export MEMHOUSE_MACOS_SDK="$memhouse_macos_sdk"
+  pg_config_path="$build_root/pg_config"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1" in' \
+    '  --cppflags|--ldflags)' \
+    '    "$MEMHOUSE_REAL_PG_CONFIG" "$@" | sed -E "s#/Applications/Xcode[^ ]*\\.sdk#$MEMHOUSE_MACOS_SDK#g"' \
+    '    ;;' \
+    '  *) exec "$MEMHOUSE_REAL_PG_CONFIG" "$@" ;;' \
+    'esac' > "$pg_config_path"
+  chmod 0755 "$pg_config_path"
+fi
+
+curl -fL "$source_url" -o "$build_root/$source_asset"
+actual=$(shasum -a 256 "$build_root/$source_asset" | awk '{print $1}')
+if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+  echo "pgvectorscale source checksum mismatch for $source_asset" >&2
+  exit 1
+fi
+
+tar -xzf "$build_root/$source_asset" -C "$build_root"
+source_dir="$build_root/pgvectorscale-$source_commit/pgvectorscale"
+cargo_root="$repo_root/_build/pgvectorscale/cargo-pgrx-0.16.1"
+package_dir="$build_root/package"
+pgrx_home="$build_root/pgrx"
+
+rustup toolchain install "$rust_toolchain" --profile minimal
+export RUSTUP_TOOLCHAIN="$rust_toolchain"
+export PGRX_HOME="$pgrx_home"
+if [ ! -x "$cargo_root/bin/cargo-pgrx" ]; then
+  cargo install --locked cargo-pgrx --version 0.16.1 --root "$cargo_root"
+fi
+mkdir -p "$PGRX_HOME"
+PATH="$cargo_root/bin:$PATH" cargo pgrx init --pg18 "$pg_config_path"
+rustflags=
+case "$(uname -m)" in
+  x86_64|amd64)
+    # pgvectorscale's x86 distance kernels require these CPU features. The
+    # supported x86_64 release target guarantees both features.
+    rustflags="-C target-feature=+avx2,+fma"
+    ;;
+esac
+if [ "$(uname -s)" = Darwin ]; then
+  # PostgreSQL supplies extension API symbols when it loads the dylib. macOS
+  # must permit those symbols to remain unresolved at link time.
+  rustflags="${rustflags:+$rustflags }-C link-arg=-Wl,-undefined,dynamic_lookup"
+fi
+if [ -n "$rustflags" ]; then
+  export RUSTFLAGS="$rustflags"
+fi
+PATH="$cargo_root/bin:$PATH" cargo pgrx package \
+  --manifest-path "$source_dir/Cargo.toml" \
+  --pg-config "$pg_config_path" \
+  --out-dir "$package_dir"
+
+library=$(find "$package_dir" -type f \( -name 'vectorscale*.so' -o -name 'vectorscale*.dylib' \) -print -quit)
+control=$(find "$package_dir" -type f -name 'vectorscale.control' -print -quit)
+if [ -z "$library" ] || [ -z "$control" ]; then
+  echo "pgvectorscale package did not contain its library and control file" >&2
+  exit 1
+fi
+
+rm -rf "$output_dir"
+mkdir -p "$output_dir/lib" "$output_dir/share/extension" "$output_dir/share/licenses/pgvectorscale"
+cp "$library" "$output_dir/lib/"
+cp "$control" "$output_dir/share/extension/"
+find "$package_dir" -type f -name 'vectorscale--*.sql' -exec cp {} "$output_dir/share/extension/" \;
+cp "$build_root/pgvectorscale-$source_commit/LICENSE" "$output_dir/share/licenses/pgvectorscale/LICENSE"
+
+(
+  cd "$output_dir"
+  find lib share -type f -print | LC_ALL=C sort | while IFS= read -r path; do
+    shasum -a 256 "$path"
+  done > manifest.sha256
+)
+
+printf '%s\n' "$vectorscale_version" > "$output_dir/VERSION"

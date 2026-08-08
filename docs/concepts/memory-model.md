@@ -151,7 +151,7 @@ governed knowledge. Input changes mark them dirty for background rebuild.
 | Governed knowledge | Entity rows and mentions |
 | Document versions and original blobs | Document chunks |
 | Hash-chain audit log | Vector and full-text indexes |
-| Usage ledger | HNSW state, ETS counters |
+| Usage ledger | DiskANN indexes, ETS counters |
 
 Backups must capture the left column together with the blob store; the right
 column is regenerated. See [Backup and restore](../operations/backup-restore.md).

@@ -126,8 +126,8 @@ limit:
 Portability and reconciliation are serialised to one at a time because each
 walks an entire Account.
 
-`CARTULARY_INGEST_QUEUE_LIMIT` changes the ingest limit at boot. It must be
-paired with a `CARTULARY_MODEL_STREAM_POOL_SIZE` at least as large as the
+`MEMHOUSE_INGEST_QUEUE_LIMIT` changes the ingest limit at boot. It must be
+paired with a `MEMHOUSE_MODEL_STREAM_POOL_SIZE` at least as large as the
 expected concurrent hosted model calls. Keep the stream-pool count at `1`:
 Finch chooses among multiple shards randomly, so one shard with enough capacity
 does not create an avoidable queue behind a busy shard. For 100 parallel

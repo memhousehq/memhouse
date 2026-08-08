@@ -79,7 +79,7 @@ Two off-by-default switches enable that declaration:
 
 - Account-scoped `Account.consent_mode="auto"`, restricted to `account_admin`
   and audited with `MemHouse.Governance.Changes.AuditResource`.
-- Deployment-wide `CARTULARY_GOVERNANCE_UNATTENDED`, loaded by
+- Deployment-wide `MEMHOUSE_GOVERNANCE_UNATTENDED`, loaded by
   `MemHouse.Governance.UnattendedMode`, logged at boot, and reported by
   `GET /api/ready`.
 
@@ -168,9 +168,9 @@ advances retrieval and context profiles to `f7-1`.
   `test/memhouse/f4_real_gate_a_b_governance_test.exs`
 - Updated baseline contract evidence:
   `test/memhouse/poc_contract_test.exs` and
-  `test/cartulary_web/controllers/memory_controller_test.exs`
+  `test/memhouse_web/controllers/memory_controller_test.exs`
 - Operation layer: `lib/memhouse/governance/`
-- Human and self-service adapters: `lib/cartulary_web/`
+- Human and self-service adapters: `lib/memhouse_web/`
 - Declared-auto consent: `lib/memhouse/governance/unattended_mode.ex`,
   `MemHouse.Governance.Engine.resolve_consent/5` in
   `lib/memhouse/governance/engine.ex`, and `consent_mode`/`configure_governance`

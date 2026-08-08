@@ -82,7 +82,7 @@ Two off-by-default switches support that case:
 - **Account-level:** an account administrator sets that Account's
   `consent_mode` to `auto`. Every other role, including curator and any
   machine credential, is refused.
-- **Deployment-level:** `CARTULARY_GOVERNANCE_UNATTENDED=true` (see
+- **Deployment-level:** `MEMHOUSE_GOVERNANCE_UNATTENDED=true` (see
   [Configuration](../reference/configuration.md#governance)) covers every
   Account in that process, for a deployment that may never have a console
   session at all.

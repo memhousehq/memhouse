@@ -39,7 +39,7 @@ vectors are excluded from logical export and regenerated from version blobs.
 
 Both new Account tables retain PostgreSQL RLS, foreign keys, schedule/lookup
 indexes, and document-version FTS. Pre-existing inline content uses a
-`legacy-db://` reference. Chunk embeddings use PostgreSQL `vector`, HNSW, and
+`legacy-db://` reference. Chunk embeddings use PostgreSQL `vector`, DiskANN, and
 generated FTS indexes for Semantic and Lexical retrieval.
 
 ## Dual ingest

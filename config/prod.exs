@@ -21,7 +21,7 @@ import Config
 # is correct only behind a terminating proxy that sets it. The loopback hosts are excluded so
 # a local container or an on-host probe can reach the app over plain HTTP without being
 # redirected to a scheme it cannot use.
-config :memhouse, CartularyWeb.Endpoint,
+config :memhouse, MemHouseWeb.Endpoint,
   force_ssl: [
     rewrite_on: [:x_forwarded_proto],
     exclude: [

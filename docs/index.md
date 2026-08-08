@@ -12,7 +12,7 @@ and full-text search. It supervises its own PostgreSQL for a no-dependency
 install, or points at one you already run — with no behavioural difference
 between the two.
 
-!!! info "Status: community beta, version 0.3.0"
+!!! info "Status: community beta, version 0.4.0"
     The memory engine, governance, retrieval, document handling, packaging, and
     release machinery are implemented and covered by tests. Integration
     surfaces — generated OpenAPI, complete generated SDKs, and the gateway

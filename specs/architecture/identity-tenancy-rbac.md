@@ -14,7 +14,9 @@ Humans use the AshAuthentication password strategy. A successful password
 sign-in returns a signed 12-hour JWT containing the Peer subject and the
 community Account tenant. Agents use the AshAuthentication API-key strategy.
 API keys are generated once, stored only as SHA-256 hashes, bound to one Peer
-and Account, and may be restricted to one scope subtree.
+and Account, and may be restricted to one scope subtree. New keys use the
+`memhouse_` prefix. The bearer dispatcher also accepts the legacy `cartulary_`
+prefix so the rename does not invalidate an existing beta credential.
 
 Both paths resolve to `MemHouse.Actor`:
 
@@ -35,13 +37,13 @@ ignored. Health remains unauthenticated.
 Bootstrap the first operator with:
 
 ```bash
-CARTULARY_BOOTSTRAP_PASSWORD='a long password' \
+MEMHOUSE_BOOTSTRAP_PASSWORD='a long password' \
   mix memhouse.identity.bootstrap \
     --email admin@example.test \
     --name 'Local Admin'
 ```
 
-This provisions `CARTULARY_FREE_ACCOUNT_KEY`, a medium-assurance password
+This provisions `MEMHOUSE_FREE_ACCOUNT_KEY`, a medium-assurance password
 identity, the containment root, and a propagating `account-admin` grant.
 
 The `accounts.edition_slot` partial unique index permits exactly one
@@ -58,7 +60,7 @@ RLS. Free core neither implements nor enables that action.
 
 Before Account RLS is established, `MemHouse.Identity.CredentialLocator`
 passes the API key's opaque credential id to
-`SECURITY DEFINER` function `cartulary_resolve_api_key_account(uuid)`. The
+`SECURITY DEFINER` function `memhouse_resolve_api_key_account(uuid)`. The
 function returns only `account_id`; it cannot return peer data, hashes, or
 content. The key hash is then verified by AshAuthentication inside the
 resolved Account transaction.
@@ -104,7 +106,7 @@ header is inert.
 Evidence lives in:
 
 - `test/memhouse/f3_identity_tenancy_basic_rbac_test.exs`;
-- `test/cartulary_web/controllers/memory_controller_test.exs`;
+- `test/memhouse_web/controllers/memory_controller_test.exs`;
 - `priv/repo/migrations/20260727155503_f3_identity_tenancy_basic_rbac.exs`;
 - `priv/resource_snapshots/`; and
 - the baseline-contract, Ash domain backbone, and transactional writes, audit,

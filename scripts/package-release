@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Build the self-contained Unix/macOS Mix release of MemHouse, with the pinned
-# embedded PostgreSQL launcher (pg0) staged inside it.
+# embedded PostgreSQL launcher (pg0) and ABI-matched pgvectorscale staged inside it.
 #
 # Purpose
 #   Produce a release that a person can unpack and run with no database to
@@ -59,17 +59,22 @@ arch=$(uname -m)
 # command sits in an `if` condition.
 case "$os:$arch" in
   Darwin:arm64) asset=pg0-darwin-aarch64 ;;
-  Darwin:x86_64) asset=pg0-darwin-x86_64 ;;
+  Darwin:x86_64)
+    echo "Intel macOS requires external PostgreSQL because pgvectorscale is unavailable" >&2
+    exit 1
+    ;;
   Linux:aarch64|Linux:arm64)
     if ldd --version 2>&1 | grep -qi musl; then
-      asset=pg0-linux-aarch64-musl
+      echo "musl requires external PostgreSQL because pgvectorscale is unavailable" >&2
+      exit 1
     else
       asset=pg0-linux-aarch64-gnu
     fi
     ;;
   Linux:x86_64|Linux:amd64)
     if ldd --version 2>&1 | grep -qi musl; then
-      asset=pg0-linux-x86_64-musl
+      echo "musl requires external PostgreSQL because pgvectorscale is unavailable" >&2
+      exit 1
     else
       asset=pg0-linux-x86_64-gnu
     fi
@@ -85,6 +90,7 @@ esac
 # the packaged release — the same path the runtime configuration defaults to
 # when looking for the database engine.
 overlay="$repo_root/rel/overlays/bin/pg0"
+vectorscale_overlay="$repo_root/rel/overlays/pgvectorscale"
 # checksums.txt is `<sha256>  <asset>` per line. Matching on the second field
 # means the file's header comment lines fall through on their own, so no comment
 # filter is needed; an unknown asset yields an empty digest, which the
@@ -97,7 +103,11 @@ mkdir -p "$(dirname "$overlay")"
 # on every exit path keeps an unverified or half-downloaded executable out of
 # the working copy, and keeps repeated packaging runs honest: each one
 # re-downloads and re-verifies instead of trusting whatever is already there.
-trap 'rm -f "$overlay"' EXIT INT TERM
+cleanup() {
+  rm -f "$overlay"
+  rm -rf "$vectorscale_overlay"
+}
+trap cleanup EXIT INT TERM
 # -f makes an HTTP error status a non-zero exit instead of a saved error page;
 # -L follows the redirect to the actual asset storage host.
 curl -fL "$url" -o "$overlay"
@@ -114,6 +124,7 @@ if [ "$actual" != "$expected" ]; then
 fi
 
 chmod 0755 "$overlay"
+"$repo_root/scripts/build-pgvectorscale" "$overlay" "$vectorscale_overlay"
 cd "$repo_root"
 # --only prod keeps dev/test-only dependencies out of the shipped release.
 MIX_ENV=prod mix deps.get --only prod

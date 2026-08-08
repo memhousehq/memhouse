@@ -124,7 +124,7 @@ Every `f11-2` question also records `expected_evidence_refs`,
 separately from answerer and judge scores; it uses the full ordered candidate
 list, not only answer citations.
 
-`mix mem_house.release.check` requires this evidence for an actual release.
+`mix memhouse.release.check` requires this evidence for an actual release.
 Manual live-model runs add `--judge model`; the configured dream-reasoner must
 be a different provider/model family from the dialectic answer role or the run
 fails before scoring.
