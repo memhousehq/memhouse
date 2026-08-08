@@ -15,6 +15,7 @@ defmodule MemHouse.Retrieval.Reembed do
   alias MemHouse.Model.Config
   alias MemHouse.Model.Embedding
   alias MemHouse.Operations.PipelineRun
+  alias MemHouse.Retrieval.DiskannLabels
   alias MemHouse.Topology.Scope
 
   require Ash.Query
@@ -159,13 +160,16 @@ defmodule MemHouse.Retrieval.Reembed do
     DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account, actor ->
       Enum.zip(rows, embedding.vectors)
       |> Enum.each(fn {row, vector} ->
+        label = DiskannLabels.ensure_scope!(account_id, row.scope_id)
+
         row
         |> Ash.Changeset.for_update(action, %{
           embedding: vector,
           embedding_provider: embedding.provider,
           embedding_model: embedding.model,
           embedding_version: embedding.version,
-          embedding_dimensions: embedding.dimensions
+          embedding_dimensions: embedding.dimensions,
+          diskann_labels: [label]
         })
         |> Ash.Changeset.set_tenant(account_id)
         |> Ash.update!(actor: actor)

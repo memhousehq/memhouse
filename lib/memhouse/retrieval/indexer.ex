@@ -12,6 +12,7 @@ defmodule MemHouse.Retrieval.Indexer do
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Model.Embedding
+  alias MemHouse.Retrieval.DiskannLabels
 
   require Ash.Query
 
@@ -29,12 +30,13 @@ defmodule MemHouse.Retrieval.Indexer do
   fails.
   """
   def rebuild_scope(account_id, scope_id) do
+    label = DiskannLabels.ensure_scope!(account_id, scope_id)
     {items, actor} = read_items!(account_id, scope_id)
 
     case items do
       # Some providers reject empty batches.
       [] -> {:ok, %{indexed: 0}}
-      items -> embed_then_write(items, account_id, scope_id, actor)
+      items -> embed_then_write(items, account_id, scope_id, actor, label)
     end
   end
 
@@ -58,7 +60,7 @@ defmodule MemHouse.Retrieval.Indexer do
   end
 
   # Providers must preserve batch order; write only after the whole embedding call succeeds.
-  defp embed_then_write(items, account_id, scope_id, actor) do
+  defp embed_then_write(items, account_id, scope_id, actor, label) do
     context = %{account_id: account_id, scope_id: scope_id, actor: actor}
 
     with {:ok, result} <- Embedding.embed(Enum.map(items, & &1.statement), context) do
@@ -74,7 +76,8 @@ defmodule MemHouse.Retrieval.Indexer do
               embedding_provider: result.provider,
               embedding_model: result.model,
               embedding_version: result.version,
-              embedding_dimensions: result.dimensions
+              embedding_dimensions: result.dimensions,
+              diskann_labels: [label]
             })
             |> Ash.Changeset.set_tenant(account_id)
             |> Ash.update!(actor: actor)

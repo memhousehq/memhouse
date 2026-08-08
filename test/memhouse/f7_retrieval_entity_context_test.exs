@@ -2584,6 +2584,26 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              "knowledge_items_search_vector_idx",
              "projections_clean_entity_cards_index"
            ]
+
+    assert %{rows: [[knowledge_definition], [chunk_definition]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT indexdef
+               FROM pg_indexes
+               WHERE indexname = ANY($1)
+               ORDER BY indexname DESC
+               """,
+               [
+                 [
+                   "knowledge_items_embedding_diskann_1024_idx",
+                   "document_chunks_embedding_diskann_1024_idx"
+                 ]
+               ]
+             )
+
+    assert knowledge_definition =~ "diskann_labels"
+    assert chunk_definition =~ "diskann_labels"
   end
 
   test "cross-linked scope reads still require access to both relation endpoints" do

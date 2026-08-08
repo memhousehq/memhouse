@@ -193,6 +193,7 @@ defmodule MemHouse.Retrieval.Store do
 
   defp semantic_query(query, embedding, identity, limit) do
     vector = vector_literal(embedding)
+    labels = MemHouse.Retrieval.DiskannLabels.for_scope_ids!(query.account_id, query.scope_ids)
 
     knowledge =
       if query.target in [:knowledge, :all] do
@@ -216,8 +217,9 @@ defmodule MemHouse.Retrieval.Store do
               AND k.embedding_model = $6
               AND k.embedding_version = $7
               AND k.embedding_dimensions = $8
+              AND k.diskann_labels && $9::smallint[]
             ORDER BY k.embedding::vector(1024) <=> $4::text::vector(1024)
-            LIMIT $9
+            LIMIT $10
             """
           else
             """
@@ -238,8 +240,9 @@ defmodule MemHouse.Retrieval.Store do
               AND k.embedding_model = $6
               AND k.embedding_version = $7
               AND k.embedding_dimensions = $8
+              AND k.diskann_labels && $9::smallint[]
             ORDER BY k.embedding <=> $4::text::vector
-            LIMIT $9
+            LIMIT $10
             """
           end
 
@@ -252,6 +255,7 @@ defmodule MemHouse.Retrieval.Store do
           identity.model,
           identity.version,
           identity.dimensions,
+          labels,
           limit
         ])
       else
@@ -280,8 +284,9 @@ defmodule MemHouse.Retrieval.Store do
               AND c.embedding_model = $5
               AND c.embedding_version = $6
               AND c.embedding_dimensions = $7
+              AND c.diskann_labels && $8::smallint[]
             ORDER BY c.embedding::vector(1024) <=> $3::text::vector(1024)
-            LIMIT $8
+            LIMIT $9
             """
           else
             """
@@ -302,8 +307,9 @@ defmodule MemHouse.Retrieval.Store do
               AND c.embedding_model = $5
               AND c.embedding_version = $6
               AND c.embedding_dimensions = $7
+              AND c.diskann_labels && $8::smallint[]
             ORDER BY c.embedding <=> $3::text::vector
-            LIMIT $8
+            LIMIT $9
             """
           end
 
@@ -315,6 +321,7 @@ defmodule MemHouse.Retrieval.Store do
           identity.model,
           identity.version,
           identity.dimensions,
+          labels,
           limit
         ])
       else

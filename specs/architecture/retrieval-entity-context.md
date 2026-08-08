@@ -127,7 +127,9 @@ not float-array stand-ins. Every vector retains provider, model, version, and
 dimensions. The retrieval migration adds:
 
 - StreamingDiskANN cosine expression indexes for the pinned 1024-dimensional
-  knowledge, chunk, and entity collections;
+  knowledge, chunk, and entity collections. Knowledge and chunks also carry a
+  private per-Account scope label. The index uses the `smallint[]` overlap
+  filter during graph traversal for authorized scopes;
 - a generated document-chunk `tsvector` and GIN index;
 - the existing knowledge-statement GIN index as the lexical path; and
 - expansion lookup indexes for mentions and knowledge relations.
@@ -140,7 +142,12 @@ small-corpus path until their own reviewed index migration is installed.
 tiny eval corpora and entity candidate comparison. A pinned-identity mismatch
 still follows the model layer's explicit re-embed plan; vectors are never
 silently reused. DiskANN post-filters Account, scope, lifecycle, and embedding
-identity; it does not weaken those authorization filters.
+identity; it does not weaken those authorization filters. Scope labels are
+rebuildable index data. They are allocated densely per Account, reused only
+after a scope is released, and recreated by import/rebuild. They are never
+exported, returned, audited, telemetered, or placed in job arguments. An
+Account with more than 65,536 live scopes fails label allocation rather than
+sharing a label.
 
 `projection_refresh` is the replay-safe rebuild job. It backfills knowledge
 vectors, resolves entities, and refreshes projections. Document import already

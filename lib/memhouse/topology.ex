@@ -29,6 +29,10 @@ defmodule MemHouse.Topology.Scope do
 
   use MemHouse.Resource, domain: MemHouse.Topology, table: "scopes"
 
+  postgres do
+    migration_types diskann_label: :smallint
+  end
+
   # One Account per row, enforced again in the database by row-level security.
   # A path is unique within an Account, never across Accounts.
   multitenancy do
@@ -57,6 +61,13 @@ defmodule MemHouse.Topology.Scope do
     update :update do
       accept [:name, :state]
     end
+
+    # DiskANN labels are internal index metadata. Only the retrieval rebuild
+    # path can allocate or release them; no scope API can observe or choose one.
+    update :assign_diskann_label do
+      accept [:diskann_label]
+      require_atomic? false
+    end
   end
 
   policies do
@@ -69,6 +80,10 @@ defmodule MemHouse.Topology.Scope do
     # primary key is the column being matched here, since this *is* the scope.
     policy action_type(:read) do
       authorize_if {MemHouse.Policy.ScopeAccess, attribute: :id}
+    end
+
+    policy action(:assign_diskann_label) do
+      authorize_if actor_attribute_equals(:pipeline?, true)
     end
   end
 
@@ -88,6 +103,7 @@ defmodule MemHouse.Topology.Scope do
     # propagating role grants are all computed from this string.
     attribute :path, :string, allow_nil?: false, public?: true
     attribute :state, :string, allow_nil?: false, default: "active", public?: true
+    attribute :diskann_label, :integer, public?: false
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end
