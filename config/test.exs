@@ -5,7 +5,7 @@
 # WHEN THIS FILE IS EVALUATED At build time, immediately after `config/config.exs` (which
 # imports it at its bottom) and only when MIX_ENV=test. `config/runtime.exs` still runs
 # afterwards and has test-specific branches of its own: it reads the database URL from
-# CARTULARY_TEST_DATABASE_URL rather than DATABASE_URL, and it forces the model credential to
+# MEMHOUSE_TEST_DATABASE_URL rather than DATABASE_URL, and it forces the model credential to
 # nil so a developer's live API key in the shell can never make a test suite non-deterministic
 # or spend money.
 
@@ -23,7 +23,7 @@ config :memhouse, MemHouse.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "cartulary_test#{System.get_env("MIX_TEST_PARTITION")}",
+  database: "memhouse_test#{System.get_env("MIX_TEST_PARTITION")}",
   # Every test runs inside a transaction that is rolled back afterwards, so no
   # test can leak durable rows into the next one.
   pool: Ecto.Adapters.SQL.Sandbox,
@@ -32,7 +32,7 @@ config :memhouse, MemHouse.Repo,
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
-config :memhouse, CartularyWeb.Endpoint,
+config :memhouse, MemHouseWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   # Public, committed, test-only value. Never reuse it anywhere else.
   secret_key_base: "+kva5XkTTwZ6ikuEVRv2mqPLh23Lfu3ht8EDoqqwb1tYR2ohmjlXZlwi9eEuHdpi",

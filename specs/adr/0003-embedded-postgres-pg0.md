@@ -109,7 +109,7 @@ suite. `AINV-1` moves from approximately true to literally true: identical
 guarantees are now a structural property rather than a thing the test suite has
 to police across two divergent backends.
 
-Local retrieval gets better, not merely simpler. pgvector's HNSW index is
+Local retrieval gets better, not merely simpler. pgvectorscale's DiskANN index is
 written inside the knowledge-write transaction and is durable, replacing an
 in-memory index that had to be rebuilt from blobs at boot and reconciled on a
 schedule. Lexical search becomes PG-FTS everywhere, so tokenisation and ranking
@@ -124,12 +124,12 @@ plus an in-process index to a supervised Postgres server with its own data
 directory and memory. Cold start is slower than opening a file. The release
 takes on responsibility for a child process's lifecycle, which is a new class of
 operational failure — a stale lock file, a port conflict, a half-initialised
-data directory. pg0's platform matrix becomes MemHouse's platform matrix,
-including the Alpine 3.20–3.21 constraint. And the project now depends on a
-young component that is not marketed as production-ready, holding the system of
-record on self-hosted installs — mitigated by the version pin, the tested export
-path, and the fact that the escape hatch to an external Postgres is a
-configuration change.
+data directory. The required pgvectorscale extension narrows the packaged pg0
+matrix to glibc Linux x86_64/ARM64 and Apple Silicon. Windows, Intel macOS, and
+Linux musl use external PostgreSQL or a container. The project also depends on
+a young launcher that is not marketed as production-ready while it holds the
+system of record on self-hosted installs. Version pins, the tested export path,
+and the external-Postgres escape hatch mitigate that risk.
 
 MemHouse is not the first system to make this bet, which is part of why it is
 defensible: Hindsight ships the same on-ramp.
@@ -138,14 +138,14 @@ defensible: Hindsight ships the same on-ramp.
 
 - `AINV-1` - one codebase, two modes, identical guarantees; now literally true.
 - `AINV-3` - don't reinvent wheels; pg0 replaces a bespoke embedded-PG build.
-- `AINV-5` - system of record vs derived cache; the HNSW rebuildable-cache
+- `AINV-5` - system of record vs derived cache; the in-memory HNSW cache
   branch of this invariant is retired.
 - `AINV-8` - infrastructure ports vs domain strategies; pg0 is an
   infrastructure packaging choice, never a domain strategy.
 - `AD-DEPLOY-1` - one image, one program, scaled by node count.
 - `AD-DEPLOY-5` - what flips between modes.
 - `AD-SEAM-2` - infrastructure ports (storage, vector, lexical, job-queue).
-- `AD-SEAM-3` - `RetrievalStrategy`; the HNSW adapter is removed.
+- `AD-SEAM-3` - `RetrievalStrategy`; the in-memory HNSW adapter is removed.
 - `AD-SEAM-4` - cross-port invariants 1 and 4.
 - `AD-DATA-4` - materialized-path scope tree; the two-backend-parity rationale
   for avoiding `ltree` no longer applies.

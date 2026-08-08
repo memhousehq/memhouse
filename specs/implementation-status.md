@@ -2,7 +2,7 @@
 
 # Implementation Status
 
-Application version: `0.3.0` (community beta).
+Application version: `0.4.0` (community beta).
 Last verified: 2026-07-28.
 
 Current behavior, evidence, and real limitations. Target architecture:
@@ -80,9 +80,11 @@ Details: `specs/architecture/identity-tenancy-rbac.md`.
 
 ### Gate A/B governance
 
-- A versioned Account/scope gate matrix over confidence, target level, and
+- A versioned Account/scope gate matrix over derived source evidence, target level, and
   sensitivity decides whether Gate A keeps, rejects, or defers an item and
-  whether Gate B may place it at the requested blast radius.
+  whether Gate B may place it at the requested blast radius. Model confidence
+  is recorded but cannot auto-keep; personal and restricted knowledge require
+  human placement.
 - The conservative default is peer-level provisional visibility plus human
   review. Pending scope- and account-level knowledge stays held and never
   reaches retrieval.
@@ -110,7 +112,7 @@ Details: `specs/architecture/gate-a-b-governance.md`.
   vectors.
 - Ash-derived structured extraction and reasoning schemas with bounded
   validate-and-repair. Extraction resolves subject independently of source,
-  discounts hearsay, and proposes confidence, sensitivity, target, and temporal
+  discounts third-party claims, and proposes confidence, sensitivity, target, and temporal
   fields plus an update operation.
 - Complete model provenance — provider, model, version, prompt version,
   pipeline version, embedding model and version — and one durable usage ledger
@@ -155,7 +157,7 @@ Details: `specs/architecture/documents-connectors-sync.md`.
 - Account, authorized scope, lifecycle, provisional subject, and source filters
   are applied before any candidate leaves retrieval internals.
 - Knowledge and document chunks use PostgreSQL `vector` values with pinned
-  provider/model/version/dimension identity, HNSW cosine indexes, and PG-FTS
+  provider/model/version/dimension identity, DiskANN cosine indexes, and PG-FTS
   GIN indexes.
 - Entity and EntityMention rows are internal rebuildable caches. The rows are
   never exposed through HTTP, MCP, SDK, LiveView, or retrieval responses. An
@@ -208,10 +210,12 @@ Details: `specs/architecture/skill-readiness-procedural-memory.md`.
 
 ### Portability, packaging, and operations
 
-- Cross-platform Mix releases with a checksum-pinned pg0 binary, supervised
+- Linux glibc and Apple Silicon Mix releases with checksum-pinned pg0 and
+  ABI-matched pgvectorscale, supervised
   lifecycle, first-run migration, stale-lock recovery, explicit port conflict
   errors, data-directory health checks, and an external-Postgres escape hatch.
-- A non-root container image and Compose stack over stock Postgres, plus an
+- A non-root container image and Compose stack over PostgreSQL with pgvector
+  and pgvectorscale, plus an
   optional OpenTelemetry Collector, Jaeger, and Prometheus profile. pg0 is
   never in the container path.
 - Runtime configuration validation with clear boot errors.
@@ -238,7 +242,7 @@ Details: `specs/architecture/portability-packaging-operations.md` and
 - Blocking external-Postgres and packaged-pg0 CI lanes, Dialyzer and security
   gates, Mix release and container builds, nightly evaluation, semantic
   version/tag validation, fail-closed release checks, durable GitHub Release
-  assets for Linux x86_64, both macOS CPU families, and Windows x86_64, and tagged GHCR
+  assets for Linux x86_64/ARM64 and Apple Silicon macOS, and tagged GHCR
   container publication.
 - A provider cassette layer for deterministic model tests.
 - Held-out tuning discipline: fusion weights may only use held-out data.
@@ -294,7 +298,7 @@ OpenRouter.
 - The full suite passed against newly created partitioned test databases,
   exercising the complete migration chain from empty, and separately against
   the stock `pgvector/pgvector:pg18-bookworm` Compose lane through
-  `CARTULARY_TEST_DATABASE_URL`.
+  `MEMHOUSE_TEST_DATABASE_URL`.
 - A packaged Darwin ARM64 release initialized PostgreSQL 18.1.0 plus pgvector,
   applied the full migration chain, returned `f10-1` readiness, recovered and
   reattached the same durable directory, and shut down cleanly.
@@ -397,7 +401,7 @@ mix memhouse.eval.release \
   --assert-thresholds \
   --output /private/tmp/memhouse-release-eval.json
 
-mix mem_house.release.check \
+mix memhouse.release.check \
   --eval-report /private/tmp/memhouse-release-eval.json
 ```
 
@@ -412,7 +416,7 @@ Run the frozen baseline contract:
 ```bash
 mix test \
   test/memhouse/poc_contract_test.exs \
-  test/cartulary_web/controllers/memory_controller_test.exs \
+  test/memhouse_web/controllers/memory_controller_test.exs \
   test/memhouse/eval/fixture_contract_test.exs
 ```
 

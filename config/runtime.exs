@@ -127,7 +127,7 @@ end
 # reference back — better when jobs run long after the request has finished, so
 # one trace does not stay open for hours. `:none` severs the connection.
 env_oban_span_relationship = fn ->
-  case env_get.("CARTULARY_OTEL_OBAN_SPAN_RELATIONSHIP", "child") do
+  case env_get.("MEMHOUSE_OTEL_OBAN_SPAN_RELATIONSHIP", "child") do
     "link" -> :link
     "none" -> :none
     _ -> :child
@@ -159,25 +159,25 @@ end
 #
 #     PHX_SERVER=true bin/memhouse start
 if System.get_env("PHX_SERVER") do
-  config :memhouse, CartularyWeb.Endpoint, server: true
+  config :memhouse, MemHouseWeb.Endpoint, server: true
 end
 
 # HTTP listener port. Strict parse: a typo must fail loudly rather than land the
 # node on port 0 or a neighbouring service's port.
-config :memhouse, CartularyWeb.Endpoint, http: [port: env_integer!.("PORT", "4000")]
+config :memhouse, MemHouseWeb.Endpoint, http: [port: env_integer!.("PORT", "4000")]
 
 # Set by the release boot scripts to the unpacked release directory; falls back
 # to the working directory when running from source. Used to locate the pg0
 # binary shipped inside the release.
 release_root = System.get_env("RELEASE_ROOT") || File.cwd!()
-database_mode = env_get.("CARTULARY_DATABASE_MODE", "external")
+database_mode = env_get.("MEMHOUSE_DATABASE_MODE", "external")
 
 # Tests read a separate variable on purpose. A developer shell almost always has
 # DATABASE_URL pointing at the development database, and honouring it here would
 # let `mix test` truncate real local data.
 database_url =
   if config_env() == :test do
-    System.get_env("CARTULARY_TEST_DATABASE_URL")
+    System.get_env("MEMHOUSE_TEST_DATABASE_URL")
   else
     env_get.("DATABASE_URL", nil)
   end
@@ -185,20 +185,20 @@ database_url =
 # Connection details for the supervised instance. These are also the credentials
 # pg0 initialises the cluster with on first start, so changing the username or
 # password after the data directory exists will not re-create the role.
-pg0_port = env_integer!.("CARTULARY_PG0_PORT", "5432")
-pg0_database = env_get.("CARTULARY_PG0_DATABASE", "memhouse")
-pg0_username = env_get.("CARTULARY_PG0_USERNAME", "postgres")
-pg0_password = env_get.("CARTULARY_PG0_PASSWORD", "postgres")
+pg0_port = env_integer!.("MEMHOUSE_PG0_PORT", "5432")
+pg0_database = env_get.("MEMHOUSE_PG0_DATABASE", "memhouse")
+pg0_username = env_get.("MEMHOUSE_PG0_USERNAME", "postgres")
+pg0_password = env_get.("MEMHOUSE_PG0_PASSWORD", "postgres")
 
 if database_mode not in ~w(pg0 external) do
-  raise "CARTULARY_DATABASE_MODE must be pg0 or external"
+  raise "MEMHOUSE_DATABASE_MODE must be pg0 or external"
 end
 
 # Refuse an ambiguous instruction instead of picking one. Supplying both says
 # "run your own database" and "use this other one"; guessing either way risks
 # writing to, or migrating, the wrong server.
 if database_mode == "pg0" and database_url not in [nil, ""] do
-  raise "DATABASE_URL conflicts with CARTULARY_DATABASE_MODE=pg0"
+  raise "DATABASE_URL conflicts with MEMHOUSE_DATABASE_MODE=pg0"
 end
 
 # In pg0 mode the URL is synthesised rather than supplied. Each component is
@@ -241,34 +241,36 @@ config :memhouse, :database,
   # where the default name collides with an existing role in a shared cluster;
   # the name is interpolated into DDL, so it must be a plain lowercase
   # identifier.
-  app_role: env_get.("CARTULARY_DATABASE_APP_ROLE", "cartulary_app"),
+  app_role: env_get.("MEMHOUSE_DATABASE_APP_ROLE", "memhouse_app"),
   # Escape hatch for a deployment that cannot yet provide a role which is
   # neither a superuser nor granted BYPASSRLS. Turning it on lets the node boot
   # with the database half of cross-Account isolation inert, logging the
   # condition at error level on every start. It exists so an upgrade cannot
   # strand a running install, not as a supported way to operate one.
-  allow_unrestricted_role: env_bool!.("CARTULARY_ALLOW_UNRESTRICTED_DATABASE_ROLE", false),
+  allow_unrestricted_role: env_bool!.("MEMHOUSE_ALLOW_UNRESTRICTED_DATABASE_ROLE", false),
   # Migrations run as a supervised startup step before the endpoint accepts
   # traffic. Defaulted on for pg0 because that install is meant to be turnkey,
   # and off for external Postgres where change control usually requires
   # migrating as a separate, reviewable step with `bin/migrate`.
-  auto_migrate: env_bool!.("CARTULARY_AUTO_MIGRATE", database_mode == "pg0"),
+  auto_migrate: env_bool!.("MEMHOUSE_AUTO_MIGRATE", database_mode == "pg0"),
   pg0: [
     # The pg0 executable shipped inside the release. It is downloaded and
     # checksum-verified at packaging time, not at runtime, so the running node
     # never fetches a database binary from the network. Startup validation
     # rejects a relative path or a file that is not readable and executable.
-    binary: env_get.("CARTULARY_PG0_BINARY", Path.join(release_root, "bin/pg0")),
-    name: env_get.("CARTULARY_PG0_NAME", "memhouse"),
+    binary: env_get.("MEMHOUSE_PG0_BINARY", Path.join(release_root, "bin/pg0")),
+    name: env_get.("MEMHOUSE_PG0_NAME", "memhouse"),
     # Must match the PostgreSQL version of the pinned asset. A mismatch means
     # the data directory cannot be opened by the binary that ships with it.
-    postgres_version: env_get.("CARTULARY_PG0_POSTGRES_VERSION", "18.1.0"),
+    postgres_version: env_get.("MEMHOUSE_PG0_POSTGRES_VERSION", "18.1.0"),
+    installation_root: Path.expand("~/.pg0/installation"),
+    vectorscale_dir: Path.join(release_root, "pgvectorscale"),
     # The durable cluster. This directory is the system of record in pg0 mode:
     # it must be backed up, must survive upgrades, and must never point at a
     # temp path in a real install.
     data_dir:
       env_get.(
-        "CARTULARY_PG0_DATA_DIR",
+        "MEMHOUSE_PG0_DATA_DIR",
         Path.expand("~/.memhouse/pg0/instances/memhouse/data")
       ),
     port: pg0_port,
@@ -284,16 +286,18 @@ config :memhouse, :database,
 oban_queues =
   Application.fetch_env!(:memhouse, Oban)
   |> Keyword.fetch!(:queues)
-  |> Keyword.put(:ingest, env_positive_integer!.("CARTULARY_INGEST_QUEUE_LIMIT", "10"))
+  |> Keyword.put(:ingest, env_positive_integer!.("MEMHOUSE_INGEST_QUEUE_LIMIT", "10"))
 
 config :memhouse, Oban, queues: oban_queues
 
 update_auto =
-  case env_get.("CARTULARY_AUTO_UPDATE", "off") do
+  case env_get.("MEMHOUSE_AUTO_UPDATE", "off") do
     "minor" -> :minor
     "off" -> :off
-    value -> raise "CARTULARY_AUTO_UPDATE must be off or minor, got: #{inspect(value)}"
+    value -> raise "MEMHOUSE_AUTO_UPDATE must be off or minor, got: #{inspect(value)}"
   end
+
+architecture = to_string(:erlang.system_info(:system_architecture))
 
 update_platform =
   case :os.type() do
@@ -301,28 +305,32 @@ update_platform =
       "windows-x86_64"
 
     {:unix, :darwin} ->
-      if(String.contains?(to_string(:erlang.system_info(:system_architecture)), "aarch64"),
+      if(String.contains?(architecture, "aarch64"),
         do: "macos-arm64",
         else: "macos-x86_64"
       )
 
     _ ->
-      "linux-x86_64"
+      if String.contains?(architecture, "aarch64") or String.contains?(architecture, "arm64") do
+        "linux-arm64"
+      else
+        "linux-x86_64"
+      end
   end
 
 config :memhouse, :update,
-  enabled: env_bool!.("CARTULARY_UPDATE_CHECK", true),
+  enabled: env_bool!.("MEMHOUSE_UPDATE_CHECK", true),
   database_mode: database_mode,
   source:
     env_get.(
-      "CARTULARY_UPDATE_SOURCE",
+      "MEMHOUSE_UPDATE_SOURCE",
       "https://api.github.com/repos/memhousehq/memhouse/releases/latest"
     ),
   public_key:
-    env_get.("CARTULARY_UPDATE_PUBLIC_KEY", "rgklaZ7eR1NlTXW5SPNdKlbvVmMyyAiJ6H3rfFvnZxM="),
+    env_get.("MEMHOUSE_UPDATE_PUBLIC_KEY", "rgklaZ7eR1NlTXW5SPNdKlbvVmMyyAiJ6H3rfFvnZxM="),
   auto_update: update_auto,
-  interval_hours: env_integer!.("CARTULARY_UPDATE_CHECK_INTERVAL_HOURS", "24"),
-  install_root: env_get.("CARTULARY_UPDATE_INSTALL_ROOT", nil),
+  interval_hours: env_integer!.("MEMHOUSE_UPDATE_CHECK_INTERVAL_HOURS", "24"),
+  install_root: env_get.("MEMHOUSE_UPDATE_INSTALL_ROOT", nil),
   platform: update_platform
 
 # Secret used to sign authentication tokens. It is deliberately independent of
@@ -332,19 +340,19 @@ config :memhouse, :update,
 # development and test borrow the endpoint's committed key so a checkout runs
 # with no setup.
 auth_signing_secret =
-  case env_get.("CARTULARY_AUTH_SIGNING_SECRET", nil) do
+  case env_get.("MEMHOUSE_AUTH_SIGNING_SECRET", nil) do
     secret when is_binary(secret) and byte_size(secret) >= 64 ->
       secret
 
     _missing_or_short ->
       if config_env() == :prod do
         raise """
-        environment variable CARTULARY_AUTH_SIGNING_SECRET must contain at least
+        environment variable MEMHOUSE_AUTH_SIGNING_SECRET must contain at least
         64 bytes. Generate an independent random secret.
         """
       else
         :memhouse
-        |> Application.fetch_env!(CartularyWeb.Endpoint)
+        |> Application.fetch_env!(MemHouseWeb.Endpoint)
         |> Keyword.fetch!(:secret_key_base)
       end
   end
@@ -354,15 +362,15 @@ auth_signing_secret =
 # from the caller's verified credential, so no deployment variable can be used to
 # reach another Account's data.
 config :memhouse, :identity,
-  account_key: env_get.("CARTULARY_FREE_ACCOUNT_KEY", "local"),
-  account_name: env_get.("CARTULARY_FREE_ACCOUNT_NAME", "Local MemHouse"),
+  account_key: env_get.("MEMHOUSE_FREE_ACCOUNT_KEY", "local"),
+  account_name: env_get.("MEMHOUSE_FREE_ACCOUNT_NAME", "Local MemHouse"),
   signing_secret: auth_signing_secret
 
 # Tests never contact a provider, even when the developer's shell exports a real
 # key. Clearing it here is what makes the suite deterministic and free.
 model_api_key = if(config_env() == :test, do: nil, else: env_get.("OPENROUTER_API_KEY", nil))
-requested_provider = env_get.("CARTULARY_MODEL_PROVIDER", "openrouter")
-local_fallback? = env_bool.("CARTULARY_MODEL_LOCAL_FALLBACK", config_env() != :prod)
+requested_provider = env_get.("MEMHOUSE_MODEL_PROVIDER", "openrouter")
+local_fallback? = env_bool.("MEMHOUSE_MODEL_LOCAL_FALLBACK", config_env() != :prod)
 
 # The deterministic provider is a local, offline stand-in that returns
 # schema-valid but non-intelligent output. It is selected only up front, and only
@@ -396,7 +404,7 @@ end
 generation_version =
   if generation_provider == "deterministic",
     do: "1",
-    else: env_get.("CARTULARY_MODEL_VERSION", "unversioned")
+    else: env_get.("MEMHOUSE_MODEL_VERSION", "unversioned")
 
 # Note what is stored: the *name of the variable* holding the credential, not
 # the credential. Role configuration is durable and exportable, so a raw key
@@ -426,12 +434,12 @@ generation_version =
 #   does not reset whenever a provider streams another chunk or keep-alive.
 generation_options = %{
   "api_key_ref" => "env:OPENROUTER_API_KEY",
-  "base_url" => env_get.("CARTULARY_OPENAI_COMPAT_BASE_URL", "https://openrouter.ai/api/v1"),
-  "max_tokens" => env_integer.("CARTULARY_MODEL_MAX_TOKENS", "8192"),
-  "reasoning_effort" => env_get.("CARTULARY_MODEL_REASONING_EFFORT", "low"),
-  "receive_timeout" => env_integer.("CARTULARY_MODEL_RECEIVE_TIMEOUT_MS", "120000"),
-  "request_timeout" => env_positive_integer!.("CARTULARY_MODEL_REQUEST_TIMEOUT_MS", "300000"),
-  "pool_timeout" => env_positive_integer!.("CARTULARY_MODEL_POOL_TIMEOUT_MS", "120000")
+  "base_url" => env_get.("MEMHOUSE_OPENAI_COMPAT_BASE_URL", "https://openrouter.ai/api/v1"),
+  "max_tokens" => env_integer.("MEMHOUSE_MODEL_MAX_TOKENS", "8192"),
+  "reasoning_effort" => env_get.("MEMHOUSE_MODEL_REASONING_EFFORT", "low"),
+  "receive_timeout" => env_integer.("MEMHOUSE_MODEL_RECEIVE_TIMEOUT_MS", "120000"),
+  "request_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS", "300000"),
+  "pool_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000")
 }
 
 # ReqLLM shares this Finch pool across every hosted generation role. Finch
@@ -439,9 +447,9 @@ generation_options = %{
 # `size`: one 16-connection shard handles the normal ten-worker ingest queue
 # without random one-connection-shard collisions. `count` is an escape hatch
 # for a measured single-shard bottleneck, not a capacity knob.
-model_stream_pool_size = env_positive_integer!.("CARTULARY_MODEL_STREAM_POOL_SIZE", "16")
-model_stream_pool_count = env_positive_integer!.("CARTULARY_MODEL_STREAM_POOL_COUNT", "1")
-model_pool_timeout = env_positive_integer!.("CARTULARY_MODEL_POOL_TIMEOUT_MS", "120000")
+model_stream_pool_size = env_positive_integer!.("MEMHOUSE_MODEL_STREAM_POOL_SIZE", "16")
+model_stream_pool_count = env_positive_integer!.("MEMHOUSE_MODEL_STREAM_POOL_COUNT", "1")
+model_pool_timeout = env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000")
 
 config :req_llm,
   stream_pool_size: model_stream_pool_size,
@@ -462,33 +470,41 @@ config :memhouse, :model_roles,
     # Ortex runs an ONNX model from files on this machine: no network call and
     # no download, so embedding works offline once the artifact paths below are
     # set. Without them the embedder errors rather than fetching anything.
-    provider: env_get.("CARTULARY_EMBEDDING_PROVIDER", "ortex"),
-    model: env_get.("CARTULARY_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
+    provider: env_get.("MEMHOUSE_EMBEDDING_PROVIDER", "ortex"),
+    model: env_get.("MEMHOUSE_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B"),
     # Bump this whenever the artifacts, pooling, or dimensions change. Provider,
     # model, version, and dimensions together form the identity stamped on every
     # stored vector; a mismatch forces an explicit re-embed and a vector is never
     # silently reused across identities.
-    model_version: env_get.("CARTULARY_EMBEDDING_VERSION", "onnx-1"),
+    model_version: env_get.("MEMHOUSE_EMBEDDING_VERSION", "onnx-1-qwen3-1024"),
     prompt_version: "none",
     pipeline_version: "f5-1",
-    # Must equal the model's real output width. 384 is the width the shipped
-    # vector indexes are built for; other widths work but fall back to the
+    # Must equal the model's real output width. 1024 is the width the shipped
+    # DiskANN vector indexes are built for; other widths work but fall back to the
     # unindexed path until a matching index migration is installed.
-    embedding_dimensions: env_integer.("CARTULARY_EMBEDDING_DIMENSIONS", "384"),
+    embedding_dimensions: env_integer.("MEMHOUSE_EMBEDDING_DIMENSIONS", "1024"),
     options: %{
-      "api_key_ref" => "env:CARTULARY_EMBEDDING_API_KEY",
-      "base_url" => env_get.("CARTULARY_EMBEDDING_BASE_URL", nil),
+      "api_key_ref" => "env:MEMHOUSE_EMBEDDING_API_KEY",
+      "base_url" => env_get.("MEMHOUSE_EMBEDDING_BASE_URL", nil),
       # Filesystem paths to operator-supplied ONNX artifacts, each of which must
       # already exist. Nothing downloads them; the embedder fails rather than
       # fetching a model from the network.
-      "model_path" => env_get.("CARTULARY_ORTEX_MODEL_PATH", nil),
-      "tokenizer_path" => env_get.("CARTULARY_ORTEX_TOKENIZER_PATH", nil),
+      "model_path" => env_get.("MEMHOUSE_ORTEX_MODEL_PATH", nil),
+      "tokenizer_path" => env_get.("MEMHOUSE_ORTEX_TOKENIZER_PATH", nil),
       # How token vectors are reduced to one sentence vector. Must match how the
       # model was trained, and changing it changes the embedding identity.
-      "pooling" => env_get.("CARTULARY_ORTEX_POOLING", "cls"),
+      "pooling" => env_get.("MEMHOUSE_ORTEX_POOLING", "last_token"),
+      # Decoder exports do not accept token_type_ids. Qwen3 uses its final
+      # unmasked token and applies this asymmetric instruction to queries only.
+      "input_order" => ["input_ids", "attention_mask"],
+      "query_instruction" =>
+        env_get.(
+          "MEMHOUSE_ORTEX_QUERY_INSTRUCTION",
+          "Given a web search query, retrieve relevant passages that answer the query"
+        ),
       # Comma-separated ONNX Runtime execution providers, in preference order.
       "execution_providers" =>
-        env_get.("CARTULARY_ORTEX_EXECUTION_PROVIDERS", "cpu")
+        env_get.("MEMHOUSE_ORTEX_EXECUTION_PROVIDERS", "cpu")
         |> String.split(",", trim: true)
     }
   },
@@ -496,9 +512,9 @@ config :memhouse, :model_roles,
   # passes validation and governance before anything becomes usable memory.
   ingest_extractor: %{
     provider: generation_provider,
-    model: generation_model.("CARTULARY_MODEL_INGEST", "openai/gpt-oss-120b"),
+    model: generation_model.("MEMHOUSE_MODEL_INGEST", "openai/gpt-oss-120b"),
     model_version: generation_version,
-    prompt_version: "extract-3",
+    prompt_version: "extract-4",
     pipeline_version: "f5-1",
     options: generation_options
   },
@@ -506,7 +522,7 @@ config :memhouse, :model_roles,
   # foreground uses: reranking the fused retrieval head and entity resolution.
   dream_reasoner: %{
     provider: generation_provider,
-    model: generation_model.("CARTULARY_MODEL_DREAM", "openai/gpt-oss-120b"),
+    model: generation_model.("MEMHOUSE_MODEL_DREAM", "openai/gpt-oss-120b"),
     model_version: generation_version,
     prompt_version: "reason-1",
     pipeline_version: "f5-1",
@@ -515,12 +531,21 @@ config :memhouse, :model_roles,
   # Answer composition for the question-answering surface.
   dialectic_agent: %{
     provider: generation_provider,
-    model: generation_model.("CARTULARY_MODEL_ASK", "openai/gpt-oss-120b"),
+    model: generation_model.("MEMHOUSE_MODEL_ASK", "openai/gpt-oss-120b"),
     model_version: generation_version,
     prompt_version: "dialectic-1",
     pipeline_version: "f5-1",
     options: generation_options
   }
+
+config :memhouse, :diskann,
+  storage_layout: env_get.("MEMHOUSE_DISKANN_STORAGE_LAYOUT", "memory_optimized"),
+  num_neighbors: env_integer.("MEMHOUSE_DISKANN_NUM_NEIGHBORS", "50"),
+  search_list_size: env_integer.("MEMHOUSE_DISKANN_SEARCH_LIST_SIZE", "100"),
+  max_alpha: env_float.("MEMHOUSE_DISKANN_MAX_ALPHA", "1.2"),
+  num_dimensions: env_integer.("MEMHOUSE_DISKANN_NUM_DIMENSIONS", "0"),
+  query_search_list_size: env_integer.("MEMHOUSE_DISKANN_QUERY_SEARCH_LIST_SIZE", "100"),
+  query_rescore: env_integer.("MEMHOUSE_DISKANN_QUERY_RESCORE", "50")
 
 # Deployment overrides for retrieval. Only two things are tunable from the
 # environment: which strategies may run at all, the three profile deadlines,
@@ -541,7 +566,7 @@ retrieval_profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
 # An unknown name raises rather than being ignored. Silently dropping a
 # misspelled strategy would quietly degrade recall with no visible symptom.
 enabled_retrieval_strategies =
-  "CARTULARY_RETRIEVAL_ENABLED_STRATEGIES"
+  "MEMHOUSE_RETRIEVAL_ENABLED_STRATEGIES"
   |> env_get.(
     retrieval_profiles
     |> Keyword.fetch!(:enabled_strategies)
@@ -567,7 +592,7 @@ retrieval_profiles =
   |> Keyword.put(
     :rerank_timeout_ms,
     env_integer.(
-      "CARTULARY_RETRIEVAL_RERANK_TIMEOUT_MS",
+      "MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS",
       Integer.to_string(Keyword.fetch!(retrieval_profiles, :rerank_timeout_ms))
     )
   )
@@ -576,7 +601,7 @@ retrieval_profiles =
     &Map.put(
       &1,
       :deadline_ms,
-      env_integer.("CARTULARY_RETRIEVAL_FAST_DEADLINE_MS", Integer.to_string(&1.deadline_ms))
+      env_integer.("MEMHOUSE_RETRIEVAL_FAST_DEADLINE_MS", Integer.to_string(&1.deadline_ms))
     )
   )
   |> Keyword.update!(
@@ -585,7 +610,7 @@ retrieval_profiles =
       &1,
       :deadline_ms,
       env_integer.(
-        "CARTULARY_RETRIEVAL_BALANCED_DEADLINE_MS",
+        "MEMHOUSE_RETRIEVAL_BALANCED_DEADLINE_MS",
         Integer.to_string(&1.deadline_ms)
       )
     )
@@ -596,7 +621,7 @@ retrieval_profiles =
       &1,
       :deadline_ms,
       env_integer.(
-        "CARTULARY_RETRIEVAL_THOROUGH_DEADLINE_MS",
+        "MEMHOUSE_RETRIEVAL_THOROUGH_DEADLINE_MS",
         Integer.to_string(&1.deadline_ms)
       )
     )
@@ -627,13 +652,13 @@ budget_key_map = %{
 }
 
 budget_limits =
-  "CARTULARY_BUDGET_LIMITS_JSON"
+  "MEMHOUSE_BUDGET_LIMITS_JSON"
   |> env_get.("{}")
   |> Jason.decode!()
   |> Map.new(fn {key, value} ->
     metric =
       Map.get(budget_key_map, key) ||
-        raise "unsupported budget metric in CARTULARY_BUDGET_LIMITS_JSON: #{inspect(key)}"
+        raise "unsupported budget metric in MEMHOUSE_BUDGET_LIMITS_JSON: #{inspect(key)}"
 
     unless is_integer(value) and value >= 0 do
       raise "budget limit #{key} must be a non-negative integer"
@@ -652,7 +677,7 @@ budget_limits =
 cost_key_map = %{"input" => :input, "output" => :output, "embedding" => :embedding}
 
 model_costs =
-  "CARTULARY_MODEL_COSTS_JSON"
+  "MEMHOUSE_MODEL_COSTS_JSON"
   |> env_get.("{}")
   |> Jason.decode!()
   |> Map.new(fn {role, rates} ->
@@ -662,7 +687,7 @@ model_costs =
       Map.new(rates, fn {metric, rate} ->
         cost_metric =
           Map.get(cost_key_map, metric) ||
-            raise "unsupported cost metric in CARTULARY_MODEL_COSTS_JSON: #{inspect(metric)}"
+            raise "unsupported cost metric in MEMHOUSE_MODEL_COSTS_JSON: #{inspect(metric)}"
 
         unless is_number(rate) and rate >= 0,
           do: raise("model cost rate #{role}.#{metric} must be non-negative")
@@ -684,10 +709,10 @@ config :memhouse, :model_cost_per_million, model_costs
 # way. An unknown value raises rather than defaulting to local storage, which
 # would put data somewhere the operator did not intend.
 blob_adapter =
-  case env_get.("CARTULARY_BLOB_ADAPTER", "local") do
+  case env_get.("MEMHOUSE_BLOB_ADAPTER", "local") do
     "local" -> MemHouse.Documents.BlobStore.Local
     "s3" -> MemHouse.Documents.BlobStore.S3
-    invalid -> raise "unsupported CARTULARY_BLOB_ADAPTER: #{inspect(invalid)}"
+    invalid -> raise "unsupported MEMHOUSE_BLOB_ADAPTER: #{inspect(invalid)}"
   end
 
 # Production defaults to a durable system path; other environments get a
@@ -703,21 +728,21 @@ config :memhouse, :documents,
   blob_adapter: blob_adapter,
   # Must be absolute; startup validation rejects a relative path. Blobs stored
   # here are content-addressed and are part of the backup set, not a cache.
-  blob_root: env_get.("CARTULARY_BLOB_ROOT", default_blob_root),
+  blob_root: env_get.("MEMHOUSE_BLOB_ROOT", default_blob_root),
   # Required when the adapter is s3; startup validation refuses to boot without
   # it rather than failing later on the first upload.
-  s3_bucket: env_get.("CARTULARY_S3_BUCKET", nil),
-  s3_prefix: env_get.("CARTULARY_S3_PREFIX", "memhouse"),
+  s3_bucket: env_get.("MEMHOUSE_S3_BUCKET", nil),
+  s3_prefix: env_get.("MEMHOUSE_S3_PREFIX", "memhouse"),
   # Chunk geometry in characters; the overlap keeps a sentence that straddles a
   # boundary retrievable from either chunk. Chunks and their embeddings are
   # rebuildable caches, so changing these values does not re-chunk documents
   # already ingested — they keep their old boundaries until ingested again.
-  chunk_size: env_integer.("CARTULARY_DOCUMENT_CHUNK_SIZE", "1200"),
-  chunk_overlap: env_integer.("CARTULARY_DOCUMENT_CHUNK_OVERLAP", "160"),
+  chunk_size: env_integer.("MEMHOUSE_DOCUMENT_CHUNK_SIZE", "1200"),
+  chunk_overlap: env_integer.("MEMHOUSE_DOCUMENT_CHUNK_OVERLAP", "160"),
   # Upper bound in characters of extracted text per document version. Guards one
   # pathological file from exhausting node memory; text past the limit is not
   # extracted, so raising it raises peak memory during parsing.
-  max_extract_length: env_integer.("CARTULARY_DOCUMENT_MAX_EXTRACT_LENGTH", "500000"),
+  max_extract_length: env_integer.("MEMHOUSE_DOCUMENT_MAX_EXTRACT_LENGTH", "500000"),
   connector_adapters: %{}
 
 config :ex_aws,
@@ -727,12 +752,12 @@ config :ex_aws,
 # Only set when an S3-compatible endpoint is in use (MinIO, Ceph, a regional
 # gateway). Left unset, ExAws talks to AWS S3 with its own defaults. Credentials
 # are not configured here: ExAws reads them from the standard AWS environment.
-case env_get.("CARTULARY_S3_HOST", nil) do
+case env_get.("MEMHOUSE_S3_HOST", nil) do
   host when is_binary(host) and host != "" ->
     config :ex_aws, :s3,
-      scheme: env_get.("CARTULARY_S3_SCHEME", "https://"),
+      scheme: env_get.("MEMHOUSE_S3_SCHEME", "https://"),
       host: host,
-      port: env_integer.("CARTULARY_S3_PORT", "443")
+      port: env_integer.("MEMHOUSE_S3_PORT", "443")
 
   _unset ->
     :ok
@@ -742,7 +767,7 @@ end
 # statement span can carry literal column values, which would put user content
 # into traces.
 otel_db_statement =
-  if env_true?.("CARTULARY_OTEL_DB_STATEMENT_ENABLED"), do: :enabled, else: :disabled
+  if env_true?.("MEMHOUSE_OTEL_DB_STATEMENT_ENABLED"), do: :enabled, else: :disabled
 
 # Span category switches. Spans record ids, counts, profile and strategy names,
 # model names, timings, token counts, and error classes — never message text,
@@ -751,14 +776,14 @@ otel_db_statement =
 # per-query spans bury the meaningful ones in noise.
 config :memhouse, :observability,
   db_statement: otel_db_statement,
-  http_spans: env_bool.("CARTULARY_OTEL_HTTP_SPANS_ENABLED", true),
-  phoenix_spans: env_bool.("CARTULARY_OTEL_PHOENIX_SPANS_ENABLED", true),
-  ecto_spans: env_bool.("CARTULARY_OTEL_ECTO_SPANS_ENABLED", false),
-  oban_spans: env_bool.("CARTULARY_OTEL_OBAN_SPANS_ENABLED", true),
+  http_spans: env_bool.("MEMHOUSE_OTEL_HTTP_SPANS_ENABLED", true),
+  phoenix_spans: env_bool.("MEMHOUSE_OTEL_PHOENIX_SPANS_ENABLED", true),
+  ecto_spans: env_bool.("MEMHOUSE_OTEL_ECTO_SPANS_ENABLED", false),
+  oban_spans: env_bool.("MEMHOUSE_OTEL_OBAN_SPANS_ENABLED", true),
   oban_span_relationship: env_oban_span_relationship.(),
-  memory_spans: env_bool.("CARTULARY_OTEL_MEMORY_SPANS_ENABLED", true),
-  model_spans: env_bool.("CARTULARY_OTEL_MODEL_SPANS_ENABLED", true),
-  document_spans: env_bool.("CARTULARY_OTEL_DOCUMENT_SPANS_ENABLED", true)
+  memory_spans: env_bool.("MEMHOUSE_OTEL_MEMORY_SPANS_ENABLED", true),
+  model_spans: env_bool.("MEMHOUSE_OTEL_MODEL_SPANS_ENABLED", true),
+  document_spans: env_bool.("MEMHOUSE_OTEL_DOCUMENT_SPANS_ENABLED", true)
 
 # Resource attributes stamped on every span. The three experiment attributes
 # exist so traces from different evaluation runs can be told apart and compared
@@ -776,18 +801,18 @@ config :opentelemetry,
       namespace: "memhouse"
     },
     :deployment => %{
-      environment: env_get.("CARTULARY_ENVIRONMENT", "development")
+      environment: env_get.("MEMHOUSE_ENVIRONMENT", "development")
     },
-    "memhouse.experiment.name" => env_get.("CARTULARY_EXPERIMENT_NAME", "local-dev"),
-    "memhouse.experiment.run_id" => env_get.("CARTULARY_EXPERIMENT_RUN_ID", "manual"),
-    "memhouse.retrieval.variant" => env_get.("CARTULARY_RETRIEVAL_VARIANT", "poc-baseline")
+    "memhouse.experiment.name" => env_get.("MEMHOUSE_EXPERIMENT_NAME", "local-dev"),
+    "memhouse.experiment.run_id" => env_get.("MEMHOUSE_EXPERIMENT_RUN_ID", "manual"),
+    "memhouse.retrieval.variant" => env_get.("MEMHOUSE_RETRIEVAL_VARIANT", "poc-baseline")
   },
   sampler: env_sampler.()
 
 # Export is opt-in. Without this flag the node produces no outbound telemetry at
 # all, which is the right default for a self-hosted install that may never have a
 # collector. Batching is used when enabled so exporting never blocks a request.
-if env_true?.("CARTULARY_OTEL_ENABLED") do
+if env_true?.("MEMHOUSE_OTEL_ENABLED") do
   config :opentelemetry,
     span_processor: :batch,
     traces_exporter: :otlp
@@ -803,14 +828,14 @@ end
 # Account in this process. Off by default; the per-Account
 # consent_mode: "auto" attribute is the narrower alternative when only some
 # Accounts in a shared deployment are synthetic.
-unattended? = env_true?.("CARTULARY_GOVERNANCE_UNATTENDED")
+unattended? = env_true?.("MEMHOUSE_GOVERNANCE_UNATTENDED")
 config :memhouse, :governance, unattended: unattended?
 
 if unattended? do
   require Logger
 
   Logger.warning(
-    "CARTULARY_GOVERNANCE_UNATTENDED=true: every Account in this process will have " <>
+    "MEMHOUSE_GOVERNANCE_UNATTENDED=true: every Account in this process will have " <>
       "subject consent auto-granted for personal knowledge above peer level. This " <>
       "removes a real privacy protection and is intended only for benchmark, " <>
       "evaluation, or synthetic-data deployments."
@@ -833,7 +858,7 @@ if config_env() == :prod do
   # node runs alone; clustering is not required for either database mode.
   config :memhouse, :dns_cluster_query, env_get.("DNS_CLUSTER_QUERY", nil)
 
-  config :memhouse, CartularyWeb.Endpoint,
+  config :memhouse, MemHouseWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
       # Enable IPv6 and bind on all interfaces.
@@ -851,7 +876,7 @@ if config_env() == :prod do
   # protocol header. To terminate TLS in the release itself instead, add an
   # `https` key to the endpoint configuration:
   #
-  #     config :memhouse, CartularyWeb.Endpoint,
+  #     config :memhouse, MemHouseWeb.Endpoint,
   #       https: [
   #         ...,
   #         port: 443,

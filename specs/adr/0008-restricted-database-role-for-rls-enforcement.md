@@ -37,7 +37,7 @@ for the transactional-writes work in issue #54.
 
 **The node's connections run as a role that cannot bypass row-level security,
 in every deployment mode.** `MemHouse.Database.AppRole` creates a role —
-`cartulary_app` by default — with `NOSUPERUSER NOBYPASSRLS NOCREATEDB
+`memhouse_app` by default — with `NOSUPERUSER NOBYPASSRLS NOCREATEDB
 NOCREATEROLE`, granted `SELECT, INSERT, UPDATE, DELETE` on the schema and
 `EXECUTE` on its functions, and nothing else. It owns no table. Three
 supervised boot steps carry this out, added to `MemHouse.Application`'s child
@@ -56,7 +56,7 @@ list in the position each needs:
    that serves a request. It reads `pg_roles` for the connection's own
    effective role and raises — refusing to boot — if that role is still a
    superuser or holds `BYPASSRLS`, unless the deployment has explicitly opted
-   out via `CARTULARY_ALLOW_UNRESTRICTED_DATABASE_ROLE=true`.
+   out via `MEMHOUSE_ALLOW_UNRESTRICTED_DATABASE_ROLE=true`.
 
 **Migrations and provisioning stay privileged, deliberately.** Both issue DDL,
 which the restricted role must not be able to do — a role that could alter its
@@ -110,7 +110,7 @@ migrations, which already run in the same position.
 An operator who has not granted `CREATEROLE` to the connection role, and has
 not created a restricted login by hand, now fails to boot instead of running
 with an inert backstop. This is the intended behavior change and the reason
-`CARTULARY_ALLOW_UNRESTRICTED_DATABASE_ROLE` exists: an upgrade must not
+`MEMHOUSE_ALLOW_UNRESTRICTED_DATABASE_ROLE` exists: an upgrade must not
 silently strand a running install, so the escape hatch is available, loud
 (logged at error level on every boot while set), and off by default.
 

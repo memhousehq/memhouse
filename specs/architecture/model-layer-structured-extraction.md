@@ -13,7 +13,7 @@ the model-outage portion of `NFR-8`.
 
 | Role | Capability | Default |
 | --- | --- | --- |
-| `embedder` | Pinned vector generation | Local Ortex/ONNX, 384 dimensions |
+| `embedder` | Pinned vector generation | Local Qwen3-Embedding-0.6B through Ortex/ONNX, 1024 dimensions |
 | `ingest_extractor` | Fast structured observation extraction | ReqLLM generation role |
 | `dream_reasoner` | Slow structured reasoning and optional rerank | ReqLLM reasoning role |
 | `dialectic_agent` | Grounded structured answers | ReqLLM dialectic role |
@@ -53,7 +53,8 @@ through its native strict JSON-schema response format. Each candidate starts
 with a concise validation-only reasoning string and its natural-language
 statement, then an integer `confidence_percentage` from 1 through 100. The
 validator strips non-digits from that field, checks the range, and divides by
-100 before it passes the resulting confidence to governance. Reasoning is not
+100 before it records the resulting confidence. Gate A receives a deterministic
+source-to-subject evidence level after schema validation. Reasoning is not
 persisted, metered, or logged.
 
 Statement text is canonicalized — invisible characters removed, whitespace runs
@@ -70,7 +71,7 @@ Each candidate also includes:
 - kind, sensitivity, and target level;
 - peer or current-scope subject, independently of the source Peer;
 - `add`, `merge`, `supersede_candidate`, or `no_op`;
-- hearsay classification with a confidence discount; and
+- schema-derived direct or indirect source evidence with a confidence discount; and
 - expiry, revalidation, and valid-time bounds.
 
 Subjects are limited to known Peers or the current scope. New items enter
@@ -102,14 +103,16 @@ Mismatch returns an `f5-1` `reembed_all` plan with
 incompatible vector space. The version covers the ONNX artifact, tokenizer,
 pooling strategy, and dimensions, so changing any of them requires a version
 bump. Retrieval, entity resolution, and context now supply the
-knowledge/document vector columns, replay-safe backfill, 384-dimensional HNSW
-indexes, semantic strategy, and tiny-corpus Nx baseline.
+knowledge/document vector columns, resumable Account-wide re-embedding,
+1024-dimensional DiskANN indexes, semantic strategy, and tiny-corpus Nx
+baseline. The shipped Qwen3 identity uses `input_ids` plus `attention_mask`,
+mask-aware last-token pooling, and a query-only instruction prefix.
 
 ## Provenance, metering, and safety
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-3` and pipeline `f5-1`. Its prompt explicitly requires
+prompt `extract-4` and pipeline `f5-1`. Its prompt explicitly requires
 confidence as a JSON fraction from `0.0` through `1.0`; the Ash-derived JSON
 schema independently enforces the same numeric bounds.
 
@@ -133,7 +136,7 @@ transactional job lane. Context reads remain available during an outage.
 
 The deterministic adapter is explicit configuration for tests and local
 development only. Development may select it when no key is present and
-`CARTULARY_MODEL_LOCAL_FALLBACK=true`; production defaults that flag to false
+`MEMHOUSE_MODEL_LOCAL_FALLBACK=true`; production defaults that flag to false
 and never switches to deterministic output after a live provider fails.
 
 ## `f5-1` transition
@@ -161,4 +164,4 @@ message/extractor identity. These are historical contract tags, not roadmap phas
   `test/fixtures/model/f5-provider-cassette.json`
 - Updated baseline contract evidence:
   `test/memhouse/poc_contract_test.exs` and
-  `test/cartulary_web/controllers/memory_controller_test.exs`
+  `test/memhouse_web/controllers/memory_controller_test.exs`

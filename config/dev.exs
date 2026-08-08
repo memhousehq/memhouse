@@ -24,7 +24,7 @@ config :memhouse, MemHouse.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "cartulary_dev",
+  database: "memhouse_dev",
   # SQL logging is off because embedding and retrieval queries carry vector
   # literals and statement text; a chatty dev log is also a content leak.
   log: false,
@@ -41,7 +41,7 @@ config :memhouse, MemHouse.Repo,
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
-config :memhouse, CartularyWeb.Endpoint,
+config :memhouse, MemHouseWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}],

@@ -23,7 +23,7 @@ contract transition.
 
 ## Application version versus contract version
 
-`GET /api/health` returns `"version": "f5-1"`. That is **not** `0.3.0`.
+`GET /api/health` returns `"version": "f5-1"`. That is **not** `0.4.0`.
 
 - **Application version** — Semantic Versioning, authoritative in `mix.exs`,
   matched by a dated changelog entry and a `v`-prefixed git tag. It answers

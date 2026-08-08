@@ -89,8 +89,9 @@ Extraction also does four things a naive extractor gets wrong:
   model is asked to rewrite it; if it cannot, the observation waits for retry.
 - **Resolves subject independently of source.** Who a statement is about is
   decided on its own, not assumed to be the speaker.
-- **Discounts hearsay.** "Dana said the deadline moved" is weaker evidence about
-  the deadline than Dana saying it.
+- **Derives source evidence.** A statement from its own peer subject is direct;
+  every other source-to-subject relationship is indirect and receives the
+  third-party confidence discount.
 - **Records complete provenance.** Provider, model, version, prompt, and
   pipeline identity travel with the result.
 
@@ -125,8 +126,8 @@ limit:
 Portability and reconciliation are serialised to one at a time because each
 walks an entire Account.
 
-`CARTULARY_INGEST_QUEUE_LIMIT` changes the ingest limit at boot. It must be
-paired with a `CARTULARY_MODEL_STREAM_POOL_SIZE` at least as large as the
+`MEMHOUSE_INGEST_QUEUE_LIMIT` changes the ingest limit at boot. It must be
+paired with a `MEMHOUSE_MODEL_STREAM_POOL_SIZE` at least as large as the
 expected concurrent hosted model calls. Keep the stream-pool count at `1`:
 Finch chooses among multiple shards randomly, so one shard with enough capacity
 does not create an avoidable queue behind a busy shard. For 100 parallel

@@ -2,6 +2,7 @@
   "installed": [
     "pgcrypto",
     "vector",
-    "citext"
+    "citext",
+    "vectorscale"
   ]
 }
