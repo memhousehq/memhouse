@@ -175,7 +175,6 @@ defmodule MemHouse.Operations.Health do
   # exposes only lane names and timestamps, never Account ids or job payloads.
   # "never" is useful operator state: no row has completed since this Account
   # was provisioned or this release first started scheduling lifecycle work.
-  # sobelow_skip ["SQL.Query"]
   defp lifecycle_sweeps_check do
     DataLayer.with_existing_free_account(fn _account, _actor -> lifecycle_sweeps_query() end)
   rescue
@@ -183,6 +182,8 @@ defmodule MemHouse.Operations.Health do
     error -> %{status: "error", error_class: error_class(error)}
   end
 
+  # SQL is static and its only value is a fixed module attribute passed as a parameter.
+  # sobelow_skip ["SQL.Query"]
   defp lifecycle_sweeps_query do
     sql = """
     SELECT kind, max(processed_at)
