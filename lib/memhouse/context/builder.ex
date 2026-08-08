@@ -32,7 +32,7 @@ defmodule MemHouse.Context.Builder do
   alias MemHouse.Knowledge.{EntityMention, KnowledgeItem, Projection}
   alias MemHouse.Model.Config
   alias MemHouse.Model.Gateway
-  alias MemHouse.Observations.Session
+  alias MemHouse.Observations.{Message, Session}
   alias MemHouse.Retrieval.Query
   alias MemHouse.Topology.Scope
 
@@ -54,6 +54,23 @@ defmodule MemHouse.Context.Builder do
   # paragraph leaves most of the context budget for governed statements and other projections.
   @entity_card_summary_chars 600
 
+  # Unit: Unicode characters. Shared summaries must leave room for the caller's own profile,
+  # entity cards, and ranked facts in the default 8,000-character context budget.
+  @scope_card_summary_chars 1_200
+  @peer_profile_summary_chars 1_000
+  @session_summary_chars 800
+
+  # Unit: governed statements. Pinned facts keep a summary inspectable without duplicating the
+  # projection's complete source set. Full provenance remains in `Projection.source_ids`.
+  @scope_card_pinned_facts 4
+  @peer_profile_pinned_facts 4
+  @session_summary_pinned_facts 3
+  @entity_card_pinned_facts 3
+
+  # Unit: Unicode characters. A pinned fact is an inspectable excerpt, not a second durable copy
+  # of an arbitrarily long statement. Its id remains the link to the complete governed source.
+  @pinned_fact_chars 180
+
   @doc """
   Rebuilds every projection belonging to one scope and clears their dirty flags.
 
@@ -69,7 +86,7 @@ defmodule MemHouse.Context.Builder do
   Replays are safe because projections are upserted by cache key.
   """
   def refresh_scope(account_id, scope_id) do
-    {scope, scope_knowledge, peer_knowledge, mentions, actor} =
+    {scope, scope_knowledge, peer_knowledge, mentions, sessions, messages, actor} =
       read_scope!(account_id, scope_id)
 
     scope_knowledge = dream_rank(scope_knowledge, scope, account_id, actor)
@@ -78,7 +95,77 @@ defmodule MemHouse.Context.Builder do
     entity_attrs =
       build_entity_card_attrs!(scope, scope_knowledge, mentions, account_id, actor)
 
-    write_projections!(account_id, scope, scope_knowledge, peer_knowledge, entity_attrs)
+    scope_attrs =
+      summary_attrs(
+        scope_knowledge,
+        :scope_card,
+        @scope_card_summary_chars,
+        @scope_card_pinned_facts,
+        %{"path" => scope.path, "name" => scope.name},
+        account_id,
+        scope.id,
+        actor
+      )
+
+    peer_attrs =
+      peer_knowledge
+      |> Enum.group_by(& &1.subject_peer_id)
+      |> Map.new(fn {peer_id, items} ->
+        {peer_id,
+         summary_attrs(
+           items,
+           :peer_profile,
+           @peer_profile_summary_chars,
+           @peer_profile_pinned_facts,
+           %{},
+           account_id,
+           scope.id,
+           actor
+         )}
+      end)
+
+    session_attrs =
+      Map.new(sessions, fn session ->
+        session_message_ids =
+          messages
+          |> Enum.filter(&(&1.session_id == session.id))
+          |> MapSet.new(& &1.id)
+
+        session_knowledge =
+          Enum.filter(scope_knowledge, fn item ->
+            not MapSet.disjoint?(session_message_ids, MapSet.new(item.source_message_ids))
+          end)
+
+        {session.id,
+         %{
+           content:
+             summary_attrs(
+               session_knowledge,
+               :session_summary,
+               @session_summary_chars,
+               @session_summary_pinned_facts,
+               %{"session_id" => session.id, "status" => session.status},
+               account_id,
+               scope.id,
+               actor
+             ),
+           source_ids: Enum.map(session_knowledge, & &1.id)
+         }}
+      end)
+
+    write_projections!(
+      account_id,
+      scope,
+      scope_knowledge,
+      peer_knowledge,
+      %{
+        sessions: sessions,
+        scope: scope_attrs,
+        peers: peer_attrs,
+        session_summaries: session_attrs,
+        entity_cards: entity_attrs
+      }
+    )
   end
 
   # Phase one reads one consistent source snapshot and returns the plain actor for the model phase.
@@ -115,20 +202,32 @@ defmodule MemHouse.Context.Builder do
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
 
-        {scope, scope_knowledge, peer_knowledge, mentions, actor}
+        sessions =
+          Session
+          |> Ash.Query.filter(scope_id == ^scope.id)
+          |> Ash.Query.set_tenant(account_id)
+          |> Ash.read!(actor: actor)
+
+        messages =
+          Message
+          |> Ash.Query.filter(scope_id == ^scope.id)
+          |> Ash.Query.set_tenant(account_id)
+          |> Ash.read!(actor: actor)
+
+        {scope, scope_knowledge, peer_knowledge, mentions, sessions, messages, actor}
       end
     )
   end
 
   # Phase three commits the projection set. No provider call may be added to this callback: a
   # slow external request here would hold a pooled connection and could discard billed work.
-  defp write_projections!(account_id, scope, scope_knowledge, peer_knowledge, entity_attrs) do
+  defp write_projections!(account_id, scope, scope_knowledge, peer_knowledge, projections) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
         entity_projections =
-          Enum.map(entity_attrs, &upsert_projection!(account_id, actor, &1))
+          Enum.map(projections.entity_cards, &upsert_projection!(account_id, actor, &1))
 
         retire_stale_entity_cards!(
           account_id,
@@ -145,12 +244,7 @@ defmodule MemHouse.Context.Builder do
               cache_key: ProjectionKey.scope(scope.id),
               scope_id: scope.id,
               kind: "scope_card",
-              content: %{
-                "scope_id" => scope.id,
-                "path" => scope.path,
-                "name" => scope.name,
-                "knowledge" => Enum.map(scope_knowledge, &knowledge_map/1)
-              },
+              content: projections.scope,
               source_ids: Enum.map(scope_knowledge, & &1.id)
             }
           )
@@ -168,19 +262,17 @@ defmodule MemHouse.Context.Builder do
                 scope_id: scope.id,
                 peer_id: peer_id,
                 kind: "peer_profile",
-                content: %{"knowledge" => Enum.map(items, &knowledge_map/1)},
+                content: Map.fetch!(projections.peers, peer_id),
                 source_ids: Enum.map(items, & &1.id)
               }
             )
           end)
 
-        # Session summaries are scope-level warm starts, not message-history summaries.
         session_projections =
-          Session
-          |> Ash.Query.filter(scope_id == ^scope.id)
-          |> Ash.Query.set_tenant(account_id)
-          |> Ash.read!(actor: actor)
+          projections.sessions
           |> Enum.map(fn session ->
+            summary = Map.fetch!(projections.session_summaries, session.id)
+
             upsert_projection!(
               account_id,
               actor,
@@ -190,12 +282,8 @@ defmodule MemHouse.Context.Builder do
                 peer_id: session.peer_id,
                 session_id: session.id,
                 kind: "session_summary",
-                content: %{
-                  "session_id" => session.id,
-                  "status" => session.status,
-                  "knowledge" => Enum.map(scope_knowledge, &knowledge_map/1)
-                },
-                source_ids: Enum.map(scope_knowledge, & &1.id)
+                content: summary.content,
+                source_ids: summary.source_ids
               }
             )
           end)
@@ -207,7 +295,8 @@ defmodule MemHouse.Context.Builder do
          %{
            scope_card: scope_projection.id,
            entity_cards: length(entity_projections),
-           entity_card_summaries_unavailable: count_unavailable_summaries(entity_attrs),
+           entity_card_summaries_unavailable:
+             count_unavailable_summaries(projections.entity_cards),
            peer_profiles: length(peer_projections),
            session_summaries: length(session_projections)
          }}
@@ -303,14 +392,13 @@ defmodule MemHouse.Context.Builder do
       kind: "entity_card",
       sensitivity: sensitivity,
       content: %{
-        "scope_id" => scope.id,
         "label" => EntityLabel.label(cluster.forms),
         "kind" => EntityLabel.kind(cluster.forms),
         "summary" => summary,
         "summary_mode" => mode,
         "summary_provenance" => provenance && stringify_keys(provenance),
         "sensitivity" => sensitivity,
-        "knowledge" => Enum.map(cluster.items, &knowledge_map/1)
+        "pinned_facts" => pinned_facts(cluster.items, @entity_card_pinned_facts)
       },
       source_ids: Enum.map(cluster.items, & &1.id)
     }
@@ -406,6 +494,85 @@ defmodule MemHouse.Context.Builder do
     |> String.slice(0, @entity_card_summary_chars)
   end
 
+  # The durable source list is deliberately not rendered into projection JSON. A bounded set of
+  # statement/id pairs lets a reader inspect the summary while the full source list remains the
+  # private cache coordinate used for invalidation, erasure, and provenance.
+  defp summary_attrs(items, kind, max_chars, fact_limit, metadata, account_id, scope_id, actor) do
+    {summary, provenance, mode} =
+      projection_summary!(items, kind, max_chars, account_id, scope_id, actor)
+
+    metadata
+    |> Map.merge(%{
+      "summary" => summary,
+      "summary_mode" => mode,
+      "summary_provenance" => provenance && stringify_keys(provenance),
+      "pinned_facts" => pinned_facts(items, fact_limit)
+    })
+  end
+
+  defp projection_summary!([], _kind, _max_chars, _account_id, _scope_id, _actor),
+    do: {nil, nil, "none"}
+
+  defp projection_summary!(items, kind, max_chars, account_id, scope_id, actor) do
+    context = %{account_id: account_id, actor: actor}
+    config = MemHouse.Model.role_config(:dream_reasoner, context)
+
+    if Gateway.provider_module(config, context) == MemHouse.Model.Providers.Deterministic do
+      {items |> Enum.map_join(" ", & &1.statement) |> String.slice(0, max_chars),
+       Config.provenance(config), "source_extract"}
+    else
+      messages = [
+        %{
+          role: "system",
+          content:
+            "Summarize only the governed statements supplied by the user. Preserve qualifications " <>
+              "and disagreements, make no new claims, and return concise prose of at most " <>
+              "#{max_chars} characters."
+        },
+        %{role: "user", content: Jason.encode!(%{"statements" => bounded_statements(items)})}
+      ]
+
+      case MemHouse.Model.chat(:dream_reasoner, messages, context, task: kind) do
+        {:ok, summary, provenance} when is_binary(summary) and summary != "" ->
+          {String.slice(String.trim(summary), 0, max_chars), provenance, "model"}
+
+        {:ok, _summary, _provenance} ->
+          unavailable_summary(account_id, scope_id, "empty_text")
+
+        {:error, reason} ->
+          unavailable_summary(account_id, scope_id, error_class(reason))
+      end
+    end
+  end
+
+  # Unit: Unicode characters. The provider input must stay bounded independently of the stored
+  # output limit, otherwise a large scope can time out before it has a chance to create a card.
+  @projection_summary_input_chars 6_000
+
+  defp bounded_statements(items) do
+    {statements, _size} =
+      Enum.reduce_while(items, {[], 0}, fn item, {statements, size} ->
+        next_size = size + String.length(item.statement)
+
+        if next_size <= @projection_summary_input_chars do
+          {:cont, {[item.statement | statements], next_size}}
+        else
+          {:halt, {statements, size}}
+        end
+      end)
+
+    Enum.reverse(statements)
+  end
+
+  defp pinned_facts(items, limit) do
+    items
+    |> Enum.take(limit)
+    |> Enum.map(&%{"id" => &1.id, "statement" => excerpt(&1.statement)})
+  end
+
+  defp excerpt(statement) when byte_size(statement) <= @pinned_fact_chars, do: statement
+  defp excerpt(statement), do: String.slice(statement, 0, @pinned_fact_chars - 1) <> "…"
+
   defp preserve_rank(items, ranked_knowledge) do
     ids = MapSet.new(items, & &1.id)
     Enum.filter(ranked_knowledge, &MapSet.member?(ids, &1.id))
@@ -482,36 +649,13 @@ defmodule MemHouse.Context.Builder do
     |> Ash.create!(actor: actor, authorize?: false)
   end
 
-  # Retain only current source ids, then append new items. The 100-statement cap bounds projection
-  # growth between full compactions; larger reads belong in retrieval.
-  defp merge_content(old, new, current_source_ids) do
-    current_source_ids = MapSet.new(current_source_ids)
-
+  # Summary content is regenerated from the bounded source set. It is not a mergeable copy of
+  # knowledge rows, so retaining old JSON would preserve facts that a lifecycle update removed.
+  defp merge_content(old, new, _current_source_ids) do
     Map.merge(old, new, fn
-      "knowledge", old_items, new_items ->
-        (Enum.filter(old_items, &MapSet.member?(current_source_ids, &1["id"])) ++ new_items)
-        |> Enum.uniq_by(& &1["id"])
-        |> Enum.take(100)
-
       _key, _old_value, new_value ->
         new_value
     end)
-  end
-
-  # Allowlist projection fields; never expose vectors, entities, or internal bookkeeping.
-  defp knowledge_map(item) do
-    %{
-      "id" => item.id,
-      "scope_id" => item.scope_id,
-      "statement" => item.statement,
-      "kind" => item.kind,
-      "confidence" => item.confidence,
-      "sensitivity" => item.sensitivity,
-      "state" => item.state,
-      "source_message_ids" => item.source_message_ids,
-      "extracting_model" => item.extracting_model,
-      "pipeline_version" => item.pipeline_version
-    }
   end
 
   # Background ranking has no deadline and stays serial outside the read and write transactions.

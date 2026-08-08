@@ -253,9 +253,10 @@ Returns `{"data": context}` with `knowledge`, `session_summary`, `scope_cards`,
 `entity_cards`, `peer_profile`, `profile_version`, and two diagnostics:
 `projection_cache_hit` and `fast_fallback`.
 
-Each entity card contains a `label`, a `kind`, the strictest source
-`sensitivity`, a bounded `summary` with its `summary_mode` and
-`summary_provenance`, and its allowlisted governed `knowledge`.
+Each projection contains a bounded `summary`, its `summary_mode` and
+`summary_provenance`, and small `pinned_facts` with a source id and statement
+excerpt. The complete source set remains internal. Each entity card also
+contains a `label`, a `kind`, and the strictest source `sensitivity`.
 
 A card requires at least two active source statements in one scope. A summary
 requires three: below that, `summary` and `summary_provenance` are `null` and

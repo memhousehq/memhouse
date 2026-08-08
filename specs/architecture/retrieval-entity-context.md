@@ -247,8 +247,9 @@ private. No path returns an entity or mention row to the web layer.
 Projection keys are Account-local and unique. Entity-card keys use a private
 entity id only as a grouping coordinate; payloads expose no entity-cache field.
 Cards carry the strictest source sensitivity, a bounded summary with model
-provenance, and the governed source statements. Updates carry a watermark,
-delta count, source ids, dirty state, and a bounded full-compaction cadence.
+provenance, and a bounded set of pinned source excerpts. Full source ids remain
+private on the projection row. Updates carry a watermark, delta count, source
+ids, dirty state, and a bounded full-compaction cadence.
 Lifecycle changes mark affected projections dirty and enqueue deterministic
 entity/projection jobs in the same transaction as the state change.
 

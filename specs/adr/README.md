@@ -24,6 +24,7 @@ settled by the blueprint specs.
 | `0015-local-cross-encoder-reranking.md` | Dedicated local cross-encoder role for deadline-bounded reranking. |
 | `0015-indexed-embedding-dimensions.md` | Configured embedding widths must have a matching installed vector index. |
 | `0015-windowed-message-extraction.md` | Bounded same-session extraction windows with schema-validated source provenance. |
+| `0016-bounded-projection-summaries.md` | Context projections store bounded summaries and pinned facts, not raw knowledge rows. |
 
 Conventions for future ADRs:
 

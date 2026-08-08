@@ -37,7 +37,7 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/context \
         "summary": "The billing service owns invoice generation and pages finance after failed settlement.",
         "summary_mode": "model",
         "sensitivity": "internal",
-        "knowledge": [ ... ]
+        "pinned_facts": [ ... ]
       }
     ],
     "peer_profile": { ... },
@@ -48,10 +48,10 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/context \
 }
 ```
 
-- **`knowledge`** — active statements in scope plus the calling peer's own
-  provisional statements, within budget.
-- **`session_summary`** — active statements used to warm this session.
-- **`scope_cards`** — active statements each ancestor scope contributes.
+- **`knowledge`** — pinned facts from delivered projections, or ranked active
+  statements from the fast fallback when no projection is available.
+- **`session_summary`** — a bounded, grounded warm-start summary for this session.
+- **`scope_cards`** — bounded summaries each ancestor scope contributes.
 - **`entity_cards`** — short per-entity briefs built from at least two active
   governed statements in one scope, capped at eight per scope. The `label` and
   `kind` come from the card's own sources in its own scope. A summary needs
@@ -59,8 +59,10 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/context \
   is `"none"`. If the summary model call fails, the rest of the card is still
   written with `summary_mode` `"unavailable"`, and a later rebuild retries the
   summary. Cards expose no entity ids, canonical names, or aliases.
-- **`peer_profile`** — active and provisional statements about the calling
-  peer. Another peer's provisional statements are never included.
+- **`peer_profile`** — a bounded profile of active and provisional statements
+  about the calling peer. Another peer's provisional statements are never included.
+- **`pinned_facts`** — small source-linked excerpts that make a projection
+  inspectable. Use search or a knowledge read for the complete source set.
 - **`projection_cache_hit`** — a stored projection was reused.
 - **`fast_fallback`** — the projection was missing, so the `fast` retrieval
   profile filled in live.
@@ -68,9 +70,9 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/context \
 ## Why this is not just a search
 
 Profiles, scope cards, entity cards, and session summaries are cached
-**projections** of governed knowledge, not another durable store. Entity-card
-summaries are generated during background refresh; no model runs during this
-request.
+**projections** of governed knowledge, not another durable store. They contain
+bounded summaries and pinned source excerpts, not raw knowledge rows. Summaries
+are generated during background refresh; no model runs during this request.
 
 Scope cards and session summaries are shared within their authorized scope, so
 they contain active knowledge only. A provisional statement is visible through

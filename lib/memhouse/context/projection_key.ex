@@ -9,7 +9,9 @@ defmodule MemHouse.Context.ProjectionKey do
   rows remain harmless and rebuildable because context assembly no longer addresses their keys.
   """
 
-  @namespace "audience-v2"
+  # A clean row written before bounded summaries can contain an entire knowledge dump. Changing
+  # this namespace makes that row a cache miss until the pipeline rebuilds it under this contract.
+  @namespace "summary-v3"
 
   @doc "Returns the cache identity for one scope card."
   @spec scope(Ecto.UUID.t()) :: String.t()
