@@ -139,9 +139,14 @@ an HTTP caller. A job is not a privilege-escalation path.
 
 ## Dream-time
 
-The `dream` lane consolidates duplicates, resolves entities, schedules
-revalidation, and prepares validation questions. It is throttled first when
-token budgets tighten and never bypasses governance.
+The `dream` lane consolidates active duplicates and raises corroboration from
+independent sources. It also derives a set aggregate for the supported
+membership form, such as `Melanie has a pet named Bailey.` The aggregate keeps
+each source and has the same scope, sensitivity, and visibility as its inputs.
+
+Dream-time also resolves entities, schedules revalidation, and prepares
+validation questions. It is throttled first when token budgets tighten and
+never bypasses governance.
 
 ## What never enters audit metadata or job arguments
 

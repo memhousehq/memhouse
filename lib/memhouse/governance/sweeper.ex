@@ -45,6 +45,7 @@ defmodule MemHouse.Governance.Sweeper do
   alias MemHouse.Governance.PeerQueue
   alias MemHouse.Governance.ValidationItem
   alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Pipeline.Consolidator
 
   require Ash.Query
 
@@ -52,13 +53,14 @@ defmodule MemHouse.Governance.Sweeper do
   Runs one sweep for an Account and reports how many records it touched.
 
   `kind` selects the work: `"revalidation"` and `"expiry"` each run a single
-  sweep, while `"dream_time"` runs queue aging and confidence decay. Any other value raises
+  sweep, while `"dream_time"` runs queue aging, confidence decay, and
+  consolidation. Any other value raises
   `FunctionClauseError` — the caller is a scheduled job, so an unknown lane is
   a wiring bug that should fail loudly rather than silently do nothing.
 
   Returns `{:ok, counts}`. The keys of `counts` depend on `kind`
-  (`:revalidation`, `:expiry`, `:aged`, `:decayed`), so callers must not assume
-  all four are present. Raises when the underlying transaction fails, which
+  (`:revalidation`, `:expiry`, `:aged`, `:decayed`, `:merged`, `:aggregates`),
+  so callers must not assume all keys are present. Raises when the underlying transaction fails, which
   rolls back every change the sweep had made so far.
   """
   def run(account_id, kind) when kind in ["revalidation", "expiry", "dream_time"] do
@@ -85,6 +87,7 @@ defmodule MemHouse.Governance.Sweeper do
       aged: age_queue!(account_id, actor),
       decayed: decay_queries!(account_id, actor)
     }
+    |> Map.merge(Consolidator.run_account!(account_id, actor))
   end
 
   # Active knowledge whose revalidation date has passed stops counting as
