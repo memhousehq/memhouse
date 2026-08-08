@@ -164,9 +164,9 @@ defmodule MemHouse.Pipeline do
   @doc """
   Schedules the time-driven lifecycle work for one Account and Cron slot.
 
-  `scheduled_at` is the Cron job's scheduled time. It is part of both replay
-  keys, so delayed execution and retries reuse the same expiry and
-  revalidation runs. Dream-time uses the same slot. Call inside an Account
+  `scheduled_at` is the Cron job's scheduled time. It is part of all replay
+  keys, so delayed execution and retries reuse the same dream-time, expiry,
+  and revalidation runs. Call inside an Account
   transaction; all run rows and jobs then commit together.
 
   Returns `{:ok, %{dream_time: run, revalidation: run, expiry: run}}` or an error.

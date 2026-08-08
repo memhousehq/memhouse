@@ -51,8 +51,7 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
   Three lanes share this workflow because they are all off-request consolidation
   work rather than user-facing latency:
 
-  - `dream_time` runs the Account-wide governance sweep — revalidation, expiry,
-    queue aging, and query decay;
+  - `dream_time` runs Account-wide queue aging and query decay;
   - `entity_resolution` rebuilds the entity and mention caches for the run's
     scope;
   - `projection_refresh` runs the full derived-cache rebuild for that scope —

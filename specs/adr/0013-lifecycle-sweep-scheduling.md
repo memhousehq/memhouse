@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
-# ADR 0012: Lifecycle sweep scheduling
+# ADR 0013: Lifecycle sweep scheduling
 
 ## Status
 
@@ -18,7 +18,8 @@ passed.
 
 Oban Cron starts one `MemHouse.Operations.LifecycleScheduler` job every hour.
 It is the only Cron entry. The worker enters the provisioned community Account
-and creates dream-time, expiry, and revalidation `PipelineRun` rows through Ash actions.
+and creates dream-time, expiry, and revalidation `PipelineRun` rows through
+Ash actions.
 Each row is keyed by Account, sweep kind, and the Cron job's `scheduled_at`
 timestamp. The row and its AshOban job commit in the Account transaction.
 

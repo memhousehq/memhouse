@@ -7,8 +7,7 @@ defmodule MemHouse.Operations.LifecycleScheduler do
   Cron only starts this worker. The worker never changes knowledge directly:
   it enters the configured community Account and creates the ordinary
   dream-time, expiry, and revalidation pipeline runs in that Account
-  transaction. The scheduled
-  timestamp is the replay watermark, so a late or retried Cron job cannot
+  transaction. The scheduled timestamp is the replay watermark, so a late or retried Cron job cannot
   create duplicate sweeps.
   """
 

@@ -40,7 +40,7 @@ Expiry and revalidation have no request-side event. The sole Oban Cron entry
 therefore starts `LifecycleScheduler` hourly. It opens the provisioned
 community Account and creates the two normal `PipelineRun` rows through Ash.
 The Account, sweep kind, and Cron `scheduled_at` slot form each replay key, so
-late execution and retry reuse work. See `ADR-0012`.
+late execution and retry reuse work. See `ADR-0013`.
 
 ## A background job declares its own Account
 
