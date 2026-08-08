@@ -20,6 +20,7 @@ settled by the blueprint specs.
 | `0011-scope-local-entity-card-labels.md` | A card names its referent with a surface form from its own scope, and recomputes the kind rather than reading the entity row. |
 | `0012-deterministic-gate-a-evidence.md` | Gate A automates only schema-derived source evidence, never model confidence. |
 | `0013-dream-time-knowledge-consolidation.md` | Dream-time merges corroborated facts and derives bounded set aggregates. |
+| `0014-lifecycle-sweep-scheduling.md` | Cron starts Account-scoped, replay-safe expiry and revalidation runs. |
 
 Conventions for future ADRs:
 

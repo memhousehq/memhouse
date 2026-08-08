@@ -24,6 +24,7 @@ There is **no generated OpenAPI description** in this release — see
 | `GET /api/v1/knowledge` | any identity | Governed knowledge query |
 | `GET /api/v1/operations/costs` | account-admin | Usage and estimated cost |
 | `POST /api/v1/operations/reconcile` | account-admin | Enqueue an Account reconciliation sweep |
+| `POST /api/v1/operations/dream` | account-admin | Enqueue an immediate Account dream-time pass |
 | `GET /api/v1/self/knowledge` | human only | Your own record |
 | `POST /api/v1/self/knowledge/:id/contest` | human only | Dispute a statement about you |
 | `POST /api/v1/self/knowledge/:id/redact` | human only | Withdraw a statement about you |
@@ -79,11 +80,12 @@ version.
 
 ## `GET /api/ready`
 
-Readiness. Runs database, Oban, queue-depth, and model-role checks. **200** only
+Readiness. Runs database, Oban, queue-depth, lifecycle-sweep, and model-role checks. **200** only
 when every component reports `ok`, otherwise **503**.
 
 The body is the whole check map: per-component status, queue depths by queue
-and job state, an error class per failing component, and `"f10-1"` — the
+and job state, an error class per failing component, the last completed expiry
+and revalidation sweep (`"never"` before the first completion), and `"f10-1"` — the
 readiness payload shape identity.
 
 The payload contains no credentials, secrets, or stored content.
@@ -294,6 +296,15 @@ new observation. The Account comes from the credential. The response is **202**:
 
 The sweep finds durable observations whose extraction did not finish and
 re-enqueues their replay-safe work.
+
+---
+
+## `POST /api/v1/operations/dream`
+
+Account administrators can enqueue an immediate Account-wide dream-time pass.
+The Account comes from the credential. The response is **202** with the same
+`run_id` and `accepted` status shape as reconciliation. The pass remains an
+ordinary durable pipeline run and obeys the configured dream-time budget.
 
 ---
 

@@ -9,12 +9,14 @@ defmodule MemHouse.Operations.Health do
   model components cannot serve.
   """
 
+  alias MemHouse.DataLayer
   alias MemHouse.Repo
 
   # Oban job states that represent outstanding work. `completed`, `discarded`,
   # and `cancelled` are excluded deliberately: they are history, and counting
   # them would make queue depth grow forever instead of tracking backlog.
   @queue_states ~w(available scheduled retryable executing)
+  @lifecycle_kinds ~w(revalidation expiry)
 
   @doc """
   Minimal liveness payload: the process is up and answering.
@@ -50,6 +52,7 @@ defmodule MemHouse.Operations.Health do
       database: database_check(),
       oban: oban_check(),
       queues: queue_check(),
+      lifecycle_sweeps: lifecycle_sweeps_check(),
       model_roles: model_roles_check()
     }
 
@@ -167,6 +170,42 @@ defmodule MemHouse.Operations.Health do
   rescue
     error -> %{status: "error", error_class: error_class(error)}
   end
+
+  # PipelineRun is the durable record of completed sweep work. The fixed query
+  # exposes only lane names and timestamps, never Account ids or job payloads.
+  # "never" is useful operator state: no row has completed since this Account
+  # was provisioned or this release first started scheduling lifecycle work.
+  # sobelow_skip ["SQL.Query"]
+  defp lifecycle_sweeps_check do
+    DataLayer.with_existing_free_account(fn _account, _actor -> lifecycle_sweeps_query() end)
+  rescue
+    Ecto.NoResultsError -> %{status: "ok", last_completed_at: never_completed()}
+    error -> %{status: "error", error_class: error_class(error)}
+  end
+
+  defp lifecycle_sweeps_query do
+    sql = """
+    SELECT kind, max(processed_at)
+    FROM pipeline_runs
+    WHERE kind = ANY($1) AND status = 'completed'
+    GROUP BY kind
+    """
+
+    case Ecto.Adapters.SQL.query(Repo, sql, [@lifecycle_kinds], timeout: 2_000) do
+      {:ok, %{rows: rows}} ->
+        last_completed_at =
+          Enum.reduce(rows, never_completed(), fn [kind, processed_at], acc ->
+            Map.put(acc, kind, DateTime.to_iso8601(processed_at))
+          end)
+
+        %{status: "ok", last_completed_at: last_completed_at}
+
+      {:error, error} ->
+        %{status: "error", error_class: error_class(error)}
+    end
+  end
+
+  defp never_completed, do: Map.new(@lifecycle_kinds, &{&1, "never"})
 
   # Reports which provider, model, and model version each Account-level role is
   # pointing at. Only the identities are exposed; API keys and endpoint

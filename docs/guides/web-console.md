@@ -27,7 +27,7 @@ Agent API keys work on JSON and MCP, never the console.
 | `/console/skills` | Skill requirement cards, and a live readiness check for yourself |
 | `/console/tools` | A workbench for all eight MCP tools, using your signed-in identity and showing the returned payload; account admins also get the retrieval diagnostic |
 | `/console/me` | Everything recorded about you, and your consent and erasure controls |
-| `/console/operations` | Account admins only: readiness, usage and cost, entity-resolution quality, scope retrieval health, gate rules, retrieval tunings |
+| `/console/operations` | Account admins only: readiness, last expiry/revalidation sweep, usage and cost, entity-resolution quality, scope retrieval health, gate rules, retrieval tunings |
 | `/governance` | Curators and account admins only: the gate queue and skill-card authoring |
 
 Navigation hides inaccessible pages, but every destination independently

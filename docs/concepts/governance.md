@@ -158,7 +158,11 @@ Governed knowledge changes over time:
 - confidence **decays** over time at read;
 - an item past `expires_at` becomes `expired` and leaves retrieval.
 
-The sweeper in the `lifecycle` job lane makes those transitions durable.
+The sweeper in the `lifecycle` job lane makes those transitions durable. It
+starts hourly. A delayed or retried start reuses the same Account-scoped sweep
+work, so it cannot duplicate lifecycle transitions. The operations readiness
+view reports when expiry and revalidation last completed; it reports `never`
+before the first completed run.
 
 ## Every decision is evidence
 

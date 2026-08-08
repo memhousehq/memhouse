@@ -770,12 +770,11 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     |> Ash.Changeset.set_tenant(actor.account_id)
     |> Ash.update!(actor: pipeline)
 
-    # The background reasoning pass reports several counters; this narrows the assertion to the
-    # one under test so an unrelated counter changing does not fail the test.
-    assert {:ok, %{decayed: 1}} =
-             actor.account_id
-             |> Sweeper.run("dream_time")
-             |> then(fn {:ok, counts} -> {:ok, %{decayed: counts.decayed}} end)
+    assert {:ok, %{aged: _aged, decayed: 1} = counts} =
+             Sweeper.run(actor.account_id, "dream_time")
+
+    refute Map.has_key?(counts, :revalidation)
+    refute Map.has_key?(counts, :expiry)
 
     # An unanswered question costs the item confidence and marks it stale. Strictly lower, not
     # merely different: silence must never be read as reassurance.

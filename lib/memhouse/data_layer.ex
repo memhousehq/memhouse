@@ -172,6 +172,7 @@ defmodule MemHouse.DataLayer do
            fun.(account, actor)
          end) do
       {:ok, result} -> result
+      {:error, %Ecto.NoResultsError{} = error} -> raise error
       {:error, error} -> raise "Free Account lookup failed: #{inspect(error)}"
     end
   end
