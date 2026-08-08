@@ -175,7 +175,6 @@ defmodule MemHouse.Governance.Erasure do
 
     delete_knowledge = Enum.uniq_by(subject_knowledge ++ strict_extra, & &1.id)
     delete_ids = MapSet.new(delete_knowledge, & &1.id)
-    affected_scope_ids = delete_knowledge |> Enum.map(& &1.scope_id) |> Enum.uniq()
 
     # Order matters. Projections and entities are adjusted while the deleted
     # ids are still known, the peer's questions and the knowledge rows are
@@ -185,7 +184,6 @@ defmodule MemHouse.Governance.Erasure do
     recompute_entities!(account_id, actor, delete_ids)
     erase_peer_queries!(account_id, actor, request.peer_id)
     erase_knowledge_rows!(account_id, actor, delete_knowledge)
-    refresh_derived_scopes!(account_id, affected_scope_ids)
 
     # Proportionate mode only: knowledge that stays keeps its other sources and
     # loses this peer's. In strict mode every sourced item was already deleted
@@ -194,6 +192,12 @@ defmodule MemHouse.Governance.Erasure do
       sourced_knowledge
       |> Enum.reject(&MapSet.member?(delete_ids, &1.id))
       |> Enum.map(&scrub_source!(&1, actor, message_ids))
+
+    affected_scope_ids =
+      (Enum.map(delete_knowledge, & &1.scope_id) ++ Enum.map(retained_sourced, & &1.scope_id))
+      |> Enum.uniq()
+
+    refresh_derived_scopes!(account_id, actor, affected_scope_ids)
 
     Enum.each(messages, &destroy!(&1, :erase, actor))
     erase_sessions_and_identity!(account_id, actor, request.peer_id)
@@ -372,8 +376,10 @@ defmodule MemHouse.Governance.Erasure do
   # after the deletions so it reads only surviving rows; running it earlier
   # would faithfully rebuild the data being erased. Both rebuilds must succeed
   # or the match fails and aborts the transaction.
-  defp refresh_derived_scopes!(account_id, scope_ids) do
+  defp refresh_derived_scopes!(account_id, actor, scope_ids) do
     Enum.each(scope_ids, fn scope_id ->
+      MemHouse.Pipeline.Consolidator.run_scope!(account_id, scope_id, actor)
+
       {:ok, _entities} =
         MemHouse.Retrieval.EntityResolver.rebuild_scope(account_id, scope_id)
 
