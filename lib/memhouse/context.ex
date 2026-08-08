@@ -10,7 +10,7 @@ defmodule MemHouse.Context do
   ## Reasoning-free by construction
 
   Normal assembly performs no generation, reranking, or adjudication. When projections contain
-  no knowledge, it may run the `:fast` retrieval profile without reranking and reports
+  no pinned facts, it may run the `:fast` retrieval profile without reranking and reports
   `"fast_fallback" => true`.
 
   ## What can be read
@@ -141,15 +141,12 @@ defmodule MemHouse.Context do
     end)
   end
 
-  # Ordered by source coverage, then by the best confidence among those sources, then by label so
-  # equally-supported cards keep a stable order. Label before cache key matters: the key holds the
+  # Ordered by source coverage, then by label so equally-supported cards keep a stable order.
+  # Label before cache key matters: the key holds the
   # entity UUID, which re-resolution can change, and the per-scope cap would otherwise make that
   # churn visible as cards appearing and disappearing between requests.
   defp entity_card_order(projection) do
-    confidences = Enum.map(projection.content["knowledge"] || [], &(&1["confidence"] || 0.0))
-
-    {length(projection.source_ids), Enum.max(confidences, fn -> 0.0 end),
-     projection.content["label"] || "", projection.cache_key}
+    {length(projection.source_ids), projection.content["label"] || "", projection.cache_key}
   end
 
   # One card per authorized scope, in the order the caller's scopes were resolved (nearest
@@ -175,8 +172,8 @@ defmodule MemHouse.Context do
       {projection, hit?} =
         projection(account_id, actor, scope.id, ProjectionKey.peer(scope.id, actor.peer_id))
 
-      knowledge = projection && Map.get(projection.content, "knowledge", [])
-      {knowledge || [], hits + if(hit?, do: 1, else: 0)}
+      content = projection && projection.content
+      {content || [], hits + if(hit?, do: 1, else: 0)}
     end)
   end
 
@@ -193,15 +190,16 @@ defmodule MemHouse.Context do
     end)
   end
 
-  # Statements already carried by the cards and profile slices. Deduplicated by statement id so
-  # a claim that appears in both a scope card and the peer's own slice is not billed twice
-  # against the character budget.
+  # Pinned facts make a projection inspectable without duplicating its full governed source set.
+  # Deduplicate them by statement id so a claim in several summaries is not billed twice.
   defp projection_knowledge(scope_cards, peer_profiles, entity_cards) do
-    (Enum.flat_map(scope_cards, &Map.get(&1 || %{}, "knowledge", [])) ++
-       List.flatten(peer_profiles) ++
+    (Enum.flat_map(scope_cards, &Map.get(&1 || %{}, "pinned_facts", [])) ++
+       (peer_profiles
+        |> List.flatten()
+        |> Enum.flat_map(&Map.get(&1 || %{}, "pinned_facts", []))) ++
        (entity_cards
         |> List.flatten()
-        |> Enum.flat_map(&Map.get(&1, "knowledge", []))))
+        |> Enum.flat_map(&Map.get(&1, "pinned_facts", []))))
     |> Enum.uniq_by(& &1["id"])
   end
 
