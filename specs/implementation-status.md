@@ -46,8 +46,10 @@ Details: `specs/architecture/ash-domain-backbone.md`.
 - An hourly Oban Cron entry starts the community Account's expiry and
   revalidation runs. Their replay keys use the Cron slot, so retries reuse the
   same durable work. `GET /api/ready` reports each sweep's last completion.
-- Ash.Reactor flows own ingest extraction, dream-time reasoning, validation
-  continuation, and transcript answer correlation.
+- Ash.Reactor flows own ingest extraction, dream-time reasoning, and transcript
+  answer correlation. Legacy validation-continuation jobs remain executable so
+  upgrades can drain them, but current gate decisions create validation rows
+  inline and do not enqueue that no-op lane.
 - Deterministic idempotency keys and Account-local advisory locks make replays
   safe: a replay merges attribution and provenance instead of duplicating
   knowledge.

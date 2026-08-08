@@ -102,17 +102,6 @@ defmodule MemHouse.Pipeline.Idempotency do
     do: key(:import_rebuild, [import_id, manifest_hash])
 
   @doc """
-  Key for the background continuation of one governance decision.
-
-  A decision applies to one knowledge item, so the pair is the unit of follow-on
-  work. Recording the decision and enqueueing this run happen in one
-  transaction, so the key never names a decision that was rolled back.
-  """
-  @spec validation_continuation(Ecto.UUID.t(), Ecto.UUID.t()) :: String.t()
-  def validation_continuation(decision_id, knowledge_item_id),
-    do: key(:validation_continuation, [decision_id, knowledge_item_id])
-
-  @doc """
   Key for correlating an answer with the question that prompted it.
 
   Keyed by the asked question and the session the answer arrived in, so a

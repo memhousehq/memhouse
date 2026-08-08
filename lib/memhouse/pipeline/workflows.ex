@@ -111,20 +111,14 @@ end
 
 defmodule MemHouse.Pipeline.Workflows.ValidationContinuation do
   @moduledoc """
-  The durable continuation a governance decision resumes.
+  Compatibility workflow for validation-continuation jobs written before issue 175.
 
-  A curator decision is recorded synchronously; the follow-on work it implies
-  runs here, in its own replay-keyed run keyed by the decision and the knowledge
-  item it applies to. Because the decision row and this run are created in one
-  transaction, a decision can never be recorded without its continuation, nor a
-  continuation exist for a decision that rolled back.
+  Current gate decisions create their validation rows and peer questions inline,
+  so they do not enqueue this lane. Keep this no-op workflow and its trigger
+  until deployments no longer have pre-change jobs to drain.
 
-  Today the step writes nothing: it returns a typed durable continuation and
-  completes. That is deliberate: the run row, its replay key, and its queue
-  placement are the part that must exist before follow-on behaviour can be
-  added, and a completed continuation is honest about doing no further work.
-  When behaviour lands here it must keep the same key, so decisions already
-  queued still resolve to one run.
+  The run records no new effect. It only lets a previously committed job
+  complete successfully after an upgrade.
   """
 
   use Ash.Reactor

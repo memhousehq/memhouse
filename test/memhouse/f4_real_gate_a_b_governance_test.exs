@@ -69,6 +69,14 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     # with nobody asked to look at it.
     assert validation.state == "pending"
 
+    # The queue row is decided and written in this transaction. Do not schedule a second
+    # durable run merely to discover it: validation continuation has no remaining work.
+    assert scalar!(
+             "SELECT count(*) FROM pipeline_runs WHERE kind = 'validation_continuation'",
+             []
+           ) ==
+             0
+
     # Both gates leave an immutable record of what they decided, in the order they ran. Even a
     # deferral is written down, so "why is this still pending" is always answerable.
     assert Enum.map(decisions, &{&1.gate, &1.decision}) == [

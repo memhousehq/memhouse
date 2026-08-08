@@ -660,7 +660,7 @@ defmodule MemHouse.Governance.Engine do
   end
 
   @doc """
-  Writes one immutable gate-decision row plus its audit entry and follow-up job.
+  Writes one immutable gate-decision row and its audit entry.
 
   `gate` is `"gate_a"`, `"gate_b"`, or `"gate_a_b"` when a single human action settled both.
   `decision` is the verb that was applied (for example a keep, place, hold, defer, approve,
@@ -674,10 +674,11 @@ defmodule MemHouse.Governance.Engine do
   content-safe — ids, states, levels, flags — while the statement itself is represented only
   by its hash.
 
-  Also enqueues the follow-up validation-continuation job under a key derived from the
-  decision and knowledge ids, so replaying this path schedules that work once instead of
-  duplicating it. Returns the created decision row and raises if any of the three writes
-  fails, which — inside the caller's transaction — discards the state change too.
+  Validation routing is decided in the caller's transaction. A deferred proposal has already
+  created its `ValidationItem` and, when it has a peer subject, its `PeerQuery`; a decision
+  needs no separate continuation to discover either fact. Returns the created decision row and
+  raises if either durable write fails, which — inside the caller's transaction — discards the
+  state change too.
   """
   def record_decision!(
         actor,
@@ -735,24 +736,6 @@ defmodule MemHouse.Governance.Engine do
         "verified" => verified
       }
     })
-
-    {:ok, _run} =
-      Pipeline.enqueue(
-        "validation_continuation",
-        knowledge.account_id,
-        %{
-          scope_id: knowledge.scope_id,
-          target_type: "gate_decision",
-          target_id: decision_row.id,
-          idempotency_key: Idempotency.validation_continuation(decision_row.id, knowledge.id),
-          payload: %{
-            "knowledge_id" => knowledge.id,
-            "gate" => gate,
-            "decision" => decision
-          }
-        },
-        actor
-      )
 
     decision_row
   end

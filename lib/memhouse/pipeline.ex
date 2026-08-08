@@ -47,7 +47,6 @@ defmodule MemHouse.Pipeline do
     "reconciler" => :enqueue_reconciler,
     "entity_resolution" => :enqueue_entity_resolution,
     "reembed" => :enqueue_reembed,
-    "validation_continuation" => :enqueue_validation_continuation,
     "answer_correlation" => :enqueue_answer_correlation
   }
 
