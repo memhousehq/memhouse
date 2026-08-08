@@ -49,7 +49,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-5"
+  @prompt_version "extract-6"
 
   @doc """
   The identity of the extraction-and-pipeline contract this build implements.
@@ -95,11 +95,29 @@ defmodule MemHouse.Pipeline.Extractor do
         role: "system",
         content: """
         Extract durable agent-memory knowledge from an anchored observation and
-        its bounded conversation window.
-        Return the supplied structured schema. Natural-language statements are
-        the knowledge atom. Do not invent facts and return no item for content
-        that is not durable memory. Greetings, acknowledgements, compliments,
-        questions, and invitations with no asserted fact are no_op.
+        its bounded conversation window. Return the supplied structured schema.
+        Natural-language statements are the knowledge atom.
+
+        Durable memory is a fact that remains useful after this conversation:
+        a stable fact, preference, relationship, possession, skill,
+        commitment, plan, or event with a lasting consequence. Keep a specific
+        claim such as "Avery prefers weekly release summaries." Keep a promise
+        as "Avery will send the release notes by 2026-08-15.", not as a record
+        that Avery spoke.
+
+        Return no item when the content has no durable claim. Drop greetings,
+        thanks, compliments, reactions, encouragement, small talk, questions,
+        invitations without an asserted fact, and messages whose only fact is
+        that somebody sent or received a message. For example, drop "Thanks,
+        that helped!", "What are Avery's pets' names?", and "Avery greeted
+        Melanie." A mix of durable and non-durable content may produce one or
+        more items; entirely non-durable content must produce an empty items
+        array.
+
+        State what is true. Never frame a candidate as a speech act or
+        transcription such as "Avery said ...", "Avery asked ...", or a quoted
+        message. A statement about a peer must name that peer directly. Do not
+        invent facts.
 
         Start each candidate with concise reasoning, then its natural-language
         statement, then confidence_percentage. Rate your confidence percentage

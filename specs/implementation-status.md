@@ -116,9 +116,11 @@ Details: `specs/architecture/gate-a-b-governance.md`.
   mismatch takes the explicit re-embed path and never silently substitutes
   vectors.
 - Ash-derived structured extraction and reasoning schemas with bounded
-  validate-and-repair. Extraction resolves subject independently of source,
-  discounts third-party claims, and proposes confidence, sensitivity, target, and temporal
-  fields plus an update operation.
+  validate-and-repair. Extraction defines durable claims and rejects questions,
+  speech-act transcriptions, and peer claims that omit their subject. It
+  resolves subject independently of source, discounts third-party claims, and
+  proposes confidence, sensitivity, target, and temporal fields plus an update
+  operation.
 - Message extraction reads a trailing six-message window in the same session
   and scope. Candidate source ids are limited to that window and become durable
   provenance rows.

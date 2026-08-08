@@ -81,7 +81,14 @@ is automatic and has no operator setting.
 Candidates must match schemas derived from their Ash resources. Invalid output
 gets bounded repair attempts, then rejection.
 
-Extraction also does four things a naive extractor gets wrong:
+Extraction also does five things a naive extractor gets wrong:
+
+- **Keeps durable knowledge.** The extractor records stable facts,
+  preferences, relationships, possessions, skills, commitments, plans, and
+  lasting events. It drops greetings, thanks, reactions, encouragement,
+  questions, and a record that somebody spoke. A candidate must state the fact
+  directly. Validation rejects a question, a speech-act transcription, or a
+  peer claim that does not name its subject.
 
 - **Refuses unreadable text.** A model can collapse into repeated ellipsis or
   invisible padding. Such a statement is rejected: a durable claim must carry

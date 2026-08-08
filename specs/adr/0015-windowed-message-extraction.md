@@ -15,9 +15,13 @@ rejects an id outside the window. The pipeline writes every cited id to the
 knowledge item's `source_message_ids` and creates one provenance row for each
 id. Duplicate statements merge their cited ids.
 
-The prompt tells the extractor to return no candidate for greetings,
-acknowledgements, compliments, questions, and invitations that state no fact.
-The deterministic local adapter applies the same narrow filter.
+The prompt defines durable claims as stable facts, preferences, relationships,
+possessions, skills, commitments, plans, and lasting events. It returns no
+candidate for greetings, acknowledgements, compliments, reactions, questions,
+and invitations that state no fact. It writes the asserted fact, not a speech
+act. Schema validation rejects questions, speech-act transcriptions, and peer
+claims that omit their subject. The deterministic local adapter applies the
+same floor.
 
 ## Consequences
 

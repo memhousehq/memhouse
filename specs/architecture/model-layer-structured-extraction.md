@@ -125,7 +125,11 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-5` and pipeline `f5-1`. Message extraction uses a trailing
+prompt `extract-6` and pipeline `f5-1`. It defines durable claims as stable
+facts, preferences, relationships, possessions, skills, commitments, plans,
+and lasting events. It drops conversation residue and schema validation rejects
+questions, speech-act transcriptions, and peer claims that omit their subject.
+Message extraction uses a trailing
 six-message same-session window, with the target message as its explicit
 anchor. Its prompt explicitly requires
 confidence as a JSON fraction from `0.0` through `1.0`; the Ash-derived JSON

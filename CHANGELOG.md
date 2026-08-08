@@ -11,6 +11,14 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Extraction now defines durable memory and drops conversational residue. The
+  `extract-6` prompt retains stable facts, preferences, relationships,
+  possessions, skills, commitments, plans, and lasting events. It excludes
+  greetings, reactions, questions, and speech-act transcriptions. Schema
+  validation independently rejects questions, speech-act statements, and peer
+  claims that do not name their subject. The `f5-1` pipeline contract is
+  unchanged; a smaller corpus is the intended result.
+
 - `thorough` retrieval now uses a dedicated `reranker` model role. The default
   is the local, checksum-pinned BAAI/bge-reranker-v2-m3 ONNX cross-encoder with a
   120 ms allowance. Hosted rerank endpoints remain supported; the expensive

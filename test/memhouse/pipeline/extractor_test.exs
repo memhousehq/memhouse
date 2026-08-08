@@ -71,7 +71,7 @@ defmodule MemHouse.Pipeline.ExtractorTest do
                "peer_key" => "alice",
                "scope_path" => "/test/extractor",
                "content" =>
-                 "Alice prefers concise status updates. Her phone number should not be shared."
+                 "Alice prefers concise status updates. Alice's phone number should not be shared."
              })
 
     # One item per sentence, each statement kept as the readable sentence it
@@ -80,7 +80,7 @@ defmodule MemHouse.Pipeline.ExtractorTest do
     # is what later restricts how widely the item may ever be exposed.
     assert [
              %{statement: "Alice prefers concise status updates.", kind: "preference"},
-             %{statement: "Her phone number should not be shared.", sensitivity: "personal"}
+             %{statement: "Alice's phone number should not be shared.", sensitivity: "personal"}
            ] = items
 
     # "f5-1" is a contract identity value stamped on every extracted item: it
@@ -95,5 +95,18 @@ defmodule MemHouse.Pipeline.ExtractorTest do
     # proposal distinguishable from a model-derived one after the fact. Seeing
     # it here also proves no network provider was reached.
     assert Enum.all?(items, &(&1.provider == "deterministic"))
+  end
+
+  test "fallback extractor declines conversation residue and unnamed claims" do
+    assert {:ok, []} =
+             Extractor.extract(%{
+               "id" => Ecto.UUID.generate(),
+               "peer_id" => Ecto.UUID.generate(),
+               "scope_id" => Ecto.UUID.generate(),
+               "peer_key" => "alice",
+               "scope_path" => "/test/extractor",
+               "content" =>
+                 "Thanks, that helped! What should we try next? Running can boost your mood."
+             })
   end
 end

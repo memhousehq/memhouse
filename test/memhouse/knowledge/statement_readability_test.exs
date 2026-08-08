@@ -81,12 +81,12 @@ defmodule MemHouse.Knowledge.StatementReadabilityTest do
       assert {:error, [_message]} = cast("……………… … … … … … … … … … … … … … …")
     end
 
-    test "keeps ordinary prose, including dates, currency, and quotation" do
+    test "keeps ordinary prose, including dates, currency, and a quoted value" do
       for statement <- [
             "Avery prefers weekly release summaries.",
-            "On 2026-03-14 the team moved the release to Q3 (pending legal sign-off).",
-            "Avery said: \"drop the Redis dependency\" — recorded on 2026-01-02.",
-            "Hosting costs $1,200/month; the owner is platform-team."
+            "On 2026-03-14 Avery moved the release to Q3 (pending legal sign-off).",
+            "Avery's recorded preference is \"drop the Redis dependency\" as of 2026-01-02.",
+            "Avery reports hosting costs of $1,200/month; the owner is platform-team."
           ] do
         assert {:ok, [candidate]} = cast(statement)
         assert candidate.statement == statement

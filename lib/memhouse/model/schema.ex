@@ -36,6 +36,11 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   ## Rules this module enforces
 
+  - **Statements assert durable knowledge.** A candidate cannot be a question,
+    a transcription of a speech act, or an unanchored generic claim. A peer
+    claim must name a subject in prose. These checks give the repair loop a
+    deterministic floor; the extractor still decides whether a supported fact
+    is durable enough to propose.
   - **Subject is independent of source.** The model names the subject itself. A
     `peer` subject must be one of the known peer keys supplied in the context,
     and a `scope` subject must be exactly the current scope path. Nothing else
@@ -208,6 +213,7 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, kind} <- enum(item, "kind", allowed(:kind)),
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
          {:ok, subject_ref} <- valid_subject_ref(item, subject_type, context),
+         :ok <- durable_statement(statement, subject_type, subject_ref),
          {:ok, source_message_ids} <- source_message_ids(item, context),
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
@@ -338,6 +344,44 @@ defmodule MemHouse.Model.Schema.Extraction do
         {:error, ["statement must be readable text, not repeated filler characters"]}
       end
     end
+  end
+
+  # This is intentionally a small deterministic floor, not an attempt to
+  # classify all durable knowledge with regular expressions. The provider has
+  # the conversation window and makes that decision. These three shapes never
+  # become knowledge: a question, a record that somebody spoke, or a peer
+  # claim that does not name the peer it purports to describe.
+  defp durable_statement(statement, subject_type, _subject_ref) do
+    cond do
+      String.contains?(statement, "?") ->
+        {:error, ["statement must assert knowledge, not record a question"]}
+
+      String.match?(
+        statement,
+        ~r/\b(?:said|says|told|asked|greeted|replied|mentioned|wrote|texted)\b/iu
+      ) ->
+        {:error, ["statement must assert the fact, not record a speech act"]}
+
+      subject_type == "peer" and not statement_names_subject?(statement) ->
+        {:error, ["statement must name its peer subject"]}
+
+      true ->
+        :ok
+    end
+  end
+
+  # Peer keys are opaque identities in some deployments (`agent-1`), while a
+  # statement uses a human name (`Avery`). The validator therefore requires a
+  # prose subject instead of incorrectly coupling an authorization identifier
+  # to its display text. A leading gerund plus a generic predicate is not a
+  # subject; a proper name such as `Vanishing` still is.
+  defp statement_names_subject?(statement) do
+    String.match?(statement, ~r/\A\p{Lu}[\p{L}\p{N}_-]*\b/u) and
+      not generic_leading_gerund?(statement)
+  end
+
+  defp generic_leading_gerund?(statement) do
+    String.match?(statement, ~r/\A(?:Running|Exercise|Sleep|Travel|Work)\s+(?:can|is|does)\b/u)
   end
 
   defp non_empty_string(item, key) do
