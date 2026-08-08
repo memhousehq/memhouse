@@ -32,11 +32,11 @@ Plain text matches statements sharing **any** of its terms, ranked by how many
 of them a statement covers and how closely together. Ask a full question: it
 does not need every content word to appear in one statement.
 
-For English questions, the lexical analyzer (`lexical-question-v1`) removes a
-small reviewed set of interrogative boilerplate and adds only the explicit
-`destress` / `stress` / `relax` / `calming` / `therapeutic` synonym group. It
-keeps names, dates, negation, and quoted text. A statement that also places two
-of your terms within eight words of each other earns a bounded bonus, so a
+For English questions, the lexical analyzer (`lexical-question-v2`) removes a
+small reviewed set of interrogative boilerplate. It keeps the remaining query
+terms, names, dates, negation, and quoted text. It does not expand terms with a
+hand-written synonym list. A statement that also places two of your terms
+within eight words of each other earns a bounded bonus, so a
 sentence that answers the question outranks one that merely mentions the same
 words. Only the highest-ranked matches compete for that bonus; a statement far
 down the list cannot be promoted by it. The analyzer version appears in the

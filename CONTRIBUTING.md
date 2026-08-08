@@ -28,6 +28,9 @@ Do not change the meaning of existing `FR-*`, `AD-*`, `AINV-*`, `NFR-*`, or
 For coding agents, the task must be labeled `ai-ready` unless a human directly
 requests the work.
 
+Query-analysis rules must be justified by shipped behavior. Do not fit
+vocabulary, transformations, or ranking rules to a reporting evaluation split.
+
 ## Write concise code documentation
 
 Source must stand on its own, but it should not read like a design document.
