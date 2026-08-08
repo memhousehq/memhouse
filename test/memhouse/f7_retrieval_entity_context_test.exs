@@ -243,6 +243,94 @@ defmodule MemHouse.F7RetrievalEntityContextTest.CardSummaryFailureProvider do
     do: Deterministic.rerank(config, query, documents, opts)
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider do
+  @moduledoc """
+  Provider that records how many entity-card summary calls overlap.
+
+  The provider seam is the only place this is observable: a refresh reports how
+  many cards it wrote, never how it obtained them. Each summary call is held for
+  a fixed interval so that calls which are allowed to overlap certainly do,
+  rather than merely being able to.
+  """
+
+  @behaviour MemHouse.Model.Provider
+
+  alias MemHouse.Model.Provider.Result
+  alias MemHouse.Model.Providers.Deterministic
+
+  # Unit: milliseconds. Long enough that two calls released together still overlap on a loaded CI
+  # machine, short enough to keep a synchronous suite fast.
+  @hold_ms 150
+
+  @doc """
+  Arms the provider with a zero call count. Returns `:ok`, discarding earlier counts.
+  """
+  def start! do
+    case Agent.start(fn -> %{in_flight: 0, peak: 0} end, name: __MODULE__) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        Agent.update(__MODULE__, fn _ -> %{in_flight: 0, peak: 0} end)
+    end
+  end
+
+  @doc """
+  Disarms the provider. Safe to call when nothing is armed; always returns `:ok`.
+  """
+  def stop do
+    if pid = Process.whereis(__MODULE__), do: Agent.stop(pid)
+    :ok
+  end
+
+  @doc """
+  Returns the largest number of summary calls seen in flight together.
+
+  Exits with `:noproc` when the provider is not armed.
+  """
+  def peak, do: Agent.get(__MODULE__, & &1.peak)
+
+  @impl true
+  def structured(config, messages, schema, opts),
+    do: Deterministic.structured(config, messages, schema, opts)
+
+  @impl true
+  def chat(config, messages, opts) do
+    if Keyword.get(opts, :task) == :entity_card do
+      enter()
+      Process.sleep(@hold_ms)
+      leave()
+
+      {:ok,
+       %Result{
+         value: "One governed summary.",
+         usage: %{input_tokens: 4, output_tokens: 4},
+         metadata: %{fixture: true}
+       }}
+    else
+      Deterministic.chat(config, messages, opts)
+    end
+  end
+
+  # The deterministic provider refuses to embed, so indexing borrows the suite's fixture vectors.
+  @impl true
+  def embed(config, texts, opts),
+    do: MemHouse.F7RetrievalEntityContextTest.Provider.embed(config, texts, opts)
+
+  @impl true
+  def rerank(config, query, documents, opts),
+    do: Deterministic.rerank(config, query, documents, opts)
+
+  defp enter do
+    Agent.update(__MODULE__, fn state ->
+      in_flight = state.in_flight + 1
+      %{in_flight: in_flight, peak: max(state.peak, in_flight)}
+    end)
+  end
+
+  defp leave, do: Agent.update(__MODULE__, &%{&1 | in_flight: &1.in_flight - 1})
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest do
   @moduledoc """
   Pins retrieval, private entity caches, and reasoning-free context assembly.
@@ -1933,6 +2021,87 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert coverage.embedded_count == 3
   end
 
+  test "entity card summaries overlap up to the configured concurrency" do
+    account_key = "f7-card-summary-concurrency"
+    scope_path = "/f7/card-summary-concurrency"
+
+    # Two clusters, each over the summary threshold, so the scope owes two provider calls. Serial
+    # generation makes a scope wait for their sum; that is what the concurrency limit bounds.
+    ledger =
+      seed_entity_cluster!(account_key, scope_path, "ledger service", "system", [
+        "The ledger service owns invoice generation.",
+        "The ledger service pages the finance on-call after failed settlement.",
+        "The ledger service retries settlement twice before it escalates."
+      ])
+
+    seed_entity_cluster!(account_key, scope_path, "rollout board", "system", [
+      "The rollout board approves every release window.",
+      "The rollout board meets before each freeze.",
+      "The rollout board records its decisions in the release log."
+    ])
+
+    original_provider = Application.get_env(:memhouse, :model_provider)
+    original_concurrency = Application.get_env(:memhouse, :entity_card_summary_concurrency)
+
+    on_exit(fn ->
+      MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider.stop()
+      Application.put_env(:memhouse, :entity_card_summary_concurrency, original_concurrency)
+
+      if original_provider do
+        Application.put_env(:memhouse, :model_provider, original_provider)
+      else
+        Application.delete_env(:memhouse, :model_provider)
+      end
+    end)
+
+    Application.put_env(
+      :memhouse,
+      :model_provider,
+      MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider
+    )
+
+    # A limit of one is the behaviour this test exists to distinguish from, and it is what the
+    # suite runs under by default, so the fan-out below is proved against a measured baseline
+    # rather than against an assumption about the serial path.
+    Application.put_env(:memhouse, :entity_card_summary_concurrency, 1)
+    MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider.start!()
+
+    # Called outside `with_account_key`, unlike the tests above: that helper holds an open
+    # transaction for its callback, and the sandbox has one connection to lend, so the summary
+    # tasks would wait on the caller that is waiting on them.
+    assert {:ok, %{entity_cards: 2, entity_card_summaries_unavailable: 0}} =
+             Builder.refresh_scope(ledger.account.id, ledger.scope.id)
+
+    assert MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider.peak() == 1
+
+    Application.put_env(:memhouse, :entity_card_summary_concurrency, 2)
+    MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider.start!()
+
+    assert {:ok, %{entity_cards: 2, entity_card_summaries_unavailable: 0}} =
+             Builder.refresh_scope(ledger.account.id, ledger.scope.id)
+
+    assert MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider.peak() == 2
+
+    # Overlapping the calls changes only when they run. Both cards are written with the summary a
+    # serial pass produced, and neither degraded.
+    context =
+      Memory.get_context(
+        %{"scope_path" => scope_path, "budget_chars" => 50_000},
+        ledger.actor
+      )
+
+    assert length(context["entity_cards"]) == 2
+
+    assert Enum.all?(context["entity_cards"], fn card ->
+             card["summary"] == "One governed summary." and card["summary_mode"] == "model"
+           end)
+
+    assert Enum.sort(Enum.map(context["entity_cards"], & &1["label"])) == [
+             "ledger service",
+             "rollout board"
+           ]
+  end
+
   test "get_context caps entity cards per scope and orders equal cards by label" do
     account_key = "f7-entity-card-cap"
     scope_path = "/f7/entity-card-cap"
@@ -2532,6 +2701,56 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
       %{account: account, actor: actor, scope: scope, knowledge: knowledge}
     end)
+  end
+
+  # Active statements plus the entity and mentions that group them into one card. Entity
+  # resolution is bypassed so the cluster shape a test needs is stated rather than inferred from
+  # what the fixture extractor happens to link. Returns the first seeded statement.
+  defp seed_entity_cluster!(account_key, scope_path, surface_form, kind, statements) do
+    slug = String.replace(surface_form, " ", "-")
+
+    seeds =
+      statements
+      |> Enum.with_index(1)
+      |> Enum.map(fn {statement, index} ->
+        seed_active!(account_key, scope_path, statement, "#{slug}-#{index}")
+      end)
+
+    DataLayer.with_account_key(account_key, fn account, actor ->
+      pipeline = pipeline_actor(actor)
+
+      entity =
+        create!(
+          Entity,
+          :create_from_pipeline,
+          %{
+            canonical_name: surface_form,
+            kind: kind,
+            aliases: [surface_form],
+            derived_from: Enum.map(seeds, & &1.knowledge.id)
+          },
+          account.id,
+          pipeline
+        )
+
+      Enum.each(seeds, fn seed ->
+        create!(
+          EntityMention,
+          :create_from_pipeline,
+          %{
+            knowledge_item_id: seed.knowledge.id,
+            scope_id: seed.scope.id,
+            entity_id: entity.id,
+            surface_form: surface_form,
+            confidence: 1.0
+          },
+          account.id,
+          pipeline
+        )
+      end)
+    end)
+
+    hd(seeds)
   end
 
   # Same as `seed_active!` up to the point of governance: the statement is extracted and stays in

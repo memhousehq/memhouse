@@ -90,6 +90,7 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_MODEL_STREAM_POOL_COUNT` | `1` | Shared HTTP/1 shard count; raise only for a measured shard bottleneck |
 | `MEMHOUSE_MODEL_POOL_TIMEOUT_MS` | `120000` | Maximum wait (ms) to check out a model HTTP connection |
 | `MEMHOUSE_INGEST_QUEUE_LIMIT` | `10` | Concurrent extraction jobs per node |
+| `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
 
 !!! warning "Reasoning models can blow the context window or time out without these"
     Reasoning models, including the default `openai/gpt-oss-120b`, can consume
@@ -115,6 +116,17 @@ For 100 parallel ingestion flows on one node, set
 `MEMHOUSE_INGEST_QUEUE_LIMIT=100` and
 `MEMHOUSE_MODEL_STREAM_POOL_SIZE=128`, then validate the provider's
 concurrency/rate limits and the database pool under representative load.
+
+`MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` bounds a different fan-out. Rebuilding
+one scope's context needs a summary call for every entity cluster with enough
+sources, and those calls run inside a single projection job. At `1` the rebuild
+waits for the sum of them, so a scope holding a few slow calls can take tens of
+minutes; higher values make it wait closer to the slowest call. The peak number
+of calls in flight is this value times the projection queue limit, so raise
+`MEMHOUSE_MODEL_STREAM_POOL_SIZE` with it. Each call also takes a database
+connection while it resolves its model role and records usage, and an erasure
+runs the same rebuild from inside its own transaction, so keep the value well
+below `POOL_SIZE`.
 
 There are exactly four Account-level model roles: `embedder`,
 `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`. Only secret

@@ -173,6 +173,11 @@ Details: `specs/architecture/documents-connectors-sync.md`.
   `summary_mode: "unavailable"` instead of failing the scope rebuild. The
   refresh result counts the degraded cards. Retry is the next refresh; nothing
   re-requests the summary sooner.
+- Entity-card summary calls run with bounded concurrency inside one refresh
+  (`CARTULARY_CONTEXT_SUMMARY_CONCURRENCY`, default 4). Card order is
+  unchanged. There is still no per-call duration telemetry, so a scope that is
+  slow because of a few slow calls cannot be told from one that is slow because
+  it holds many clusters.
 - The account-admin operations page exposes content-free resolution health:
   cache counts, observed-alias buckets, singleton rate, and
   mentions-per-entity p50/p95. Statement detail exposes only the count and

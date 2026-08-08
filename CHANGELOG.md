@@ -29,6 +29,18 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
+- Entity-card summaries no longer make a scope rebuild wait for the sum of its
+  model calls. `MemHouse.Context.Builder` generated one summary per qualifying
+  entity cluster with a plain `Enum.flat_map`, so each call ran only after the
+  previous one returned, degraded, or hit `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS`.
+  Two comparable scopes in the same run took a few minutes and about 34 minutes,
+  the difference being how many of one scope's calls happened to run slow.
+  Summary generation now runs with bounded concurrency, so a scope waits closer
+  to its slowest call than to their total. The new
+  `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` sets how many overlap and defaults
+  to `4`; `1` restores the previous serial behavior. Card order, content, and
+  the degraded-summary handling are unchanged, and the `f7-1` retrieval and
+  context contract is unchanged.
 - Gate A no longer automates from a model's self-reported confidence. The
   extractor now derives and persists `direct` or `indirect` source evidence
   from the schema-validated speaker and subject. Matrix rows use that stable

@@ -290,6 +290,19 @@ oban_queues =
 
 config :memhouse, Oban, queues: oban_queues
 
+# Entity-card summaries are the other place one job makes many hosted model
+# calls: a scope rebuild needs one call per qualifying entity cluster. They run
+# inside the projection lane rather than a queue of their own, so this bounds
+# how many overlap within a single rebuild. Raising it also requires enough
+# ReqLLM Finch connections above, because the projection and ingest lanes share
+# that pool. Tests stay serial: the SQL sandbox owns one database connection.
+config :memhouse,
+       :entity_card_summary_concurrency,
+       env_positive_integer!.(
+         "MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY",
+         if(config_env() == :test, do: "1", else: "4")
+       )
+
 update_auto =
   case env_get.("MEMHOUSE_AUTO_UPDATE", "off") do
     "minor" -> :minor

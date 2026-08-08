@@ -15,6 +15,10 @@ defmodule MemHouse.Context.Builder do
   refresh, because the caller's rebuild has already committed embeddings and entity resolution
   that a raise here would force it to redo.
 
+  Entity-card summaries run with bounded concurrency. One scope holds many qualifying entity
+  clusters and each costs a separate provider call, so a serial pass makes the scope wait for the
+  sum of those calls rather than the slowest one.
+
   `mark_dirty/3` must share the lifecycle-change transaction; otherwise stale content could remain
   readable. Both operations invalidate node-local copies cluster-wide. Incremental merges are
   capped and periodically compacted to bound growth and drift.
@@ -221,51 +225,95 @@ defmodule MemHouse.Context.Builder do
 
     mentions
     |> Enum.group_by(& &1.entity_id)
-    |> Enum.flat_map(fn {entity_id, mentions} ->
-      items =
+    |> Enum.flat_map(&entity_card_cluster(&1, active_by_id, knowledge))
+    |> summarize_clusters(scope, account_id, actor)
+    |> Enum.map(&entity_card_attrs(&1, scope))
+  end
+
+  # Everything a card needs that costs no provider call. Keeping this phase separate is what lets
+  # the summary calls below overlap.
+  defp entity_card_cluster({entity_id, mentions}, active_by_id, knowledge) do
+    items =
+      mentions
+      |> Enum.map(&Map.get(active_by_id, &1.knowledge_item_id))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq_by(& &1.id)
+
+    if length(items) < @entity_card_min_sources do
+      []
+    else
+      items = preserve_rank(items, knowledge)
+
+      # Only forms carried by statements that became sources of this card. A mention whose
+      # statement was dropped as inactive must not name the card.
+      source_ids = MapSet.new(items, & &1.id)
+
+      forms =
         mentions
-        |> Enum.map(&Map.get(active_by_id, &1.knowledge_item_id))
-        |> Enum.reject(&is_nil/1)
-        |> Enum.uniq_by(& &1.id)
+        |> Enum.filter(&MapSet.member?(source_ids, &1.knowledge_item_id))
+        |> Enum.map(& &1.surface_form)
 
-      if length(items) < @entity_card_min_sources do
-        []
-      else
-        items = preserve_rank(items, knowledge)
-        sensitivity = strictest_sensitivity(items)
-        {summary, provenance, mode} = entity_summary!(items, scope.id, account_id, actor)
+      [%{entity_id: entity_id, items: items, forms: forms}]
+    end
+  end
 
-        # Only forms carried by statements that became sources of this card. A mention whose
-        # statement was dropped as inactive must not name the card.
-        source_ids = MapSet.new(items, & &1.id)
+  # `ordered: true` keeps the card order a serial pass produced, so a rebuild stays reproducible.
+  # No deadline is imposed here: the model layer already caps each call, and a second deadline
+  # would kill the task instead of letting the call degrade into a readable card. A summary call
+  # that raises rather than degrades therefore reaches the caller as a task exit instead of the
+  # original exception; both fail the refresh, and replay is the recovery path either way.
+  defp summarize_clusters(clusters, scope, account_id, actor) do
+    summarize = fn cluster ->
+      Map.put(cluster, :summary, entity_summary!(cluster.items, scope.id, account_id, actor))
+    end
 
-        forms =
-          mentions
-          |> Enum.filter(&MapSet.member?(source_ids, &1.knowledge_item_id))
-          |> Enum.map(& &1.surface_form)
+    case summary_concurrency() do
+      1 ->
+        Enum.map(clusters, summarize)
 
-        [
-          %{
-            cache_key: "entity:#{scope.id}:#{entity_id}",
-            scope_id: scope.id,
-            entity_id: entity_id,
-            kind: "entity_card",
-            sensitivity: sensitivity,
-            content: %{
-              "scope_id" => scope.id,
-              "label" => EntityLabel.label(forms),
-              "kind" => EntityLabel.kind(forms),
-              "summary" => summary,
-              "summary_mode" => mode,
-              "summary_provenance" => provenance && stringify_keys(provenance),
-              "sensitivity" => sensitivity,
-              "knowledge" => Enum.map(items, &knowledge_map/1)
-            },
-            source_ids: Enum.map(items, & &1.id)
-          }
-        ]
-      end
-    end)
+      limit ->
+        clusters
+        |> Task.async_stream(summarize,
+          ordered: true,
+          max_concurrency: limit,
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, cluster} -> cluster end)
+    end
+  end
+
+  # Unit: provider calls in flight per scope rebuild. Bounded rather than unbounded because these
+  # calls share one outbound connection pool with the ingest lane, and each also takes a database
+  # connection of its own to resolve the role and append its usage row. `Governance.Erasure` calls
+  # this refresh from inside its own transaction, so the limit must stay well under the database
+  # pool or those tasks would wait on the caller that is waiting on them. One means serial, which
+  # is what the single-connection test sandbox needs.
+  defp summary_concurrency do
+    Application.get_env(:memhouse, :entity_card_summary_concurrency, 4)
+  end
+
+  defp entity_card_attrs(cluster, scope) do
+    {summary, provenance, mode} = cluster.summary
+    sensitivity = strictest_sensitivity(cluster.items)
+
+    %{
+      cache_key: "entity:#{scope.id}:#{cluster.entity_id}",
+      scope_id: scope.id,
+      entity_id: cluster.entity_id,
+      kind: "entity_card",
+      sensitivity: sensitivity,
+      content: %{
+        "scope_id" => scope.id,
+        "label" => EntityLabel.label(cluster.forms),
+        "kind" => EntityLabel.kind(cluster.forms),
+        "summary" => summary,
+        "summary_mode" => mode,
+        "summary_provenance" => provenance && stringify_keys(provenance),
+        "sensitivity" => sensitivity,
+        "knowledge" => Enum.map(cluster.items, &knowledge_map/1)
+      },
+      source_ids: Enum.map(cluster.items, & &1.id)
+    }
   end
 
   # A merge, split, retraction, or erasure can leave a formerly useful card below
