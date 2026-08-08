@@ -147,7 +147,7 @@ answer-correlation AshOban lanes now call real governance operations:
 
 Expiry and revalidation are started hourly by the Account-scoped lifecycle
 scheduler. The scheduler creates replay-safe pipeline runs; it does not write
-knowledge. See `ADR-0013`.
+knowledge. See `ADR-0014`.
 
 The same workflows run with pg0 or operator-run Postgres; there is no alternate
 queue, cache, or governance implementation.
