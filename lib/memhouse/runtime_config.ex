@@ -14,6 +14,9 @@ defmodule MemHouse.RuntimeConfig do
 
   # Reject unknown storage modules before documents can be misplaced.
   @blob_adapters [MemHouse.Documents.BlobStore.Local, MemHouse.Documents.BlobStore.S3]
+  # A migration creates these expression indexes. A configured embedder outside
+  # this set would make semantic retrieval fall back to an unbounded scan.
+  @indexed_embedding_dimensions [1024]
   import Bitwise, only: [band: 2]
 
   @doc """
@@ -37,7 +40,33 @@ defmodule MemHouse.RuntimeConfig do
     validate_diskann!()
     validate_documents!()
     validate_models!()
+    validate_embedding_index!()
     :ok
+  end
+
+  @doc """
+  Reports whether the configured embedder has a matching installed vector index.
+
+  Returns only the embedding identity and dimension contract. It is safe for the
+  unauthenticated readiness payload and does not inspect vectors or database metadata.
+  """
+  def embedding_index_check do
+    config =
+      :memhouse
+      |> Application.fetch_env!(:model_roles)
+      |> Keyword.fetch!(:embedder)
+      |> Map.new()
+
+    dimensions = Map.get(config, :embedding_dimensions)
+
+    %{
+      status: if(dimensions in @indexed_embedding_dimensions, do: "ok", else: "error"),
+      provider: Map.get(config, :provider),
+      model: Map.get(config, :model),
+      version: Map.get(config, :model_version),
+      configured_dimensions: dimensions,
+      indexed_dimensions: @indexed_embedding_dimensions
+    }
   end
 
   @doc """
@@ -196,5 +225,19 @@ defmodule MemHouse.RuntimeConfig do
         end
       end
     end)
+  end
+
+  defp validate_embedding_index! do
+    %{
+      status: status,
+      configured_dimensions: configured_dimensions,
+      indexed_dimensions: indexed_dimensions
+    } = embedding_index_check()
+
+    unless status == "ok" do
+      raise "MEMHOUSE_EMBEDDING_DIMENSIONS must match an installed vector index; " <>
+              "configured dimensions: #{inspect(configured_dimensions)}; " <>
+              "indexed dimensions: #{Enum.join(indexed_dimensions, ", ")}"
+    end
   end
 end

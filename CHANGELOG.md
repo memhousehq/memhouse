@@ -11,6 +11,10 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Boot now rejects an embedding width without a matching installed vector
+  index. `GET /api/ready` reports the content-safe embedding-index contract
+  and returns 503 for that mismatch. This release supports 1024 dimensions.
+
 - Message extraction now uses a bounded six-message same-session window. The
   extractor identifies each retained candidate with the message ids that support
   it, and validation rejects ids outside the supplied window. The durable
