@@ -108,7 +108,7 @@ defmodule MemHouse.Retrieval.Strategies.Semantic do
   def candidates(query, budget) do
     context = %{account_id: query.account_id, actor: query.actor}
 
-    case Embedding.embed([query.text], context, purpose: :query) do
+    case Embedding.embed([query.text], context, input_type: :query) do
       {:ok, %{vectors: [embedding]}} ->
         identity = :embedder |> Config.resolve(context) |> Config.embedding_identity()
 

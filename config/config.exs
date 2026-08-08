@@ -360,7 +360,7 @@ config :memhouse, :model_roles,
       "input_order" => ["input_ids", "attention_mask"],
       "pooling" => "last_token",
       "query_instruction" =>
-        "Given a web search query, retrieve relevant passages that answer the query"
+        "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
     }
   },
   ingest_extractor: %{
