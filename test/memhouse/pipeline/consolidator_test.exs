@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Pipeline.ConsolidatorTest do
-  use CartularyWeb.ConnCase, async: false
+  use MemHouseWeb.ConnCase, async: false
 
   alias MemHouse.Actor
   alias MemHouse.DataLayer
