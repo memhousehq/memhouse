@@ -1,8 +1,8 @@
-# Cartulary — Multi-Scope Agent Memory System — Product Blueprint
+# MemHouse — Multi-Scope Agent Memory System — Product Blueprint
 
 > **Status:** v0.2 (Elixir/Ash edition). Companion to `memory-system-functional-requirements.md` (the FR spec — technical source of truth), `memory-system-architecture-and-nfr.md` (the ARCH spec), and `memory-system-build-phasing.md` (the PH plan — engineering phasing); this blueprint is the *why / who / how-it-reaches-people / how-it-makes-money* layer above them.
 > **Audience & purpose:** an internal **north-star** and an **onboarding brief** for engineers and OSS contributors. Not an investor deck — no market-sizing theatre; the focus is a clear, opinionated picture of what we're building and the bet behind it.
-> **Product name:** **Cartulary** — the bound register in which an institution kept authenticated copies of its charters; here, the governed register of what an organisation knows. *Multi-Scope Agent Memory System* remains the descriptive subtitle.
+> **Product name:** **MemHouse** — the bound register in which an institution kept authenticated copies of its charters; here, the governed register of what an organisation knows. *Multi-Scope Agent Memory System* remains the descriptive subtitle.
 > **Elixir/Ash edition — read first.** The implementation platform is now **Elixir + the Ash Framework** (BEAM runtime, Phoenix, Oban), not TypeScript/Node. **The product strategy is unchanged** — vision, ICPs, the two moats, GTM funnel, competitive positioning, open-core/fair-code split, pricing philosophy, and roadmap all carry over verbatim. This edition only refreshes the concrete *implementation* references (stack, deployment topology, queueing); the business bet is identical. Pairs with the Elixir/Ash editions of the FR and ARCH specs.
 
 ---
@@ -62,9 +62,9 @@ The three are a **funnel, not three separate go-to-markets**: personal adoption 
 
 The strategic one-liner: **solve institutional knowledge first — personalisation falls out of the same engine for free, and we don't have to re-platform when agents move from answering questions to doing work.**
 
-**The moats, restated as answers to problems the field says are open.** Two 2026 surveys of the agent-memory space — one vendor-neutral [Vectorize 2026], one from a major incumbent [Mem0 2026] — each publish a list of unsolved problems. Neither was written with Cartulary in view, which is what makes the overlap worth citing: it moves these claims from *we think this matters* to *the field says this is unsolved, and here is where we solved it.*
+**The moats, restated as answers to problems the field says are open.** Two 2026 surveys of the agent-memory space — one vendor-neutral [Vectorize 2026], one from a major incumbent [Mem0 2026] — each publish a list of unsolved problems. Neither was written with MemHouse in view, which is what makes the overlap worth citing: it moves these claims from *we think this matters* to *the field says this is unsolved, and here is where we solved it.*
 
-| Open problem, as the field states it | Cartulary's answer | Anchor |
+| Open problem, as the field states it | MemHouse's answer | Anchor |
 |---|---|---|
 | "Multi-agent and shared-memory governance is analysed by nobody" [Vectorize 2026] | The recursive governed scope tree (moat 1) | §6, `FR-GOV-*` |
 | Privacy and consent architecture "left to the application layer" [Mem0 2026] | Gate A / Gate B, consent for upward promotion, the blast-radius principle | `FR-GOV-*` |
@@ -153,7 +153,7 @@ The business phasing mirrors the product phasing:
 - **Phase 2 — First customers.** Queue mode and the governance UI matured enough for design partners on the SaaS-product and early org shapes; first enterprise licenses. *Goal: design partners → first paid contracts → early ARR.*
 - **Phase 3 — Scale / funding.** Enterprise tier and managed SaaS hardened (SSO/SCIM, compliance, per-account isolation); raise on demonstrated ARR. *Goal: ARR growth and category leadership.*
 
-This is the *shape* of the plan; the detailed engineering phasing lives in `memory-system-build-phasing.md` (PH-0–PH-7, mapped back to these business phases in its §5). **Execution model:** Cartulary is built by AI coding agents through an automated development framework (PH-0), orchestrated via GitHub and a ticket tracker, with a human as reviewer and merge gate and Telegram as the process channel. The Elixir talent pool is smaller than TypeScript's, but that is offset here rather than incurred: the code is written by AI agents, and the BEAM's supervision and concurrency model removes whole classes of infrastructure (no Redis, no separate worker fleet, no RPC fan-out layer) that a human team would otherwise have to build and maintain.
+This is the *shape* of the plan; the detailed engineering phasing lives in `memory-system-build-phasing.md` (PH-0–PH-7, mapped back to these business phases in its §5). **Execution model:** MemHouse is built by AI coding agents through an automated development framework (PH-0), orchestrated via GitHub and a ticket tracker, with a human as reviewer and merge gate and Telegram as the process channel. The Elixir talent pool is smaller than TypeScript's, but that is offset here rather than incurred: the code is written by AI agents, and the BEAM's supervision and concurrency model removes whole classes of infrastructure (no Redis, no separate worker fleet, no RPC fan-out layer) that a human team would otherwise have to build and maintain.
 
 ## 15. Success metrics
 
@@ -180,7 +180,7 @@ Phase-gated leading indicators:
 - **Wedge sequencing** — *strawman:* developer/personal-led adoption first, enterprise monetisation later, with the product serving all three shapes throughout. (You were undecided; this is the proposed default — confirm or steer.)
 - **Pricing unit** — predictable tiers agreed; the exact unit (seat / scope / Account / flat) is open.
 - **Enterprise SSO library** — SAML via **ExSaml vs Samly** (both SP+IdP-initiated) to be picked in the implementation spike; **SCIM** scoped as a bounded Phase-2 build over Ash (or OIDC just-in-time provisioning for the earliest design partners) — no longer an architectural blocker.
-- ~~**Naming**~~ — *resolved: **Cartulary**.*
+- ~~**Naming**~~ — *resolved: **MemHouse**.*
 - ~~**Platform**~~ — *resolved: **Elixir + Ash** (BEAM, Phoenix, Oban); Redis/BullMQ dropped; embeddings can run local/offline via Ortex/ONNX. See the Elixir/Ash redesign & decision list.*
 - ~~**Local storage tier**~~ — *resolved by **ADR-0003**: the SQLite + in-memory-HNSW tier is retired. Postgres + pgvector is the only data layer, with **pg0** giving a one-command, zero-dependency local install. Open follow-ups (pg0 version pin, lifecycle ownership, re-measured single-node ceiling) are tracked in ARCH §18.*
 - **Retrieval quality and the licence boundary** — may the expensive retrieval strategies (reranking, graph) be enterprise-only? *Recommendation: **no**.* Gating answer quality breaks the "identical guarantees in every mode" promise exactly where users notice, and undercuts the free-tier credibility ADR-0003 bought. Gate scale, operations, governance, and support instead. Flagged as yours to decide (ADR-0004; licensing boundaries are a human-only decision area under ADR-0002).

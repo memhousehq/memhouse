@@ -1,4 +1,4 @@
-# Cartulary CODEOWNERS
+# MemHouse CODEOWNERS
 #
 # Purpose: the core team owns every path in this repository, and the
 # security-, tenancy-, audit-, ledger-, pipeline-, release-, migration-, and
@@ -11,68 +11,68 @@
 #
 # Some patterns below match directories that do not exist yet. That is
 # intentional: they claim the path in advance, so a future
-# lib/cartulary/policies/ cannot land without the named reviewers.
+# lib/memhouse/policies/ cannot land without the named reviewers.
 
 # Core ownership for every path. Keep this before narrower rules; GitHub uses
 # the last matching pattern, so each sensitive override repeats the core owner.
-* @cartularyhq/core
+* @memhousehq/core
 
 # CODEOWNERS and repository automation/configuration.
-.github/CODEOWNERS @cartularyhq/core @aleksei-s-popov
-.github/ @cartularyhq/core @aleksei-s-popov
-.github/workflows/ @cartularyhq/core @aleksei-s-popov
-.codex/ @cartularyhq/core @aleksei-s-popov
-AGENTS.md @cartularyhq/core @aleksei-s-popov
-CONTRIBUTING.md @cartularyhq/core @aleksei-s-popov
+.github/CODEOWNERS @memhousehq/core @aleksei-s-popov
+.github/ @memhousehq/core @aleksei-s-popov
+.github/workflows/ @memhousehq/core @aleksei-s-popov
+.codex/ @memhousehq/core @aleksei-s-popov
+AGENTS.md @memhousehq/core @aleksei-s-popov
+CONTRIBUTING.md @memhousehq/core @aleksei-s-popov
 
 # Architecture, ADRs, blueprint specs, roadmap, security, and eval docs. Every
 # design document lives under specs/; docs/ is the published user site.
-specs/ @cartularyhq/core @aleksei-s-popov
-specs/adr/ @cartularyhq/core @aleksei-s-popov
-specs/architecture/ @cartularyhq/core @aleksei-s-popov
-specs/design/ @cartularyhq/core @aleksei-s-popov
-specs/process/ @cartularyhq/core @aleksei-s-popov
-specs/roadmap/ @cartularyhq/core @aleksei-s-popov
-specs/security/ @cartularyhq/core @aleksei-s-popov
-specs/eval/ @cartularyhq/core @aleksei-s-popov
+specs/ @memhousehq/core @aleksei-s-popov
+specs/adr/ @memhousehq/core @aleksei-s-popov
+specs/architecture/ @memhousehq/core @aleksei-s-popov
+specs/design/ @memhousehq/core @aleksei-s-popov
+specs/process/ @memhousehq/core @aleksei-s-popov
+specs/roadmap/ @memhousehq/core @aleksei-s-popov
+specs/security/ @memhousehq/core @aleksei-s-popov
+specs/eval/ @memhousehq/core @aleksei-s-popov
 
 # Published user documentation and its build definition.
-docs/ @cartularyhq/core @aleksei-s-popov
-mkdocs.yml @cartularyhq/core @aleksei-s-popov
+docs/ @memhousehq/core @aleksei-s-popov
+mkdocs.yml @memhousehq/core @aleksei-s-popov
 
 # Elixir project and dependency lockfiles.
-mix.exs @cartularyhq/core @aleksei-s-popov
-mix.lock @cartularyhq/core @aleksei-s-popov
-config/ @cartularyhq/core @aleksei-s-popov
-rel/ @cartularyhq/core @aleksei-s-popov
-priv/repo/ @cartularyhq/core @aleksei-s-popov
-priv/static/robots.txt @cartularyhq/core @aleksei-s-popov
+mix.exs @memhousehq/core @aleksei-s-popov
+mix.lock @memhousehq/core @aleksei-s-popov
+config/ @memhousehq/core @aleksei-s-popov
+rel/ @memhousehq/core @aleksei-s-popov
+priv/repo/ @memhousehq/core @aleksei-s-popov
+priv/static/robots.txt @memhousehq/core @aleksei-s-popov
 
 # Future security, identity, tenancy, authorization, and account-boundary paths.
-lib/**/accounts/ @cartularyhq/core @aleksei-s-popov
-lib/**/auth*/ @cartularyhq/core @aleksei-s-popov
-lib/**/identity/ @cartularyhq/core @aleksei-s-popov
-lib/**/policies/ @cartularyhq/core @aleksei-s-popov
-lib/**/policy*/ @cartularyhq/core @aleksei-s-popov
-lib/**/rbac/ @cartularyhq/core @aleksei-s-popov
-lib/**/security/ @cartularyhq/core @aleksei-s-popov
-lib/**/tenan*/ @cartularyhq/core @aleksei-s-popov
-lib/**/scope*/ @cartularyhq/core @aleksei-s-popov
+lib/**/accounts/ @memhousehq/core @aleksei-s-popov
+lib/**/auth*/ @memhousehq/core @aleksei-s-popov
+lib/**/identity/ @memhousehq/core @aleksei-s-popov
+lib/**/policies/ @memhousehq/core @aleksei-s-popov
+lib/**/policy*/ @memhousehq/core @aleksei-s-popov
+lib/**/rbac/ @memhousehq/core @aleksei-s-popov
+lib/**/security/ @memhousehq/core @aleksei-s-popov
+lib/**/tenan*/ @memhousehq/core @aleksei-s-popov
+lib/**/scope*/ @memhousehq/core @aleksei-s-popov
 
 # Future governance, audit, ledger, lifecycle, pipeline, and job paths.
-lib/**/audit*/ @cartularyhq/core @aleksei-s-popov
-lib/**/govern*/ @cartularyhq/core @aleksei-s-popov
-lib/**/ledger*/ @cartularyhq/core @aleksei-s-popov
-lib/**/lifecycle*/ @cartularyhq/core @aleksei-s-popov
-lib/**/pipeline*/ @cartularyhq/core @aleksei-s-popov
-lib/**/oban*/ @cartularyhq/core @aleksei-s-popov
-lib/**/workers/ @cartularyhq/core @aleksei-s-popov
-lib/**/jobs/ @cartularyhq/core @aleksei-s-popov
+lib/**/audit*/ @memhousehq/core @aleksei-s-popov
+lib/**/govern*/ @memhousehq/core @aleksei-s-popov
+lib/**/ledger*/ @memhousehq/core @aleksei-s-popov
+lib/**/lifecycle*/ @memhousehq/core @aleksei-s-popov
+lib/**/pipeline*/ @memhousehq/core @aleksei-s-popov
+lib/**/oban*/ @memhousehq/core @aleksei-s-popov
+lib/**/workers/ @memhousehq/core @aleksei-s-popov
+lib/**/jobs/ @memhousehq/core @aleksei-s-popov
 
 # Future storage, migrations, release, deployment, and backend-parity paths.
-lib/**/repo* @cartularyhq/core @aleksei-s-popov
-lib/**/storage/ @cartularyhq/core @aleksei-s-popov
-lib/**/vector*/ @cartularyhq/core @aleksei-s-popov
-lib/**/retrieval*/ @cartularyhq/core @aleksei-s-popov
-docker-compose*.yml @cartularyhq/core @aleksei-s-popov
-Dockerfile* @cartularyhq/core @aleksei-s-popov
+lib/**/repo* @memhousehq/core @aleksei-s-popov
+lib/**/storage/ @memhousehq/core @aleksei-s-popov
+lib/**/vector*/ @memhousehq/core @aleksei-s-popov
+lib/**/retrieval*/ @memhousehq/core @aleksei-s-popov
+docker-compose*.yml @memhousehq/core @aleksei-s-popov
+Dockerfile* @memhousehq/core @aleksei-s-popov

@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Builds the production release and runs it unprivileged against external PostgreSQL.
-# DATABASE_URL and CARTULARY_AUTH_SIGNING_SECRET are required at runtime; builds consume
+# DATABASE_URL and MEMHOUSE_AUTH_SIGNING_SECRET are required at runtime; builds consume
 # no secrets. Keep build and runtime images on the same pinned Debian release.
 
 ARG ELIXIR_IMAGE=hexpm/elixir:1.18.4-erlang-27.3.4-debian-bookworm-20250428-slim
@@ -64,22 +64,22 @@ FROM ${DEBIAN_IMAGE} AS runtime
 RUN apt-get -o Acquire::Retries=5 update \
     && apt-get -o Acquire::Retries=5 install -y --no-install-recommends libstdc++6 openssl libncurses6 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --create-home --uid 10001 cartulary \
-    && mkdir -p /var/lib/cartulary/blobs \
-    && chown -R cartulary:cartulary /var/lib/cartulary
+    && useradd --system --create-home --uid 10001 memhouse \
+    && mkdir -p /var/lib/memhouse/blobs \
+    && chown -R memhouse:memhouse /var/lib/memhouse
 
 WORKDIR /app
-COPY --from=build --chown=cartulary:cartulary /build/_build/prod/rel/cartulary ./
+COPY --from=build --chown=memhouse:memhouse /build/_build/prod/rel/memhouse ./
 
 # Erlang needs a writable HOME for cookies and caches.
-USER cartulary
-ENV HOME=/home/cartulary
+USER memhouse
+ENV HOME=/home/memhouse
 # Starts the Phoenix endpoint.
 ENV PHX_SERVER=true
 # Containers always use operator-run PostgreSQL.
-ENV CARTULARY_DATABASE_MODE=external
+ENV MEMHOUSE_DATABASE_MODE=external
 # Multi-replica deployments must run migrations as a separate operator step.
-ENV CARTULARY_AUTO_MIGRATE=false
+ENV MEMHOUSE_AUTO_MIGRATE=false
 EXPOSE 4000
 # Readiness is content-safe. Timings are seconds: 10 interval, 3 timeout, 30 startup,
 # and 5 consecutive failures.
@@ -87,4 +87,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
   CMD curl -fsS http://127.0.0.1:4000/api/ready || exit 1
 
 # Exec form gives the release PID 1 and direct shutdown signals.
-CMD ["/app/bin/cartulary", "start"]
+CMD ["/app/bin/memhouse", "start"]

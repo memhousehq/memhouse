@@ -1,7 +1,7 @@
 #!/bin/sh
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
-# Unix/macOS entry point for a running Cartulary node: the command a person runs
+# Unix/macOS entry point for a running MemHouse node: the command a person runs
 # after unpacking the release.
 #
 # Purpose
@@ -11,14 +11,14 @@
 #   PostgreSQL, and then hands off to the generated release launcher.
 #
 # Environment (all optional; anything already set is respected)
-#   CARTULARY_DATA_ROOT      Where local state lives. Default ~/.cartulary.
-#   CARTULARY_AUTH_SIGNING_SECRET  Token signing key. Generated and persisted on
+#   MEMHOUSE_DATA_ROOT      Where local state lives. Default ~/.memhouse.
+#   MEMHOUSE_AUTH_SIGNING_SECRET  Token signing key. Generated and persisted on
 #                            first run if absent.
-#   CARTULARY_DATABASE_MODE  `pg0` (embedded, the default here) or `external`.
-#   CARTULARY_AUTO_MIGRATE   Apply pending migrations during boot.
-#   CARTULARY_PG0_BINARY     Path to the embedded PostgreSQL launcher.
-#   CARTULARY_PG0_DATA_DIR   PostgreSQL cluster directory.
-#   CARTULARY_BLOB_ROOT      Local document blob storage directory.
+#   MEMHOUSE_DATABASE_MODE  `pg0` (embedded, the default here) or `external`.
+#   MEMHOUSE_AUTO_MIGRATE   Apply pending migrations during boot.
+#   MEMHOUSE_PG0_BINARY     Path to the embedded PostgreSQL launcher.
+#   MEMHOUSE_PG0_DATA_DIR   PostgreSQL cluster directory.
+#   MEMHOUSE_BLOB_ROOT      Local document blob storage directory.
 #   Plus everything the application itself reads (HTTP port, model settings,
 #   and so on), which this script neither sets nor inspects.
 #
@@ -47,7 +47,7 @@ set -eu
 # is cleared because a value in the caller's environment could make `cd` land
 # somewhere else entirely and print the wrong directory.
 release_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-data_root=${CARTULARY_DATA_ROOT:-"$HOME/.cartulary"}
+data_root=${MEMHOUSE_DATA_ROOT:-"$HOME/.memhouse"}
 secret_file="$data_root/auth-signing-secret"
 
 mkdir -p "$data_root"
@@ -64,7 +64,7 @@ chmod 0700 "$data_root"
 # falling back to something guessable. `umask 077` is set before the redirect,
 # so the file is owner-only from the instant it is created rather than being
 # briefly readable and tightened afterwards.
-if [ -z "${CARTULARY_AUTH_SIGNING_SECRET:-}" ]; then
+if [ -z "${MEMHOUSE_AUTH_SIGNING_SECRET:-}" ]; then
   if [ ! -f "$secret_file" ]; then
     umask 077
     dd if=/dev/urandom bs=48 count=1 2>/dev/null | base64 > "$secret_file"
@@ -72,8 +72,8 @@ if [ -z "${CARTULARY_AUTH_SIGNING_SECRET:-}" ]; then
 
   # base64 output may be line-wrapped depending on the implementation; strip line
   # endings so the value is one contiguous secret and not a truncated first line.
-  CARTULARY_AUTH_SIGNING_SECRET=$(tr -d '\r\n' < "$secret_file")
-  export CARTULARY_AUTH_SIGNING_SECRET
+  MEMHOUSE_AUTH_SIGNING_SECRET=$(tr -d '\r\n' < "$secret_file")
+  export MEMHOUSE_AUTH_SIGNING_SECRET
 fi
 
 # `: "${VAR:=default}"` assigns only when the variable is unset or empty, so an
@@ -85,19 +85,19 @@ fi
 # during boot, before the node serves traffic. Ordering is enforced by the node,
 # not here: the embedded PostgreSQL is started before the Repo connects and
 # before migrations run, since neither can do anything until the engine is up.
-: "${CARTULARY_DATABASE_MODE:=pg0}"
-: "${CARTULARY_AUTO_MIGRATE:=true}"
-: "${CARTULARY_PG0_BINARY:=$release_root/bin/pg0}"
-: "${CARTULARY_PG0_DATA_DIR:=$data_root/pg0/instances/cartulary/data}"
-: "${CARTULARY_BLOB_ROOT:=$data_root/blobs}"
+: "${MEMHOUSE_DATABASE_MODE:=pg0}"
+: "${MEMHOUSE_AUTO_MIGRATE:=true}"
+: "${MEMHOUSE_PG0_BINARY:=$release_root/bin/pg0}"
+: "${MEMHOUSE_PG0_DATA_DIR:=$data_root/pg0/instances/memhouse/data}"
+: "${MEMHOUSE_BLOB_ROOT:=$data_root/blobs}"
 
 # Defaults resolved above are only useful to the node if they are exported into
 # its environment; the runtime configuration reads them as environment variables.
-export CARTULARY_DATABASE_MODE
-export CARTULARY_AUTO_MIGRATE
-export CARTULARY_PG0_BINARY
-export CARTULARY_PG0_DATA_DIR
-export CARTULARY_BLOB_ROOT
+export MEMHOUSE_DATABASE_MODE
+export MEMHOUSE_AUTO_MIGRATE
+export MEMHOUSE_PG0_BINARY
+export MEMHOUSE_PG0_DATA_DIR
+export MEMHOUSE_BLOB_ROOT
 # Without this the release boots the application but never starts the HTTP
 # endpoint, which is the correct behaviour for `remote`/`eval`/`rpc` style
 # invocations and the wrong one for a server.
@@ -106,7 +106,7 @@ export PHX_SERVER=true
 # After a manual update, an older launcher may still be the command in a
 # shell's history. Follow the atomically switched pointer so it cannot restart
 # old code against a newer schema.
-update_root=${CARTULARY_UPDATE_INSTALL_ROOT:-"$(dirname -- "$release_root")"}
+update_root=${MEMHOUSE_UPDATE_INSTALL_ROOT:-"$(dirname -- "$release_root")"}
 if [ -d "$update_root/current" ]; then
   active_root=$(CDPATH= cd -- "$update_root/current" && pwd)
   if [ "$active_root" != "$release_root" ]; then
@@ -117,8 +117,8 @@ fi
 # A running BEAM node never replaces its own executable tree. The optional
 # update happens here, before this process starts the server, and the stable
 # install root is followed only after an atomic pointer switch completed.
-if [ "${CARTULARY_AUTO_UPDATE:-off}" = "minor" ] && [ -x "$release_root/bin/update" ]; then
-  "$release_root/bin/update" --auto || echo "Cartulary automatic update was not applied; see bin/update --check" >&2
+if [ "${MEMHOUSE_AUTO_UPDATE:-off}" = "minor" ] && [ -x "$release_root/bin/update" ]; then
+  "$release_root/bin/update" --auto || echo "MemHouse automatic update was not applied; see bin/update --check" >&2
 
   if [ -d "$update_root/current" ]; then
     active_root=$(CDPATH= cd -- "$update_root/current" && pwd)
@@ -132,4 +132,4 @@ fi
 # process id. That is what lets a supervisor, a container runtime, or Ctrl-C
 # deliver signals straight to the node and get an orderly shutdown — which is
 # also what stops the embedded PostgreSQL cleanly.
-exec "$release_root/bin/cartulary" start
+exec "$release_root/bin/memhouse" start

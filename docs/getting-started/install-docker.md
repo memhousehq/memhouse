@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Run with Docker
 
@@ -22,7 +22,7 @@ The image runs as a non-root user.
 ## With local tracing and metrics
 
 ```bash
-CARTULARY_OTEL_ENABLED=true docker compose --profile observability up --build
+MEMHOUSE_OTEL_ENABLED=true docker compose --profile observability up --build
 ```
 
 This adds the local collector stack. See
@@ -39,10 +39,10 @@ is forbidden from recording.
 Compose passes environment variables through. See
 [Configuration](../reference/configuration.md), especially:
 
-- `CARTULARY_AUTH_SIGNING_SECRET` — at least 64 random bytes, independent of
+- `MEMHOUSE_AUTH_SIGNING_SECRET` — at least 64 random bytes, independent of
   `SECRET_KEY_BASE`;
 - `DATABASE_URL` — the container path always uses external-database mode;
-- `CARTULARY_BLOB_ROOT` — must be a durable volume if you ingest documents,
+- `MEMHOUSE_BLOB_ROOT` — must be a durable volume if you ingest documents,
   because the database stores content hashes and blob references rather than
   the bytes themselves.
 

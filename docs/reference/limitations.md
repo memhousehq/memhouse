@@ -1,11 +1,11 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Limitations
 
-Cartulary `0.3.0` is a community beta. These capabilities are unavailable.
+MemHouse `0.4.0` is a community beta. These capabilities are unavailable.
 
 The machine-readable inventory is
-[`specs/eval/surface-contract-inventory.json`](https://github.com/cartularyhq/cartulary/blob/main/specs/eval/surface-contract-inventory.json),
+[`specs/eval/surface-contract-inventory.json`](https://github.com/memhousehq/memhouse/blob/main/specs/eval/surface-contract-inventory.json),
 which marks these surfaces `unavailable`. Release checks reject contrary claims.
 
 ## Not implemented
@@ -19,7 +19,7 @@ authentication, no retries, no pagination, and nothing published to npm or
 PyPI. See [SDK helpers](../guides/sdk-helpers.md).
 
 **The OpenAI-compatible and Anthropic-compatible gateway proxy.** You cannot
-point an existing OpenAI client at Cartulary and have memory injected
+point an existing OpenAI client at MemHouse and have memory injected
 transparently.
 
 **The full grounded `ask` dialectic loop with in-loop citation verification.**
@@ -74,12 +74,16 @@ judge, strategy override, and run limits.
 
 ## Operational gaps worth planning around
 
-**Bootstrapping a packaged release** goes through `bin/cartulary rpc` rather
+**Bootstrapping a packaged release** goes through `bin/memhouse rpc` rather
 than a first-run wizard.
 
 **Ortex embedding artefacts are operator-supplied.** The embedder downloads
-nothing. Semantic retrieval requires you to provide the ONNX model and
-tokenizer.
+nothing. Semantic retrieval requires the Qwen3 ONNX model and tokenizer.
+
+**Single-node pg0 is unavailable on Windows, Intel macOS, and Linux musl.**
+The pgvectorscale build supports the shipped pg0 path on glibc Linux
+x86_64/ARM64 and Apple Silicon. Use external PostgreSQL or a container on the
+unsupported platforms.
 
 **No job pruning.** Nothing deletes rows from the Oban jobs table; plan for
 that growth.
@@ -102,6 +106,6 @@ These are deliberate designs, not gaps:
 ## Where the outstanding work is tracked
 
 Acceptance criteria live in
-[`specs/roadmap/beta-roadmap.md`](https://github.com/cartularyhq/cartulary/blob/main/specs/roadmap/beta-roadmap.md).
+[`specs/roadmap/beta-roadmap.md`](https://github.com/memhousehq/memhouse/blob/main/specs/roadmap/beta-roadmap.md).
 Current behavior and verification live in
-[`specs/implementation-status.md`](https://github.com/cartularyhq/cartulary/blob/main/specs/implementation-status.md).
+[`specs/implementation-status.md`](https://github.com/memhousehq/memhouse/blob/main/specs/implementation-status.md).

@@ -1,15 +1,15 @@
-# Cartulary Enterprise License
+# MemHouse Enterprise License
 
 Copyright (c) 2026-present Aleksei Popov.
 
-This license governs Cartulary code and documentation whose path contains
+This license governs MemHouse code and documentation whose path contains
 `/ee/`, whose filename contains `.ee.`, or whose file header identifies
-`SPDX-License-Identifier: Cartulary-Enterprise`.
+`SPDX-License-Identifier: MemHouse-Enterprise`.
 
 You may view, copy, and modify enterprise-marked software for development,
 testing, security review, and evaluation. Production use, commercial use,
 distribution, hosting, resale, or use of enterprise features requires a valid
-Cartulary Enterprise license, valid entitlements for the features used, or
+MemHouse Enterprise license, valid entitlements for the features used, or
 another written commercial agreement with the licensor.
 
 Modifications, patches, and derivative works of enterprise-marked software are

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Prometheus configuration for the local development stack in
 # dev/observability/docker-compose.yml. Development only.

@@ -7,7 +7,7 @@ maintainer: whether any retrieval strategy may be enterprise-gated (see the Open
 question section).
 
 The public-surface boundary was reconsidered in
-[#73](https://github.com/cartularyhq/cartulary/issues/73) and retained. A
+[#73](https://github.com/memhousehq/memhouse/issues/73) and retained. A
 reader-projected entity browser is not an exception to this decision.
 
 This ADR adds two derived resources, one dream-time pipeline stage, and one
@@ -38,7 +38,7 @@ and one annotation per mention.
 
 ### Two derived resources
 
-`Cartulary.Knowledge.Entity`:
+`MemHouse.Knowledge.Entity`:
 
 | Field | Purpose |
 |---|---|
@@ -49,7 +49,7 @@ and one annotation per mention.
 | `alias_embedding` | Vector over canonical name and aliases; candidate lookup |
 | `derived_from` | Statement ids the entity was resolved from |
 
-`Cartulary.Knowledge.EntityMention` joins them to knowledge:
+`MemHouse.Knowledge.EntityMention` joins them to knowledge:
 `statement_id`, `entity_id`, `surface_form`, `confidence`.
 
 ### Entities carry no visibility of their own
@@ -138,7 +138,7 @@ leave no ledger entry.
 
 ### The `EntityMatch` retrieval strategy
 
-A new `Cartulary.Retrieval.Strategy` implementation under ADR 0004's seam:
+A new `MemHouse.Retrieval.Strategy` implementation under ADR 0004's seam:
 
 - `name/0` — `:entity_match`
 - `cost_class/0` — `:cheap`

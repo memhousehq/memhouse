@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Upgrades
 
@@ -12,19 +12,33 @@ bin/update --version 0.3.1
 ```
 
 The updater verifies the detached manifest signature and selected archive
-checksum, writes and validates a `cartulary-account-1` archive under the data
+checksum, writes and validates a `memhouse-account-1` archive under the data
 root, migrates the staged release, then switches the `current` release pointer.
 It retains old executable trees. The archive is a logical recovery checkpoint,
 not a rollback substitute: it omits credentials and derived data and imports
 only into a fresh Account. Keep database and blob backups for rollback.
 
-Set `CARTULARY_AUTO_UPDATE=minor` to permit release-marked stable patch/minor
+Set `MEMHOUSE_AUTO_UPDATE=minor` to permit release-marked stable patch/minor
 updates before startup. Major versions, prereleases, and releases not marked
 eligible remain notification-only. `/api/ready`, the Operations console, and
 startup logs show the availability result and update command.
 
 Migrations are forward-only. Roll back by restoring a snapshot, never by
 running old code against a new schema.
+
+## MemHouse name migration
+
+Before the first upgraded start, rename each `CARTULARY_*` environment variable
+to the same suffix under `MEMHOUSE_*`. For example,
+`CARTULARY_DATABASE_MODE` becomes `MEMHOUSE_DATABASE_MODE`. Old environment
+variable names are not read after this upgrade.
+
+Do not rotate agent credentials for the rename. Existing `cartulary_` API keys
+remain valid, while newly issued keys use `memhouse_`. The schema migration
+renames the API-key lookup function and Account-wall policies in place. Their
+permissions and policy expressions do not change. The default restricted role
+is now `memhouse_app`; remove an unused `cartulary_app` role only after the new
+release passes readiness and an authenticated read.
 
 ## Procedure
 
@@ -69,8 +83,8 @@ Rollback is:
 
 | Setting | Behaviour |
 | --- | --- |
-| `CARTULARY_AUTO_MIGRATE=true` | Migrations run as a supervised startup step before traffic is accepted. |
-| `CARTULARY_AUTO_MIGRATE=false` | Run `bin/migrate` yourself before starting the release. |
+| `MEMHOUSE_AUTO_MIGRATE=true` | Migrations run as a supervised startup step before traffic is accepted. |
+| `MEMHOUSE_AUTO_MIGRATE=false` | Run `bin/migrate` yourself before starting the release. |
 
 Use `false` when migrations require separate approval.
 
@@ -80,10 +94,24 @@ Watch queue depths on `/api/ready`. A new version may enqueue projection or
 index rebuilds; `/api/v1/context` reports `fast_fallback: true` until
 projections warm up.
 
+The 1024-dimensional Qwen3 transition needs an explicit re-embed after the
+schema migration:
+
+```bash
+bin/memhouse rpc 'MemHouse.Release.reembed!()'
+bin/memhouse rpc 'MemHouse.Release.reembed_status!("PIPELINE_RUN_ID")'
+```
+
+The first command returns the durable run id. Repeat the status command until
+the phase is `complete`. Semantic search sees only batches written with the new
+identity during the transition. Lexical search stays available. Do not remove
+the old release or backups until the run completes and an authenticated search
+succeeds.
+
 ## Version alignment
 
 A release is coherent only when `mix.exs`, the changelog entry, the git tag,
 and the evaluation evidence all name the same version. The release-readiness
 check enforces this and fails closed. The maintainer-facing procedure lives in
 the repository under
-[`specs/process/release-checklist.md`](https://github.com/cartularyhq/cartulary/blob/main/specs/process/release-checklist.md).
+[`specs/process/release-checklist.md`](https://github.com/memhousehq/memhouse/blob/main/specs/process/release-checklist.md).

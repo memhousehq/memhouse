@@ -1,6 +1,6 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.Model.PromptCaptureProvider do
+defmodule MemHouse.Model.PromptCaptureProvider do
   @moduledoc """
   Offline model provider that records the prompt it was given and returns one
   fixed extraction candidate.
@@ -15,9 +15,9 @@ defmodule Cartulary.Model.PromptCaptureProvider do
   reaches them by accident fails loudly instead of getting a silent stub.
   """
 
-  @behaviour Cartulary.Model.Provider
+  @behaviour MemHouse.Model.Provider
 
-  alias Cartulary.Model.Provider.Result
+  alias MemHouse.Model.Provider.Result
 
   @doc """
   Arms the provider so the next `structured/4` call returns exactly `candidates`.

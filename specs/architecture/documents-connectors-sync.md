@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Documents, Connectors, And Sync
 
@@ -13,7 +13,7 @@ and the document-outage portion of `NFR-8`.
 ## Durable and derived boundaries
 
 The configured boundary contains ten Ash Domains and 38 Resources.
-`Cartulary.Observations.Document` identifies one logical source document and
+`MemHouse.Observations.Document` identifies one logical source document and
 its scope. `DocumentVersion` is immutable source history carrying:
 
 - SHA-256 content hash and byte count;
@@ -30,7 +30,7 @@ deterministic content-addressed put may leave a harmless orphan when the later
 database transaction rolls back; it can never replace a different object and
 is eligible for later reconciliation.
 
-`Cartulary.Documents.ConnectorConfig` is durable authored state: scope, owner,
+`MemHouse.Documents.ConnectorConfig` is durable authored state: scope, owner,
 adapter kind, interval schedule, cursor, next/last sync timestamps, status,
 content-safe config, and an optional secret reference. Raw credentials are
 rejected. `DocumentChunk` is a rebuildable derived cache: version and byte
@@ -39,12 +39,12 @@ vectors are excluded from logical export and regenerated from version blobs.
 
 Both new Account tables retain PostgreSQL RLS, foreign keys, schedule/lookup
 indexes, and document-version FTS. Pre-existing inline content uses a
-`legacy-db://` reference. Chunk embeddings use PostgreSQL `vector`, HNSW, and
+`legacy-db://` reference. Chunk embeddings use PostgreSQL `vector`, DiskANN, and
 generated FTS indexes for Semantic and Lexical retrieval.
 
 ## Dual ingest
 
-`Cartulary.Documents.ingest_bytes/2` writes the content-addressed blob, creates
+`MemHouse.Documents.ingest_bytes/2` writes the content-addressed blob, creates
 or reuses the scoped logical document, appends a new immutable version only
 when the hash changed, and uses the existing transactional-write, audit, and
 job Ash change to commit:
@@ -96,7 +96,7 @@ provenance remain governed and retrievable.
 
 ## Erasure and portability
 
-`Cartulary.Documents.Portability` contributes documents to the Account archive.
+`MemHouse.Documents.Portability` contributes documents to the Account archive.
 Its `f6-document-1` bundle contains durable metadata and checksum-verified blob bytes but excludes
 chunks and embeddings; import passes every raw version through ordinary ingest
 and enqueue, so derived data is rebuilt under the target embedder identity.
@@ -112,15 +112,15 @@ retains only IDs, hashes, actions, and counts.
 ## Evidence and version posture
 
 - Document, connector, chunk, blob, parser, sync, and portability code:
-  `lib/cartulary/documents/`
-- Ash domain/resources: `lib/cartulary/documents.ex` and
-  `lib/cartulary/observations.ex`
-- Pipeline integration: `lib/cartulary/pipeline/`
+  `lib/memhouse/documents/`
+- Ash domain/resources: `lib/memhouse/documents.ex` and
+  `lib/memhouse/observations.ex`
+- Pipeline integration: `lib/memhouse/pipeline/`
 - Resource migration:
   `priv/repo/migrations/20260728082728_f6_documents_connectors_sync.exs`
 - Generated snapshots: `priv/resource_snapshots/repo/`
 - Documents acceptance suite:
-  `test/cartulary/f6_documents_connectors_sync_test.exs`
+  `test/memhouse/f6_documents_connectors_sync_test.exs`
 
 HTTP shapes, Gate A/B lifecycle, and message extraction remain unchanged. The
 additive document path keeps `f5-1` health/message identity; retrieval later

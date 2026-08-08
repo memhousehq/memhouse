@@ -1,12 +1,12 @@
 # Security Policy
 
-Cartulary is pre-release software. This policy records the project's initial
+MemHouse is pre-release software. This policy records the project's initial
 security posture and reporting expectations for issue #7; it should be refined
 by a human maintainer before the project has a public supported release.
 
 ## Supported versions
 
-Cartulary does not yet have a stable supported release line.
+MemHouse does not yet have a stable supported release line.
 
 | Version | Supported |
 | --- | --- |
@@ -14,7 +14,7 @@ Cartulary does not yet have a stable supported release line.
 | Public stable releases | Not yet available |
 
 Until the release policy is finalized, security fixes may land on `main` without
-backports. A human maintainer must update this table when Cartulary publishes a
+backports. A human maintainer must update this table when MemHouse publishes a
 supported version.
 
 ## Reporting a vulnerability
@@ -37,7 +37,7 @@ When reporting, include:
 
 ## Safe handling expectations
 
-Cartulary's architecture treats user data, keys, and tenant boundaries as hard
+MemHouse's architecture treats user data, keys, and tenant boundaries as hard
 security requirements:
 
 - Users own their data and keys. Secrets, model/provider keys, API keys,
@@ -65,6 +65,6 @@ promotion, or deployment security require human security review before merge.
 This includes documentation-only changes that alter stated security guarantees
 or disclosure expectations.
 
-Cartulary's security review should preserve the blueprint anchors for user-owned
+MemHouse's security review should preserve the blueprint anchors for user-owned
 data and keys (AINV-2), absolute cross-account isolation (AINV-6), and the
 security, identity, and tenancy decisions in AD-SEC-*.

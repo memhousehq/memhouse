@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Credo configuration, run as `mix credo --strict` for changes that touch non-trivial logic.
 #

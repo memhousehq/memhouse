@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Exploring memory in the web console
 
@@ -357,7 +357,7 @@ that call fails the panel says the brief could not be written and a later
 rebuild retries it. The hub's name and statements are unaffected.
 
 A faint dotted line between two named hubs means **named together**: both
-referents appeared in one statement. It is not a stated relation. Cartulary
+referents appeared in one statement. It is not a stated relation. MemHouse
 records no relations between entities, so read this as co-occurrence and
 nothing more. Unnamed hubs are never joined this way, because the count of
 lines leaving a hub would otherwise reveal how many referents it holds.

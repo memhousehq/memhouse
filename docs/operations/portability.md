@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Logical Export And Import
 
@@ -8,32 +8,32 @@ adapters. They do not replace point-in-time backups.
 Export from a running unpacked release:
 
 ```bash
-bin/cartulary rpc \
-  'Cartulary.Release.export!("/secure/path/cartulary-account.tar.gz")'
+bin/memhouse rpc \
+  'MemHouse.Release.export!("/secure/path/memhouse-account.tar.gz")'
 ```
 
 From source, the equivalent command is
-`mix cartulary.portability.export --output /secure/path/cartulary-account.tar.gz`.
+`mix memhouse.portability.export --output /secure/path/memhouse-account.tar.gz`.
 Keep the archive as sensitive user data even though credentials and secrets are
 excluded.
 
 Validate before transfer and again at the destination:
 
 ```bash
-bin/cartulary rpc \
-  'Cartulary.Release.validate_archive!("/secure/path/cartulary-account.tar.gz")'
+bin/memhouse rpc \
+  'MemHouse.Release.validate_archive!("/secure/path/memhouse-account.tar.gz")'
 ```
 
 Import requires a migrated database with no Account occupying the archived id
 or community slot:
 
 ```bash
-bin/cartulary rpc \
-  'Cartulary.Release.import!("/secure/path/cartulary-account.tar.gz")'
+bin/memhouse rpc \
+  'MemHouse.Release.import!("/secure/path/memhouse-account.tar.gz")'
 ```
 
 From source, use
-`mix cartulary.portability.import --input /secure/path/cartulary-account.tar.gz`
+`mix memhouse.portability.import --input /secure/path/memhouse-account.tar.gz`
 and add `--validate-only` for validation.
 
 Before writing, import verifies all manifest, resource, and blob SHA-256 values

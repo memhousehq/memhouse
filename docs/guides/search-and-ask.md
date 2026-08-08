@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Search and ask
 
@@ -61,7 +61,7 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
   no query or candidate text.
 - `pre_rerank_remaining_ms` shows how much of the hard ceiling remained before
   reranking. Reranking receives the smaller of that value and
-  `CARTULARY_RETRIEVAL_RERANK_TIMEOUT_MS`.
+  `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS`.
 - `empty_strategies` lists strategies that ran and matched nothing. That is a
   result, not a failure — but a strategy in this list did not vote on the order.
 

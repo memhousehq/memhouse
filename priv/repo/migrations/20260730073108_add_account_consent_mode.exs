@@ -1,4 +1,4 @@
-defmodule Cartulary.Repo.Migrations.AddAccountConsentMode do
+defmodule MemHouse.Repo.Migrations.AddAccountConsentMode do
   @moduledoc """
   Updates resources based on their most recent snapshots.
 

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Local trace and metric stack for development only. Nothing here ships in a
 # release or in the production container.
@@ -7,14 +7,14 @@
 #   docker compose -f dev/observability/docker-compose.yml up
 #
 # Then point the application at the collector by setting, in .env:
-#   CARTULARY_OTEL_ENABLED=true
+#   MEMHOUSE_OTEL_ENABLED=true
 #   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:14318
 #
 # The application exports OTLP to the collector, the collector fans traces out
 # to Jaeger and exposes metrics for Prometheus to scrape. Browse traces at
 # http://localhost:16686 and Prometheus at http://localhost:9090.
 #
-# Cartulary spans are content-safe by construction: they carry ids, counts,
+# MemHouse spans are content-safe by construction: they carry ids, counts,
 # profile and model names, timings, token counts, and error classes, never raw
 # messages, prompts, answers, or secrets. Keep it that way — this stack has no
 # redaction of its own.
@@ -29,8 +29,8 @@ services:
       - ./otel-collector.yml:/etc/otelcol/config.yml:ro
     ports:
       # Host 14318 rather than the usual 4318: developers commonly already have
-      # something bound to 4318. Override with CARTULARY_OTEL_HTTP_PORT.
-      - "${CARTULARY_OTEL_HTTP_PORT:-14318}:4318"
+      # something bound to 4318. Override with MEMHOUSE_OTEL_HTTP_PORT.
+      - "${MEMHOUSE_OTEL_HTTP_PORT:-14318}:4318"
       # 8888 is the collector's own health/telemetry metrics; 8889 is the
       # pipeline metrics exporter that Prometheus scrapes.
       - "8888:8888"

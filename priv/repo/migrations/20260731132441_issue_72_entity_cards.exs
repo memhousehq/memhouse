@@ -1,4 +1,4 @@
-defmodule Cartulary.Repo.Migrations.Issue72EntityCards do
+defmodule MemHouse.Repo.Migrations.Issue72EntityCards do
   @moduledoc """
   Updates resources based on their most recent snapshots.
 

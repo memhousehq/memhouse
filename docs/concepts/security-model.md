@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Isolation and access control
 
@@ -18,7 +18,7 @@ flowchart LR
 Without a transaction Account, row-level security returns **no rows**.
 
 **Account comes from the credential, never request data.** Legacy
-`x-cartulary-account-key` and `account_key` values are accepted but ignored.
+`x-memhouse-account-key` and `account_key` values are accepted but ignored.
 
 ## Five kinds of caller
 
@@ -106,5 +106,5 @@ port can read it without authenticating.
 ## Reporting a vulnerability
 
 See
-[`SECURITY.md`](https://github.com/cartularyhq/cartulary/blob/main/SECURITY.md)
+[`SECURITY.md`](https://github.com/memhousehq/memhouse/blob/main/SECURITY.md)
 in the repository.

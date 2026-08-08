@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Apply pending database migrations without starting a server.
 #
@@ -16,7 +16,7 @@
 #
 # Environment
 #   The same database configuration the node uses. In embedded mode that is
-#   CARTULARY_DATABASE_MODE=pg0 plus the pg0 binary and data directory settings;
+#   MEMHOUSE_DATABASE_MODE=pg0 plus the pg0 binary and data directory settings;
 #   in external mode it is DATABASE_URL. Unlike the server launcher, this script
 #   supplies no defaults of its own, so run it with the identical environment
 #   the node will run with or it may migrate a different database.
@@ -49,4 +49,4 @@ release_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # background job queues, and no scheduled work run while the schema changes.
 # `exec` hands over the process id so the caller — often a container init job —
 # observes the migration's real exit status and can signal it directly.
-exec "$release_root/bin/cartulary" eval "Cartulary.Release.migrate()"
+exec "$release_root/bin/memhouse" eval "MemHouse.Release.migrate()"

@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Health and cost
 
@@ -7,7 +7,7 @@
 Unauthenticated. Touches no database and no queue.
 
 ```json
-{"status": "ok", "app": "cartulary", "version": "f5-1"}
+{"status": "ok", "app": "memhouse", "version": "f5-1"}
 ```
 
 `version` identifies the extraction-and-pipeline contract, **not** the
@@ -65,7 +65,7 @@ bytes, and an estimated model cost in USD.
 flowchart LR
     CALL[Every model call] --> UE[(UsageEvent ledger<br/>durable, exact)]
     UE --> SUM[Account summary]
-    RATES["CARTULARY_MODEL_COSTS_JSON<br/>operator-supplied rates"] --> SUM
+    RATES["MEMHOUSE_MODEL_COSTS_JSON<br/>operator-supplied rates"] --> SUM
     SUM --> OUT[Estimated cost in USD]
     UE --> ETS[(ETS budget counters<br/>rebuildable)]
     ETS --> ADM{Daily limit reached?}
@@ -78,7 +78,7 @@ flowchart LR
 
 ### Budgets and throttling
 
-`CARTULARY_BUDGET_LIMITS_JSON` sets daily token counters for admission control.
+`MEMHOUSE_BUDGET_LIMITS_JSON` sets daily token counters for admission control.
 When a limit bites, **dream-time is throttled first**: background reasoning
 yields before user-facing ingest and retrieval do.
 

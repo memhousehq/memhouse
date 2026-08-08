@@ -8,9 +8,9 @@
   },
   "runs": [
     {
-      "id": "cartulary-balanced",
-      "benchmark": "cartulary",
-      "dataset": "../../test/fixtures/eval/cartulary-smoke.json",
+      "id": "memhouse-balanced",
+      "benchmark": "memhouse",
+      "dataset": "../../test/fixtures/eval/memhouse-smoke.json",
       "profile": "balanced",
       "split": "release-evaluation",
       "deadline": "disabled",

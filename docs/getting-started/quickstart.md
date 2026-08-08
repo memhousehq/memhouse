@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Quickstart tutorial
 
@@ -11,7 +11,7 @@ at `http://127.0.0.1:4000`.
 sequenceDiagram
     autonumber
     participant You
-    participant API as Cartulary API
+    participant API as MemHouse API
     participant Pipe as Extraction pipeline
     participant Gate as Gate A / Gate B
     You->>API: POST /api/auth/password
@@ -33,8 +33,8 @@ bearer token valid for 12 hours.
 === "From source"
 
     ```bash
-    CARTULARY_BOOTSTRAP_PASSWORD='replace-with-a-long-password' \
-      mix cartulary.identity.bootstrap \
+    MEMHOUSE_BOOTSTRAP_PASSWORD='replace-with-a-long-password' \
+      mix memhouse.identity.bootstrap \
         --email admin@example.test \
         --name 'Local Admin'
     ```
@@ -44,11 +44,11 @@ bearer token valid for 12 hours.
     A release contains no Mix tasks, so call the same function directly:
 
     ```bash
-    bin/cartulary rpc '
-      r = Cartulary.Identity.bootstrap_human(%{
+    bin/memhouse rpc '
+      r = MemHouse.Identity.bootstrap_human(%{
             email: "admin@example.test",
             name: "Local Admin",
-            password: System.fetch_env!("CARTULARY_BOOTSTRAP_PASSWORD")
+            password: System.fetch_env!("MEMHOUSE_BOOTSTRAP_PASSWORD")
           })
       IO.puts("peer=#{r.peer.id} token=#{r.token}")'
     ```

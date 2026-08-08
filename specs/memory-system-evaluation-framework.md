@@ -1,6 +1,6 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
-# Cartulary — Evaluation Framework
+# MemHouse — Evaluation Framework
 
 > **Status:** v1.0 — evaluation, CI, and release-readiness implementation
 > contract.
@@ -17,7 +17,7 @@
   measured and compared, but do not become hard gates without a reviewed
   threshold change tied to an architecture anchor.
 - **EV-INV-3 — Real path.** Engine and product evaluations ingest, retrieve,
-  answer, and cite through the shipped Cartulary path. A harness-only shortcut
+  answer, and cite through the shipped MemHouse path. A harness-only shortcut
   cannot support a public claim.
 - **EV-INV-4 — Content safety.** CI logs, telemetry, release manifests, and
   benchmark metadata contain identities, hashes, counts, versions, metrics, and
@@ -26,7 +26,7 @@
 ## 2. Reproducibility
 
 - **EV-REPRO-1 — Versioned evidence.** Every report records report schema,
-  Cartulary semantic version, execution date, dataset id/SHA-256/split, retrieval
+  MemHouse semantic version, execution date, dataset id/SHA-256/split, retrieval
   profile and exact profile version, deadline setting, all four model-role
   identities, judge identity, run limits, and strategy override.
 - **EV-REPRO-2 — Dataset immutability.** Dataset bytes are identified by
@@ -83,7 +83,7 @@ runner and shipped memory surface.
 
 ## 5. Product evaluations
 
-`EV-TASK` is the Cartulary-specific layer that public conversation benchmarks
+`EV-TASK` is the MemHouse-specific layer that public conversation benchmarks
 cannot cover. Its blocking scenarios are mapped to existing deterministic
 contracts:
 

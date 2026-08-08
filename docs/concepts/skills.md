@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Skill readiness
 
@@ -57,7 +57,7 @@ question the agent can put to the person.
 sequenceDiagram
     participant A as Agent
     participant P as Person
-    participant C as Cartulary
+    participant C as MemHouse
     A->>C: POST /api/v1/readiness
     C-->>A: blocker + elicitation prompt
     A->>P: "Before I draft this — who signs off on the copy?"

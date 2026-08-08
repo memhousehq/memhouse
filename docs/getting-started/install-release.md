@@ -1,78 +1,80 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Install a packaged release
 
 The packaged release includes and supervises a checksum-pinned pg0 PostgreSQL
-distribution with pgvector.
+distribution with pgvector and pgvectorscale 0.9.0.
 
 ## Choose a build
 
-Open [Cartulary Releases](https://github.com/cartularyhq/cartulary/releases),
+Open [MemHouse Releases](https://github.com/memhousehq/memhouse/releases),
 select a version, and download the archive and adjacent `.sha256` file matching
 your machine:
 
 | System | Architecture check | Archive |
 | --- | --- | --- |
-| macOS, Apple Silicon | `uname -m` prints `arm64` | `cartulary-macos-arm64.tar.gz` |
-| macOS, Intel | `uname -m` prints `x86_64` | `cartulary-macos-x86_64.tar.gz` |
-| Linux, Intel/AMD 64-bit | `uname -m` prints `x86_64` | `cartulary-linux-x86_64.tar.gz` |
-| Windows, Intel/AMD 64-bit | Settings → System → About → System type | `cartulary-windows-x86_64.zip` |
+| macOS, Apple Silicon | `uname -m` prints `arm64` | `memhouse-macos-arm64.tar.gz` |
+| Linux, Intel/AMD 64-bit | `uname -m` prints `x86_64` | `memhouse-linux-x86_64.tar.gz` |
+| Linux, ARM 64-bit | `uname -m` prints `aarch64` or `arm64` | `memhouse-linux-arm64.tar.gz` |
+
+Windows, Intel macOS, and Linux musl need external PostgreSQL with pgvector and
+pgvectorscale, or a container deployment.
 
 The container build for external PostgreSQL is
-`ghcr.io/cartularyhq/cartulary:<version>`.
+`ghcr.io/memhousehq/memhouse:<version>`.
 
 ## Download and verify
 
 The browser download works without extra tools. The commands below use the
 [GitHub CLI](https://cli.github.com/) to download both required files. Replace
-`v0.3.0` with the release tag you want.
+`v0.4.0` with the release tag you want.
 
 === "macOS"
 
     ```bash
-    release_tag=v0.3.0
+    release_tag=v0.4.0
     arch=$(uname -m)
-    mkdir -p cartulary-download
+    mkdir -p memhouse-download
     gh release download "$release_tag" \
-      --repo cartularyhq/cartulary \
-      --pattern "cartulary-macos-${arch}.tar.gz*" \
-      --dir cartulary-download
-    cd cartulary-download
-    shasum -a 256 -c "cartulary-macos-${arch}.tar.gz.sha256"
-    tar -xzf "cartulary-macos-${arch}.tar.gz"
-    cd cartulary
+      --repo memhousehq/memhouse \
+      --pattern "memhouse-macos-${arch}.tar.gz*" \
+      --dir memhouse-download
+    cd memhouse-download
+    shasum -a 256 -c "memhouse-macos-${arch}.tar.gz.sha256"
+    tar -xzf "memhouse-macos-${arch}.tar.gz"
+    cd memhouse
     ```
 
 === "Linux"
 
     ```bash
-    release_tag=v0.3.0
-    mkdir -p cartulary-download
+    release_tag=v0.4.0
+    mkdir -p memhouse-download
     gh release download "$release_tag" \
-      --repo cartularyhq/cartulary \
-      --pattern "cartulary-linux-x86_64.tar.gz*" \
-      --dir cartulary-download
-    cd cartulary-download
-    sha256sum -c cartulary-linux-x86_64.tar.gz.sha256
-    tar -xzf cartulary-linux-x86_64.tar.gz
-    cd cartulary
+      --repo memhousehq/memhouse \
+      --pattern "memhouse-linux-x86_64.tar.gz*" \
+      --dir memhouse-download
+    cd memhouse-download
+    sha256sum -c memhouse-linux-x86_64.tar.gz.sha256
+    tar -xzf memhouse-linux-x86_64.tar.gz
+    cd memhouse
     ```
 
 === "Windows"
 
     ```powershell
-    $releaseTag = "v0.3.0"
-    $download = "cartulary-download"
+    $releaseTag = "v0.4.0"
+    $download = "memhouse-download"
     gh release download $releaseTag `
-      --repo cartularyhq/cartulary `
-      --pattern "cartulary-windows-x86_64.zip*" `
+      --repo memhousehq/memhouse `
+      --pattern "memhouse-windows-x86_64.zip*" `
       --dir $download
     Set-Location $download
-    $expected = (Get-Content cartulary-windows-x86_64.zip.sha256).Split()[0]
-    $actual = (Get-FileHash -Algorithm SHA256 cartulary-windows-x86_64.zip).Hash.ToLowerInvariant()
+    $expected = (Get-Content memhouse-windows-x86_64.zip.sha256).Split()[0]
+    $actual = (Get-FileHash -Algorithm SHA256 memhouse-windows-x86_64.zip).Hash.ToLowerInvariant()
     if ($actual -ne $expected) { throw "Checksum verification failed" }
-    Expand-Archive cartulary-windows-x86_64.zip
-    Set-Location cartulary
+    Expand-Archive memhouse-windows-x86_64.zip
+    Set-Location memhouse
     ```
 
 Do not run an archive when its checksum fails. Download both files again from
@@ -84,51 +86,28 @@ For a single-machine installation, use the packaged PostgreSQL, keep all
 durable state in one private directory, and enable signed patch/minor updates
 before each start:
 
-=== "macOS / Linux"
+```bash
+export MEMHOUSE_DATA_ROOT="$HOME/.memhouse"
+export MEMHOUSE_DATABASE_MODE=pg0
+export MEMHOUSE_AUTO_MIGRATE=true
+export MEMHOUSE_UPDATE_CHECK=true
+export MEMHOUSE_AUTO_UPDATE=minor
+export MEMHOUSE_UPDATE_CHECK_INTERVAL_HOURS=24
 
-    ```bash
-    export CARTULARY_DATA_ROOT="$HOME/.cartulary"
-    export CARTULARY_DATABASE_MODE=pg0
-    export CARTULARY_AUTO_MIGRATE=true
-    export CARTULARY_UPDATE_CHECK=true
-    export CARTULARY_AUTO_UPDATE=minor
-    export CARTULARY_UPDATE_CHECK_INTERVAL_HOURS=24
-
-    bin/server
-    ```
-
-=== "Windows"
-
-    ```powershell
-    $env:CARTULARY_DATA_ROOT = "$HOME\.cartulary"
-    $env:CARTULARY_DATABASE_MODE = "pg0"
-    $env:CARTULARY_AUTO_MIGRATE = "true"
-    $env:CARTULARY_UPDATE_CHECK = "true"
-    $env:CARTULARY_AUTO_UPDATE = "minor"
-    $env:CARTULARY_UPDATE_CHECK_INTERVAL_HOURS = "24"
-
-    .\bin\server.bat
-    ```
+bin/server
+```
 
 `minor` accepts only an eligible signed stable patch/minor release in the
 current major version. Use `bin/update --check` to inspect availability, or
-set `CARTULARY_AUTO_UPDATE=off` when you want to approve every update yourself.
+set `MEMHOUSE_AUTO_UPDATE=off` when you want to approve every update yourself.
 
 ## Run it
 
-From the extracted `cartulary` directory:
+From the extracted `memhouse` directory:
 
-=== "macOS / Linux"
-
-    ```bash
-    bin/server
-    ```
-
-=== "Windows"
-
-    ```powershell
-    .\bin\server.bat
-    ```
+```bash
+bin/server
+```
 
 The macOS archives are not yet signed or notarized by Apple. If macOS blocks
 the verified build, try to open it once, then use **System Settings → Privacy &
@@ -138,7 +117,7 @@ not disable Gatekeeper globally.
 
 On first start the launcher:
 
-1. creates a private data root at `~/.cartulary` on macOS/Linux or `%USERPROFILE%\.cartulary` on Windows;
+1. creates a private data root at `~/.memhouse`;
 2. generates the local signing secret;
 3. starts the packaged pg0 binary and creates its PostgreSQL cluster;
 4. runs every migration against the fresh database;
@@ -165,44 +144,39 @@ created:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CARTULARY_DATA_ROOT` | `~/.cartulary` | Private data root for database, blobs, and secrets |
+| `MEMHOUSE_DATA_ROOT` | `~/.memhouse` | Private data root for database, blobs, and secrets |
 | `PORT` | `4000` | HTTP port |
-| `CARTULARY_PG0_PORT` | `5432` | Port the supervised PostgreSQL listens on |
+| `MEMHOUSE_PG0_PORT` | `5432` | Port the supervised PostgreSQL listens on |
 
 The complete list is in [Configuration](../reference/configuration.md).
 
 ## Point it at your own PostgreSQL instead
 
-The same release can use operator-run PostgreSQL 18 with pgvector:
+The same release can use operator-run PostgreSQL 18 with pgvector and
+pgvectorscale 0.9.0. Boot fails with an actionable error if `vectorscale` is
+not available to install.
 
 ```bash
-export CARTULARY_DATABASE_MODE=external
-export DATABASE_URL='ecto://user:password@db.example/cartulary'
-export CARTULARY_AUTO_MIGRATE=true
-export CARTULARY_AUTH_SIGNING_SECRET='at-least-64-random-bytes...'
-export CARTULARY_BLOB_ROOT=/absolute/durable/blob/path
-bin/cartulary start
+export MEMHOUSE_DATABASE_MODE=external
+export DATABASE_URL='ecto://user:password@db.example/memhouse'
+export MEMHOUSE_AUTO_MIGRATE=true
+export MEMHOUSE_AUTH_SIGNING_SECRET='at-least-64-random-bytes...'
+export MEMHOUSE_BLOB_ROOT=/absolute/durable/blob/path
+bin/memhouse start
 ```
 
-Set `CARTULARY_AUTO_MIGRATE=false` when change control requires migrations to
+Set `MEMHOUSE_AUTO_MIGRATE=false` when change control requires migrations to
 be a separate step, then run `bin/migrate` before starting the release.
 
 ## Build a release from source
 
-Both scripts download the exact pg0 asset named in `rel/pg0/VERSION`, verify it
-against `rel/pg0/checksums.txt`, and stage it only for release assembly:
+The package script downloads the exact pg0 asset named in `rel/pg0/VERSION`,
+verifies it against `rel/pg0/checksums.txt`, and builds the pinned pgvectorscale
+source against that pg0 installation:
 
-=== "macOS / Linux"
-
-    ```bash
-    ./scripts/package-release
-    ```
-
-=== "Windows"
-
-    ```powershell
-    scripts\package-release.ps1
-    ```
+```bash
+./scripts/package-release
+```
 
 ## Next
 

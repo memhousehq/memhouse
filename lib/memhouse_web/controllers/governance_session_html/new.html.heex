@@ -1,0 +1,36 @@
+<%!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 --%>
+<%!--
+  Sign-in page for the human curator interface. This is the only way in to approving,
+  editing, rejecting, merging, and deferring knowledge; a machine API key has nothing it
+  can present here, which is what keeps agents out of curator decisions.
+
+  Assigns: @invalid_credentials? (boolean, show the rejection notice) and @csrf_token.
+
+  Served to anonymous visitors, so it deliberately renders nothing but the form: no memory,
+  no account or peer details, and no hint about why an attempt failed.
+
+  Styling is inline and this template adds no script of its own; the only JavaScript on the
+  rendered page is the module the root layout loads. The page must work under a
+  Content-Security-Policy that forbids inline script and permits only same-origin sources;
+  inline style attributes are the one exception that policy still allows.
+--%>
+<main style="font-family:system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem;">
+  <h1>MemHouse governance</h1>
+  <%!--
+    One message for every rejection: wrong password, unknown email, a machine credential,
+    or a valid sign-in without the curator or account-admin role. Never make this specific
+    — naming the reason would reveal which addresses exist and who the curators are.
+    role="alert" so a screen reader announces it after the failed attempt reloads the page.
+  --%>
+  <p :if={@invalid_credentials?} role="alert">Invalid human curator credentials.</p>
+  <form method="post" action="/governance/sign-in" style="display:grid;gap:1rem;">
+    <%!--
+      Required: the POST route verifies this token and rejects the request without it, so
+      removing the field breaks sign-in entirely rather than merely loosening a check.
+    --%>
+    <input type="hidden" name="_csrf_token" value={@csrf_token} />
+    <label>Email <input type="email" name="email" required /></label>
+    <label>Password <input type="password" name="password" required /></label>
+    <button type="submit">Sign in</button>
+  </form>
+</main>

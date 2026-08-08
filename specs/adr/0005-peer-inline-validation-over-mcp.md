@@ -15,8 +15,8 @@ The only route to that human today is the LiveView governance console.
 `FR-GOV-8` already routes peer-level knowledge to the peer "inline or auto",
 and `FR-GOV-10` already specifies that revalidation is "surfaced inline by the
 SDK in the peer's next relevant session" — but the MCP surface, which is how
-the Phase-1 target user actually reaches Cartulary, has no way to carry that.
-For an individual running Cartulary behind Claude Desktop, the console is a
+the Phase-1 target user actually reaches MemHouse, has no way to carry that.
+For an individual running MemHouse behind Claude Desktop, the console is a
 second place they must remember to visit. The queue does not drain, confidence
 decays, and stale items route to a curator who, in a single-peer deployment, is
 the same person who never opened the console.
@@ -43,7 +43,7 @@ decision was taken:
   The target audience for this capability is non-developers.
 - ChatGPT consumer plans receive read-only custom connectors, and ChatGPT
   requires remote HTTPS with OAuth 2.1 and Dynamic Client Registration. This
-  already blocks `ingest`, so a self-hosted Cartulary does not function there
+  already blocks `ingest`, so a self-hosted MemHouse does not function there
   regardless of this decision.
 
 The only mechanism present on every target host is content returned inside a
@@ -51,7 +51,7 @@ The only mechanism present on every target host is content returned inside a
 
 ## Decision
 
-Cartulary shall deliver peer-level validation questions through the MCP surface
+MemHouse shall deliver peer-level validation questions through the MCP surface
 by attaching them to read-tool results, and shall accept answers through a
 `resolve_validation` tool backed by a dream-time transcript check.
 

@@ -1,13 +1,13 @@
-/* SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 */
+/* SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 */
 /*
- * The entire appearance of Cartulary's browser surface.
+ * The entire appearance of MemHouse's browser surface.
  *
  * Purpose: one stylesheet for the sign-in pages, the console under /console,
  * and the curator area at /governance. Markup emits class names and no inline
  * style attributes, so every visual decision is made here and a change of
  * appearance is a change to one file.
  *
- * Inputs: the class names produced by CartularyWeb.ConsoleComponents and the
+ * Inputs: the class names produced by MemHouseWeb.ConsoleComponents and the
  * console LiveViews. Badge classes are built as "<family>-<value>" from stored
  * enumerated values (lifecycle state, sensitivity, kind, role, decision), so a
  * new value in the domain renders with the neutral fallback until a rule is

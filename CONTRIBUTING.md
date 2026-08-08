@@ -1,4 +1,4 @@
-# Contributing to Cartulary
+# Contributing to MemHouse
 
 Use one scoped task, one branch, and one pull request. Humans remain the merge
 gate.
@@ -110,10 +110,10 @@ mkdocs build
 For evaluation or release work:
 
 ```bash
-mix cartulary.eval.release --no-model --assert-thresholds \
-  --output /private/tmp/cartulary-release-eval.json
-mix cartulary.release.check \
-  --eval-report /private/tmp/cartulary-release-eval.json
+mix memhouse.eval.release --no-model --assert-thresholds \
+  --output /private/tmp/memhouse-release-eval.json
+mix memhouse.release.check \
+  --eval-report /private/tmp/memhouse-release-eval.json
 ```
 
 Report unavailable checks instead of implying they passed. Database-mode

@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Authentication
 
@@ -40,8 +40,10 @@ Authorization: Bearer <token>
 
 ## Agent API keys
 
-Agents send a per-peer API key in the same header. Cartulary stores only its
-hash, so record the plaintext when issued.
+Agents send a per-peer API key in the same header. MemHouse stores only its
+hash, so record the plaintext when issued. New keys start with `memhouse_`.
+Keys issued during the Cartulary beta keep their `cartulary_` prefix and remain
+valid.
 
 An API key is enough for the memory routes and MCP. It is **not** enough for:
 
@@ -80,7 +82,7 @@ See [Exploring memory in the web console](web-console.md).
 The verified identity determines the Account tenant.
 
 An `account_key` field in a request body and the legacy
-`x-cartulary-account-key` header are accepted and **ignored**, so an old client
+`x-memhouse-account-key` header are accepted and **ignored**, so an old client
 fails closed into its own Account rather than reaching into someone else's.
 
 ## Roles

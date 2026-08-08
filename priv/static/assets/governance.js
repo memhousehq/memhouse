@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+// SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 //
 // The console's whole client. It stays a hand-written same-origin ES module so
 // that the strict `script-src 'self'` policy needs no exception and the project

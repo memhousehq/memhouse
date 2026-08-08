@@ -1,10 +1,10 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.MixProject do
+defmodule MemHouse.MixProject do
   @moduledoc """
-  Build definition for Cartulary: one OTP application, one Mix release, two deployment modes.
+  Build definition for MemHouse: one OTP application, one Mix release, two deployment modes.
 
-  Cartulary ships as a single `cartulary` release that runs either against an operator-run
+  MemHouse ships as a single `memhouse` release that runs either against an operator-run
   PostgreSQL or against a private PostgreSQL the release starts for itself. Which one is in
   use is decided by runtime environment variables, never by the build — there is no second
   project file, no alternate dependency set, and no build-time flag that forks behaviour.
@@ -34,10 +34,10 @@ defmodule Cartulary.MixProject do
   """
   def project do
     [
-      app: :cartulary,
+      app: :memhouse,
       # Read as data by the release-readiness check, which requires a matching dated
       # CHANGELOG entry and a `v`-prefixed git tag before a release may proceed.
-      version: "0.3.0",
+      version: "0.4.0",
       elixir: "~> 1.17",
       # Registers the LiveView compiler, which extracts the hooks, JS, and CSS colocated
       # inside HEEx templates. It schedules its own pass to run after the Elixir compiler
@@ -66,7 +66,7 @@ defmodule Cartulary.MixProject do
   """
   def application do
     [
-      mod: {Cartulary.Application, []},
+      mod: {MemHouse.Application, []},
       extra_applications: [:logger, :runtime_tools]
     ]
   end
@@ -204,7 +204,7 @@ defmodule Cartulary.MixProject do
   # recipient can re-verify the package instead of trusting it.
   defp package do
     [
-      licenses: ["Cartulary-Sustainable-Use-1.0"],
+      licenses: ["MemHouse-Sustainable-Use-1.0"],
       files: [
         "config",
         "lib",
@@ -232,7 +232,7 @@ defmodule Cartulary.MixProject do
   # a fresh install needs no manual setup step before it can serve.
   defp releases do
     [
-      cartulary: [
+      memhouse: [
         include_executables_for: [:unix, :windows],
         applications: [runtime_tools: :permanent],
         overlays: ["rel/overlays"]

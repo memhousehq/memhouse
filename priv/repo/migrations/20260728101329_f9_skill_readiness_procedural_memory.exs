@@ -1,6 +1,6 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.Repo.Migrations.F9SkillReadinessProceduralMemory do
+defmodule MemHouse.Repo.Migrations.F9SkillReadinessProceduralMemory do
   @moduledoc """
   Updates resources based on their most recent snapshots.
 

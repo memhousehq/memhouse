@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Publish only the exact version that reached main through a release PR. The
 # release workflow then certifies and attaches platform artifacts.
@@ -39,8 +39,8 @@ jobs:
           tag="${RELEASE_BRANCH#release/}"
           repair=false
 
-          if [[ "$tag" == */repair ]]; then
-            tag="${tag%/repair}"
+          if [[ "$tag" == *-repair ]]; then
+            tag="${tag%-repair}"
             repair=true
           fi
 
@@ -71,8 +71,10 @@ jobs:
             git push origin ":refs/tags/$tag"
           fi
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "Release $tag"
           git push origin "refs/tags/$tag"
-          gh release create "$tag" --title "Cartulary $tag" --generate-notes
+          gh release create "$tag" --title "MemHouse $tag" --generate-notes
           gh workflow run release.yml --ref main -f "tag=$tag"
           echo "Release published: $(gh release view "$tag" --json url --jq .url)"

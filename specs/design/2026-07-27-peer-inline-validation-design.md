@@ -16,7 +16,7 @@ a peer, items whose `revalidate-after` has elapsed (`FR-GOV-10`), and personal
 knowledge that cannot move upward without the peer's consent (`FR-GOV-12`).
 
 Today the only route to that human is the LiveView governance console. For the
-Phase-1 target user — an individual running Cartulary behind Claude Desktop —
+Phase-1 target user — an individual running MemHouse behind Claude Desktop —
 the console is a second place they must remember to visit. The queue does not
 drain, confidence decays, and items route to a curator who, in a single-peer
 deployment, is the same person who never opened the console.
@@ -59,7 +59,7 @@ progressive enhancement.
 **ChatGPT consumer plans get read-only custom connectors.** Write-capable
 custom connectors require Business, Enterprise, or Edu. ChatGPT additionally
 mandates remote HTTPS with OAuth 2.1 and Dynamic Client Registration — no
-stdio, no localhost. This blocks `ingest` as well, so a self-hosted Cartulary
+stdio, no localhost. This blocks `ingest` as well, so a self-hosted MemHouse
 already cannot serve consumer ChatGPT. PIV does not make that worse and does
 not attempt to work around it.
 
@@ -105,7 +105,7 @@ edit.
 Nothing is pushed. Questions are parked by dream-time and ride out on the next
 relevant read.
 
-### 5.1 Domain resources (`Cartulary.Governance`)
+### 5.1 Domain resources (`MemHouse.Governance`)
 
 **`PeerQuery`** — one pending question addressed to one peer.
 
@@ -224,7 +224,7 @@ fact.
   "pending_validation": {
     "id": "pq_01JQ...",
     "kind": "revalidate",
-    "statement": "Aleksei uses SQLite as the local dev database for Cartulary.",
+    "statement": "Aleksei uses SQLite as the local dev database for MemHouse.",
     "asked_because": "This was recorded 4 months ago and is due for a check.",
     "instruction": "Before or after answering the user's request, mention that you were reviewing earlier conversations and ask whether this is still true. Quote the statement text exactly as given, in quotation marks — do not paraphrase it. Do not invent a statement. If the user answers, call resolve_validation with this id. If the user does not engage, drop it and do not repeat it."
   }
@@ -388,6 +388,6 @@ Per `AD-EVAL-2` (pyramid), `AD-EVAL-1` (provider layer as determinism seam),
 - Elicitation and MRTR support. Revisit if Claude Desktop ships elicitation.
 - Curator queue drainage over chat. Requires a channel-assurance model for MCP
   tokens; a later ADR at most.
-- Consumer ChatGPT. Read-only custom connectors block `ingest`, so Cartulary
+- Consumer ChatGPT. Read-only custom connectors block `ingest`, so MemHouse
   as a whole does not function there.
 - Out-of-band nudges (email, Slack). Orthogonal channel, separate design.

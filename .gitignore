@@ -20,7 +20,7 @@ node_modules/
 # Dialyzer PLTs: large, machine-specific, and rebuildable.
 priv/plts/
 
-# Any local SQLite file. Cartulary runs on PostgreSQL in every deployment
+# Any local SQLite file. MemHouse runs on PostgreSQL in every deployment
 # mode; a file here means someone pointed a tool at the wrong adapter.
 priv/repo/*.sqlite*
 

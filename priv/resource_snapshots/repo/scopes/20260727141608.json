@@ -110,7 +110,7 @@
     "global": null,
     "strategy": null
   },
-  "repo": "Elixir.Cartulary.Repo",
+  "repo": "Elixir.MemHouse.Repo",
   "schema": null,
   "table": "scopes"
 }

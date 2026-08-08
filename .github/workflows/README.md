@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # GitHub Actions Workflows
 
@@ -35,17 +35,17 @@ location, not product behavior.
 Runs the versioned `f11-1` release matrix nightly or manually and retains the
 report artifact for 30 days. Scheduled runs are deterministic. A manual
 maintainer may select live-model mode only when the repository has a protected
-`OPENROUTER_API_KEY` and `CARTULARY_EVAL_JUDGE_MODEL` variable. The judge model
-must differ from `CARTULARY_MODEL_ASK`; untrusted pull requests never receive
+`OPENROUTER_API_KEY` and `MEMHOUSE_EVAL_JUDGE_MODEL` variable. The judge model
+must differ from `MEMHOUSE_MODEL_ASK`; untrusted pull requests never receive
 the credential.
 
 ## `release.yml`
 
 Runs when a maintainer publishes a GitHub Release for an existing semantic tag. It repeats
 deterministic guardrails, verifies the tag/version/changelog/eval tuple, and
-builds the checksum-pinned Linux x86_64, macOS Apple Silicon, macOS Intel, and
-Windows x86_64 pg0 packages. Each package boots from an empty data root and
-passes the full suite on its native runner. A final fan-in publishes all four
+builds the checksum-pinned Linux x86_64/ARM64 and macOS Apple Silicon pg0 plus
+pgvectorscale packages. Each package boots from an empty data root and
+passes the full suite on its native runner. A final fan-in publishes all three
 packages, their SHA-256 files, and eval evidence as durable GitHub Release assets. The Linux
 job also pushes the container to this repository's GHCR package with both
 `<version>` and `v<version>` tags; a stable release advances `latest`.
@@ -53,8 +53,8 @@ Workflow-run copies remain available for 90 days for debugging. GitHub generates
 the release notes when the maintainer creates the release; the workflow uploads
 only generated artifacts and never edits those notes.
 
-The repository secret `CARTULARY_RELEASE_SIGNING_KEY` is the base64-encoded raw
-Ed25519 private key matching Cartulary's embedded updater public key. The fan-in
+The repository secret `MEMHOUSE_RELEASE_SIGNING_KEY` is the base64-encoded raw
+Ed25519 private key matching MemHouse's embedded updater public key. The fan-in
 job signs `release-manifest-v1.json`; standalone updaters reject assets unless
 that detached signature and the manifest's per-platform SHA-256 both verify.
 

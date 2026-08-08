@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Connecting an MCP client
 
@@ -12,7 +12,7 @@ The advertised protocol revision is `2025-03-26`.
 ```json
 {
   "mcpServers": {
-    "cartulary": {
+    "memhouse": {
       "url": "http://127.0.0.1:4000/mcp",
       "headers": {
         "Authorization": "Bearer <api-key-or-token>"
@@ -78,7 +78,7 @@ A reasonable loop:
 ```mermaid
 sequenceDiagram
     participant A as Agent
-    participant C as Cartulary MCP
+    participant C as MemHouse MCP
     A->>C: check_readiness(skill, scope)
     alt blockers present
         C-->>A: gaps + elicitation prompts

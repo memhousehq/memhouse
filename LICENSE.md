@@ -1,4 +1,4 @@
-# Cartulary License
+# MemHouse License
 
 Copyright (c) 2026-present Aleksei Popov.
 
@@ -7,15 +7,15 @@ Portions of this repository are licensed as follows:
 - Files in `deps/`, generated dependency artifacts, and other third-party
   components remain under the licenses supplied by their respective owners.
 - Files whose path contains `/ee/` or whose filename contains `.ee.` are not
-  licensed under the Cartulary Sustainable Use License. They are governed by
+  licensed under the MemHouse Sustainable Use License. They are governed by
   `LICENSE_EE.md` unless a separate written agreement says otherwise.
-- All other repository content is licensed under the Cartulary Sustainable Use
+- All other repository content is licensed under the MemHouse Sustainable Use
   License below.
 
 This repository is source-available fair-code. It is not released under an OSI
 approved open source license.
 
-## Cartulary Sustainable Use License
+## MemHouse Sustainable Use License
 
 Version 1.0
 
@@ -39,7 +39,7 @@ education, non-commercial use, and your own internal business purposes.
 You may run the community self-hosted core for a single Account without usage
 metering. You may also use that community core as part of an application you
 operate for your own business, provided that you do not sell, rent, provide, or
-make available Cartulary itself, a hosted Cartulary instance, or a substantially
+make available MemHouse itself, a hosted MemHouse instance, or a substantially
 similar managed memory service to third parties as a standalone commercial
 offering.
 
@@ -48,7 +48,7 @@ personal, evaluation, development, testing, education, or non-commercial use.
 
 ### Enterprise Features
 
-Enterprise features require a valid Cartulary Enterprise license or another
+Enterprise features require a valid MemHouse Enterprise license or another
 written commercial agreement. Enterprise features include, without limitation:
 
 - multiple Accounts in one deployment;
@@ -58,7 +58,7 @@ written commercial agreement. Enterprise features include, without limitation:
 - granular enterprise RBAC;
 - audit export, SIEM streaming, compliance packs, CMK, or KMS integrations;
 - any code marked with `/ee/`, `.ee.`, or `SPDX-License-Identifier:
-  Cartulary-Enterprise`.
+  MemHouse-Enterprise`.
 
 Missing, expired, or insufficient enterprise entitlements do not grant rights to
 use enterprise features, even if the source is visible or technically modifiable.
@@ -112,12 +112,12 @@ licensor is not liable for damages arising from the software or these terms.
 
 ### Definitions
 
-"Account" has the meaning used in Cartulary's functional requirements: the hard
+"Account" has the meaning used in MemHouse's functional requirements: the hard
 tenant and isolation boundary.
 
 "Licensor" means the person or entity offering these terms.
 
-"Software" means the Cartulary software and documentation made available under
+"Software" means the MemHouse software and documentation made available under
 these terms, including any part of it.
 
 "You" means the individual or entity accepting these terms.

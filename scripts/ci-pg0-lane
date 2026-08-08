@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Packaged-release verification lane: prove that the artifact people actually
 # download works, and that it offers the same behaviour as a deployment against
@@ -26,7 +26,7 @@
 #   result. TMPDIR, if set, decides where the throwaway data root is created.
 #
 # Outputs
-#   No retained artifacts. The built release stays in _build/prod/rel/cartulary
+#   No retained artifacts. The built release stays in _build/prod/rel/memhouse
 #   for a subsequent packaging or container step; everything stateful this lane
 #   creates lives under one temporary directory that is deleted on exit.
 #
@@ -47,8 +47,8 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # One throwaway root holds the database cluster, blobs, and the release log, so
 # cleanup is a single removal and concurrent runs cannot share state. The name
 # carries a historical tag; it is only a directory prefix.
-lane_root=$(mktemp -d "${TMPDIR:-/tmp}/cartulary-f11-pg0.XXXXXX")
-release_root="$repo_root/_build/prod/rel/cartulary"
+lane_root=$(mktemp -d "${TMPDIR:-/tmp}/memhouse-f11-pg0.XXXXXX")
+release_root="$repo_root/_build/prod/rel/memhouse"
 release_log="$lane_root/release.log"
 release_pid=
 
@@ -61,8 +61,8 @@ release_pid=
 # stop, and a failure here must not mask the real exit status.
 cleanup() {
   status=$?
-  if [ -x "$release_root/bin/cartulary" ]; then
-    CARTULARY_DATA_ROOT="$lane_root/data" "$release_root/bin/cartulary" stop >/dev/null 2>&1 || true
+  if [ -x "$release_root/bin/memhouse" ]; then
+    MEMHOUSE_DATA_ROOT="$lane_root/data" "$release_root/bin/memhouse" stop >/dev/null 2>&1 || true
   fi
   if [ -n "$release_pid" ] && kill -0 "$release_pid" >/dev/null 2>&1; then
     kill "$release_pid" >/dev/null 2>&1 || true
@@ -90,21 +90,21 @@ cd "$repo_root"
 # environment. Every variable here exists to keep the lane hermetic and
 # reproducible:
 #
-#   CARTULARY_AUTH_SIGNING_SECRET  A production boot refuses to start without at
+#   MEMHOUSE_AUTH_SIGNING_SECRET  A production boot refuses to start without at
 #       least 64 bytes of signing secret rather than inventing a guessable one.
 #       This literal is a throwaway that satisfies that length check; it is
 #       CI-only and must never be reused by a real deployment.
-#   CARTULARY_AUTO_MIGRATE  Run migrations during boot, before serving traffic,
+#   MEMHOUSE_AUTO_MIGRATE  Run migrations during boot, before serving traffic,
 #       so readiness below genuinely means "schema applied and usable".
-#   CARTULARY_DATABASE_MODE=pg0  Supervise our own PostgreSQL. The release
+#   MEMHOUSE_DATABASE_MODE=pg0  Supervise our own PostgreSQL. The release
 #       starts pg0 first, then the Repo, then migrations — that ordering is the
 #       whole point of the lane, because nothing can connect before the engine
 #       is up.
-#   CARTULARY_DATA_ROOT  Redirect the database cluster, blobs, and generated
+#   MEMHOUSE_DATA_ROOT  Redirect the database cluster, blobs, and generated
 #       secret into the throwaway directory instead of the runner's home.
-#   CARTULARY_PG0_NAME  Names the managed instance so cleanup can stop exactly
+#   MEMHOUSE_PG0_NAME  Names the managed instance so cleanup can stop exactly
 #       this one and not a developer's local instance.
-#   CARTULARY_PG0_PORT  A high, unlikely-to-collide TCP port; the default 5432
+#   MEMHOUSE_PG0_PORT  A high, unlikely-to-collide TCP port; the default 5432
 #       is often already taken on a CI runner or a developer machine. The test
 #       run further below must target this same port.
 #   DATABASE_URL=  Cleared on purpose. Supplying both a database URL and pg0
@@ -115,12 +115,12 @@ cd "$repo_root"
 #
 # stdout and stderr go to the log file because the readiness loop and the test
 # run need a clean console, and the cleanup trap replays the log on failure.
-CARTULARY_AUTH_SIGNING_SECRET=cartulary-f11-ci-only-signing-secret-that-is-longer-than-sixty-four-bytes \
-CARTULARY_AUTO_MIGRATE=true \
-CARTULARY_DATABASE_MODE=pg0 \
-CARTULARY_DATA_ROOT="$lane_root/data" \
-CARTULARY_PG0_NAME="cartulary-f11-ci" \
-CARTULARY_PG0_PORT=55431 \
+MEMHOUSE_AUTH_SIGNING_SECRET=memhouse-f11-ci-only-signing-secret-that-is-longer-than-sixty-four-bytes \
+MEMHOUSE_AUTO_MIGRATE=true \
+MEMHOUSE_DATABASE_MODE=pg0 \
+MEMHOUSE_DATA_ROOT="$lane_root/data" \
+MEMHOUSE_PG0_NAME="memhouse-f11-ci" \
+MEMHOUSE_PG0_PORT=55431 \
 DATABASE_URL= \
 PORT=4101 \
 PHX_HOST=127.0.0.1 \
@@ -153,11 +153,11 @@ done
 # normally runs against an operator-run PostgreSQL is proven against the
 # embedded one — same migrations, same extensions, same behaviour.
 #
-# The suite reads CARTULARY_TEST_DATABASE_URL rather than DATABASE_URL so that a
+# The suite reads MEMHOUSE_TEST_DATABASE_URL rather than DATABASE_URL so that a
 # developer running this locally cannot have their real development database
 # truncated. The database name here is lane-local and distinct from the
 # release's own database, so the tests never touch the running node's data.
-CARTULARY_DATABASE_MODE=external \
-CARTULARY_TEST_DATABASE_URL=ecto://postgres:postgres@127.0.0.1:55431/cartulary_f11_pg0 \
+MEMHOUSE_DATABASE_MODE=external \
+MEMHOUSE_TEST_DATABASE_URL=ecto://postgres:postgres@127.0.0.1:55431/memhouse_f11_pg0 \
 MIX_ENV=test \
 mix test

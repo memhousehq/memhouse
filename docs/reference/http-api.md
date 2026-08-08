@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # HTTP API reference
 
@@ -60,7 +60,7 @@ Agent API keys cannot open browser sessions. See
 [Exploring memory in the web console](../guides/web-console.md).
 
 **Account is never selected by the request.** An `account_key` body field and
-the legacy `x-cartulary-account-key` header are accepted and ignored.
+the legacy `x-memhouse-account-key` header are accepted and ignored.
 
 ---
 
@@ -69,7 +69,7 @@ the legacy `x-cartulary-account-key` header are accepted and ignored.
 Liveness. Touches no database and no queue.
 
 ```json
-{"status": "ok", "app": "cartulary", "version": "f5-1"}
+{"status": "ok", "app": "memhouse", "version": "f5-1"}
 ```
 
 `version` identifies the extraction-and-pipeline contract, not the application

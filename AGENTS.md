@@ -1,7 +1,7 @@
-# Cartulary agent contract
+# MemHouse agent contract
 
-Applies to the repository unless a nested `AGENTS.md` overrides it. Cartulary
-is a `0.3.0` community beta. The old `F0`–`F11` phase names are retired.
+Applies to the repository unless a nested `AGENTS.md` overrides it. MemHouse
+is a `0.4.0` community beta. The old `F0`–`F11` phase names are retired.
 
 ## Before editing
 
@@ -112,7 +112,7 @@ These strings version public contracts, not roadmap phases:
 | `f10-1` | Readiness payload |
 | `f11-1`, `f11-suite-1` | Evaluation report and release bundle |
 | `f11-surface-contracts-1` | Surface inventory |
-| `cartulary-account-1` | Logical Account archive |
+| `memhouse-account-1` | Logical Account archive |
 
 A transition needs a changelog entry, updated evidence, and the closest
 architecture note. Never casually rename an identity or historical artifact.
@@ -182,9 +182,9 @@ HTTP behavior, Account selection, inheritance, raw persistence, pipeline-only
 writes, lifecycle insertion, deterministic fallback, and normalized eval
 fixtures must not regress. Evidence:
 
-- `test/cartulary/poc_contract_test.exs`
-- `test/cartulary_web/controllers/memory_controller_test.exs`
-- `test/cartulary/eval/fixture_contract_test.exs`
+- `test/memhouse/poc_contract_test.exs`
+- `test/memhouse_web/controllers/memory_controller_test.exs`
+- `test/memhouse/eval/fixture_contract_test.exs`
 - `test/fixtures/eval/poc-contract-baseline.json`
 
 ### Ash and transactions
@@ -193,34 +193,34 @@ Ten Domains and 38 Resources own durable data. Direct Repo/Ecto SQL is limited
 to the documented read-only retrieval store, advisory-lock helper, and
 credential bootstrap locator. New exceptions need explicit architecture work.
 
-`Cartulary.Operations.PipelineRun` commits the observation, content-safe audit,
+`MemHouse.Operations.PipelineRun` commits the observation, content-safe audit,
 idempotency record, and AshOban enqueue together. Jobs need deterministic replay
 keys and reconciliation. Never put content in audit metadata or job arguments.
 
-Evidence: `test/cartulary/f1_ash_domain_backbone_test.exs`,
-`test/cartulary/f2_transactional_writes_audit_jobs_test.exs`.
+Evidence: `test/memhouse/f1_ash_domain_backbone_test.exs`,
+`test/memhouse/f2_transactional_writes_audit_jobs_test.exs`.
 
 ### Identity and governance
 
-`Cartulary.Accounts.ApiKey` derives Account from identity. Store no plaintext
+`MemHouse.Accounts.ApiKey` derives Account from identity. Store no plaintext
 keys. Authenticated scope reads use deny-wins inherited roles through
-`Cartulary.Identity.RoleResolver`. Roles are exactly `account-admin`, `curator`,
+`MemHouse.Identity.RoleResolver`. Roles are exactly `account-admin`, `curator`,
 `member`, and `reader`. A cross-link grants no access.
 
-New knowledge enters `proposed` and passes `Cartulary.Governance.Engine`.
+New knowledge enters `proposed` and passes `MemHouse.Governance.Engine`.
 Machine credentials and MCP cannot perform curator actions. Scope/account
 proposals stay held until Gate B approval; upward personal knowledge also needs
-verified subject consent. Erasure uses `Cartulary.Governance.Erasure`, preserves
+verified subject consent. Erasure uses `MemHouse.Governance.Erasure`, preserves
 content-safe audit evidence, and refreshes affected derived data.
 
-Evidence: `test/cartulary/f3_identity_tenancy_basic_rbac_test.exs`,
-`test/cartulary/f4_real_gate_a_b_governance_test.exs`.
+Evidence: `test/memhouse/f3_identity_tenancy_basic_rbac_test.exs`,
+`test/memhouse/f4_real_gate_a_b_governance_test.exs`.
 
 ### Models and documents
 
-All model calls go through `Cartulary.Model.Gateway`. The four Account roles are
+All model calls go through `MemHouse.Model.Gateway`. The four Account roles are
 `embedder`, `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`. Persist
-secret references, model provenance, and usage through `Cartulary.Model.Usage`.
+secret references, model provenance, and usage through `MemHouse.Model.Usage`.
 Structured output uses bounded validation/repair and still passes governance.
 `get_context` stays model-free. Embeddings must match provider, model, version,
 and dimensions; mismatches take the re-embed path. Deterministic fallback is
@@ -233,13 +233,13 @@ provenance survives supersession or erasure. Export blobs and metadata, not
 chunks or vectors; import rebuilds derived data. Keep document content, cursors,
 metadata, and secrets out of audit, telemetry, and job arguments.
 
-Evidence: `test/cartulary/f5_model_layer_structured_extraction_test.exs`,
-`test/cartulary/f6_documents_connectors_sync_test.exs`.
+Evidence: `test/memhouse/f5_model_layer_structured_extraction_test.exs`,
+`test/memhouse/f6_documents_connectors_sync_test.exs`.
 
 ### Retrieval and context
 
-`Cartulary.Retrieval.Strategy` owns retrieval;
-`Cartulary.Context` owns reasoning-free projection assembly. `search` defaults
+`MemHouse.Retrieval.Strategy` owns retrieval;
+`MemHouse.Context` owns reasoning-free projection assembly. `search` defaults
 to `:balanced`, `ask` to `:thorough`; only `:fast` may run live on a projection
 miss. Filter Account, authorized scopes, lifecycle, subject, and source before
 candidates leave retrieval internals. Fuse incomparable strategy ranks with
@@ -254,15 +254,15 @@ account-global and stay unreadable. Expansion requires access to both relation
 endpoints. Keep vector/FTS indices,
 projections, invalidation, and erasure/import rebuilds aligned.
 
-Evidence: `test/cartulary/f7_retrieval_entity_context_test.exs`.
+Evidence: `test/memhouse/f7_retrieval_entity_context_test.exs`.
 
 ### Browser console
 
 One human password session covers `/console/*`; curator/admin roles also reach
-`/governance`. Machines establish neither. `CartularyWeb.Console.Access` owns
+`/governance`. Machines establish neither. `MemHouseWeb.Console.Access` owns
 visibility: provisional statements are subject-only even for admins; settled
 state and curator visibility follow its narrowing rules. All reads go through
-`CartularyWeb.Console.Loader` inside `DataLayer.with_actor/2`; role-only reads
+`MemHouseWeb.Console.Loader` inside `DataLayer.with_actor/2`; role-only reads
 are pre-gated. Writes delegate to the operation layer, which reauthorizes them.
 
 Never expose entities, vectors, chunks, hashes, or secrets, except an entity
@@ -270,9 +270,9 @@ card's scope-local label and recomputed kind. Keep styles in
 `console.css`, use no inline script/style, and render deterministic server-side
 SVG without randomness or wall clock.
 
-Evidence: `test/cartulary_web/live/console_live_test.exs`,
-`test/cartulary_web/console/access_test.exs`,
-`test/cartulary_web/console/graph_test.exs`.
+Evidence: `test/memhouse_web/live/console_live_test.exs`,
+`test/memhouse_web/console/access_test.exs`,
+`test/memhouse_web/console/graph_test.exs`.
 
 ### Skills, portability, and operations
 
@@ -284,7 +284,7 @@ return through ingest and governance; helpers never override the server.
 
 The same release runs supervised-pg0 and external Postgres. Pin pg0 version and
 checksums; start it before Repo/migrations; never put it in the container path.
-Archives use `cartulary-account-1`, stream durable resources, verify blobs and
+Archives use `memhouse-account-1`, stream durable resources, verify blobs and
 the audit graph, exclude secrets and derived caches, require a fresh Account,
 write through private Ash actions in one transaction, and enqueue replay-safe
 rebuilds.
@@ -293,8 +293,8 @@ Readiness and logs may expose ids, counts, component status, model/version
 identity, timings, tokens, and error classes—never content or secrets. Preserve
 incoming W3C trace ids and return `x-trace-id`.
 
-Evidence: `test/cartulary/f9_skill_readiness_procedural_memory_test.exs`,
-`test/cartulary/f10_portability_packaging_operations_test.exs`.
+Evidence: `test/memhouse/f9_skill_readiness_procedural_memory_test.exs`,
+`test/memhouse/f10_portability_packaging_operations_test.exs`.
 
 ### Evaluation and release
 
@@ -309,14 +309,14 @@ an explicit threshold change.
 Integration surfaces, gateway, and generated SDKs are not implemented. Keep
 them unavailable in `specs/eval/surface-contract-inventory.json`.
 
-Evidence: `test/cartulary/f11_evaluation_ci_release_readiness_test.exs`.
+Evidence: `test/memhouse/f11_evaluation_ci_release_readiness_test.exs`.
 
 ## Licensing
 
 - Community/core uses `LICENSE.md` and SPDX
-  `Cartulary-Sustainable-Use-1.0` where comments are supported.
+  `MemHouse-Sustainable-Use-1.0` where comments are supported.
 - Enterprise uses `LICENSE_EE.md`, lives under `ee` or in `.ee.` files, and uses
-  SPDX `Cartulary-Enterprise`.
+  SPDX `MemHouse-Enterprise`.
 - Do not move behavior across the boundary or change entitlements without an
   explicit human decision. Core cannot import enterprise modules.
 - Gate scale, operations, compliance, and support—not core answer quality.
@@ -339,10 +339,10 @@ Run `mix credo --strict`, `mix dialyzer`, and `mix sobelow --config` when the
 area warrants them. For evaluation/release work also run:
 
 ```bash
-mix cartulary.eval.release --no-model --assert-thresholds \
-  --output /private/tmp/cartulary-release-eval.json
-mix cartulary.release.check \
-  --eval-report /private/tmp/cartulary-release-eval.json
+mix memhouse.eval.release --no-model --assert-thresholds \
+  --output /private/tmp/memhouse-release-eval.json
+mix memhouse.release.check \
+  --eval-report /private/tmp/memhouse-release-eval.json
 ```
 
 For `docs/` or `mkdocs.yml` changes:

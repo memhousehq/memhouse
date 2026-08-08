@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Sobelow (Phoenix security scanner) configuration, read by `mix sobelow --config`. Run it for
 # any change touching the web layer, authentication, tenancy, or raw SQL.

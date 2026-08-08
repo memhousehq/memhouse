@@ -1,10 +1,10 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Documentation site: build the user documentation and publish it to GitHub Pages.
 #
 # Purpose
 #   Turn the Markdown under `docs/` into the static site served at
-#   https://cartularyhq.github.io/cartulary/ so that installation, usage, and
+#   https://memhousehq.github.io/memhouse/ so that installation, usage, and
 #   how-it-works documentation is readable without cloning the repository.
 #
 # Triggers

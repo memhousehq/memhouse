@@ -6,7 +6,7 @@ framework is `specs/memory-system-evaluation-framework.md`; implementation and
 release posture are recorded in
 `specs/architecture/evaluation-ci-release-readiness.md`.
 
-The local harness supports Cartulary product-shaped fixtures plus LoCoMo,
+The local harness supports MemHouse product-shaped fixtures plus LoCoMo,
 LongMemEval, ConvoMem, and BEAM memory paths. It exercises the durable message
 write path, pipeline knowledge extraction, scoped retrieval, grounded
 answering, and citation validation against Postgres.
@@ -37,25 +37,25 @@ the committed reports are not rewritten.
 
 The baseline contract also freezes the four tiny input fixtures independently
 of volatile database UUIDs and latency values.
-`test/fixtures/eval/poc-contract-baseline.json` records each Cartulary, LoCoMo,
+`test/fixtures/eval/poc-contract-baseline.json` records each MemHouse, LoCoMo,
 LongMemEval, and BEAM fixture's SHA-256 plus its normalized case, message, and
 question IDs.
 
 ```bash
-mix test test/cartulary/eval/fixture_contract_test.exs
+mix test test/memhouse/eval/fixture_contract_test.exs
 ```
 
 ```bash
-mix cartulary.eval.smoke --profile balanced --account eval-poc
+mix memhouse.eval.smoke --profile balanced --account eval-poc
 ```
 
 To write a JSON report:
 
 ```bash
-mix cartulary.eval.smoke \
+mix memhouse.eval.smoke \
   --profile balanced \
   --account eval-poc \
-  --output /private/tmp/cartulary-smoke-report.json
+  --output /private/tmp/memhouse-smoke-report.json
 ```
 
 The built-in fixture is intentionally small. Custom fixtures use this shape:
@@ -86,7 +86,7 @@ The built-in fixture is intentionally small. Custom fixtures use this shape:
 Run a fixture with:
 
 ```bash
-mix cartulary.eval.smoke --dataset path/to/smoke.json --profile balanced
+mix memhouse.eval.smoke --dataset path/to/smoke.json --profile balanced
 ```
 
 ## Deterministic Release Matrix
@@ -94,12 +94,12 @@ mix cartulary.eval.smoke --dataset path/to/smoke.json --profile balanced
 Run every committed engine/product fixture and the strategy ablations:
 
 ```bash
-mix cartulary.eval.release \
+mix memhouse.eval.release \
   --no-model \
   --assert-thresholds \
-  --output /private/tmp/cartulary-f11-release.json
+  --output /private/tmp/memhouse-f11-release.json
 
-mix cartulary.eval.verify /private/tmp/cartulary-f11-release.json
+mix memhouse.eval.verify /private/tmp/memhouse-f11-release.json
 ```
 
 The manifest is `release-suite.json`; deterministic correctness/citation floors
@@ -109,7 +109,7 @@ comparable ablations.
 
 Every `f11-1` report records:
 
-- Cartulary semantic version and execution date;
+- MemHouse semantic version and execution date;
 - dataset id, SHA-256, and split;
 - profile and exact profile version;
 - strategy override and deadline setting;
@@ -124,23 +124,23 @@ Every `f11-2` question also records `expected_evidence_refs`,
 separately from answerer and judge scores; it uses the full ordered candidate
 list, not only answer citations.
 
-`mix cartulary.release.check` requires this evidence for an actual release.
+`mix memhouse.release.check` requires this evidence for an actual release.
 Manual live-model runs add `--judge model`; the configured dream-reasoner must
 be a different provider/model family from the dialectic answer role or the run
 fails before scoring.
 
 ## Full Benchmark Ingestion And Scoring
 
-Cartulary also includes a full benchmark runner for fixture ingestion and
+MemHouse also includes a full benchmark runner for fixture ingestion and
 deterministic scoring:
 
 ```bash
-mix cartulary.eval.benchmark \
+mix memhouse.eval.benchmark \
   --benchmark locomo \
   --dataset path/to/locomo10.json \
   --profile balanced \
   --account eval-locomo \
-  --output /private/tmp/cartulary-locomo-report.json
+  --output /private/tmp/memhouse-locomo-report.json
 ```
 
 Supported source formats:
@@ -155,12 +155,12 @@ Supported source formats:
 - `--benchmark beam`: BEAM-style chat/probing-question JSON. The adapter accepts
   common generated-artifact field names such as `messages`, `conversation`,
   `probing_questions`, `questions`, `chat_size`, and `ability`.
-- `--benchmark cartulary`: the local JSON shape used by the smoke harness.
+- `--benchmark memhouse`: the local JSON shape used by the smoke harness.
 
 Useful options:
 
 ```bash
-mix cartulary.eval.benchmark \
+mix memhouse.eval.benchmark \
   --dataset path/to/fixture.json \
   --limit-cases 1 \
   --limit-messages 200 \
@@ -184,7 +184,7 @@ The JSON report includes:
   version, deadline, dataset digest/split, date, and run-limit evidence, per
   ADR-0004 / `AD-EVAL-3` / `NFR-11`.
 
-The runner uses the real durable write/read path (`Cartulary.Memory`) and
+The runner uses the real durable write/read path (`MemHouse.Memory`) and
 therefore records raw messages, pipeline-created knowledge, lifecycle events,
 retrieval, answers, and citations in Postgres. It is still a smoke-scale
 harness: it does not claim upstream judge parity or upstream-scale scores from

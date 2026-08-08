@@ -2,7 +2,7 @@
 
 **Status:** design approved, pending implementation plan
 **Date:** 2026-07-27
-**Scope:** changes to the Cartulary memory-system design prompted by a review of
+**Scope:** changes to the MemHouse memory-system design prompted by a review of
 the 2026 agent-memory field: entity resolution, evaluation coverage, two NFR
 additions, one named architectural principle, and positioning corrections
 **Depends on:** FR v1.0, ARCH v1.0, ADR-0002, ADR-0003, ADR-0004, ADR-0005
@@ -13,7 +13,7 @@ FR and ARCH, and the missing evaluation-framework spec
 
 ## 1. Context
 
-Three external sources were reviewed against the full Cartulary design set (the
+Three external sources were reviewed against the full MemHouse design set (the
 three specs plus ADR-0002 through ADR-0005):
 
 - Vectorize, *Best AI Agent Memory Systems* — a survey of the vendor landscape
@@ -23,7 +23,7 @@ three specs plus ADR-0002 through ADR-0005):
 - Mem0, research page — published benchmark results and the architectural
   changes behind them.
 
-The review had two useful outcomes. Several Cartulary decisions turn out to
+The review had two useful outcomes. Several MemHouse decisions turn out to
 answer problems the field currently lists as open, which is evidence the design
 is positioned correctly but understated in the blueprint. Separately, the review
 exposed real gaps, one of which is structural.
@@ -32,10 +32,10 @@ This document records both, and specifies the changes.
 
 ## 2. Where the design already answers the field's open problems
 
-Neither source's list of open problems was written with Cartulary in view, which
+Neither source's list of open problems was written with MemHouse in view, which
 is what makes the overlap worth citing.
 
-| Open problem in the field | Cartulary answer | Anchor |
+| Open problem in the field | MemHouse answer | Anchor |
 |---|---|---|
 | Privacy and consent architecture "left to the application layer" (mem0 #4) | Gate A / Gate B, consent for upward promotion of personal knowledge, blast-radius principle | `FR-GOV-*` |
 | Memory staleness — confidently wrong, high-relevance memories (mem0 #6) | Revalidation, Ebbinghaus decay on confidence-at-read, `expires` | `AD-DATA-2`, `FR-KN-17`, `FR-GOV-10` |
@@ -68,7 +68,7 @@ memory ingestion as Extract → Resolve → Store → Index, with resolution a
 distinct stage. Mem0 names entity matching as a third retrieval signal alongside
 semantic and lexical, and — the more interesting detail — replaced external
 graph databases with graph-style entity linking while keeping the multi-hop
-gain. Cartulary has `FR-FORM-14`'s `add` / `merge` / `supersede-candidate` /
+gain. MemHouse has `FR-FORM-14`'s `add` / `merge` / `supersede-candidate` /
 `no-op`, none of which canonicalizes referents: "Alice", "our CTO", and
 `alice@example.com` are three unrelated strings. Consequences today are that
 `merge` is weaker than it appears because it operates on statement similarity
@@ -119,7 +119,7 @@ spec must be written before the evaluation work can be anchored anywhere.
 
 #### Resource shape
 
-A new derived resource, `Cartulary.Knowledge.Entity`:
+A new derived resource, `MemHouse.Knowledge.Entity`:
 
 | Field | Purpose |
 |---|---|
@@ -130,7 +130,7 @@ A new derived resource, `Cartulary.Knowledge.Entity`:
 | `alias_embedding` | Vector over canonical name and aliases, for candidate lookup |
 | `derived_from` | Ids of the statements the entity was resolved from |
 
-A join resource, `Cartulary.Knowledge.EntityMention`, carries `statement_id`,
+A join resource, `MemHouse.Knowledge.EntityMention`, carries `statement_id`,
 `entity_id`, `surface_form`, and `confidence`.
 
 #### Entities are account-global and carry no visibility of their own
@@ -207,7 +207,7 @@ residue.
 
 #### Retrieval: the `EntityMatch` strategy
 
-A new `Cartulary.Retrieval.Strategy` implementation:
+A new `MemHouse.Retrieval.Strategy` implementation:
 
 - `name/0` — `:entity_match`
 - `cost_class/0` — `:cheap`
@@ -359,7 +359,7 @@ instrumentation, and `EV-TASK` is the beginning of an answer.
 
 #### Refusal, recorded as a decision
 
-Mem0 treats agent-generated facts as primary data. Cartulary declines:
+Mem0 treats agent-generated facts as primary data. MemHouse declines:
 `FR-API-12` and FR invariant 2 make agents submitters of observations and the
 pipeline the sole writer of knowledge. Agent observations remain a first-class
 *source* under `FR-FORM-15`'s subject-versus-source resolution with its hearsay

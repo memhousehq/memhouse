@@ -6,19 +6,19 @@ Accepted
 
 ## Context
 
-Cartulary uses L3 automation so Codex can implement well-scoped repository
+MemHouse uses L3 automation so Codex can implement well-scoped repository
 issues while a human maintainer remains accountable for product and architecture
 direction. The L3 flow is deliberately narrow: one issue, one branch, one PR,
 real check evidence, and human review before merge.
 
-That boundary matters because Cartulary's core guarantees are not ordinary
+That boundary matters because MemHouse's core guarantees are not ordinary
 implementation details. The ARCH prime directive requires one codebase with two
 deployment modes and identical guarantees. Account isolation is absolute.
 Deterministic PR gates exist to make automation reviewable, but they do not make
 architecture, licensing, security, or data-governance decisions on their own.
 
 ADR 0001 defines the repository automation model. This ADR defines what L3
-automation does and does not mean for Cartulary.
+automation does and does not mean for MemHouse.
 
 ## Decision
 
@@ -55,7 +55,7 @@ becomes binding.
 
 ## Consequences
 
-This boundary lets Cartulary use Codex for focused implementation without
+This boundary lets MemHouse use Codex for focused implementation without
 delegating product accountability or trust boundaries to automation. It keeps
 low-risk work moving while preserving review control over the guarantees that
 make the system credible: deployment-mode parity, account isolation, data
@@ -63,7 +63,7 @@ ownership, auditability, and deterministic evidence.
 
 The trade-off is deliberate friction. Some issues will require human scoping or
 an accepted ADR before implementation can proceed. That is acceptable because
-the cost of an extra review step is lower than silently weakening Cartulary's
+the cost of an extra review step is lower than silently weakening MemHouse's
 architecture, security posture, licensing model, or data promises.
 
 Future automation may become more capable, but any expansion of what Codex may

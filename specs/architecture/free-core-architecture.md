@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Free Core Architecture
 
@@ -24,7 +24,7 @@ anchors remain in:
 
 ## Scope
 
-The free core includes everything required to run Cartulary as a complete,
+The free core includes everything required to run MemHouse as a complete,
 single-Account, self-hosted memory system:
 
 - Full memory topology: Account, Peers, Scopes, scope tree, scope relations,
@@ -76,7 +76,7 @@ The free core excludes enterprise-only scale and compliance features:
 
 ## Prime structure
 
-Cartulary is one Elixir/Ash/Phoenix/Oban codebase and one Mix release
+MemHouse is one Elixir/Ash/Phoenix/Oban codebase and one Mix release
 (`AINV-1`, `AD-LANG-1`, `AD-LANG-2`):
 
 ```text
@@ -110,21 +110,21 @@ services.
 
 | Domain | Owns | Main anchors |
 | --- | --- | --- |
-| `Cartulary.Accounts` | Account, local identities, API keys, peer identity links, single-Account enforcement | `FR-TOP-1`, `FR-TOP-2`, `AINV-6`, `AD-SEC-*` |
-| `Cartulary.Topology` | Scopes, materialized paths, scope relations, role grants, inheritance resolution | `FR-TOP-3` to `FR-TOP-11`, `FR-GOV-18`, `FR-GOV-19`, `AD-DATA-4` |
-| `Cartulary.Observations` | Sessions, session scopes, participants, raw messages, documents, document versions | `FR-FORM-1` to `FR-FORM-13` |
-| `Cartulary.Knowledge` | Knowledge items, attributions, provenance, lifecycle ledger, relations, current-state materialization | `FR-KN-*`, `FR-FORM-19` to `FR-FORM-23`, `AD-DATA-1` to `AD-DATA-3` |
-| `Cartulary.Governance` | Gate A/B policy, validation queue, consent, peer self-view, contest/redact, audit, history/diff | `FR-GOV-*`, `AD-GOV-*`, `AD-DATA-8` |
-| `Cartulary.Pipeline` | Ingest-time extraction, dream-time reasoning, revalidation/expiry sweeps, connector sync orchestration | `FR-FORM-14` to `FR-FORM-18`, `AD-PIPE-*` |
-| `Cartulary.Retrieval` | Strategy behaviour, seed and expansion strategies, RRF fusion, rerank, profile versions, deadlines | `FR-API-25` to `FR-API-29`, `AD-SEAM-3` |
-| `Cartulary.Context` | Reasoning-free `get_context`, projection reads, context budget assembly, salience-ranked knowledge slices | `FR-API-4`, `FR-API-5`, `FR-API-10`, `NFR-2` |
-| `Cartulary.Query` | `ask`, `search`, `query_knowledge`, point-in-time and provenance filters, grounding and abstention | `FR-API-1` to `FR-API-8`, `FR-API-23`, `FR-API-24`, `FR-API-26` |
-| `Cartulary.Skills` | Skill requirement cards, inherited requirements, readiness checks, gap reports, elicitation hooks | `FR-SK-*`, `FR-API-9` |
-| `Cartulary.Documents` | Native extraction, chunking, document embeddings, content-hash sync hooks | `FR-FORM-9` to `FR-FORM-12` |
-| `Cartulary.Model` | ReqLLM provider layer, model roles, structured generation, embedding role, usage emission | `FR-API-17` to `FR-API-20`, `AD-MODEL-*` |
-| `Cartulary.Operations` | Health, readiness, telemetry, usage ledger, budget counters, local observability | `FR-PLAT-8` to `FR-PLAT-10`, `AD-OBS-*` |
-| `Cartulary.Portability` | Logical export/import, import validation, cache rebuild scheduling, backup/restore runbooks | `FR-PLAT-11`, `FR-PLAT-14`, `AD-PORT-*` |
-| `Cartulary.Release` | Runtime config validation, pg0 supervision, migration on boot, packaging modes | `FR-PLAT-2`, `FR-PLAT-4`, `FR-PLAT-5`, `AD-CFG-2` |
+| `MemHouse.Accounts` | Account, local identities, API keys, peer identity links, single-Account enforcement | `FR-TOP-1`, `FR-TOP-2`, `AINV-6`, `AD-SEC-*` |
+| `MemHouse.Topology` | Scopes, materialized paths, scope relations, role grants, inheritance resolution | `FR-TOP-3` to `FR-TOP-11`, `FR-GOV-18`, `FR-GOV-19`, `AD-DATA-4` |
+| `MemHouse.Observations` | Sessions, session scopes, participants, raw messages, documents, document versions | `FR-FORM-1` to `FR-FORM-13` |
+| `MemHouse.Knowledge` | Knowledge items, attributions, provenance, lifecycle ledger, relations, current-state materialization | `FR-KN-*`, `FR-FORM-19` to `FR-FORM-23`, `AD-DATA-1` to `AD-DATA-3` |
+| `MemHouse.Governance` | Gate A/B policy, validation queue, consent, peer self-view, contest/redact, audit, history/diff | `FR-GOV-*`, `AD-GOV-*`, `AD-DATA-8` |
+| `MemHouse.Pipeline` | Ingest-time extraction, dream-time reasoning, revalidation/expiry sweeps, connector sync orchestration | `FR-FORM-14` to `FR-FORM-18`, `AD-PIPE-*` |
+| `MemHouse.Retrieval` | Strategy behaviour, seed and expansion strategies, RRF fusion, rerank, profile versions, deadlines | `FR-API-25` to `FR-API-29`, `AD-SEAM-3` |
+| `MemHouse.Context` | Reasoning-free `get_context`, projection reads, context budget assembly, salience-ranked knowledge slices | `FR-API-4`, `FR-API-5`, `FR-API-10`, `NFR-2` |
+| `MemHouse.Query` | `ask`, `search`, `query_knowledge`, point-in-time and provenance filters, grounding and abstention | `FR-API-1` to `FR-API-8`, `FR-API-23`, `FR-API-24`, `FR-API-26` |
+| `MemHouse.Skills` | Skill requirement cards, inherited requirements, readiness checks, gap reports, elicitation hooks | `FR-SK-*`, `FR-API-9` |
+| `MemHouse.Documents` | Native extraction, chunking, document embeddings, content-hash sync hooks | `FR-FORM-9` to `FR-FORM-12` |
+| `MemHouse.Model` | ReqLLM provider layer, model roles, structured generation, embedding role, usage emission | `FR-API-17` to `FR-API-20`, `AD-MODEL-*` |
+| `MemHouse.Operations` | Health, readiness, telemetry, usage ledger, budget counters, local observability | `FR-PLAT-8` to `FR-PLAT-10`, `AD-OBS-*` |
+| `MemHouse.Portability` | Logical export/import, import validation, cache rebuild scheduling, backup/restore runbooks | `FR-PLAT-11`, `FR-PLAT-14`, `AD-PORT-*` |
+| `MemHouse.Release` | Runtime config validation, pg0 supervision, migration on boot, packaging modes | `FR-PLAT-2`, `FR-PLAT-4`, `FR-PLAT-5`, `AD-CFG-2` |
 
 ## Abstraction layers
 
@@ -207,7 +207,7 @@ These public contract versions are independent of application SemVer. The
 | `f10-1` | Readiness payload shape. |
 | `f11-1` | Evaluation report schema; `f11-suite-1` for the release report bundle. |
 | `f11-surface-contracts-1` | Surface contract inventory schema. |
-| `cartulary-account-1` | Logical Account archive schema. |
+| `memhouse-account-1` | Logical Account archive schema. |
 
 Changing any of these is a deliberate contract transition: it needs a changelog
 entry, updated contract evidence, and a note in the closest architecture

@@ -1,8 +1,8 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Versioning And Changelog Policy
 
-Cartulary uses Semantic Versioning: `MAJOR.MINOR.PATCH`, optionally followed by
+MemHouse uses Semantic Versioning: `MAJOR.MINOR.PATCH`, optionally followed by
 a prerelease suffix. The application version in `mix.exs` is authoritative.
 Release tags use the exact form `vMAJOR.MINOR.PATCH`.
 

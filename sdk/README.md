@@ -1,13 +1,13 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
-# Cartulary skill-readiness helpers
+# MemHouse skill-readiness helpers
 
-Two small, transport-neutral modules that interpret one Cartulary API response — the
+Two small, transport-neutral modules that interpret one MemHouse API response — the
 skill-readiness report — and turn it into a decision a program can act on: run the
 skill, or stop and ask the peer some questions first.
 
 - `typescript/src/skill-readiness.ts`
-- `python/cartulary/skill_readiness.py`
+- `python/memhouse/skill_readiness.py`
 
 Both implement the same three things and nothing else: a plan builder, an enforcing
 guard, and the error the guard raises.
@@ -135,7 +135,7 @@ import {
   SkillReadinessBlockedError,
 } from "./skill-readiness";
 
-const response = await fetch("https://cartulary.example/api/v1/readiness", {
+const response = await fetch("https://memhouse.example/api/v1/readiness", {
   method: "POST",
   headers: {
     authorization: `Bearer ${apiKey}`,
@@ -175,7 +175,7 @@ prototype chain and `instanceof SkillReadinessBlockedError` silently returns fal
 ### Python
 
 ```python
-from cartulary.skill_readiness import (
+from memhouse.skill_readiness import (
     SkillReadinessBlockedError,
     require_skill_ready,
 )

@@ -8,7 +8,7 @@ perform repository writes.
 ## Review posture
 
 Focus on serious risks, invariant violations, and missing evidence rather than
-style preferences or speculative improvements. Treat the Cartulary architecture
+style preferences or speculative improvements. Treat the MemHouse architecture
 contract and blueprint anchors as authoritative review inputs, especially:
 
 - `AINV-6`: cross-account isolation is absolute.

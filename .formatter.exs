@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # `mix format` configuration. CI runs `mix format --check-formatted`, so an
 # unformatted file fails the build.

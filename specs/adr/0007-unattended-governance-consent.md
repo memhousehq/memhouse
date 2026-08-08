@@ -8,9 +8,9 @@ Accepted
 
 `FR-GOV-12` requires the subject's own consent, not merely a curator's
 approval, before personal knowledge attributes upward to a shared scope.
-`Cartulary.Governance.Engine.consent_required?/3` enforces this
+`MemHouse.Governance.Engine.consent_required?/3` enforces this
 unconditionally for any `personal`-sensitivity item aimed above its subject's
-peer level, and `Cartulary.Governance.Consent.decide` refuses a `"granted"`
+peer level, and `MemHouse.Governance.Consent.decide` refuses a `"granted"`
 verdict that did not arrive over a channel the system can verify belongs to
 the real subject — by design, so a matrix cell or a curator can never waive a
 subject's own say over their own information.
@@ -22,7 +22,7 @@ empirically against a benchmark account: 28 of 29 pending `ValidationItem`
 rows stayed permanently blocked after `account_admin` approval, across
 confidence values from 0.225 to 1.0, because `decide/4` correctly reports
 `consent_required: true` and there is no supported path to a verified grant
-for a subject who was never a real peer. `Cartulary.Governance.GateRule`'s
+for a subject who was never a real peer. `MemHouse.Governance.GateRule`'s
 existing `auto_keep`/`auto_place` modes do not help — the consent check runs
 independently of and after Gate A/B, per `consent_required?/3`'s own
 moduledoc comment explaining why that is deliberate.
@@ -34,15 +34,15 @@ administrator who scoped the request, not inferred or auto-applied.
 
 ## Decision
 
-Cartulary adds two independent, orthogonal, off-by-default switches that let
+MemHouse adds two independent, orthogonal, off-by-default switches that let
 an operator explicitly declare that an account, or an entire deployment
 process, has no real human subject and no human curator in the loop:
 
-1. `Cartulary.Accounts.Account.consent_mode`: `"subject_required"` (default)
+1. `MemHouse.Accounts.Account.consent_mode`: `"subject_required"` (default)
    | `"auto"`, settable only by a password-session `account_admin` (narrower
    than `curator`) through a dedicated, audited action.
-2. `config :cartulary, :governance, unattended: boolean`
-   (`CARTULARY_GOVERNANCE_UNATTENDED`), a boot-time deployment-wide flag for
+2. `config :memhouse, :governance, unattended: boolean`
+   (`MEMHOUSE_GOVERNANCE_UNATTENDED`), a boot-time deployment-wide flag for
    a process that never has a console session at all — the case a single
    per-account toggle cannot reach.
 

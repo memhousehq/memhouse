@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Skill Readiness And Procedural Memory
 
@@ -110,13 +110,13 @@ The same readiness implementation is available through:
 
 - `POST /api/v1/readiness`;
 - the AshAi MCP `check_readiness` tool; and
-- `Cartulary.Skills.check_readiness/2` for internal callers.
+- `MemHouse.Skills.check_readiness/2` for internal callers.
 
 The password-session governance LiveView lists cards and publishes normalized
 versions from reviewed `f9-1` JSON. Machine credentials cannot author cards.
 
 `sdk/typescript/src/skill-readiness.ts` and
-`sdk/python/cartulary/skill_readiness.py` consume the report, preserve warnings,
+`sdk/python/memhouse/skill_readiness.py` consume the report, preserve warnings,
 build elicitation prompts, and throw when required gaps block. They are
 transport-neutral helpers, not the complete generated clients still tracked in
 `specs/roadmap/beta-roadmap.md`.
@@ -133,7 +133,7 @@ It adds `description` and the non-null `f9-1` identity. Snapshot:
 `priv/resource_snapshots/repo/skill_requirement_cards/`.
 
 Deterministic evidence is in
-`test/cartulary/f9_skill_readiness_procedural_memory_test.exs`, covering:
+`test/memhouse/f9_skill_readiness_procedural_memory_test.exs`, covering:
 
 - selector validation and requirement-level nearest-scope inheritance;
 - transactional plain versioning and content-safe audit;

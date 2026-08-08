@@ -177,7 +177,7 @@
     "global": false,
     "strategy": "attribute"
   },
-  "repo": "Elixir.Cartulary.Repo",
+  "repo": "Elixir.MemHouse.Repo",
   "schema": null,
   "table": "external_identities"
 }

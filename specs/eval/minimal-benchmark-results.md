@@ -6,7 +6,7 @@ This document is the immutable Stage 0 record of the minimal LoCoMo,
 LongMemEval, and BEAM benchmark runs
 executed against the 0.1.0 benchmark runner. These are not upstream-scale
 scores. They prove that the 0.1.0 release could ingest the named benchmark
-families, exercise the real `Cartulary.Memory` write/read path, score answers
+families, exercise the real `MemHouse.Memory` write/read path, score answers
 and citations, and write durable JSON reports in the repository.
 
 All runs used `--no-model`, so extraction and answering used the deterministic
@@ -24,7 +24,7 @@ historical files. Current `f7-1` claims use the `f11-1` report schema and
 ## Commands Run
 
 ```bash
-mix cartulary.eval.benchmark \
+mix memhouse.eval.benchmark \
   --benchmark locomo \
   --dataset test/fixtures/eval/locomo-minimal.json \
   --profile balanced \
@@ -33,7 +33,7 @@ mix cartulary.eval.benchmark \
   --no-model \
   --output specs/eval/results/locomo-minimal-report.json
 
-mix cartulary.eval.benchmark \
+mix memhouse.eval.benchmark \
   --benchmark longmemeval \
   --dataset test/fixtures/eval/longmemeval-minimal.json \
   --profile balanced \
@@ -42,7 +42,7 @@ mix cartulary.eval.benchmark \
   --no-model \
   --output specs/eval/results/longmemeval-minimal-report.json
 
-mix cartulary.eval.benchmark \
+mix memhouse.eval.benchmark \
   --benchmark beam \
   --dataset test/fixtures/eval/beam-minimal.json \
   --profile balanced \

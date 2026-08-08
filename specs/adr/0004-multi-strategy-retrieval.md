@@ -27,7 +27,7 @@ score and 100–600ms band support the structural choice: different query shapes
 benefit from different mechanisms, and concurrent cheap strategies cost about
 as much as the slowest one.
 
-Cartulary already indexes belief-time, valid-time, salience windows, and
+MemHouse already indexes belief-time, valid-time, salience windows, and
 `as_of(D)` (`FR-KN-17`, `FR-API-23`, `AD-DATA-1`), making temporal retrieval an
 indexed range scan. Since ADR 0003, every strategy also uses one Postgres pool.
 `Task.async_stream` with `on_timeout: :kill_task` bounds fan-out wall time.
@@ -41,7 +41,7 @@ Multi-strategy retrieval belongs on `ask` and `search`. It does not fit
 
 `AD-SEAM-3`'s retrieval seam splits into three named seams:
 
-1. **Candidate generation** — N `Cartulary.Retrieval.Strategy` modules, each
+1. **Candidate generation** — N `MemHouse.Retrieval.Strategy` modules, each
    producing a ranked candidate list independently.
 2. **Fusion** — merging N ranked lists into one.
 3. **Rerank** — an optional, expensive precision pass over the fused head. This
@@ -54,7 +54,7 @@ matrix, chunking, and model-tiering — are unaffected.
 ### The strategy behaviour
 
 ```elixir
-defmodule Cartulary.Retrieval.Strategy do
+defmodule MemHouse.Retrieval.Strategy do
   @callback name() :: atom()
   @callback cost_class() :: :cheap | :moderate | :expensive
   @callback stage() :: :seed | :expand
@@ -205,7 +205,7 @@ far less derived structure.
 
 The knowledge-graph layer stays deferred with no stage attached (ARCH §18, FR
 §12). The constraint that shaped it is unchanged and still worth recording:
-Cartulary cannot do Hindsight's write-time KG construction, because `FR-KN-2`'s
+MemHouse cannot do Hindsight's write-time KG construction, because `FR-KN-2`'s
 natural-language-statement-only rule exists so a human can gate one statement
 rather than forty triples, and the derived graph must stay a derived cache under
 `AINV-5`. What changed is the evidence that the multi-hop gain this stage was

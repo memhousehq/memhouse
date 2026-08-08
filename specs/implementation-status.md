@@ -1,8 +1,8 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Implementation Status
 
-Application version: `0.3.0` (community beta).
+Application version: `0.4.0` (community beta).
 Last verified: 2026-07-28.
 
 Current behavior, evidence, and real limitations. Target architecture:
@@ -27,7 +27,7 @@ are not.
   records are append-only.
 - PostgreSQL RLS on every Account-scoped table, enforced alongside Ash
   actor/tenant policies. Every deployment mode connects as a provisioned
-  `NOSUPERUSER NOBYPASSRLS` role (`Cartulary.Database.AppRole`) rather than the
+  `NOSUPERUSER NOBYPASSRLS` role (`MemHouse.Database.AppRole`) rather than the
   bootstrap superuser, and a startup guard refuses to serve traffic otherwise
   — see `ADR-0008` (issue #55: this was previously inert everywhere, because
   PostgreSQL exempts superusers from RLS regardless of `FORCE`).
@@ -43,8 +43,10 @@ Details: `specs/architecture/ash-domain-backbone.md`.
 - Eleven AshOban lanes cover extraction, dream-time, revalidation, expiry,
   projection and entity refresh, connector sync, portability rebuild,
   reconciliation, and governance continuations.
-- Ash.Reactor flows own ingest extraction, dream-time reasoning, validation
-  continuation, and transcript answer correlation.
+- Ash.Reactor flows own ingest extraction, dream-time reasoning, and transcript
+  answer correlation. Legacy validation-continuation jobs remain executable so
+  upgrades can drain them, but current gate decisions create validation rows
+  inline and do not enqueue that no-op lane.
 - Deterministic idempotency keys and Account-local advisory locks make replays
   safe: a replay merges attribution and provenance instead of duplicating
   knowledge.
@@ -80,9 +82,11 @@ Details: `specs/architecture/identity-tenancy-rbac.md`.
 
 ### Gate A/B governance
 
-- A versioned Account/scope gate matrix over confidence, target level, and
+- A versioned Account/scope gate matrix over derived source evidence, target level, and
   sensitivity decides whether Gate A keeps, rejects, or defers an item and
-  whether Gate B may place it at the requested blast radius.
+  whether Gate B may place it at the requested blast radius. Model confidence
+  is recorded but cannot auto-keep; personal and restricted knowledge require
+  human placement.
 - The conservative default is peer-level provisional visibility plus human
   review. Pending scope- and account-level knowledge stays held and never
   reaches retrieval.
@@ -110,7 +114,7 @@ Details: `specs/architecture/gate-a-b-governance.md`.
   vectors.
 - Ash-derived structured extraction and reasoning schemas with bounded
   validate-and-repair. Extraction resolves subject independently of source,
-  discounts hearsay, and proposes confidence, sensitivity, target, and temporal
+  discounts third-party claims, and proposes confidence, sensitivity, target, and temporal
   fields plus an update operation.
 - Complete model provenance — provider, model, version, prompt version,
   pipeline version, embedding model and version — and one durable usage ledger
@@ -155,7 +159,7 @@ Details: `specs/architecture/documents-connectors-sync.md`.
 - Account, authorized scope, lifecycle, provisional subject, and source filters
   are applied before any candidate leaves retrieval internals.
 - Knowledge and document chunks use PostgreSQL `vector` values with pinned
-  provider/model/version/dimension identity, HNSW cosine indexes, and PG-FTS
+  provider/model/version/dimension identity, DiskANN cosine indexes, and PG-FTS
   GIN indexes.
 - Entity and EntityMention rows are internal rebuildable caches. The rows are
   never exposed through HTTP, MCP, SDK, LiveView, or retrieval responses. An
@@ -213,10 +217,12 @@ Details: `specs/architecture/skill-readiness-procedural-memory.md`.
 
 ### Portability, packaging, and operations
 
-- Cross-platform Mix releases with a checksum-pinned pg0 binary, supervised
+- Linux glibc and Apple Silicon Mix releases with checksum-pinned pg0 and
+  ABI-matched pgvectorscale, supervised
   lifecycle, first-run migration, stale-lock recovery, explicit port conflict
   errors, data-directory health checks, and an external-Postgres escape hatch.
-- A non-root container image and Compose stack over stock Postgres, plus an
+- A non-root container image and Compose stack over PostgreSQL with pgvector
+  and pgvectorscale, plus an
   optional OpenTelemetry Collector, Jaeger, and Prometheus profile. pg0 is
   never in the container path.
 - Runtime configuration validation with clear boot errors.
@@ -235,7 +241,7 @@ Details: `specs/architecture/portability-packaging-operations.md` and
 
 ### Evaluation, CI, and release readiness
 
-- Reproducible evaluation reports for Cartulary product scenarios, LoCoMo,
+- Reproducible evaluation reports for MemHouse product scenarios, LoCoMo,
   LongMemEval, ConvoMem, and BEAM, carrying dataset hashes and splits, exact
   profile and model-role versions, deadline identity, RAG-triad, token and
   latency measures, per-category scores, degradation curves, and strategy
@@ -243,7 +249,7 @@ Details: `specs/architecture/portability-packaging-operations.md` and
 - Blocking external-Postgres and packaged-pg0 CI lanes, Dialyzer and security
   gates, Mix release and container builds, nightly evaluation, semantic
   version/tag validation, fail-closed release checks, durable GitHub Release
-  assets for Linux x86_64, both macOS CPU families, and Windows x86_64, and tagged GHCR
+  assets for Linux x86_64/ARM64 and Apple Silicon macOS, and tagged GHCR
   container publication.
 - A provider cassette layer for deterministic model tests.
 - Held-out tuning discipline: fusion weights may only use held-out data.
@@ -293,13 +299,13 @@ OpenRouter.
 - `mix dialyzer` passed with 0 errors.
 - `mix sobelow --config` passed with no findings after three reviewed
   false-positive skips: local benchmark fixture reads in
-  `Cartulary.Eval.Adapter`, the read-only static retrieval data layer in
-  `Cartulary.Retrieval.Store`, and the static UUID-only message-to-Account
-  bootstrap lookup in `Cartulary.DataLayer`.
+  `MemHouse.Eval.Adapter`, the read-only static retrieval data layer in
+  `MemHouse.Retrieval.Store`, and the static UUID-only message-to-Account
+  bootstrap lookup in `MemHouse.DataLayer`.
 - The full suite passed against newly created partitioned test databases,
   exercising the complete migration chain from empty, and separately against
   the stock `pgvector/pgvector:pg18-bookworm` Compose lane through
-  `CARTULARY_TEST_DATABASE_URL`.
+  `MEMHOUSE_TEST_DATABASE_URL`.
 - A packaged Darwin ARM64 release initialized PostgreSQL 18.1.0 plus pgvector,
   applied the full migration chain, returned `f10-1` readiness, recovered and
   reattached the same durable directory, and shut down cleanly.
@@ -307,11 +313,11 @@ OpenRouter.
   pg0 in its runtime layer, and returned `f10-1` readiness.
 - A fresh two-database logical archive round trip preserved durable data,
   verified audit continuity, and rebuilt derived caches.
-- The deterministic release matrix covered Cartulary, LoCoMo, LongMemEval,
+- The deterministic release matrix covered MemHouse, LoCoMo, LongMemEval,
   ConvoMem, and BEAM plus eight ablations, validated report provenance, met
   every committed correctness and citation floor, and passed the semantic
   version and changelog release check for `0.2.0`.
-- `mix cartulary.eval.smoke --profile balanced` ingested 3 messages and
+- `mix memhouse.eval.smoke --profile balanced` ingested 3 messages and
   answered all 3 smoke questions with citations against OpenRouter.
 - `GET /api/health` returned status `ok` and contract `f5-1`. HTTP ingest and
   ask were verified locally; the ask response returned a cited knowledge item
@@ -342,7 +348,7 @@ Each limitation is tracked in `specs/roadmap/beta-roadmap.md`.
   evidence still need protected credentials and the upstream datasets. Do not
   present the committed fixtures as comparative scores.
 - **Model deployment assets are operator-supplied.** The ReqLLM seam and local
-  Ortex/ONNX execution ship, but Cartulary does not download or package
+  Ortex/ONNX execution ship, but MemHouse does not download or package
   ONNX/tokenizer artefacts, certify every ReqLLM provider, or run an in-engine
   multi-provider cascade.
 - **Retrieval tuning is still evidence work.** Versioned profiles, raw internal
@@ -352,9 +358,9 @@ Each limitation is tracked in `specs/roadmap/beta-roadmap.md`.
 - **Enterprise identity is out of scope.** SSO/SAML/SCIM, multi-Account
   provisioning, advanced RBAC administration, and channel-linking UX remain
   later licensed work.
-- **Dream-time deduction application is partial.** The lanes, reasoning role,
-  and governance path exist; broad applied-deduction and projection-build
-  coverage is outstanding.
+- **Dream-time deduction application is partial.** Consolidation merges active
+  duplicates and emits bounded set aggregates. Broad applied-deduction and
+  projection-build coverage is outstanding.
 - **`main` is not fully protected yet.** CI workflows exist and report green,
   but required status checks are not configured on the GitHub ruleset. A
   workflow file is not proof of branch protection.
@@ -397,28 +403,28 @@ mix sobelow --config
 Run the deterministic release evaluation and readiness check:
 
 ```bash
-mix cartulary.eval.release \
+mix memhouse.eval.release \
   --no-model \
   --assert-thresholds \
-  --output /private/tmp/cartulary-release-eval.json
+  --output /private/tmp/memhouse-release-eval.json
 
-mix cartulary.release.check \
-  --eval-report /private/tmp/cartulary-release-eval.json
+mix memhouse.release.check \
+  --eval-report /private/tmp/memhouse-release-eval.json
 ```
 
 Run the smoke evaluation:
 
 ```bash
-mix cartulary.eval.smoke --profile balanced --account eval-poc
+mix memhouse.eval.smoke --profile balanced --account eval-poc
 ```
 
 Run the frozen baseline contract:
 
 ```bash
 mix test \
-  test/cartulary/poc_contract_test.exs \
-  test/cartulary_web/controllers/memory_controller_test.exs \
-  test/cartulary/eval/fixture_contract_test.exs
+  test/memhouse/poc_contract_test.exs \
+  test/memhouse_web/controllers/memory_controller_test.exs \
+  test/memhouse/eval/fixture_contract_test.exs
 ```
 
 Start the local API on `http://localhost:4000`:

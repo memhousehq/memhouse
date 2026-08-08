@@ -1,6 +1,6 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.DataCase do
+defmodule MemHouse.DataCase do
   @moduledoc """
   ExUnit case template for tests that reach the database through Ash, Oban, or Ecto.
 
@@ -12,23 +12,23 @@ defmodule Cartulary.DataCase do
 
   use ExUnit.CaseTemplate
 
-  # Injected into every module that does `use Cartulary.DataCase`. Kept to
+  # Injected into every module that does `use MemHouse.DataCase`. Kept to
   # aliases and imports on purpose: a case template that also seeded data would
   # make every test pay for fixtures it does not use, and would hide which test
   # created which row.
   using do
     quote do
-      alias Cartulary.Repo
+      alias MemHouse.Repo
 
       import Ecto
       import Ecto.Changeset
       import Ecto.Query
-      import Cartulary.DataCase
+      import MemHouse.DataCase
     end
   end
 
   setup tags do
-    Cartulary.DataCase.setup_sandbox(tags)
+    MemHouse.DataCase.setup_sandbox(tags)
     :ok
   end
 
@@ -36,7 +36,7 @@ defmodule Cartulary.DataCase do
   Checks a sandbox connection out for the current test and schedules its return.
   """
   def setup_sandbox(tags) do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Cartulary.Repo, shared: not tags[:async])
+    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(MemHouse.Repo, shared: not tags[:async])
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
   end
 

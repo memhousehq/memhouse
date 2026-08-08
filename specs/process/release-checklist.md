@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Release Checklist
 
@@ -32,14 +32,14 @@ This checklist is the evaluation, CI, and release-readiness gate for
 ## Evaluation and parity
 
 ```bash
-mix cartulary.eval.release \
+mix memhouse.eval.release \
   --no-model \
   --assert-thresholds \
-  --output /private/tmp/cartulary-release-eval.json
+  --output /private/tmp/memhouse-release-eval.json
 
-mix cartulary.release.check \
+mix memhouse.release.check \
   --tag "v$(sed -n 's/.*version: \"\\([^\"]*\\)\".*/\\1/p' mix.exs)" \
-  --eval-report /private/tmp/cartulary-release-eval.json
+  --eval-report /private/tmp/memhouse-release-eval.json
 ```
 
 - [ ] External-Postgres deterministic gate passed.
@@ -56,7 +56,7 @@ mix cartulary.release.check \
   without `v`, then merge the generated release-preparation PR. The merge
   creates `v<version>`, publishes the GitHub Release, and starts the artifact
   workflow.
-- [ ] Configure `CARTULARY_RELEASE_SIGNING_KEY` as the protected base64 Ed25519
+- [ ] Configure `MEMHOUSE_RELEASE_SIGNING_KEY` as the protected base64 Ed25519
   private key matching the updater's embedded public key; never place it in the
   repository or a release asset.
 - [ ] Wait for the GitHub-Release-triggered workflow to run every gate, build

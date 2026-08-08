@@ -2,7 +2,7 @@
   "schema": "f11-thresholds-1",
   "policy": "Only deterministic correctness and citation guardrails gate releases. Quality, token cost, and latency remain frontier-tracked.",
   "benchmarks": {
-    "cartulary": {
+    "memhouse": {
       "balanced": {
         "accuracy": 1.0,
         "citation_hit_rate": 1.0

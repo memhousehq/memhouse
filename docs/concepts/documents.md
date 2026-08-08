@@ -1,8 +1,8 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Documents and connectors
 
-A document is a raw observation. Cartulary stores it before processing, and
+A document is a raw observation. MemHouse stores it before processing, and
 extracted knowledge follows the same pipeline and gates as messages.
 
 ```mermaid

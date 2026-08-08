@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 # pg0 v0.14.2, PostgreSQL 18.1.0 + pgvector 0.8.1
 120dab9c20348d8171088d5148ada8ba2980ea9a7089b3faf41823f1d380ef09  pg0-darwin-aarch64
 896ea2189e37630d7b9ffdbd728944b6e165159da3959f113436e42bf182fa8a  pg0-darwin-x86_64

@@ -1,8 +1,8 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Retrieval and context
 
-Cartulary runs independent candidate generators in parallel, fuses their ranks,
+MemHouse runs independent candidate generators in parallel, fuses their ranks,
 and may rerank the fused head under one wall-clock deadline.
 
 ```mermaid

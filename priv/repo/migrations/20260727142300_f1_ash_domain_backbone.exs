@@ -1,6 +1,6 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.Repo.Migrations.F1AshDomainBackbone do
+defmodule MemHouse.Repo.Migrations.F1AshDomainBackbone do
   @moduledoc """
   Updates resources based on their most recent snapshots.
 
@@ -747,12 +747,12 @@ defmodule Cartulary.Repo.Migrations.F1AshDomainBackbone do
     execute """
     CREATE POLICY cartulary_account_wall ON accounts
     USING (
-      id = NULLIF(current_setting('cartulary.account_id', true), '')::uuid
-      OR key = NULLIF(current_setting('cartulary.account_key', true), '')
+      id = NULLIF(current_setting('memhouse.account_id', true), '')::uuid
+      OR key = NULLIF(current_setting('memhouse.account_key', true), '')
     )
     WITH CHECK (
-      id = NULLIF(current_setting('cartulary.account_id', true), '')::uuid
-      OR key = NULLIF(current_setting('cartulary.account_key', true), '')
+      id = NULLIF(current_setting('memhouse.account_id', true), '')::uuid
+      OR key = NULLIF(current_setting('memhouse.account_key', true), '')
     )
     """
 
@@ -763,10 +763,10 @@ defmodule Cartulary.Repo.Migrations.F1AshDomainBackbone do
       execute """
       CREATE POLICY cartulary_account_wall ON #{table_name}
       USING (
-        account_id = NULLIF(current_setting('cartulary.account_id', true), '')::uuid
+        account_id = NULLIF(current_setting('memhouse.account_id', true), '')::uuid
       )
       WITH CHECK (
-        account_id = NULLIF(current_setting('cartulary.account_id', true), '')::uuid
+        account_id = NULLIF(current_setting('memhouse.account_id', true), '')::uuid
       )
       """
     end)

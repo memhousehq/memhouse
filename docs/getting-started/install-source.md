@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Run from source
 
@@ -18,7 +18,7 @@ mix ecto.migrate
 ```
 
 `.env.example` lists every setting. Start with
-`DATABASE_URL`, `CARTULARY_AUTH_SIGNING_SECRET`, and the model settings
+`DATABASE_URL`, `MEMHOUSE_AUTH_SIGNING_SECRET`, and the model settings
 described in [Configuration](../reference/configuration.md).
 
 ## Bootstrap the Account and first administrator
@@ -26,8 +26,8 @@ described in [Configuration](../reference/configuration.md).
 Use the idempotent bootstrap task to create the first administrator:
 
 ```bash
-CARTULARY_BOOTSTRAP_PASSWORD='replace-with-a-long-password' \
-  mix cartulary.identity.bootstrap \
+MEMHOUSE_BOOTSTRAP_PASSWORD='replace-with-a-long-password' \
+  mix memhouse.identity.bootstrap \
     --email admin@example.test \
     --name 'Local Admin'
 ```
@@ -46,7 +46,7 @@ Without a model provider, use the deterministic adapter for tests and smoke
 runs:
 
 ```bash
-CARTULARY_MODEL_LOCAL_FALLBACK=true
+MEMHOUSE_MODEL_LOCAL_FALLBACK=true
 ```
 
 Production defaults it off and never falls back to it after a provider error.
@@ -64,7 +64,7 @@ mix test
 ```
 
 Contribution rules, the full check matrix, and the review posture are in
-[`CONTRIBUTING.md`](https://github.com/cartularyhq/cartulary/blob/main/CONTRIBUTING.md).
+[`CONTRIBUTING.md`](https://github.com/memhousehq/memhouse/blob/main/CONTRIBUTING.md).
 
 ## Next
 

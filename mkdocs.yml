@@ -1,9 +1,9 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
-# Build definition for the published Cartulary user documentation.
+# Build definition for the published MemHouse user documentation.
 #
 # Purpose: turn the Markdown under `docs/` into the static site served at
-# https://cartularyhq.github.io/cartulary/ by the `docs.yml` GitHub Actions
+# https://memhousehq.github.io/memhouse/ by the `docs.yml` GitHub Actions
 # workflow.
 #
 # Inputs:  every file under `docs/`, plus this file's `nav` ordering.
@@ -22,14 +22,14 @@
 #   * Diagrams are Mermaid fenced blocks. The `pymdownx.superfences` custom
 #     fence below hands them to Material's bundled Mermaid renderer; no extra
 #     JavaScript include is needed.
-site_name: Cartulary
+site_name: MemHouse
 site_description: Governed agent memory — setup, usage, and how it works.
-site_url: https://cartularyhq.github.io/cartulary/
-repo_url: https://github.com/cartularyhq/cartulary
-repo_name: cartularyhq/cartulary
+site_url: https://memhousehq.github.io/memhouse/
+repo_url: https://github.com/memhousehq/memhouse
+repo_name: memhousehq/memhouse
 edit_uri: edit/main/docs/
 copyright: >-
-  Cartulary is source-available fair-code under the Cartulary Sustainable Use
+  MemHouse is source-available fair-code under the MemHouse Sustainable Use
   License 1.0.
 
 # Fail the build on a broken internal link or an orphaned page rather than
@@ -103,7 +103,7 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/cartularyhq/cartulary
+      link: https://github.com/memhousehq/memhouse
 
 nav:
   - Home: index.md

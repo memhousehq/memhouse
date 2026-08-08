@@ -1,6 +1,6 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.Repo.Migrations.EnablePgvector do
+defmodule MemHouse.Repo.Migrations.EnablePgvector do
   use Ecto.Migration
 
   def up do

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 # Production build-time configuration.
 #
@@ -21,7 +21,7 @@ import Config
 # is correct only behind a terminating proxy that sets it. The loopback hosts are excluded so
 # a local container or an on-host probe can reach the app over plain HTTP without being
 # redirected to a scheme it cannot use.
-config :cartulary, CartularyWeb.Endpoint,
+config :memhouse, MemHouseWeb.Endpoint,
   force_ssl: [
     rewrite_on: [:x_forwarded_proto],
     exclude: [
@@ -37,7 +37,7 @@ config :logger, level: :info
 # reviewed metadata allowlist. That allowlist is what keeps raw messages,
 # prompts, answers, restricted knowledge, and credentials out of log output;
 # swapping this formatter for a plain one removes that protection.
-config :logger, :default_handler, formatter: {Cartulary.Observability.JSONFormatter, %{}}
+config :logger, :default_handler, formatter: {MemHouse.Observability.JSONFormatter, %{}}
 
 # Runtime production configuration, including reading
 # of environment variables, is done on config/runtime.exs.

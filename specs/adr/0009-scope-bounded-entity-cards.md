@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # ADR 0009: Entity cards are scope-bounded projections
 
@@ -23,7 +23,7 @@ entity visibility. Account administrators are not an exemption: authenticated
 actors still carry explicit authorized scopes.
 
 Entity-card sensitivity also needs an explicit decision. A summary that combines
-sources takes the strictest source classification. Cartulary currently uses
+sources takes the strictest source classification. MemHouse currently uses
 sensitivity at Gate B to decide blast radius, then scope policy to authorize
 reads. It has no separate reader-clearance axis.
 

@@ -2,7 +2,7 @@
 
 ## 1. Problem
 
-`Cartulary.Governance.Engine.consent_required?/3` treats every `personal`
+`MemHouse.Governance.Engine.consent_required?/3` treats every `personal`
 knowledge item aimed above its subject's own peer level as consent-blocked,
 regardless of `GateRule` configuration:
 
@@ -28,7 +28,7 @@ reported `consent_required: true` and `Consent.decide` has no channel it can
 verify for a subject who does not exist.
 
 A second, structural gap compounds this. The ordinary ingestion path
-(`Cartulary.Memory`) calls `Engine.evaluate_proposal(knowledge, actor)` with no
+(`MemHouse.Memory`) calls `Engine.evaluate_proposal(knowledge, actor)` with no
 `:target_scope_id` option. `request_consent!/3` is only reachable when
 `is_binary(target_scope_id)`, and `Consent.target_scope_id` is
 `allow_nil?: false` — so for a direct (non-promotion) proposal, **no `Consent`
@@ -40,10 +40,10 @@ structurally unrequestable for this path, only for `request_promotion/3`."
 
 1. Two independent, orthogonal switches, both defaulting to today's behavior
    exactly:
-   - `Cartulary.Accounts.Account.consent_mode` — `"subject_required"`
+   - `MemHouse.Accounts.Account.consent_mode` — `"subject_required"`
      (default) | `"auto"`. Per-account, admin-set, audited.
-   - `config :cartulary, :governance, unattended: boolean`
-     (`CARTULARY_GOVERNANCE_UNATTENDED`, default `false`). Per-deployment
+   - `config :memhouse, :governance, unattended: boolean`
+     (`MEMHOUSE_GOVERNANCE_UNATTENDED`, default `false`). Per-deployment
      process, no Account row required.
 2. Neither switch touches `GateRule.requires_consent`, which stays exactly as
    inert as its moduledoc already states. This is a new, separate mechanism —
@@ -74,7 +74,7 @@ structurally unrequestable for this path, only for `request_promotion/3`."
 
 ## 3. Architecture
 
-### 3.1 `Cartulary.Accounts.Account`
+### 3.1 `MemHouse.Accounts.Account`
 
 New attribute:
 
@@ -86,7 +86,7 @@ attribute :consent_mode, :string,
 ```
 
 New action, audited the same way `GateRule`'s `:create`/`:update` are
-(`Cartulary.Governance.Changes.AuditResource`, category `"configuration"`,
+(`MemHouse.Governance.Changes.AuditResource`, category `"configuration"`,
 action `"account.consent_mode_changed"`, content field `:consent_mode`):
 
 ```elixir
@@ -95,7 +95,7 @@ update :configure_governance do
 
   validate one_of(:consent_mode, ["subject_required", "auto"])
 
-  change {Cartulary.Governance.Changes.AuditResource,
+  change {MemHouse.Governance.Changes.AuditResource,
           category: "configuration",
           action: "account.consent_mode_changed",
           resource_type: "account",
@@ -103,7 +103,7 @@ update :configure_governance do
 end
 ```
 
-Policy: restricted to `{Cartulary.Policy.HumanRoleIn, roles: [:account_admin]}`
+Policy: restricted to `{MemHouse.Policy.HumanRoleIn, roles: [:account_admin]}`
 only — no `curator`, no `pipeline?` bypass. The pipeline never needs to set
 this; only a human declares an account synthetic.
 
@@ -111,26 +111,26 @@ this; only a human declares an account synthetic.
 
 ```elixir
 # config/runtime.exs
-config :cartulary, :governance,
-  unattended: System.get_env("CARTULARY_GOVERNANCE_UNATTENDED") == "true"
+config :memhouse, :governance,
+  unattended: System.get_env("MEMHOUSE_GOVERNANCE_UNATTENDED") == "true"
 ```
 
 Read through a small accessor, not `Application.get_env/3` scattered inline:
 
 ```elixir
-defmodule Cartulary.Governance.UnattendedMode do
+defmodule MemHouse.Governance.UnattendedMode do
   @moduledoc """
   Whether this deployment process has declared itself to have no human
   governance participant at all.
 
   Checked once per proposal evaluation, never cached across config changes
   (there are none at runtime — this is read at boot), and consulted only by
-  `Cartulary.Governance.Engine`'s consent resolution. It does not affect Gate
+  `MemHouse.Governance.Engine`'s consent resolution. It does not affect Gate
   A/B automation, which is governed entirely by `GateRule` as before.
   """
 
-  @doc "True when CARTULARY_GOVERNANCE_UNATTENDED was set at boot."
-  def enabled?, do: Application.get_env(:cartulary, :governance, [])[:unattended] || false
+  @doc "True when MEMHOUSE_GOVERNANCE_UNATTENDED was set at boot."
+  def enabled?, do: Application.get_env(:memhouse, :governance, [])[:unattended] || false
 end
 ```
 
@@ -139,7 +139,7 @@ what it disables. `GET /api/ready` gains a `governance.unattended` boolean
 field alongside existing component-status fields — content-safe, matches
 existing readiness-payload conventions.
 
-### 3.3 `Cartulary.Governance.Engine`
+### 3.3 `MemHouse.Governance.Engine`
 
 Consent resolution becomes a three-way outcome instead of a boolean gate,
 computed wherever the engine currently either blocks on
@@ -165,7 +165,7 @@ defp resolve_consent(knowledge, rule, target_level, target_scope_id, actor) do
 end
 
 defp auto_consent?(account_id, actor) do
-  Cartulary.Governance.UnattendedMode.enabled?() or
+  MemHouse.Governance.UnattendedMode.enabled?() or
     account!(account_id, actor).consent_mode == "auto"
 end
 
@@ -189,7 +189,7 @@ defp auto_grant_consent!(knowledge, target_scope_id, actor) do
 end
 
 defp auto_consent_channel(_account_id, _actor) do
-  if Cartulary.Governance.UnattendedMode.enabled?(),
+  if MemHouse.Governance.UnattendedMode.enabled?(),
     do: "auto:unattended_deployment",
     else: "auto:account_mode"
 end
@@ -211,9 +211,9 @@ grant would.
 
 `account!/2` is a new private point-read (`Ash.get!`-style, elevated via
 `pipeline_actor/1`, the same pattern `scope!/3` and `knowledge!/3` already
-use). It does not set a tenant: `Cartulary.Accounts.Account` is not
+use). It does not set a tenant: `MemHouse.Accounts.Account` is not
 multitenant — it *is* the tenant — the same reason
-`Cartulary.DataLayer.with_actor/2` reads it without one.
+`MemHouse.DataLayer.with_actor/2` reads it without one.
 
 ### 3.4 What does not change
 
@@ -229,7 +229,7 @@ multitenant — it *is* the tenant — the same reason
 
 - `consent_mode` changes are `account_admin`-only and hash-chain audited
   (category `"configuration"`), matching `GateRule`.
-- `CARTULARY_GOVERNANCE_UNATTENDED` is boot-time only (no runtime toggle),
+- `MEMHOUSE_GOVERNANCE_UNATTENDED` is boot-time only (no runtime toggle),
   logged loudly, and visible on `/api/ready` — an operator or auditor can
   always tell, without reading source, whether a given deployment process has
   disabled subject consent.
@@ -247,7 +247,7 @@ multitenant — it *is* the tenant — the same reason
 
 ## 5. Testing
 
-Extend `test/cartulary/f4_real_gate_a_b_governance_test.exs`:
+Extend `test/memhouse/f4_real_gate_a_b_governance_test.exs`:
 
 - Default (`consent_mode: "subject_required"`, `unattended: false`) is
   byte-for-byte unchanged — this touches the `poc-0` baseline's gate and
@@ -256,7 +256,7 @@ Extend `test/cartulary/f4_real_gate_a_b_governance_test.exs`:
   `target_scope_id` supplied) and the `request_promotion/3` path; the
   resulting `Consent` row has `status: "granted"`, `verified: true`, and a
   `channel` starting `"auto:"`.
-- `CARTULARY_GOVERNANCE_UNATTENDED=true` unblocks regardless of
+- `MEMHOUSE_GOVERNANCE_UNATTENDED=true` unblocks regardless of
   `consent_mode`, and its `channel` reads `"auto:unattended_deployment"`.
 - Only `account_admin` may call `configure_governance`; `curator` and a
   machine (`api_key`) credential are both rejected.
@@ -266,7 +266,7 @@ Extend `test/cartulary/f4_real_gate_a_b_governance_test.exs`:
 ## 6. Documentation
 
 - `docs/reference/configuration.md` and `.env.example` —
-  `CARTULARY_GOVERNANCE_UNATTENDED`.
+  `MEMHOUSE_GOVERNANCE_UNATTENDED`.
 - `docs/concepts/` governance page — the two switches, what they do and do
   not affect, and that this is off by default.
 - `specs/architecture/gate-a-b-governance.md` — consent section gains the

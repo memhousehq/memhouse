@@ -1,13 +1,13 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Observability
 
-Cartulary provides OpenTelemetry traces, structured logs, and a durable usage
+MemHouse provides OpenTelemetry traces, structured logs, and a durable usage
 ledger. Export is **off by default** and sends OTLP to your collector.
 
 ```mermaid
 flowchart LR
-    APP[Cartulary] -->|OTLP/HTTP| COL[OpenTelemetry Collector]
+    APP[MemHouse] -->|OTLP/HTTP| COL[OpenTelemetry Collector]
     COL --> J[Jaeger — traces]
     COL --> P[Prometheus — collector metrics]
     COL --> D[Debug log output]
@@ -19,8 +19,8 @@ flowchart LR
 ## Turn it on
 
 ```bash
-CARTULARY_OTEL_ENABLED=true
-OTEL_SERVICE_NAME=cartulary-dev
+MEMHOUSE_OTEL_ENABLED=true
+OTEL_SERVICE_NAME=memhouse-dev
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:14318
 ```
 
@@ -31,17 +31,17 @@ repository:
 docker compose -f dev/observability/docker-compose.yml up
 ```
 
-Traces are then at `http://localhost:16686` under service `cartulary-dev`, and
+Traces are then at `http://localhost:16686` under service `memhouse-dev`, and
 collector metrics at `http://localhost:9090`.
 
 The collector receives OTLP/HTTP from the host on port `14318` and forwards to
 the standard container port `4318`. The non-standard host port avoids the
-common local `4318` conflict; override `CARTULARY_OTEL_HTTP_PORT` if needed.
+common local `4318` conflict; override `MEMHOUSE_OTEL_HTTP_PORT` if needed.
 
 With the container path, the same stack is a Compose profile:
 
 ```bash
-CARTULARY_OTEL_ENABLED=true docker compose --profile observability up --build
+MEMHOUSE_OTEL_ENABLED=true docker compose --profile observability up --build
 ```
 
 ## Correlating one request
@@ -59,21 +59,21 @@ Manual workflow spans:
 
 | Span | Covers |
 | --- | --- |
-| `cartulary.memory.ingest_message` | Recording a raw observation |
-| `cartulary.memory.extract_message` | Extraction of candidates |
-| `cartulary.memory.query_knowledge` | Governed knowledge listing |
-| `cartulary.memory.search` | Ranked retrieval |
-| `cartulary.memory.ask` | Cited answer |
-| `cartulary.memory.get_context` | Projection assembly |
-| `cartulary.model.chat` / `.structured` / `.embed` / `.rerank` | Model gateway calls |
-| `cartulary.documents.process_version` | Document parsing and derivation |
-| `cartulary.documents.sync_connector` | Connector sync |
+| `memhouse.memory.ingest_message` | Recording a raw observation |
+| `memhouse.memory.extract_message` | Extraction of candidates |
+| `memhouse.memory.query_knowledge` | Governed knowledge listing |
+| `memhouse.memory.search` | Ranked retrieval |
+| `memhouse.memory.ask` | Cited answer |
+| `memhouse.memory.get_context` | Projection assembly |
+| `memhouse.model.chat` / `.structured` / `.embed` / `.rerank` | Model gateway calls |
+| `memhouse.documents.process_version` | Document parsing and derivation |
+| `memhouse.documents.sync_connector` | Connector sync |
 
 Model spans carry operation, role, provider, model, version, duration, and
 token usage. Document spans carry version id, parser, byte/chunk/knowledge
 counts, connector id, item count, and duration.
 
-Every retrieval emits `[:cartulary, :retrieval, :outcomes]`. Measurements are
+Every retrieval emits `[:memhouse, :retrieval, :outcomes]`. Measurements are
 total latency and pre-rerank remaining budget. Metadata contains Account id,
 profile, hard deadline, and content-free component outcomes with elapsed time
 and one deterministic failure class. The latest outcome observed on the node is
@@ -93,7 +93,7 @@ classes name that case, and they call for different responses:
 | Error class | What happened | What to do |
 | --- | --- | --- |
 | `provider_upstream_error` | The endpoint accepted the request and then failed, cancelled, or cut the response short | Nothing. The job retries and normally succeeds. Investigate only if the rate is high or sustained |
-| `provider_output_truncated` | The answer hit the output cap before it was complete | Raise `CARTULARY_MODEL_MAX_TOKENS`, or lower `CARTULARY_MODEL_REASONING_EFFORT` so less of the budget goes to reasoning. Retrying alone repeats this identically |
+| `provider_output_truncated` | The answer hit the output cap before it was complete | Raise `MEMHOUSE_MODEL_MAX_TOKENS`, or lower `MEMHOUSE_MODEL_REASONING_EFFORT` so less of the budget goes to reasoning. Retrying alone repeats this identically |
 | `provider_content_filtered` | The endpoint withheld the answer | Retrying repeats it. The input or the model has to change |
 | `missing_structured_object` / `missing_text_response` | The call finished normally and returned nothing usable — typically a model answering in prose instead of returning the structured result it was asked for | Check that the configured model supports tool calling or structured output |
 
@@ -106,19 +106,19 @@ Tune noise per debugging session:
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `CARTULARY_OTEL_HTTP_SPANS_ENABLED` | `true` | One server trace per HTTP request |
-| `CARTULARY_OTEL_PHOENIX_SPANS_ENABLED` | `true` | Phoenix route naming |
-| `CARTULARY_OTEL_MEMORY_SPANS_ENABLED` | `true` | The workflow spans above |
-| `CARTULARY_OTEL_MODEL_SPANS_ENABLED` | `true` | Model gateway spans |
-| `CARTULARY_OTEL_DOCUMENT_SPANS_ENABLED` | `true` | Document and connector spans |
-| `CARTULARY_OTEL_OBAN_SPANS_ENABLED` | `true` | Background job spans |
-| `CARTULARY_OTEL_ECTO_SPANS_ENABLED` | `false` | Deep database spans — many, low-level |
-| `CARTULARY_OTEL_DB_STATEMENT_ENABLED` | `false` | SQL statement text; off because statements can carry sensitive values |
+| `MEMHOUSE_OTEL_HTTP_SPANS_ENABLED` | `true` | One server trace per HTTP request |
+| `MEMHOUSE_OTEL_PHOENIX_SPANS_ENABLED` | `true` | Phoenix route naming |
+| `MEMHOUSE_OTEL_MEMORY_SPANS_ENABLED` | `true` | The workflow spans above |
+| `MEMHOUSE_OTEL_MODEL_SPANS_ENABLED` | `true` | Model gateway spans |
+| `MEMHOUSE_OTEL_DOCUMENT_SPANS_ENABLED` | `true` | Document and connector spans |
+| `MEMHOUSE_OTEL_OBAN_SPANS_ENABLED` | `true` | Background job spans |
+| `MEMHOUSE_OTEL_ECTO_SPANS_ENABLED` | `false` | Deep database spans — many, low-level |
+| `MEMHOUSE_OTEL_DB_STATEMENT_ENABLED` | `false` | SQL statement text; off because statements can carry sensitive values |
 
 ## Knowing when a scope lost its indexes
 
 Every completed projection refresh emits the telemetry event
-`[:cartulary, :retrieval, :projection_refresh]`, measuring `indexed`,
+`[:memhouse, :retrieval, :projection_refresh]`, measuring `indexed`,
 `statements`, `embedded`, `mentions`, and `coverage` (embedded ÷ statements,
 `1.0` when the scope has nothing to index), tagged with `account_id` and
 `scope_id`.
@@ -188,4 +188,4 @@ Use the local collector when you also need local inspection.
 The measurement discipline behind evaluation runs — experiment labelling,
 retrieval variants, and what may be claimed from a trace — is maintainer
 material and lives in the repository under
-[`specs/observability/`](https://github.com/cartularyhq/cartulary/tree/main/specs/observability).
+[`specs/observability/`](https://github.com/memhousehq/memhouse/tree/main/specs/observability).

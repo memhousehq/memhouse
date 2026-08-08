@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Visible entity cards and projection oversight
 
@@ -190,7 +190,7 @@ The loader's projection query must filter `kind == "entity_card" and
 dirty == false`. `Knowledge.Projection` authorizes reads on `scope_id` alone and
 filters neither kind nor peer (`knowledge.ex:684-686`). An unfiltered query in a
 drawn scope would return `peer_profile` rows — another peer's provisional
-content — to any member with scope access. `Cartulary.Context` avoids this by
+content — to any member with scope access. `MemHouse.Context` avoids this by
 filtering kind and keying on `actor.peer_id` (`context.ex:126-128`, `:150-155`).
 A negative test pins it.
 
@@ -234,7 +234,7 @@ readable statement, which satisfies the rule that expansion requires access to
 both relation endpoints. Edges are drawn only between hubs that carry a label,
 so the collapse is not circumvented by inference from the edge set.
 
-A co-mention edge means "named together", not "related to". Cartulary has no
+A co-mention edge means "named together", not "related to". MemHouse has no
 entity-relation table, and this edge does not create one. The legend says so.
 
 ## Increment 3: projection oversight
@@ -242,7 +242,7 @@ entity-relation table, and this edge does not create one. The legend says so.
 A page at `/governance/projections` lists projections for a chosen scope.
 
 This is the first console surface that reads `Knowledge.Projection` directly
-rather than through `Cartulary.Context`. That is a new boundary and needs its own
+rather than through `MemHouse.Context`. That is a new boundary and needs its own
 ADR.
 
 ### What each role sees
@@ -265,12 +265,12 @@ peer-profile content.
 
 `Knowledge.Projection` authorizes reads on `scope_id` alone. What keeps one
 peer's profile away from another today is the access pattern in
-`Cartulary.Context`, which builds the peer cache key from `actor.peer_id` and
+`MemHouse.Context`, which builds the peer cache key from `actor.peer_id` and
 never from a request parameter. A list that enumerates by scope bypasses that
 guard, and peer profiles are the only kind that stores provisional content.
 
 `/console/*` remains subject-only for every role, and
-`CartularyWeb.Console.Access.visible_knowledge?` does not change. Oversight lives
+`MemHouseWeb.Console.Access.visible_knowledge?` does not change. Oversight lives
 on a separate, role-gated surface.
 
 ### Audit
@@ -345,12 +345,12 @@ becomes user-visible in the console. It is pre-existing, and ADR 0011 records it
 
 | Test | Covers |
 | --- | --- |
-| `test/cartulary/context/entity_label_test.exs` (new) | Selection order; rejection rules; closed-class list; kind precedence |
-| `test/cartulary/context/builder_test.exs` (new) | A label never draws on a statement outside the card's sources; both thresholds; null summary and provenance at two sources |
-| `test/cartulary/f7_retrieval_entity_context_test.exs` | Payload members; per-scope cap and its ordering |
-| `test/cartulary_web/console/graph_test.exs` | Hub labels; ordinal fallback for collapsed groups |
-| `test/cartulary_web/live/console_live_test.exs` | Panel rendering; `:entity_id` absent from the cluster map, unchanged; a `peer_profile` row in a drawn scope never reaches the graph payload |
-| `test/cartulary_web/console/access_test.exs` | `/console/*` provisional rule unchanged |
+| `test/memhouse/context/entity_label_test.exs` (new) | Selection order; rejection rules; closed-class list; kind precedence |
+| `test/memhouse/context/builder_test.exs` (new) | A label never draws on a statement outside the card's sources; both thresholds; null summary and provenance at two sources |
+| `test/memhouse/f7_retrieval_entity_context_test.exs` | Payload members; per-scope cap and its ordering |
+| `test/memhouse_web/console/graph_test.exs` | Hub labels; ordinal fallback for collapsed groups |
+| `test/memhouse_web/live/console_live_test.exs` | Panel rendering; `:entity_id` absent from the cluster map, unchanged; a `peer_profile` row in a drawn scope never reaches the graph payload |
+| `test/memhouse_web/console/access_test.exs` | `/console/*` provisional rule unchanged |
 
 ## Delivery
 

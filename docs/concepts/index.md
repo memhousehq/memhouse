@@ -1,8 +1,8 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # System overview
 
-Cartulary is one Elixir/OTP release: a Phoenix HTTP surface, an Ash domain
+MemHouse is one Elixir/OTP release: a Phoenix HTTP surface, an Ash domain
 model, Oban background jobs, and PostgreSQL with pgvector and full-text search.
 There is no second runtime, no separate worker fleet, and no service mesh.
 
@@ -21,7 +21,7 @@ flowchart TB
     end
 
     subgraph Core
-        MEM["Cartulary.Memory<br/>the operation facade"]
+        MEM["MemHouse.Memory<br/>the operation facade"]
         PIPE["Pipeline<br/>the only writer of knowledge"]
         GOV["Governance engine<br/>Gate A / Gate B"]
         RET["Retrieval<br/>strategies + fusion"]
@@ -77,7 +77,7 @@ sequenceDiagram
     autonumber
     participant C as Client
     participant P as Auth plug
-    participant M as Cartulary.Memory
+    participant M as MemHouse.Memory
     participant DB as PostgreSQL
     participant O as Oban
     participant X as Extractor
@@ -114,7 +114,7 @@ Backups preserve the left column; erasure and recovery may rebuild the right.
 | Governed knowledge | Entity rows and mentions |
 | Document versions and their original blobs | Document chunks |
 | The hash-chain audit log | Vector and full-text indexes |
-| Usage ledger entries | HNSW state, ETS counters |
+| Usage ledger entries | DiskANN indexes, ETS counters |
 
 
 ## Where to go next

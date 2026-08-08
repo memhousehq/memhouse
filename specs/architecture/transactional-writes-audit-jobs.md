@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Transactional Writes, Audit, And Jobs
 
@@ -13,16 +13,16 @@ version tag for the frozen baseline, not a roadmap phase.
 
 ## Transaction boundary
 
-`Cartulary.Observations.Message.create` and
-`Cartulary.Observations.DocumentVersion.create` use Ash changes that:
+`MemHouse.Observations.Message.create` and
+`MemHouse.Observations.DocumentVersion.create` use Ash changes that:
 
 1. compute a SHA-256 content hash without copying content into operational
    metadata;
 2. append an Account-local audit event;
-3. create or reuse a unique `Cartulary.Operations.PipelineRun`; and
+3. create or reuse a unique `MemHouse.Operations.PipelineRun`; and
 4. insert its AshOban trigger job.
 
-All four writes use the caller's `Cartulary.Repo` transaction; any error rolls
+All four writes use the caller's `MemHouse.Repo` transaction; any error rolls
 back all four. Message ingest is always asynchronous: HTTP and MCP acknowledge
 with the message id after commit and never run a model in the caller. The
 Account- and scope-authorised HTTP status read exposes pending, failed, or
@@ -48,12 +48,12 @@ The declaration therefore belongs to the actions themselves, not to their
 callers:
 
 - `PipelineRun.for_trigger` is a transactional read used by every trigger's
-  `worker_read_action`. `Cartulary.Pipeline.Preparations.DeclareAccount`
+  `worker_read_action`. `MemHouse.Pipeline.Preparations.DeclareAccount`
   installs the query's tenant before the statement runs.
 - `PipelineRun.execute` and `PipelineRun.mark_failed` carry
-  `Cartulary.Pipeline.Changes.DeclareAccount`, which installs the updated row's
+  `MemHouse.Pipeline.Changes.DeclareAccount`, which installs the updated row's
   own Account inside the action's transaction.
-- `Cartulary.DataLayer.declare_account!/1` performs the installation and never
+- `MemHouse.DataLayer.declare_account!/1` performs the installation and never
   overwrites a declaration already in force, so an enclosing Account-scoped
   transaction still wins and the change can never switch or widen tenancy.
 
@@ -62,21 +62,21 @@ hook keeps the long Reactor outside that transaction.
 
 ## No external call inside an Account transaction
 
-A transaction holds one pooled connection. `Cartulary.Repo` keeps
+A transaction holds one pooled connection. `MemHouse.Repo` keeps
 DBConnection's 15,000 ms ownership timeout, while a model call may take 120,000
-ms (`CARTULARY_MODEL_RECEIVE_TIMEOUT_MS`) and structured generation permits two
+ms (`MEMHOUSE_MODEL_RECEIVE_TIMEOUT_MS`) and structured generation permits two
 repairs. Keeping that call in a transaction can close the connection, discard
 the post-call write, retry billed work, and charge the Account twice.
 
 Such work has three phases: a short read transaction, the external call without
-a connection, and a short result transaction. `Cartulary.Memory.extract_message/2`,
-`Cartulary.Memory.extract_message_for_account/2`, and
-`Cartulary.Documents.Service.process_version_for_account/2` all have this
+a connection, and a short result transaction. `MemHouse.Memory.extract_message/2`,
+`MemHouse.Memory.extract_message_for_account/2`, and
+`MemHouse.Documents.Service.process_version_for_account/2` all have this
 shape. The document external phase also fetches the blob, parses, and embeds.
 
 Two database operations remain inside a provider call: resolving the Account's
 `ModelRoleConfig` and appending its `UsageEvent`. Both use
-`Cartulary.DataLayer.in_account_transaction/2`, which installs the Account
+`MemHouse.DataLayer.in_account_transaction/2`, which installs the Account
 setting the row-level-security policies read without resolving an Account row
 or building an actor. Nesting is deliberate: it always opens a transaction
 rather than branching on `Repo.in_transaction?/0`, because under the SQL
@@ -109,7 +109,7 @@ portability owns logical import/export.
 
 ## Idempotency and reconciliation
 
-`Cartulary.Pipeline.Idempotency` defines deterministic keys for:
+`MemHouse.Pipeline.Idempotency` defines deterministic keys for:
 
 - message id plus content hash;
 - document-version id plus content hash;
@@ -126,13 +126,13 @@ provenance rows and does not append a second creation lifecycle event. The
 Account-scoped reconciler scans raw messages without
 `extraction_completed_at` and re-enqueues the deterministic extraction key.
 
-`Cartulary.Pipeline.Lock` is the transactional-writes infrastructure exception
+`MemHouse.Pipeline.Lock` is the transactional-writes infrastructure exception
 that uses a parameterized PostgreSQL advisory-lock query. It performs no
 durable write; all durable state still goes through Ash actions.
 
 ## Audit chain
 
-`Cartulary.Governance.AuditEvent` remains append-only and now carries:
+`MemHouse.Governance.AuditEvent` remains append-only and now carries:
 
 - event category and action;
 - resource id/type;
@@ -148,7 +148,7 @@ configuration, and governance; all emit through the same append API.
 
 ## Evidence
 
-`test/cartulary/f2_transactional_writes_audit_jobs_test.exs` proves:
+`test/memhouse/f2_transactional_writes_audit_jobs_test.exs` proves:
 
 - commit coupling for raw observation, audit, pipeline run, and Oban job;
 - rollback coupling after audit and enqueue;

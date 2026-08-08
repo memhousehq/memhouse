@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Retrieval, Entity Resolution, And Context
 
@@ -12,8 +12,8 @@ replace inline retrieval. This implements `FR-API-1` through `FR-API-5`, `FR-API
 
 ## Retrieval boundary
 
-`Cartulary.Retrieval.Strategy` defines `name/0`, `cost_class/0`, `stage/0`,
-`applicable?/1`, and `candidates/2`. Cartulary ships:
+`MemHouse.Retrieval.Strategy` defines `name/0`, `cost_class/0`, `stage/0`,
+`applicable?/1`, and `candidates/2`. MemHouse ships:
 
 | Stage | Strategies |
 | --- | --- |
@@ -28,7 +28,7 @@ Each source list has its own cutoff and cap. Weighted reciprocal-rank fusion
 uses only within-strategy rank (`k = 60`), so pgvector similarity, FTS rank,
 time relevance, salience, and mention confidence are never treated as
 comparable scores. The `:thorough` profile optionally reranks only the fused
-head through `Cartulary.Model.Gateway`. Reranking and grounded answers hold no
+head through `MemHouse.Model.Gateway`. Reranking and grounded answers hold no
 transaction; the model layer scopes its own configuration read and usage write.
 A hard remaining-time budget wraps strategies and reranking. Reranking receives
 an independently configured timeout clamped to the remaining hard deadline.
@@ -38,7 +38,7 @@ reason classes plus pre-fusion cross-strategy disagreement.
 
 Fusion destroys the evidence of how a candidate arrived, which leaves an
 operator unable to tell a candidate that no strategy generated from one that
-fusion or reranking demoted. `Cartulary.Retrieval.Trace` reconstructs that for a
+fusion or reranking demoted. `MemHouse.Retrieval.Trace` reconstructs that for a
 single run when a `DiagnosticGrant` asks for it: per-strategy local rank and
 score, each list's `weight / (k + rank)` contribution, the pre-rerank fused
 rank, the final rank, and why a candidate was or was not reranked. It reports
@@ -73,14 +73,14 @@ as dropped. An empty list keeps its own meaning: the strategy ran and matched
 nothing. Collapsing the two would make a broken dependency indistinguishable
 from an honest miss, which is the same confusion an unindexed corpus creates.
 
-`Cartulary.Retrieval.Store` is the reviewed read-only data-layer helper for
+`MemHouse.Retrieval.Store` is the reviewed read-only data-layer helper for
 the operations Ash does not express as ordinary resource reads: PG-FTS,
 pgvector ANN order, hop-one expansion, content-free entity-cache aggregates,
 and co-mention statement ids. Its static parameterized statements apply
 Account, authorized scope, lifecycle, soft-delete, and caller-provisional
 filters before returning content or a statement id. The aggregate query is
 reachable only after the browser's account-admin gate and returns counts,
-rates, and quantiles without entity identities. `Cartulary.Memory.Query` has
+rates, and quantiles without entity identities. `MemHouse.Memory.Query` has
 been removed. Durable writes remain Ash-action-only.
 
 ## Profiles and configuration
@@ -99,11 +99,11 @@ with a digest of strategies, weights, and rerank configuration. Deployment
 configuration can constrain enabled strategy modules and the three deadline
 ceilings through:
 
-- `CARTULARY_RETRIEVAL_ENABLED_STRATEGIES`;
-- `CARTULARY_RETRIEVAL_FAST_DEADLINE_MS`;
-- `CARTULARY_RETRIEVAL_BALANCED_DEADLINE_MS`; and
-- `CARTULARY_RETRIEVAL_THOROUGH_DEADLINE_MS`.
-- `CARTULARY_RETRIEVAL_RERANK_TIMEOUT_MS`.
+- `MEMHOUSE_RETRIEVAL_ENABLED_STRATEGIES`;
+- `MEMHOUSE_RETRIEVAL_FAST_DEADLINE_MS`;
+- `MEMHOUSE_RETRIEVAL_BALANCED_DEADLINE_MS`; and
+- `MEMHOUSE_RETRIEVAL_THOROUGH_DEADLINE_MS`.
+- `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS`.
 
 Raw strategy lists and rerank overrides remain restricted to internal/system and
 eval callers. The one browser path into that seam is
@@ -126,19 +126,21 @@ Knowledge and document chunk embeddings are real PostgreSQL `vector` values,
 not float-array stand-ins. Every vector retains provider, model, version, and
 dimensions. The retrieval migration adds:
 
-- HNSW cosine indexes for the pinned 384-dimensional knowledge, chunk, and
-  entity collections;
+- StreamingDiskANN cosine expression indexes for the pinned 1024-dimensional
+  knowledge, chunk, and entity collections;
 - a generated document-chunk `tsvector` and GIN index;
 - the existing knowledge-statement GIN index as the lexical path; and
 - expansion lookup indexes for mentions and knowledge relations.
 
-The production 384-dimensional semantic query uses the matching HNSW
-expression. Other explicitly configured dimensions remain valid and use the
+The production 1024-dimensional semantic query uses the matching DiskANN
+expression. The query applies transaction-local search-list and rescore
+settings. Other explicitly configured dimensions remain valid and use the
 small-corpus path until their own reviewed index migration is installed.
-`Cartulary.Retrieval.Vector` provides the deterministic Nx cosine baseline for
+`MemHouse.Retrieval.Vector` provides the deterministic Nx cosine baseline for
 tiny eval corpora and entity candidate comparison. A pinned-identity mismatch
 still follows the model layer's explicit re-embed plan; vectors are never
-silently reused.
+silently reused. DiskANN post-filters Account, scope, lifecycle, and embedding
+identity; it does not weaken those authorization filters.
 
 `projection_refresh` is the replay-safe rebuild job. It backfills knowledge
 vectors, resolves entities, and refreshes projections. Document import already
@@ -149,12 +151,12 @@ Because vectors and mentions are written by that job alone and no longer ride
 the knowledge-write transaction, they are eventually consistent: a refresh that
 was cancelled or never enqueued leaves a scope holding every governed statement
 with no vectors, while lexical search keeps answering from its generated
-column. `Cartulary.Retrieval.Coverage` is the read that distinguishes the two —
+column. `MemHouse.Retrieval.Coverage` is the read that distinguishes the two —
 per-scope statement, embedded, mention, and mentioned-statement counts plus the
 embedding identities in use, under the same authorization and
 provisional-subject rules as any other retrieval query. Mentions remain counts
 so the entity cache stays internal. Every completed refresh emits
-`[:cartulary, :retrieval, :projection_refresh]` with those counts and the
+`[:memhouse, :retrieval, :projection_refresh]` with those counts and the
 resulting ratio. The Account reconciler detects an active scope with no mention
 rows and enqueues the same full refresh using a corpus-derived replay key.
 Request-local diagnostics classify partial coverage and distinguish no resolved
@@ -246,7 +248,7 @@ stored-content rule advances that namespace, so nodes running the new code
 cannot serve a clean projection written under the older rule while its rebuild
 is pending. A miss uses the already subject-filtered `:fast` retrieval path.
 
-`Cartulary.Context` reserves the caller's character budget in the required
+`MemHouse.Context` reserves the caller's character budget in the required
 order: session summary, peer profile, scope cards, entity cards, then
 salience-ranked knowledge. Clean projections are cached in ETS. Invalidation is broadcast
 through Phoenix PubSub so queue-mode nodes evict the same Account/scope key.
@@ -261,13 +263,13 @@ contract tags, not roadmap phases.
 
 Implementation and regression evidence:
 
-- retrieval and context code under `lib/cartulary/retrieval/` and
-  `lib/cartulary/context/`;
-- retrieval resource fields and actions in `lib/cartulary/knowledge.ex` and
-  `lib/cartulary/documents.ex`;
+- retrieval and context code under `lib/memhouse/retrieval/` and
+  `lib/memhouse/context/`;
+- retrieval resource fields and actions in `lib/memhouse/knowledge.ex` and
+  `lib/memhouse/documents.ex`;
 - migration
   `priv/repo/migrations/20260728092147_f7_retrieval_entity_context.exs`;
 - generated resource snapshots under `priv/resource_snapshots/repo/`;
 - acceptance suite
-  `test/cartulary/f7_retrieval_entity_context_test.exs`; and
+  `test/memhouse/f7_retrieval_entity_context_test.exs`; and
 - updated baseline-contract surface and document-vector regressions.

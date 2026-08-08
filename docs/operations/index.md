@@ -1,4 +1,4 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Operations overview
 
@@ -67,7 +67,7 @@ blob snapshot *together*, then starting the prior release.
 | Governed knowledge | Entity rows and mentions |
 | Document versions and original blobs | Document chunks |
 | Hash-chain audit log | Vector and full-text indexes |
-| Usage ledger | HNSW state, ETS counters |
+| Usage ledger | DiskANN indexes, ETS counters |
 
 ## Content safety
 
@@ -87,7 +87,7 @@ Cost estimates use operator-provided rates and the local usage ledger.
 
 ## Release and versioning
 
-Cartulary uses Semantic Versioning; `mix.exs` is authoritative and a release tag
+MemHouse uses Semantic Versioning; `mix.exs` is authoritative and a release tag
 is exactly `v<version>`. The release checklist, the versioning policy, and the
 required CI checks are maintainer process and live in the repository under
-[`specs/process/`](https://github.com/cartularyhq/cartulary/tree/main/specs/process).
+[`specs/process/`](https://github.com/memhousehq/memhouse/tree/main/specs/process).

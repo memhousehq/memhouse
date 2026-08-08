@@ -1,14 +1,14 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
-# Cartulary design documentation
+# MemHouse design documentation
 
-This tree holds everything design-facing: what Cartulary is meant to do, why it
+This tree holds everything design-facing: what MemHouse is meant to do, why it
 is built the way it is, what has been decided, what is left, and how it is
 measured and released. **It is not published.**
 
 User-facing documentation — installation, usage, operations, and how the
 running system behaves — lives in `docs/` and is published to
-<https://cartularyhq.github.io/cartulary/>. Do not put a spec, plan, ADR,
+<https://memhousehq.github.io/memhouse/>. Do not put a spec, plan, ADR,
 roadmap item, benchmark result, or design rationale there; do not put an
 install step, an API parameter, or an operational procedure here.
 

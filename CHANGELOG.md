@@ -1,32 +1,60 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Changelog
 
-All notable Cartulary changes are recorded here. Versions follow Semantic
+All notable MemHouse changes are recorded here. Versions follow Semantic
 Versioning. While the public API is pre-1.0, a minor release may intentionally
 version an incomplete surface; breaking changes still require an explicit
 changelog entry and contract-version transition.
 
 ## [Unreleased]
 
+### Changed
+
+- The Cartulary product name is now fully migrated to MemHouse. Source and test
+  paths, Phoenix modules, Mix task files, release launchers, database defaults,
+  telemetry labels, and configuration variables now use `memhouse`,
+  `MemHouseWeb`, or the `MEMHOUSE_` prefix. Operators must rename existing
+  `CARTULARY_*` environment variables before upgrade. Existing
+  `cartulary_` API keys and immutable `f11-1` evidence remain valid; new keys
+  and `f11-2` reports use MemHouse names.
+
+- Local semantic retrieval now uses Qwen3-Embedding-0.6B at 1024 dimensions
+  and pgvectorscale 0.9.0 StreamingDiskANN indexes. Packaged pg0 builds are
+  limited to glibc Linux x86_64/ARM64 and Apple Silicon. Existing installations
+  can enqueue the resumable `mix memhouse.reembed` transition; old vectors are
+  absent from semantic retrieval until their batches complete.
+
+## [0.4.0] - 2026-08-08
+
 ### Fixed
 
 - Entity-card summaries no longer make a scope rebuild wait for the sum of its
-  model calls. `Cartulary.Context.Builder` generated one summary per qualifying
+  model calls. `MemHouse.Context.Builder` generated one summary per qualifying
   entity cluster with a plain `Enum.flat_map`, so each call ran only after the
-  previous one returned, degraded, or hit `CARTULARY_MODEL_REQUEST_TIMEOUT_MS`.
+  previous one returned, degraded, or hit `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS`.
   Two comparable scopes in the same run took a few minutes and about 34 minutes,
   the difference being how many of one scope's calls happened to run slow.
   Summary generation now runs with bounded concurrency, so a scope waits closer
   to its slowest call than to their total. The new
-  `CARTULARY_CONTEXT_SUMMARY_CONCURRENCY` sets how many overlap and defaults
+  `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` sets how many overlap and defaults
   to `4`; `1` restores the previous serial behavior. Card order, content, and
   the degraded-summary handling are unchanged, and the `f7-1` retrieval and
   context contract is unchanged.
+- Gate A no longer automates from a model's self-reported confidence. The
+  extractor now derives and persists `direct` or `indirect` source evidence
+  from the schema-validated speaker and subject. Matrix rows use that stable
+  evidence level for `auto_keep`; `minimum_confidence` remains recorded policy
+  metadata only. Hearsay discounting uses the same resolved relationship, not
+  the model's label. Gate B also requires a human placement for personal and
+  restricted knowledge, and the operations console reports content-safe gate
+  outcome totals. ADR 0012 records the `f4-1` governance change.
+  Extracted provenance records prompt `extract-4`; the pipeline contract
+  remains `f5-1`.
 
 - One flaky entity-card summary call no longer aborts a whole scope rebuild.
-  `Cartulary.Context.Builder` raised on any failed summary generation, and that
-  raise travelled out of `Cartulary.Retrieval.Rebuild.scope/2`, so a single
+  `MemHouse.Context.Builder` raised on any failed summary generation, and that
+  raise travelled out of `MemHouse.Retrieval.Rebuild.scope/2`, so a single
   provider timeout reported the rebuild as failed and made the caller re-run
   entity resolution — even though the embeddings and entity rows from the same
   call were already committed. A scope needs one summary call per qualifying
@@ -44,7 +72,7 @@ changelog entry and contract-version transition.
 - A model generation that collapses into filler no longer becomes knowledge.
   Statement text such as `Melanie told the … …… … statement…… ...` satisfied
   `min_length: 1` and every structural check, so it reached the console looking
-  like a fact. `Cartulary.Knowledge.Statement` now states the readability rule:
+  like a fact. `MemHouse.Knowledge.Statement` now states the readability rule:
   a statement must carry letters or digits, and above a short floor at least
   60% of its non-space characters must be. Extraction reports the failure to the
   model, which repairs or fails the observation for retry; the
@@ -175,7 +203,7 @@ changelog entry and contract-version transition.
 - The console graph now joins two named hubs whose entities were mentioned in
   the same statement. Both ends of the line come from one statement the reader
   is already shown, so it discloses nothing beyond what is on the page. It means
-  "named together", not "related to": Cartulary records no relations between
+  "named together", not "related to": MemHouse records no relations between
   entities and this edge does not create one, so the legend and the console
   guide both say so. Only named hubs take part — joining an unnamed one would
   let a reader count the referents inside a collapsed group by counting the
@@ -265,8 +293,8 @@ changelog entry and contract-version transition.
   values. `search` and `ask` responses carry one new top-level field and one new
   `disagreement` key; a caller counting `contributed_strategies` will now see
   only the strategies that actually voted on the order. The `search` telemetry
-  span adds `cartulary.retrieval.empty_strategy_count` and
-  `cartulary.retrieval.query_dependent_empty`, and the console retrieval preview
+  span adds `memhouse.retrieval.empty_strategy_count` and
+  `memhouse.retrieval.query_dependent_empty`, and the console retrieval preview
   names empty strategies alongside dropped ones. `ask` does not yet abstain on
   the new signal; that remains the tracked roadmap item, which this change
   supplies the missing input for. No contract identity changes: `f7-1` still
@@ -296,7 +324,7 @@ changelog entry and contract-version transition.
   tell a transient upstream blip from a failure that will repeat on every
   retry. A hosted aggregator can answer HTTP 200 with a choice whose finish
   reason is `error` — its own upstream failed part-way through generating —
-  and `Cartulary.Model.Providers.ReqLLM` saw only that the response carried no
+  and `MemHouse.Model.Providers.ReqLLM` saw only that the response carried no
   object. It reported the same name for a response cut off at the output cap
   and for one the endpoint withheld, and that name became the `error.type` on
   the model span and the error class on the usage event. Incomplete responses
@@ -321,21 +349,21 @@ changelog entry and contract-version transition.
   so the pooled connection its first query lands on has no Account declared to
   the database, and the row-level security policy on `pipeline_runs` hides every
   row until one is. The job runner reads its own run row back before any
-  Cartulary code runs; finding nothing, it concluded its trigger no longer
+  MemHouse code runs; finding nothing, it concluded its trigger no longer
   applied and cancelled cleanly while the work stayed outstanding. The same gap
   sat on the write side, where an undeclared status update matched no row and
   surfaced as a stale record. This affected all eleven lanes — extraction,
   dream-time, revalidation, expiry, projection refresh, connector sync, import
   rebuild, reconciliation, entity resolution, validation continuation, and
   answer correlation — not extraction alone. Every trigger now reads through the
-  new transactional `Cartulary.Operations.PipelineRun.for_trigger` action, and
+  new transactional `MemHouse.Operations.PipelineRun.for_trigger` action, and
   `execute` and `mark_failed` declare the run's own Account inside their
   transaction; the lane's own work still runs outside that transaction, so no
   job holds a database connection across its workflow. No route, parameter,
   response field, or contract identity changes.
 - Every authenticated API request returned `500 Internal Server Error` once the
   database role became one that row-level security actually applies to.
-  `Cartulary.Operations.Metering.record_api/2` writes the edge usage-ledger row
+  `MemHouse.Operations.Metering.record_api/2` writes the edge usage-ledger row
   from `CartularyWeb.Plugs.MeterUsage`'s before-send callback, which runs after
   the request's own transactions have already ended, and it wrote that row with
   no Account declared to the database at all. The ledger's Account policy
@@ -343,20 +371,20 @@ changelog entry and contract-version transition.
   none installed the insert was refused with `42501 insufficient_privilege` and
   the response the controller had already produced was replaced by a `500` —
   `/api/v1/ingest`, `/api/v1/search`, and every other metered route alike. The
-  same omission on the read side made `Cartulary.Operations.Metering.summary/1`
+  same omission on the read side made `MemHouse.Operations.Metering.summary/1`
   fail silently instead: `GET /api/v1/costs` and the console's overview and
   operations pages reported an Account with real recorded spend as having
   consumed nothing, because the policy filtered the whole ledger away rather
   than raising. Both entry points now open their own
-  `Cartulary.DataLayer.in_account_transaction/2`, which is also what keeps the
+  `MemHouse.DataLayer.in_account_transaction/2`, which is also what keeps the
   ledger row independent of whether the request's own work committed. No route,
   parameter, response field, or contract identity changes; the `f10-1` stamp on
   edge rows is unchanged.
 - The two background rebuild lanes left out of the previous fix now follow the
-  same rule: `Cartulary.Retrieval.Indexer.rebuild_scope/2` and
-  `Cartulary.Retrieval.EntityResolver.rebuild_scope/2` no longer hold an
+  same rule: `MemHouse.Retrieval.Indexer.rebuild_scope/2` and
+  `MemHouse.Retrieval.EntityResolver.rebuild_scope/2` no longer hold an
   Account database transaction across a model call. Both previously opened one
-  `Cartulary.DataLayer.with_account_id/3` transaction around the entire scope
+  `MemHouse.DataLayer.with_account_id/3` transaction around the entire scope
   rebuild with provider calls inside it — one batched embedding call for the
   indexer, and for the entity resolver, one embedding call per unmatched
   surface form plus one `dream_reasoner` structured-adjudication call per
@@ -370,7 +398,7 @@ changelog entry and contract-version transition.
   Account's entities per surface form, and keeps clearing a scope's stale
   mentions and writing its rebuilt ones in that same final transaction, so a
   failure anywhere still leaves the previous index in place rather than half
-  cleared. Fixes a latent bug in `Cartulary.Retrieval.Vector.cosine/2`
+  cleared. Fixes a latent bug in `MemHouse.Retrieval.Vector.cosine/2`
   surfaced by the regression tests for this change: it multiplied and divided
   `Nx.Tensor` values with Kernel operators instead of `Nx.multiply/2` and
   `Nx.divide/2`, which always raised once an account actually had more than
@@ -385,26 +413,26 @@ changelog entry and contract-version transition.
   two bounded repairs) at up to `CARTULARY_MODEL_RECEIVE_TIMEOUT_MS` — 120
   seconds — each. DBConnection closes a connection whose checkout exceeds its
   ownership timeout, 15 000 ms by default and not overridden for
-  `Cartulary.Repo`, so any extraction whose cumulative provider time crossed
+  `MemHouse.Repo`, so any extraction whose cumulative provider time crossed
   roughly 15 seconds lost its connection mid-transaction. The write recording
   an already-completed, already-billed call was discarded and the job retried,
   charging the Account a second time; observed at scale as roughly one in 25
   first attempts against a reasoning model. Raising `POOL_SIZE` does not help,
   because the failure is one connection held too long rather than too few
   connections. Three call sites are affected:
-  `Cartulary.Memory.extract_message/2` and
-  `Cartulary.Memory.extract_message_for_account/2`,
-  `Cartulary.Documents.Service.process_version_for_account/2` (whose
+  `MemHouse.Memory.extract_message/2` and
+  `MemHouse.Memory.extract_message_for_account/2`,
+  `MemHouse.Documents.Service.process_version_for_account/2` (whose
   transaction also spanned the blob fetch, the parse, and the embedding call),
   and both provider calls on the `/api/ask` request path — the rerank step in
-  `Cartulary.Retrieval.Engine` and grounded answer generation in
-  `Cartulary.Memory`, each of which wrapped its call in a transaction that
+  `MemHouse.Retrieval.Engine` and grounded answer generation in
+  `MemHouse.Memory`, each of which wrapped its call in a transaction that
   existed only to scope the model layer. Each now reads in one short
   transaction, calls the model holding no connection, and writes in a second
   short transaction where it writes at all.
-  `Cartulary.Model.Config` and `Cartulary.Model.Usage` scope their own
+  `MemHouse.Model.Config` and `MemHouse.Model.Usage` scope their own
   Account-scoped reads and writes through the new
-  `Cartulary.DataLayer.in_account_transaction/2`, since role resolution and
+  `MemHouse.DataLayer.in_account_transaction/2`, since role resolution and
   usage metering both run during a provider call. A consequence: a usage record
   now commits independently, so a caller whose own write fails afterwards no
   longer rolls back the ledger row for a call that really was billed.
@@ -415,7 +443,7 @@ changelog entry and contract-version transition.
   door" — was inert in every deployment mode and every test lane, because
   PostgreSQL exempts superusers from RLS unconditionally and `FORCE ROW LEVEL
   SECURITY` only removes the table owner's exemption, never the superuser's.
-  Every connection Cartulary made was a superuser connection: `postgres` in
+  Every connection MemHouse made was a superuser connection: `postgres` in
   `mix test` and every CI lane, and — the deployment-affecting case — the
   bootstrap role pg0's `initdb` creates in the turnkey single-node install.
   This did not leak tenant data; the Ash actor and tenant filter still ran on
@@ -423,20 +451,20 @@ changelog entry and contract-version transition.
   documented backstop for a missed application-layer filter was not there,
   and no test could detect its absence. Every deployment mode now provisions
   and connects as a `NOSUPERUSER NOBYPASSRLS` role
-  (`Cartulary.Database.AppRole`), and refuses to boot if that switch did not
+  (`MemHouse.Database.AppRole`), and refuses to boot if that switch did not
   take unless `CARTULARY_ALLOW_UNRESTRICTED_DATABASE_ROLE=true` is set. See
   `specs/adr/0008-restricted-database-role-for-rls-enforcement.md` and
   GitHub issue #55.
 - A job that failed once and was scheduled for a delayed retry (state
   `retryable`) stayed in that state permanently instead of running again once
-  its backoff elapsed. `config :cartulary, Oban` sets `plugins: false`, and
+  its backoff elapsed. `config :memhouse, Oban` sets `plugins: false`, and
   `AshOban.config/2` treats any `:plugins` value that is not already a
   non-empty list as "also disable peer leadership entirely" by forcing
   `peer: false`, which Oban resolves to a peer that can never become leader.
   Oban's job stager only promotes delayed `scheduled`/`retryable` jobs back to
   `available` while its node holds leadership, so every node was permanently
   unable to stage its own retries — silently, with no exception raised.
-  `Cartulary.Application.oban_config/0` now restores the ordinary
+  `MemHouse.Application.oban_config/0` now restores the ordinary
   database-backed peer after `AshOban.config/2` runs, so this node can win
   leadership again; every other consequence of the empty plugin list (no
   Cron, no Pruner) is unchanged.
@@ -455,11 +483,11 @@ changelog entry and contract-version transition.
   timeout for model ids it recognizes as reasoning models (OpenAI's
   o-series, gpt-5, and codex families), which `gpt-oss-120b` does not match.
   `max_tokens` and `receive_timeout` request options already existed in
-  `Cartulary.Model.Providers.ReqLLM`; `reasoning_effort` was added to its
+  `MemHouse.Model.Providers.ReqLLM`; `reasoning_effort` was added to its
   allowlist, and all three now have a default. Role options are always
   string-valued, but req_llm validates `reasoning_effort` against a fixed
   atom enum and rejects a string outright — every extraction call failed
-  immediately on this option until `Cartulary.Model.Providers.ReqLLM` started
+  immediately on this option until `MemHouse.Model.Providers.ReqLLM` started
   converting it to the atom the schema requires.
 
 ### Added
@@ -478,18 +506,18 @@ changelog entry and contract-version transition.
   the projection refresh alone; a refresh that was cancelled or never enqueued
   left semantic and entity recall permanently empty while full-text search kept
   answering — its index is a generated column no queue failure can lose — and
-  nothing anywhere reported the gap. `Cartulary.Retrieval.index_coverage/3`
+  nothing anywhere reported the gap. `MemHouse.Retrieval.index_coverage/3`
   returns per-scope statement, embedded, and entity-mention counts plus the
   embedding identities in use, filtered by Account and authorized scopes and
   narrowing provisional statements to their subject like every other retrieval
   query. Mentions are reported as a count, so the entity cache stays internal.
   `/console/scopes` shows the counts and highlights a shortfall, and every
-  completed refresh emits `[:cartulary, :retrieval, :projection_refresh]` with
+  completed refresh emits `[:memhouse, :retrieval, :projection_refresh]` with
   `indexed`, `statements`, `embedded`, `mentions`, and `coverage` so an
   operator can alert on the ratio. No new table, route, or contract identity.
 - Two off-by-default switches let an operator declare an Account or a whole
   deployment has no real human governance participant, and auto-grant the
-  subject-consent step `Cartulary.Governance.Engine` otherwise blocks on for
+  subject-consent step `MemHouse.Governance.Engine` otherwise blocks on for
   personal knowledge above peer level: `Account.consent_mode: "auto"`
   (account-admin only, audited) and `CARTULARY_GOVERNANCE_UNATTENDED=true`
   (boot-time, logged, reported on `GET /api/ready`). Intended for benchmark,
@@ -576,7 +604,7 @@ changelog entry and contract-version transition.
   release checklist from `docs/operations/` → `specs/process/`. File names are
   unchanged, so the recorded evaluation reports and every other evidence
   artifact keep their identities. References were updated in
-  `Cartulary.ReleaseReadiness`, `mix cartulary.eval.release`, the evaluation
+  `MemHouse.ReleaseReadiness`, `mix memhouse.eval.release`, the evaluation
   regression test, `.github/CODEOWNERS`, the issue and pull request templates,
   the workflows README, `AGENTS.md`, `CONTRIBUTING.md`, and `README.md`.
 - Replaced `docs/operations/README.md` with the new operations section and the
@@ -598,7 +626,7 @@ changelog entry and contract-version transition.
   every remaining `F0`–`F11` phase label from code prose, replacing each with
   the rule stated in place. The `f`-prefixed contract identity values
   (`poc-0`, `f4-1`, `f5-1`, `f7-1`, `f9-1`, `f10-1`, `f11-1`, `f11-suite-1`,
-  `f11-surface-contracts-1`, `cartulary-account-1`) are unchanged, and the test
+  `f11-surface-contracts-1`, `memhouse-account-1`) are unchanged, and the test
   filenames that carry regression-evidence identities were deliberately not
   renamed.
 - Added a "Coding conventions" section to `AGENTS.md` making the above a
@@ -610,7 +638,7 @@ changelog entry and contract-version transition.
   `.github/CODEOWNERS`, the pull request template, and the three issue
   templates.
 - Replaced the boilerplate `priv/repo/seeds.exs` comment, which advised writing
-  through `Cartulary.Repo.insert!/1` and so contradicted the pipeline-only and
+  through `MemHouse.Repo.insert!/1` and so contradicted the pipeline-only and
   Ash-action-only write rules.
 - Updated the official GitHub Actions used by CI, nightly evaluation, and
   release workflows to maintained Node 24 action majors.
@@ -627,7 +655,7 @@ changelog entry and contract-version transition.
 - Changed the `prerequisite` value for the unavailable OpenAPI and generated
   SDK surfaces in `docs/eval/surface-contract-inventory.json` from `F8` to
   `integration-surfaces`, with the matching assertion updated in
-  `test/cartulary/f11_evaluation_ci_release_readiness_test.exs`. The
+  `test/memhouse/f11_evaluation_ci_release_readiness_test.exs`. The
   `f11-surface-contracts-1` schema identity and the `unavailable` statuses are
   unchanged.
 
@@ -660,11 +688,11 @@ changelog entry and contract-version transition.
   the `confidence` field as a JSON string instead of a native number —
   observed identically across unrelated backing models over the OpenRouter
   compat path, which pointed at a type problem rather than a range problem.
-  `Cartulary.Model.Schema.Extraction`'s `confidence/1` validator now parses a
+  `MemHouse.Model.Schema.Extraction`'s `confidence/1` validator now parses a
   numeric string before range-checking it; the 0–1 range check itself, for
   both numbers and numeric strings, is unchanged. No contract version
   identity changed. Regression evidence:
-  `test/cartulary/model/schema_extraction_test.exs`.
+  `test/memhouse/model/schema_extraction_test.exs`.
 
 ## [0.2.0] - 2026-07-28
 
@@ -674,7 +702,7 @@ changelog entry and contract-version transition.
   compilation, Ash snapshot drift, tests and properties, Credo, Dialyzer,
   Sobelow, surface privacy, provider cassettes, and evaluation report
   provenance (`AD-EVAL-1` through `AD-EVAL-5`, `AD-DATA-10`).
-- Versioned `f11-1` release/nightly evaluation reports for Cartulary product
+- Versioned `f11-1` release/nightly evaluation reports for MemHouse product
   scenarios, LoCoMo, LongMemEval, ConvoMem, and BEAM, including deterministic
   RAG-triad signals, abstention/citation measures, token efficiency, latency,
   per-category scores, degradation curves, and strategy ablations
@@ -698,5 +726,5 @@ changelog entry and contract-version transition.
 
 ### Added
 
-- Initial Cartulary POC and free-core implementation through F10, including the
+- Initial MemHouse POC and free-core implementation through F10, including the
   F0 contract, F1–F7, F9, and F10 evidence described in the roadmap.

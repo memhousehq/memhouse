@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 # Development-environment configuration, for a source checkout run with `mix phx.server` or
 # `iex -S mix`.
@@ -20,11 +20,11 @@ import Config
 # release instead gets its connection from `config/runtime.exs`, either as a
 # supervised pg0 instance or an operator-run server; both are the same code path
 # with a different database location.
-config :cartulary, Cartulary.Repo,
+config :memhouse, MemHouse.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "cartulary_dev",
+  database: "memhouse_dev",
   # SQL logging is off because embedding and retrieval queries carry vector
   # literals and statement text; a chatty dev log is also a content leak.
   log: false,
@@ -41,7 +41,7 @@ config :cartulary, Cartulary.Repo,
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
-config :cartulary, CartularyWeb.Endpoint,
+config :memhouse, MemHouseWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}],
@@ -66,7 +66,7 @@ config :cartulary, CartularyWeb.Endpoint,
 #
 # Left over from the Phoenix generator: nothing in this application reads
 # `:dev_routes`, and the router mounts no development-only tooling.
-config :cartulary, dev_routes: true
+config :memhouse, dev_routes: true
 
 # Include request and trace metadata in development logs so terminal output can
 # be correlated with collector traces.

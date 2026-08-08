@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Cartulary is intended to be built through the L3 automation flow: one scoped
+MemHouse is intended to be built through the L3 automation flow: one scoped
 issue, one branch, one PR, human review, and then the next task. That flow lets
 Codex help with implementation while preserving the ARCH prime directive:
 one codebase, two deployment modes, identical guarantees.
@@ -25,7 +25,7 @@ repo-visible changes should remain inert and reviewable.
 
 ## Decision
 
-Cartulary will use a controlled repository automation model:
+MemHouse will use a controlled repository automation model:
 
 - A human scopes each implementation issue and applies `ai-ready` only when the
   goal, scope, architecture anchors, acceptance criteria, required tests, and
@@ -51,7 +51,7 @@ traceable changes quickly, while deterministic checks and human review preserve
 the same guarantees expected of human-authored code.
 
 The trade-off is throughput: tasks are intentionally serialized through issues,
-PRs, checks, and review. That cost is acceptable because Cartulary's architecture
+PRs, checks, and review. That cost is acceptable because MemHouse's architecture
 depends on stable review handles, deployment-mode parity, account isolation, and
 honest evidence. Batching unrelated work or allowing AI auto-merge would make
 those guarantees harder to audit.

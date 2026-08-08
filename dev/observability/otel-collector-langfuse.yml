@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # Opt-in variant of otel-collector.yml that additionally forwards traces to a
 # Langfuse project. Development only.
@@ -12,7 +12,7 @@
 #   LANGFUSE_OTLP_AUTHORIZATION   "Basic <base64 public:secret>"
 #
 # This exporter sends span data to a third party. That is only safe because
-# Cartulary spans are content-safe by construction — ids, counts, profile and
+# MemHouse spans are content-safe by construction — ids, counts, profile and
 # model names, timings, token counts, error classes; never raw messages,
 # prompts, answers, keys, or secrets. Do not add an attribute to a span on the
 # assumption that it "stays local": with this config, it does not.

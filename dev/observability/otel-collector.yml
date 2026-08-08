@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 #
 # OpenTelemetry Collector configuration for the local development stack in
 # dev/observability/docker-compose.yml. Not used by any release or container
@@ -10,7 +10,7 @@
 # Output: traces to Jaeger, metrics to a Prometheus scrape endpoint, and a
 #         low-verbosity copy of both to the collector's stdout for debugging.
 #
-# The collector performs no redaction. It is safe here only because Cartulary
+# The collector performs no redaction. It is safe here only because MemHouse
 # emits content-safe spans in the first place.
 
 receivers:

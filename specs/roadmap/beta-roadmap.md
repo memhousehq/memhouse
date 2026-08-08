@@ -1,12 +1,12 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
-# Cartulary Beta Roadmap
+# MemHouse Beta Roadmap
 
 Status: active. This is the only roadmap.
 Application version at time of writing: `0.2.0`.
 Repository state verified: 2026-07-28.
 
-Cartulary is past its proof-of-concept stage. The memory engine, governance,
+MemHouse is past its proof-of-concept stage. The memory engine, governance,
 retrieval, documents, packaging, and release machinery are implemented and
 under test. This document lists **only the work that is still outstanding**.
 Anything already delivered has been removed from here; the record of what runs
@@ -186,7 +186,7 @@ The evaluation framework, report contract, thresholds, and CI lanes are done.
 The committed fixtures are deliberately smoke-scale. Anchors: `AD-EVAL-3`,
 `EV-STRAT-1`, `NFR-1`, `NFR-11`.
 
-- [ ] Run upstream-scale LoCoMo through `mix cartulary.eval.release` and
+- [ ] Run upstream-scale LoCoMo through `mix memhouse.eval.release` and
   retain the `f11-1` report as release evidence.
 - [ ] Run upstream-scale LongMemEval and retain the report.
 - [ ] Run upstream-scale ConvoMem and retain the report.
@@ -265,8 +265,8 @@ them. Names must match exactly.
 Reference:
 
 ```bash
-gh api repos/cartularyhq/cartulary/rulesets/<ruleset-id>
-gh api repos/cartularyhq/cartulary/actions/permissions
+gh api repos/memhousehq/memhouse/rulesets/<ruleset-id>
+gh api repos/memhousehq/memhouse/actions/permissions
 ```
 
 ### 4.3 Secrets, variables, and environments
@@ -277,8 +277,8 @@ The nightly live-model evaluation lane therefore cannot run.
 - [ ] Create a protected environment for release and publishing credentials.
 - [ ] Add `OPENROUTER_API_KEY` as an environment secret, never exposed to
   pull requests from forks.
-- [ ] Add the `CARTULARY_EVAL_JUDGE_MODEL` repository variable, set to a
-  provider and model family different from `CARTULARY_MODEL_ASK`.
+- [ ] Add the `MEMHOUSE_EVAL_JUDGE_MODEL` repository variable, set to a
+  provider and model family different from `MEMHOUSE_MODEL_ASK`.
 - [ ] Add `HEX_API_KEY` only when a package publish task exists, scoped to the
   release environment.
 - [x] Publish tagged containers to GHCR with the built-in `GITHUB_TOKEN` and
@@ -300,8 +300,8 @@ disabled on a public repository where they are free.
 
 ### 4.5 Codex and agent wiring
 
-- [ ] Connect Codex Cloud to the `cartularyhq` organization with the minimum
-  repository access Cartulary needs.
+- [ ] Connect Codex Cloud to the `memhousehq` organization with the minimum
+  repository access MemHouse needs.
 - [ ] Start with manual `@codex review` on pull requests; enable automatic
   review only after several manual reviews produce low-noise feedback.
 - [ ] Keep agent implementation limited to issues labelled `ai-ready`.
@@ -349,19 +349,19 @@ configuration, and test fixtures. Each item is a deliberate contract decision,
 not a cosmetic rename: changing a default or an identity string is a versioned
 behaviour change that needs a changelog entry and updated contract evidence.
 
-- [ ] Replace the `/poc` default scope path in `lib/cartulary/memory.ex` with
+- [ ] Replace the `/poc` default scope path in `lib/memhouse/memory.ex` with
   a neutral default, update the baseline contract tests and eval fixtures, and
   version the change in `CHANGELOG.md`.
-- [ ] Rename `test/cartulary/poc_contract_test.exs` and
+- [ ] Rename `test/memhouse/poc_contract_test.exs` and
   `test/fixtures/eval/poc-contract-baseline.json` to baseline-contract names,
   and decide explicitly whether the `contract_version` string stays `poc-0` as
   frozen history or advances to a beta identity.
-- [ ] Rename the `poc-baseline` default of `CARTULARY_RETRIEVAL_VARIANT` in
+- [ ] Rename the `poc-baseline` default of `MEMHOUSE_RETRIEVAL_VARIANT` in
   `config/runtime.exs`, noting that the label is an experiment-comparison key
   and that older recorded experiments keep the old value.
-- [ ] Rename the `eval-poc` default account and the `cartulary-poc-smoke`
-  benchmark label in `lib/mix/tasks/cartulary.eval.smoke.ex`.
-- [ ] Retire `Cartulary.Memory` as a facade once every surface calls Ash
+- [ ] Rename the `eval-poc` default account and the `memhouse-poc-smoke`
+  benchmark label in `lib/mix/tasks/memhouse.eval.smoke.ex`.
+- [ ] Retire `MemHouse.Memory` as a facade once every surface calls Ash
   actions directly, per
   `specs/architecture/free-core-architecture.md`.
 - [ ] Leave historical artefacts alone and say so in the PR:
@@ -426,7 +426,7 @@ free/enterprise line remain human-only decisions under ADR-0002.
 The beta becomes 1.0 when all of the following hold, each with committed
 evidence:
 
-1. [ ] A fresh user installs and runs Cartulary single-node without Docker or
+1. [ ] A fresh user installs and runs MemHouse single-node without Docker or
    a preinstalled Postgres on a supported platform.
 2. [ ] All public writes persist raw observations only; every knowledge write
    comes from the pipeline through Gate A/B.

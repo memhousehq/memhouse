@@ -1,25 +1,25 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # Physical Backup And Restore
 
 Back up the Postgres database and original blob store at the same recovery
-point. Chunks, projections, indexes, HNSW state, ETS counters, and
+point. Chunks, projections, DiskANN indexes, ETS counters, and
 `persistent_term` caches are rebuildable.
 
 ## Embedded pg0
 
 For a cold backup, stop `bin/server` cleanly and verify its pg0 instance has
-stopped. Copy the complete `CARTULARY_PG0_DATA_DIR` and
-`CARTULARY_BLOB_ROOT`, preserving ownership, permissions, and timestamps.
-Record the Cartulary release version, pg0 version from `rel/pg0/VERSION`,
+stopped. Copy the complete `MEMHOUSE_PG0_DATA_DIR` and
+`MEMHOUSE_BLOB_ROOT`, preserving ownership, permissions, and timestamps.
+Record the MemHouse release version, pg0 version from `rel/pg0/VERSION`,
 PostgreSQL version, paths, time, and a checksum inventory.
 
-Restore only while Cartulary and pg0 are stopped:
+Restore only while MemHouse and pg0 are stopped:
 
 1. Move the failed directories aside; do not merge file trees.
 2. Restore the database and blob directories from the same snapshot epoch.
 3. Restore their original owner and private permissions.
-4. Start the same Cartulary release and require `/api/ready` to return 200.
+4. Start the same MemHouse release and require `/api/ready` to return 200.
 5. Run a logical export validation and representative governed reads.
 6. Upgrade only after the restored version is healthy.
 
@@ -36,7 +36,7 @@ references.
 
 For a logical emergency copy, use `pg_dump`/`pg_restore` with the exact server
 major version. Include extensions, schemas, functions, RLS policies, Oban, and
-all Cartulary tables. Unlike a portable Account archive, this dump contains
+all MemHouse tables. Unlike a portable Account archive, this dump contains
 credentials and deployment state.
 
 ## S3-compatible blobs

@@ -1,6 +1,6 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.Repo.Migrations.F2TransactionalWritesAuditJobs do
+defmodule MemHouse.Repo.Migrations.F2TransactionalWritesAuditJobs do
   @moduledoc """
   Updates resources based on their most recent snapshots.
 
@@ -95,10 +95,10 @@ defmodule Cartulary.Repo.Migrations.F2TransactionalWritesAuditJobs do
     execute """
     CREATE POLICY cartulary_account_wall ON pipeline_runs
     USING (
-      account_id = NULLIF(current_setting('cartulary.account_id', true), '')::uuid
+      account_id = NULLIF(current_setting('memhouse.account_id', true), '')::uuid
     )
     WITH CHECK (
-      account_id = NULLIF(current_setting('cartulary.account_id', true), '')::uuid
+      account_id = NULLIF(current_setting('memhouse.account_id', true), '')::uuid
     )
     """
   end

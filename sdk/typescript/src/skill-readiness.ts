@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+// SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 //
-// Client-side helpers for interpreting a Cartulary skill-readiness report.
+// Client-side helpers for interpreting a MemHouse skill-readiness report.
 //
-// Before an agent runs a named skill in a scope, Cartulary can answer "does this peer
+// Before an agent runs a named skill in a scope, MemHouse can answer "does this peer
 // already know enough?". The server evaluates human-authored skill requirement cards
 // against governed knowledge and returns a reasoning-free report of what is satisfied,
 // what is missing, and what has gone stale. This module turns one such report into a

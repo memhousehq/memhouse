@@ -1,6 +1,6 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.Model.GroundedAnswerProvider do
+defmodule MemHouse.Model.GroundedAnswerProvider do
   @moduledoc """
   Offline provider for exercising grounded answer assembly at public boundaries.
 
@@ -15,10 +15,10 @@ defmodule Cartulary.Model.GroundedAnswerProvider do
   `stop/0` during cleanup. It must never be configured outside tests.
   """
 
-  @behaviour Cartulary.Model.Provider
+  @behaviour MemHouse.Model.Provider
 
-  alias Cartulary.Model.Provider.Result
-  alias Cartulary.Model.Providers.Deterministic
+  alias MemHouse.Model.Provider.Result
+  alias MemHouse.Model.Providers.Deterministic
 
   @supported_answer "The recorded statements do not establish this, but they support a preference for concise weekly release summaries."
   @inferred_answer "Avery most likely prefers concise weekly release summaries."

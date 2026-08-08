@@ -1,6 +1,6 @@
-# SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule Cartulary.Model.CassetteProvider do
+defmodule MemHouse.Model.CassetteProvider do
   @moduledoc """
   Offline model provider that replays a recorded JSON script instead of calling a
     model.
@@ -13,9 +13,9 @@ defmodule Cartulary.Model.CassetteProvider do
     cannot reach a model endpoint.
   """
 
-  @behaviour Cartulary.Model.Provider
+  @behaviour MemHouse.Model.Provider
 
-  alias Cartulary.Model.Provider.Result
+  alias MemHouse.Model.Provider.Result
 
   @doc """
   Loads one scenario from a cassette file and arms it as the next responses.

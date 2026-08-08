@@ -1,12 +1,12 @@
-<!-- SPDX-License-Identifier: Cartulary-Sustainable-Use-1.0 -->
+<!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
 # SDK helpers
 
 Two transport-neutral modules turn a skill-readiness report into a run-or-stop
 decision:
 
-- [`sdk/typescript/src/skill-readiness.ts`](https://github.com/cartularyhq/cartulary/blob/main/sdk/typescript/src/skill-readiness.ts)
-- [`sdk/python/cartulary/skill_readiness.py`](https://github.com/cartularyhq/cartulary/blob/main/sdk/python/cartulary/skill_readiness.py)
+- [`sdk/typescript/src/skill-readiness.ts`](https://github.com/memhousehq/memhouse/blob/main/sdk/typescript/src/skill-readiness.ts)
+- [`sdk/python/memhouse/skill_readiness.py`](https://github.com/memhousehq/memhouse/blob/main/sdk/python/memhouse/skill_readiness.py)
 
 !!! warning "These are not generated SDKs"
     These files provide no HTTP/MCP client, authentication, retries, request
@@ -59,7 +59,7 @@ import {
   SkillReadinessBlockedError,
 } from "./skill-readiness";
 
-const response = await fetch("https://cartulary.example/api/v1/readiness", {
+const response = await fetch("https://memhouse.example/api/v1/readiness", {
   method: "POST",
   headers: {
     authorization: `Bearer ${apiKey}`,
@@ -99,7 +99,7 @@ its prototype chain and `instanceof` silently returns false — check
 ## Python
 
 ```python
-from cartulary.skill_readiness import (
+from memhouse.skill_readiness import (
     SkillReadinessBlockedError,
     require_skill_ready,
 )
