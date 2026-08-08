@@ -50,6 +50,7 @@ defmodule MemHouse.Memory do
   # caller names no limit. In retrieval it also caps how many candidates each
   # strategy may contribute, so raising it widens the fused candidate pool too.
   @default_limit 12
+  @extraction_window_size 6
 
   @doc """
   Persists one raw observation and enqueues extraction before returning.
@@ -804,17 +805,34 @@ defmodule MemHouse.Memory do
       |> Ash.Query.set_tenant(account.id)
       |> Ash.read_one!(actor: actor)
 
-    peer = read_one_by_id!(Peer, message.peer_id, account.id, actor)
     scope = read_one_by_id!(Scope, message.scope_id, account.id, actor)
 
+    window_messages =
+      Message
+      |> Ash.Query.filter(
+        session_id == ^message.session_id and scope_id == ^message.scope_id and
+          occurred_at <= ^message.occurred_at
+      )
+      |> Ash.Query.sort(occurred_at: :desc, inserted_at: :desc)
+      |> Ash.Query.limit(@extraction_window_size)
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read!(actor: actor)
+      |> Enum.sort_by(&{&1.occurred_at, &1.inserted_at, &1.id})
+      |> Enum.map(&message_with_peer_key(&1, account.id, actor))
+
     message
-    |> record_to_map()
+    |> message_with_peer_key(account.id, actor)
     |> Map.merge(%{
-      "peer_key" => peer.key,
       "scope_path" => scope.path,
       "account_key" => account.key,
-      "known_peer_keys" => known_peer_keys(account.id, actor)
+      "known_peer_keys" => known_peer_keys(account.id, actor),
+      "window_messages" => window_messages
     })
+  end
+
+  defp message_with_peer_key(message, account_id, actor) do
+    peer = read_one_by_id!(Peer, message.peer_id, account_id, actor)
+    record_to_map(message) |> Map.put("peer_key", peer.key)
   end
 
   # The surrounding identifiers the extractor needs for validation and provenance. Built in
@@ -830,6 +848,8 @@ defmodule MemHouse.Memory do
       peer_id: message["peer_id"],
       source_peer_id: message["peer_id"],
       message_id: message["id"],
+      window_messages: message["window_messages"],
+      window_message_ids: Enum.map(message["window_messages"], & &1["id"]),
       actor: actor
     }
   end
@@ -903,7 +923,7 @@ defmodule MemHouse.Memory do
         # row instead, so it never enters the message id list.
         source_message_ids =
           if source_type(message) == "message" do
-            Enum.uniq(existing.source_message_ids ++ [message["id"]])
+            Enum.uniq(existing.source_message_ids ++ item.source_message_ids)
           else
             existing.source_message_ids
           end
@@ -942,7 +962,7 @@ defmodule MemHouse.Memory do
               target_level: item.target_level,
               verification: "pending",
               source_message_ids:
-                if(source_type(message) == "message", do: [message["id"]], else: []),
+                if(source_type(message) == "message", do: item.source_message_ids, else: []),
               expires_at: item.expires_at,
               revalidate_after: item.revalidate_after,
               relevant_from: item.relevant_from,
@@ -1036,12 +1056,20 @@ defmodule MemHouse.Memory do
   # matters because erasure and supersession count independent sources to decide
   # whether a statement still has any surviving reason to exist.
   defp ensure_provenance!(account_id, actor, knowledge, message, item) do
-    source_type = source_type(message)
+    if source_type(message) == "message" do
+      Enum.each(item.source_message_ids, fn message_id ->
+        ensure_provenance_source!(account_id, actor, knowledge, "message", message_id, item)
+      end)
+    else
+      ensure_provenance_source!(account_id, actor, knowledge, "document", message["id"], item)
+    end
+  end
 
+  defp ensure_provenance_source!(account_id, actor, knowledge, source_type, source_id, item) do
     query =
       Provenance
       |> Ash.Query.filter(knowledge_item_id == ^knowledge.id and source_type == ^source_type)
-      |> provenance_source_filter(source_type, message["id"])
+      |> provenance_source_filter(source_type, source_id)
 
     existing =
       query
@@ -1057,8 +1085,8 @@ defmodule MemHouse.Memory do
           knowledge_item_id: knowledge.id,
           scope_id: knowledge.scope_id,
           source_type: source_type,
-          message_id: if(source_type == "message", do: message["id"]),
-          document_version_id: if(source_type == "document", do: message["id"]),
+          message_id: if(source_type == "message", do: source_id),
+          document_version_id: if(source_type == "document", do: source_id),
           extracting_provider: item.provider,
           extracting_model: item.model,
           extracting_model_version: item.model_version,

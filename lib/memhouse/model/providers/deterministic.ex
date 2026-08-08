@@ -112,6 +112,7 @@ defmodule MemHouse.Model.Providers.Deterministic do
   defp extraction_items(messages, opts) do
     content = Keyword.get(opts, :observation) || last_user_content(messages)
     source_peer_key = Keyword.get(opts, :source_peer_key)
+    source_message_ids = Keyword.get(opts, :source_message_ids, [])
 
     content
     # Split after sentence-ending punctuation or on line breaks.
@@ -120,6 +121,7 @@ defmodule MemHouse.Model.Providers.Deterministic do
     # Under 12 characters is almost always a greeting or a fragment, not a
     # durable claim worth proposing.
     |> Enum.reject(&(String.length(&1) < 12))
+    |> Enum.reject(&non_durable_conversation?/1)
     # At most 6 candidates per observation, keeping offline runs cheap and their
     # output small enough to assert on in tests.
     |> Enum.take(6)
@@ -130,6 +132,7 @@ defmodule MemHouse.Model.Providers.Deterministic do
         "kind" => infer_kind(statement),
         "subject_type" => "peer",
         "subject_ref" => source_peer_key,
+        "source_message_ids" => source_message_ids,
         "confidence_percentage" => 55,
         "sensitivity" => infer_sensitivity(statement),
         "target_level" => "peer",
@@ -140,6 +143,11 @@ defmodule MemHouse.Model.Providers.Deterministic do
         "relevant_until" => nil
       }
     end)
+  end
+
+  defp non_durable_conversation?(statement) do
+    String.ends_with?(statement, "?") or
+      String.match?(statement, ~r/^(hi|hello|hey|thanks|thank you|great job|nice work)\b/i)
   end
 
   # Falls back to the most recent user turn when the caller did not pass the

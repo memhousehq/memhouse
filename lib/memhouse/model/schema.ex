@@ -44,6 +44,8 @@ defmodule MemHouse.Model.Schema.Extraction do
   - **Evidence is derived, not asserted.** Only a peer speaking about itself is
     `direct`; every other source-to-subject relationship is `indirect`. The
     same deterministic relationship applies the third-party confidence discount.
+  - **Message provenance is bounded.** A candidate may cite only message ids
+    supplied in the extractor's conversation window.
   - **Time bounds must be coherent.** A validity window that starts after it
     ends is rejected.
   - **Nothing here activates knowledge.** A valid candidate is still only a
@@ -133,6 +135,12 @@ defmodule MemHouse.Model.Schema.Extraction do
             "confidence_percentage" => %{"type" => "integer", "minimum" => 1, "maximum" => 100},
             "subject_type" => %{"type" => "string", "enum" => @subject_types},
             "subject_ref" => %{"type" => "string", "minLength" => 1},
+            "source_message_ids" => %{
+              "type" => "array",
+              "items" => %{"type" => "string", "format" => "uuid"},
+              "minItems" => 1,
+              "uniqueItems" => true
+            },
             "update_operation" => %{"type" => "string", "enum" => @operations}
           }),
         "required" =>
@@ -200,6 +208,7 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, kind} <- enum(item, "kind", allowed(:kind)),
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
          {:ok, subject_ref} <- valid_subject_ref(item, subject_type, context),
+         {:ok, source_message_ids} <- source_message_ids(item, context),
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
@@ -212,6 +221,7 @@ defmodule MemHouse.Model.Schema.Extraction do
              kind: kind,
              subject_type: subject_type,
              subject_ref: subject_ref,
+             source_message_ids: source_message_ids,
              confidence: source_confidence(confidence, subject_type, subject_ref, context),
              evidence_level: evidence_level(subject_type, subject_ref, context),
              sensitivity: sensitivity,
@@ -225,6 +235,29 @@ defmodule MemHouse.Model.Schema.Extraction do
   end
 
   defp cast_item(_item, _context), do: {:error, ["candidate must be an object"]}
+
+  defp source_message_ids(item, context) do
+    allowed = Map.get(context, :window_message_ids, [])
+
+    case Map.fetch(item, "source_message_ids") do
+      {:ok, ids} when is_list(ids) and ids != [] ->
+        if Enum.all?(ids, &(is_binary(&1) and &1 in allowed)) and
+             length(ids) == length(Enum.uniq(ids)) do
+          {:ok, ids}
+        else
+          {:error, ["source_message_ids must be unique ids from the supplied observation window"]}
+        end
+
+      :error when allowed != [] ->
+        {:ok, [List.last(allowed)]}
+
+      :error ->
+        {:ok, []}
+
+      _other ->
+        {:error, ["source_message_ids must be a non-empty array"]}
+    end
+  end
 
   # Final gate: build the real pipeline create changeset and ask whether it is
   # valid, without saving. This makes the resource's own attribute constraints,
@@ -244,7 +277,7 @@ defmodule MemHouse.Model.Schema.Extraction do
         scope_id: Map.fetch!(context, :scope_id),
         subject_peer_id: Map.get(context, :source_peer_id),
         state: "proposed",
-        source_message_ids: List.wrap(Map.get(context, :message_id)),
+        source_message_ids: item.source_message_ids,
         extracting_provider: "schema-validation",
         extracting_model: "schema-validation",
         extracting_model_version: "schema-validation",

@@ -2,15 +2,15 @@
 
 defmodule MemHouse.Pipeline.Extractor do
   @moduledoc """
-  Turns exactly one raw observation into candidate knowledge items.
+  Turns one anchored observation and a bounded conversation window into candidate knowledge items.
 
   Builds the extraction prompt and returns schema-validated candidates. It writes nothing;
   persistence, merging, and governance remain pipeline responsibilities.
 
   ## What extraction constrains
 
-  - **One observation at a time.** Statements are extracted from a single raw
-    message or document version, never from a batch, so provenance stays exact.
+  - **Bounded message windows.** Message extraction reads a small same-session
+    window with one explicit anchor. Candidates cite only ids from that window.
   - **Subject is resolved independently of source.** Who spoke and who a claim
     is about are separate. A peer subject must be one of the supplied known peer
     keys and a scope subject must be the current scope path; the schema rejects
@@ -49,7 +49,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-4"
+  @prompt_version "extract-5"
 
   @doc """
   The identity of the extraction-and-pipeline contract this build implements.
@@ -94,17 +94,20 @@ defmodule MemHouse.Pipeline.Extractor do
       %{
         role: "system",
         content: """
-        Extract durable agent-memory knowledge from exactly one raw observation.
+        Extract durable agent-memory knowledge from an anchored observation and
+        its bounded conversation window.
         Return the supplied structured schema. Natural-language statements are
         the knowledge atom. Do not invent facts and return no item for content
-        that is not durable memory.
+        that is not durable memory. Greetings, acknowledgements, compliments,
+        questions, and invitations with no asserted fact are no_op.
 
         Start each candidate with concise reasoning, then its natural-language
         statement, then confidence_percentage. Rate your confidence percentage
         on an integer scale from 1 to 100 (where 1 is completely uncertain and
         100 is absolute certainty). Resolve subject independently from source. A peer subject_ref must be
         one of the supplied known peer keys. Use the current scope path only for
-        a scope subject. The source-to-subject relationship is derived by
+        a scope subject. Each candidate must cite source_message_ids drawn only
+        from the supplied conversation window. The source-to-subject relationship is derived by
         MemHouse. Propose sensitivity and the independent
         expiry, revalidation, and relevant-window timestamps. Use no_op by
         omitting the candidate rather than emitting an empty statement.
@@ -129,8 +132,11 @@ defmodule MemHouse.Pipeline.Extractor do
         Known peer keys: #{Enum.join(schema_context.known_peer_keys, ", ")}
         Observed at: #{observed_at(schema_context.occurred_at)}
 
-        Observation:
+        Anchored observation:
         #{Map.fetch!(message, "content")}
+
+        Conversation window (id | speaker | observed at | text):
+        #{window_text(schema_context.window_messages)}
         """
       }
     ]
@@ -143,6 +149,7 @@ defmodule MemHouse.Pipeline.Extractor do
       task: :extraction,
       source_peer_key: schema_context.source_peer_key,
       observation: Map.fetch!(message, "content"),
+      source_message_ids: [schema_context.message_id],
       prompt_version: @prompt_version
     ]
 
@@ -193,6 +200,11 @@ defmodule MemHouse.Pipeline.Extractor do
     |> Map.put_new(:message_id, Map.get(message, "id"))
     |> Map.put(:source_peer_key, source_peer_key)
     |> Map.put(:scope_path, Map.fetch!(message, "scope_path"))
+    |> Map.put(:window_messages, Map.get(context, :window_messages, [message]))
+    |> Map.put(
+      :window_message_ids,
+      Map.get(context, :window_message_ids, List.wrap(Map.get(message, "id")))
+    )
     # Falls back to now only for a standalone caller that assembled an
     # observation without one. Both pipeline paths always carry a stored time.
     |> Map.put(:occurred_at, Map.get(message, "occurred_at") || MemHouse.Clock.utc_now())
@@ -203,5 +215,11 @@ defmodule MemHouse.Pipeline.Extractor do
       |> Kernel.++([source_peer_key])
       |> Enum.uniq()
     )
+  end
+
+  defp window_text(messages) do
+    Enum.map_join(messages, "\n", fn window_message ->
+      "#{window_message["id"]} | #{window_message["peer_key"]} | #{observed_at(window_message["occurred_at"])} | #{window_message["content"]}"
+    end)
   end
 end
