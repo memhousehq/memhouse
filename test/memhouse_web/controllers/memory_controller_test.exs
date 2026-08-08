@@ -203,6 +203,22 @@ defmodule MemHouseWeb.MemoryControllerTest do
              )
   end
 
+  test "POST /api/v1/operations/dream enqueues an Account dream-time pass", %{
+    conn: conn,
+    token: token
+  } do
+    conn = conn |> with_identity(token) |> post(~p"/api/v1/operations/dream")
+
+    assert %{"data" => %{"run_id" => run_id, "status" => "accepted"}} = json_response(conn, 202)
+
+    assert %{rows: [["dream_time", "pending"]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT kind, status FROM pipeline_runs WHERE id = $1",
+               [Ecto.UUID.dump!(run_id)]
+             )
+  end
+
   # Ranked retrieval with no answer generation. A scope path selects that scope
   # together with its ancestors, because context flows downward: a child scope
   # sees what its parents know and never the reverse. Account, authorization,

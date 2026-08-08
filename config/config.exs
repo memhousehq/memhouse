@@ -149,19 +149,20 @@ config :memhouse, Oban,
     # reconciliation of durable records whose job never ran
     reconciler: 1
   ],
-  # No Oban plugins run. Every trigger declares `scheduler_cron(false)`, so work is inserted
-  # by the enqueue action inside the caller's transaction and no polling scheduler is needed;
-  # a Cron plugin would add a second, non-transactional way to start work. One consequence to
-  # know about: without a Pruner plugin, nothing deletes rows from the `oban_jobs` table.
+  # AshOban triggers stay transactionally driven: every one declares
+  # `scheduler_cron(false)`. This Cron entry is the narrow exception for work
+  # with no request-side trigger. It starts an Account-scoped lifecycle
+  # scheduler, which then creates ordinary replay-safe PipelineRun rows and
+  # their jobs in one transaction. Do not add a trigger cron schedule here.
   #
-  # This value also has a side effect that has nothing to do with plugins: AshOban reads a
-  # `:plugins` value that is not a non-empty list as "disable peer leadership entirely", and
-  # Oban's stager (core infrastructure, not a plugin, in the pinned Oban version) only
-  # promotes delayed `scheduled`/`retryable` jobs back to `available` while its node holds
-  # leadership. `MemHouse.Application.oban_config/0` restores the ordinary database-backed
-  # peer after AshOban's merge for exactly this reason — see the comment there before changing
-  # this value.
-  plugins: false
+  # There is intentionally no Pruner plugin. Operations retains Oban history
+  # until a separate retention policy exists.
+  plugins: [
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"0 * * * *", MemHouse.Operations.LifecycleScheduler}
+     ]}
+  ]
 
 config :ash_oban,
   # Jobs run through Ash actions with authorization on, exactly like an HTTP

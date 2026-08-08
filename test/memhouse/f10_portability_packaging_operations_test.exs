@@ -131,7 +131,25 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert result.checks.database.status == "ok"
     assert result.checks.oban.status == "ok"
     assert result.checks.queues.status == "ok"
+    assert result.checks.lifecycle_sweeps.status == "ok"
+
+    assert Map.keys(result.checks.lifecycle_sweeps.last_completed_at) |> Enum.sort() == [
+             "expiry",
+             "revalidation"
+           ]
+
     assert result.checks.model_roles.status == "ok"
+
+    {Oban.Plugins.Cron, cron_options} =
+      Application.fetch_env!(:memhouse, Oban)
+      |> Keyword.fetch!(:plugins)
+      |> Enum.find(fn {plugin, _options} -> plugin == Oban.Plugins.Cron end)
+
+    assert {"0 * * * *", MemHouse.Operations.LifecycleScheduler} in Keyword.fetch!(
+             cron_options,
+             :crontab
+           )
+
     # All four roles, and their identities only — never their credentials.
     assert map_size(result.checks.model_roles.configured) == 4
   end

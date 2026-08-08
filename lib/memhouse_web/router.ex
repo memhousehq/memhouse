@@ -68,6 +68,7 @@ defmodule MemHouseWeb.Router do
       get "/knowledge", MemoryController, :knowledge
       get "/operations/costs", MemoryController, :costs
       post "/operations/reconcile", MemoryController, :reconcile
+      post "/operations/dream", MemoryController, :dream
     end
   end
 

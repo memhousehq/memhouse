@@ -145,6 +145,10 @@ answer-correlation AshOban lanes now call real governance operations:
 - verified confirmation resets the timer and raises confidence; and
 - erasure recomputes or marks affected projections and entity derivations.
 
+Expiry and revalidation are started hourly by the Account-scoped lifecycle
+scheduler. The scheduler creates replay-safe pipeline runs; it does not write
+knowledge. See `ADR-0014`.
+
 The same workflows run with pg0 or operator-run Postgres; there is no alternate
 queue, cache, or governance implementation.
 

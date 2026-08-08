@@ -68,6 +68,26 @@ defmodule MemHouseWeb.MemoryController do
   end
 
   @doc """
+  Enqueues one immediate dream-time pass for the authenticated operator's Account.
+
+  Returns 202 with the durable run id. Only account administrators and internal
+  system actors may request model-backed maintenance work.
+  """
+  def dream(conn, _params) do
+    actor = conn.assigns.current_actor
+
+    if actor.role in [:account_admin, :system] do
+      {:ok, run} = Pipeline.request_dream_time(actor)
+
+      conn
+      |> put_status(:accepted)
+      |> json(%{data: %{run_id: run.id, status: "accepted"}})
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+    end
+  end
+
+  @doc """
   Records one raw observation. This is the only write path an agent has.
 
     Body fields: `session_id`, `scope_path`, and `content` are required; `role`

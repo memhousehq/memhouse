@@ -53,13 +53,14 @@ defmodule MemHouse.Governance.Sweeper do
   Runs one sweep for an Account and reports how many records it touched.
 
   `kind` selects the work: `"revalidation"` and `"expiry"` each run a single
-  sweep, while `"dream_time"` runs all four. Any other value raises
+  sweep, while `"dream_time"` runs queue aging, confidence decay, and
+  consolidation. Any other value raises
   `FunctionClauseError` — the caller is a scheduled job, so an unknown lane is
   a wiring bug that should fail loudly rather than silently do nothing.
 
   Returns `{:ok, counts}`. The keys of `counts` depend on `kind`
-  (`:revalidation`, `:expiry`, `:aged`, `:decayed`, `:merged`, `:aggregates`), so callers must not assume
-  all keys are present. Raises when the underlying transaction fails, which
+  (`:revalidation`, `:expiry`, `:aged`, `:decayed`, `:merged`, `:aggregates`),
+  so callers must not assume all keys are present. Raises when the underlying transaction fails, which
   rolls back every change the sweep had made so far.
   """
   def run(account_id, kind) when kind in ["revalidation", "expiry", "dream_time"] do
@@ -71,7 +72,7 @@ defmodule MemHouse.Governance.Sweeper do
         case kind do
           "revalidation" -> %{revalidation: revalidate!(account.id, actor)}
           "expiry" -> %{expiry: expire!(account.id, actor)}
-          "dream_time" -> full_sweep(account.id, actor)
+          "dream_time" -> dream_sweep(account.id, actor)
         end
 
       {:ok, counts}
@@ -81,10 +82,8 @@ defmodule MemHouse.Governance.Sweeper do
   # Queue rows created by the revalidation pass are due 14 days out, and the
   # aging pass only looks at rows already past their due date, so no question is
   # escalated before anybody has had a chance to answer it.
-  defp full_sweep(account_id, actor) do
+  defp dream_sweep(account_id, actor) do
     %{
-      revalidation: revalidate!(account_id, actor),
-      expiry: expire!(account_id, actor),
       aged: age_queue!(account_id, actor),
       decayed: decay_queries!(account_id, actor)
     }

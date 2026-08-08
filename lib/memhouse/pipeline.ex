@@ -161,6 +161,64 @@ defmodule MemHouse.Pipeline do
   end
 
   @doc """
+  Schedules the time-driven lifecycle work for one Account and Cron slot.
+
+  `scheduled_at` is the Cron job's scheduled time. It is part of all replay
+  keys, so delayed execution and retries reuse the same dream-time, expiry,
+  and revalidation runs. Call inside an Account
+  transaction; all run rows and jobs then commit together.
+
+  Returns `{:ok, %{dream_time: run, revalidation: run, expiry: run}}` or an error.
+  """
+  @spec enqueue_lifecycle_sweeps(Ecto.UUID.t(), map(), DateTime.t()) ::
+          {:ok,
+           %{dream_time: PipelineRun.t(), revalidation: PipelineRun.t(), expiry: PipelineRun.t()}}
+          | {:error, term()}
+  def enqueue_lifecycle_sweeps(account_id, actor, %DateTime{} = scheduled_at) do
+    payload = %{"scheduled_at" => DateTime.to_iso8601(scheduled_at)}
+
+    with {:ok, dream_time} <-
+           enqueue(
+             "dream_time",
+             account_id,
+             %{
+               target_type: "account",
+               target_id: account_id,
+               idempotency_key: Idempotency.account_dream_time(account_id, scheduled_at),
+               payload: payload
+             },
+             actor
+           ),
+         {:ok, revalidation} <-
+           enqueue(
+             "revalidation",
+             account_id,
+             %{
+               target_type: "account",
+               target_id: account_id,
+               idempotency_key:
+                 Idempotency.lifecycle_sweep(account_id, "revalidation", scheduled_at),
+               payload: payload
+             },
+             actor
+           ),
+         {:ok, expiry} <-
+           enqueue(
+             "expiry",
+             account_id,
+             %{
+               target_type: "account",
+               target_id: account_id,
+               idempotency_key: Idempotency.lifecycle_sweep(account_id, "expiry", scheduled_at),
+               payload: payload
+             },
+             actor
+           ) do
+      {:ok, %{dream_time: dream_time, revalidation: revalidation, expiry: expiry}}
+    end
+  end
+
+  @doc """
   Schedules the ordinary full derived-cache rebuild for one scope.
 
   Callers supply a stable, content-free watermark. Repeated reconciliation of
@@ -225,6 +283,32 @@ defmodule MemHouse.Pipeline do
   def request_reconciliation(%Actor{} = actor) do
     DataLayer.with_actor(actor, fn account, scoped_actor ->
       enqueue_reconciler(account.id, scoped_actor)
+    end)
+  end
+
+  @doc """
+  Requests one immediate Account-wide dream-time pass.
+
+  The request creates a normal durable run. The current timestamp is a new
+  replay watermark, so a later operator request is distinct work while Oban
+  retries keep the same run.
+  """
+  @spec request_dream_time(Actor.t()) :: {:ok, PipelineRun.t()} | {:error, term()}
+  def request_dream_time(%Actor{} = actor) do
+    DataLayer.with_actor(actor, fn account, scoped_actor ->
+      scheduled_at = Clock.utc_now()
+
+      enqueue(
+        "dream_time",
+        account.id,
+        %{
+          target_type: "account",
+          target_id: account.id,
+          idempotency_key: Idempotency.account_dream_time(account.id, scheduled_at),
+          payload: %{"requested_at" => DateTime.to_iso8601(scheduled_at)}
+        },
+        scoped_actor
+      )
     end)
   end
 
