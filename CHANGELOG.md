@@ -15,6 +15,12 @@ changelog entry and contract-version transition.
   index. `GET /api/ready` reports the content-safe embedding-index contract
   and returns 503 for that mismatch. This release supports 1024 dimensions.
 
+- Message extraction now uses a bounded six-message same-session window. The
+  extractor identifies each retained candidate with the message ids that support
+  it, and validation rejects ids outside the supplied window. The durable
+  knowledge item and provenance rows retain all cited messages. The prompt is
+  now `extract-5`; the `f5-1` pipeline contract is unchanged.
+
 - Lexical question analysis no longer expands a query through a hand-written
   synonym group. The analyzer is now `lexical-question-v2` and retains only
   supplied non-boilerplate terms for plain-text lexical matching. The `f7-1`
