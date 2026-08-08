@@ -136,7 +136,7 @@ defmodule MemHouse.Pipeline.Extractor do
         #{Map.fetch!(message, "content")}
 
         Conversation window (id | speaker | observed at | text):
-        #{window_text(schema_context.window_messages)}
+        #{window_text(schema_context.window_messages, schema_context.occurred_at)}
         """
       }
     ]
@@ -217,9 +217,11 @@ defmodule MemHouse.Pipeline.Extractor do
     )
   end
 
-  defp window_text(messages) do
+  defp window_text(messages, fallback_occurred_at) do
     Enum.map_join(messages, "\n", fn window_message ->
-      "#{window_message["id"]} | #{window_message["peer_key"]} | #{observed_at(window_message["occurred_at"])} | #{window_message["content"]}"
+      occurred_at = window_message["occurred_at"] || fallback_occurred_at
+
+      "#{window_message["id"]} | #{window_message["peer_key"]} | #{observed_at(occurred_at)} | #{window_message["content"]}"
     end)
   end
 end
