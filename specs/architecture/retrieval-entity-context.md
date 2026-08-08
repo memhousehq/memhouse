@@ -136,8 +136,10 @@ dimensions. The retrieval migration adds:
 
 The production 1024-dimensional semantic query uses the matching DiskANN
 expression. The query applies transaction-local search-list and rescore
-settings. Other explicitly configured dimensions remain valid and use the
-small-corpus path until their own reviewed index migration is installed.
+settings. Boot rejects an embedder width without a matching installed index;
+the public readiness payload reports this content-safe configuration check.
+Supporting another width requires a reviewed index migration and a full
+re-embed before that width can be configured.
 `MemHouse.Retrieval.Vector` provides the deterministic Nx cosine baseline for
 tiny eval corpora and entity candidate comparison. A pinned-identity mismatch
 still follows the model layer's explicit re-embed plan; vectors are never

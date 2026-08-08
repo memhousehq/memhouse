@@ -29,6 +29,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
   alias MemHouse.Portability.AuditVerifier
   alias MemHouse.Portability.Registry
   alias MemHouse.Repo
+  alias MemHouse.RuntimeConfig
 
   test "logical export is self-describing, checksum verified, and excludes secrets and caches" do
     # Unique account key per run so a leftover archive or account from an earlier run cannot
@@ -120,7 +121,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert {:error, {:audit_event_hash_mismatch, "two"}} = AuditVerifier.verify([first, changed])
   end
 
-  test "readiness covers database, Oban, queues, and model role configuration" do
+  test "readiness covers database, Oban, queues, model roles, and the embedding index" do
     result = Health.readiness()
 
     # Readiness is a deployment gate, so it must check everything the app needs to actually
@@ -139,6 +140,9 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
            ]
 
     assert result.checks.model_roles.status == "ok"
+    assert result.checks.embedding_index.status == "ok"
+    assert result.checks.embedding_index.configured_dimensions == 1024
+    assert result.checks.embedding_index.indexed_dimensions == [1024]
 
     {Oban.Plugins.Cron, cron_options} =
       Application.fetch_env!(:memhouse, Oban)
@@ -152,6 +156,45 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
 
     # All four roles, and their identities only — never their credentials.
     assert map_size(result.checks.model_roles.configured) == 4
+  end
+
+  test "embedding index rejects an embedder width without an installed index" do
+    original_roles = Application.fetch_env!(:memhouse, :model_roles)
+
+    roles =
+      Keyword.update!(original_roles, :embedder, fn config ->
+        Map.put(config, :embedding_dimensions, 384)
+      end)
+
+    Application.put_env(:memhouse, :model_roles, roles)
+    on_exit(fn -> Application.put_env(:memhouse, :model_roles, original_roles) end)
+
+    assert %{status: "error", configured_dimensions: 384, indexed_dimensions: [1024]} =
+             RuntimeConfig.embedding_index_check()
+
+    assert_raise RuntimeError,
+                 "MEMHOUSE_EMBEDDING_DIMENSIONS must match an installed vector index; " <>
+                   "configured dimensions: 384; indexed dimensions: 1024",
+                 fn -> RuntimeConfig.validate!() end
+  end
+
+  test "readiness is not ready when the configured embedder has no index" do
+    original_roles = Application.fetch_env!(:memhouse, :model_roles)
+
+    roles =
+      Keyword.update!(original_roles, :embedder, fn config ->
+        Map.put(config, :embedding_dimensions, 384)
+      end)
+
+    Application.put_env(:memhouse, :model_roles, roles)
+    on_exit(fn -> Application.put_env(:memhouse, :model_roles, original_roles) end)
+
+    result = Health.readiness()
+
+    assert result.status == "not_ready"
+
+    assert %{status: "error", configured_dimensions: 384, indexed_dimensions: [1024]} =
+             result.checks.embedding_index
   end
 
   test "readiness discloses whether this deployment is unattended" do

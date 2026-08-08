@@ -148,7 +148,7 @@ avoids models that intermittently ignore forced tool calls.
 | `MEMHOUSE_EMBEDDING_PROVIDER` | `ortex` | `ortex` (local ONNX) or `openai-compatible` |
 | `MEMHOUSE_EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Model identity |
 | `MEMHOUSE_EMBEDDING_VERSION` | `onnx-1-qwen3-1024` | **The vector-space version** |
-| `MEMHOUSE_EMBEDDING_DIMENSIONS` | `1024` | Vector width |
+| `MEMHOUSE_EMBEDDING_DIMENSIONS` | `1024` | Vector width. Must match an installed vector index. |
 | `MEMHOUSE_ORTEX_MODEL_PATH` | absolute path | Operator-supplied `.onnx` file |
 | `MEMHOUSE_ORTEX_TOKENIZER_PATH` | absolute path | Operator-supplied `tokenizer.json` |
 | `MEMHOUSE_ORTEX_POOLING` | `last_token` | Pooling strategy |
@@ -173,6 +173,11 @@ mask-aware last-token pooling. Documents are embedded as supplied; retrieval
 queries receive the configured instruction prefix. A switch from the former
 384-dimensional identity requires a full, resumable re-embed. Until it
 finishes, old vectors are intentionally absent from semantic retrieval.
+
+This release installs 1024-dimensional vector indexes only. Boot fails when
+`MEMHOUSE_EMBEDDING_DIMENSIONS` is another width. To support another width,
+add a reviewed index migration, re-embed all derived vectors, verify
+`GET /api/ready`, and update this configuration contract.
 
 ### DiskANN
 

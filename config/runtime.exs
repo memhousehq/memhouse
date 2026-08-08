@@ -492,9 +492,8 @@ config :memhouse, :model_roles,
     model_version: env_get.("MEMHOUSE_EMBEDDING_VERSION", "onnx-1-qwen3-1024"),
     prompt_version: "none",
     pipeline_version: "f5-1",
-    # Must equal the model's real output width. 1024 is the width the shipped
-    # DiskANN vector indexes are built for; other widths work but fall back to the
-    # unindexed path until a matching index migration is installed.
+    # Must equal the model's real output width and a shipped DiskANN index.
+    # This release supports 1024 dimensions only.
     embedding_dimensions: env_integer.("MEMHOUSE_EMBEDDING_DIMENSIONS", "1024"),
     options: %{
       "api_key_ref" => "env:MEMHOUSE_EMBEDDING_API_KEY",

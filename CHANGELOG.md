@@ -11,6 +11,10 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Boot now rejects an embedding width without a matching installed vector
+  index. `GET /api/ready` reports the content-safe embedding-index contract
+  and returns 503 for that mismatch. This release supports 1024 dimensions.
+
 - Lexical question analysis no longer expands a query through a hand-written
   synonym group. The analyzer is now `lexical-question-v2` and retains only
   supplied non-boilerplate terms for plain-text lexical matching. The `f7-1`
