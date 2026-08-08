@@ -57,6 +57,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
         :statement,
         :kind,
         :confidence,
+        :evidence_level,
         :sensitivity,
         :state,
         :target_level,
@@ -103,6 +104,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       validate MemHouse.Knowledge.Validations.ReadableStatement
 
       validate attribute_in(:kind, ~w(fact preference event relation skill))
+      validate attribute_in(:evidence_level, ~w(direct indirect))
       validate attribute_in(:sensitivity, ~w(public internal personal restricted))
       validate attribute_in(:state, ~w(proposed))
       validate attribute_in(:target_level, ~w(peer scope account))
@@ -245,6 +247,13 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       allow_nil?: false,
       default: 0.5,
       constraints: [min: 0.0, max: 1.0],
+      public?: true
+
+    # Derived from the schema context. Gate A can automate only direct
+    # self-observations, never a model's self-reported confidence.
+    attribute :evidence_level, :string,
+      allow_nil?: false,
+      default: "indirect",
       public?: true
 
     attribute :sensitivity, :string,
@@ -429,7 +438,7 @@ defmodule MemHouse.Knowledge.Attribution do
     attribute :target_peer_id, :uuid, public?: true
     attribute :target_scope_id, :uuid, public?: true
 
-    # "self", "hearsay", or "scope" — first-hand versus second-hand knowledge.
+    # "self", "hearsay", or "scope" — derived source-to-subject relationship.
     attribute :level, :string, allow_nil?: false, public?: true
     create_timestamp :inserted_at
   end

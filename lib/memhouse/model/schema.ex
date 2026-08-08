@@ -30,8 +30,9 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   ## What one candidate is
 
-  A candidate includes statement, classification, confidence, sensitivity, target level,
-  independent subject, operation, hearsay, expiry, revalidation, and validity window.
+  A candidate includes statement, classification, confidence, sensitivity,
+  target level, independent subject, operation, expiry, revalidation, and a
+  validity window.
 
   ## Rules this module enforces
 
@@ -40,10 +41,9 @@ defmodule MemHouse.Model.Schema.Extraction do
     and a `scope` subject must be exactly the current scope path. Nothing else
     can be named, so a model cannot attach a claim to a peer or a scope the
     caller never mentioned.
-  - **Hearsay is discounted by the engine.** A candidate marked hearsay, or one
-    whose subject reference is anything other than the source peer's key, has
-    its confidence multiplied by 0.75 here. The model's self-reported confidence
-    is an input to that calculation, never the final value.
+  - **Evidence is derived, not asserted.** Only a peer speaking about itself is
+    `direct`; every other source-to-subject relationship is `indirect`. The
+    same deterministic relationship applies the third-party confidence discount.
   - **Time bounds must be coherent.** A validity window that starts after it
     ends is rejected.
   - **Nothing here activates knowledge.** A valid candidate is still only a
@@ -133,11 +133,10 @@ defmodule MemHouse.Model.Schema.Extraction do
             "confidence_percentage" => %{"type" => "integer", "minimum" => 1, "maximum" => 100},
             "subject_type" => %{"type" => "string", "enum" => @subject_types},
             "subject_ref" => %{"type" => "string", "minLength" => 1},
-            "update_operation" => %{"type" => "string", "enum" => @operations},
-            "hearsay" => %{"type" => "boolean"}
+            "update_operation" => %{"type" => "string", "enum" => @operations}
           }),
         "required" =>
-          ~w(reasoning statement confidence_percentage kind subject_type subject_ref sensitivity target_level update_operation hearsay)
+          ~w(reasoning statement confidence_percentage kind subject_type subject_ref sensitivity target_level update_operation)
       }
 
     %{
@@ -194,7 +193,7 @@ defmodule MemHouse.Model.Schema.Extraction do
   # Validates one candidate. The `with` chain is ordered cheapest-first and
   # stops at the first failure, so the resource changeset check — the most
   # expensive step — only runs on a candidate that is already well formed.
-  # Confidence is computed rather than copied: see `hearsay_confidence/4`.
+  # Confidence is computed rather than copied: see `source_confidence/4`.
   defp cast_item(item, context) when is_map(item) do
     with {:ok, _reasoning} <- non_empty_string(item, "reasoning"),
          {:ok, statement} <- readable_statement(item),
@@ -205,7 +204,6 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
          {:ok, operation} <- enum(item, "update_operation", @operations),
-         {:ok, hearsay} <- boolean(item, "hearsay"),
          {:ok, temporal} <- temporal(item),
          :ok <- temporal_order(temporal),
          casted <-
@@ -214,11 +212,11 @@ defmodule MemHouse.Model.Schema.Extraction do
              kind: kind,
              subject_type: subject_type,
              subject_ref: subject_ref,
-             confidence: hearsay_confidence(confidence, hearsay, subject_ref, context),
+             confidence: source_confidence(confidence, subject_type, subject_ref, context),
+             evidence_level: evidence_level(subject_type, subject_ref, context),
              sensitivity: sensitivity,
              target_level: target_level,
-             update_operation: operation,
-             hearsay: hearsay
+             update_operation: operation
            }
            |> Map.merge(temporal),
          :ok <- validate_ash_action(casted, context) do
@@ -383,13 +381,6 @@ defmodule MemHouse.Model.Schema.Extraction do
   defp confidence_percentage_in_range(_value),
     do: {:error, ["confidence_percentage must be between 1 and 100"]}
 
-  defp boolean(item, key) do
-    case fetch(item, key) do
-      value when is_boolean(value) -> {:ok, value}
-      _other -> {:error, ["#{key} must be a boolean"]}
-    end
-  end
-
   defp temporal(item) do
     @temporal_fields
     |> Enum.reduce_while({:ok, %{}}, fn field, {:ok, acc} ->
@@ -422,22 +413,20 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   defp temporal_order(_temporal), do: :ok
 
-  # Second-hand claims are discounted by the engine, not by the model.
-  #
-  # The discount applies both when the model marked the candidate as hearsay and
-  # whenever the subject reference is not the source peer's key, because a claim
-  # about anything other than the speaker is second-hand whether or not the
-  # model noticed. That second condition also catches scope subjects, and it
-  # catches everything when the context supplies no `:source_peer_key`. The 0.75
-  # multiplier is a flat 25% reduction in stated confidence, rounded to four
-  # decimal places to keep stored values stable and comparable.
-  defp hearsay_confidence(confidence, hearsay, subject_ref, context) do
-    if hearsay or subject_ref != Map.get(context, :source_peer_key) do
+  # Third-party status comes from the resolved subject and known source peer.
+  defp source_confidence(confidence, subject_type, subject_ref, context) do
+    if evidence_level(subject_type, subject_ref, context) == "indirect" do
       Float.round(confidence * 0.75, 4)
     else
       confidence
     end
   end
+
+  defp evidence_level("peer", subject_ref, %{source_peer_key: source_peer_key})
+       when subject_ref == source_peer_key,
+       do: "direct"
+
+  defp evidence_level(_subject_type, _subject_ref, _context), do: "indirect"
 
   # Looks a key up by its string name whether the map arrived with string or
   # atom keys. Providers, cassettes, and hand-written test fixtures disagree
@@ -475,8 +464,8 @@ defmodule MemHouse.Model.Schema.Reasoning do
   The structured shape for background reasoning: extraction candidates plus
   typed relations between existing knowledge.
 
-  Reasoning reuses extraction validation, including subject allowlist, hearsay discount, and
-  governance. It cannot mint otherwise-invalid knowledge.
+  Reasoning reuses extraction validation, including subject allowlist,
+  third-party discount, and governance. It cannot mint otherwise-invalid knowledge.
 
   It adds `supports`, `contradicts`, and `derived_from` edges. Contradictions never overwrite.
   """

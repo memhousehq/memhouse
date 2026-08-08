@@ -15,9 +15,9 @@ defmodule MemHouse.Pipeline.Extractor do
     is about are separate. A peer subject must be one of the supplied known peer
     keys and a scope subject must be the current scope path; the schema rejects
     anything else, so this is enforced rather than merely requested.
-  - **Third-party claims are marked hearsay** and their confidence is discounted
-    during validation; the model's own confidence is an input, not the final
-    value.
+  - **Source evidence is derived.** The resolved source and subject produce a
+    stable direct or indirect level; indirect claims receive the third-party
+    confidence discount during validation.
   - **Declining is explicit.** A candidate emitted with the `no_op` operation is
     dropped here rather than becoming an empty statement that would later look
     like real knowledge.
@@ -49,7 +49,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-3"
+  @prompt_version "extract-4"
 
   @doc """
   The identity of the extraction-and-pipeline contract this build implements.
@@ -104,8 +104,8 @@ defmodule MemHouse.Pipeline.Extractor do
         on an integer scale from 1 to 100 (where 1 is completely uncertain and
         100 is absolute certainty). Resolve subject independently from source. A peer subject_ref must be
         one of the supplied known peer keys. Use the current scope path only for
-        a scope subject. Mark third-party claims as hearsay; their confidence is
-        discounted again by MemHouse. Propose sensitivity and the independent
+        a scope subject. The source-to-subject relationship is derived by
+        MemHouse. Propose sensitivity and the independent
         expiry, revalidation, and relevant-window timestamps. Use no_op by
         omitting the candidate rather than emitting an empty statement.
 

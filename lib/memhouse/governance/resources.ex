@@ -4,8 +4,8 @@ defmodule MemHouse.Governance.GateRule do
   @moduledoc """
   One cell of the versioned matrix that decides what happens to a proposed piece of knowledge.
 
-  For one target level and sensitivity, a row sets confidence, automation, corroboration, review
-  age, and revalidation limits.
+  For one target level and sensitivity, a row sets evidence, automation,
+  corroboration, review age, and revalidation limits.
 
   ## How a row is selected
 
@@ -15,8 +15,8 @@ defmodule MemHouse.Governance.GateRule do
 
   ## Field meanings
 
-  * `gate_a_mode` — `"auto_keep"` accepts a proposal whose confidence reaches
-    `minimum_confidence`; `"auto_reject"` discards every matching proposal outright; any other
+  * `gate_a_mode` — `"auto_keep"` accepts a proposal whose derived evidence reaches
+    `minimum_evidence_level`; `"auto_reject"` discards every matching proposal outright; any other
     value, including the `"human"` default, routes it to the review queue.
   * `gate_b_mode` — `"auto_place"` places the item at the requested level once
     `minimum_corroboration` independent sources agree; anything else needs a human placement.
@@ -54,6 +54,7 @@ defmodule MemHouse.Governance.GateRule do
         :target_level,
         :sensitivity,
         :minimum_confidence,
+        :minimum_evidence_level,
         :gate_a_mode,
         :gate_b_mode,
         :minimum_corroboration,
@@ -65,6 +66,8 @@ defmodule MemHouse.Governance.GateRule do
         :active
       ]
 
+      validate attribute_in(:minimum_evidence_level, ~w(direct indirect))
+
       change {MemHouse.Governance.Changes.AuditResource,
               category: "configuration",
               action: "gate_rule.created",
@@ -74,6 +77,7 @@ defmodule MemHouse.Governance.GateRule do
                 :target_level,
                 :sensitivity,
                 :minimum_confidence,
+                :minimum_evidence_level,
                 :gate_a_mode,
                 :gate_b_mode,
                 :minimum_corroboration,
@@ -93,6 +97,7 @@ defmodule MemHouse.Governance.GateRule do
     update :update do
       accept [
         :minimum_confidence,
+        :minimum_evidence_level,
         :gate_a_mode,
         :gate_b_mode,
         :minimum_corroboration,
@@ -104,6 +109,8 @@ defmodule MemHouse.Governance.GateRule do
         :active
       ]
 
+      validate attribute_in(:minimum_evidence_level, ~w(direct indirect))
+
       require_atomic? false
 
       change {MemHouse.Governance.Changes.AuditResource,
@@ -112,6 +119,7 @@ defmodule MemHouse.Governance.GateRule do
               resource_type: "gate_rule",
               content_fields: [
                 :minimum_confidence,
+                :minimum_evidence_level,
                 :gate_a_mode,
                 :gate_b_mode,
                 :minimum_corroboration,
@@ -154,10 +162,17 @@ defmodule MemHouse.Governance.GateRule do
     # scope) and how delicate it is; together they name the matrix cell.
     attribute :target_level, :string, allow_nil?: false, public?: true
     attribute :sensitivity, :string, allow_nil?: false, public?: true
-    # Extractor confidence on a 0..1 scale, consulted only when `gate_a_mode` is "auto_keep".
-    # The 1.0 default together with the "human" gate defaults means a freshly created rule
-    # automates nothing until someone deliberately relaxes it.
+    # Kept as recorded model metadata for existing policies and operators. Gate A
+    # never treats a model self-score as an automation input.
     attribute :minimum_confidence, :float, allow_nil?: false, default: 1.0, public?: true
+    # `direct` is the only level eligible for automatic Gate A keep. It is
+    # derived from the resolved speaker and subject, so re-running extraction
+    # cannot cross this threshold.
+    attribute :minimum_evidence_level, :string,
+      allow_nil?: false,
+      default: "direct",
+      public?: true
+
     attribute :gate_a_mode, :string, allow_nil?: false, default: "human", public?: true
     attribute :gate_b_mode, :string, allow_nil?: false, default: "human", public?: true
     # Count of independent sources that must agree before automatic placement.

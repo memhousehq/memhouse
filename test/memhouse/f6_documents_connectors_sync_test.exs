@@ -37,7 +37,6 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest.Provider do
           "sensitivity" => "internal",
           "target_level" => "peer",
           "update_operation" => "add",
-          "hearsay" => false,
           "expires_at" => nil,
           "revalidate_after" => nil,
           "relevant_from" => nil,

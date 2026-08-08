@@ -4,7 +4,7 @@ defmodule MemHouse.Governance.Engine do
   @moduledoc """
   The Gate A/B decision engine: the only place knowledge changes governance state.
 
-  Gate A decides whether to keep a proposal from its confidence. Gate B decides
+  Gate A decides whether to keep a proposal from derived source evidence. Gate B decides
   its visibility from target level, sensitivity, and corroboration. Rules resolve
   from scope to Account to a conservative human-review fallback.
 
@@ -67,7 +67,16 @@ defmodule MemHouse.Governance.Engine do
   """
   def evaluate_proposal(knowledge, actor, opts \\ []) do
     target_level = Keyword.get(opts, :target_level, knowledge.target_level || "peer")
-    target_scope_id = Keyword.get(opts, :target_scope_id)
+
+    # A direct scope-level proposal already names its destination by where the
+    # knowledge row lives. Keep that id on the validation item too, so a later
+    # curator approval can find the matching consent and place the item. A peer
+    # proposal has no target scope, and account-level placement remains a
+    # separate target.
+    target_scope_id =
+      Keyword.get(opts, :target_scope_id) ||
+        if(target_level == "scope", do: knowledge.scope_id)
+
     rule = matching_rule(knowledge, target_level, actor)
 
     # Deadline for a human to act, in hours from now, taken from the matrix cell (the built-in
@@ -917,6 +926,7 @@ defmodule MemHouse.Governance.Engine do
         statement: statement,
         kind: knowledge.kind,
         confidence: knowledge.confidence,
+        evidence_level: knowledge.evidence_level,
         sensitivity: Map.get(opts, "sensitivity", knowledge.sensitivity),
         state: "proposed",
         target_level: knowledge.target_level,
@@ -1062,6 +1072,7 @@ defmodule MemHouse.Governance.Engine do
       target_level: target_level,
       sensitivity: sensitivity,
       minimum_confidence: 1.0,
+      minimum_evidence_level: "direct",
       gate_a_mode: "human",
       gate_b_mode: "human",
       minimum_corroboration: if(target_level == "peer", do: 1, else: 2),
@@ -1071,17 +1082,24 @@ defmodule MemHouse.Governance.Engine do
     }
   end
 
-  # Gate A keeps automatically only when the cell says so and the item's confidence reaches
-  # the cell's floor. Any other mode means a human looks at it.
+  # Gate A keeps automatically only when the cell says so and the item's
+  # deterministic source-to-subject evidence reaches its floor. Model confidence
+  # is intentionally not an automation input: repeated model runs need not agree.
   defp auto_gate_a?(knowledge, rule),
-    do: rule.gate_a_mode == "auto_keep" && knowledge.confidence >= rule.minimum_confidence
+    do:
+      rule.gate_a_mode == "auto_keep" &&
+        evidence_rank(knowledge.evidence_level) >= evidence_rank(rule.minimum_evidence_level)
 
-  # Gate B places automatically only when the cell says so and enough independent sources
-  # corroborate the item. Confidence does not substitute for corroboration here: one very
-  # confident source is still one source.
+  defp evidence_rank("direct"), do: 1
+  defp evidence_rank("indirect"), do: 0
+
+  # Gate B places automatically only when the cell says so, the sensitivity is
+  # not personal or restricted, and enough independent sources corroborate the
+  # item. Sensitive knowledge always needs a human placement decision.
   defp auto_gate_b?(knowledge, rule, _target_level),
     do:
       rule.gate_b_mode == "auto_place" &&
+        knowledge.sensitivity in ["public", "internal"] &&
         knowledge.corroboration_count >= rule.minimum_corroboration
 
   # Returns {outcome, consent}, where consent is the resolve_consent/5 result — reused by

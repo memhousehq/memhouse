@@ -3,7 +3,8 @@
 defmodule MemHouseWeb.ConsoleLive.Operations do
   @moduledoc """
   Read-only, account-administrator view of readiness, usage, entity-resolution
-  quality signals, gate rules, and retrieval profiles at `/console/operations`.
+  quality signals, gate rules and outcomes, and retrieval profiles at
+  `/console/operations`.
 
   Check the role before querying resources that refuse unauthorized reads.
   Render only content-safe status, counts, model identities, versions, error
@@ -244,8 +245,25 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
       </.panel>
 
       <.panel
+        title="Gate outcomes"
+        description="Account-wide decision counts. These aggregates show whether the gate is holding or refusing work without exposing statements or identifiers."
+      >
+        <div class="tiles">
+          <.tile label="Kept" value={Map.get(@operations.gate_outcomes, "keep", 0)} />
+          <.tile label="Placed" value={Map.get(@operations.gate_outcomes, "place", 0)} />
+          <.tile label="Held" value={Map.get(@operations.gate_outcomes, "hold", 0)} />
+          <.tile label="Deferred" value={Map.get(@operations.gate_outcomes, "defer", 0)} />
+          <.tile
+            label="Refused"
+            value={Map.get(@operations.gate_outcomes, "reject", 0)}
+            tone={if Map.get(@operations.gate_outcomes, "reject", 0) > 0, do: "danger", else: "neutral"}
+          />
+        </div>
+      </.panel>
+
+      <.panel
         title="Gate matrix"
-        description="Which combinations of target level, sensitivity, and confidence are decided automatically and which wait for a person. The most specific matching rule with the highest priority wins."
+        description="Which combinations of target level, sensitivity, and derived evidence are decided automatically and which wait for a person. The most specific matching rule with the highest priority wins."
       >
         <.empty
           :if={@operations.gate_rules == []}
@@ -258,7 +276,7 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
               <th>Scope</th>
               <th>Target level</th>
               <th>Sensitivity</th>
-              <th>Min confidence</th>
+              <th>Min evidence</th>
               <th>Gate A</th>
               <th>Gate B</th>
               <th>Corroboration</th>
@@ -272,7 +290,7 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
               <td>{rule.scope_id && scope_path(@operations.scope_paths, rule.scope_id) || "account-wide"}</td>
               <td><.badge family="level" value={rule.target_level} /></td>
               <td><.badge family="sensitivity" value={rule.sensitivity} /></td>
-              <td class="nowrap">{rule.minimum_confidence}</td>
+              <td class="nowrap">{rule.minimum_evidence_level}</td>
               <td><.badge family="decision" value={rule.gate_a_mode} /></td>
               <td><.badge family="decision" value={rule.gate_b_mode} /></td>
               <td class="nowrap">{rule.minimum_corroboration}</td>

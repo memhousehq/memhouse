@@ -788,9 +788,9 @@ defmodule MemHouseWeb.Console.Loader do
   end
 
   @doc """
-  The administrator's operations view: gate rules, stored and runtime retrieval
-  profiles, the latest content-free retrieval outcome, and aggregate
-  entity-resolution quality signals.
+  The administrator's operations view: gate rules, content-safe gate outcomes,
+  stored and runtime retrieval profiles, the latest content-free retrieval
+  outcome, and aggregate entity-resolution quality signals.
 
   Raises `Ash.Error.Forbidden` if called by anyone who is not a
   password-authenticated account administrator. That is deliberate: gate rules
@@ -810,6 +810,12 @@ defmodule MemHouseWeb.Console.Loader do
         |> Ash.Query.set_tenant(account.id)
         |> Ash.read!(actor: current_actor)
 
+      gate_outcomes =
+        GateDecision
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: current_actor)
+        |> Enum.frequencies_by(& &1.decision)
+
       profiles =
         RetrievalProfile
         |> Ash.Query.sort(name: :asc, version: :desc)
@@ -818,6 +824,7 @@ defmodule MemHouseWeb.Console.Loader do
 
       %{
         gate_rules: gate_rules,
+        gate_outcomes: gate_outcomes,
         retrieval_profiles: profiles,
         retrieval_runtime: retrieval_runtime(),
         latest_retrieval: MemHouse.Retrieval.Diagnostics.latest(account.id),

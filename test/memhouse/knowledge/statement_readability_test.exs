@@ -44,8 +44,7 @@ defmodule MemHouse.Knowledge.StatementReadabilityTest do
       "confidence_percentage" => 90,
       "sensitivity" => "internal",
       "target_level" => "peer",
-      "update_operation" => "add",
-      "hearsay" => false
+      "update_operation" => "add"
     }
   end
 

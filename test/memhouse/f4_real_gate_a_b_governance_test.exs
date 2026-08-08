@@ -101,8 +101,8 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     # meant to travel (target level) and how sensitive it is; the modes then say what the gates
     # should do automatically.
     #
-    #   minimum_confidence 0.5    — confidence runs 0.0 to 1.0; below this floor the automatic
-    #                               keep does not fire and the item falls back to human review.
+    #   minimum_evidence_level direct — only a source speaking about itself may pass Gate A
+    #                                    automatically; model confidence is recorded, not gated.
     #   minimum_corroboration 1   — how many independent sources must have said it; 1 means a
     #                               single source is enough for this narrow, low-stakes cell.
     #   revalidate_after_days 90  — days before an auto-kept item must be re-confirmed, so
@@ -112,7 +112,10 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     create_gate_rule!(actor, %{
       target_level: "peer",
       sensitivity: "internal",
-      minimum_confidence: 0.5,
+      # Deliberately unreachable for the deterministic provider (0.55). This
+      # confirms that confidence is no longer an automatic Gate A input.
+      minimum_confidence: 1.0,
+      minimum_evidence_level: "direct",
       gate_a_mode: "auto_keep",
       gate_b_mode: "auto_place",
       minimum_corroboration: 1,
@@ -384,12 +387,10 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         "Avery's medical appointment is scheduled for next Thursday."
       )
 
-    # No request_promotion call: the matrix cell alone would already
-    # auto-accept, but consent_required?/3 would ordinarily still defer this
-    # personal item. consent_mode: "auto" removes exactly that block, and
-    # only that block.
+    # consent_mode: "auto" settles consent, but it cannot widen personal
+    # knowledge automatically. Sensitivity requires a human Gate B placement.
     assert knowledge.sensitivity == "personal"
-    assert knowledge.state == "active"
+    assert knowledge.state == "held"
 
     consent =
       DataLayer.with_actor(actor, fn account, current_actor ->
@@ -404,6 +405,9 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert consent.channel == "auto:account_mode"
     assert consent.target_scope_id == knowledge.scope_id
     assert consent.decided_by_peer_id == nil
+
+    assert Engine.decide(actor, validation_for!(actor, knowledge.id).id, "approve").knowledge.state ==
+             "active"
   end
 
   test "account consent_mode: auto grants consent for an explicit Gate B promotion" do
@@ -453,7 +457,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         "Avery's medical appointment is scheduled for next Thursday."
       )
 
-    assert knowledge.state == "active"
+    assert knowledge.state == "held"
 
     consent =
       DataLayer.with_actor(actor, fn account, current_actor ->
@@ -956,6 +960,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         statement: statement,
         kind: "fact",
         confidence: 1.0,
+        evidence_level: "direct",
         sensitivity: "personal",
         state: "proposed",
         target_level: target_level,

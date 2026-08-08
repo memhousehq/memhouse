@@ -80,9 +80,11 @@ Details: `specs/architecture/identity-tenancy-rbac.md`.
 
 ### Gate A/B governance
 
-- A versioned Account/scope gate matrix over confidence, target level, and
+- A versioned Account/scope gate matrix over derived source evidence, target level, and
   sensitivity decides whether Gate A keeps, rejects, or defers an item and
-  whether Gate B may place it at the requested blast radius.
+  whether Gate B may place it at the requested blast radius. Model confidence
+  is recorded but cannot auto-keep; personal and restricted knowledge require
+  human placement.
 - The conservative default is peer-level provisional visibility plus human
   review. Pending scope- and account-level knowledge stays held and never
   reaches retrieval.
@@ -110,7 +112,7 @@ Details: `specs/architecture/gate-a-b-governance.md`.
   vectors.
 - Ash-derived structured extraction and reasoning schemas with bounded
   validate-and-repair. Extraction resolves subject independently of source,
-  discounts hearsay, and proposes confidence, sensitivity, target, and temporal
+  discounts third-party claims, and proposes confidence, sensitivity, target, and temporal
   fields plus an update operation.
 - Complete model provenance — provider, model, version, prompt version,
   pipeline version, embedding model and version — and one durable usage ledger

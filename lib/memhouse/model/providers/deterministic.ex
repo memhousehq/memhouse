@@ -134,7 +134,6 @@ defmodule MemHouse.Model.Providers.Deterministic do
         "sensitivity" => infer_sensitivity(statement),
         "target_level" => "peer",
         "update_operation" => "add",
-        "hearsay" => false,
         "expires_at" => nil,
         "revalidate_after" => nil,
         "relevant_from" => nil,

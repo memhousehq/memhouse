@@ -936,6 +936,7 @@ defmodule MemHouse.Memory do
               statement: item.statement,
               kind: item.kind,
               confidence: item.confidence,
+              evidence_level: item.evidence_level,
               sensitivity: item.sensitivity,
               state: "proposed",
               target_level: item.target_level,
@@ -1138,10 +1139,9 @@ defmodule MemHouse.Memory do
   # map also carries the `lock_key` fragment used to serialize concurrent writes
   # about the same subject.
   #
-  # `level` records how direct the claim is. It is "self" only when the subject is
-  # the speaker and the extractor did not flag the claim as second-hand;
-  # everything else is "hearsay". Downstream gating discounts hearsay, so
-  # collapsing the two would let a second-hand claim be treated as first-hand.
+  # `level` records how direct the claim is. It is "self" only when the subject
+  # is the speaker. Everything else is "hearsay". Derive this relationship from
+  # durable identities so a model label cannot change governance behavior.
   defp resolve_subject!(account_id, actor, message, %{subject_type: "peer"} = item) do
     peer =
       Peer
@@ -1155,10 +1155,7 @@ defmodule MemHouse.Memory do
     # is worse than no knowledge at all.
     if is_nil(peer), do: raise(ArgumentError, "structured extraction referenced an unknown peer")
 
-    level =
-      if peer.id == message["peer_id"] and not item.hearsay,
-        do: "self",
-        else: "hearsay"
+    level = if peer.id == message["peer_id"], do: "self", else: "hearsay"
 
     %{type: "peer", peer_id: peer.id, scope_id: nil, level: level, lock_key: "peer:#{peer.id}"}
   end

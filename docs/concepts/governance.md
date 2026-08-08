@@ -7,7 +7,7 @@ it may be exposed. Each writes its own decision record.
 
 ```mermaid
 flowchart TD
-    P[Candidate statement<br/>state = proposed] --> A{Gate A<br/>confidence vs. the matrix cell}
+    P[Candidate statement<br/>state = proposed] --> A{Gate A<br/>derived source evidence vs. the matrix cell}
     A -->|auto_reject| R[rejected<br/>kept as evidence, never retrieved]
     A -->|human review| D
     A -->|auto_keep| B{Gate B<br/>corroboration vs. the same cell}
@@ -36,10 +36,16 @@ A gate decision uses a matrix cell keyed by **target level** and
 
 A missing or invalid matrix falls back to human review, never auto-activation.
 
-Gate A modes are `auto_keep` (keep when confidence clears the cell's minimum),
-`auto_reject` (drop unconditionally), and anything else meaning human review.
-Gate B has `auto_place` (place when corroboration clears the cell's minimum)
-and human review.
+Gate A modes are `auto_keep` (keep only when schema-derived source evidence
+clears the cell's minimum), `auto_reject` (drop unconditionally), and anything
+else meaning human review. A source speaking about itself is `direct`; every
+other source-to-subject relationship is `indirect`. Model confidence is shown
+to reviewers but never authorizes automatic acceptance.
+
+Gate B has `auto_place` (place public or internal knowledge when corroboration
+clears the cell's minimum) and human review. Personal and restricted knowledge
+always need a human placement decision. This remains true when an Account has
+declared automatic subject consent.
 
 ## Target levels and blast radius
 

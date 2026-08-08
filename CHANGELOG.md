@@ -29,6 +29,17 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
+- Gate A no longer automates from a model's self-reported confidence. The
+  extractor now derives and persists `direct` or `indirect` source evidence
+  from the schema-validated speaker and subject. Matrix rows use that stable
+  evidence level for `auto_keep`; `minimum_confidence` remains recorded policy
+  metadata only. Hearsay discounting uses the same resolved relationship, not
+  the model's label. Gate B also requires a human placement for personal and
+  restricted knowledge, and the operations console reports content-safe gate
+  outcome totals. ADR 0012 records the `f4-1` governance change.
+  Extracted provenance records prompt `extract-4`; the pipeline contract
+  remains `f5-1`.
+
 - One flaky entity-card summary call no longer aborts a whole scope rebuild.
   `MemHouse.Context.Builder` raised on any failed summary generation, and that
   raise travelled out of `MemHouse.Retrieval.Rebuild.scope/2`, so a single
