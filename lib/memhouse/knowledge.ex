@@ -34,6 +34,10 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
 
   use MemHouse.Resource, domain: MemHouse.Knowledge, table: "knowledge_items"
 
+  postgres do
+    migration_types diskann_labels: {:array, :smallint}
+  end
+
   # Every query and write is confined to one Account by the Ash tenant, which this resource
   # requires. PostgreSQL row-level security repeats the same check underneath, against a
   # transaction-local Account setting: with no Account set, the policy matches no rows.
@@ -132,7 +136,8 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
         :embedding_provider,
         :embedding_model,
         :embedding_version,
-        :embedding_dimensions
+        :embedding_dimensions,
+        :diskann_labels
       ]
 
       require_atomic? false
@@ -223,6 +228,9 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
 
     # Where the statement lives, and therefore who inherits access to it.
     attribute :scope_id, :uuid, allow_nil?: false, public?: true
+    # Internal filtered-DiskANN metadata. It is derived from the scope and is
+    # deliberately absent from public responses, export, audit, and jobs.
+    attribute :diskann_labels, {:array, :integer}, allow_nil?: false, default: [], public?: false
 
     # Exactly one of these two identifies the subject: the peer the claim is about, or the scope
     # the claim characterises. Neither is the source of the claim.

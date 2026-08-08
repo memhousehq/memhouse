@@ -434,6 +434,8 @@ defmodule MemHouse.Documents.Service do
 
   # Upsert derived chunks by version/position so reprocessing converges.
   defp persist_chunks(version, chunks, actor) do
+    label = MemHouse.Retrieval.DiskannLabels.ensure_scope!(version.account_id, version.scope_id)
+
     Enum.each(chunks, fn chunk ->
       create!(
         DocumentChunk,
@@ -442,6 +444,7 @@ defmodule MemHouse.Documents.Service do
           document_id: version.document_id,
           document_version_id: version.id,
           scope_id: version.scope_id,
+          diskann_labels: [label],
           status: "active"
         }),
         version.account_id,

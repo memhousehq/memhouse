@@ -444,6 +444,10 @@ defmodule MemHouse.Documents.DocumentChunk do
     domain: MemHouse.Documents,
     table: "document_chunks"
 
+  postgres do
+    migration_types diskann_labels: {:array, :smallint}
+  end
+
   # Account isolation on every query, backed again by Postgres row-level security.
   multitenancy do
     strategy :attribute
@@ -475,6 +479,7 @@ defmodule MemHouse.Documents.DocumentChunk do
         :embedding_model,
         :embedding_version,
         :embedding_dimensions,
+        :diskann_labels,
         :status
       ]
 
@@ -491,6 +496,7 @@ defmodule MemHouse.Documents.DocumentChunk do
         :embedding_model,
         :embedding_version,
         :embedding_dimensions,
+        :diskann_labels,
         :status,
         :updated_at
       ]
@@ -502,7 +508,8 @@ defmodule MemHouse.Documents.DocumentChunk do
         :embedding_provider,
         :embedding_model,
         :embedding_version,
-        :embedding_dimensions
+        :embedding_dimensions,
+        :diskann_labels
       ]
 
       require_atomic? false
@@ -547,6 +554,9 @@ defmodule MemHouse.Documents.DocumentChunk do
     attribute :document_id, :uuid, allow_nil?: false, public?: true
     attribute :document_version_id, :uuid, allow_nil?: false, public?: true
     attribute :scope_id, :uuid, allow_nil?: false, public?: true
+    # Internal filtered-DiskANN metadata, rebuilt with this cache and never
+    # exposed outside retrieval internals.
+    attribute :diskann_labels, {:array, :integer}, allow_nil?: false, default: [], public?: false
 
     # Zero-based order within the version, and the byte range of the extracted text this chunk
     # covers.
