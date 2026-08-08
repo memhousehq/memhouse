@@ -1673,11 +1673,11 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert first["profile_version"] == "f7-1"
     # Projections were clean, so no live retrieval fallback was needed.
     assert first["fast_fallback"] == false
-    # Session summary, scope cards, and peer profile are projections of governed knowledge —
-    # views, not a second copy of the truth. They are assembled in a fixed budget order.
+    # Projections are bounded summaries with inspectable pinned facts, not a second copy of every
+    # governed row. They are assembled in a fixed budget order.
     assert first["session_summary"]["session_id"]
     assert [%{"path" => "/f7/context"} | _] = first["scope_cards"]
-    assert [%{"statement" => statement} | _] = first["peer_profile"]
+    assert [%{"pinned_facts" => [%{"statement" => statement} | _]} | _] = first["peer_profile"]
     assert statement =~ "concise release summaries"
     # The second identical request is served from the in-memory cache.
     assert second["projection_cache_hit"] == true
@@ -1702,6 +1702,34 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     # On a miss the caller still gets an answer, from the cheapest retrieval profile, and the
     # response says so. Silently serving a stale projection would be the worse failure.
     assert dirty["fast_fallback"] == true
+  end
+
+  test "projection payloads are bounded summaries with pinned facts, not knowledge-row dumps" do
+    statement = String.duplicate("releasechecklist ", 200) <> "complete"
+    seeded = seed_active!("f7-bounded-projections", "/f7/bounded", statement, "bounded-session")
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    DataLayer.with_account_key("f7-bounded-projections", fn account, actor ->
+      projections =
+        Projection
+        |> Ash.Query.filter(scope_id == ^seeded.scope.id and dirty == false)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert projections != []
+
+      Enum.each(projections, fn projection ->
+        refute Map.has_key?(projection.content, "knowledge")
+        assert is_list(projection.content["pinned_facts"])
+        assert byte_size(Jason.encode!(projection.content)) <= 2_500
+
+        Enum.each(projection.content["pinned_facts"], fn fact ->
+          assert Map.keys(fact) |> Enum.sort() == ["id", "statement"]
+          assert fact["id"] in projection.source_ids
+        end)
+      end)
+    end)
   end
 
   test "entity cards name their scope-local referent and drop the summary at two sources" do
@@ -1830,7 +1858,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert card["summary"] == "The billing service has three governed operational facts."
     assert card["summary_mode"] == "model"
     assert card["sensitivity"] == "personal"
-    assert length(card["knowledge"]) == 3
+    assert length(card["pinned_facts"]) == 3
 
     # The label is the scope-local surface form, and the kind is recomputed from it. The entity
     # row says "system"; recomputation says "concept". That divergence is the point: the stored
@@ -1840,7 +1868,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     for private_field <- ~w(entity_id canonical_name aliases surface_form) do
       refute Map.has_key?(card, private_field)
-      refute Enum.any?(card["knowledge"], &Map.has_key?(&1, private_field))
+      refute Enum.any?(card["pinned_facts"], &Map.has_key?(&1, private_field))
     end
 
     # Two sources still earn a card, but never a summary: a pair rarely yields a brief worth a
@@ -1870,7 +1898,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert is_nil(pair_card["summary"])
     assert pair_card["summary_mode"] == "none"
     assert is_nil(pair_card["summary_provenance"])
-    assert length(pair_card["knowledge"]) == 2
+    assert length(pair_card["pinned_facts"]) == 2
 
     # Dropping below the two-active-source threshold retires the card. The mention cache may
     # still contain the retracted statements until its own rebuild, so this also proves that card
@@ -2005,7 +2033,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert is_nil(card["summary"])
     assert card["summary_mode"] == "unavailable"
     assert is_nil(card["summary_provenance"])
-    assert length(card["knowledge"]) == 3
+    assert length(card["pinned_facts"]) == 3
 
     # The whole three-stage rebuild now completes with the same provider, and the embeddings its
     # first stage commits are what the raise used to make the caller redo.
@@ -2129,14 +2157,13 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
             kind: "entity_card",
             sensitivity: "internal",
             content: %{
-              "scope_id" => seed.scope.id,
               "label" => "Team #{letter}",
               "kind" => "concept",
               "summary" => nil,
               "summary_mode" => "none",
               "summary_provenance" => nil,
               "sensitivity" => "internal",
-              "knowledge" => [
+              "pinned_facts" => [
                 %{
                   "id" => Ash.UUID.generate(),
                   "statement" => "Team #{letter} owns it.",
@@ -2333,9 +2360,12 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
       refute Jason.encode!(blake_context) =~ secret
       assert blake_context["fast_fallback"] == false
-      assert blake_context["session_summary"]["knowledge"] == []
-      assert Enum.all?(blake_context["scope_cards"], &(&1["knowledge"] == []))
-      assert Enum.any?(blake_context["peer_profile"], &(&1["statement"] == blake_statement))
+      assert blake_context["session_summary"]["pinned_facts"] == []
+      assert Enum.all?(blake_context["scope_cards"], &(&1["pinned_facts"] == []))
+
+      assert Enum.any?(blake_context["peer_profile"], fn profile ->
+               Enum.any?(profile["pinned_facts"], &(&1["statement"] == blake_statement))
+             end)
 
       avery_actor = %{
         actor
@@ -2351,7 +2381,9 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
           avery_actor
         )
 
-      assert Enum.any?(avery_context["peer_profile"], &(&1["statement"] == secret))
+      assert Enum.any?(avery_context["peer_profile"], fn profile ->
+               Enum.any?(profile["pinned_facts"], &(&1["statement"] == secret))
+             end)
     end)
   end
 

@@ -193,9 +193,10 @@ Details: `specs/architecture/documents-connectors-sync.md`.
   eventually consistent, so a refresh that never ran leaves a scope with
   statements and no vectors; coverage is what makes that state observable.
   Re-enqueuing a stale scope's refresh is still manual.
-- Incremental peer profile, scope card, and session summary projections with
-  dirty marking, bounded delta compaction, versioned audience keys, and
-  PubSub-backed ETS invalidation. Shared scope/session projections are
+- Peer profiles, scope cards, session summaries, and entity cards are bounded
+  summaries with pinned source excerpts, not copied knowledge rows. Dirty
+  marking, bounded delta compaction, versioned audience keys, and PubSub-backed
+  ETS invalidation keep them rebuildable. Shared scope/session projections are
   active-only; provisional knowledge appears only in its subject's peer slice.
 - `get_context` assembles its budget from clean projections and stays
   reasoning-free; its only live retrieval work is the allowed `:fast` fallback

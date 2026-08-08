@@ -499,7 +499,7 @@ defmodule MemHouseWeb.Console.Loader do
           summary: card.content["summary"],
           summary_mode: card.content["summary_mode"],
           sensitivity: card.content["sensitivity"],
-          card_knowledge_ids: Enum.map(card.content["knowledge"] || [], & &1["id"])
+          card_knowledge_ids: Enum.map(card.content["pinned_facts"] || [], & &1["id"])
         }
 
         # Every candidate form can be rejected, which leaves a card with no label. Dropping the
