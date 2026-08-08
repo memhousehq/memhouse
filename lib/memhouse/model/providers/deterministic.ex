@@ -120,8 +120,7 @@ defmodule MemHouse.Model.Providers.Deterministic do
     |> Enum.map(&String.trim/1)
     # Under 12 characters is almost always a greeting or a fragment, not a
     # durable claim worth proposing.
-    |> Enum.reject(&(String.length(&1) < 12))
-    |> Enum.reject(&non_durable_conversation?/1)
+    |> Enum.reject(&(String.length(&1) < 12 or non_durable_conversation?(&1)))
     # At most 6 candidates per observation, keeping offline runs cheap and their
     # output small enough to assert on in tests.
     |> Enum.take(6)
