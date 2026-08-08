@@ -78,8 +78,12 @@ judge, strategy override, and run limits.
 than a first-run wizard.
 
 **Ortex embedding artefacts are operator-supplied.** The embedder downloads
-nothing. Semantic retrieval requires you to provide the ONNX model and
-tokenizer.
+nothing. Semantic retrieval requires the Qwen3 ONNX model and tokenizer.
+
+**Single-node pg0 is unavailable on Windows, Intel macOS, and Linux musl.**
+The pgvectorscale build supports the shipped pg0 path on glibc Linux
+x86_64/ARM64 and Apple Silicon. Use external PostgreSQL or a container on the
+unsupported platforms.
 
 **No job pruning.** Nothing deletes rows from the Oban jobs table; plan for
 that growth.

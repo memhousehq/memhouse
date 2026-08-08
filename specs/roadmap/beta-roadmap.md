@@ -277,8 +277,8 @@ The nightly live-model evaluation lane therefore cannot run.
 - [ ] Create a protected environment for release and publishing credentials.
 - [ ] Add `OPENROUTER_API_KEY` as an environment secret, never exposed to
   pull requests from forks.
-- [ ] Add the `CARTULARY_EVAL_JUDGE_MODEL` repository variable, set to a
-  provider and model family different from `CARTULARY_MODEL_ASK`.
+- [ ] Add the `MEMHOUSE_EVAL_JUDGE_MODEL` repository variable, set to a
+  provider and model family different from `MEMHOUSE_MODEL_ASK`.
 - [ ] Add `HEX_API_KEY` only when a package publish task exists, scoped to the
   release environment.
 - [x] Publish tagged containers to GHCR with the built-in `GITHUB_TOKEN` and
@@ -356,7 +356,7 @@ behaviour change that needs a changelog entry and updated contract evidence.
   `test/fixtures/eval/poc-contract-baseline.json` to baseline-contract names,
   and decide explicitly whether the `contract_version` string stays `poc-0` as
   frozen history or advances to a beta identity.
-- [ ] Rename the `poc-baseline` default of `CARTULARY_RETRIEVAL_VARIANT` in
+- [ ] Rename the `poc-baseline` default of `MEMHOUSE_RETRIEVAL_VARIANT` in
   `config/runtime.exs`, noting that the label is an experiment-comparison key
   and that older recorded experiments keep the old value.
 - [ ] Rename the `eval-poc` default account and the `memhouse-poc-smoke`

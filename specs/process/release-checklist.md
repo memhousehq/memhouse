@@ -37,7 +37,7 @@ mix memhouse.eval.release \
   --assert-thresholds \
   --output /private/tmp/memhouse-release-eval.json
 
-mix mem_house.release.check \
+mix memhouse.release.check \
   --tag "v$(sed -n 's/.*version: \"\\([^\"]*\\)\".*/\\1/p' mix.exs)" \
   --eval-report /private/tmp/memhouse-release-eval.json
 ```
@@ -56,7 +56,7 @@ mix mem_house.release.check \
   without `v`, then merge the generated release-preparation PR. The merge
   creates `v<version>`, publishes the GitHub Release, and starts the artifact
   workflow.
-- [ ] Configure `CARTULARY_RELEASE_SIGNING_KEY` as the protected base64 Ed25519
+- [ ] Configure `MEMHOUSE_RELEASE_SIGNING_KEY` as the protected base64 Ed25519
   private key matching the updater's embedded public key; never place it in the
   repository or a release asset.
 - [ ] Wait for the GitHub-Release-triggered workflow to run every gate, build

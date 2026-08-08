@@ -10,11 +10,12 @@ listed where available.
 | `memhouse.identity.bootstrap` | Create the Account and first administrator |
 | `memhouse.portability.export` | Write a whole-Account logical archive |
 | `memhouse.portability.import` | Load or verify an archive |
+| `memhouse.reembed` | Enqueue or inspect an embedding transition |
 | `memhouse.eval.smoke` | Developer sanity pass over the real write/read path |
 | `memhouse.eval.benchmark` | Run one benchmark fixture and score it |
 | `memhouse.eval.release` | Run the deterministic release matrix |
 | `memhouse.eval.verify` | Validate a report's provenance |
-| `mem_house.release.check` | Fail unless the tree is releasable |
+| `memhouse.release.check` | Fail unless the tree is releasable |
 
 Packaged standalone releases additionally provide `bin/update --check` and
 `bin/update --version MAJOR.MINOR.PATCH`; these are not Mix tasks.
@@ -27,7 +28,7 @@ Provisions the community Account, first password identity, root administrator
 grant with downward propagation, and a 12-hour bearer token.
 
 ```bash
-CARTULARY_BOOTSTRAP_PASSWORD='a long password' \
+MEMHOUSE_BOOTSTRAP_PASSWORD='a long password' \
   mix memhouse.identity.bootstrap \
     --email admin@example.test \
     --name 'Local Admin'
@@ -82,6 +83,30 @@ two histories.
 
 **In a release:** `MemHouse.Release.import!/1` and
 `MemHouse.Release.validate_archive!/1` through `bin/memhouse rpc`.
+
+---
+
+## `memhouse.reembed`
+
+```bash
+mix memhouse.reembed
+mix memhouse.reembed --status PIPELINE_RUN_ID
+```
+
+The first command enqueues the configured Account-wide embedding identity. The
+task prints the run id and durable progress as JSON. The status form reports
+the phase, cursor, processed counts, attempt count, and last error class.
+
+**In a release:**
+
+```bash
+bin/memhouse rpc 'MemHouse.Release.reembed!()'
+bin/memhouse rpc 'MemHouse.Release.reembed_status!("PIPELINE_RUN_ID")'
+```
+
+Knowledge, active document chunks, and entity projections run in resumable
+batches. Old-identity rows are absent from semantic retrieval until their
+batch commits. Lexical retrieval remains available during the transition.
 
 ---
 
@@ -154,11 +179,11 @@ Provenance only — it re-runs nothing and compares nothing to a floor.
 
 ---
 
-## `mem_house.release.check`
+## `memhouse.release.check`
 
 ```bash
-mix mem_house.release.check --eval-report /private/tmp/memhouse-release-eval.json
-mix mem_house.release.check --tag v0.4.0 --eval-report /private/tmp/...
+mix memhouse.release.check --eval-report /private/tmp/memhouse-release-eval.json
+mix memhouse.release.check --tag v0.4.0 --eval-report /private/tmp/...
 ```
 
 Fails unless `mix.exs`, changelog, documentation, git tag, and evaluation

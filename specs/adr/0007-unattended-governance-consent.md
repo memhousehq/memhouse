@@ -42,7 +42,7 @@ process, has no real human subject and no human curator in the loop:
    | `"auto"`, settable only by a password-session `account_admin` (narrower
    than `curator`) through a dedicated, audited action.
 2. `config :memhouse, :governance, unattended: boolean`
-   (`CARTULARY_GOVERNANCE_UNATTENDED`), a boot-time deployment-wide flag for
+   (`MEMHOUSE_GOVERNANCE_UNATTENDED`), a boot-time deployment-wide flag for
    a process that never has a console session at all — the case a single
    per-account toggle cannot reach.
 

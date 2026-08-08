@@ -4,7 +4,7 @@
     {
       "benchmark": "memhouse",
       "path": "test/fixtures/eval/memhouse-smoke.json",
-      "sha256": "0f4640648955c216f15bde411de889a33e8d14dd53c7e24e1a77fc26ce058a3a",
+      "sha256": "a11eb64e22a17d033f06558b05de5006df7db3f020900a3534bbfafeba741c9b",
       "normalized": {
         "benchmark": "memhouse",
         "source_format": "memhouse",

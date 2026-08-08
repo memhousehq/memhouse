@@ -11,14 +11,14 @@ echo usage: bin\update.bat [--check ^| --auto ^| --version MAJOR.MINOR.PATCH] 1>
 exit /b 64
 
 :check
-call "%~dp0cartulary.bat" eval "IO.inspect(MemHouse.Update.check())"
+call "%~dp0memhouse.bat" eval "IO.inspect(MemHouse.Update.check())"
 exit /b %ERRORLEVEL%
 
 :auto
-call "%~dp0cartulary.bat" eval "case MemHouse.Update.check() do %%{automatic_eligible: true, available_version: version} -> MemHouse.Update.apply!(version); result -> IO.inspect(result) end"
+call "%~dp0memhouse.bat" eval "case MemHouse.Update.check() do %%{automatic_eligible: true, available_version: version} -> MemHouse.Update.apply!(version); result -> IO.inspect(result) end"
 exit /b %ERRORLEVEL%
 
 :version
 if "%~2"=="" exit /b 64
-call "%~dp0cartulary.bat" eval "MemHouse.Update.apply!(\"%~2\")"
+call "%~dp0memhouse.bat" eval "MemHouse.Update.apply!(\"%~2\")"
 exit /b %ERRORLEVEL%

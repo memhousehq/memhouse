@@ -3,14 +3,14 @@
 # Physical Backup And Restore
 
 Back up the Postgres database and original blob store at the same recovery
-point. Chunks, projections, indexes, HNSW state, ETS counters, and
+point. Chunks, projections, DiskANN indexes, ETS counters, and
 `persistent_term` caches are rebuildable.
 
 ## Embedded pg0
 
 For a cold backup, stop `bin/server` cleanly and verify its pg0 instance has
-stopped. Copy the complete `CARTULARY_PG0_DATA_DIR` and
-`CARTULARY_BLOB_ROOT`, preserving ownership, permissions, and timestamps.
+stopped. Copy the complete `MEMHOUSE_PG0_DATA_DIR` and
+`MEMHOUSE_BLOB_ROOT`, preserving ownership, permissions, and timestamps.
 Record the MemHouse release version, pg0 version from `rel/pg0/VERSION`,
 PostgreSQL version, paths, time, and a checksum inventory.
 

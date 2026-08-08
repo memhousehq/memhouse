@@ -33,7 +33,7 @@ bearer token valid for 12 hours.
 === "From source"
 
     ```bash
-    CARTULARY_BOOTSTRAP_PASSWORD='replace-with-a-long-password' \
+    MEMHOUSE_BOOTSTRAP_PASSWORD='replace-with-a-long-password' \
       mix memhouse.identity.bootstrap \
         --email admin@example.test \
         --name 'Local Admin'
@@ -48,7 +48,7 @@ bearer token valid for 12 hours.
       r = MemHouse.Identity.bootstrap_human(%{
             email: "admin@example.test",
             name: "Local Admin",
-            password: System.fetch_env!("CARTULARY_BOOTSTRAP_PASSWORD")
+            password: System.fetch_env!("MEMHOUSE_BOOTSTRAP_PASSWORD")
           })
       IO.puts("peer=#{r.peer.id} token=#{r.token}")'
     ```

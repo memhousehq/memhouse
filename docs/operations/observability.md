@@ -19,7 +19,7 @@ flowchart LR
 ## Turn it on
 
 ```bash
-CARTULARY_OTEL_ENABLED=true
+MEMHOUSE_OTEL_ENABLED=true
 OTEL_SERVICE_NAME=memhouse-dev
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:14318
 ```
@@ -36,12 +36,12 @@ collector metrics at `http://localhost:9090`.
 
 The collector receives OTLP/HTTP from the host on port `14318` and forwards to
 the standard container port `4318`. The non-standard host port avoids the
-common local `4318` conflict; override `CARTULARY_OTEL_HTTP_PORT` if needed.
+common local `4318` conflict; override `MEMHOUSE_OTEL_HTTP_PORT` if needed.
 
 With the container path, the same stack is a Compose profile:
 
 ```bash
-CARTULARY_OTEL_ENABLED=true docker compose --profile observability up --build
+MEMHOUSE_OTEL_ENABLED=true docker compose --profile observability up --build
 ```
 
 ## Correlating one request
@@ -93,7 +93,7 @@ classes name that case, and they call for different responses:
 | Error class | What happened | What to do |
 | --- | --- | --- |
 | `provider_upstream_error` | The endpoint accepted the request and then failed, cancelled, or cut the response short | Nothing. The job retries and normally succeeds. Investigate only if the rate is high or sustained |
-| `provider_output_truncated` | The answer hit the output cap before it was complete | Raise `CARTULARY_MODEL_MAX_TOKENS`, or lower `CARTULARY_MODEL_REASONING_EFFORT` so less of the budget goes to reasoning. Retrying alone repeats this identically |
+| `provider_output_truncated` | The answer hit the output cap before it was complete | Raise `MEMHOUSE_MODEL_MAX_TOKENS`, or lower `MEMHOUSE_MODEL_REASONING_EFFORT` so less of the budget goes to reasoning. Retrying alone repeats this identically |
 | `provider_content_filtered` | The endpoint withheld the answer | Retrying repeats it. The input or the model has to change |
 | `missing_structured_object` / `missing_text_response` | The call finished normally and returned nothing usable — typically a model answering in prose instead of returning the structured result it was asked for | Check that the configured model supports tool calling or structured output |
 
@@ -106,14 +106,14 @@ Tune noise per debugging session:
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `CARTULARY_OTEL_HTTP_SPANS_ENABLED` | `true` | One server trace per HTTP request |
-| `CARTULARY_OTEL_PHOENIX_SPANS_ENABLED` | `true` | Phoenix route naming |
-| `CARTULARY_OTEL_MEMORY_SPANS_ENABLED` | `true` | The workflow spans above |
-| `CARTULARY_OTEL_MODEL_SPANS_ENABLED` | `true` | Model gateway spans |
-| `CARTULARY_OTEL_DOCUMENT_SPANS_ENABLED` | `true` | Document and connector spans |
-| `CARTULARY_OTEL_OBAN_SPANS_ENABLED` | `true` | Background job spans |
-| `CARTULARY_OTEL_ECTO_SPANS_ENABLED` | `false` | Deep database spans — many, low-level |
-| `CARTULARY_OTEL_DB_STATEMENT_ENABLED` | `false` | SQL statement text; off because statements can carry sensitive values |
+| `MEMHOUSE_OTEL_HTTP_SPANS_ENABLED` | `true` | One server trace per HTTP request |
+| `MEMHOUSE_OTEL_PHOENIX_SPANS_ENABLED` | `true` | Phoenix route naming |
+| `MEMHOUSE_OTEL_MEMORY_SPANS_ENABLED` | `true` | The workflow spans above |
+| `MEMHOUSE_OTEL_MODEL_SPANS_ENABLED` | `true` | Model gateway spans |
+| `MEMHOUSE_OTEL_DOCUMENT_SPANS_ENABLED` | `true` | Document and connector spans |
+| `MEMHOUSE_OTEL_OBAN_SPANS_ENABLED` | `true` | Background job spans |
+| `MEMHOUSE_OTEL_ECTO_SPANS_ENABLED` | `false` | Deep database spans — many, low-level |
+| `MEMHOUSE_OTEL_DB_STATEMENT_ENABLED` | `false` | SQL statement text; off because statements can carry sensitive values |
 
 ## Knowing when a scope lost its indexes
 
