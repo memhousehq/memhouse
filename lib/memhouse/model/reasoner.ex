@@ -53,7 +53,8 @@ defmodule MemHouse.Model.Reasoner do
         content: """
         Revisit the supplied delta and working set. Return only supported
         deductions, update candidates, and supports/contradicts/derived_from
-        relations in the supplied schema. Never overwrite contradictions.
+        relations in the supplied schema. Every deduction must cite at least two
+        contributor ids from the working set. Never overwrite contradictions.
         """
       },
       %{role: "user", content: Jason.encode!(delta_and_working_set)}

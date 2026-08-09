@@ -26,8 +26,22 @@ defmodule MemHouse.Model.SchemaReasoningTest do
         source_peer_key: "avery",
         reasoning_inheritance: %{sensitivity: "internal", target_level: "peer"},
         reasoning_inputs: [
-          %{id: @source_id, account_id: @account_id, scope_id: @scope_id, state: "active"},
-          %{id: @target_id, account_id: @account_id, scope_id: @scope_id, state: "active"}
+          %{
+            id: @source_id,
+            account_id: @account_id,
+            scope_id: @scope_id,
+            state: "active",
+            sensitivity: "internal",
+            target_level: "peer"
+          },
+          %{
+            id: @target_id,
+            account_id: @account_id,
+            scope_id: @scope_id,
+            state: "active",
+            sensitivity: "internal",
+            target_level: "peer"
+          }
         ]
       },
       overrides
@@ -52,7 +66,8 @@ defmodule MemHouse.Model.SchemaReasoningTest do
         "confidence_percentage" => 90,
         "sensitivity" => "internal",
         "target_level" => "peer",
-        "update_operation" => "add"
+        "update_operation" => "add",
+        "contributor_ids" => [@source_id, @target_id]
       },
       attrs
     )
@@ -166,7 +181,7 @@ defmodule MemHouse.Model.SchemaReasoningTest do
   end
 
   test "deductions inherit visibility and cannot request lifecycle control" do
-    assert {:error, ["items[0].target_level must inherit the working set"]} =
+    assert {:error, ["items[0].target_level must not widen its contributors"]} =
              Reasoning.cast(
                %{"items" => [deduction(%{"target_level" => "account"})], "relations" => []},
                context()

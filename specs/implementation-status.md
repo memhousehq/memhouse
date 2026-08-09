@@ -367,10 +367,11 @@ Each limitation is tracked in `specs/roadmap/beta-roadmap.md`.
 - **Enterprise identity is out of scope.** SSO/SAML/SCIM, multi-Account
   provisioning, advanced RBAC administration, and channel-linking UX remain
   later licensed work.
-- **Dream-time deduction application is partial.** Consolidation merges active
-  duplicates and emits bounded set aggregates. Validated relation output is
-  applied with replay-safe audit and contradiction review effects. Broad
-  applied-deduction and projection-build coverage is outstanding.
+- **Dream-time deductions are governed.** Each model deduction names active
+  contributors, enters as proposed knowledge, copies source provenance, and
+  writes lineage only after governance accepts it. Contributor lifecycle
+  changes mark accepted deductions for revalidation. Broad projection-build
+  coverage is still outstanding.
 - **`main` is not fully protected yet.** CI workflows exist and report green,
   but required status checks are not configured on the GitHub ruleset. A
   workflow file is not proof of branch protection.

@@ -69,6 +69,9 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
         :held_scope_id,
         :corroboration_count,
         :supersedes_id,
+        :deduction_key,
+        :deduction_family_key,
+        :contributor_ids,
         :source_message_ids,
         :expires_at,
         :revalidate_after,
@@ -297,6 +300,13 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
     # text, provenance, and lifecycle trail.
     attribute :supersedes_id, :uuid, public?: true
 
+    # Stable, content-safe identities for a model deduction. They let the pipeline
+    # replay the same supported claim and replace a changed contributor set without
+    # making a statement or model response part of an operational key.
+    attribute :deduction_key, :string
+    attribute :deduction_family_key, :string
+    attribute :contributor_ids, {:array, :uuid}, allow_nil?: false, default: []
+
     # Belief time: when the system should stop trusting or should re-ask about this claim.
     attribute :expires_at, :utc_datetime_usec, public?: true
     attribute :revalidate_after, :utc_datetime_usec, public?: true
@@ -338,6 +348,10 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
     attribute :deleted_at, :utc_datetime_usec
     create_timestamp :inserted_at
     update_timestamp :updated_at
+  end
+
+  identities do
+    identity :deduction_key, [:deduction_key], nils_distinct?: true
   end
 end
 

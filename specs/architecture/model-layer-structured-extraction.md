@@ -80,12 +80,15 @@ Each candidate also includes:
 
 Subjects are limited to known Peers or the current scope. New items enter
 `proposed` and pass Gate A/B. The reasoning
-schema reuses the same candidate shape and adds typed
+schema reuses the same candidate shape, requires at least two active contributor
+ids for each deduction, and adds typed
 `supports`/`contradicts`/`derived_from` relations. The dream lane owns durable
 retries, budgets, and per-scope input watermarks. It calls the provider outside
 a database transaction, then applies governed proposals and relations,
 coalesces derived refreshes, and advances the watermark in one short Account
-transaction. A provider or write failure leaves the watermark unchanged.
+transaction. Accepted deductions receive provenance and contributor relations;
+changed or removed contributors mark them for revalidation. A provider or write
+failure leaves the watermark unchanged.
 Projection rebuilding remains separate pipeline work.
 
 The dialectic response schema requires answer text, retrieved knowledge IDs,
