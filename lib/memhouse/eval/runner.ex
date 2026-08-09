@@ -10,7 +10,7 @@ defmodule MemHouse.Eval.Runner do
   """
 
   alias MemHouse.Clock
-  alias MemHouse.Eval.{ModelJudge, Reasoning, Scorer}
+  alias MemHouse.Eval.{Durability, ModelJudge, Reasoning, Scorer}
   alias MemHouse.Memory
 
   @doc """
@@ -47,6 +47,18 @@ defmodule MemHouse.Eval.Runner do
         do: cases |> Enum.map(& &1.reasoning) |> Enum.reject(&is_nil/1) |> Reasoning.merge(),
         else: nil
 
+    durability =
+      if Keyword.get(opts, :durability_audit, false),
+        do:
+          cases
+          |> Enum.flat_map(& &1.extractions)
+          |> Durability.audit(
+            judge: Keyword.get(opts, :durability_judge, "deterministic"),
+            sample: Keyword.get(opts, :durability_sample),
+            seed: Keyword.get(opts, :durability_seed, "durability-audit-v1")
+          ),
+        else: nil
+
     %{
       "report_schema" => "f11-2",
       "memhouse_version" => memhouse_version(),
@@ -81,6 +93,7 @@ defmodule MemHouse.Eval.Runner do
       "messages_ingested" => cases |> Enum.map(& &1.messages_ingested) |> Enum.sum(),
       "questions_attempted" => length(question_results),
       "reasoning" => reasoning,
+      "durability" => durability,
       "metrics" => Scorer.summarize(question_results),
       "cases" => Enum.map(cases, &case_report/1)
     }
@@ -130,8 +143,8 @@ defmodule MemHouse.Eval.Runner do
 
         result =
           with {:ok, stored} <- Memory.ingest_message(attrs),
-               {:ok, _knowledge} <- Memory.extract_message(stored["id"], account_key) do
-            {:ok, stored}
+               {:ok, knowledge} <- Memory.extract_message(stored["id"], account_key) do
+            {:ok, stored, knowledge}
           end
 
         {message, result}
@@ -220,9 +233,14 @@ defmodule MemHouse.Eval.Runner do
       scope_path: scope_path,
       messages_attempted: length(messages),
       messages_ingested:
-        Enum.count(ingested, fn {_message, result} -> match?({:ok, _}, result) end),
+        Enum.count(ingested, fn {_message, result} -> match?({:ok, _, _}, result) end),
       questions_attempted: length(questions),
       question_results: question_results,
+      extractions:
+        Enum.map(ingested, fn
+          {_message, {:ok, _stored, knowledge}} -> knowledge
+          {_message, _result} -> []
+        end),
       reasoning: reasoning,
       status: "evaluated",
       reason: nil
@@ -239,6 +257,7 @@ defmodule MemHouse.Eval.Runner do
       messages_ingested: 0,
       questions_attempted: 0,
       question_results: [],
+      extractions: [],
       reasoning: nil,
       status: status,
       reason: reason
@@ -253,7 +272,7 @@ defmodule MemHouse.Eval.Runner do
   defp build_ref_map(ingested) do
     ingested
     |> Enum.reduce(%{message_by_db_id: %{}, session_by_db_id: %{}}, fn
-      {source, {:ok, %{"id" => db_id}}}, acc ->
+      {source, {:ok, %{"id" => db_id}, _knowledge}}, acc ->
         source_session_ref =
           source
           |> Map.get(:metadata, %{})

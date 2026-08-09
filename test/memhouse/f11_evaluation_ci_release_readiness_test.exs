@@ -439,6 +439,38 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
     assert Enum.any?(errors, &String.contains?(&1, "accounting"))
   end
 
+  test "durability audit evidence is content-safe and count-balanced" do
+    report =
+      valid_report()
+      |> Map.put("durability", %{
+        "method" => "deterministic-durability-f11-1",
+        "judge" => %{
+          "kind" => "deterministic",
+          "method" => "deterministic-durability-f11-1"
+        },
+        "available" => 4,
+        "sampled" => 4,
+        "sample_seed" => "issue-160",
+        "categories" => %{
+          "durable" => 2,
+          "greeting_or_small_talk" => 1,
+          "question" => 1,
+          "speech_act_transcription" => 0,
+          "subjectless_generic" => 0,
+          "other_non_durable" => 0
+        },
+        "durable" => 2,
+        "noise" => 2,
+        "messages" => %{"zero" => 1, "one" => 2, "multiple" => 1}
+      })
+
+    assert Report.validate(report) == :ok
+
+    invalid = put_in(report, ["durability", "noise"], 1)
+    assert {:error, errors} = Report.validate(invalid)
+    assert "durability must contain balanced, content-safe audit counts" in errors
+  end
+
   test "dream-time evidence balances terminal passes and requires a clean replay" do
     report =
       valid_report()

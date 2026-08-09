@@ -57,6 +57,7 @@ defmodule MemHouse.Eval.Report do
     |> require_metrics(report)
     |> require_accounting(report)
     |> require_reasoning(report)
+    |> require_durability(report)
     |> Enum.reverse()
     |> case do
       [] -> :ok
@@ -401,6 +402,66 @@ defmodule MemHouse.Eval.Report do
 
   defp require_reasoning(errors, _report),
     do: ["reasoning must be null or valid accounting" | errors]
+
+  defp require_durability(errors, %{"durability" => nil}), do: errors
+  defp require_durability(errors, report) when not is_map_key(report, "durability"), do: errors
+
+  defp require_durability(errors, %{"durability" => durability}) when is_map(durability) do
+    categories = Map.get(durability, "categories")
+    message_counts = Map.get(durability, "messages")
+    available = Map.get(durability, "available")
+    sampled = Map.get(durability, "sampled")
+    durable = Map.get(durability, "durable")
+    noise = Map.get(durability, "noise")
+
+    if non_negative_integer?(available) and non_negative_integer?(sampled) and
+         sampled <= available and
+         is_binary(Map.get(durability, "sample_seed")) and valid_durability_judge?(durability) and
+         valid_durability_categories?(categories, sampled, durable, noise) and
+         valid_message_yield?(message_counts) do
+      errors
+    else
+      ["durability must contain balanced, content-safe audit counts" | errors]
+    end
+  end
+
+  defp require_durability(errors, _report),
+    do: ["durability must be null or valid audit accounting" | errors]
+
+  defp valid_durability_judge?(%{
+         "method" => "deterministic-durability-f11-1",
+         "judge" => %{"kind" => "deterministic", "method" => "deterministic-durability-f11-1"}
+       }),
+       do: true
+
+  defp valid_durability_judge?(%{"method" => "model-durability-f11-1", "judge" => judge})
+       when is_map(judge) do
+    Map.get(judge, "kind") == "model" and Map.get(judge, "method") == "model-durability-f11-1" and
+      Enum.all?(
+        ~w(provider model model_version prompt_version pipeline_version),
+        &(is_binary(Map.get(judge, &1)) and Map.get(judge, &1) != "")
+      )
+  end
+
+  defp valid_durability_judge?(_durability), do: false
+
+  defp valid_durability_categories?(categories, sampled, durable, noise)
+       when is_map(categories) do
+    required =
+      ~w(durable greeting_or_small_talk question speech_act_transcription subjectless_generic other_non_durable)
+
+    Enum.all?(required, &non_negative_integer?(Map.get(categories, &1))) and
+      Enum.sort(Map.keys(categories)) == Enum.sort(required) and
+      Enum.sum(Enum.map(required, &Map.fetch!(categories, &1))) == sampled and
+      durable == Map.get(categories, "durable") and noise == sampled - durable
+  end
+
+  defp valid_durability_categories?(_categories, _sampled, _durable, _noise), do: false
+
+  defp valid_message_yield?(%{"zero" => zero, "one" => one, "multiple" => multiple}),
+    do: Enum.all?([zero, one, multiple], &non_negative_integer?/1)
+
+  defp valid_message_yield?(_counts), do: false
 
   defp count_map?(map) when is_map(map),
     do: Enum.all?(map, fn {key, value} -> is_binary(key) and non_negative_integer?(value) end)

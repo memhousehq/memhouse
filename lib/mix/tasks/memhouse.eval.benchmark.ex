@@ -37,6 +37,10 @@ defmodule Mix.Tasks.Memhouse.Eval.Benchmark do
           limit_messages: :integer,
           limit_questions: :integer,
           dream_time: :boolean,
+          durability_audit: :boolean,
+          durability_judge: :string,
+          durability_sample: :integer,
+          durability_seed: :string,
           no_model: :boolean
         ],
         aliases: [
@@ -79,7 +83,11 @@ defmodule Mix.Tasks.Memhouse.Eval.Benchmark do
         limit_cases: Keyword.get(opts, :limit_cases),
         limit_messages: Keyword.get(opts, :limit_messages),
         limit_questions: Keyword.get(opts, :limit_questions),
-        dream_time: Keyword.get(opts, :dream_time, false)
+        dream_time: Keyword.get(opts, :dream_time, false),
+        durability_audit: Keyword.get(opts, :durability_audit, false),
+        durability_judge: Keyword.get(opts, :durability_judge, "deterministic"),
+        durability_sample: Keyword.get(opts, :durability_sample),
+        durability_seed: Keyword.get(opts, :durability_seed, "durability-audit-v1")
       )
 
     encoded = Jason.encode_to_iodata!(report, pretty: true)
