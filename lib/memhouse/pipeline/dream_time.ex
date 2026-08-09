@@ -15,11 +15,10 @@ defmodule MemHouse.Pipeline.DreamTime do
   """
 
   alias MemHouse.DataLayer
-  alias MemHouse.Governance.Engine
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Model.Reasoner
   alias MemHouse.Operations.DreamTimeWatermark
-  alias MemHouse.Pipeline.{Consolidator, Idempotency, Lock, ReasoningEffects}
+  alias MemHouse.Pipeline.{Consolidator, DeductionEffects, Idempotency, Lock, ReasoningEffects}
   alias MemHouse.Retrieval
   alias MemHouse.Retrieval.Query
 
@@ -140,7 +139,7 @@ defmodule MemHouse.Pipeline.DreamTime do
       Lock.acquire!(account_id, lock_key(scope_id))
       # Applying a stale response is safe because the watermark advances only
       # to the snapshot boundary. New rows remain a delta for the next pass.
-      items = Enum.map(result.items, &apply_item!(&1, account_id, scope_id, actor))
+      items = Enum.map(result.items, &DeductionEffects.apply!(&1, account_id, scope_id, actor))
 
       relations =
         ReasoningEffects.complete!(
@@ -204,60 +203,16 @@ defmodule MemHouse.Pipeline.DreamTime do
       reasoning_inputs:
         Enum.map(
           inputs,
-          &%{id: &1.id, account_id: &1.account_id, scope_id: &1.scope_id, state: &1.state}
+          &%{
+            id: &1.id,
+            account_id: &1.account_id,
+            scope_id: &1.scope_id,
+            state: &1.state,
+            sensitivity: &1.sensitivity,
+            target_level: &1.target_level
+          }
         )
     }
-  end
-
-  defp apply_item!(item, account_id, scope_id, actor) do
-    subject = subject!(item, account_id, scope_id, actor)
-
-    knowledge =
-      KnowledgeItem
-      |> Ash.Changeset.new()
-      |> Ash.Changeset.set_tenant(account_id)
-      |> Ash.Changeset.for_create(:create_from_pipeline, %{
-        scope_id: scope_id,
-        subject_peer_id: subject.peer_id,
-        subject_scope_id: subject.scope_id,
-        statement: item.statement,
-        kind: item.kind,
-        confidence: item.confidence,
-        # A deduction is never a direct observation, even when every input was
-        # direct. This prevents Gate A from auto-placing a model conclusion.
-        evidence_level: "indirect",
-        sensitivity: item.sensitivity,
-        state: "proposed",
-        target_level: item.target_level,
-        verification: "pending",
-        source_message_ids: item.source_message_ids || [],
-        expires_at: item.expires_at,
-        revalidate_after: item.revalidate_after,
-        relevant_from: item.relevant_from,
-        relevant_until: item.relevant_until,
-        extracting_provider: item.provider,
-        extracting_model: item.model,
-        extracting_model_version: item.model_version,
-        prompt_version: item.prompt_version,
-        pipeline_version: item.pipeline_version
-      })
-      |> Ash.create!(actor: actor)
-
-    Engine.evaluate_proposal(knowledge, actor)
-  end
-
-  defp subject!(%{subject_type: "scope"}, _account_id, scope_id, _actor),
-    do: %{peer_id: nil, scope_id: scope_id}
-
-  defp subject!(item, account_id, _scope_id, actor) do
-    peer =
-      MemHouse.Accounts.Peer
-      |> Ash.Query.filter(key == ^item.subject_ref)
-      |> Ash.Query.set_tenant(account_id)
-      |> Ash.read_one!(actor: actor)
-
-    if is_nil(peer), do: raise(ArgumentError, "reasoner referenced an unknown peer")
-    %{peer_id: peer.id, scope_id: nil}
   end
 
   defp watermark(account_id, scope_id, actor) do

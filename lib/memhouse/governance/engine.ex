@@ -609,6 +609,18 @@ defmodule MemHouse.Governance.Engine do
       |> Ash.Changeset.set_tenant(knowledge.account_id)
       |> Ash.update!(actor: actor)
 
+    if knowledge.state == "active" and updated.state != "active" do
+      MemHouse.Pipeline.DeductionEffects.invalidate_contributors!(
+        knowledge.account_id,
+        [knowledge.id],
+        pipeline_actor(actor)
+      )
+    end
+
+    if updated.state == "active" and is_binary(updated.deduction_key) do
+      MemHouse.Pipeline.DeductionEffects.accept!(updated, pipeline_actor(actor))
+    end
+
     enqueue_derived_refreshes!(updated, actor)
     updated
   end

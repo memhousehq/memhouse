@@ -283,6 +283,8 @@ defmodule MemHouse.Governance.Erasure do
   def erase_knowledge_rows!(account_id, actor, knowledge_rows) do
     ids = Enum.map(knowledge_rows, & &1.id)
 
+    MemHouse.Pipeline.DeductionEffects.invalidate_contributors!(account_id, ids, actor)
+
     KnowledgeRelation
     |> Ash.Query.filter(source_knowledge_id in ^ids or target_knowledge_id in ^ids)
     |> Ash.Query.set_tenant(account_id)

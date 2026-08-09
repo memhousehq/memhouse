@@ -564,6 +564,13 @@ defmodule MemHouse.Model.Schema.Reasoning do
 
     extraction
     |> put_in(["properties", "items", "maxItems"], @max_deductions)
+    |> put_in(["properties", "items", "items", "properties", "contributor_ids"], %{
+      "type" => "array",
+      "items" => %{"type" => "string", "format" => "uuid"},
+      "minItems" => 2,
+      "uniqueItems" => true
+    })
+    |> update_in(["properties", "items", "items", "required"], &(&1 ++ ["contributor_ids"]))
     |> put_in(["properties", "relations"], %{
       "type" => "array",
       "maxItems" => @max_relations,
@@ -599,7 +606,7 @@ defmodule MemHouse.Model.Schema.Reasoning do
          :ok <- deduction_limit(raw_items),
          :ok <- reject_controlled_item_fields(raw_items),
          {:ok, items} <- MemHouse.Model.Schema.Extraction.cast(%{"items" => raw_items}, context),
-         :ok <- validate_inheritance(items, context),
+         {:ok, items} <- validate_deduction_contributors(items, raw_items, context),
          {:ok, raw_relations} <- relations(object),
          :ok <- relation_limit(raw_relations),
          {:ok, relations} <- validate_relations(raw_relations, context) do
@@ -655,35 +662,101 @@ defmodule MemHouse.Model.Schema.Reasoning do
     end
   end
 
-  defp validate_inheritance([], _context), do: :ok
+  defp validate_deduction_contributors([], [], _context), do: {:ok, []}
 
-  defp validate_inheritance(items, context) do
-    case Map.get(context, :reasoning_inheritance) do
-      %{sensitivity: sensitivity, target_level: target_level} ->
-        items
-        |> Enum.with_index()
-        |> Enum.flat_map(fn {item, index} ->
-          []
-          |> mismatch(
-            item.sensitivity,
-            sensitivity,
-            "items[#{index}].sensitivity must inherit the working set"
-          )
-          |> mismatch(
-            item.target_level,
-            target_level,
-            "items[#{index}].target_level must inherit the working set"
-          )
-        end)
-        |> case do
-          [] -> :ok
-          errors -> {:error, errors}
+  defp validate_deduction_contributors(items, raw_items, context) do
+    with {:ok, inputs} <- reasoning_inputs(context) do
+      items
+      |> Enum.zip(raw_items)
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {{item, raw}, index}, {valid, errors} ->
+        case contributor_ids(raw, inputs, context, index) do
+          {:ok, ids, inheritance} ->
+            add_valid_deduction(item, ids, inheritance, index, valid, errors)
+
+          {:error, item_errors} ->
+            {valid, errors ++ item_errors}
+        end
+      end)
+      |> case do
+        {valid, []} -> {:ok, Enum.reverse(valid)}
+        {_valid, errors} -> {:error, errors}
+      end
+    end
+  end
+
+  defp add_valid_deduction(item, ids, inheritance, index, valid, errors) do
+    item_errors =
+      []
+      |> mismatch(
+        item.sensitivity,
+        inheritance.sensitivity,
+        "items[#{index}].sensitivity must inherit its contributors"
+      )
+      |> mismatch(
+        item.target_level,
+        inheritance.target_level,
+        "items[#{index}].target_level must not widen its contributors"
+      )
+
+    if item_errors == [] do
+      {[Map.put(item, :contributor_ids, ids) | valid], errors}
+    else
+      {valid, errors ++ item_errors}
+    end
+  end
+
+  defp contributor_ids(raw, inputs, context, index) do
+    case fetch(raw, "contributor_ids") do
+      ids when is_list(ids) and length(ids) >= 2 ->
+        if length(ids) == length(Enum.uniq(ids)) do
+          with :ok <- all_uuids(ids, index),
+               {:ok, contributors} <- contributor_inputs(ids, inputs, context, index) do
+            {:ok, ids, inheritance(contributors)}
+          end
+        else
+          {:error, ["items[#{index}].contributor_ids must contain at least two unique input ids"]}
         end
 
       _other ->
-        {:error, ["reasoning inheritance must be supplied for deductions"]}
+        {:error, ["items[#{index}].contributor_ids must contain at least two unique input ids"]}
     end
   end
+
+  defp all_uuids(ids, index) do
+    if Enum.all?(ids, fn id -> is_binary(id) and match?({:ok, _}, Ecto.UUID.cast(id)) end),
+      do: :ok,
+      else: {:error, ["items[#{index}].contributor_ids must contain UUIDs"]}
+  end
+
+  defp contributor_inputs(ids, inputs, context, index) do
+    contributors = Enum.map(ids, &Map.get(inputs, &1))
+
+    if Enum.any?(contributors, &is_nil/1) or
+         Enum.any?(
+           contributors,
+           &(&1.account_id != context.account_id or &1.scope_id != context.scope_id or
+               &1.state != "active")
+         ) do
+      {:error, ["items[#{index}].contributor_ids must name active authorized inputs"]}
+    else
+      {:ok, contributors}
+    end
+  end
+
+  defp inheritance(contributors) do
+    sensitivity = Enum.max_by(contributors, &sensitivity_rank(&1.sensitivity)).sensitivity
+    target_level = Enum.min_by(contributors, &target_rank(&1.target_level)).target_level
+    %{sensitivity: sensitivity, target_level: target_level}
+  end
+
+  defp sensitivity_rank("public"), do: 0
+  defp sensitivity_rank("internal"), do: 1
+  defp sensitivity_rank("personal"), do: 2
+  defp sensitivity_rank("restricted"), do: 3
+  defp target_rank("peer"), do: 0
+  defp target_rank("scope"), do: 1
+  defp target_rank("account"), do: 2
 
   defp mismatch(errors, value, expected, _message) when value == expected, do: errors
   defp mismatch(errors, _value, _expected, message), do: errors ++ [message]
@@ -728,7 +801,14 @@ defmodule MemHouse.Model.Schema.Reasoning do
            scope_id when is_binary(scope_id) <- value(input, "scope_id"),
            state when is_binary(state) <- value(input, "state") do
         {:cont,
-         {:ok, Map.put(indexed, id, %{account_id: account_id, scope_id: scope_id, state: state})}}
+         {:ok,
+          Map.put(indexed, id, %{
+            account_id: account_id,
+            scope_id: scope_id,
+            state: state,
+            sensitivity: value(input, "sensitivity"),
+            target_level: value(input, "target_level")
+          })}}
       else
         _other -> {:halt, {:error, ["reasoning inputs must be active knowledge rows"]}}
       end

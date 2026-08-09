@@ -22,7 +22,12 @@ trusted write. Deductions enter the normal pipeline as `proposed` knowledge and
 relations are created only after semantic validation. The model cannot set a
 lifecycle state, Account, scope, held target, or verification state.
 
-Each deduction inherits the working set scope, sensitivity, and target level.
+Each deduction cites at least two active working-set rows. It inherits their
+same scope, highest sensitivity, and narrowest target level. Its durable
+identity includes the sorted contributor ids and reasoner contract identity,
+so a replay returns the existing proposal. A changed contributor set creates a
+replacement proposal. Governance activates it before the old deduction becomes
+`superseded`; a rejected or held replacement cannot retire active knowledge.
 Its durable provenance records the active input ids and the resolved model,
 model version, prompt version, and pipeline version. Relations may use only
 `supports`, `contradicts`, or `derived_from`; each endpoint must be a distinct,
@@ -37,6 +42,12 @@ only with the durable effects. A `contradicts` edge keeps both statements in
 their current state and opens one replay-safe curator review that references
 both statements and their provenances. It must not put statements, raw model
 output, or prompts in audit metadata, telemetry, or job arguments.
+
+When governance accepts a deduction, the pipeline writes a `derived_from`
+relation to every contributor. If an accepted contributor is superseded,
+expires, needs revalidation, or is erased, dependent deductions move to
+`needs_revalidation`. The rows remain immutable lifecycle history; cache work
+is dirtied and rebuilt from surviving durable knowledge.
 
 The aggregate is an ordinary governed knowledge row. It records every source
 message and provenance row, links to each component with `derived_from`, and
