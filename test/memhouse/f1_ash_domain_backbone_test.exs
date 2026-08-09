@@ -74,6 +74,7 @@ defmodule MemHouse.F1AshDomainBackboneTest do
     MemHouse.Observations.Session,
     MemHouse.Observations.SessionParticipant,
     MemHouse.Observations.SessionScope,
+    MemHouse.Operations.DreamTimeWatermark,
     MemHouse.Operations.PipelineRun,
     MemHouse.Operations.UsageEvent,
     MemHouse.Retrieval.RetrievalProfile,
@@ -90,7 +91,7 @@ defmodule MemHouse.F1AshDomainBackboneTest do
   # policy; keeping the list complete when a tenant table is added is a review obligation.
   @rls_tables ~w(
     accounts api_keys attributions audit_events connector_configs document_chunks document_versions
-    documents entities entity_mentions erasure_requests external_identities gate_decisions
+    documents dream_time_watermarks entities entity_mentions erasure_requests external_identities gate_decisions
     governance_gate_rules knowledge_consents knowledge_items knowledge_lifecycle_events
     knowledge_relations messages model_role_configs peer_ask_preferences peer_queries
     peer_query_deliveries peers pipeline_runs policy_configs projections provenances

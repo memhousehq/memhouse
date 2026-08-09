@@ -12,6 +12,7 @@ defmodule MemHouse.Operations do
 
   resources do
     resource MemHouse.Operations.UsageEvent
+    resource MemHouse.Operations.DreamTimeWatermark
     resource MemHouse.Operations.PipelineRun
   end
 end
@@ -145,6 +146,68 @@ defmodule MemHouse.Operations.UsageEvent do
     # covers (account_id, call_id): a retry that reuses a call id within the
     # Account is rejected rather than counted twice.
     identity :call_id, [:call_id]
+  end
+end
+
+defmodule MemHouse.Operations.DreamTimeWatermark do
+  @moduledoc """
+  Durable per-scope progress for incremental dream-time reasoning.
+
+  The watermark advances only in the transaction that applies a completed
+  reasoning pass. It is operational state, not a cache: losing it could skip
+  governed knowledge during a later pass.
+  """
+
+  use MemHouse.Resource, domain: MemHouse.Operations, table: "dream_time_watermarks"
+
+  multitenancy do
+    strategy :attribute
+    attribute :account_id
+  end
+
+  actions do
+    defaults [:read]
+
+    create :start do
+      accept [:scope_id, :input_watermark]
+      upsert? true
+      upsert_identity :scope
+      upsert_fields [:input_watermark, :updated_at]
+    end
+
+    update :advance do
+      accept [:input_watermark]
+      require_atomic? false
+    end
+  end
+
+  policies do
+    policy always() do
+      authorize_if expr(account_id == ^actor(:account_id))
+    end
+
+    policy action_type([:create, :update]) do
+      authorize_if {MemHouse.Policy.RoleIn, roles: [:system]}
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
+
+    policy action_type(:read) do
+      authorize_if {MemHouse.Policy.RoleIn, roles: [:account_admin, :system]}
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
+  end
+
+  attributes do
+    uuid_primary_key :id
+    attribute :account_id, :uuid, allow_nil?: false
+    attribute :scope_id, :uuid, allow_nil?: false
+    attribute :input_watermark, :utc_datetime_usec, allow_nil?: false
+    create_timestamp :inserted_at
+    update_timestamp :updated_at
+  end
+
+  identities do
+    identity :scope, [:scope_id]
   end
 end
 

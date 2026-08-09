@@ -7,7 +7,9 @@ defmodule MemHouse.Model.Reasoner do
 
   This slow lane revisits a delta and stored working set when budget allows.
 
-  No production caller uses it; `dream_time` currently runs the governance sweeper.
+  `MemHouse.Pipeline.DreamTime` is its production caller. It supplies only
+  active knowledge from one Account and scope, then applies accepted output
+  through the ordinary governance operations.
 
   ## What it may and may not produce
 
@@ -57,12 +59,18 @@ defmodule MemHouse.Model.Reasoner do
       %{role: "user", content: Jason.encode!(delta_and_working_set)}
     ]
 
-    Model.generate_structured(
-      :dream_reasoner,
-      messages,
-      Reasoning,
-      context,
-      Keyword.merge([task: :reasoning, prompt_version: @prompt_version], opts)
-    )
+    case Model.generate_structured(
+           :dream_reasoner,
+           messages,
+           Reasoning,
+           context,
+           Keyword.merge([task: :reasoning, prompt_version: @prompt_version], opts)
+         ) do
+      {:ok, result, provenance} ->
+        {:ok, %{result | items: Enum.map(result.items, &Map.merge(&1, provenance))}, provenance}
+
+      {:error, error} ->
+        {:error, error}
+    end
   end
 end
