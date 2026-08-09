@@ -576,6 +576,12 @@ defmodule MemHouse.Knowledge.KnowledgeRelation do
     create :create_from_pipeline do
       accept [:scope_id, :source_knowledge_id, :target_knowledge_id, :kind, :confidence]
     end
+
+    # Relations are derived from governed knowledge. Erasure removes an edge before either
+    # endpoint disappears, so relation expansion can never retain a dangling reference.
+    destroy :erase do
+      require_atomic? false
+    end
   end
 
   policies do
@@ -588,6 +594,10 @@ defmodule MemHouse.Knowledge.KnowledgeRelation do
     end
 
     policy action(:create_from_pipeline) do
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
+
+    policy action(:erase) do
       authorize_if actor_attribute_equals(:pipeline?, true)
     end
   end

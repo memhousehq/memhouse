@@ -30,12 +30,13 @@ active input in the same Account and scope. Duplicate edges are rejected. These
 rules reject model attempts to select broader visibility or to attach an edge to
 missing, foreign, inactive, or out-of-scope knowledge.
 
-The current dream lane does not apply general model deductions. It performs
-consolidation and lifecycle work only. This contract is the prerequisite for a
-future production writer; that writer must use pipeline-only Ash actions,
-governance, replay keys, budget admission, and content-safe telemetry. It must
-not put statements, raw model output, or prompts in audit metadata, telemetry,
-or job arguments.
+The dream lane applies validated relation output through a pipeline-only effect
+writer. It reauthorizes both active same-scope endpoints inside the Account
+transaction, records content-safe audit evidence, and advances the watermark
+only with the durable effects. A `contradicts` edge keeps both statements in
+their current state and opens one replay-safe curator review that references
+both statements and their provenances. It must not put statements, raw model
+output, or prompts in audit metadata, telemetry, or job arguments.
 
 The aggregate is an ordinary governed knowledge row. It records every source
 message and provenance row, links to each component with `derived_from`, and

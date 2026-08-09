@@ -54,6 +54,7 @@ defmodule MemHouse.Governance.Erasure do
   alias MemHouse.Knowledge.Entity
   alias MemHouse.Knowledge.EntityMention
   alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.KnowledgeRelation
   alias MemHouse.Knowledge.Projection
   alias MemHouse.Knowledge.Provenance
   alias MemHouse.Observations.Message
@@ -281,6 +282,12 @@ defmodule MemHouse.Governance.Erasure do
   @doc false
   def erase_knowledge_rows!(account_id, actor, knowledge_rows) do
     ids = Enum.map(knowledge_rows, & &1.id)
+
+    KnowledgeRelation
+    |> Ash.Query.filter(source_knowledge_id in ^ids or target_knowledge_id in ^ids)
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.read!(actor: actor)
+    |> Enum.each(&destroy!(&1, :erase, actor))
 
     EntityMention
     |> Ash.Query.filter(knowledge_item_id in ^ids)

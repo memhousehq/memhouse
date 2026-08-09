@@ -16,10 +16,10 @@ defmodule MemHouse.Pipeline.DreamTime do
 
   alias MemHouse.DataLayer
   alias MemHouse.Governance.Engine
-  alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation}
+  alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Model.Reasoner
   alias MemHouse.Operations.DreamTimeWatermark
-  alias MemHouse.Pipeline.{Consolidator, Idempotency, Lock}
+  alias MemHouse.Pipeline.{Consolidator, Idempotency, Lock, ReasoningEffects}
   alias MemHouse.Retrieval
   alias MemHouse.Retrieval.Query
 
@@ -118,8 +118,11 @@ defmodule MemHouse.Pipeline.DreamTime do
              %{delta: serialise(snapshot.delta), working_set: serialise(working_set)},
              context
            ) do
-        {:ok, result, _provenance} -> {:ok, %{status: :ready, result: result}}
-        {:error, error} -> {:error, error}
+        {:ok, result, _provenance} ->
+          {:ok, %{status: :ready, result: result, input_ids: Enum.map(working_set, & &1.id)}}
+
+        {:error, error} ->
+          {:error, error}
       end
     else
       {:ok, %{status: :throttled}}
@@ -132,13 +135,21 @@ defmodule MemHouse.Pipeline.DreamTime do
   defp apply(_account_id, _scope_id, _snapshot, %{status: :throttled}),
     do: {:ok, %{status: :throttled, items: 0, relations: 0}}
 
-  defp apply(account_id, scope_id, snapshot, %{result: result}) do
+  defp apply(account_id, scope_id, snapshot, %{result: result, input_ids: input_ids}) do
     DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account, actor ->
       Lock.acquire!(account_id, lock_key(scope_id))
       # Applying a stale response is safe because the watermark advances only
       # to the snapshot boundary. New rows remain a delta for the next pass.
       items = Enum.map(result.items, &apply_item!(&1, account_id, scope_id, actor))
-      relations = Enum.count(result.relations, &apply_relation!(&1, account_id, scope_id, actor))
+
+      relations =
+        ReasoningEffects.complete!(
+          account_id,
+          scope_id,
+          input_ids,
+          result.relations,
+          actor
+        )
 
       advance!(account_id, scope_id, snapshot.input_watermark, actor)
       # The governing transitions above enqueue the same per-scope derived work
@@ -233,35 +244,6 @@ defmodule MemHouse.Pipeline.DreamTime do
       |> Ash.create!(actor: actor)
 
     Engine.evaluate_proposal(knowledge, actor)
-  end
-
-  defp apply_relation!(relation, account_id, scope_id, actor) do
-    existing =
-      KnowledgeRelation
-      |> Ash.Query.filter(
-        source_knowledge_id == ^relation.source_id and
-          target_knowledge_id == ^relation.target_id and kind == ^relation.kind
-      )
-      |> Ash.Query.set_tenant(account_id)
-      |> Ash.read_one!(actor: actor)
-
-    if existing do
-      false
-    else
-      KnowledgeRelation
-      |> Ash.Changeset.new()
-      |> Ash.Changeset.set_tenant(account_id)
-      |> Ash.Changeset.for_create(:create_from_pipeline, %{
-        scope_id: scope_id,
-        source_knowledge_id: relation.source_id,
-        target_knowledge_id: relation.target_id,
-        kind: relation.kind,
-        confidence: 1.0
-      })
-      |> Ash.create!(actor: actor)
-
-      true
-    end
   end
 
   defp subject!(%{subject_type: "scope"}, _account_id, scope_id, _actor),

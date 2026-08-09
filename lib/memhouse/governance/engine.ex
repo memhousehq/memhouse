@@ -1268,7 +1268,7 @@ defmodule MemHouse.Governance.Engine do
   defp conflict_ids(knowledge, actor) do
     KnowledgeRelation
     |> Ash.Query.filter(
-      kind == "conflict" and
+      kind == "contradicts" and
         (source_knowledge_id == ^knowledge.id or target_knowledge_id == ^knowledge.id)
     )
     |> Ash.Query.set_tenant(knowledge.account_id)
