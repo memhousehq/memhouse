@@ -54,7 +54,8 @@ defmodule MemHouse.Eval.ReleaseSuite do
             run_id: "#{run_id}-#{Map.fetch!(run, "id")}",
             limit_cases: Map.get(run, "limit_cases"),
             limit_messages: Map.get(run, "limit_messages"),
-            limit_questions: Map.get(run, "limit_questions")
+            limit_questions: Map.get(run, "limit_questions"),
+            dream_time: Map.get(run, "dream_time", false)
           )
           # The matrix id ties a report back to the manifest entry that configured it,
           # which is the only way to tell two runs over the same fixture apart.

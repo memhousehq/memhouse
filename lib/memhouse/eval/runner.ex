@@ -10,7 +10,7 @@ defmodule MemHouse.Eval.Runner do
   """
 
   alias MemHouse.Clock
-  alias MemHouse.Eval.{ModelJudge, Scorer}
+  alias MemHouse.Eval.{ModelJudge, Reasoning, Scorer}
   alias MemHouse.Memory
 
   @doc """
@@ -41,6 +41,11 @@ defmodule MemHouse.Eval.Runner do
     question_results = Enum.flat_map(cases, & &1.question_results)
 
     accounting = accounting(available_cases, cases)
+
+    reasoning =
+      if Keyword.get(opts, :dream_time, false),
+        do: cases |> Enum.map(& &1.reasoning) |> Enum.reject(&is_nil/1) |> Reasoning.merge(),
+        else: nil
 
     %{
       "report_schema" => "f11-2",
@@ -75,6 +80,7 @@ defmodule MemHouse.Eval.Runner do
       "messages_attempted" => cases |> Enum.map(& &1.messages_attempted) |> Enum.sum(),
       "messages_ingested" => cases |> Enum.map(& &1.messages_ingested) |> Enum.sum(),
       "questions_attempted" => length(question_results),
+      "reasoning" => reasoning,
       "metrics" => Scorer.summarize(question_results),
       "cases" => Enum.map(cases, &case_report/1)
     }
@@ -130,6 +136,11 @@ defmodule MemHouse.Eval.Runner do
 
         {message, result}
       end)
+
+    reasoning =
+      if Keyword.get(opts, :dream_time, false),
+        do: Reasoning.run(account_key),
+        else: nil
 
     ref_map = build_ref_map(ingested)
 
@@ -212,6 +223,7 @@ defmodule MemHouse.Eval.Runner do
         Enum.count(ingested, fn {_message, result} -> match?({:ok, _}, result) end),
       questions_attempted: length(questions),
       question_results: question_results,
+      reasoning: reasoning,
       status: "evaluated",
       reason: nil
     }
@@ -227,6 +239,7 @@ defmodule MemHouse.Eval.Runner do
       messages_ingested: 0,
       questions_attempted: 0,
       question_results: [],
+      reasoning: nil,
       status: status,
       reason: reason
     }
@@ -317,6 +330,7 @@ defmodule MemHouse.Eval.Runner do
       "messages_attempted" => case.messages_attempted,
       "messages_ingested" => case.messages_ingested,
       "questions_attempted" => case.questions_attempted,
+      "reasoning" => case[:reasoning],
       "status" => case.status,
       "reason" => case[:reason],
       "metrics" => Scorer.summarize(case.question_results)["overall"],

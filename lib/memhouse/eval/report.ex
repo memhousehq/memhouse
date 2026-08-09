@@ -56,6 +56,7 @@ defmodule MemHouse.Eval.Report do
     |> require_judge(report)
     |> require_metrics(report)
     |> require_accounting(report)
+    |> require_reasoning(report)
     |> Enum.reverse()
     |> case do
       [] -> :ok
@@ -362,6 +363,49 @@ defmodule MemHouse.Eval.Report do
   # will receive the normal schema/provenance errors rather than crashing the compatibility
   # reader while it reports why they are not quotable evidence.
   defp require_accounting(errors, _report), do: errors
+
+  # Dream-time is optional for the ordinary release matrix. When an evaluation
+  # claims to have run it, this block makes its terminal accounting and replay
+  # result quotable instead of leaving them as unstructured task output.
+  defp require_reasoning(errors, %{"reasoning" => nil}), do: errors
+
+  defp require_reasoning(errors, report) when not is_map_key(report, "reasoning"), do: errors
+
+  defp require_reasoning(errors, %{"reasoning" => reasoning}) when is_map(reasoning) do
+    integers = ~w(
+      attempted completed throttled failed replayed replay_durable_effects
+      knowledge_before knowledge_after superseded conflict_validation_items
+    )
+
+    reasoner = Map.get(reasoning, "reasoner", %{})
+
+    if Map.get(reasoning, "enabled") == true and
+         Enum.all?(integers, &non_negative_integer?(Map.get(reasoning, &1))) and
+         Map.get(reasoning, "attempted") ==
+           Map.get(reasoning, "completed") + Map.get(reasoning, "throttled") +
+             Map.get(reasoning, "failed") and
+         Map.get(reasoning, "replay_durable_effects") == 0 and
+         count_map?(Map.get(reasoning, "relations")) and
+         count_map?(Map.get(reasoning, "deductions")) and
+         count_map?(Map.get(reasoning, "corroboration")) and
+         count_map?(Map.get(reasoner, "error_classes")) and
+         Enum.all?(
+           ~w(calls input_tokens output_tokens latency_ms),
+           &non_negative_integer?(Map.get(reasoner, &1))
+         ) do
+      errors
+    else
+      ["reasoning must balance terminal passes and show a zero-effect replay" | errors]
+    end
+  end
+
+  defp require_reasoning(errors, _report),
+    do: ["reasoning must be null or valid accounting" | errors]
+
+  defp count_map?(map) when is_map(map),
+    do: Enum.all?(map, fn {key, value} -> is_binary(key) and non_negative_integer?(value) end)
+
+  defp count_map?(_map), do: false
 
   defp non_negative_integer?(value), do: is_integer(value) and value >= 0
 

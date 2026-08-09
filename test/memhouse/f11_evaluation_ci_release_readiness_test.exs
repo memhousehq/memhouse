@@ -438,4 +438,44 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
     assert {:error, errors} = MemHouse.Eval.Report.validate(invalid)
     assert Enum.any?(errors, &String.contains?(&1, "accounting"))
   end
+
+  test "dream-time evidence balances terminal passes and requires a clean replay" do
+    report =
+      valid_report()
+      |> Map.put("reasoning", %{
+        "enabled" => true,
+        "attempted" => 2,
+        "completed" => 1,
+        "throttled" => 0,
+        "failed" => 1,
+        "replayed" => 1,
+        "replay_durable_effects" => 0,
+        "knowledge_before" => 2,
+        "knowledge_after" => 3,
+        "superseded" => 0,
+        "relations" => %{"supports" => 1},
+        "deductions" => %{"active" => 1},
+        "conflict_validation_items" => 0,
+        "corroboration" => %{"1" => 3},
+        "reasoner" => %{
+          "calls" => 2,
+          "input_tokens" => 10,
+          "output_tokens" => 5,
+          "latency_ms" => 20,
+          "error_classes" => %{"timeout" => 1}
+        }
+      })
+
+    assert Report.validate(report) == :ok
+
+    assert {:error, errors} =
+             report |> put_in(["reasoning", "replay_durable_effects"], 1) |> Report.validate()
+
+    assert "reasoning must balance terminal passes and show a zero-effect replay" in errors
+  end
+
+  test "dream-time evidence is optional for historical and ordinary reports" do
+    assert Report.validate(valid_report()) == :ok
+    assert Report.validate(Map.put(valid_report(), "reasoning", nil)) == :ok
+  end
 end

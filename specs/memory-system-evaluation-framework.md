@@ -36,6 +36,11 @@
 - **EV-REPRO-4 — Semantic releases.** Application versions follow Semantic
   Versioning and have a dated `CHANGELOG.md` entry. A release tag is exactly
   `v<application-version>`.
+- **EV-REPRO-5 — Dream-time accounting.** A report that enables dream-time
+  records completed, throttled, and failed passes. Their sum equals attempted
+  passes. It also records a replay with zero durable effects, reasoner usage,
+  and content-safe relation, conflict, deduction, supersession, and
+  corroboration counts.
 
 ## 3. Two tiers
 
