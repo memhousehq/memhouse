@@ -29,6 +29,7 @@ defmodule MemHouse.Memory do
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Knowledge.LifecycleEvent
   alias MemHouse.Knowledge.Provenance
+  alias MemHouse.Knowledge.Statement
   alias MemHouse.Observability
   alias MemHouse.Observations.Message
   alias MemHouse.Observations.Session
@@ -1460,22 +1461,6 @@ defmodule MemHouse.Memory do
     end
   end
 
-  # Renders a candidate's validity window, or "" when it has none.
-  #
-  # A statement is written to read on its own, but extraction cannot always put an absolute
-  # date in one — "last weekend" survives into the text. The window is then the only thing
-  # that can date the claim, and a model shown the sentence alone resolves the phrase against
-  # its own idea of today. Dates only: no retrieved statement is finer-grained than a day.
-  defp validity_suffix(row) do
-    case {row["relevant_from"], row["relevant_until"]} do
-      {nil, _until} -> ""
-      {from, nil} -> " (true from #{date_only(from)})"
-      {from, until} -> " (true from #{date_only(from)} until #{date_only(until)})"
-    end
-  end
-
-  defp date_only(%DateTime{} = at), do: at |> DateTime.to_date() |> Date.to_iso8601()
-
   # Builds the grounded question prompt and validates what comes back.
   #
   # Every statement is prefixed with its knowledge id so the model can cite by id,
@@ -1487,7 +1472,7 @@ defmodule MemHouse.Memory do
     memory_context =
       candidates
       |> Enum.map_join("\n", fn row ->
-        "[#{row["id"]}] #{row["statement"]}#{validity_suffix(row)}"
+        "[#{row["id"]}] #{Statement.with_validity(row["statement"], row["relevant_from"], row["relevant_until"])}"
       end)
 
     prompt = """

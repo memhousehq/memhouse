@@ -90,6 +90,10 @@ which silently dates the turn to the moment you loaded it — check the stored
 carries no absolute date of its own. Load a transcript without it and every
 statement it produces is anchored to your import run.
 
+The extractor stores the resolved date in `relevant_from` and
+`relevant_until`. It does not add an observation-time prefix to the statement.
+It keeps an ISO date in statement text only when the date is part of the claim.
+
 ## Replaying is safe
 
 Deterministic idempotency makes replay merge provenance instead of duplicating

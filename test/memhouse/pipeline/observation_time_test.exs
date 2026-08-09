@@ -66,10 +66,15 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
       assert user_prompt() =~ "2023-07-17T14:31:00Z"
     end
 
-    test "tells the model to resolve relative dates against that time" do
+    test "puts resolved relative dates in the valid-time fields, not the statement frame" do
       Memory.extract_message(seed_message!("obs-relative"))
 
-      assert system_prompt() =~ "relative"
+      prompt = system_prompt()
+
+      assert prompt =~ "Resolve every relative"
+      assert prompt =~ "relevant_from and relevant_until"
+      assert prompt =~ "not as a dated utterance or observation frame"
+      assert prompt =~ "ISO YYYY-MM-DD"
     end
   end
 

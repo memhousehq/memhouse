@@ -255,7 +255,8 @@ Returns `{"data": context}` with `knowledge`, `session_summary`, `scope_cards`,
 
 Each projection contains a bounded `summary`, its `summary_mode` and
 `summary_provenance`, and small `pinned_facts` with a source id and statement
-excerpt. The complete source set remains internal. Each entity card also
+excerpt. A dated excerpt includes a date-only valid-time suffix rendered from
+its structured fields. The complete source set remains internal. Each entity card also
 contains a `label`, a `kind`, and the strictest source `sensitivity`.
 
 A card requires at least two active source statements in one scope. A summary

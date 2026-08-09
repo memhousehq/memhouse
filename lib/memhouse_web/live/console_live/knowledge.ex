@@ -20,6 +20,7 @@ defmodule MemHouseWeb.ConsoleLive.Knowledge do
 
   import MemHouseWeb.ConsoleComponents
 
+  alias MemHouse.Knowledge.Statement
   alias MemHouse.Memory
   alias MemHouseWeb.Console.Access
   alias MemHouseWeb.Console.Loader
@@ -174,7 +175,7 @@ defmodule MemHouseWeb.ConsoleLive.Knowledge do
               <tr :for={{candidate, index} <- Enum.with_index(@search["candidates"], 1)}>
                 <td class="nowrap" data-label="Rank">{index}</td>
                 <td data-label="Candidate">
-                  <.expandable text={candidate["statement"]} length={160} />
+                  <.expandable text={candidate_statement(candidate)} length={160} />
                 </td>
                 <td class="nowrap" data-label="Source">
                   <.badge family="kind" value={candidate["candidate_type"] || "knowledge"} />
@@ -325,16 +326,16 @@ defmodule MemHouseWeb.ConsoleLive.Knowledge do
                     navigate={~p"/console/knowledge/#{item.id}?#{back_param(@filters)}"}
                     class="statement-link"
                   >
-                    {truncate(item.statement, 200)}
+                    {truncate(statement_with_validity(item), 200)}
                   </.link>
                   <%!--
                     The link cannot also be the expander: a `details` element
                     inside an anchor is invalid, and a reader scanning a page
                     wants the rest of a sentence without losing their place.
                   --%>
-                  <details :if={truncated?(item.statement, 200)} class="expandable">
+                  <details :if={truncated?(statement_with_validity(item), 200)} class="expandable">
                     <summary>Show full text</summary>
-                    <p class="expandable-full">{item.statement}</p>
+                    <p class="expandable-full">{statement_with_validity(item)}</p>
                   </details>
                   <p class="statement-meta">
                     <.badge family="kind" value={item.kind} />
@@ -512,6 +513,18 @@ defmodule MemHouseWeb.ConsoleLive.Knowledge do
   end
 
   defp blank?(value), do: value in [nil, ""]
+
+  defp candidate_statement(candidate) do
+    Statement.with_validity(
+      candidate["statement"],
+      candidate["relevant_from"],
+      candidate["relevant_until"]
+    )
+  end
+
+  defp statement_with_validity(item) do
+    Statement.with_validity(item.statement, item.relevant_from, item.relevant_until)
+  end
 
   # Separate deadline loss from empty indexes, and both from a healthy run. A search where the
   # text-reading strategies all found nothing still returns a full page — of whatever is most
