@@ -162,11 +162,14 @@ defmodule MemHouseWeb.MemoryController do
     latency than a bare search.
 
     Returns `%{"data" => result}`: the search payload merged with `answer`, `citations`,
-    `abstained`, and `answer_confidence`. The answer is grounded in the returned candidates
-    — when nothing supports the question the action abstains instead of inventing one, so
-    treat `abstained == true` as an ordinary outcome and not an error.
+    `abstained`, `answer_confidence`, and `answer_degraded`. The answer is grounded in the
+    returned candidates — when nothing supports the question the action abstains instead of
+    inventing one, so treat `abstained == true` as an ordinary outcome and not an error.
     `answer_confidence` is a 0-100 percentage; a model answer below the abstention
-    threshold abstains regardless of what the model claimed.
+    threshold abstains regardless of what the model claimed. `answer_degraded` is `nil`
+    unless the model call itself failed, in which case it names the failure class and
+    `supporting_statements` carries the retrieved statements the (absent) answer would have
+    been grounded on.
   """
   def ask(conn, params) do
     result =

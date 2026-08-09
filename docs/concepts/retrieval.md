@@ -213,3 +213,12 @@ answer invented from an empty candidate set would be worse than silence. Every
 model citation is intersected with the retrieved candidate ids before the
 response leaves the server, and no surviving citation means that empty
 abstention wins.
+
+A failed model call is a third state, distinct from both a weak inference and
+an empty index: `answer_degraded` names the failure, `abstained == true`, and
+`answer_confidence` 0. The retrieved statements are real and still returned,
+in `citations` and as plain text in `supporting_statements`, but `answer`
+states that the call failed rather than presenting them as a conclusion. A
+deployment with no model configured is different again — that is a chosen
+configuration, not a failure, and answers by concatenating the top statements
+at a fixed `answer_confidence` of 40 with `answer_degraded` left `null`.

@@ -100,6 +100,48 @@ defmodule MemHouse.AskGroundedAbstentionTest do
     assert result["abstained"]
   end
 
+  test "reports a failed model call as degraded, not as a confident answer" do
+    bootstrap = bootstrap_human!("degraded")
+    {knowledge_id, scope_path, _session_id} = seed_memory!(bootstrap.actor, "degraded")
+    {:ok, actor} = Identity.authenticate_bearer(bootstrap.token)
+    use_answer_mode!(:provider_error)
+
+    handler_id = attach_degraded_telemetry()
+
+    result = ask(actor, scope_path)
+
+    # A failed model call is not a low-confidence answer: the retrieved
+    # statement never became a claim, so it must not be presented as one.
+    refute result["answer"] == "Avery prefers concise weekly release summaries."
+    assert result["abstained"]
+    assert result["answer_confidence"] == 0
+    assert result["answer_degraded"] == "provider_upstream_error"
+
+    # The statement is still there, as a citation and as plain text, just not
+    # dressed up as a conclusion anyone reasoned to (memhousehq/memhouse#143).
+    assert result["citations"] == [knowledge_id]
+    assert result["supporting_statements"] == ["Avery prefers concise weekly release summaries."]
+
+    assert_receive {^handler_id, measurements, metadata}
+    assert metadata.error_class == "provider_upstream_error"
+    assert metadata.account_id == actor.account_id
+    assert is_integer(measurements.duration_ms)
+    assert measurements.duration_ms >= 0
+
+    :telemetry.detach(handler_id)
+  end
+
+  test "a confident answer never carries answer_degraded" do
+    bootstrap = bootstrap_human!("not-degraded")
+    {_knowledge_id, scope_path, _session_id} = seed_memory!(bootstrap.actor, "not-degraded")
+    {:ok, actor} = Identity.authenticate_bearer(bootstrap.token)
+    use_answer_mode!(:confident_inference)
+
+    result = ask(actor, scope_path)
+
+    assert result["answer_degraded"] == nil
+  end
+
   test "shows the answerer when a dated statement was true" do
     bootstrap = bootstrap_human!("dated")
 
@@ -260,6 +302,23 @@ defmodule MemHouse.AskGroundedAbstentionTest do
   defp use_answer_mode!(mode) do
     GroundedAnswerProvider.start!(mode)
     Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
+  end
+
+  defp attach_degraded_telemetry do
+    test_process = self()
+    handler_id = {:ask_degraded_test, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:memhouse, :ask, :degraded],
+        fn _event, measurements, metadata, _config ->
+          send(test_process, {handler_id, measurements, metadata})
+        end,
+        nil
+      )
+
+    handler_id
   end
 
   defp ask(actor, scope_path) do

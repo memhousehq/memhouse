@@ -92,8 +92,8 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/ask \
 `question` is required. All `search` parameters apply; `profile` defaults to
 `thorough`.
 
-The response is the search payload plus `answer`, `citations`, `abstained`, and
-`answer_confidence`.
+The response is the search payload plus `answer`, `citations`, `abstained`,
+`answer_confidence`, and `answer_degraded`.
 
 !!! tip "Read the confidence, not only the answer"
     `ask` does not refuse. It answers with what the retrieved statements make
@@ -106,6 +106,14 @@ The response is the search payload plus `answer`, `citations`, `abstained`, and
     ground an answer on. That is a report about the index, not a guess about
     the subject. An answer invented from an empty candidate set is worse than
     silence, and much harder to notice.
+
+!!! warning "A degraded answer is not a low-confidence one"
+    When the answering model call itself fails, `answer_degraded` names the
+    failure instead of `null`, `abstained` is `true`, and `answer_confidence`
+    is 0. `answer` states that the call failed — it is never the retrieved
+    statements presented as a conclusion. Those statements are still there, as
+    plain text in `supporting_statements`, so you lose nothing but the false
+    confidence.
 
 Retrieval for `ask` is restricted to knowledge items, so every citation is a
 governed statement rather than a raw message. Citation ids the model invented

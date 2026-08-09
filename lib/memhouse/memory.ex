@@ -561,13 +561,24 @@ defmodule MemHouse.Memory do
   used when no retrieved statement survived to ground an answer on. That is a
   statement about the index, not about the subject.
 
-  When the deployment has no real model configured, and when a configured
-  provider errors, the reply falls back to concatenating the top retrieved
-  statements and citing exactly those, rather than inventing prose or silently
-  switching providers.
+  When the deployment has no real model configured, the reply falls back to
+  concatenating the top retrieved statements and citing exactly those, with
+  `"answer_confidence" => 40`, rather than inventing prose or silently
+  switching providers. That is a deployment choice, not a failure.
 
-  Returns the `search/2` map with `"answer"`, `"citations"`, `"abstained"`, and
-  `"answer_confidence"` merged in. Raises under the same conditions as
+  When a configured provider errors or exhausts its structured-output repair
+  budget, the reply never presents an answer at all: `"abstained" => true`,
+  `"answer_confidence" => 0`, and `"answer_degraded"` names the failure class
+  (for example `"provider_upstream_error"` or
+  `"structured_validation_failed"`). The retrieved statements still travel, as
+  `"citations"` and as plain text under `"supporting_statements"`, so nothing
+  already retrieved is lost — only the false claim that a model reasoned over
+  it. Every other reply carries `"answer_degraded" => nil`.
+
+  Returns the `search/2` map with `"answer"`, `"citations"`, `"abstained"`,
+  `"answer_confidence"`, and `"answer_degraded"` merged in — plus
+  `"supporting_statements"` when the answer is degraded. Raises under the same
+  conditions as
   `search/2`.
   """
   def ask(attrs, identity_actor \\ nil) do
@@ -1424,6 +1435,17 @@ defmodule MemHouse.Memory do
   # without being zero.
   @fallback_confidence 40
 
+  # A provider or validation failure earns nothing: unlike @fallback_confidence,
+  # this state is not a deployment choice, it is a call that did not produce an
+  # answer at all.
+  @degraded_confidence 0
+
+  # What a caller sees when the answering model call itself failed. Distinct
+  # from @no_evidence_answer: statements were retrieved, they are just not
+  # presented as an answer. The top statements still travel in
+  # "supporting_statements" so a caller loses nothing but the false confidence.
+  @model_failed_answer "The answering model call failed; no answer was generated for this question."
+
   # Nothing retrieved means nothing to ground an answer in, so abstain without
   # spending a model call.
   defp answer_question(_attrs, question, []), do: {fallback_answer(question, []), false}
@@ -1513,6 +1535,8 @@ defmodule MemHouse.Memory do
     #{memory_context}
     """
 
+    started_at = MemHouse.Clock.monotonic_ms()
+
     result =
       MemHouse.Model.generate_structured(
         :dialectic_agent,
@@ -1549,17 +1573,56 @@ defmodule MemHouse.Memory do
             "citations" => citations,
             "abstained" =>
               decoded.abstained or decoded.answer_confidence < @inference_abstain_below,
-            "answer_confidence" => decoded.answer_confidence
+            "answer_confidence" => decoded.answer_confidence,
+            "answer_degraded" => nil
           }
         end
 
-      # A provider error degrades to the retrieved statements. It does not retry
-      # with a different provider, and it does not raise: the caller still gets a
-      # cited, if blunt, answer.
-      {:error, _error} ->
-        fallback_answer(question, candidates)
+      # A provider or validation failure is not an answer, however confident the
+      # statement-concatenation trick used to look. It does not retry with a
+      # different provider, and it does not raise: the caller gets a marked
+      # degraded reply, not a fabricated conclusion (see memhousehq/memhouse#143).
+      {:error, reason} ->
+        degrade(candidates, reason, model_context, started_at)
     end
   end
+
+  # Reports a failed model call as what it is instead of reusing the
+  # concatenated-statements reply, which a caller cannot tell apart from a real
+  # answer once it carries a non-zero confidence. The retrieved statements
+  # still travel, as citations and as plain text, so nothing already retrieved
+  # is lost — only the false claim that it was reasoned over.
+  defp degrade(candidates, reason, model_context, started_at) do
+    top = Enum.take(candidates, 4)
+    failure = failure_class(reason)
+
+    :telemetry.execute(
+      [:memhouse, :ask, :degraded],
+      %{duration_ms: MemHouse.Clock.monotonic_ms() - started_at},
+      %{account_id: model_context.account_id, error_class: failure}
+    )
+
+    %{
+      "answer" => @model_failed_answer,
+      "citations" => Enum.map(top, & &1["id"]),
+      "abstained" => true,
+      "answer_confidence" => @degraded_confidence,
+      "answer_degraded" => failure,
+      "supporting_statements" => Enum.map(top, & &1["statement"])
+    }
+  end
+
+  # A short, content-free label for why the model call failed, matching the
+  # `error_class` values `MemHouse.Model.Gateway` already writes to the usage
+  # ledger so the two can be correlated. Validation exhaustion is the one shape
+  # that does not pass through the gateway a second time, since
+  # `StructuredGenerator` raises it itself after the repair budget is spent.
+  defp failure_class({:structured_validation_failed, _errors}),
+    do: "structured_validation_failed"
+
+  defp failure_class(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp failure_class(%module{}), do: inspect(module)
+  defp failure_class(_reason), do: "model_error"
 
   # The deterministic provider is the built-in default, not a deliberate choice,
   # so it does not count as an override. Only a real provider module injected
@@ -1578,7 +1641,8 @@ defmodule MemHouse.Memory do
       "answer" => @no_evidence_answer,
       "citations" => [],
       "abstained" => true,
-      "answer_confidence" => 0
+      "answer_confidence" => 0,
+      "answer_degraded" => nil
     }
 
   defp fallback_answer(_question, candidates) do
@@ -1590,6 +1654,7 @@ defmodule MemHouse.Memory do
       "answer" => Enum.map_join(top, " ", & &1["statement"]),
       "citations" => Enum.map(top, & &1["id"]),
       "abstained" => false,
+      "answer_degraded" => nil,
       "answer_confidence" => @fallback_confidence
     }
   end

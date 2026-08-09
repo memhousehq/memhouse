@@ -207,9 +207,10 @@ retrieval. A raw `strategies` override is refused for external callers.
 `question` is required; every `search` field is also accepted, but `profile`
 defaults to `"thorough"`.
 
-Returns the search payload merged with `answer`, `citations`, `abstained`, and
-`answer_confidence`. Retrieval is restricted to knowledge items, so citations
-are governed statements. `abstained: true` is an ordinary outcome.
+Returns the search payload merged with `answer`, `citations`, `abstained`,
+`answer_confidence`, and `answer_degraded`. Retrieval is restricted to
+knowledge items, so citations are governed statements. `abstained: true` is an
+ordinary outcome.
 
 The answerer sees each statement with its validity window and is told to date a
 relative phrase from that window rather than from today, so a statement reading
@@ -222,15 +223,22 @@ and a weak answer arrives with a low `answer_confidence` rather than as a
 refusal. A model answer below 50 sets `abstained: true` whatever the model
 claimed.
 
-| `citations` | `abstained` | `answer_confidence` | Meaning |
-| --- | --- | --- | --- |
-| non-empty | `false` | 50-100 | The cited statements support the answer well enough to act on. |
-| non-empty | `true` | 0-49 | The cited statements make the answer the most probable one, but weakly. Read it as a lead. |
-| empty | `true` | 0 | No retrieved statement survived to ground an answer on. |
+| `citations` | `abstained` | `answer_confidence` | `answer_degraded` | Meaning |
+| --- | --- | --- | --- | --- |
+| non-empty | `false` | 50-100 | `null` | The cited statements support the answer well enough to act on. |
+| non-empty | `true` | 0-49 | `null` | The cited statements make the answer the most probable one, but weakly. Read it as a lead. |
+| empty | `true` | 0 | `null` | No retrieved statement survived to ground an answer on. |
+| non-empty | `false` | 40 | `null` | The deployment has no model configured; `answer` is the top retrieved statements, concatenated. |
+| non-empty | `true` | 0 | a failure class | The model call failed. `answer` states that, not a conclusion; the retrieved statements are in `supporting_statements`. |
 
-The model-free replies report fixed confidences instead: 0 when nothing was
-retrieved, and 40 when the deployment has no model configured or the provider
-errored and the top statements are returned directly.
+`answer_degraded` is `null` unless the model call itself failed — a transport
+or provider error, or exhausted structured-output repair. When it is set,
+`answer` is a fixed statement that the call failed, never the retrieved
+statements presented as a conclusion; `supporting_statements` carries those
+statements as plain text, separately from `answer` and from `citations`.
+Failure classes match the `error_class` values the usage ledger records, for
+example `provider_upstream_error`, `missing_structured_object`, and
+`structured_validation_failed`.
 
 Citation ids not present in the retrieved candidates are removed before the
 response is returned. If none survive, the response uses the empty abstention
