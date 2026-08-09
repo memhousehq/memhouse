@@ -102,7 +102,10 @@ defmodule MemHouse.MixProject do
       # already pin a compatible range, and duplicating it here only creates conflicts
       # when they move.
       {:postgrex, ">= 0.0.0"},
-      {:ash, "~> 3.30"},
+      # Floor is 3.31 rather than 3.30 because EEF-CVE-2026-69659 and
+      # EEF-CVE-2026-70395 are only fixed from 3.31.1 onward. Do not lower it
+      # without checking `mix hex.audit`.
+      {:ash, "~> 3.31"},
       {:ash_authentication, "~> 4.14"},
       {:ash_ai, "~> 0.7.3"},
       {:ash_postgres, "~> 2.11"},
