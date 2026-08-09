@@ -36,6 +36,7 @@ defmodule Mix.Tasks.Memhouse.Eval.Benchmark do
           limit_cases: :integer,
           limit_messages: :integer,
           limit_questions: :integer,
+          dream_time: :boolean,
           no_model: :boolean
         ],
         aliases: [
@@ -77,7 +78,8 @@ defmodule Mix.Tasks.Memhouse.Eval.Benchmark do
         run_id: Keyword.get(opts, :run_id),
         limit_cases: Keyword.get(opts, :limit_cases),
         limit_messages: Keyword.get(opts, :limit_messages),
-        limit_questions: Keyword.get(opts, :limit_questions)
+        limit_questions: Keyword.get(opts, :limit_questions),
+        dream_time: Keyword.get(opts, :dream_time, false)
       )
 
     encoded = Jason.encode_to_iodata!(report, pretty: true)

@@ -128,7 +128,7 @@ asks a few questions, and prints what came back. No scores, no thresholds.
 ## `memhouse.eval.benchmark`
 
 ```bash
-mix memhouse.eval.benchmark --benchmark locomo --dataset data/locomo10.json
+mix memhouse.eval.benchmark --benchmark locomo --dataset data/locomo10.json --dream-time
 ```
 
 Runs one fixture end to end through the ordinary write and answer paths and
@@ -143,6 +143,7 @@ MemHouse's own `{"messages": [...], "questions": [...]}`.
 | `--account` | Default `eval-benchmark` |
 | `--run-id` | Seeds the scope root; give concurrent runs distinct ids |
 | `--limit-cases` / `--limit-messages` / `--limit-questions` | Truncate for a fast loop — recorded in the report, because a truncated run is not comparable |
+| `--dream-time` | Run and replay the Account dream-time pass after each case ingest. The report records content-safe reasoning counts and rejects a non-zero replay effect. |
 | `--no-model` | Deterministic local extractor and answerer |
 
 Also writes real rows. Same warning applies.

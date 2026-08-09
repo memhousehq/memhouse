@@ -44,6 +44,12 @@ application version, date, dataset id/hash/split, profile and exact version,
 strategy override, deadline setting, five model-role identities, judge method,
 limits, and per-question evidence.
 
+An opt-in dream-time evaluation runs the Account reasoning pass after ingest,
+then replays it. Its report contains only durable counts: terminal pass states,
+knowledge before and after, relation kinds, conflict reviews, supersession,
+corroboration, and dream-reasoner usage. Validation rejects an unbalanced pass
+total or any replay that creates a durable effect.
+
 `Scorer` retains deterministic correctness, abstention, and citation measures
 and adds lexical `f11-1` groundedness/context-relevance/answer-relevance plus
 context, answer, end-to-end, full-context, and efficiency-ratio token measures.
