@@ -68,9 +68,8 @@ defmodule MemHouse.Pipeline.DreamTime do
   @doc false
   def run_scope(account_id, scope_id) do
     with {:ok, snapshot} <- snapshot(account_id, scope_id),
-         {:ok, reasoning} <- reason(snapshot),
-         {:ok, result} <- apply(account_id, scope_id, snapshot, reasoning) do
-      {:ok, result}
+         {:ok, reasoning} <- reason(snapshot) do
+      apply(account_id, scope_id, snapshot, reasoning)
     end
   end
 
@@ -240,8 +239,8 @@ defmodule MemHouse.Pipeline.DreamTime do
     existing =
       KnowledgeRelation
       |> Ash.Query.filter(
-        source_knowledge_id == ^relation.source_id and target_knowledge_id == ^relation.target_id and
-          kind == ^relation.kind
+        source_knowledge_id == ^relation.source_id and
+          target_knowledge_id == ^relation.target_id and kind == ^relation.kind
       )
       |> Ash.Query.set_tenant(account_id)
       |> Ash.read_one!(actor: actor)
