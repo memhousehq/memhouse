@@ -51,7 +51,8 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
   Three lanes share this workflow because they are all off-request consolidation
   work rather than user-facing latency:
 
-  - `dream_time` runs Account-wide queue aging and query decay;
+  - `dream_time` dispatches incremental per-scope reasoning, then runs
+    Account-wide queue aging and query decay;
   - `entity_resolution` rebuilds the entity and mention caches for the run's
     scope;
   - `projection_refresh` runs the full derived-cache rebuild for that scope —
@@ -89,7 +90,10 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
           # Budget refusal is a completed run, not a failure: retrying would
           # queue the same denied work again.
           if MemHouse.Operations.Budget.admit?(run.account_id, run.scope_id, :dream_time) do
-            MemHouse.Governance.Sweeper.run(run.account_id, "dream_time")
+            with {:ok, reasoning} <- MemHouse.Pipeline.DreamTime.run(run.account_id),
+                 {:ok, sweep} <- MemHouse.Governance.Sweeper.run(run.account_id, "dream_time") do
+              {:ok, %{reasoning: reasoning, sweep: sweep}}
+            end
           else
             {:ok, %{status: "throttled", lane: "dream_time"}}
           end

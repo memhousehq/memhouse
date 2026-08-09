@@ -155,9 +155,12 @@ independent sources. It also derives a set aggregate for the supported
 membership form, such as `Melanie has a pet named Bailey.` The aggregate keeps
 each source and has the same scope, sensitivity, and visibility as its inputs.
 
-Dream-time also resolves entities, schedules revalidation, and prepares
-validation questions. It is throttled first when token budgets tighten and
-never bypasses governance.
+Dream-time also reasons over changed scope knowledge, resolves entities,
+schedules revalidation, and prepares validation questions. Each scope keeps a
+durable input watermark. MemHouse advances it only after governed reasoning
+output and derived-refresh requests commit. A provider or write failure leaves
+the watermark unchanged for retry. The lane is throttled first when token
+budgets tighten and never bypasses governance.
 
 ## What never enters audit metadata or job arguments
 
