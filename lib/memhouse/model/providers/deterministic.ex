@@ -120,7 +120,9 @@ defmodule MemHouse.Model.Providers.Deterministic do
     |> Enum.map(&String.trim/1)
     # Under 12 characters is almost always a greeting or a fragment, not a
     # durable claim worth proposing.
-    |> Enum.reject(&(String.length(&1) < 12 or non_durable_conversation?(&1)))
+    |> Enum.reject(
+      &(String.length(&1) < 12 or non_durable_conversation?(&1) or subjectless_generic?(&1))
+    )
     # At most 6 candidates per observation, keeping offline runs cheap and their
     # output small enough to assert on in tests.
     |> Enum.take(6)
@@ -147,6 +149,13 @@ defmodule MemHouse.Model.Providers.Deterministic do
   defp non_durable_conversation?(statement) do
     String.ends_with?(statement, "?") or
       String.match?(statement, ~r/^(hi|hello|hey|thanks|thank you|great job|nice work)\b/i)
+  end
+
+  # A peer key can be an opaque identity, so this local adapter cannot require
+  # it to occur in natural language. It still declines common generic
+  # leading-gerund claims that have no named subject.
+  defp subjectless_generic?(statement) do
+    String.match?(statement, ~r/\A(?:Running|Exercise|Sleep|Travel|Work)\s+(?:can|is|does)\b/u)
   end
 
   # Falls back to the most recent user turn when the caller did not pass the

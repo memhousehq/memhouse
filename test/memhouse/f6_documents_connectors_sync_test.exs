@@ -25,7 +25,7 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest.Provider do
       |> Keyword.fetch!(:observation)
       |> String.split(~r/(?<=[.!?])\s+|\n+/, trim: true)
       |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(String.length(&1) < 8))
+      |> Enum.reject(&(String.length(&1) < 8 or String.starts_with?(&1, "#")))
       |> Enum.map(fn statement ->
         %{
           "reasoning" => "The source states this directly.",

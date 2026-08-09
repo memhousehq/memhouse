@@ -1705,7 +1705,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   end
 
   test "projection payloads are bounded summaries with pinned facts, not knowledge-row dumps" do
-    statement = String.duplicate("releasechecklist ", 200) <> "complete"
+    statement = "Avery's " <> String.duplicate("releasechecklist ", 200) <> "is complete"
     seeded = seed_active!("f7-bounded-projections", "/f7/bounded", statement, "bounded-session")
 
     assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)

@@ -123,12 +123,42 @@ defmodule MemHouse.Model.SchemaExtractionTest do
   test "derives indirect evidence and its discount from source and subject" do
     indirect =
       item(90)
-      |> Map.put("subject_ref", "other")
+      |> Map.merge(%{
+        "statement" => "Other prefers weekly release summaries.",
+        "subject_ref" => "other"
+      })
 
     context = %{context() | known_peer_keys: ["avery", "other"]}
 
     assert {:ok, [candidate]} = Extraction.cast(%{"items" => [indirect]}, context)
     assert candidate.evidence_level == "indirect"
     assert candidate.confidence == 0.675
+  end
+
+  test "rejects a question instead of storing it as knowledge" do
+    question = item(90) |> Map.put("statement", "Does Avery prefer weekly release summaries?")
+
+    assert {:error, ["items[0].statement must assert knowledge, not record a question"]} =
+             cast_item(question)
+  end
+
+  test "rejects a speech-act transcription" do
+    transcription =
+      item(90) |> Map.put("statement", "Avery said that weekly release summaries are best.")
+
+    assert {:error, ["items[0].statement must assert the fact, not record a speech act"]} =
+             cast_item(transcription)
+  end
+
+  test "rejects a peer claim that does not name its subject" do
+    generic = item(90) |> Map.put("statement", "Running can really boost your mood.")
+
+    assert {:error, ["items[0].statement must name its peer subject"]} = cast_item(generic)
+  end
+
+  test "keeps a proper name that ends in ing" do
+    candidate = item(90) |> Map.put("statement", "Vanishing indexer statement.")
+
+    assert {:ok, [_]} = cast_item(candidate)
   end
 end
