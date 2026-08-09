@@ -85,4 +85,26 @@ defmodule MemHouse.Knowledge.Statement do
       true -> alnum / count >= @min_alnum_ratio
     end
   end
+
+  @doc """
+  Adds a date-only valid-time suffix to statement text for a reader.
+
+  The returned text is display or model context, not a replacement for the
+  stored statement. Valid time stays in structured fields so extraction,
+  embedding, and entity resolution do not treat an observation-time frame as a
+  claim.
+  """
+  def with_validity(statement, relevant_from, relevant_until) when is_binary(statement) do
+    statement <> validity_suffix(relevant_from, relevant_until)
+  end
+
+  defp validity_suffix(nil, _until), do: ""
+  defp validity_suffix(from, nil), do: " (true from #{date_only(from)})"
+
+  defp validity_suffix(from, until),
+    do: " (true from #{date_only(from)} until #{date_only(until)})"
+
+  defp date_only(%DateTime{} = at), do: at |> DateTime.to_date() |> Date.to_iso8601()
+  defp date_only(%Date{} = date), do: Date.to_iso8601(date)
+  defp date_only(at) when is_binary(at), do: String.slice(at, 0, 10)
 end

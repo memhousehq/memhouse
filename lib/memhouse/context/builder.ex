@@ -29,7 +29,7 @@ defmodule MemHouse.Context.Builder do
   alias MemHouse.Context.EntityLabel
   alias MemHouse.Context.ProjectionKey
   alias MemHouse.DataLayer
-  alias MemHouse.Knowledge.{EntityMention, KnowledgeItem, Projection}
+  alias MemHouse.Knowledge.{EntityMention, KnowledgeItem, Projection, Statement}
   alias MemHouse.Model.Config
   alias MemHouse.Model.Gateway
   alias MemHouse.Observations.{Message, Session}
@@ -446,7 +446,7 @@ defmodule MemHouse.Context.Builder do
         },
         %{
           role: "user",
-          content: Jason.encode!(%{"statements" => Enum.map(items, & &1.statement)})
+          content: Jason.encode!(%{"statements" => Enum.map(items, &display_statement/1)})
         }
       ]
 
@@ -490,7 +490,7 @@ defmodule MemHouse.Context.Builder do
 
   defp grounded_summary(items) do
     items
-    |> Enum.map_join(" ", & &1.statement)
+    |> Enum.map_join(" ", &display_statement/1)
     |> String.slice(0, @entity_card_summary_chars)
   end
 
@@ -518,7 +518,7 @@ defmodule MemHouse.Context.Builder do
     config = MemHouse.Model.role_config(:dream_reasoner, context)
 
     if Gateway.provider_module(config, context) == MemHouse.Model.Providers.Deterministic do
-      {items |> Enum.map_join(" ", & &1.statement) |> String.slice(0, max_chars),
+      {items |> Enum.map_join(" ", &display_statement/1) |> String.slice(0, max_chars),
        Config.provenance(config), "source_extract"}
     else
       messages = [
@@ -552,10 +552,11 @@ defmodule MemHouse.Context.Builder do
   defp bounded_statements(items) do
     {statements, _size} =
       Enum.reduce_while(items, {[], 0}, fn item, {statements, size} ->
-        next_size = size + String.length(item.statement)
+        statement = display_statement(item)
+        next_size = size + String.length(statement)
 
         if next_size <= @projection_summary_input_chars do
-          {:cont, {[item.statement | statements], next_size}}
+          {:cont, {[statement | statements], next_size}}
         else
           {:halt, {statements, size}}
         end
@@ -567,7 +568,11 @@ defmodule MemHouse.Context.Builder do
   defp pinned_facts(items, limit) do
     items
     |> Enum.take(limit)
-    |> Enum.map(&%{"id" => &1.id, "statement" => excerpt(&1.statement)})
+    |> Enum.map(&%{"id" => &1.id, "statement" => &1 |> display_statement() |> excerpt()})
+  end
+
+  defp display_statement(item) do
+    Statement.with_validity(item.statement, item.relevant_from, item.relevant_until)
   end
 
   defp excerpt(statement) when byte_size(statement) <= @pinned_fact_chars, do: statement

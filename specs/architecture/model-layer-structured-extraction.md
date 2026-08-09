@@ -131,15 +131,17 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-6` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-7` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.
-Message extraction uses a trailing
-six-message same-session window, with the target message as its explicit
-anchor. Its prompt explicitly requires
-confidence as a JSON fraction from `0.0` through `1.0`; the Ash-derived JSON
-schema independently enforces the same numeric bounds.
+Message extraction uses a trailing six-message same-session window, with the
+target message as its explicit anchor. Relative dates resolve against the
+observation time into `relevant_from` and `relevant_until`; statement text does
+not repeat that time unless a date is part of the claim. Readers render the
+structured valid-time fields when they need the date. Its prompt explicitly
+requires confidence as a JSON fraction from `0.0` through `1.0`; the
+Ash-derived JSON schema independently enforces the same numeric bounds.
 
 `MemHouse.Model.Usage` is the one durable emission point. Each provider call,
 including every repair attempt and returned provider error, appends one

@@ -85,6 +85,9 @@ Keep these dimensions independent:
   `relevant_until` as well when it spans more than an instant. When extraction
   produces no date, the observation's `occurred_at` anchors the event instead.
   Other kinds stay undated unless the claim really has a window.
+- **A date is not an observation frame.** The extractor records relative dates
+  in valid-time fields. It keeps a date in the statement only when that date is
+  part of the claim. Readers render valid time when they need it.
 - **Confidence is not sensitivity.** Being very sure of something does not
   license sharing it more widely.
 

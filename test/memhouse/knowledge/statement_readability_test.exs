@@ -133,5 +133,19 @@ defmodule MemHouse.Knowledge.StatementReadabilityTest do
     test "prose? rejects empty text" do
       refute Statement.prose?("   ​ ")
     end
+
+    test "renders valid time separately from the stored statement" do
+      assert Statement.with_validity(
+               "Avery joined the release review.",
+               ~U[2026-08-07 13:14:15Z],
+               ~U[2026-08-09 13:14:15Z]
+             ) ==
+               "Avery joined the release review. (true from 2026-08-07 until 2026-08-09)"
+    end
+
+    test "leaves an undated statement unchanged" do
+      assert Statement.with_validity("Avery prefers concise summaries.", nil, nil) ==
+               "Avery prefers concise summaries."
+    end
   end
 end

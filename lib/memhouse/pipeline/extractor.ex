@@ -49,7 +49,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-6"
+  @prompt_version "extract-7"
 
   @doc """
   The identity of the extraction-and-pipeline contract this build implements.
@@ -132,8 +132,10 @@ defmodule MemHouse.Pipeline.Extractor do
 
         The observation carries the time it was made. Resolve every relative
         date against that time — "last weekend", "yesterday", "next month" —
-        and write the absolute date into the statement itself, because a reader
-        of the statement alone has no other clock.
+        and record the result in relevant_from and relevant_until. Write the
+        statement as the claim, not as a dated utterance or observation frame.
+        Keep an ISO YYYY-MM-DD date in the statement only when the date itself
+        is part of the claim.
 
         Use kind "event" for anything that happened at a point or over a span of
         time, whatever else it also asserts. Give an event relevant_from, and
