@@ -497,13 +497,19 @@ defmodule MemHouse.Model.Schema.Reasoning do
   The structured shape for background reasoning: extraction candidates plus
   typed relations between existing knowledge.
 
-  Reasoning reuses extraction validation, including subject allowlist,
-  third-party discount, and governance. It cannot mint otherwise-invalid knowledge.
-
-  It adds `supports`, `contradicts`, and `derived_from` edges. Contradictions never overwrite.
+  A response is untrusted input, not a write instruction. Candidate statements
+  inherit their scope, sensitivity, and target level from the pipeline working
+  set. Relations may name only supplied active inputs in that Account and scope.
+  The pipeline applies accepted output as governed proposals; this schema never
+  selects a lifecycle state or widens visibility.
   """
 
   @behaviour MemHouse.Model.Schema
+
+  @max_deductions 12
+  @max_relations 24
+  @relation_kinds ~w(supports contradicts derived_from)
+  @controlled_item_fields ~w(account_id scope_id state held_scope_id verification)
 
   @doc """
   The extraction schema with a required `relations` array added.
@@ -513,10 +519,13 @@ defmodule MemHouse.Model.Schema.Reasoning do
     extraction = MemHouse.Model.Schema.Extraction.json_schema()
 
     extraction
+    |> put_in(["properties", "items", "maxItems"], @max_deductions)
     |> put_in(["properties", "relations"], %{
       "type" => "array",
+      "maxItems" => @max_relations,
       "items" => %{
         "type" => "object",
+        "additionalProperties" => false,
         "properties" => %{
           "source_id" => %{"type" => "string"},
           "target_id" => %{"type" => "string"},
@@ -531,20 +540,244 @@ defmodule MemHouse.Model.Schema.Reasoning do
   @doc """
   Validates a reasoning response into `{:ok, %{items:, relations:}}`.
 
-  Candidates go through the full extraction validation, so every rule that
-  applies to extracted knowledge applies here too. Relations are read by string
-  key only and accepted as a list without further checking; a missing key is
-  treated as no relations, while a present but non-list value is an error.
-  Returns `{:error, messages}` otherwise.
+  Candidates go through extraction validation and must match the pipeline's
+  inherited sensitivity and target level. A non-empty relation list also
+  requires `:reasoning_inputs`: active input maps with `id`, `account_id`,
+  `scope_id`, and `state`. The pipeline builds that list from authorized rows;
+  callers must not construct it from model output.
+
+  Returns normalized atom-keyed relations, or stable content-free rejection
+  reasons. It never performs a database write.
   """
   @impl true
-  def cast(object, context) do
-    with {:ok, items} <- MemHouse.Model.Schema.Extraction.cast(object, context),
-         relations when is_list(relations) <- Map.get(object, "relations", []) do
+  def cast(object, context) when is_map(object) and is_map(context) do
+    with {:ok, raw_items} <- items(object),
+         :ok <- deduction_limit(raw_items),
+         :ok <- reject_controlled_item_fields(raw_items),
+         {:ok, items} <- MemHouse.Model.Schema.Extraction.cast(%{"items" => raw_items}, context),
+         :ok <- validate_inheritance(items, context),
+         {:ok, raw_relations} <- relations(object),
+         :ok <- relation_limit(raw_relations),
+         {:ok, relations} <- validate_relations(raw_relations, context) do
       {:ok, %{items: items, relations: relations}}
     else
       {:error, errors} -> {:error, errors}
+    end
+  end
+
+  def cast(_object, _context), do: {:error, ["response must be an object"]}
+
+  defp items(object) do
+    case fetch(object, "items") do
+      items when is_list(items) -> {:ok, items}
+      _other -> {:error, ["items must be an array"]}
+    end
+  end
+
+  defp relations(object) do
+    case fetch(object, "relations") do
+      nil -> {:ok, []}
+      relations when is_list(relations) -> {:ok, relations}
       _other -> {:error, ["relations must be an array"]}
+    end
+  end
+
+  defp deduction_limit(items) when length(items) <= @max_deductions, do: :ok
+
+  defp deduction_limit(_items),
+    do: {:error, ["items must contain at most #{@max_deductions} deductions"]}
+
+  defp relation_limit(relations) when length(relations) <= @max_relations, do: :ok
+
+  defp relation_limit(_relations),
+    do: {:error, ["relations must contain at most #{@max_relations} relations"]}
+
+  defp reject_controlled_item_fields(items) do
+    items
+    |> Enum.with_index()
+    |> Enum.reduce([], fn {item, index}, errors ->
+      if is_map(item) do
+        case Enum.find(@controlled_item_fields, &has_key?(item, &1)) do
+          nil -> errors
+          field -> errors ++ ["items[#{index}].#{field} is pipeline-controlled"]
+        end
+      else
+        errors
+      end
+    end)
+    |> case do
+      [] -> :ok
+      errors -> {:error, errors}
+    end
+  end
+
+  defp validate_inheritance([], _context), do: :ok
+
+  defp validate_inheritance(items, context) do
+    case Map.get(context, :reasoning_inheritance) do
+      %{sensitivity: sensitivity, target_level: target_level} ->
+        items
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {item, index} ->
+          []
+          |> mismatch(
+            item.sensitivity,
+            sensitivity,
+            "items[#{index}].sensitivity must inherit the working set"
+          )
+          |> mismatch(
+            item.target_level,
+            target_level,
+            "items[#{index}].target_level must inherit the working set"
+          )
+        end)
+        |> case do
+          [] -> :ok
+          errors -> {:error, errors}
+        end
+
+      _other ->
+        {:error, ["reasoning inheritance must be supplied for deductions"]}
+    end
+  end
+
+  defp mismatch(errors, value, expected, _message) when value == expected, do: errors
+  defp mismatch(errors, _value, _expected, message), do: errors ++ [message]
+
+  defp validate_relations([], _context), do: {:ok, []}
+
+  defp validate_relations(relations, context) do
+    with {:ok, inputs} <- reasoning_inputs(context) do
+      relations
+      |> Enum.with_index()
+      |> Enum.reduce({[], MapSet.new(), []}, &validate_relation_entry(&1, &2, inputs, context))
+      |> case do
+        {valid, _seen, []} -> {:ok, Enum.reverse(valid)}
+        {_valid, _seen, errors} -> {:error, errors}
+      end
+    end
+  end
+
+  defp validate_relation_entry({relation, index}, {valid, seen, errors}, inputs, context) do
+    case validate_relation(relation, index, inputs, context) do
+      {:ok, normalized} -> add_relation(normalized, index, valid, seen, errors)
+      {:error, relation_errors} -> {valid, seen, errors ++ relation_errors}
+    end
+  end
+
+  defp add_relation(normalized, index, valid, seen, errors) do
+    edge = {normalized.source_id, normalized.target_id, normalized.kind}
+
+    if MapSet.member?(seen, edge) do
+      {valid, seen, errors ++ ["relations[#{index}] duplicates another relation"]}
+    else
+      {[normalized | valid], MapSet.put(seen, edge), errors}
+    end
+  end
+
+  defp reasoning_inputs(%{reasoning_inputs: inputs}) when is_list(inputs) do
+    inputs
+    |> Enum.reduce_while({:ok, %{}}, fn input, {:ok, indexed} ->
+      with id when is_binary(id) <- value(input, "id"),
+           {:ok, ^id} <- Ecto.UUID.cast(id),
+           account_id when is_binary(account_id) <- value(input, "account_id"),
+           scope_id when is_binary(scope_id) <- value(input, "scope_id"),
+           state when is_binary(state) <- value(input, "state") do
+        {:cont,
+         {:ok, Map.put(indexed, id, %{account_id: account_id, scope_id: scope_id, state: state})}}
+      else
+        _other -> {:halt, {:error, ["reasoning inputs must be active knowledge rows"]}}
+      end
+    end)
+  end
+
+  defp reasoning_inputs(_context),
+    do: {:error, ["reasoning inputs must be supplied for relations"]}
+
+  defp validate_relation(relation, index, inputs, context) when is_map(relation) do
+    with {:ok, source_id} <- uuid(relation, "source_id", index),
+         {:ok, target_id} <- uuid(relation, "target_id", index),
+         :ok <- not_self_relation(source_id, target_id, index),
+         {:ok, kind} <- relation_kind(relation, index),
+         {:ok, source} <- input(source_id, "source_id", index, inputs),
+         {:ok, target} <- input(target_id, "target_id", index, inputs),
+         :ok <- current_account(source, "source_id", index, context),
+         :ok <- current_account(target, "target_id", index, context),
+         :ok <- current_scope(source, "source_id", index, context),
+         :ok <- current_scope(target, "target_id", index, context),
+         :ok <- active(source, "source_id", index),
+         :ok <- active(target, "target_id", index) do
+      {:ok, %{source_id: source_id, target_id: target_id, kind: kind}}
+    end
+  end
+
+  defp validate_relation(_relation, index, _inputs, _context),
+    do: {:error, ["relations[#{index}] must be an object"]}
+
+  defp uuid(relation, field, index) do
+    case value(relation, field) do
+      id when is_binary(id) ->
+        case Ecto.UUID.cast(id) do
+          {:ok, ^id} -> {:ok, id}
+          :error -> {:error, ["relations[#{index}].#{field} must be a UUID"]}
+        end
+
+      _other ->
+        {:error, ["relations[#{index}].#{field} must be a UUID"]}
+    end
+  end
+
+  defp not_self_relation(id, id, index),
+    do: {:error, ["relations[#{index}] must not be self-referential"]}
+
+  defp not_self_relation(_source_id, _target_id, _index), do: :ok
+
+  defp relation_kind(relation, index) do
+    case value(relation, "kind") do
+      kind when kind in @relation_kinds -> {:ok, kind}
+      _other -> {:error, ["relations[#{index}].kind is invalid"]}
+    end
+  end
+
+  defp input(id, field, index, inputs) do
+    case Map.fetch(inputs, id) do
+      {:ok, input} -> {:ok, input}
+      :error -> {:error, ["relations[#{index}].#{field} must name a supplied input"]}
+    end
+  end
+
+  defp current_account(%{account_id: account_id}, _field, _index, %{account_id: account_id}),
+    do: :ok
+
+  defp current_account(_input, field, index, _context),
+    do: {:error, ["relations[#{index}].#{field} must belong to the current account"]}
+
+  defp current_scope(%{scope_id: scope_id}, _field, _index, %{scope_id: scope_id}), do: :ok
+
+  defp current_scope(_input, field, index, _context),
+    do: {:error, ["relations[#{index}].#{field} must be in the current scope"]}
+
+  defp active(%{state: "active"}, _field, _index), do: :ok
+
+  defp active(_input, field, index),
+    do: {:error, ["relations[#{index}].#{field} must name active knowledge"]}
+
+  defp has_key?(map, key),
+    do:
+      Map.has_key?(map, key) or
+        Enum.any?(Map.keys(map), &(is_atom(&1) and Atom.to_string(&1) == key))
+
+  defp value(map, key) when is_map(map), do: fetch(map, key)
+
+  defp fetch(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        Enum.find_value(map, fn {candidate, value} ->
+          if is_atom(candidate) and Atom.to_string(candidate) == key, do: value
+        end)
     end
   end
 end

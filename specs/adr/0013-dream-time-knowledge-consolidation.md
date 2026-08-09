@@ -15,6 +15,28 @@ Dream-time consolidates active knowledge inside one Account and one scope. It:
 - creates a derived aggregate fact for the unambiguous set-membership form
   `subject has a noun named member` when two or more active members exist.
 
+General model reasoning has a separate trust boundary. One pass receives an
+Account- and scope-scoped delta plus a bounded active working set. It may return
+at most 12 deductions and 24 typed relations. The model output is never a
+trusted write. Deductions enter the normal pipeline as `proposed` knowledge and
+relations are created only after semantic validation. The model cannot set a
+lifecycle state, Account, scope, held target, or verification state.
+
+Each deduction inherits the working set scope, sensitivity, and target level.
+Its durable provenance records the active input ids and the resolved model,
+model version, prompt version, and pipeline version. Relations may use only
+`supports`, `contradicts`, or `derived_from`; each endpoint must be a distinct,
+active input in the same Account and scope. Duplicate edges are rejected. These
+rules reject model attempts to select broader visibility or to attach an edge to
+missing, foreign, inactive, or out-of-scope knowledge.
+
+The current dream lane does not apply general model deductions. It performs
+consolidation and lifecycle work only. This contract is the prerequisite for a
+future production writer; that writer must use pipeline-only Ash actions,
+governance, replay keys, budget admission, and content-safe telemetry. It must
+not put statements, raw model output, or prompts in audit metadata, telemetry,
+or job arguments.
+
 The aggregate is an ordinary governed knowledge row. It records every source
 message and provenance row, links to each component with `derived_from`, and
 becomes active only because all of its inputs are already active in the same
