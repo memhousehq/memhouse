@@ -28,8 +28,8 @@ defmodule MemHouse.Model.GroundedAnswerProvider do
 
   Supported modes are `:grounded_abstention`,
   `:grounded_abstention_with_invented_citation`, `:unsupported_assertion`,
-  `:confident_inference`, and `:low_confidence_inference`. Returns `:ok`; raises
-  for an unsupported mode.
+  `:confident_inference`, `:low_confidence_inference`, and `:provider_error`.
+  Returns `:ok`; raises for an unsupported mode.
   """
   def start!(mode)
       when mode in [
@@ -37,7 +37,8 @@ defmodule MemHouse.Model.GroundedAnswerProvider do
              :grounded_abstention_with_invented_citation,
              :unsupported_assertion,
              :confident_inference,
-             :low_confidence_inference
+             :low_confidence_inference,
+             :provider_error
            ] do
     state = %{mode: mode, prompts: []}
 
@@ -108,6 +109,17 @@ defmodule MemHouse.Model.GroundedAnswerProvider do
         {state.mode, %{state | prompts: [prompt | state.prompts]}}
       end)
 
+    if mode == :provider_error do
+      # Exercises the answering call failing outright, the same shape a
+      # transport or upstream error returns from the real ReqLLM adapter — no
+      # decoded object ever reaches `MemHouse.Memory.model_answer/3`.
+      {:error, :provider_upstream_error}
+    else
+      structured_reply(mode, cited_id)
+    end
+  end
+
+  defp structured_reply(mode, cited_id) do
     value =
       case mode do
         :grounded_abstention ->

@@ -1068,8 +1068,10 @@ defmodule MemHouseWeb.ConsoleLive.Tools do
       {"Answer", truncate(to_string(value(result, "answer") || ""), 600)},
       {"Abstained", value(result, "abstained")},
       {"Answer confidence", value(result, "answer_confidence")},
+      {"Answer degraded", value(result, "answer_degraded")},
       {"Citations", count(result, "citations")},
       {"Candidates", count(result, "candidates")},
+      {"Supporting statements", count(result, "supporting_statements")},
       {"Index health", retrieval_health(result)},
       {"Inline question", pending(result)}
     ])

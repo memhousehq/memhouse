@@ -9,6 +9,31 @@ changelog entry and contract-version transition.
 
 ## [Unreleased]
 
+### Security
+
+- `ash` is now `~> 3.31` (3.31.2), which clears EEF-CVE-2026-69659 (memory
+  exhaustion via unbounded deserialization of keyset pagination cursors) and
+  EEF-CVE-2026-70395 (predicate injection in `manage_relationship` belongs_to
+  lookup disclosing secret lookup keys). Both are fixed from 3.31.1 onward, and
+  3.31.1 is retired upstream. `reactor`, `splode`, and `spitfire` moved with it.
+  Do not lower the floor without checking `mix hex.audit`.
+
+### Fixed
+
+- `POST /api/v1/ask` no longer returns a failed model call as an answer. A
+  provider error or exhausted structured-output repair reused the same
+  top-statement concatenation as the deliberate no-model-configured reply,
+  including `abstained: false` and `answer_confidence: 40`, so a caller could
+  not tell a failure from an answer; one benchmark run reported zero errors
+  while 72.5% of its model calls had failed. A failed call now returns
+  `abstained: true`, `answer_confidence: 0`, and a new `answer_degraded` field
+  naming the failure class, with the retrieved statements kept in `citations`
+  and in a new `supporting_statements` field. Every other reply carries
+  `answer_degraded: null`. A new `[:memhouse, :ask, :degraded]` telemetry event
+  reports the failure class, Account id, and elapsed time, with no content. The
+  no-model-configured reply is unchanged, since that state is a deployment
+  choice rather than a failure. The `f7-1` retrieval contract is unchanged.
+
 ### Changed
 
 - Extraction prompt `extract-7` records resolved relative dates in
