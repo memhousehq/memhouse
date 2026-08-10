@@ -149,7 +149,7 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
              Adapter.chat(config, [%{role: "user", content: "hi"}], [])
   end
 
-  test "the total request timeout reaches Finch through Req's callback" do
+  test "the configured total request timeout reaches Finch through Req's callback" do
     config =
       stubbed_role(
         completion("stop", %{"role" => "assistant", "content" => "hello"}),

@@ -92,6 +92,14 @@ defmodule MemHouseWeb.MemoryControllerTest do
     assert %{
              "status" => "ready",
              "checks" => %{
+               "model_calls" => %{
+                 "status" => "ok",
+                 "window_seconds" => 86_400,
+                 "attempts" => 0,
+                 "errors" => 0,
+                 "unmetered" => 0,
+                 "error_classes" => %{}
+               },
                "embedding_index" => %{
                  "status" => "ok",
                  "configured_dimensions" => 1024,
@@ -99,6 +107,8 @@ defmodule MemHouseWeb.MemoryControllerTest do
                }
              }
            } = json_response(conn, 200)
+
+    assert get_in(json_response(conn, 200), ["checks", "model_calls", "error_rate"]) == 0.0
 
     assert_trace_id(conn)
   end

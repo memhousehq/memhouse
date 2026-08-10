@@ -80,8 +80,8 @@ version.
 
 ## `GET /api/ready`
 
-Readiness. Runs database, Oban, queue-depth, lifecycle-sweep, model-role, and
-embedding-index checks. **200** only when every component reports `ok`,
+Readiness. Runs database, Oban, queue-depth, lifecycle-sweep, model-role,
+model-call, and embedding-index checks. **200** only when every component reports `ok`,
 otherwise **503**.
 
 The body is the whole check map: per-component status, queue depths by queue
@@ -92,6 +92,11 @@ readiness payload shape identity.
 `checks.embedding_index` includes only the configured embedder provider,
 model, version, configured dimensions, and installed index dimensions. A
 configured width without a matching installed index reports `error`.
+
+`checks.model_calls` is informational. It reports the prior 24 hours of model
+attempts, failures, failure rate, unmetered failures, and content-safe error
+classes. Provider failures do not change readiness because durable jobs retry.
+An unmetered failure returned no token usage, so its cost is unknown.
 
 The payload contains no credentials, secrets, or stored content.
 

@@ -83,8 +83,10 @@ and ask results show the same additive details in `/console/tools`.
 ## Reading a failed model call
 
 A failed model call sets `error.type` on its span and writes the same string as
-the error class on its usage event. When the call itself failed — a timeout, a
-rejected credential, a rate limit — that string is the exception's module name.
+the error class on its usage event. Transport failures use `request_timeout` or
+`transport_error`. Other failures use a content-safe exception module name.
+An error row is `unmetered` when the provider returned no token usage; its
+unknown cost is not shown as zero.
 
 A call can also return HTTP 200 and still carry no usable answer, which is what
 a hosted aggregator does when its own upstream failed part-way. These four

@@ -241,8 +241,9 @@ Details: `specs/architecture/skill-readiness-procedural-memory.md`.
   Account-scoped transaction, and replay-keyed rebuild work.
 - Physical backup and restore runbooks for the pg0 directory, external
   Postgres, and blob storage.
-- Versioned readiness for the app, database, Oban, queues, and model roles;
-  redacted JSON production logs; exact request/token/storage metering;
+- Versioned readiness for the app, database, Oban, queues, model roles, and
+  prior-24-hour model-call health; redacted JSON production logs; exact
+  request/token/storage metering with visible unmetered provider failures;
   dream-time budget admission; and operator-rate self-host cost visibility.
 
 Details: `specs/architecture/portability-packaging-operations.md` and

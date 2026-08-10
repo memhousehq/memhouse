@@ -179,7 +179,15 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
             label="Estimated model cost"
             value={"#{@usage.estimated_model_cost} #{@usage.currency}"}
           />
+          <.tile label="Model calls (24 h)" value={@usage.model_calls.attempts} />
+          <.tile label="Model failures (24 h)" value={@usage.model_calls.errors} />
+          <.tile label="Model error rate (24 h)" value={percent(@usage.model_calls.error_rate)} />
+          <.tile label="Unmetered failures (24 h)" value={@usage.model_calls.unmetered} />
         </div>
+
+        <p :if={@usage.model_calls.unmetered > 0} class="hint">
+          Unmetered failures returned no token usage. The cost estimate excludes their unknown cost.
+        </p>
 
         <table class="grid">
           <thead>

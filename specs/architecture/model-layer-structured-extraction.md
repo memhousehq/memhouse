@@ -148,12 +148,18 @@ including every repair attempt and returned provider error, appends one
 Account- and optional scope/Peer-attributed `UsageEvent` with operation, role,
 provider, model/version, prompt/pipeline versions, input/output/embedding token
 counts, duration, status, timestamp, and a content-safe metadata allowlist.
+An error that returns no provider usage is marked `unmetered`; its token fields
+stay zero for ledger compatibility, but its cost remains explicitly unknown.
 OpenTelemetry mirrors safe timings and counts but is not the exact ledger.
 Prompts, answers, observations, credentials, and secrets never enter usage
 metadata, spans, audit records, or Oban arguments.
 
 Each `UsageEvent` commits in its own short Account transaction. A later caller
 failure cannot roll back a call that already happened and was billed.
+
+The gateway classifies total request deadlines as `request_timeout` and other
+transport failures as `transport_error`. The classifications contain no
+provider message, prompt, or response text.
 
 Raw observation, audit, `PipelineRun`, and AshOban enqueue still commit before
 any provider call. A provider error leaves the raw message and queued job
