@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Memhouse.Eval.Release do
 
   use Mix.Task
 
-  alias MemHouse.Eval.{ReleaseSuite, Runtime}
+  alias MemHouse.Eval.{Preflight, ReleaseSuite, Runtime}
 
   @shortdoc "Runs the release/nightly evaluation matrix"
 
@@ -48,6 +48,10 @@ defmodule Mix.Tasks.Memhouse.Eval.Release do
     # rewrite has to happen before app.start or the run will still reach a live provider.
     if Keyword.get(opts, :no_model, false), do: Runtime.use_deterministic_models()
     Mix.Task.run("app.start")
+
+    # A release claim asserts measured quality. Measuring a run whose roles
+    # could not generate would publish a floor comparison against nothing.
+    unless Keyword.get(opts, :no_model, false), do: Preflight.assert_generative_roles!()
 
     report =
       ReleaseSuite.run(

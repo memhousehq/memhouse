@@ -136,6 +136,13 @@ When `MEMHOUSE_MODEL_PROVIDER=openrouter`, structured extraction and reasoning
 use OpenRouter's strict JSON-schema response format. This is automatic; it
 avoids models that intermittently ignore forced tool calls.
 
+Reaching the same endpoint as `openai-compatible` plus a base URL does **not**
+get that path automatically. The model identity is unknown to the client there,
+so it falls back to a forced tool call that some models decline. Set the role
+option `structured_output_mode` to `json_schema` for such a role. The value is
+validated: anything else fails the call rather than reverting to tool calling.
+`mix memhouse.model.check` reports which roles can actually return an object.
+
 !!! warning "The local fallback is a test aid"
     Production defaults it off and never switches to it after a live provider
     error. A silent downgrade from a real model to a deterministic stand-in

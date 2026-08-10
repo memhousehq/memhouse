@@ -214,6 +214,52 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
       refute Map.has_key?(request, "tool_choice")
     end
 
+    test "the same endpoint reached as openai-compatible can be told to use it too" do
+      # OpenRouter is also reachable as `openai-compatible` plus a base URL.
+      # There the underlying library picks the mode from its model database,
+      # which does not recognise an OpenRouter model id and falls back to the
+      # forced tool call that gpt-oss models decline. The role option is the
+      # only way an operator in that shape gets the schema-enforced path.
+      config =
+        stubbed_role(
+          completion("stop", %{"role" => "assistant", "content" => ~s({"ok":true})}),
+          test_pid: self()
+        )
+
+      config = %{
+        config
+        | provider: "openai-compatible",
+          options: Map.put(config.options, "structured_output_mode", "json_schema")
+      }
+
+      assert {:ok, %Result{value: %{"ok" => true}}} =
+               Adapter.structured(config, @messages, @schema, [])
+
+      assert_receive {:req_llm_request, request}
+
+      assert %{"type" => "json_schema", "json_schema" => %{"strict" => true}} =
+               request["response_format"]
+
+      refute Map.has_key?(request, "tool_choice")
+    end
+
+    test "an unusable structured_output_mode fails the call instead of degrading" do
+      # Silently ignoring a typo would restore the forced tool call this option
+      # exists to avoid, and the operator would read the misspelled value as
+      # proof the schema path was on.
+      config =
+        stubbed_role(completion("stop", %{"role" => "assistant", "content" => ~s({"ok":true})}))
+
+      config = %{
+        config
+        | options: Map.put(config.options, "structured_output_mode", "jsonschema")
+      }
+
+      assert_raise ArgumentError, ~r/structured_output_mode/, fn ->
+        Adapter.structured(config, @messages, @schema, [])
+      end
+    end
+
     test "an upstream failure is named as one, not as missing output" do
       config = stubbed_role(completion("error", silent_assistant()))
 

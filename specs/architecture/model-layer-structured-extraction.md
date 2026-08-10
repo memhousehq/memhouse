@@ -161,6 +161,22 @@ The gateway classifies total request deadlines as `request_timeout` and other
 transport failures as `transport_error`. The classifications contain no
 provider message, prompt, or response text.
 
+The ledger reports failures that have happened; it cannot report a role that
+has never been called, and a rate cannot show that schema enforcement was lost.
+`MemHouse.Model.Probe` covers both: one fixed, content-free structured call per
+generative role, resolved from deployment configuration, sending the configured
+limits unchanged and writing no usage row. An object that does not carry the
+required key is `schema_not_enforced`, and a role on the deterministic adapter
+is skipped rather than passed. Graded evaluation refuses to start unless every
+generative role passes it, because a scored run cannot distinguish a weak answer
+from one that was never generated.
+
+A role naming `openrouter` uses that provider's JSON-schema response path. The
+same endpoint reached as `openai-compatible` has no recognised model identity
+and would revert to a forced tool call that some models decline, so the role
+option `structured_output_mode` sets the mode explicitly there. An unusable
+value fails the call rather than degrading to tool calling.
+
 Raw observation, audit, `PipelineRun`, and AshOban enqueue still commit before
 any provider call. A provider error leaves the raw message and queued job
 durable, keeps extraction incomplete, and is returned for retry. The same
