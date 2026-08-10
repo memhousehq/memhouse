@@ -18,8 +18,8 @@ Point orchestrator **liveness** probes here.
 
 ## Readiness: `GET /api/ready`
 
-Unauthenticated. Checks the database, Oban, queue depth, model roles, and the
-configured embedding index.
+Unauthenticated. Checks the database, Oban, queue depth, model roles, model
+call health, and the configured embedding index.
 Returns 200 when all are `ok`; otherwise 503.
 
 The body is the whole check map: per-component status, queue depths by queue
@@ -41,6 +41,12 @@ Point orchestrator **readiness** probes here.
 `checks.embedding_index` reports the embedder provider, model, version,
 configured dimensions, and installed index dimensions. It is `error` when the
 configured width has no installed index, and the endpoint returns 503.
+
+`checks.model_calls` reports the prior 24 hours of attempts, errors, error
+rate, unmetered failures, and error classes. It is informational: an upstream
+provider failure does not make the application unready while durable jobs can
+retry. `unmetered` means the provider returned no token usage, so the estimate
+cannot include that call's unknown cost.
 
 ### Reading queue depth
 
@@ -64,7 +70,7 @@ curl -fsS http://127.0.0.1:4000/api/v1/operations/costs \
 
 Returns the exact recorded usage-event count, API request and ingest counts,
 input/output/embedding token totals overall and per model role, logical storage
-bytes, and an estimated model cost in USD.
+bytes, estimated model cost in USD, and prior-24-hour model-call health.
 
 ```mermaid
 flowchart LR

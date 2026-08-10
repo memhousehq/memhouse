@@ -54,6 +54,7 @@ defmodule MemHouse.Operations.Health do
       queues: queue_check(),
       lifecycle_sweeps: lifecycle_sweeps_check(),
       model_roles: model_roles_check(),
+      model_calls: model_calls_check(),
       embedding_index: embedding_index_check()
     }
 
@@ -237,6 +238,30 @@ defmodule MemHouse.Operations.Health do
     %{status: "ok", configured: roles}
   rescue
     error -> %{status: "error", error_class: error_class(error)}
+  end
+
+  # Model-call health is informational. A recent provider outage must not make
+  # readiness flap while durable work remains queued for retry. The community
+  # build has one configured Account, so the aggregate is content-safe and does
+  # not cross an Account boundary.
+  defp model_calls_check do
+    DataLayer.with_existing_free_account(fn _account, actor ->
+      %{status: "ok"} |> Map.merge(MemHouse.Operations.Metering.summary(actor).model_calls)
+    end)
+  rescue
+    Ecto.NoResultsError ->
+      %{
+        status: "ok",
+        attempts: 0,
+        errors: 0,
+        error_rate: 0.0,
+        unmetered: 0,
+        error_classes: %{},
+        window_seconds: 86_400
+      }
+
+    error ->
+      %{status: "error", error_class: error_class(error)}
   end
 
   # The index contract is configuration-only so it remains available before a

@@ -200,6 +200,7 @@ defmodule MemHouse.Model.Gateway do
             usage: %{},
             metadata: %{
               error_class: error_class(error),
+              metering_status: :unmetered,
               repair_attempt: Keyword.get(opts, :repair_attempt, 0)
             }
           })
@@ -245,10 +246,13 @@ defmodule MemHouse.Model.Gateway do
     error -> {:error, error}
   end
 
-  # A short, content-free label for what went wrong. Exception structs are
-  # reduced to their module name deliberately: an exception *message* can quote
-  # the prompt or the response body, and neither may reach telemetry or the
-  # usage ledger.
+  # A short, content-free label for what went wrong. Transport deadline classes
+  # distinguish a configured total deadline from an endpoint failure without
+  # retaining an exception message, which can quote a prompt or response body.
+  defp error_class(%ReqLLM.Error.API.Request{cause: %Finch.TransportError{reason: :timeout}}),
+    do: "request_timeout"
+
+  defp error_class(%ReqLLM.Error.API.Request{}), do: "transport_error"
   defp error_class(%module{}), do: inspect(module)
   defp error_class(error) when is_atom(error), do: Atom.to_string(error)
   defp error_class(_error), do: "model_error"

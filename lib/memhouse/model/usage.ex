@@ -47,7 +47,7 @@ defmodule MemHouse.Model.Usage do
   # boolean, or a short classification string — never text from a prompt, a
   # completion, an observation, or a credential. Anything not on this list is
   # dropped before the row is written.
-  @safe_metadata_keys ~w(error_class fallback repair_attempt result_count vector_count)
+  @safe_metadata_keys ~w(error_class fallback metering_status repair_attempt result_count vector_count)
 
   @doc """
   Appends one usage row for a completed provider call and updates budget counters.

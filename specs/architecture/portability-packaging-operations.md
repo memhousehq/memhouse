@@ -69,14 +69,17 @@ provenance and immutable document history remain intact.
 `GET /api/ready` adds the versioned `f10-1` operator contract (a historical
 version tag, not a roadmap phase) and returns 200 only when the app,
 database, Oban supervisor, queue query, and five model-role configurations are
-healthy; failures return content-safe error classes with 503.
+healthy; failures return content-safe error classes with 503. Its informational
+model-call check reports a prior-24-hour attempt count, failure rate,
+unmetered-failure count, and error-class counts. Provider failures do not make
+the process unready because durable jobs retry them.
 
 Every authenticated HTTP request emits an exact `UsageEvent`; ingest requests
 are identified separately. Model usage continues to have one durable emission
 point in `MemHouse.Model.Usage`. Rebuildable ETS counters provide inexpensive
 daily admission checks, with dream-time throttled before user-facing ingest or
 governed reads. Account administrators can inspect exact API, ingest, token,
-role, and logical-storage totals plus operator-configured USD estimates at
+role, logical-storage, and model-call-health totals plus operator-configured USD estimates at
 `GET /api/v1/operations/costs`.
 
 Production logs use a JSON formatter with an explicit metadata allowlist and

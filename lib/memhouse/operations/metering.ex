@@ -17,6 +17,7 @@ defmodule MemHouse.Operations.Metering do
   alias MemHouse.Repo
 
   @token_metrics [:input_tokens, :output_tokens, :embedding_tokens]
+  @model_health_window_seconds 86_400
 
   @doc """
   Writes one authenticated HTTP usage event and updates daily counters.
@@ -136,6 +137,7 @@ defmodule MemHouse.Operations.Metering do
         tokens_by_role: by_role,
         logical_storage_bytes: logical_storage_bytes(actor.account_id),
         estimated_model_cost: estimated_cost(by_role),
+        model_calls: model_call_health(events),
         currency: "USD"
       }
     end)
@@ -148,6 +150,47 @@ defmodule MemHouse.Operations.Metering do
       embedding: Enum.sum(Enum.map(events, & &1.embedding_tokens))
     }
   end
+
+  # A zero token total is ambiguous on an error: a provider may have billed a
+  # request but returned no usage object. Keep that uncertainty visible rather
+  # than inventing token counts that would corrupt cost and budget reporting.
+  defp model_call_health(events) do
+    cutoff = DateTime.add(Clock.utc_now(), -@model_health_window_seconds, :second)
+
+    events
+    |> Enum.filter(&(&1.model_role != "edge" and DateTime.compare(&1.occurred_at, cutoff) != :lt))
+    |> Enum.reduce(
+      %{
+        window_seconds: @model_health_window_seconds,
+        attempts: 0,
+        errors: 0,
+        unmetered: 0,
+        error_classes: %{}
+      },
+      fn event, health ->
+        health = %{health | attempts: health.attempts + 1}
+
+        if event.status == "error" do
+          error_class = Map.get(event.metadata, "error_class", "unknown")
+
+          %{
+            health
+            | errors: health.errors + 1,
+              unmetered:
+                health.unmetered +
+                  if(Map.get(event.metadata, "metering_status") == "unmetered", do: 1, else: 0),
+              error_classes: Map.update(health.error_classes, error_class, 1, &(&1 + 1))
+          }
+        else
+          health
+        end
+      end
+    )
+    |> then(fn health -> Map.put(health, :error_rate, rate(health.errors, health.attempts)) end)
+  end
+
+  defp rate(_numerator, 0), do: 0.0
+  defp rate(numerator, denominator), do: Float.round(numerator / denominator, 4)
 
   # Metadata is a free-form map on the ledger row, so a value written by an
   # older build may be any shape. Non-integers are dropped rather than crashing

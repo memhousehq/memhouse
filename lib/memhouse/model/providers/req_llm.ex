@@ -313,28 +313,36 @@ defmodule MemHouse.Model.Providers.ReqLLM do
         if is_nil(value), do: acc, else: [{key, value} | acc]
       end)
 
-    request_timeout =
-      Keyword.get(overrides, :request_timeout, Map.get(options, "request_timeout"))
+    timeouts = %{
+      pool_timeout: Keyword.get(overrides, :pool_timeout, Map.get(options, "pool_timeout")),
+      receive_timeout:
+        Keyword.get(overrides, :receive_timeout, Map.get(options, "receive_timeout")),
+      request_timeout:
+        Keyword.get(overrides, :request_timeout, Map.get(options, "request_timeout"))
+    }
 
     configured
     |> maybe_put(:api_key, resolve_api_key(options))
     |> Keyword.merge(Keyword.take(overrides, @request_option_keys))
     |> maybe_put(
       :req_http_options,
-      maybe_put(req_http_options, :finch_request, finch_request(request_timeout))
+      maybe_put(req_http_options, :finch_request, finch_request(timeouts))
     )
   end
 
-  # Req 0.6 passes only pool_timeout and receive_timeout to Finch. Its callback
-  # hook keeps that behaviour while adding Finch's HTTP/1 total-response cap.
-  defp finch_request(nil), do: nil
+  # Req 0.6 passes only pool_timeout and receive_timeout to Finch. The callback
+  # supplies all three limits from the resolved role so a future Req change
+  # cannot silently restore Finch's five-second pool-checkout default.
+  defp finch_request(%{request_timeout: nil}), do: nil
 
-  defp finch_request(request_timeout) do
+  defp finch_request(timeouts) do
+    timeouts = Enum.reject(timeouts, fn {_key, value} -> is_nil(value) end)
+
     fn request, finch_request, finch_name, finch_options ->
       case Finch.request(
              finch_request,
              finch_name,
-             Keyword.put(finch_options, :request_timeout, request_timeout)
+             Keyword.merge(finch_options, timeouts)
            ) do
         {:ok, response} ->
           {request, Req.Response.new(response)}

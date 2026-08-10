@@ -23,6 +23,8 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
 
   alias MemHouse.DataLayer
   alias MemHouse.Memory
+  alias MemHouse.Model.Config
+  alias MemHouse.Model.Usage
   alias MemHouse.Operations.Health
   alias MemHouse.Operations.Metering
   alias MemHouse.Portability
@@ -236,6 +238,16 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     # No model was called, so no tokens. Token counts come only from real provider calls;
     # they are never estimated from request counts.
     assert summary.tokens == %{input: 0, output: 0, embedding: 0}
+
+    assert summary.model_calls == %{
+             window_seconds: 86_400,
+             attempts: 0,
+             errors: 0,
+             error_rate: 0.0,
+             unmetered: 0,
+             error_classes: %{}
+           }
+
     assert is_integer(summary.logical_storage_bytes)
     # Zero because a self-hoster supplies their own rates. MemHouse does not carry hidden
     # pricing: with no configured rate, the honest estimate is 0.0, not a guess.
@@ -280,6 +292,42 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     summary = Metering.summary(actor)
     assert summary.event_count == 1
     assert summary.api_requests == 1
+  end
+
+  test "model-call health keeps unknown failed-call cost visible" do
+    account_key = "f10-unmetered-model-#{System.unique_integer([:positive])}"
+
+    {_account, actor, config} =
+      DataLayer.with_account_key(
+        account_key,
+        [role: :account_admin, pipeline?: true],
+        fn account, actor ->
+          {account, actor,
+           Config.resolve(:ingest_extractor, %{account_id: account.id, actor: actor})}
+        end
+      )
+
+    assert :ok =
+             Usage.emit(
+               %{account_id: actor.account_id, actor: actor},
+               config,
+               %{
+                 operation: :structured,
+                 status: :error,
+                 duration_ms: 50,
+                 usage: %{},
+                 metadata: %{error_class: "request_timeout", metering_status: :unmetered}
+               }
+             )
+
+    assert Metering.summary(actor).model_calls == %{
+             window_seconds: 86_400,
+             attempts: 1,
+             errors: 1,
+             error_rate: 1.0,
+             unmetered: 1,
+             error_classes: %{"request_timeout" => 1}
+           }
   end
 
   test "production JSON logs redact credentials and drop unreviewed metadata" do
