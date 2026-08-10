@@ -250,6 +250,10 @@ config :memhouse, :retrieval_profiles,
   # this to the request's remaining hard deadline, so it reserves useful model
   # time without ever extending the overall request ceiling.
   rerank_timeout_ms: 120,
+  # Maximum number of final ranked candidates sent to the answer model. Search
+  # still returns its full requested candidate list. This bound controls answer
+  # prompt cost without changing retrieval recall or citation authorization.
+  answer_context_limit: 12,
   # After this many incremental delta merges, a projection is rebuilt in full
   # rather than merged again. Unit: delta updates. Bounds drift and unbounded
   # growth of merged projection content.

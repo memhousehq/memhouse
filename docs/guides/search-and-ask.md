@@ -93,7 +93,9 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/ask \
 `thorough`.
 
 The response is the search payload plus `answer`, `citations`, `abstained`,
-`answer_confidence`, and `answer_degraded`.
+`answer_confidence`, `answer_degraded`, `answer_context_count`, and
+`answerer_prompt_tokens`. The candidate list remains complete up to `limit`.
+Only its bounded, final-ranked head enters the answer prompt.
 
 !!! tip "Read the confidence, not only the answer"
     `ask` does not refuse. It answers with what the retrieved statements make

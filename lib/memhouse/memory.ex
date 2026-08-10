@@ -577,7 +577,8 @@ defmodule MemHouse.Memory do
   it. Every other reply carries `"answer_degraded" => nil`.
 
   Returns the `search/2` map with `"answer"`, `"citations"`, `"abstained"`,
-  `"answer_confidence"`, and `"answer_degraded"` merged in — plus
+  `"answer_confidence"`, `"answer_degraded"`, `"answer_context_count"`, and
+  `"answerer_prompt_tokens"` merged in — plus
   `"supporting_statements"` when the answer is degraded. Raises under the same
   conditions as
   `search/2`.
@@ -609,6 +610,9 @@ defmodule MemHouse.Memory do
 
       Observability.set_attributes(:memory, %{
         "memhouse.ask.candidate_count" => length(candidates),
+        "memhouse.ask.answer_context_count" => Map.get(answer, "answer_context_count", 0),
+        "memhouse.ask.answerer_prompt_tokens" =>
+          Map.get(answer, "answerer_prompt_tokens", 0) || 0,
         "memhouse.ask.used_model" => used_model?,
         "memhouse.ask.abstained" => Map.get(answer, "abstained", false),
         "memhouse.ask.answer_confidence" => Map.get(answer, "answer_confidence", 0)
@@ -1464,7 +1468,8 @@ defmodule MemHouse.Memory do
           account_id: account.id,
           scope_id: candidates |> List.first() |> Map.get("scope_id"),
           peer_id: actor.peer_id,
-          actor: actor
+          actor: actor,
+          reference_time: parse_datetime(Map.get(attrs, "as_of")) || Clock.utc_now()
         }
 
         {context, MemHouse.Model.role_config(:dialectic_agent, context)}
@@ -1491,8 +1496,10 @@ defmodule MemHouse.Memory do
   # call goes through the model gateway rather than a provider directly, which is
   # what keeps usage accounting, provenance, and provider choice in one place.
   defp model_answer(question, candidates, model_context) do
+    answer_candidates = Enum.take(candidates, answer_context_limit())
+
     memory_context =
-      candidates
+      answer_candidates
       |> Enum.map_join("\n", fn row ->
         "[#{row["id"]}] #{Statement.with_validity(row["statement"], row["relevant_from"], row["relevant_until"])}"
       end)
@@ -1500,9 +1507,10 @@ defmodule MemHouse.Memory do
     prompt = """
     Answer the question using only the cited MemHouse memory statements.
     Return JSON: {"answer":"...", "citations":["knowledge-id"], "abstained":false, "answer_confidence":0}.
-    answer_confidence is your own probability, an integer from 0 to 100, that the answer you gave is correct.
+    Write the answer and its citations before you estimate answer_confidence.
+    answer_confidence is your probability, from 0 to 100, that the completed answer is correct.
 
-    Always give your best answer. Never reply "not known", "unknown", "no information available", or "cannot answer": state what the statements make most probable and let answer_confidence carry your uncertainty.
+    When memory statements are present, give the best answer they support. State what they make most probable and let answer_confidence carry uncertainty. MemHouse handles an empty memory context without calling you.
 
     1. If a statement states the answer, give it and set answer_confidence high.
     2. If no statement states the answer, infer the most probable one from the statements, use an explicit likelihood word, and set answer_confidence to how probable it is.
@@ -1512,7 +1520,7 @@ defmodule MemHouse.Memory do
 
     A statement may be followed by "(true from ...)" or "(true from ... until ...)": when the claim held. Use it to date an answer whose statement says only "last weekend" or "yesterday". Do not date such a phrase from today's date.
 
-    A statement may be followed by "(true from ...)" or "(true from ... until ...)": when the claim held. Use it to date an answer whose statement says only "last weekend" or "yesterday". Do not date such a phrase from today's date.
+    Reference time: #{answer_reference_time(model_context)}. Resolve relative time against this value unless a statement's validity window gives the event date.
 
     Question: #{question}
 
@@ -1531,15 +1539,16 @@ defmodule MemHouse.Memory do
         ],
         MemHouse.Model.Schema.DialecticAnswer,
         model_context,
-        task: :dialectic
+        task: :dialectic,
+        return_usage: true
       )
 
     case result do
-      {:ok, decoded, _provenance} ->
+      {:ok, decoded, provenance} ->
         # Second grounding check. The model was shown only these statements, but
         # nothing stops it from returning an id it invented, so every citation is
         # intersected with what was actually retrieved.
-        cited_ids = candidates |> MapSet.new(& &1["id"])
+        cited_ids = answer_candidates |> MapSet.new(& &1["id"])
         citations = Enum.filter(decoded.citations, &MapSet.member?(cited_ids, &1))
 
         # An answer with no surviving citation is unsupported prose, whatever
@@ -1549,6 +1558,7 @@ defmodule MemHouse.Memory do
         # without establishing a conclusion.
         if citations == [] do
           fallback_answer(question, [])
+          |> put_answer_diagnostics(length(answer_candidates), prompt_tokens(provenance))
         else
           # The model may always abstain; below the threshold it no longer gets
           # to claim the opposite. An inference it is itself unsure of is
@@ -1559,7 +1569,9 @@ defmodule MemHouse.Memory do
             "abstained" =>
               decoded.abstained or decoded.answer_confidence < @inference_abstain_below,
             "answer_confidence" => decoded.answer_confidence,
-            "answer_degraded" => nil
+            "answer_degraded" => nil,
+            "answer_context_count" => length(answer_candidates),
+            "answerer_prompt_tokens" => prompt_tokens(provenance)
           }
         end
 
@@ -1568,7 +1580,7 @@ defmodule MemHouse.Memory do
       # different provider, and it does not raise: the caller gets a marked
       # degraded reply, not a fabricated conclusion (see memhousehq/memhouse#143).
       {:error, reason} ->
-        degrade(candidates, reason, model_context, started_at)
+        degrade(answer_candidates, reason, model_context, started_at)
     end
   end
 
@@ -1593,6 +1605,8 @@ defmodule MemHouse.Memory do
       "abstained" => true,
       "answer_confidence" => @degraded_confidence,
       "answer_degraded" => failure,
+      "answer_context_count" => length(candidates),
+      "answerer_prompt_tokens" => nil,
       "supporting_statements" => Enum.map(top, & &1["statement"])
     }
   end
@@ -1627,6 +1641,8 @@ defmodule MemHouse.Memory do
       "citations" => [],
       "abstained" => true,
       "answer_confidence" => 0,
+      "answer_context_count" => 0,
+      "answerer_prompt_tokens" => 0,
       "answer_degraded" => nil
     }
 
@@ -1640,8 +1656,30 @@ defmodule MemHouse.Memory do
       "citations" => Enum.map(top, & &1["id"]),
       "abstained" => false,
       "answer_degraded" => nil,
-      "answer_confidence" => @fallback_confidence
+      "answer_confidence" => @fallback_confidence,
+      "answer_context_count" => 0,
+      "answerer_prompt_tokens" => 0
     }
+  end
+
+  defp answer_context_limit do
+    :memhouse
+    |> Application.fetch_env!(:retrieval_profiles)
+    |> Keyword.fetch!(:answer_context_limit)
+  end
+
+  defp answer_reference_time(model_context) do
+    model_context
+    |> Map.fetch!(:reference_time)
+    |> DateTime.to_iso8601()
+  end
+
+  defp prompt_tokens(provenance), do: get_in(provenance, [:usage, :input_tokens]) || 0
+
+  defp put_answer_diagnostics(answer, context_count, prompt_tokens) do
+    answer
+    |> Map.put("answer_context_count", context_count)
+    |> Map.put("answerer_prompt_tokens", prompt_tokens)
   end
 
   # Anything unrecognized widens to every target rather than failing, because the

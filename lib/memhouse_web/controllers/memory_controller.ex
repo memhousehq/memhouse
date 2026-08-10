@@ -162,7 +162,8 @@ defmodule MemHouseWeb.MemoryController do
     latency than a bare search.
 
     Returns `%{"data" => result}`: the search payload merged with `answer`, `citations`,
-    `abstained`, `answer_confidence`, and `answer_degraded`. The answer is grounded in the
+    `abstained`, `answer_confidence`, `answer_degraded`, `answer_context_count`, and
+    `answerer_prompt_tokens`. The answer is grounded in a bounded final-ranked head of the
     returned candidates — when nothing supports the question the action abstains instead of
     inventing one, so treat `abstained == true` as an ordinary outcome and not an error.
     `answer_confidence` is a 0-100 percentage; a model answer below the abstention

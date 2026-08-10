@@ -158,7 +158,10 @@ Details: `specs/architecture/documents-connectors-sync.md`.
   seed strategies, followed by hop-one RelationExpand over knowledge relations,
   permission-filtered scope relations, and shared-entity edges.
 - Weighted reciprocal-rank fusion over strategy-local ranks, with disagreement
-  computed before fusion and optional reranking of the fused head.
+  computed before fusion and optional reranking of the fused head. `ask` sends
+  a configured, bounded final-ranked head to the answer model while returning
+  the full requested candidate list. It reports the answer-context count and
+  provider-reported prompt tokens without exposing content.
 - Named versioned profiles that inherit nearest-wins from scope configuration,
   honour deployment strategy constraints, enforce a hard deadline, and report
   contributed, empty, and dropped strategies separately, plus a
