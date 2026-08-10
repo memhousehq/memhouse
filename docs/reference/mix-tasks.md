@@ -11,6 +11,7 @@ listed where available.
 | `memhouse.portability.export` | Write a whole-Account logical archive |
 | `memhouse.portability.import` | Load or verify an archive |
 | `memhouse.reembed` | Enqueue or inspect an embedding transition |
+| `memhouse.model.check` | Probe structured output for every generative role |
 | `memhouse.eval.smoke` | Developer sanity pass over the real write/read path |
 | `memhouse.eval.benchmark` | Run one benchmark fixture and score it |
 | `memhouse.eval.release` | Run the deterministic release matrix |
@@ -110,6 +111,32 @@ batch commits. Lexical retrieval remains available during the transition.
 
 ---
 
+## `memhouse.model.check`
+
+```bash
+mix memhouse.model.check
+mix memhouse.model.check --json
+```
+
+Asks `ingest_extractor`, `dream_reasoner`, and `dialectic_agent` for one tiny
+object each and prints status, provider, model, duration, and — for a failure —
+a content-free error class. Exits non-zero when a role fails.
+
+Run it after changing a role, a provider key, or an endpoint. A role that
+cannot return an object still answers HTTP 200, so extraction thins and answers
+degrade with nothing in the logs naming the cause. `checks.model_calls` on
+[`GET /api/ready`](../operations/health-and-costs.md) reports failures that have
+already happened; this reports whether the next call will work.
+
+A role on the deterministic local fallback is reported as `skipped`. There is no
+provider to reach, so the command does not fail on it.
+
+The probe uses the roles from deployment configuration, sends the configured
+timeouts and output caps unchanged, and writes no usage row. A per-Account role
+override is not covered.
+
+---
+
 ## `memhouse.eval.smoke`
 
 ```bash
@@ -165,6 +192,12 @@ MemHouse's own `{"messages": [...], "questions": [...]}`.
 | `--durability-sample` / `--durability-seed` | Stable statement sample size and selection seed. Use at least 200 statements for a durability claim. |
 | `--no-model` | Deterministic local extractor and answerer |
 
+Unless `--no-model` is given, the run probes every generative role first and
+refuses to start if one cannot return an object. Scoring a run whose extractor
+never worked publishes a quality number for a corpus that was never extracted.
+A role on the deterministic fallback fails this check too: `--no-model` is how
+an offline run is requested.
+
 Also writes real rows. Same warning applies.
 
 ---
@@ -180,7 +213,8 @@ mix memhouse.eval.release \
 
 Runs `specs/eval/release-suite.json` against floors in
 `specs/eval/deterministic-thresholds.json`. Only release guardrails block;
-ablations inform.
+ablations inform. Without `--no-model` it runs the same generative-role probe
+as the benchmark task and refuses to start when a role fails it.
 
 ---
 

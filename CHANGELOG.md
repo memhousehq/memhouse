@@ -9,6 +9,34 @@ changelog entry and contract-version transition.
 
 ## [Unreleased]
 
+### Added
+
+- `mix memhouse.model.check` probes structured output for `ingest_extractor`,
+  `dream_reasoner`, and `dialectic_agent`, asking each for one small object and
+  printing status, provider, model, duration, and a content-free error class.
+  It exits non-zero when a role fails, and reports a role on the deterministic
+  local fallback as skipped. The prior-24-hour `checks.model_calls` rate on
+  `GET /api/ready` reports failures that already happened and reads as healthy
+  on a node that has never called a model; this reports whether the next call
+  will work. The probe resolves roles from deployment configuration, sends the
+  configured timeouts and output caps unchanged, and writes no usage row, so it
+  neither meters itself nor covers a per-Account role override. The readiness
+  payload is unchanged and the `f10-1` operator contract still holds.
+
+- `mix memhouse.eval.benchmark` and `mix memhouse.eval.release` run that probe
+  before ingest unless `--no-model` is given, and refuse to start when a role
+  cannot return an object. A graded run cannot tell a weak answer from one that
+  was never generated, so it would otherwise publish a quality number for a
+  corpus that was never extracted. A role on the deterministic fallback fails
+  the check; `--no-model` is how an offline run is requested.
+
+- Model roles accept a `structured_output_mode` option. A role naming
+  `openrouter` already uses that provider's JSON-schema response path; the same
+  endpoint reached as `openai-compatible` plus a base URL has no recognised
+  model identity and reverts to a forced tool call that some models decline.
+  Setting the option to `json_schema` selects the schema-enforced path there.
+  An unusable value fails the call instead of degrading to tool calling.
+
 ### Security
 
 - `ash` is now `~> 3.31` (3.31.2), which clears EEF-CVE-2026-69659 (memory

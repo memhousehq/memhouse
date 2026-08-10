@@ -246,14 +246,23 @@ defmodule MemHouse.Model.Gateway do
     error -> {:error, error}
   end
 
-  # A short, content-free label for what went wrong. Transport deadline classes
-  # distinguish a configured total deadline from an endpoint failure without
-  # retaining an exception message, which can quote a prompt or response body.
-  defp error_class(%ReqLLM.Error.API.Request{cause: %Finch.TransportError{reason: :timeout}}),
+  @doc """
+  A short, content-free label for what went wrong.
+
+  Transport deadline classes distinguish a configured total deadline from an
+  endpoint failure without retaining an exception message, which can quote a
+  prompt or response body. Everything else reduces to an exception module name
+  or the error atom the adapter returned.
+
+  Public so that a caller reporting a provider failure outside the metered call
+  path — `MemHouse.Model.Probe` — names it exactly as the ledger and the span
+  do, rather than inventing a second vocabulary for the same failures.
+  """
+  def error_class(%ReqLLM.Error.API.Request{cause: %Finch.TransportError{reason: :timeout}}),
     do: "request_timeout"
 
-  defp error_class(%ReqLLM.Error.API.Request{}), do: "transport_error"
-  defp error_class(%module{}), do: inspect(module)
-  defp error_class(error) when is_atom(error), do: Atom.to_string(error)
-  defp error_class(_error), do: "model_error"
+  def error_class(%ReqLLM.Error.API.Request{}), do: "transport_error"
+  def error_class(%module{}), do: inspect(module)
+  def error_class(error) when is_atom(error), do: Atom.to_string(error)
+  def error_class(_error), do: "model_error"
 end

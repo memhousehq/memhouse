@@ -358,13 +358,64 @@ defmodule MemHouse.Model.Providers.ReqLLM do
   # JSON-schema response path returns the same object while avoiding that
   # model-level failure mode. This is limited to structured generation; chat
   # continues to use normal tool calling where callers explicitly need tools.
-  defp structured_request_opts(%Role{provider: "openrouter"} = config, overrides) do
-    config
-    |> request_opts(overrides)
-    |> Keyword.put(:provider_options, openrouter_structured_output_mode: :json_schema)
+  #
+  # The mode is merged into any provider options the caller supplied rather than
+  # replacing them, so a caller asking for an unrelated provider feature does
+  # not silently lose the schema-enforced response path with it.
+  defp structured_request_opts(%Role{} = config, overrides) do
+    opts = request_opts(config, overrides)
+
+    case structured_output_mode(config) do
+      nil -> opts
+      {key, mode} -> put_structured_output_mode(opts, key, mode)
+    end
   end
 
-  defp structured_request_opts(%Role{} = config, overrides), do: request_opts(config, overrides)
+  # The two adapters read the mode from different places: OpenRouter's from the
+  # nested provider options, OpenAI's from the top level. Putting it in the
+  # wrong one is not an error — it is ignored, and the call silently reverts to
+  # the forced tool call. The wire-level tests are what hold each placement.
+  defp put_structured_output_mode(opts, :openrouter_structured_output_mode = key, mode) do
+    Keyword.update(opts, :provider_options, [{key, mode}], &Keyword.put(&1, key, mode))
+  end
+
+  defp put_structured_output_mode(opts, key, mode), do: Keyword.put(opts, key, mode)
+
+  # `json_schema` is the default only for a role naming OpenRouter directly.
+  # The same endpoint is also reachable as `openai-compatible` plus a base URL,
+  # and there the underlying library decides the mode from its model database,
+  # which does not recognise an OpenRouter model id and falls back to the
+  # unreliable forced tool call. A role in that shape must set
+  # `structured_output_mode` itself; `MemHouse.Model.Probe` is what shows an
+  # operator that it was needed.
+  defp structured_output_mode(%Role{provider: provider, options: options}) do
+    case Map.get(options, "structured_output_mode", default_structured_output_mode(provider)) do
+      nil ->
+        nil
+
+      "json_schema" ->
+        {structured_output_mode_key(provider), :json_schema}
+
+      other ->
+        # A typo must not degrade silently into forced tool calling, which is
+        # the exact failure this option exists to prevent.
+        raise ArgumentError,
+              "structured_output_mode must be \"json_schema\" or absent, got: #{inspect(other)}"
+    end
+  end
+
+  defp default_structured_output_mode("openrouter"), do: "json_schema"
+  defp default_structured_output_mode(_provider), do: nil
+
+  defp structured_output_mode_key("openrouter"), do: :openrouter_structured_output_mode
+
+  defp structured_output_mode_key(provider) when provider in ["openai", "openai-compatible"],
+    do: :openai_structured_output_mode
+
+  defp structured_output_mode_key(provider) do
+    raise ArgumentError,
+          "structured_output_mode is not supported for provider #{inspect(provider)}"
+  end
 
   # Role options are always string-valued so they stay printable/exportable
   # regardless of source (see `MemHouse.Model.Config.Role`), but req_llm's

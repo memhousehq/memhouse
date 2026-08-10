@@ -11,7 +11,7 @@ defmodule Mix.Tasks.Memhouse.Eval.Benchmark do
 
   use Mix.Task
 
-  alias MemHouse.Eval.{Adapter, Runner, Runtime}
+  alias MemHouse.Eval.{Adapter, Preflight, Runner, Runtime}
 
   @shortdoc "Runs full MemHouse benchmark ingestion/scoring"
 
@@ -65,6 +65,11 @@ defmodule Mix.Tasks.Memhouse.Eval.Benchmark do
     # rewrite has to happen before app.start or the run will still reach a live provider.
     if Keyword.get(opts, :no_model, false), do: Runtime.use_deterministic_models()
     Mix.Task.run("app.start")
+
+    # Ingest is the expensive half and it silently absorbs a broken structured
+    # path: the run still produces a scored report, just one measuring a corpus
+    # that was never extracted. One call per role decides that up front.
+    unless Keyword.get(opts, :no_model, false), do: Preflight.assert_generative_roles!()
 
     dataset =
       Adapter.load!(dataset_path,
