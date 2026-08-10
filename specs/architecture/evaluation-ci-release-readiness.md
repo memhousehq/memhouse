@@ -56,6 +56,12 @@ context, answer, end-to-end, full-context, and efficiency-ratio token measures.
 Those lexical scores are reproducible baseline signals, not a claim of parity
 with an upstream model judge.
 
+The benchmark runner can also audit extracted-statement durability after the
+ordinary pipeline writes them. Its report records only sample provenance,
+category counts, and zero/one/multiple statement yield per source message.
+The optional model judge must use a different provider/model family from the
+ingest extractor. This audit is frontier evidence; it is not a release gate.
+
 `specs/eval/release-suite.json` defines the release matrix and distinct
 `held-out-tuning`/`release-evaluation` policy. Named-profile runs are release
 guardrails; lexical and salience-recency variants are reported ablations.

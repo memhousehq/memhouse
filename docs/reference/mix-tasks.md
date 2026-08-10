@@ -131,6 +131,22 @@ asks a few questions, and prints what came back. No scores, no thresholds.
 mix memhouse.eval.benchmark --benchmark locomo --dataset data/locomo10.json --dream-time
 ```
 
+For an issue-160 durability audit, use the same dataset, limits, and seed for
+both revisions. A live judge needs a reasoning role configured to a different
+provider/model family than `ingest_extractor`.
+
+```bash
+mix memhouse.eval.benchmark \
+  --benchmark locomo \
+  --dataset data/locomo10.json \
+  --run-id issue-160-after \
+  --durability-audit \
+  --durability-judge model \
+  --durability-sample 200 \
+  --durability-seed issue-160-held-out \
+  --output /private/tmp/issue-160-after.json
+```
+
 Runs one fixture end to end through the ordinary write and answer paths and
 scores it. Recognised shapes: LoCoMo, LongMemEval, ConvoMem, BEAM, and
 MemHouse's own `{"messages": [...], "questions": [...]}`.
@@ -144,6 +160,9 @@ MemHouse's own `{"messages": [...], "questions": [...]}`.
 | `--run-id` | Seeds the scope root; give concurrent runs distinct ids |
 | `--limit-cases` / `--limit-messages` / `--limit-questions` | Truncate for a fast loop — recorded in the report, because a truncated run is not comparable |
 | `--dream-time` | Run and replay the Account dream-time pass after each case ingest. The report records content-safe reasoning counts and rejects a non-zero replay effect. |
+| `--durability-audit` | Add a content-safe extraction audit. It records only category and message-yield counts. |
+| `--durability-judge` | `deterministic` (default) or `model`. A model judge must differ from the ingest extractor provider/model family. |
+| `--durability-sample` / `--durability-seed` | Stable statement sample size and selection seed. Use at least 200 statements for a durability claim. |
 | `--no-model` | Deterministic local extractor and answerer |
 
 Also writes real rows. Same warning applies.
