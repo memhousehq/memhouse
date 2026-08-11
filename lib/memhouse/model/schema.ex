@@ -938,7 +938,12 @@ defmodule MemHouse.Model.Schema.DialecticAnswer do
         "answer" => %{"type" => "string"},
         "citations" => %{"type" => "array", "items" => %{"type" => "string"}},
         "abstained" => %{"type" => "boolean"},
-        "answer_confidence" => %{"type" => "integer", "minimum" => 0, "maximum" => 100}
+        "answer_confidence" => %{
+          "type" => "integer",
+          "minimum" => 0,
+          "maximum" => 100,
+          "description" => "Probability that the completed answer is correct"
+        }
       },
       "required" => ~w(answer citations abstained answer_confidence)
     }

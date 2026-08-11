@@ -317,4 +317,8 @@ It is the most time reranking may use, but the request's remaining profile
 deadline always wins when it is smaller. Raising it can improve thorough-search
 ranking at the cost of tail latency; it cannot extend the 1500 ms hard ceiling.
 
+`MEMHOUSE_ANSWER_CONTEXT_LIMIT` defaults to `12` and is clamped to `1..50`.
+It limits only the final ranked candidates sent to the `ask` answer model.
+Search still returns its full requested candidate list.
+
 Profile changes require product review; PostgreSQL location changes do not.

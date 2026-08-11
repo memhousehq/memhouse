@@ -213,13 +213,21 @@ retrieval. A raw `strategies` override is refused for external callers.
 defaults to `"thorough"`.
 
 Returns the search payload merged with `answer`, `citations`, `abstained`,
-`answer_confidence`, and `answer_degraded`. Retrieval is restricted to
+`answer_confidence`, `answer_degraded`, `answer_context_count`, and
+`answerer_prompt_tokens`. Retrieval is restricted to
 knowledge items, so citations are governed statements. `abstained: true` is an
 ordinary outcome.
 
-The answerer sees each statement with its validity window and is told to date a
-relative phrase from that window rather than from today, so a statement reading
-"last weekend" is answered with the date the claim held.
+The search payload keeps all returned candidates. The answerer sees only the
+first `MEMHOUSE_ANSWER_CONTEXT_LIMIT` candidates after reranking. It also sees
+each statement's validity window and an explicit reference time. `as_of` is the
+reference time when supplied; otherwise the request time is used.
+
+`answer_context_count` is the number of candidates sent to the answerer.
+`answerer_prompt_tokens` is the provider-reported input-token count across the
+initial call and any structured-output repairs. It is `null` when the answer
+model call fails and `0` when no answer model ran. The durable usage ledger
+still records metered failed attempts.
 
 `answer_confidence` is an integer from 0 to 100. For a model answer it is the
 model's own probability that the answer is correct. The model always answers:
