@@ -39,6 +39,11 @@ changelog entry and contract-version transition.
 
 ### Security
 
+- `phoenix_live_view` is now 1.2.9, which clears EEF-CVE-2026-64941 (open
+  redirect in `Phoenix.LiveView.validate_local_url!/2` via ASCII tab, LF, and
+  CR). The `~> 1.1` requirement already allowed it; only the lock moved. Do not
+  lower the lock without checking `mix hex.audit`.
+
 - `ash` is now `~> 3.31` (3.31.2), which clears EEF-CVE-2026-69659 (memory
   exhaustion via unbounded deserialization of keyset pagination cursors) and
   EEF-CVE-2026-70395 (predicate injection in `manage_relationship` belongs_to
