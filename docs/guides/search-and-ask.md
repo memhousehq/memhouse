@@ -42,6 +42,8 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
     "contributed_strategies": ["semantic", "lexical", "entity_match"],
     "empty_strategies": [],
     "dropped_strategies": ["temporal"],
+    "degraded": true,
+    "degraded_components": ["temporal"],
     "disagreement": { "query_dependent_empty": false }
   }
 }
@@ -57,11 +59,20 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
 - `retrieval_outcomes` gives each component's status, deterministic drop reason,
   elapsed time, and remaining budget. The reason is one of
   `disabled`, `deadline_exhausted_before_start`, `timeout`,
-  `dependency_unavailable`, `provider_error`, or `invalid_result`. It contains
-  no query or candidate text.
+  `dependency_unavailable`, `provider_error`, `invalid_result`, or
+  `partial_rankings`. It contains no query or candidate text.
+- `degraded` is the short form of the same news: `true` when a component was
+  dropped or completed with a reason class, with the names in
+  `degraded_components`. A dropped `reranker` is the case to watch, because the
+  results still look ordered by relevance when they are ordered by reciprocal
+  rank alone.
 - `pre_rerank_remaining_ms` shows how much of the hard ceiling remained before
   reranking. Reranking receives the smaller of that value and
-  `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS`.
+  `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS`, and a run with `deadline` set to
+  `"disabled"` is not capped at all.
+- `reserved_rerank_ms` shows how much of the deadline was kept back from the
+  strategies for that stage. A reranking profile spends it last but reserves it
+  first, so a slow strategy costs recall instead of costing the ordering.
 - `empty_strategies` lists strategies that ran and matched nothing. That is a
   result, not a failure — but a strategy in this list did not vote on the order.
 

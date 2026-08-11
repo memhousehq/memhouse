@@ -381,12 +381,20 @@ defmodule MemHouse.Memory do
   Returns a string-keyed map holding `"query"`, `"profile"`,
   `"profile_version"`, `"deadline"`, `"latency_ms"`,
   `"contributed_strategies"`, `"empty_strategies"`, `"dropped_strategies"`,
-  `"retrieval_outcomes"`, `"pre_rerank_remaining_ms"`, `"disagreement"`, and
+  `"degraded"`, `"degraded_components"`, `"retrieval_outcomes"`,
+  `"pre_rerank_remaining_ms"`, `"reserved_rerank_ms"`, `"disagreement"`, and
   `"candidates"`. A strategy that ran out of deadline lands in
   `"dropped_strategies"` instead of failing the call, so a partial result is
   normal: read that list before treating a thin result as an absence of
   knowledge. The structured outcomes add content-free reason classes and
   timings while preserving the compatible dropped-name list.
+
+  `"degraded"` is the one field a caller can check without interpreting the
+  outcomes. It is true whenever a component was dropped or completed with a
+  reason class, and `"degraded_components"` names those components. The case
+  that matters is a dropped reranker: the results still arrive, ordered by
+  reciprocal rank alone, and nothing else in the payload says the stage that
+  decides relevance never ran.
 
   A strategy that ran and matched nothing lands in `"empty_strategies"`. When
   the text-reading strategies are all in there,
@@ -462,6 +470,7 @@ defmodule MemHouse.Memory do
         "memhouse.retrieval.strategy_count" => length(retrieval.contributed_strategies),
         # Counts only; a degraded run is otherwise indistinguishable from a good one in traces.
         "memhouse.retrieval.empty_strategy_count" => length(retrieval.empty_strategies),
+        "memhouse.retrieval.degraded" => retrieval.degraded,
         "memhouse.retrieval.query_dependent_empty" =>
           retrieval.disagreement["query_dependent_empty"],
         "memhouse.query.limit" => limit,
@@ -575,6 +584,11 @@ defmodule MemHouse.Memory do
   `"citations"` and as plain text under `"supporting_statements"`, so nothing
   already retrieved is lost — only the false claim that a model reasoned over
   it. Every other reply carries `"answer_degraded" => nil`.
+
+  `"answer_degraded"` describes the answering model call alone. Whether the
+  retrieval that fed it lost a component is a separate question, answered by
+  the `"degraded"` and `"degraded_components"` fields inherited from `search/2`:
+  an answer can be perfectly reasoned over a list the reranker never ordered.
 
   Returns the `search/2` map with `"answer"`, `"citations"`, `"abstained"`,
   `"answer_confidence"`, `"answer_degraded"`, `"answer_context_count"`, and

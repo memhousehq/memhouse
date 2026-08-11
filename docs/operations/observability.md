@@ -148,13 +148,29 @@ Account administrators can select a readable scope and profile in
 nearest inherited profile, reports its version, deadline, enabled and disabled
 strategies, and classifies disabled strategies separately from missing indexes.
 The probe is metadata-only: it makes no generation-model call and reads no
-stored statement content. Retrieval drops are request-scoped and are shown on
-the retrieval result; telemetry is not treated as a historical health ledger.
+stored statement content. Which components a single request lost is shown on
+that request's own result, not stored; the counter below is a rate signal, not
+a historical health ledger.
 
 `POST /api/v1/operations/reconcile` also checks active scopes for a completely
 missing mention index. It enqueues the ordinary full scope rebuild with a
 stable corpus watermark. Repeating reconciliation before the corpus changes
 reuses the same pipeline run.
+
+## Knowing when retrieval ran degraded
+
+Each retrieval component that was dropped, or completed with a reason class,
+emits `[:memhouse, :retrieval, :degraded]` with a `count` of `1`, tagged with
+`account_id`, `profile`, `component`, and `reason_class`. The same facts are
+logged at warning level and returned to the caller as `degraded` and
+`degraded_components`.
+
+Alert on a sustained rate for `component: "reranker"`. A dropped reranker
+changes no field a client is likely to read: the results still arrive, ordered
+by reciprocal rank alone, and only the count says that the stage which judges
+relevance never ran. `reason_class: "timeout"` there means the profile deadline
+is too tight for the reranker on your hardware; `"partial_rankings"` means the
+provider judged only part of the head, which was applied rather than discarded.
 
 ## Traces are sampled; the ledger is exact
 

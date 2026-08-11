@@ -83,7 +83,9 @@ config :logger, :default_formatter,
     :target_id,
     :message_id,
     :attempt_count,
-    :error_class
+    :error_class,
+    :component,
+    :reason_class
   ]
 
 # Set a higher stacktrace during development. Avoid configuring such

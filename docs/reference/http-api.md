@@ -195,7 +195,14 @@ omit the pair.
 
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.
-`pre_rerank_remaining_ms` reports the budget available before reranking.
+`pre_rerank_remaining_ms` reports the budget available before reranking, and
+`reserved_rerank_ms` reports how much of the deadline was withheld from the
+strategies to pay for it.
+
+`degraded` is `true` when any component was dropped, or completed with a reason
+class, and `degraded_components` names those components. Check it before
+presenting results as relevance-ordered: when `reranker` is in that list, the
+candidates arrived ordered by reciprocal rank alone.
 
 `disagreement.query_dependent_empty` is `true` when no strategy that reads the
 query text produced a candidate. A text search does not fill that gap with a
@@ -228,6 +235,11 @@ reference time when supplied; otherwise the request time is used.
 initial call and any structured-output repairs. It is `null` when the answer
 model call fails and `0` when no answer model ran. The durable usage ledger
 still records metered failed attempts.
+
+`answer_degraded` and `degraded` answer different questions. The first is about
+the answering model call; the second is about the retrieval that fed it. An
+answer can be soundly reasoned over a candidate list the reranker never ordered,
+and that shows only in `degraded`.
 
 `answer_confidence` is an integer from 0 to 100. For a model answer it is the
 model's own probability that the answer is correct. The model always answers:

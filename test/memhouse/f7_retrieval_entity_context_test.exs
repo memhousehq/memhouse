@@ -203,6 +203,15 @@ defmodule MemHouse.F7RetrievalEntityContextTest.RerankFailureProvider do
 
       :invalid ->
         {:ok, %Result{value: [%{index: 999, relevance_score: 1.0}], usage: %{}}}
+
+      # Judges only the last document. A generation-backed reranker returning
+      # fewer rankings than it was given is the common shape of a short answer.
+      :partial ->
+        {:ok,
+         %Result{
+           value: [%{index: length(documents) - 1, relevance_score: 0.9}],
+           usage: %{}
+         }}
     end
   end
 end
@@ -1605,9 +1614,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     baseline_ids = Enum.map(baseline["candidates"], & &1["id"])
 
+    # The timeout class needs a live deadline and is exercised separately: a deadline-free run
+    # deliberately offers the reranker an unbounded allowance.
     for {mode, expected_status, reason} <- [
           {:complete, "completed", nil},
-          {:timeout, "dropped", "timeout"},
           {:provider_error, "dropped", "provider_error"},
           {:invalid, "dropped", "invalid_result"}
         ] do
@@ -1629,8 +1639,191 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       if expected_status == "dropped" do
         assert Enum.map(result["candidates"], & &1["id"]) == baseline_ids
         assert "reranker" in result["dropped_strategies"]
+        # A dropped ordering stage is degradation the caller can read without
+        # interpreting the outcome list.
+        assert result["degraded"] == true
+        assert "reranker" in result["degraded_components"]
+      else
+        assert result["degraded"] == false
+        assert result["degraded_components"] == []
       end
     end
+  end
+
+  test "a live deadline bounds the reranker and a deadline-free run does not" do
+    seeded =
+      seed_active!("f7-rerank-deadline", "/f7/rerank-deadline", "Avery writes release notes.")
+
+    original_provider = Application.get_env(:memhouse, :model_provider)
+    original_retrieval = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :retrieval_profiles, original_retrieval)
+      Application.delete_env(:memhouse, :rerank_test_mode)
+
+      if original_provider,
+        do: Application.put_env(:memhouse, :model_provider, original_provider),
+        else: Application.delete_env(:memhouse, :model_provider)
+    end)
+
+    Application.put_env(
+      :memhouse,
+      :model_provider,
+      MemHouse.F7RetrievalEntityContextTest.RerankFailureProvider
+    )
+
+    # The injected reranker takes 80 ms; the allowance is 50 ms.
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Keyword.put(original_retrieval, :rerank_timeout_ms, 50)
+    )
+
+    Application.put_env(:memhouse, :rerank_test_mode, :timeout)
+
+    search = fn deadline ->
+      Memory.search(%{
+        "account_key" => "f7-rerank-deadline",
+        "scope_path" => seeded.scope.path,
+        "query" => "release",
+        "profile" => "thorough",
+        "strategies" => ["lexical"],
+        "deadline" => deadline
+      })
+    end
+
+    live = search.("enabled")
+
+    assert %{status: "dropped", reason_class: "timeout"} =
+             Enum.find(live["retrieval_outcomes"], &(&1.component == "reranker"))
+
+    assert live["degraded"] == true
+
+    # An evaluation run that asked for no time limit is measuring the reranked ordering. Capping
+    # the stage that produces it at the live allowance measures fusion order instead.
+    unbounded = search.("disabled")
+
+    assert %{status: "completed", reason_class: nil} =
+             Enum.find(unbounded["retrieval_outcomes"], &(&1.component == "reranker"))
+
+    assert unbounded["degraded"] == false
+  end
+
+  test "the rerank allowance is reserved before the strategies can spend it" do
+    seeded =
+      seed_active!("f7-rerank-reserve", "/f7/rerank-reserve", "Avery writes release notes.")
+
+    original_retrieval = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    on_exit(fn -> Application.put_env(:memhouse, :retrieval_profiles, original_retrieval) end)
+
+    # Half of the 1500 ms thorough deadline is the clamp, so 700 ms is reserved in full and the
+    # strategies see 800 ms rather than the whole ceiling.
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Keyword.put(original_retrieval, :rerank_reserved_ms, 700)
+    )
+
+    search = fn profile, deadline ->
+      Memory.search(%{
+        "account_key" => "f7-rerank-reserve",
+        "scope_path" => seeded.scope.path,
+        "query" => "release",
+        "profile" => profile,
+        "strategies" => ["lexical"],
+        "deadline" => deadline
+      })
+    end
+
+    reranking = search.("thorough", "enabled")
+
+    assert reranking["reserved_rerank_ms"] == 700
+
+    strategy_outcomes =
+      Enum.reject(reranking["retrieval_outcomes"], &(&1.component == "reranker"))
+
+    assert strategy_outcomes != []
+
+    for outcome <- strategy_outcomes do
+      assert outcome.budget_remaining_ms <= 800
+    end
+
+    assert %{status: "completed"} =
+             Enum.find(reranking["retrieval_outcomes"], &(&1.component == "reranker"))
+
+    # Nothing is withheld from a profile that never reranks, or from a run with no clock.
+    assert search.("balanced", "enabled")["reserved_rerank_ms"] == 0
+    assert search.("thorough", "disabled")["reserved_rerank_ms"] == 0
+  end
+
+  test "a partial ranking reorders what the model judged and reports degradation" do
+    seeded =
+      seed_active!("f7-rerank-partial", "/f7/rerank-partial", "Avery writes release notes.")
+
+    seed_active!(
+      "f7-rerank-partial",
+      "/f7/rerank-partial",
+      "Blake reviews the release checklist.",
+      "partial-session-2"
+    )
+
+    seed_active!(
+      "f7-rerank-partial",
+      "/f7/rerank-partial",
+      "Casey schedules the release train.",
+      "partial-session-3"
+    )
+
+    original_provider = Application.get_env(:memhouse, :model_provider)
+
+    on_exit(fn ->
+      Application.delete_env(:memhouse, :rerank_test_mode)
+
+      if original_provider,
+        do: Application.put_env(:memhouse, :model_provider, original_provider),
+        else: Application.delete_env(:memhouse, :model_provider)
+    end)
+
+    Application.put_env(
+      :memhouse,
+      :model_provider,
+      MemHouse.F7RetrievalEntityContextTest.RerankFailureProvider
+    )
+
+    search = fn profile ->
+      Memory.search(%{
+        "account_key" => "f7-rerank-partial",
+        "scope_path" => seeded.scope.path,
+        "query" => "release",
+        "profile" => profile,
+        "strategies" => ["lexical"],
+        "deadline" => "disabled"
+      })
+    end
+
+    Application.put_env(:memhouse, :rerank_test_mode, :complete)
+    fusion_ids = Enum.map(search.("balanced")["candidates"], & &1["id"])
+
+    assert length(fusion_ids) == 3
+
+    Application.put_env(:memhouse, :rerank_test_mode, :partial)
+    result = search.("thorough")
+
+    # The model judged only the last document. Its verdict leads; everything it did not judge
+    # keeps fusion order behind it, which is strictly more of the model's opinion than throwing
+    # the call away and keeping fusion order for all three.
+    assert Enum.map(result["candidates"], & &1["id"]) ==
+             [Enum.at(fusion_ids, 2) | List.delete_at(fusion_ids, 2)]
+
+    assert %{status: "completed", reason_class: "partial_rankings"} =
+             Enum.find(result["retrieval_outcomes"], &(&1.component == "reranker"))
+
+    # It ran and produced an ordering, so it is not a drop; it did less than asked, so it is
+    # still degradation.
+    refute "reranker" in result["dropped_strategies"]
+    assert result["degraded"] == true
+    assert "reranker" in result["degraded_components"]
   end
 
   test "projection refresh, bounded deltas, session resolution, and ETS invalidation stay model-free" do
