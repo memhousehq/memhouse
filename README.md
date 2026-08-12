@@ -163,7 +163,7 @@ SDKs. Remaining work is tracked in
 | `lib/mix/tasks/` | Operator and evaluation commands |
 | `test/` | Regression and contract evidence |
 | `docs/` | Published user documentation |
-| `specs/` | Decisions, outstanding work, and evaluation evidence |
+| `specs/` | Decisions, outstanding work, module boundaries, evaluation evidence, and process |
 
 Start reading at `lib/memhouse_web/router.ex`, then
 `lib/memhouse/memory.ex`, `lib/memhouse/knowledge.ex`,

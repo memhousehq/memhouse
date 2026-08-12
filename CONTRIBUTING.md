@@ -49,7 +49,7 @@ See `AGENTS.md` for the full writing style and architecture guardrails.
 | --- | --- |
 | Source and tests | Current behavior, and the rules the system enforces |
 | `docs/` | Published setup, usage, operations, and current behavior |
-| `specs/` | Decisions, outstanding work, evaluation evidence, and process |
+| `specs/` | Decisions, outstanding work, module boundaries, evaluation evidence, and process |
 | `CONTRIBUTING.md` | Development workflow |
 | `README.md` | Project orientation |
 
@@ -76,8 +76,8 @@ Behavior and documentation ship together. Common mappings:
 2. Make one reviewable change.
 3. Run applicable checks and inspect the final diff.
 4. Commit with a short, scoped message.
-5. Open one PR with scope, reason, relevant anchors, real check results, and
-   deliberate limitations.
+5. Open one PR with scope, reason, the tests that prove it, real check
+   results, and deliberate limitations.
 
 Do not rewrite or revert others' work without explicit authorization.
 

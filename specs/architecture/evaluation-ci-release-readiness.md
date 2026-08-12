@@ -33,8 +33,8 @@ builds both the Mix release and production container.
 AshJsonApi OpenAPI and complete generated TypeScript/Python clients remain
 unimplemented in `specs/roadmap/beta-roadmap.md`. The surface inventory marks them
 `unavailable`, gates the shipped Phoenix/MCP and skill-readiness helper
-contracts, and prevents 0.2.0 documentation or packaging from presenting the
-skill-readiness helpers as complete SDKs.
+contracts, and prevents any release's documentation or packaging from
+presenting the skill-readiness helpers as complete SDKs.
 
 ## Evaluation boundary
 

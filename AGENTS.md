@@ -133,7 +133,7 @@ architecture note. Never casually rename an identity or historical artifact.
 | --- | --- |
 | Source and tests | Current behavior, and the rules the system enforces |
 | `docs/` | Published setup, usage, operations, and current behavior |
-| `specs/` | Decisions, outstanding work, evaluation evidence, and process |
+| `specs/` | Decisions, outstanding work, module boundaries, evaluation evidence, and process |
 | `CONTRIBUTING.md` | Development workflow and review rules |
 | `README.md` | Project orientation and documentation map |
 

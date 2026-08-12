@@ -177,8 +177,8 @@ The JSON report includes:
 - Aggregate metrics overall, by category, and by scale.
 - For BEAM, a `beam_degradation_curve` grouped by corpus scale.
 - RAG-triad lexical baseline, full-context/token-efficiency, profile/model
-  version, deadline, dataset digest/split, date, and run-limit evidence, per
-  ADR-0004 / `AD-EVAL-3` / `NFR-11`.
+  version, deadline, dataset digest/split, date, and run-limit evidence, so a
+  published number is reproducible and comparable (see `specs/adr/0004-multi-strategy-retrieval.md`).
 
 The runner uses the real durable write/read path (`MemHouse.Memory`) and
 therefore records raw messages, pipeline-created knowledge, lifecycle events,
@@ -193,5 +193,5 @@ pg0/external-Postgres CI parity.
 The surface contract inventory records the intentional integration-surfaces
 boundary (still to be implemented; tracked in
 `specs/roadmap/beta-roadmap.md`): current Phoenix, MCP, and skill-readiness
-helpers are gated; generated OpenAPI and complete SDKs are explicitly
-unavailable in 0.2.0.
+helpers are gated; generated OpenAPI and complete SDKs are explicitly marked
+`unavailable`.

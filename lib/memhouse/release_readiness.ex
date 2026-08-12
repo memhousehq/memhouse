@@ -83,14 +83,12 @@ defmodule MemHouse.ReleaseReadiness do
     end
   end
 
-  # Three separate requirements, all on the changelog:
+  # Two requirements, both on the changelog:
   #
   #   * an Unreleased section, so the next change has somewhere to go and the
-  #     file has not been closed off at this release;
+  #     file has not been closed off at this release; and
   #   * a heading for exactly this version with an ISO date, anchored to line
-  #     start and end so a mention inside prose cannot satisfy it; and
-  #   * the anchor-evidence marker the changelog format requires, which is what
-  #     ties each entry back to the design decisions it implements.
+  #     start and end so a mention inside prose cannot satisfy it.
   #
   # The version is escaped before interpolation because it comes from file text
   # and its dots would otherwise match any character.
