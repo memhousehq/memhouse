@@ -167,6 +167,15 @@ Details: `specs/architecture/documents-connectors-sync.md`.
   contributed, empty, and dropped strategies separately, plus a
   `query_dependent_empty` flag for a run no query-reading strategy answered.
   `search` defaults to `:balanced`; `ask` defaults to `:thorough`.
+- A reranking profile reserves its rerank allowance before the strategies run
+  and reports it as `reserved_rerank_ms`, so slow strategies cost recall rather
+  than the ordering. A deadline-free run does not cap the reranker at all. A
+  ranking covering part of the head is applied and reported as
+  `partial_rankings`; duplicate or out-of-range indexes remain
+  `invalid_result`.
+- Any component dropped, or completed with a reason class, is named in
+  `degraded_components`, flagged by `degraded`, counted through
+  `[:memhouse, :retrieval, :degraded]`, and logged at warning level.
 - Account, authorized scope, lifecycle, provisional subject, and source filters
   are applied before any candidate leaves retrieval internals.
 - Knowledge and document chunks use PostgreSQL `vector` values with pinned

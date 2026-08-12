@@ -316,6 +316,14 @@ profile asks for. `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `120`.
 It is the most time reranking may use, but the request's remaining profile
 deadline always wins when it is smaller. Raising it can improve thorough-search
 ranking at the cost of tail latency; it cannot extend the 1500 ms hard ceiling.
+A request that sets `deadline` to `"disabled"` is not capped by it either,
+because such a run exists to measure the reranked ordering.
+
+`MEMHOUSE_RETRIEVAL_RERANK_RESERVED_MS` defaults to `120` and is how much of a
+reranking profile's deadline is withheld from its strategies. It is clamped to
+half the profile deadline, so it cannot starve retrieval of candidates to rank.
+Set it to `0` to let the strategies spend the whole deadline, which makes a slow
+strategy able to cost the reranker its allowance.
 
 `MEMHOUSE_ANSWER_CONTEXT_LIMIT` defaults to `12` and is clamped to `1..50`.
 It limits only the final ranked candidates sent to the `ask` answer model.
