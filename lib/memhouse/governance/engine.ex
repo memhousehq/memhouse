@@ -1140,11 +1140,12 @@ defmodule MemHouse.Governance.Engine do
   # switch off a subject's say over their own personal information. Removing that seemingly
   # redundant clause would hand that power to whoever edits the matrix.
   #
-  # "About someone" presupposes a peer: FR-GOV-12 requires "the peer's consent", and Consent
-  # itself has no representation for a subject that is not a peer (subject_peer_id is
-  # non-nullable). A subject_type: "scope" item has no peer subject at all — subject_peer_id is
-  # nil — regardless of what sensitivity the extractor proposed for it, so there is no peer
-  # whose consent could ever be requested. Such an item still passes through the ordinary
+  # "About someone" presupposes a peer: upward promotion of personal knowledge requires the
+  # peer's consent, and Consent itself has no representation for a subject that is not a peer
+  # (subject_peer_id is non-nullable). A subject_type: "scope" item has no peer subject at all —
+  # subject_peer_id is nil — regardless of what sensitivity the extractor proposed for it, so
+  # there is no peer whose consent could ever be requested. Such an item still passes through
+  # the ordinary
   # confidence/sensitivity matrix; it just cannot owe a peer-consent decision that has no peer
   # to make it.
   defp consent_required?(knowledge, rule, target_level),
