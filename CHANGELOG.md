@@ -39,6 +39,11 @@ changelog entry and contract-version transition.
 
 ### Security
 
+- `phoenix_live_view` is now 1.2.9, which clears EEF-CVE-2026-64941 (open
+  redirect in `Phoenix.LiveView.validate_local_url!/2` via ASCII tab, LF, and
+  CR). The `~> 1.1` requirement already allowed it; only the lock moved. Do not
+  lower the lock without checking `mix hex.audit`.
+
 - `ash` is now `~> 3.31` (3.31.2), which clears EEF-CVE-2026-69659 (memory
   exhaustion via unbounded deserialization of keyset pagination cursors) and
   EEF-CVE-2026-70395 (predicate injection in `manage_relationship` belongs_to
@@ -47,6 +52,38 @@ changelog entry and contract-version transition.
   Do not lower the floor without checking `mix hex.audit`.
 
 ### Fixed
+
+- Reranking can now actually run, and a run that lost it says so. Three
+  independent defects stopped the stage that decides the final order:
+
+  - The strategies spent the whole deadline and the reranker was offered
+    whatever was left. A reranking profile now reserves
+    `MEMHOUSE_RETRIEVAL_RERANK_RESERVED_MS` (default `120`, clamped to half the
+    profile deadline) before the strategies start, and reports the reservation
+    as `reserved_rerank_ms`. The strategies are now the stage that degrades
+    under time pressure, which is the correct priority: reranking changes which
+    candidates a caller sees, expansion mostly changes which ones it does not.
+  - `deadline: "disabled"` removed the request deadline but still capped the
+    reranker at `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS`, so an evaluation run
+    that asked for no time limit measured fusion order. Such a run is now
+    uncapped. This also unblocks the structured-generation rerank fallback,
+    which is only permitted on deadline-free runs and could never finish inside
+    120 ms.
+  - A ranking that did not name every head index exactly once was discarded
+    whole. A partial ranking is now applied — the judged indexes lead, in the
+    model's order, and the rest follow in fusion order — and reported as a
+    completed outcome with reason class `partial_rankings`. Duplicate and
+    out-of-range indexes still fail the result as `invalid_result`, because
+    they make the intended order unknowable.
+
+  `search` and `ask` also gained `degraded` and `degraded_components`. A dropped
+  reranker was previously invisible in the product: the results still arrived
+  looking relevance-ordered when they were ordered by reciprocal rank alone.
+  Every degraded component now also emits `[:memhouse, :retrieval, :degraded]`
+  with a count, Account id, profile, component, and reason class, and logs the
+  same at warning level, with no content. The `f7-1` retrieval contract is
+  unchanged: the added fields are additive and no existing field changed
+  meaning.
 
 - `POST /api/v1/ask` no longer returns a failed model call as an answer. A
   provider error or exhausted structured-output repair reused the same

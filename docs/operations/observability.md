@@ -148,13 +148,39 @@ Account administrators can select a readable scope and profile in
 nearest inherited profile, reports its version, deadline, enabled and disabled
 strategies, and classifies disabled strategies separately from missing indexes.
 The probe is metadata-only: it makes no generation-model call and reads no
-stored statement content. Retrieval drops are request-scoped and are shown on
-the retrieval result; telemetry is not treated as a historical health ledger.
+stored statement content. Which components a single request lost is shown on
+that request's own result, not stored; the counter below is a rate signal, not
+a historical health ledger.
 
 `POST /api/v1/operations/reconcile` also checks active scopes for a completely
 missing mention index. It enqueues the ordinary full scope rebuild with a
 stable corpus watermark. Repeating reconciliation before the corpus changes
 reuses the same pipeline run.
+
+## Knowing when retrieval ran degraded
+
+Each retrieval component that was dropped, or completed with a reason class,
+emits `[:memhouse, :retrieval, :degraded]` with a `count` of `1`, tagged with
+`account_id`, `profile`, `component`, and `reason_class`. The same facts are
+logged at warning level and returned to the caller as `degraded` and
+`degraded_components`.
+
+Alert on a sustained rate for `component: "reranker"`. A dropped reranker
+changes nothing else in the result: the candidates still arrive, ordered by
+reciprocal rank alone. Only `degraded`, `degraded_components`, and this counter
+say that the stage which judges relevance never ran.
+
+The reason class says what to do about it. `"timeout"` means the reranker did
+not answer within its allowance, which is the smaller of
+`MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` and the budget left when the stage began.
+The timeout outcome records that allowance as its `elapsed_ms`; read
+`pre_rerank_remaining_ms` on the same result to see which of the two was
+binding, then raise the timeout, or the profile deadline if the reranker was
+reached with too little left. `reserved_rerank_ms` is not the reranker's
+timeout — it only keeps the strategies from spending the budget first.
+`"provider_error"` is the provider failing rather than lagging.
+`"partial_rankings"` is the mildest: the model judged only part of the head, and
+that part was applied, so only the unjudged remainder kept fusion order.
 
 ## Traces are sampled; the ledger is exact
 

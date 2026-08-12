@@ -8,19 +8,26 @@ defmodule MemHouse.Retrieval.Engine do
   chooses the expansion frontier, not the final order. Weighted reciprocal-rank fusion orders all
   candidates, then a model may rerank the fused head.
 
-  The budget includes profile resolution, strategies, and reranking. Timeouts are killed without
-  retry and reported as dropped, as is a strategy whose dependency was unavailable; reranker
-  failure preserves fusion order. Strategies normally run concurrently; tests may run them
-  serially against one sandbox connection.
+  The budget includes profile resolution, strategies, and reranking. A reranking profile
+  withholds `rerank_reserved_ms` from its strategy phases, so the stage that decides the final
+  order is not paid out of whatever earlier work left behind; the strategies are the stage that
+  degrades under pressure. Timeouts are killed without retry and reported as dropped, as is a
+  strategy whose dependency was unavailable; reranker failure preserves fusion order. Strategies
+  normally run concurrently; tests may run them serially against one sandbox connection.
 
   Every response preserves the contributed, empty, and dropped name lists and adds content-free
   component outcomes with elapsed time, remaining budget, and deterministic failure classes. A
   strategy that ran and found nothing is not degradation, but it is also not a contribution, and
-  a caller cannot tell a ranked answer from a recency dump without seeing the difference.
+  a caller cannot tell a ranked answer from a recency dump without seeing the difference. Any
+  component that was dropped, or completed with a reason class, is also named in
+  `degraded_components`, counted through telemetry, and logged at warning level, because a
+  result list carries no visible sign that the stage which orders it never ran.
 
   Each strategy runs in its own Account transaction and must filter scope, lifecycle, and
   provisional subjects before returning candidates. This module does no post-filtering.
   """
+
+  require Logger
 
   alias MemHouse.DataLayer
   alias MemHouse.Model.Gateway
@@ -32,8 +39,9 @@ defmodule MemHouse.Retrieval.Engine do
   `query` has an authorized Account, actor, and scopes. `profile_name` selects the posture.
   Options:
 
-  * `:deadline?` (default true) — set false to remove the time budget; only for
-    evaluation runs and dream-time rebuilds, never a live request.
+  * `:deadline?` (default true) — set false to remove the time budget, including
+    the reranker's own allowance; only for evaluation runs and dream-time
+    rebuilds, never a live request.
   * `:concurrent?` — overrides the application-level concurrency setting; the
     test sandbox turns it off because it owns a single database connection.
   * `:internal?`, `:strategies`, and `:rerank` — naming strategies explicitly or
@@ -42,8 +50,8 @@ defmodule MemHouse.Retrieval.Engine do
   * `:inherit?` — set false to ignore any stored per-scope profile override.
 
   Returns profile metadata, latency in milliseconds, contributed, empty, and dropped
-  strategies, pre-fusion disagreement, and ranked records with `rrf_score` and contributing
-  strategies.
+  strategies, the degradation summary, the milliseconds withheld for reranking, pre-fusion
+  disagreement, and ranked records with `rrf_score` and contributing strategies.
 
   Raises `ArgumentError` for an unknown profile or strategy name, or for a
   strategy list from a non-internal caller. A strategy killed by the deadline
@@ -73,10 +81,16 @@ defmodule MemHouse.Retrieval.Engine do
       deadline?: deadline?
     }
 
+    # Reranking changes which candidates the caller sees; expansion mostly changes which ones it
+    # does not. Withhold the rerank allowance from the strategies rather than letting them spend
+    # it, so slow strategies cost recall instead of costing the ordering.
+    reserved_rerank_ms = reserved_rerank_ms(profile, deadline?)
+    strategy_budget = %Budget{budget | deadline_ms: profile.deadline_ms - reserved_rerank_ms}
+
     {seed_lists, seed_outcomes} =
       profile.strategy_modules
       |> Enum.filter(&(&1.stage() == :seed))
-      |> run_phase(query, budget, concurrent?)
+      |> run_phase(query, strategy_budget, concurrent?)
 
     # Interleave before fusion for a diverse, bounded expansion frontier. Taking before `uniq`
     # keeps the frontier bounded even when strategies agree.
@@ -93,7 +107,7 @@ defmodule MemHouse.Retrieval.Engine do
     {expand_lists, expand_outcomes} =
       profile.strategy_modules
       |> Enum.filter(&(&1.stage() == :expand))
-      |> run_phase(expanded_query, budget, concurrent?)
+      |> run_phase(expanded_query, strategy_budget, concurrent?)
 
     lists = seed_lists ++ expand_lists
     fused = Fusion.reciprocal_rank(lists, profile.weights, query.max_candidates)
@@ -120,6 +134,14 @@ defmodule MemHouse.Retrieval.Engine do
       for %{component: component, status: "dropped"} <- outcomes,
           do: component
 
+    # Completing with a reason class is still degradation: a partially reranked head is not the
+    # ordering the profile promises, and collapsing it into "completed" hides that.
+    degraded_components =
+      for %{component: component, status: status, reason_class: reason_class} <- outcomes,
+          status == "dropped" or not is_nil(reason_class),
+          uniq: true,
+          do: component
+
     query_dependent =
       for module <- profile.strategy_modules, module.query_dependent?(), do: module.name()
 
@@ -132,8 +154,11 @@ defmodule MemHouse.Retrieval.Engine do
       contributed_strategies: strategy_names(contributing_lists),
       empty_strategies: strategy_names(empty_lists),
       dropped_strategies: Enum.uniq(dropped),
+      degraded: degraded_components != [],
+      degraded_components: degraded_components,
       retrieval_outcomes: outcomes,
       pre_rerank_remaining_ms: finite_remaining(pre_rerank_remaining_ms),
+      reserved_rerank_ms: reserved_rerank_ms,
       # Fusion destroys evidence of strategy disagreement.
       disagreement: Fusion.disagreement(seed_lists, query_dependent),
       candidates: Enum.map(ranked, &candidate_map/1)
@@ -310,19 +335,33 @@ defmodule MemHouse.Retrieval.Engine do
   defp finish_rerank(rankings, head, tail, candidates, elapsed_ms, budget) do
     remaining_ms = finite_remaining(Budget.remaining_ms(budget))
 
-    if valid_rankings?(rankings, length(head)) do
-      reordered =
-        rankings
-        |> Enum.sort_by(&ranking_score/1, :desc)
-        |> Enum.map(&Enum.at(head, ranking_index(&1)))
-        |> Kernel.++(tail)
-        |> Enum.with_index(1)
-        |> Enum.map(fn {candidate, rank} -> %{candidate | rank: rank} end)
+    case ranking_order(rankings, length(head)) do
+      {:ok, order, completeness} ->
+        reordered =
+          order
+          |> Enum.map(&Enum.at(head, &1))
+          |> Kernel.++(tail)
+          |> Enum.with_index(1)
+          |> Enum.map(fn {candidate, rank} -> %{candidate | rank: rank} end)
 
-      {reordered, completed_outcome(:reranker, elapsed_ms, remaining_ms)}
-    else
-      {candidates, outcome(:reranker, "invalid_result", elapsed_ms, remaining_ms)}
+        {reordered, rerank_outcome(completeness, elapsed_ms, remaining_ms)}
+
+      :error ->
+        {candidates, outcome(:reranker, "invalid_result", elapsed_ms, remaining_ms)}
     end
+  end
+
+  defp rerank_outcome(:complete, elapsed_ms, remaining_ms),
+    do: completed_outcome(:reranker, elapsed_ms, remaining_ms)
+
+  # Ran, produced a usable ordering, and still did less than it was asked to. Reporting it as a
+  # drop would claim fusion order survived when it did not; reporting it as a clean completion
+  # would hide that part of the head was never judged.
+  defp rerank_outcome(:partial, elapsed_ms, remaining_ms) do
+    %{
+      completed_outcome(:reranker, elapsed_ms, remaining_ms)
+      | reason_class: "partial_rankings"
+    }
   end
 
   defp deadline_call(call, :infinity, _concurrent?), do: call.()
@@ -348,25 +387,46 @@ defmodule MemHouse.Retrieval.Engine do
     end
   end
 
-  # Accept provider key variants; a missing index selects the first head entry.
-  defp ranking_index(ranking), do: ranking[:index] || ranking["index"] || 0
+  # Turns provider rankings into the head order to apply, or `:error` when the intended order
+  # cannot be known.
+  #
+  # A model that scored only part of the head still scored that part, and discarding the call
+  # throws away real work to keep an ordering nobody asked for. So a short answer is honoured:
+  # the indexes it returned lead, in its order, and the rest follow in fusion order. A duplicate
+  # or out-of-range index is different in kind — it makes the intended order unknowable — and
+  # still fails the whole result. An empty list ranks nothing and is likewise a failure.
+  defp ranking_order(rankings, expected) when is_list(rankings) and rankings != [] do
+    scored = Enum.map(rankings, &ranking_pair(&1, expected))
+    indexes = for {index, _score} <- scored, do: index
 
-  defp ranking_score(ranking),
-    do: ranking[:relevance_score] || ranking["relevance_score"] || ranking[:score] || 0.0
+    if :error in scored or length(Enum.uniq(indexes)) != length(indexes) do
+      :error
+    else
+      ranked =
+        scored
+        |> Enum.sort_by(fn {_index, score} -> score end, :desc)
+        |> Enum.map(fn {index, _score} -> index end)
 
-  defp valid_rankings?(rankings, expected)
-       when is_list(rankings) and length(rankings) == expected do
-    indexes = Enum.map(rankings, &ranking_index/1)
+      remainder = Enum.reject(0..(expected - 1), &(&1 in ranked))
+      completeness = if remainder == [], do: :complete, else: :partial
 
-    Enum.all?(rankings, fn ranking ->
-      index = ranking_value(ranking, :index)
-      score = ranking_value(ranking, :relevance_score, :score)
-
-      is_integer(index) and index in 0..(expected - 1) and is_number(score)
-    end) and length(Enum.uniq(indexes)) == expected
+      {:ok, ranked ++ remainder, completeness}
+    end
   end
 
-  defp valid_rankings?(_rankings, _expected), do: false
+  defp ranking_order(_rankings, _expected), do: :error
+
+  # Accepts provider key variants. A missing, non-integer, or out-of-range index is a failure
+  # rather than a default, because a default silently reorders a candidate the model never
+  # judged.
+  defp ranking_pair(ranking, expected) do
+    index = ranking_value(ranking, :index)
+    score = ranking_value(ranking, :relevance_score, :score)
+
+    if is_integer(index) and index in 0..(expected - 1) and is_number(score),
+      do: {index, score},
+      else: :error
+  end
 
   defp ranking_value(ranking, key, fallback_key \\ nil)
 
@@ -378,8 +438,25 @@ defmodule MemHouse.Retrieval.Engine do
 
   defp ranking_value(_ranking, _key, _fallback_key), do: nil
 
-  defp rerank_allowance(:infinity), do: retrieval_config(:rerank_timeout_ms)
+  # A run with no deadline is usually measuring the reranked ordering itself, so capping the
+  # stage that produces it would measure the wrong thing. It is also the only mode in which a
+  # provider without a native rerank endpoint may fall back to structured generation, which
+  # cannot finish inside a live allowance.
+  defp rerank_allowance(:infinity), do: :infinity
   defp rerank_allowance(remaining), do: min(remaining, retrieval_config(:rerank_timeout_ms))
+
+  # Nothing is withheld from a profile that does not rerank, or from a run with no clock to
+  # divide. The half-deadline clamp keeps a large reservation from starving retrieval of the
+  # candidates the reranker exists to order. The lower bound matters just as much: a negative
+  # value would be subtracted as extra strategy time and push the phases past the profile
+  # deadline, which is the one ceiling the request is not allowed to cross.
+  defp reserved_rerank_ms(%{rerank: true} = profile, true) do
+    retrieval_config(:rerank_reserved_ms)
+    |> max(0)
+    |> min(div(profile.deadline_ms, 2))
+  end
+
+  defp reserved_rerank_ms(_profile, _deadline?), do: 0
 
   defp completed_outcome(component, elapsed_ms, remaining_ms) do
     %{
@@ -420,6 +497,35 @@ defmodule MemHouse.Retrieval.Engine do
         outcomes: result.retrieval_outcomes
       }
     )
+
+    report_degradation(account_id, result)
+  end
+
+  # One counter increment and one warning per degraded component. A caller that ignores the
+  # `degraded` flag still leaves a trace an operator can alert on, and a reranker that never runs
+  # in production is otherwise indistinguishable from one that runs and agrees with fusion.
+  defp report_degradation(account_id, result) do
+    for %{component: component, reason_class: reason_class} <- result.retrieval_outcomes,
+        component in result.degraded_components do
+      :telemetry.execute(
+        [:memhouse, :retrieval, :degraded],
+        %{count: 1},
+        %{
+          account_id: account_id,
+          profile: result.profile,
+          component: component,
+          reason_class: reason_class
+        }
+      )
+
+      Logger.warning("retrieval component degraded",
+        account_id: account_id,
+        component: component,
+        reason_class: reason_class
+      )
+    end
+
+    :ok
   end
 
   # Do not expose incomparable strategy-local scores.

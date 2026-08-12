@@ -67,7 +67,7 @@ defmodule MemHouse.Model.StructuredGenerator do
       |> max(0)
       |> min(@max_repairs)
 
-    generate_attempt(role, messages, schema, context, opts, 0, max_repairs)
+    generate_attempt(role, messages, schema, context, opts, 0, max_repairs, %{})
   end
 
   # One attempt, then either success, a recursive repair, or a final error.
@@ -75,16 +75,29 @@ defmodule MemHouse.Model.StructuredGenerator do
   # The `with` deliberately has no else clause: a provider error falls straight
   # through to the caller unchanged, because re-prompting past a transport,
   # authentication, or rate-limit failure cannot help.
-  defp generate_attempt(role, messages, schema, context, opts, attempt, max_repairs) do
+  defp generate_attempt(role, messages, schema, context, opts, attempt, max_repairs, usage) do
     # Rides along to the usage ledger so a repaired generation is visibly more
     # than one call rather than looking like a single cheap one.
     call_opts = Keyword.put(opts, :repair_attempt, attempt)
 
-    with {:ok, object, config} <-
-           Gateway.structured_once(role, messages, schema.json_schema(), context, call_opts) do
+    with {:ok, object, config, attempt_usage} <-
+           Gateway.structured_once_with_usage(
+             role,
+             messages,
+             schema.json_schema(),
+             context,
+             call_opts
+           ) do
+      usage = merge_usage(usage, attempt_usage)
+
       case schema.cast(object, context) do
         {:ok, value} ->
-          {:ok, value, Config.provenance(config)}
+          provenance =
+            config
+            |> Config.provenance()
+            |> maybe_put_usage(opts, usage)
+
+          {:ok, value, provenance}
 
         {:error, errors} when attempt < max_repairs ->
           generate_attempt(
@@ -94,13 +107,27 @@ defmodule MemHouse.Model.StructuredGenerator do
             context,
             opts,
             attempt + 1,
-            max_repairs
+            max_repairs,
+            usage
           )
 
         {:error, errors} ->
           {:error, {:structured_validation_failed, errors}}
       end
     end
+  end
+
+  defp merge_usage(total, current) do
+    Enum.reduce([:input_tokens, :output_tokens, :embedding_tokens], total, fn key, acc ->
+      value = Map.get(current, key, Map.get(current, Atom.to_string(key), 0)) || 0
+      Map.update(acc, key, value, &(&1 + value))
+    end)
+  end
+
+  defp maybe_put_usage(provenance, opts, usage) do
+    if Keyword.get(opts, :return_usage, false),
+      do: Map.put(provenance, :usage, usage),
+      else: provenance
   end
 
   # Appends the repair turn to the original conversation rather than replacing

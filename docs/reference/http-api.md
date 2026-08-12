@@ -195,7 +195,16 @@ omit the pair.
 
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.
-`pre_rerank_remaining_ms` reports the budget available before reranking.
+`pre_rerank_remaining_ms` reports the budget available before reranking, and
+`reserved_rerank_ms` reports how much of the deadline was withheld from the
+strategies to pay for it.
+
+`degraded` is `true` when any component was dropped, or completed with a reason
+class, and `degraded_components` names those components. Check it before
+presenting results as relevance-ordered, and read the reranker's reason class to
+know how much ordering was lost. A dropped or `invalid_result` reranker leaves
+every candidate in reciprocal-rank order; `partial_rankings` means the model
+ordered the candidates it judged and only the rest kept fusion order.
 
 `disagreement.query_dependent_empty` is `true` when no strategy that reads the
 query text produced a candidate. A text search does not fill that gap with a
@@ -213,13 +222,26 @@ retrieval. A raw `strategies` override is refused for external callers.
 defaults to `"thorough"`.
 
 Returns the search payload merged with `answer`, `citations`, `abstained`,
-`answer_confidence`, and `answer_degraded`. Retrieval is restricted to
+`answer_confidence`, `answer_degraded`, `answer_context_count`, and
+`answerer_prompt_tokens`. Retrieval is restricted to
 knowledge items, so citations are governed statements. `abstained: true` is an
 ordinary outcome.
 
-The answerer sees each statement with its validity window and is told to date a
-relative phrase from that window rather than from today, so a statement reading
-"last weekend" is answered with the date the claim held.
+The search payload keeps all returned candidates. The answerer sees only the
+first `MEMHOUSE_ANSWER_CONTEXT_LIMIT` candidates after reranking. It also sees
+each statement's validity window and an explicit reference time. `as_of` is the
+reference time when supplied; otherwise the request time is used.
+
+`answer_context_count` is the number of candidates sent to the answerer.
+`answerer_prompt_tokens` is the provider-reported input-token count across the
+initial call and any structured-output repairs. It is `null` when the answer
+model call fails and `0` when no answer model ran. The durable usage ledger
+still records metered failed attempts.
+
+`answer_degraded` and `degraded` answer different questions. The first is about
+the answering model call; the second is about the retrieval that fed it. An
+answer can be soundly reasoned over a candidate list the reranker never ordered,
+and that shows only in `degraded`.
 
 `answer_confidence` is an integer from 0 to 100. For a model answer it is the
 model's own probability that the answer is correct. The model always answers:

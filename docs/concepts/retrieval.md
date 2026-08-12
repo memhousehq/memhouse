@@ -115,6 +115,12 @@ every result as `profile_version`.
 `deadline_ms` covers strategy execution and reranking. Late strategies are
 dropped, not retried, and reported. Larger deadlines trade latency for recall.
 
+A reranking profile reserves the rerank allowance before the strategies start,
+and the result reports the reservation as `reserved_rerank_ms`. Reranking
+decides which candidates you see; expansion mostly decides which ones you do
+not. So the strategies are the stage that gives way under time pressure, and a
+slow one costs recall rather than costing the ordering.
+
 An operator-level allowlist can switch off an expensive strategy across the
 whole deployment: a strategy absent from it never runs, whatever a profile
 asks for.

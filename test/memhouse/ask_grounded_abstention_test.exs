@@ -60,14 +60,18 @@ defmodule MemHouse.AskGroundedAbstentionTest do
 
     assert [prompt] = GroundedAnswerProvider.prompts()
 
-    assert prompt =~
-             "Always give your best answer. Never reply \"not known\", \"unknown\", \"no information available\", or \"cannot answer\""
+    assert prompt =~ "Write the answer and its citations before you estimate answer_confidence."
+    assert prompt =~ "MemHouse handles an empty memory context without calling you."
+    refute prompt =~ "Never reply \"not known\""
 
     assert prompt =~
              "infer the most probable one from the statements, use an explicit likelihood word"
 
     assert prompt =~
              "Cite every statement your answer rests on, including a low-confidence one."
+
+    assert result["answer_context_count"] == 1
+    assert result["answerer_prompt_tokens"] == 20
   end
 
   test "keeps a confident inference as a conclusion" do
@@ -116,6 +120,8 @@ defmodule MemHouse.AskGroundedAbstentionTest do
     assert result["abstained"]
     assert result["answer_confidence"] == 0
     assert result["answer_degraded"] == "provider_upstream_error"
+    assert result["answer_context_count"] == 1
+    assert result["answerer_prompt_tokens"] == nil
 
     # The statement is still there, as a citation and as plain text, just not
     # dressed up as a conclusion anyone reasoned to (memhousehq/memhouse#143).
@@ -161,6 +167,66 @@ defmodule MemHouse.AskGroundedAbstentionTest do
     # before the freeze" and resolves it against whatever date it holds.
     assert [prompt] = GroundedAnswerProvider.prompts()
     assert prompt =~ "2023-07-17"
+  end
+
+  test "passes the caller reference time and states the validity rule once" do
+    bootstrap = bootstrap_human!("reference-time")
+    {_knowledge_id, scope_path, _session_id} = seed_memory!(bootstrap.actor, "reference-time")
+    {:ok, actor} = Identity.authenticate_bearer(bootstrap.token)
+    use_answer_mode!(:grounded_abstention)
+
+    Memory.ask(
+      %{
+        "scope_path" => scope_path,
+        "question" => "What did Avery prefer then?",
+        "profile" => "balanced",
+        "deadline" => "disabled",
+        "as_of" => "2024-02-03T04:05:06Z"
+      },
+      actor
+    )
+
+    assert [prompt] = GroundedAnswerProvider.prompts()
+    assert prompt =~ "Reference time: 2024-02-03T04:05:06Z."
+    assert length(Regex.scan(~r/A statement may be followed by/, prompt)) == 1
+  end
+
+  test "answers over the bounded ranked head and returns the full candidate list" do
+    bootstrap = bootstrap_human!("bounded-context")
+
+    {first_id, scope_path, _session_id} =
+      seed_memory!(bootstrap.actor, "bounded-context",
+        content: "Avery prefers concise weekly release summaries."
+      )
+
+    {second_id, ^scope_path, _session_id} =
+      seed_memory!(bootstrap.actor, "bounded-context",
+        content: "Avery prefers concise weekly planning summaries."
+      )
+
+    {:ok, actor} = Identity.authenticate_bearer(bootstrap.token)
+    use_answer_mode!(:grounded_abstention)
+
+    retrieval_profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    on_exit(fn -> Application.put_env(:memhouse, :retrieval_profiles, retrieval_profiles) end)
+
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Keyword.put(retrieval_profiles, :answer_context_limit, 1)
+    )
+
+    result = ask(actor, scope_path)
+
+    assert length(result["candidates"]) == 2
+    assert result["answer_context_count"] == 1
+
+    assert [prompt] = GroundedAnswerProvider.prompts()
+    assert length(Regex.scan(~r/^\s*\[[^\]]+\]\s/m, prompt)) == 1
+    first_present? = prompt =~ first_id
+    second_present? = prompt =~ second_id
+    assert first_present? != second_present?
   end
 
   test "strips invented citations and falls back only when none survive" do

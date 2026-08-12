@@ -53,12 +53,25 @@ defmodule MemHouse.Model.Gateway do
   implementing that loop: raw provider output must never be trusted as-is.
   """
   def structured_once(role, messages, schema, context, opts \\ []) do
+    case structured_once_with_usage(role, messages, schema, context, opts) do
+      {:ok, value, config, _usage} -> {:ok, value, config}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Performs one structured-generation call and returns its content-free token usage.
+
+  This is for callers that must report their own model cost. It has the same
+  validation boundary and failures as `structured_once/5`.
+  """
+  def structured_once_with_usage(role, messages, schema, context, opts \\ []) do
     config = Config.resolve(role, context)
 
     case invoke(:structured, config, context, opts, fn provider ->
            provider.structured(config, messages, schema, opts)
          end) do
-      {:ok, %Result{value: value}} -> {:ok, value, config}
+      {:ok, %Result{value: value, usage: usage}} -> {:ok, value, config, usage || %{}}
       {:error, error} -> {:error, error}
     end
   end

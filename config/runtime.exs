@@ -580,9 +580,11 @@ config :memhouse, :diskann,
   query_search_list_size: env_integer.("MEMHOUSE_DISKANN_QUERY_SEARCH_LIST_SIZE", "100"),
   query_rescore: env_integer.("MEMHOUSE_DISKANN_QUERY_RESCORE", "50")
 
-# Deployment overrides for retrieval. Only two things are tunable from the
+# Deployment overrides for retrieval. Only these values are tunable from the
 # environment: which strategies may run at all, the three profile deadlines,
-# and the reranker timeout inside those deadlines.
+# the reranker timeout inside those deadlines, how much of a reranking profile's
+# deadline is withheld from its strategies for that timeout, and the
+# answer-context limit.
 # Strategy membership and fusion weights per profile are not environment-tunable,
 # because changing them changes result quality and needs review.
 retrieval_strategy_names = %{
@@ -628,6 +630,23 @@ retrieval_profiles =
       "MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS",
       Integer.to_string(Keyword.fetch!(retrieval_profiles, :rerank_timeout_ms))
     )
+  )
+  |> Keyword.put(
+    :rerank_reserved_ms,
+    env_integer.(
+      "MEMHOUSE_RETRIEVAL_RERANK_RESERVED_MS",
+      Integer.to_string(Keyword.fetch!(retrieval_profiles, :rerank_reserved_ms))
+    )
+    |> max(0)
+  )
+  |> Keyword.put(
+    :answer_context_limit,
+    env_integer.(
+      "MEMHOUSE_ANSWER_CONTEXT_LIMIT",
+      Integer.to_string(Keyword.fetch!(retrieval_profiles, :answer_context_limit))
+    )
+    |> max(1)
+    |> min(50)
   )
   |> Keyword.update!(
     :fast,

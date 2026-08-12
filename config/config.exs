@@ -248,8 +248,21 @@ config :memhouse, :retrieval_profiles,
   rerank_head: 20,
   # Maximum milliseconds independently offered to local reranking. The engine clamps
   # this to the request's remaining hard deadline, so it reserves useful model
-  # time without ever extending the overall request ceiling.
+  # time without ever extending the overall request ceiling. A deadline-free
+  # evaluation run is not clamped at all, because it is measuring the reranked
+  # ordering itself.
   rerank_timeout_ms: 120,
+  # Maximum number of final ranked candidates sent to the answer model. Search
+  # still returns its full requested candidate list. This bound controls answer
+  # prompt cost without changing retrieval recall or citation authorization.
+  answer_context_limit: 12,
+  # Milliseconds withheld from the strategy phases of a reranking profile so the
+  # stage that decides the final order is not paid last. Defaults to
+  # `rerank_timeout_ms`, and is clamped to half the profile deadline so a large
+  # reservation can never starve retrieval of candidates to rank. Set it to 0 to
+  # restore leftover-budget behavior, where slow strategies silently cost the
+  # rerank stage its allowance.
+  rerank_reserved_ms: 120,
   # After this many incremental delta merges, a projection is rebuilt in full
   # rather than merged again. Unit: delta updates. Bounds drift and unbounded
   # growth of merged projection content.
@@ -457,7 +470,9 @@ config :logger, :default_formatter,
     :target_id,
     :message_id,
     :attempt_count,
-    :error_class
+    :error_class,
+    :component,
+    :reason_class
   ]
 
 # Tracing is off unless a deployment explicitly enables the OTLP exporter at
