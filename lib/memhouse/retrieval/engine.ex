@@ -447,9 +447,14 @@ defmodule MemHouse.Retrieval.Engine do
 
   # Nothing is withheld from a profile that does not rerank, or from a run with no clock to
   # divide. The half-deadline clamp keeps a large reservation from starving retrieval of the
-  # candidates the reranker exists to order.
-  defp reserved_rerank_ms(%{rerank: true} = profile, true),
-    do: min(retrieval_config(:rerank_reserved_ms), div(profile.deadline_ms, 2))
+  # candidates the reranker exists to order. The lower bound matters just as much: a negative
+  # value would be subtracted as extra strategy time and push the phases past the profile
+  # deadline, which is the one ceiling the request is not allowed to cross.
+  defp reserved_rerank_ms(%{rerank: true} = profile, true) do
+    retrieval_config(:rerank_reserved_ms)
+    |> max(0)
+    |> min(div(profile.deadline_ms, 2))
+  end
 
   defp reserved_rerank_ms(_profile, _deadline?), do: 0
 

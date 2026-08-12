@@ -637,6 +637,7 @@ retrieval_profiles =
       "MEMHOUSE_RETRIEVAL_RERANK_RESERVED_MS",
       Integer.to_string(Keyword.fetch!(retrieval_profiles, :rerank_reserved_ms))
     )
+    |> max(0)
   )
   |> Keyword.put(
     :answer_context_limit,

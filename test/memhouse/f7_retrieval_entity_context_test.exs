@@ -1755,6 +1755,22 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     # Nothing is withheld from a profile that never reranks, or from a run with no clock.
     assert search.("balanced", "enabled")["reserved_rerank_ms"] == 0
     assert search.("thorough", "disabled")["reserved_rerank_ms"] == 0
+
+    # A negative reservation would otherwise be subtracted as extra strategy time and carry the
+    # phases past the profile deadline. It reserves nothing instead.
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Keyword.put(original_retrieval, :rerank_reserved_ms, -120)
+    )
+
+    negative = search.("thorough", "enabled")
+
+    assert negative["reserved_rerank_ms"] == 0
+
+    for outcome <- Enum.reject(negative["retrieval_outcomes"], &(&1.component == "reranker")) do
+      assert outcome.budget_remaining_ms <= 1500
+    end
   end
 
   test "a partial ranking reorders what the model judged and reports degradation" do

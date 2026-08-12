@@ -201,8 +201,10 @@ strategies to pay for it.
 
 `degraded` is `true` when any component was dropped, or completed with a reason
 class, and `degraded_components` names those components. Check it before
-presenting results as relevance-ordered: when `reranker` is in that list, the
-candidates arrived ordered by reciprocal rank alone.
+presenting results as relevance-ordered, and read the reranker's reason class to
+know how much ordering was lost. A dropped or `invalid_result` reranker leaves
+every candidate in reciprocal-rank order; `partial_rankings` means the model
+ordered the candidates it judged and only the rest kept fusion order.
 
 `disagreement.query_dependent_empty` is `true` when no strategy that reads the
 query text produced a candidate. A text search does not fill that gap with a

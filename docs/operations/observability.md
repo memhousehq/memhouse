@@ -166,11 +166,17 @@ logged at warning level and returned to the caller as `degraded` and
 `degraded_components`.
 
 Alert on a sustained rate for `component: "reranker"`. A dropped reranker
-changes no field a client is likely to read: the results still arrive, ordered
-by reciprocal rank alone, and only the count says that the stage which judges
-relevance never ran. `reason_class: "timeout"` there means the profile deadline
-is too tight for the reranker on your hardware; `"partial_rankings"` means the
-provider judged only part of the head, which was applied rather than discarded.
+changes nothing else in the result: the candidates still arrive, ordered by
+reciprocal rank alone. Only `degraded`, `degraded_components`, and this counter
+say that the stage which judges relevance never ran.
+
+The reason class says what to do about it. `"timeout"` means the reranker did
+not answer within its allowance — either the allowance is too small for your
+hardware, or a hosted provider is slow; compare `reserved_rerank_ms` against the
+elapsed time in `retrieval_outcomes` before raising the deadline.
+`"provider_error"` is the provider failing rather than lagging.
+`"partial_rankings"` is the mildest: the model judged only part of the head, and
+that part was applied, so only the unjudged remainder kept fusion order.
 
 ## Traces are sampled; the ledger is exact
 
