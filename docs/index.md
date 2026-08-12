@@ -86,10 +86,9 @@ Full definitions are in the [Glossary](reference/glossary.md).
 
 ## Documentation
 
-This site covers installation, usage, and operations. Design material — the
-product blueprint, functional requirements,
-architecture and non-functional requirements, architecture decision records,
-the roadmap, and evaluation evidence — is not published here. It lives in the
+This site covers installation, usage, and operations. Design material —
+architecture decision records, the roadmap, and evaluation evidence — is not
+published here. It lives in the
 [`specs/` directory](https://github.com/memhousehq/memhouse/tree/main/specs)
 of the repository, next to the code it describes. Contribution rules are in
 [`CONTRIBUTING.md`](https://github.com/memhousehq/memhouse/blob/main/CONTRIBUTING.md)

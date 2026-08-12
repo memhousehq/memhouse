@@ -13,24 +13,22 @@ Closes #
 
 <!-- List the internal docs actually used to scope, implement, and review this PR. Include the closest specific document(s), not every possible doc. Use `N/A` only when a category truly does not apply. -->
 
-- Blueprint requirements: `specs/memory-system-functional-requirements.md` (`FR-*` anchors):
-- Blueprint architecture/NFRs: `specs/memory-system-architecture-and-nfr.md` (`AD-*`, `AINV-*`, `NFR-*` anchors):
-- Product context: `specs/memory-system-product-blueprint.md`:
+- Modules and tests that define the behavior being changed:
 - ADRs: `specs/adr/README.md` or `specs/adr/<adr-file>.md`:
 - Architecture notes: `specs/architecture/README.md` or `specs/architecture/<note>.md`:
-- Roadmap/process docs: `specs/roadmap/beta-roadmap.md`:
+- Roadmap/process docs: `specs/roadmap/beta-roadmap.md`, `specs/process/`:
 - Security/eval docs: `specs/security/README.md`, `specs/eval/README.md`, or a specific note:
 - Published user documentation affected: the page(s) under `docs/`:
 - Other internal docs:
 
-## Architecture anchors
+## Product invariants
 
-List the blueprint anchors this PR depends on or preserves. Use `N/A` only for truly mechanical changes.
+Name the invariants from `AGENTS.md` this PR depends on or preserves, and the test that proves it. Use `N/A` only for truly mechanical changes.
 
-- `AINV-1` — one codebase, two deployment modes, identical guarantees:
-- `AINV-6` — account isolation; account derived from identity, never request parameters:
-- `AD-EVAL-*` — deterministic PR gate and eval separation:
-- Other `FR-*`, `AD-*`, `AINV-*`, or `NFR-*` anchors:
+- One codebase, two deployment modes, identical guarantees:
+- Account isolation; Account derived from identity, never a request parameter:
+- Pipeline-only knowledge writes and governed promotion:
+- Other invariants:
 
 ## Self-explanatory code
 
@@ -39,7 +37,7 @@ Every touched file must be readable on its own, without opening `specs/` or
 
 - [ ] Every module touched has a real `@moduledoc`; no `@moduledoc false` added
 - [ ] New or changed public functions have a `@doc` covering return shape and failure modes
-- [ ] No comment or docstring points at a spec, ADR, roadmap item, or blueprint anchor
+- [ ] No comment or docstring points at a spec, ADR, or roadmap item for its meaning
 - [ ] Comments explain why, not what, and no comment contradicts the code it sits next to
 
 ## Documentation
@@ -102,7 +100,7 @@ Parity notes:
 - [ ] Tenancy/account-isolation impact reviewed
 - [ ] Audit/ledger/history impact reviewed
 
-Notes, including how `AINV-6` is preserved when relevant:
+Notes, including how Account isolation is preserved when relevant:
 
 ## Migration impact
 

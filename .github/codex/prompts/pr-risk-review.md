@@ -8,13 +8,13 @@ perform repository writes.
 ## Review posture
 
 Focus on serious risks, invariant violations, and missing evidence rather than
-style preferences or speculative improvements. Treat the MemHouse architecture
-contract and blueprint anchors as authoritative review inputs, especially:
+style preferences or speculative improvements. Treat the product invariants and
+architecture boundaries in `AGENTS.md` as authoritative review inputs,
+especially:
 
-- `AINV-6`: cross-account isolation is absolute.
-- `AD-EVAL-*`: deterministic gates are separate from advisory review.
-- The ARCH prime directive: one codebase, two deployment modes, identical
-  guarantees.
+- Cross-account isolation is absolute, and identity determines the Account.
+- Deterministic release gates stay separate from advisory review.
+- One codebase, two deployment modes, identical guarantees.
 
 When evidence is insufficient, say what is missing and why it matters. Avoid
 blocking language unless the issue is a concrete violation of a stated invariant,
@@ -23,9 +23,9 @@ expectation.
 
 ## Review inputs
 
-Review the PR diff, linked issue, local repository instructions, and relevant
-blueprint anchors before writing findings. If the linked issue or acceptance
-criteria are unavailable, call that out as missing context.
+Review the PR diff, linked issue, local repository instructions, and the tests
+covering the changed code before writing findings. If the linked issue or
+acceptance criteria are unavailable, call that out as missing context.
 
 ## Output format
 
@@ -37,9 +37,9 @@ Return a Markdown review with these sections:
 - Summarize the highest-impact risks in a few bullets.
 - Distinguish concrete defects from questions or missing evidence.
 
-### Affected invariants and anchors
+### Affected invariants
 
-- List each relevant `FR-*`, `AD-*`, `AINV-*`, or `NFR-*` anchor.
+- List each product invariant or architecture boundary the PR touches.
 - Explain whether the PR appears to preserve, weaken, or violate each one.
 - Pay special attention to cross-account isolation, governed knowledge
   promotion, pipeline-only knowledge writes, durable system-of-record boundaries,

@@ -65,6 +65,6 @@ promotion, or deployment security require human security review before merge.
 This includes documentation-only changes that alter stated security guarantees
 or disclosure expectations.
 
-MemHouse's security review should preserve the blueprint anchors for user-owned
-data and keys (AINV-2), absolute cross-account isolation (AINV-6), and the
-security, identity, and tenancy decisions in AD-SEC-*.
+Security review must preserve the product invariants in `AGENTS.md`, above all
+user-owned data and keys, and absolute Account isolation with the Account
+derived from identity rather than from a request parameter.

@@ -5,28 +5,24 @@ is a `0.4.0` community beta. The old `F0`–`F11` phase names are retired.
 
 ## Before editing
 
-Read only what the task needs:
+The source and its tests are the specification of current behavior. Read them
+first, in this order:
 
 1. This file.
-2. Relevant anchors in the three `specs/memory-system-*` blueprints.
-3. `specs/roadmap/beta-roadmap.md` for remaining work and delivery order.
-4. `specs/implementation-status.md` for current behavior and limitations.
-5. `specs/architecture/free-core-architecture.md` for boundaries and contracts.
-6. The closest ADR, architecture note, test, and user guide.
+2. The modules the task touches, and their tests.
+3. The affected page under `docs/` for anything users or operators can see.
 
-Also read:
+Read a document under `specs/` only for what the code cannot tell you:
 
-- `specs/memory-system-evaluation-framework.md`, `specs/observability/README.md`,
-  and `specs/architecture/evaluation-ci-release-readiness.md` for telemetry,
-  evaluation, CI, versioning, or releases;
-- `specs/architecture/ash-domain-backbone.md` for Ash resources, actions,
-  policies, tenancy, or migrations;
-- `specs/architecture/documents-connectors-sync.md` for documents, blobs,
-  parsing, connectors, sync, or supersession;
-- the affected page under `docs/` for anything users or operators can see.
+| Question | Read |
+| --- | --- |
+| Why was this decided, and what lost? | The closest `specs/adr/` record |
+| What is still unbuilt, and in what order? | `specs/roadmap/beta-roadmap.md` |
+| Where are the module boundaries? | `specs/architecture/free-core-architecture.md` |
+| What blocks a release? | `specs/process/`, `specs/eval/` |
 
-Preserve existing `FR-*`, `AD-*`, `AINV-*`, `NFR-*`, and `EV-*` meanings unless
-the task explicitly changes the blueprint.
+Never treat a document as authoritative over the code it describes. If the two
+disagree, the code is right and the document is a bug.
 
 ## Writing style
 
@@ -124,9 +120,10 @@ architecture note. Never casually rename an identity or historical artifact.
 - Keep each behavior change small, with one clear home and focused tests.
 - Use Ash actions for durable writes. Keep snapshots and migrations aligned via
   `mix ash.codegen`; review generated migrations and custom DDL.
-- Update tests, docs, fixtures, ADRs, and comments with behavior changes.
+- Update tests, docs, fixtures, and comments with behavior changes.
 - Mark roadmap items complete only when code, evidence, and durable docs exist.
-- Put anchor traceability in commits, PRs, and `specs/`, never source comments.
+- Write an ADR when a decision closes off an alternative someone would
+  otherwise re-propose. Do not write one to record what the code already says.
 - Align `mix.exs`, `CHANGELOG.md`, tags, protocol/report versions, and release
   artifacts for releases.
 
@@ -134,15 +131,20 @@ architecture note. Never casually rename an identity or historical artifact.
 
 | Location | Content |
 | --- | --- |
+| Source and tests | Current behavior, and the rules the system enforces |
 | `docs/` | Published setup, usage, operations, and current behavior |
-| `specs/` | Requirements, architecture, ADRs, plans, evidence, and process |
+| `specs/` | Decisions, outstanding work, module boundaries, evaluation evidence, and process |
 | `CONTRIBUTING.md` | Development workflow and review rules |
 | `README.md` | Project orientation and documentation map |
 
 Do not mix the trees. User procedures must not live only in specs or comments;
-design rationale must not appear in `docs/`. User docs do not cite blueprint
-anchors. Use Mermaid for useful flows. Add every new docs page to `mkdocs.yml`;
-use absolute GitHub URLs when a docs page links outside `docs/`.
+design rationale must not appear in `docs/`. Use Mermaid for useful flows. Add
+every new docs page to `mkdocs.yml`; use absolute GitHub URLs when a docs page
+links outside `docs/`.
+
+`specs/` must not restate implemented behavior. A document that describes what
+the code already does is drift waiting to happen: delete it and let the code
+answer.
 
 Update these together:
 
@@ -156,7 +158,7 @@ Update these together:
 | Contract identity | Contract reference, changelog, architecture note |
 | Surface availability | Limitations and surface inventory JSON |
 | Browser route, page, control, visibility | Console guide, HTTP route table, console architecture |
-| Design decision | `specs/` only |
+| Decision that rules out an alternative | `specs/adr/` only |
 
 ### Source documentation
 
@@ -298,9 +300,11 @@ Evidence: `test/memhouse/f9_skill_readiness_procedural_memory_test.exs`,
 
 ### Evaluation and release
 
-Application versions use SemVer; evaluation reports use `f11-1`. Deterministic
-guardrails, both Postgres lanes, builds, version/changelog checks, provenance,
-and committed correctness/citation floors block a release. Public claims need
+Application versions use SemVer; evaluation reports use `f11-1`.
+`MemHouse.ReleaseReadiness` is the one fail-closed release-readiness gate, run
+by `mix memhouse.release.check`. Deterministic guardrails, both Postgres lanes,
+builds, version/changelog checks, provenance, and committed correctness and
+citation floors block a release. Public claims need
 exact application/profile/model versions, dataset id/hash/split, deadline,
 date, judge, strategy override, and run limits. Tune fusion only on held-out
 data. Quality, latency, token, and degradation frontiers are not gates without
@@ -358,9 +362,9 @@ changes need parity evidence. If a check is unavailable, say so.
 ## Delivery and review
 
 Use one task, branch, and PR. Start from current `main`; keep humans as the
-merge gate. The PR states scope, reason, relevant anchors, real check results,
-and deliberate limitations. Do not claim repository settings from workflow
-files alone.
+merge gate. The PR states scope, reason, the tests that prove it, real check
+results, and deliberate limitations. Do not claim repository settings from
+workflow files alone.
 
 Before delivery, confirm the change preserves Account isolation, inheritance,
 governed promotion, pipeline-only writes, durable/cache separation,

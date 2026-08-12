@@ -18,26 +18,24 @@ assignees: ""
 
 <!-- Link the internal docs that provide the task context reviewers and implementers should read. Include the closest specific document(s), not every possible doc. Delete rows that do not apply. -->
 
-- Blueprint requirements: `specs/memory-system-functional-requirements.md` (`FR-*` anchors):
-- Blueprint architecture/NFRs: `specs/memory-system-architecture-and-nfr.md` (`AD-*`, `AINV-*`, `NFR-*` anchors):
-- Product context: `specs/memory-system-product-blueprint.md`:
+- Modules and tests that define the behavior being changed:
 - ADRs: `specs/adr/README.md` or `specs/adr/<adr-file>.md`:
 - Architecture notes: `specs/architecture/README.md` or `specs/architecture/<note>.md`:
-- Roadmap/process docs: `specs/roadmap/beta-roadmap.md`:
+- Roadmap/process docs: `specs/roadmap/beta-roadmap.md`, `specs/process/`:
 - Security/eval docs: `specs/security/README.md`, `specs/eval/README.md`, or a specific note:
 - Published user documentation affected: the page(s) under `docs/`:
 - Other internal docs:
 
-## Architecture anchors
+## Product invariants
 
-<!-- Cite stable blueprint anchors that constrain the work. Do not change anchor meanings in this issue. -->
+<!-- Name the invariants from `AGENTS.md` that constrain this work. Do not weaken one in this issue. -->
 
-Relevant anchors:
+Relevant invariants:
 
-- AINV-
-- AD-
-- FR-
-- NFR-
+- Account isolation; Account derived from identity:
+- Pipeline-only knowledge writes and governed promotion:
+- One codebase, two deployment modes, identical guarantees:
+- Other:
 
 ## Scope
 

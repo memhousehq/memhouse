@@ -1,8 +1,7 @@
 # Evaluation Documentation
 
 Evaluation, CI, and release readiness upgrades the original harness into a
-versioned deterministic gate and release/nightly matrix. The authoritative
-framework is `specs/memory-system-evaluation-framework.md`; implementation and
+versioned deterministic gate and release/nightly matrix. Implementation and
 release posture are recorded in
 `specs/architecture/evaluation-ci-release-readiness.md`.
 
@@ -10,9 +9,6 @@ The local harness supports MemHouse product-shaped fixtures plus LoCoMo,
 LongMemEval, ConvoMem, and BEAM memory paths. It exercises the durable message
 write path, pipeline knowledge extraction, scoped retrieval, grounded
 answering, and citation validation against Postgres.
-
-The broader implementation log and refactor list is maintained in
-`specs/implementation-status.md`.
 
 For development traces, experiment labels, Langfuse forwarding, and the
 measurement checklist that should accompany eval reports, read
@@ -181,8 +177,8 @@ The JSON report includes:
 - Aggregate metrics overall, by category, and by scale.
 - For BEAM, a `beam_degradation_curve` grouped by corpus scale.
 - RAG-triad lexical baseline, full-context/token-efficiency, profile/model
-  version, deadline, dataset digest/split, date, and run-limit evidence, per
-  ADR-0004 / `AD-EVAL-3` / `NFR-11`.
+  version, deadline, dataset digest/split, date, and run-limit evidence, so a
+  published number is reproducible and comparable (see `specs/adr/0004-multi-strategy-retrieval.md`).
 
 The runner uses the real durable write/read path (`MemHouse.Memory`) and
 therefore records raw messages, pipeline-created knowledge, lifecycle events,
@@ -197,5 +193,5 @@ pg0/external-Postgres CI parity.
 The surface contract inventory records the intentional integration-surfaces
 boundary (still to be implemented; tracked in
 `specs/roadmap/beta-roadmap.md`): current Phoenix, MCP, and skill-readiness
-helpers are gated; generated OpenAPI and complete SDKs are explicitly
-unavailable in 0.2.0.
+helpers are gated; generated OpenAPI and complete SDKs are explicitly marked
+`unavailable`.

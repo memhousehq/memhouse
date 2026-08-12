@@ -107,5 +107,5 @@ These are deliberate designs, not gaps:
 
 Acceptance criteria live in
 [`specs/roadmap/beta-roadmap.md`](https://github.com/memhousehq/memhouse/blob/main/specs/roadmap/beta-roadmap.md).
-Current behavior and verification live in
-[`specs/implementation-status.md`](https://github.com/memhousehq/memhouse/blob/main/specs/implementation-status.md).
+Current behavior is verified by the suite under
+[`test/`](https://github.com/memhousehq/memhouse/tree/main/test).

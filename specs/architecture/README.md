@@ -1,22 +1,13 @@
 # Architecture notes
 
-Implementation decisions, trade-offs, evidence, and contract transitions.
-Source files document current behavior; these notes explain why.
+Module boundaries and contracts that span more code than any one module can
+show. The source and its tests are authoritative for behavior; these notes say
+where the seams are and why they sit there.
 
-## Where authority lives
+A note must not restate what a module already says. If it does, delete it.
 
-Blueprint specs remain authoritative for behavior and stable anchors.
-
-| Source | Authoritative for |
-| --- | --- |
-| `specs/memory-system-functional-requirements.md` | Product behaviour, `FR-*` anchors. |
-| `specs/memory-system-architecture-and-nfr.md` | Architecture decisions, non-functional targets, `AD-*` / `AINV-*` / `NFR-*` anchors. |
-| `specs/memory-system-product-blueprint.md` | Product positioning, sequencing, go-to-market context. |
-| `specs/memory-system-evaluation-framework.md` | Evaluation methodology and `EV-*` anchors. |
-| `specs/adr/` | Decisions with alternatives weighed and a chosen outcome. |
-
-Keep notes short and traceable. Anchors belong here and in PR descriptions,
-never source comments.
+Older notes cite `FR-*`, `AD-*`, `AINV-*`, and `NFR-*` anchors from the retired
+blueprint documents. Those anchors no longer resolve. Read them as history.
 
 ## The notes
 
@@ -36,8 +27,7 @@ never source comments.
 
 ## Related
 
-- `specs/implementation-status.md` — current behavior, evidence, and limitations;
-  not a substitute for a spec or ADR.
+- `specs/adr/` — decisions with alternatives weighed and a chosen outcome.
 - `specs/roadmap/beta-roadmap.md` — the only roadmap: outstanding work with
   acceptance criteria.
 - `specs/observability/README.md` — local OpenTelemetry collection, Langfuse

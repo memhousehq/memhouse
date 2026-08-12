@@ -83,14 +83,12 @@ defmodule MemHouse.ReleaseReadiness do
     end
   end
 
-  # Three separate requirements, all on the changelog:
+  # Two requirements, both on the changelog:
   #
   #   * an Unreleased section, so the next change has somewhere to go and the
-  #     file has not been closed off at this release;
+  #     file has not been closed off at this release; and
   #   * a heading for exactly this version with an ISO date, anchored to line
-  #     start and end so a mention inside prose cannot satisfy it; and
-  #   * the anchor-evidence marker the changelog format requires, which is what
-  #     ties each entry back to the design decisions it implements.
+  #     start and end so a mention inside prose cannot satisfy it.
   #
   # The version is escaped before interpolation because it comes from file text
   # and its dots would otherwise match any character.
@@ -98,10 +96,8 @@ defmodule MemHouse.ReleaseReadiness do
     changelog = read_local!(Path.join(root, "CHANGELOG.md"))
 
     unless String.contains?(changelog, "## [Unreleased]") and
-             Regex.match?(~r/^## \[#{Regex.escape(version)}\] - \d{4}-\d{2}-\d{2}$/m, changelog) and
-             String.contains?(changelog, "AD-EVAL-") do
-      raise ArgumentError,
-            "CHANGELOG.md must contain Unreleased, #{version} date, and blueprint-anchor evidence"
+             Regex.match?(~r/^## \[#{Regex.escape(version)}\] - \d{4}-\d{2}-\d{2}$/m, changelog) do
+      raise ArgumentError, "CHANGELOG.md must contain Unreleased and a dated #{version} entry"
     end
   end
 
@@ -114,7 +110,6 @@ defmodule MemHouse.ReleaseReadiness do
     "README.md",
     "AGENTS.md",
     "specs/roadmap/beta-roadmap.md",
-    "specs/implementation-status.md",
     "specs/architecture/evaluation-ci-release-readiness.md"
   ]
 

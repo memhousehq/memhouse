@@ -13,8 +13,7 @@ is removed or starts failing.
 
 Related reading:
 
-- `specs/implementation-status.md` — what actually runs today, with its
-  verification evidence and known limitations.
+- `specs/adr/` — decisions already taken, and the alternatives they rule out.
 - `specs/architecture/free-core-architecture.md` — the target decomposition,
   abstraction layers, durable-versus-derived rules, and public operation set.
 - `specs/architecture/` — one note per implemented capability.

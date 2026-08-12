@@ -87,5 +87,3 @@ terms because it changes existing fields).
 
 - `specs/adr/0006-entity-resolution.md`
 - `specs/architecture/retrieval-entity-context.md`
-- `specs/memory-system-functional-requirements.md`
-- `specs/memory-system-architecture-and-nfr.md`

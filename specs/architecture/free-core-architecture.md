@@ -8,15 +8,12 @@ Date: 2026-07-28.
 This is the target architecture for the complete free self-host core: one
 Account, one Mix release, one BEAM node by default, pg0 or external Postgres,
 governed memory, local model options, public surfaces, RBAC, portability, and
-release evaluation. See `specs/roadmap/beta-roadmap.md` for delivery and
-`specs/implementation-status.md` for current behavior.
+release evaluation. See `specs/roadmap/beta-roadmap.md` for delivery, and the
+source and its tests for current behavior.
 
-This document is subordinate to the blueprint specs and ADRs. The stable
-anchors remain in:
+Where this document and the code disagree, the code is right. The decisions it
+depends on are recorded in:
 
-- `specs/memory-system-functional-requirements.md`
-- `specs/memory-system-architecture-and-nfr.md`
-- `specs/memory-system-product-blueprint.md`
 - `specs/adr/0003-embedded-postgres-pg0.md`
 - `specs/adr/0004-multi-strategy-retrieval.md`
 - `specs/adr/0005-peer-inline-validation-over-mcp.md`

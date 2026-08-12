@@ -118,4 +118,3 @@ the cluster map.
 - `specs/adr/0006-entity-resolution.md`
 - `specs/adr/0009-scope-bounded-entity-cards.md`
 - `specs/architecture/retrieval-entity-context.md`
-- `specs/design/2026-08-06-visible-entity-cards-and-projection-oversight-design.md`
