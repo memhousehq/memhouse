@@ -60,10 +60,8 @@ the audit trail is what makes the bypass visible, not a hidden code path.
 by the pipeline only for an account or deployment that has made this explicit
 declaration. It is unchanged for every account and deployment that has not.
 
-The design, including the `target_scope_id` resolution fix required for the
-auto-grant to actually reach the ordinary-ingestion path (not just
-`request_promotion/3`), is specified in
-`specs/design/2026-07-30-unattended-governance-consent-design.md`.
+The auto-grant needed a `target_scope_id` resolution fix to reach the ordinary
+ingestion path, not only `request_promotion/3`.
 
 ## Consequences
 
@@ -98,7 +96,5 @@ decision, and does not touch the real-subject consent path
 
 ## Related Documents
 
-- `specs/design/2026-07-30-unattended-governance-consent-design.md`
 - `specs/architecture/gate-a-b-governance.md`
 - `specs/adr/0002-l3-automation-boundary.md`
-- `specs/memory-system-functional-requirements.md`

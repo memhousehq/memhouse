@@ -29,10 +29,14 @@ settled by the blueprint specs.
 Conventions for future ADRs:
 
 - Name files `NNNN-short-title.md`.
-- Cite relevant `FR-*`, `AD-*`, `AINV-*`, or `NFR-*` anchors.
+- Write one only when the decision rules out an alternative someone would
+  otherwise re-propose. Record the rejected option and the reason; the code
+  already shows the chosen one.
+- Name the modules and tests the decision now lives in.
 - Keep status explicit: `Proposed`, `Accepted`, `Superseded`, or `Rejected`.
-- Do not use ADRs to override blueprint requirements without an explicit
-  blueprint update in the same or a preceding PR.
-- Longer design documents that fan out into an ADR live in `specs/design/`.
 - ADRs are never published to the documentation site. If a decision changes
   what a user sees, update the affected page under `docs/` in the same patch.
+
+ADRs numbered 0001 to 0016 cite `FR-*`, `AD-*`, `AINV-*`, and `NFR-*` anchors
+from the retired blueprint documents. Those anchors no longer resolve. Read the
+records as dated history and follow the code they name.

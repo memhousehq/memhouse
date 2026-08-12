@@ -98,10 +98,8 @@ defmodule MemHouse.ReleaseReadiness do
     changelog = read_local!(Path.join(root, "CHANGELOG.md"))
 
     unless String.contains?(changelog, "## [Unreleased]") and
-             Regex.match?(~r/^## \[#{Regex.escape(version)}\] - \d{4}-\d{2}-\d{2}$/m, changelog) and
-             String.contains?(changelog, "AD-EVAL-") do
-      raise ArgumentError,
-            "CHANGELOG.md must contain Unreleased, #{version} date, and blueprint-anchor evidence"
+             Regex.match?(~r/^## \[#{Regex.escape(version)}\] - \d{4}-\d{2}-\d{2}$/m, changelog) do
+      raise ArgumentError, "CHANGELOG.md must contain Unreleased and a dated #{version} entry"
     end
   end
 
@@ -114,7 +112,6 @@ defmodule MemHouse.ReleaseReadiness do
     "README.md",
     "AGENTS.md",
     "specs/roadmap/beta-roadmap.md",
-    "specs/implementation-status.md",
     "specs/architecture/evaluation-ci-release-readiness.md"
   ]
 

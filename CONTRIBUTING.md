@@ -6,14 +6,11 @@ gate.
 ## Before you edit
 
 1. Read `AGENTS.md`.
-2. Read the closest requirement anchors, architecture note, tests, and user
-   guide.
-3. Check `specs/implementation-status.md` for current behavior and
-   `specs/roadmap/beta-roadmap.md` for outstanding work.
+2. Read the modules the task touches, their tests, and the affected user guide.
+   The code and its tests are the specification of current behavior.
+3. Check `specs/roadmap/beta-roadmap.md` for outstanding work, and the closest
+   `specs/adr/` record before you reopen a settled decision.
 4. Inspect the worktree and preserve unrelated changes.
-
-Do not change the meaning of existing `FR-*`, `AD-*`, `AINV-*`, `NFR-*`, or
-`EV-*` anchors unless the task calls for a blueprint change.
 
 ## Keep changes focused
 
@@ -50,14 +47,16 @@ See `AGENTS.md` for the full writing style and architecture guardrails.
 
 | Location | Content |
 | --- | --- |
+| Source and tests | Current behavior, and the rules the system enforces |
 | `docs/` | Published setup, usage, operations, and current behavior |
-| `specs/` | Requirements, architecture, ADRs, plans, and evidence |
+| `specs/` | Decisions, outstanding work, evaluation evidence, and process |
 | `CONTRIBUTING.md` | Development workflow |
 | `README.md` | Project orientation |
 
 Do not put design history in `docs/`, or leave user procedures only in specs or
-source comments. User docs do not cite blueprint anchors. Add new docs pages to
-`mkdocs.yml`; use absolute GitHub URLs for links from `docs/` outside that tree.
+source comments. Do not add a `specs/` page that restates implemented behavior;
+it will drift from the code. Add new docs pages to `mkdocs.yml`; use absolute
+GitHub URLs for links from `docs/` outside that tree.
 
 Behavior and documentation ship together. Common mappings:
 

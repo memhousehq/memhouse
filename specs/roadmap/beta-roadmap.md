@@ -3,14 +3,14 @@
 # MemHouse Beta Roadmap
 
 Status: active. This is the only roadmap.
-Application version at time of writing: `0.2.0`.
-Repository state verified: 2026-07-28.
+Application version at time of writing: `0.4.0`.
+Repository state verified: 2026-08-12.
 
 MemHouse is past its proof-of-concept stage. The memory engine, governance,
 retrieval, documents, packaging, and release machinery are implemented and
 under test. This document lists **only the work that is still outstanding**.
-Anything already delivered has been removed from here; the record of what runs
-today lives in `specs/implementation-status.md`.
+Anything already delivered has been removed from here; what runs today is
+described by the source and its tests.
 
 This roadmap merges and replaces three earlier documents:
 
@@ -39,8 +39,7 @@ lives at `specs/architecture/free-core-architecture.md`.
 
 ## Where we are
 
-Delivered and covered by tests, documented in `specs/implementation-status.md`
-and the notes under `specs/architecture/`:
+Delivered and covered by tests under `test/`:
 
 - the frozen API baseline, the Ash domain backbone, transactional
   writes/audit/jobs, identity/tenancy/RBAC, Gate A/B governance, the model
@@ -462,12 +461,10 @@ evidence:
 
 ## References
 
-- Product and architecture anchors: `specs/memory-system-functional-requirements.md`,
-  `specs/memory-system-architecture-and-nfr.md`,
-  `specs/memory-system-product-blueprint.md`,
-  `specs/memory-system-evaluation-framework.md`.
+- Product invariants and architecture boundaries: `AGENTS.md`.
 - Target architecture: `specs/architecture/free-core-architecture.md`.
-- What runs today: `specs/implementation-status.md`.
+- Decisions already taken: `specs/adr/`.
+- What runs today: the source under `lib/` and its tests under `test/`.
 - Operator procedures: `docs/operations/`.
 - GitHub labels: https://docs.github.com/issues/using-labels-and-milestones-to-track-work/managing-labels
 - Repository rulesets: https://docs.github.com/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets

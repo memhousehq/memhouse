@@ -2,46 +2,48 @@
 
 # MemHouse design documentation
 
-This tree holds everything design-facing: what MemHouse is meant to do, why it
-is built the way it is, what has been decided, what is left, and how it is
-measured and released. **It is not published.**
+The source and its tests are the specification of what MemHouse does. This tree
+holds only what running code cannot state: why a decision was made, what is not
+built yet, how a release is measured, and what the security posture is. **It is
+not published.**
+
+Do not add a document here that describes implemented behavior. It will drift
+from the code, and the code will still be right.
 
 User-facing documentation — installation, usage, operations, and how the
 running system behaves — lives in `docs/` and is published to
-<https://memhousehq.github.io/memhouse/>. Do not put a spec, plan, ADR,
-roadmap item, benchmark result, or design rationale there; do not put an
-install step, an API parameter, or an operational procedure here.
+<https://memhousehq.github.io/memhouse/>.
 
 Development process — workflow, branch and PR rules, required checks, review
 expectations — lives in `CONTRIBUTING.md`. The agent and contributor operating
-contract is `AGENTS.md`.
+contract is `AGENTS.md`, which also carries the product invariants and the
+architecture boundaries.
 
 ## Layout
 
 | Path | Holds | Authoritative for |
 | --- | --- | --- |
-| `memory-system-product-blueprint.md` | Product positioning, sequencing, go-to-market context. | Product framing. |
-| `memory-system-functional-requirements.md` | Functional requirements. | `FR-*` anchors. |
-| `memory-system-architecture-and-nfr.md` | Architecture decisions and non-functional targets. | `AD-*`, `AINV-*`, `NFR-*` anchors. |
-| `memory-system-evaluation-framework.md` | Evaluation methodology. | `EV-*` anchors. |
-| `architecture/` | One implementation-facing note per capability, plus the target decomposition. | Reasoning behind the built system. |
-| `adr/` | Architecture decision records: alternatives weighed, outcome chosen. | Decisions. |
-| `design/` | Dated design documents that fan out into specific ADRs. | Design history. |
+| `adr/` | Architecture decision records: alternatives weighed, outcome chosen. | Decisions, and what they rule out. |
 | `roadmap/beta-roadmap.md` | The only roadmap: outstanding work with acceptance criteria, the delivery workflow, and maintainer-owned GitHub setup. | What is left. |
-| `implementation-status.md` | What actually runs today, its verification evidence, and its real limitations. | Evidence and debt. |
+| `architecture/` | Module boundaries and contracts that span more code than one module can show. | Where the seams are. |
 | `eval/` | Release matrix, deterministic thresholds, surface contract inventory, and recorded reports. | Evaluation evidence. |
 | `observability/` | Measurement discipline, local collection, trace and log safety defaults. | How runs are measured. |
 | `process/` | Semantic versioning policy and the release checklist. | Release process. |
 | `security/` | Threat models, review notes, hardening checklists. | Security posture. |
 
-## Anchors
+## Writing an ADR
 
-`FR-*`, `AD-*`, `AINV-*`, `NFR-*`, and `EV-*` are stable review handles.
-Preserve their meaning unless a task explicitly asks for a blueprint change.
+Write one when a decision closes off an alternative that someone would
+otherwise re-propose. The value is the rejected option and the reason, not the
+chosen one — the code already shows that.
 
-Anchors belong in these documents, in commit messages, and in pull request
-descriptions — never in source comments, which must stand on their own, and
-never in `docs/`, which is user-facing prose.
+Do not write an ADR to record what the code says.
+
+## Contract identities
+
+Strings such as `f7-1` and `memhouse-account-1` version public contracts. They
+are listed in `AGENTS.md` and in the published contract reference. They are not
+phase labels. Never rename one as incidental cleanup.
 
 ## Files consumed by code
 

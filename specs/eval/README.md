@@ -1,8 +1,7 @@
 # Evaluation Documentation
 
 Evaluation, CI, and release readiness upgrades the original harness into a
-versioned deterministic gate and release/nightly matrix. The authoritative
-framework is `specs/memory-system-evaluation-framework.md`; implementation and
+versioned deterministic gate and release/nightly matrix. Implementation and
 release posture are recorded in
 `specs/architecture/evaluation-ci-release-readiness.md`.
 
@@ -10,9 +9,6 @@ The local harness supports MemHouse product-shaped fixtures plus LoCoMo,
 LongMemEval, ConvoMem, and BEAM memory paths. It exercises the durable message
 write path, pipeline knowledge extraction, scoped retrieval, grounded
 answering, and citation validation against Postgres.
-
-The broader implementation log and refactor list is maintained in
-`specs/implementation-status.md`.
 
 For development traces, experiment labels, Langfuse forwarding, and the
 measurement checklist that should accompany eval reports, read

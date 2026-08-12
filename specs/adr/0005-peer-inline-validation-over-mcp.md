@@ -80,9 +80,6 @@ transcript of that session. Unverified answers defer revalidation timers and do
 nothing else — they do not raise confidence, and they never satisfy
 `FR-GOV-12` consent, for which a verified answer or the console is required.
 
-The design is specified in
-`specs/design/2026-07-27-peer-inline-validation-design.md`.
-
 ## Consequences
 
 The peer-routed portion of the validation queue drains during ordinary use,
@@ -136,7 +133,4 @@ change to the delivery layer that does not disturb this boundary.
 
 ## Related Documents
 
-- `specs/design/2026-07-27-peer-inline-validation-design.md`
 - `specs/adr/0002-l3-automation-boundary.md`
-- `specs/memory-system-functional-requirements.md`
-- `specs/memory-system-architecture-and-nfr.md`

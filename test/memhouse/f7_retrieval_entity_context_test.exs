@@ -770,7 +770,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     # The point of the flag: no query-reading strategy found evidence. Ordinary
     # text searches no longer fill that absence with a scope-ranked list.
     #
-    # These two also pin the signal to pre-fusion (FR-API-29). Fusion always emits a ranked
+    # These two also pin the signal to pre-fusion. Fusion always emits a ranked
     # list, so anything derived from the fused output could not report "nothing was found"
     # while candidates are being returned. They can only hold together if it was measured
     # before the merge.

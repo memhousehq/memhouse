@@ -62,8 +62,29 @@ changelog entry and contract-version transition.
   no-model-configured reply is unchanged, since that state is a deployment
   choice rather than a failure. The `f7-1` retrieval contract is unchanged.
 
+### Removed
+
+- The four `specs/memory-system-*.md` blueprints, `specs/design/`, and
+  `specs/implementation-status.md`, together with the `FR-*`, `AD-*`, `AINV-*`,
+  `NFR-*`, and `EV-*` anchor system they defined. The source and its tests are
+  the specification of current behavior; those documents restated it and drifted
+  from it. `specs/` now holds only what code cannot state: decisions and the
+  alternatives they rule out (`specs/adr/`), outstanding work
+  (`specs/roadmap/`), module boundaries (`specs/architecture/`), evaluation
+  evidence (`specs/eval/`), and release process (`specs/process/`). ADRs 0001
+  to 0016 still cite the retired anchors and are kept as dated history.
+- The release check no longer requires blueprint-anchor evidence in
+  `CHANGELOG.md`, and no longer requires `specs/implementation-status.md` to
+  describe the release gate. Both gates enforced the retired anchor system.
+
 ### Changed
 
+- `AGENTS.md` and `CONTRIBUTING.md` now direct a contributor to the modules and
+  tests first, and to `specs/` only for a decision, unbuilt work, a module
+  boundary, or a release gate. A document that restates implemented behavior is
+  now explicitly out of scope for `specs/`.
+- The pull request and issue templates ask for product invariants and the tests
+  that prove them, in place of blueprint anchor citations.
 - Extraction prompt `extract-7` records resolved relative dates in
   `relevant_from` and `relevant_until`. Statements state claims without an
   observation-time frame. A statement keeps an ISO date only when the date is

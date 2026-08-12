@@ -165,6 +165,3 @@ defensible: Hindsight ships the same on-ramp.
 ## Related Documents
 
 - `specs/adr/0002-l3-automation-boundary.md`
-- `specs/memory-system-architecture-and-nfr.md`
-- `specs/memory-system-functional-requirements.md`
-- `specs/memory-system-product-blueprint.md`

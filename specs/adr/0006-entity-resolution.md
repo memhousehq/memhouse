@@ -228,6 +228,3 @@ boundaries are an ADR 0002 human-only decision area.
 
 - `specs/adr/0002-l3-automation-boundary.md`
 - `specs/adr/0004-multi-strategy-retrieval.md`
-- `specs/design/2026-07-27-research-informed-design-improvements.md`
-- `specs/memory-system-architecture-and-nfr.md`
-- `specs/memory-system-functional-requirements.md`

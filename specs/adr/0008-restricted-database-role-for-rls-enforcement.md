@@ -139,7 +139,6 @@ every other mode; no compose-specific carve-out was needed or added.
 ## Related Documents
 
 - `specs/architecture/ash-domain-backbone.md`
-- `specs/memory-system-architecture-and-nfr.md`
 - `docs/concepts/deployment-modes.md`
 - `docs/reference/configuration.md`
 - GitHub issue #55

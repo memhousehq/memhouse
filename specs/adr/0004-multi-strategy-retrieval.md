@@ -252,6 +252,3 @@ decision, so it remains open.
 
 - `specs/adr/0002-l3-automation-boundary.md`
 - `specs/adr/0003-embedded-postgres-pg0.md`
-- `specs/memory-system-architecture-and-nfr.md`
-- `specs/memory-system-functional-requirements.md`
-- `specs/memory-system-product-blueprint.md`

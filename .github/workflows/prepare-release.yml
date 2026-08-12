@@ -111,7 +111,6 @@ jobs:
               "docs/reference/contract-versions.md",
               "docs/reference/mix-tasks.md",
               "docs/getting-started/install-release.md",
-              "specs/implementation-status.md",
               "specs/eval/surface-contract-inventory.json",
               "test/memhouse/f11_evaluation_ci_release_readiness_test.exs",
           ]:

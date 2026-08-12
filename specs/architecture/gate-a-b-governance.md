@@ -92,7 +92,6 @@ When ordinary ingest supplies no `target_scope_id` for a scope-level proposal,
 the gate uses the item's `scope_id` for the hold, validation item, and consent;
 none of those target fields receives `nil`.
 
-Full design: `specs/design/2026-07-30-unattended-governance-consent-design.md`.
 Decision record: `specs/adr/0007-unattended-governance-consent.md`.
 
 ## Human and machine surfaces
