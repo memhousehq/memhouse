@@ -76,7 +76,7 @@ jobs:
     steps:
       # Explicit ref: the event workflow itself may be read from the default branch, while
       # the release checks must certify the commit selected by this GitHub Release's tag.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
       - uses: erlef/setup-beam@v1
@@ -174,7 +174,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
       - uses: erlef/setup-beam@v1
@@ -210,7 +210,7 @@ jobs:
             machine_arch: arm64
             asset_arch: arm64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
       - uses: erlef/setup-beam@v1

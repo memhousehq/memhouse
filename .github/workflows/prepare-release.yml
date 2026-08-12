@@ -54,7 +54,7 @@ jobs:
       MEMHOUSE_DATABASE_MODE: external
       MEMHOUSE_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/memhouse_release_prepare
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
