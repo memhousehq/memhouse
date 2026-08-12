@@ -484,6 +484,7 @@ defmodule MemHouse.Retrieval.Store do
         OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
       )
       AND k.deleted_at IS NULL
+      AND (k.expires_at IS NULL OR k.expires_at > now())
       AND EXISTS (
         SELECT 1
         FROM unnest(e.aliases || ARRAY[e.canonical_name]) AS alias
