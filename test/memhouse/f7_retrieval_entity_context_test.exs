@@ -1222,6 +1222,18 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       )
     end)
 
+    # Verify the row is actually active with a past expires_at before asserting retrieval behavior.
+    updated_knowledge =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        KnowledgeItem
+        |> Ash.Query.filter(id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+      end)
+
+    assert updated_knowledge.state == "active"
+    assert DateTime.compare(updated_knowledge.expires_at, DateTime.utc_now()) == :lt
+
     assert [] == entity_match_candidates!("f7-entity-expiry", "/f7/entity-expiry")
   end
 

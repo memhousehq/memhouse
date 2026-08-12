@@ -53,12 +53,14 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
-- The `entity_match` retrieval strategy no longer returns a statement whose
-  `expires_at` has passed. Expiry is a timestamp and the sweeper that rewrites
-  `state` to `expired` runs as a job, so a row stays `active` with a past
-  expiry until that job lands. Every other visible-knowledge query already
-  refused such a row; this one returned it, leaving an expired statement
-  retrievable through whichever entity it happened to name.
+- Retrieval strategies no longer return a statement whose `expires_at` has
+  passed. Expiry is a timestamp and the sweeper that rewrites `state` to
+  `expired` runs as a job, so a row stays `active` with a past expiry until
+  that job lands. The active, non-expired predicate now applies consistently
+  across `lexical`, both `semantic` branches, `entity_match`,
+  `relation_expand`, and `co_mentioned_knowledge`. `temporal` and
+  `salience_recency` already applied it. An expired statement is no longer
+  retrievable through any visible-knowledge query path.
 
 - Reranking can now actually run, and a run that lost it says so. Three
   independent defects stopped the stage that decides the final order:
