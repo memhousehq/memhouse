@@ -1237,6 +1237,65 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert [] == entity_match_candidates!("f7-entity-expiry", "/f7/entity-expiry")
   end
 
+  test "entity_match ranks a selective entity's statements above a scope-wide one's" do
+    seeds = seed_statements!("f7-entity-idf", "/f7/entity-idf", 6)
+
+    # "Melanie" names most of the scope, so learning that a statement mentions her narrows
+    # nothing. "Rivet" names two statements, so it narrows a great deal. Ranking must follow
+    # that difference and not the extractor's confidence, which is uniform here.
+    mention_entity!("f7-entity-idf", "Melanie", seeds)
+    selective = Enum.take(seeds, 2)
+    mention_entity!("f7-entity-idf", "Rivet", selective)
+
+    candidates =
+      entity_match_candidates!("f7-entity-idf", "/f7/entity-idf", "What did Melanie say to Rivet")
+
+    assert length(candidates) == 6
+
+    assert candidates |> Enum.take(2) |> Enum.map(& &1["id"]) |> Enum.sort() ==
+             selective |> Enum.map(& &1.knowledge.id) |> Enum.sort()
+
+    # Bounded, because `min_score` filtering and the `low_score` disagreement hint both read
+    # this raw score. An unbounded sum would silently change what those two mean.
+    assert Enum.all?(candidates, &(&1["rrf_score"] > 0))
+  end
+
+  test "entity_match reports nothing when every entity the query names saturates the scope" do
+    put_retrieval_config!(entity_match_ceiling_min_statements: 4)
+
+    seeds = seed_statements!("f7-entity-hub", "/f7/entity-hub", 5)
+    mention_entity!("f7-entity-hub", "Melanie", seeds)
+
+    # Every statement mentions her, so the strategy has no way to prefer one over another and
+    # would otherwise return the scope in extractor-confidence order. Reporting empty is what
+    # lets `query_dependent_empty` say the run never understood the question.
+    result =
+      Memory.search(%{
+        "account_key" => "f7-entity-hub",
+        "scope_path" => "/f7/entity-hub",
+        "query" => "Melanie",
+        "strategies" => ["entity_match"],
+        "deadline" => "disabled"
+      })
+
+    assert result["candidates"] == []
+    assert result["disagreement"]["query_dependent_empty"]
+  end
+
+  test "entity_match caps how many statements one entity may contribute" do
+    put_retrieval_config!(
+      entity_match_ceiling_min_statements: 100,
+      entity_match_per_entity_cap: 2
+    )
+
+    seeds = seed_statements!("f7-entity-cap", "/f7/entity-cap", 5)
+    mention_entity!("f7-entity-cap", "Melanie", seeds)
+
+    # The ceiling is out of reach here, so without a cap one hub entity fills the whole list
+    # and crowds out every other strategy's contribution to fusion.
+    assert length(entity_match_candidates!("f7-entity-cap", "/f7/entity-cap", "Melanie")) == 2
+  end
+
   test "Indexer.rebuild_scope keeps a billed embedding call metered when the write phase fails" do
     seeded = seed_active!("f7-index-vanish", "/f7/index-vanish", "Vanishing indexer statement.")
 
@@ -2947,16 +3006,79 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   # Ingest alone leaves an item awaiting approval, which retrieval correctly hides. These
   # tests are about ranking and authorization, not about the approval lifecycle, so the item
   # is transitioned to `active` through the ordinary governance engine under the pipeline
-  # Runs entity_match alone, so what comes back is that strategy's own visibility decision
-  # rather than a fused list another strategy could have supplied the same id to.
-  defp entity_match_candidates!(account_key, scope_path) do
+  # Runs entity_match alone, so what comes back is that strategy's own ranking rather than a
+  # fused list another strategy could have supplied the same ids to.
+  defp entity_match_candidates!(account_key, scope_path, query \\ "Avery") do
     Memory.search(%{
       "account_key" => account_key,
       "scope_path" => scope_path,
-      "query" => "Avery",
+      "query" => query,
       "strategies" => ["entity_match"],
       "deadline" => "disabled"
     })["candidates"]
+  end
+
+  # Distinct governed statements that name nobody, so the only entity signal a test sees is the
+  # one it states through `mention_entity!/3`.
+  defp seed_statements!(account_key, scope_path, count) do
+    Enum.map(1..count, fn index ->
+      seed_active!(
+        account_key,
+        scope_path,
+        "Release note number #{index} records a routine deployment step.",
+        "idf-#{index}"
+      )
+    end)
+  end
+
+  # One entity mentioned by exactly the given statements. Resolution is bypassed so a test can
+  # state the frequency it is measuring instead of hoping the fixture extractor produces it.
+  defp mention_entity!(account_key, surface_form, seeds) do
+    DataLayer.with_account_key(account_key, fn account, actor ->
+      pipeline = pipeline_actor(actor)
+
+      entity =
+        create!(
+          Entity,
+          :create_from_pipeline,
+          %{
+            canonical_name: surface_form,
+            kind: "person",
+            aliases: [surface_form],
+            derived_from: Enum.map(seeds, & &1.knowledge.id)
+          },
+          account.id,
+          pipeline
+        )
+
+      Enum.each(seeds, fn seed ->
+        create!(
+          EntityMention,
+          :create_from_pipeline,
+          %{
+            knowledge_item_id: seed.knowledge.id,
+            scope_id: seed.scope.id,
+            entity_id: entity.id,
+            surface_form: surface_form,
+            confidence: 1.0
+          },
+          account.id,
+          pipeline
+        )
+      end)
+    end)
+  end
+
+  # The suite's setup restores the whole keyword list on exit, so a test may narrow one knob to
+  # a fixture it can afford to seed rather than to production's scale.
+  defp put_retrieval_config!(overrides) do
+    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Enum.reduce(overrides, profiles, fn {key, value}, acc -> Keyword.put(acc, key, value) end)
+    )
   end
 
   # actor — deliberately going through the engine, not around it, so the transition writes

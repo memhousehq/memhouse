@@ -460,42 +460,115 @@ defmodule MemHouse.Retrieval.Store do
   Entity rows locate statements but never appear in results. Account, scope, lifecycle, and
   provisional filters still apply before candidates leave the query.
 
-  Scores are the strongest mention-confidence times statement-confidence
-  product per statement, grouped so one statement appears once however many of
-  its mentions matched.
+  A statement scores by how much the entities it shares with the query narrow
+  the scope, not by how sure the extractor was. Each matched entity is weighted
+  by inverse frequency over the authorized scopes' visible statements, and a
+  statement's score is the share of that weight its own mentions carry, times
+  its confidence. The result stays in `0..1`, which `min_score` filtering and
+  the `low_score` disagreement hint both depend on.
 
-  Knowledge only. Returns an empty list when the query targets documents or
-  yields no usable terms. Raises `Postgrex.Error` if the statement fails.
+  Frequency is measured per request rather than cached on the entity row.
+  Entities are Account-global while rebuilds are per-scope, so a stored figure
+  would be stale for every scope but the last one rebuilt.
+
+  Knowledge only. Returns an empty list when the query targets documents,
+  yields no usable terms, or names only entities above the frequency ceiling —
+  the last case is a real finding, not a failure, and is what allows
+  `query_dependent_empty` to report that nothing resolved the question. Raises
+  `Postgrex.Error` if the statement fails.
   """
   def entity_match(query, limit) do
     terms = entity_terms(query.text)
 
     sql = """
+    WITH visible AS (
+      SELECT k.id
+      FROM knowledge_items AS k
+      WHERE k.account_id = $1
+        AND k.scope_id = ANY($2)
+        AND (
+          k.state = 'active'
+          OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
+        )
+        AND k.deleted_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > now())
+    ),
+    corpus AS (
+      SELECT greatest(count(*), 1)::float8 AS statements FROM visible
+    ),
+    matched AS (
+      SELECT e.id
+      FROM entities AS e
+      WHERE e.account_id = $1
+        AND EXISTS (
+          SELECT 1
+          FROM unnest(e.aliases || ARRAY[e.canonical_name]) AS alias
+          WHERE lower(alias) = ANY($4)
+        )
+    ),
+    -- One row per entity and statement. An entity named twice in one statement is one
+    -- mention here, or it would inflate both the frequency and the statement's own score.
+    mention AS (
+      SELECT m.entity_id, m.knowledge_item_id, max(m.confidence)::float8 AS confidence
+      FROM entity_mentions AS m
+      JOIN matched ON matched.id = m.entity_id
+      JOIN visible ON visible.id = m.knowledge_item_id
+      WHERE m.account_id = $1
+      GROUP BY m.entity_id, m.knowledge_item_id
+    ),
+    -- Smoothed inverse frequency: `ln(1 + N/n)` stays positive when an entity covers the
+    -- whole corpus, so a scope too small to measure keeps its recall instead of collapsing
+    -- to no candidates. The ceiling below, not a zero weight, is what drops a hub entity.
+    weighted AS (
+      SELECT mention.entity_id,
+             mention.knowledge_item_id,
+             mention.confidence,
+             count(*) OVER (PARTITION BY mention.entity_id) / corpus.statements AS frequency,
+             ln(1 + corpus.statements / count(*) OVER (PARTITION BY mention.entity_id)) AS idf,
+             corpus.statements
+      FROM mention CROSS JOIN corpus
+    ),
+    selective AS (
+      SELECT * FROM weighted
+      WHERE statements < $5 OR frequency <= $6
+    ),
+    -- Constant per request: the weight a statement would carry if it mentioned every
+    -- selective entity the query named. Dividing by it is what bounds the score at 1.
+    mass AS (
+      SELECT greatest(sum(idf), 1e-9) AS total_idf
+      FROM (SELECT DISTINCT entity_id, idf FROM selective) AS per_entity
+    ),
+    scored AS (
+      SELECT selective.knowledge_item_id,
+             (sum(selective.idf * selective.confidence) / mass.total_idf)::float8 AS entity_score
+      FROM selective CROSS JOIN mass
+      GROUP BY selective.knowledge_item_id, mass.total_idf
+    ),
+    -- Each entity contributes its own best statements only. A hub entity that clears the
+    -- ceiling would otherwise fill the list alone and crowd fusion's other inputs out.
+    capped AS (
+      SELECT DISTINCT ranked.knowledge_item_id
+      FROM (
+        SELECT selective.knowledge_item_id,
+               row_number() OVER (
+                 PARTITION BY selective.entity_id
+                 ORDER BY scored.entity_score DESC, selective.knowledge_item_id
+               ) AS per_entity_rank
+        FROM selective
+        JOIN scored ON scored.knowledge_item_id = selective.knowledge_item_id
+      ) AS ranked
+      WHERE ranked.per_entity_rank <= $7
+    )
     SELECT #{@knowledge_columns},
-           max(m.confidence * k.confidence)::float8 AS score,
+           (scored.entity_score * k.confidence)::float8 AS score,
            'knowledge' AS candidate_type
-    FROM entities AS e
-    JOIN entity_mentions AS m
-      ON m.entity_id = e.id AND m.account_id = e.account_id
-    JOIN knowledge_items AS k
-      ON k.id = m.knowledge_item_id AND k.account_id = m.account_id
+    FROM knowledge_items AS k
     JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
-    WHERE e.account_id = $1
-      AND k.scope_id = ANY($2)
-      AND (
-        k.state = 'active'
-        OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-      )
-      AND k.deleted_at IS NULL
-      AND (k.expires_at IS NULL OR k.expires_at > now())
-      AND EXISTS (
-        SELECT 1
-        FROM unnest(e.aliases || ARRAY[e.canonical_name]) AS alias
-        WHERE lower(alias) = ANY($4)
-      )
-    GROUP BY k.id, s.path
+    JOIN scored ON scored.knowledge_item_id = k.id
+    JOIN capped ON capped.knowledge_item_id = k.id
+    WHERE k.account_id = $1
     ORDER BY score DESC, k.updated_at DESC
-    LIMIT $5
+    LIMIT $8
     """
 
     if query.target in [:knowledge, :all] and terms != [] do
@@ -504,6 +577,9 @@ defmodule MemHouse.Retrieval.Store do
         db_uuids!(query.scope_ids),
         db_uuid(query.actor.peer_id),
         terms,
+        retrieval_config(:entity_match_ceiling_min_statements),
+        retrieval_config(:entity_match_frequency_ceiling),
+        retrieval_config(:entity_match_per_entity_cap),
         limit
       ])
     else
@@ -1040,6 +1116,13 @@ defmodule MemHouse.Retrieval.Store do
   # Build pgvector text as a bound parameter; coerce integers before `Float.to_string/1`.
   defp vector_literal(values) do
     "[" <> Enum.map_join(values, ",", &Float.to_string(&1 * 1.0)) <> "]"
+  end
+
+  # These settings change ranking, so a missing key must fail rather than default.
+  defp retrieval_config(key) do
+    :memhouse
+    |> Application.fetch_env!(:retrieval_profiles)
+    |> Keyword.fetch!(key)
   end
 
   # SQL is static and parameterized inside this reviewed data-layer boundary.
