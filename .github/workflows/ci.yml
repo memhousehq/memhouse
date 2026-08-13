@@ -97,12 +97,20 @@ jobs:
       # Cache keyed on the dependency lock file only, because that is what decides which
       # dependencies get compiled. A source change reuses the restored build directory and
       # lets the compiler's own change tracking recompile what actually moved.
+      #
+      # `restore-keys` matches the same prefix without the hash, so a changed lock file
+      # restores the previous entry instead of starting from nothing. Mix then recompiles
+      # only the dependencies whose lock entry moved. Without the fallback every dependency
+      # bump rebuilt all of them, and a dependency that fetches a precompiled native binary
+      # during compilation fetched it again, so an upstream outage failed the run for a
+      # reason unrelated to the change under test.
       - uses: actions/cache@v6
         with:
           path: |
             deps
             _build
           key: ${{ runner.os }}-beam-test-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-beam-test-
       - run: mix deps.get
       # Fails when the declared data model and the committed migrations plus schema
       # snapshots disagree. Catching that here matters because a missing migration would
@@ -177,6 +185,10 @@ jobs:
       # "Old PLT file" rather than rebuilding it. Since `otp-version: "27"` resolves to
       # whatever 27.x the runner image ships, a patch bump would otherwise restore a PLT
       # the new OTP refuses, and an unchanged lockfile would keep restoring it forever.
+      #
+      # The fallback prefix keeps both versions for that same reason. Truncating it to
+      # `-dialyzer-` would restore a PLT built by a different OTP, which is the failure the
+      # key was written to prevent.
       - uses: actions/cache@v6
         with:
           path: |
@@ -184,6 +196,7 @@ jobs:
             _build
             priv/plts
           key: ${{ runner.os }}-dialyzer-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-dialyzer-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
       - run: mix deps.get
       - run: mix dialyzer
 
@@ -205,12 +218,15 @@ jobs:
         with:
           otp-version: "27"
           elixir-version: "1.18"
+      # Prefix fallback for the reason given in the external PostgreSQL lane: a changed lock
+      # file must not force every dependency to be fetched and rebuilt.
       - uses: actions/cache@v6
         with:
           path: |
             deps
             _build
           key: ${{ runner.os }}-beam-pg0-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-beam-pg0-
       - run: mix deps.get
       # Needs network access: the database asset is downloaded from upstream and checked
       # against a digest pinned in the repository. Every other setting the release needs is
@@ -236,13 +252,15 @@ jobs:
           otp-version: "27"
           elixir-version: "1.18"
       # Separate cache key from the test lanes: production build output is not
-      # interchangeable with test build output and sharing a key would poison both.
+      # interchangeable with test build output and sharing a key would poison both. The
+      # prefix fallback stays inside that separation.
       - uses: actions/cache@v6
         with:
           path: |
             deps
             _build
           key: ${{ runner.os }}-beam-prod-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-beam-prod-
       # Production dependencies only, which also proves that nothing on a production path
       # has picked up an accidental dependency on a development or test package.
       - run: mix deps.get --only prod
