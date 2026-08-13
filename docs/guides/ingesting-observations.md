@@ -25,16 +25,62 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/ingest \
 | `session_id` | yes | — | Any stable string. The session and its scope/participant links are created on demand. |
 | `scope_path` | yes | — | Created on demand if it does not exist. |
 | `content` | yes | — | The raw text of the observation. |
+| `peer_key` | no | your credential's peer | Who spoke the turn. Created on first use. |
+| `peer_name` | no | the key | Display name, used only when that peer is created. |
 | `role` | no | `"user"` | Who was speaking. |
 | `occurred_at` | no | now | When it was said, if backfilling. |
 
 Missing scopes, the session, and its links are created on demand.
 
-## The acting peer comes from your credential
+## Relaying somebody else's conversation
 
-A `peer_key` in the body is honoured only for internal callers that carry no
-peer of their own. An authenticated caller cannot attribute an observation to
-somebody else.
+An agent records turns it did not speak. Name the speaker in `peer_key` and the
+turn is attributed to that peer, not to the credential that sent it.
+
+A password session always speaks as itself, and a `peer_key` in the body is
+ignored. Nobody can post under another person's name.
+
+!!! warning "The key is trusted as supplied"
+    Per-peer authentication is not implemented yet. A machine credential can
+    attribute an observation to any peer in its Account, so treat the speaker as
+    claimed rather than verified.
+
+Relaying transfers no authority. The write keeps your credential's own roles and
+authorised scopes, so naming a peer with wider grants does not widen what you
+may write. An existing peer is resolved, never rewritten, so relaying an agent's
+key cannot re-file it as a person.
+
+### A two-speaker transcript
+
+Send each turn separately with the same `session_id` and the speaker's own
+`peer_key`. `$AGENT_KEY` is the relaying agent's API key:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:4000/api/v1/ingest \
+  -H "authorization: Bearer $AGENT_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+        "session_id": "standup-2026-03-04",
+        "scope_path": "/marketing/social",
+        "peer_key": "amelia",
+        "peer_name": "Amelia Osei",
+        "content": "I am handing campaign copy sign-off to Raj until Q4."
+      }'
+
+curl -fsS -X POST http://127.0.0.1:4000/api/v1/ingest \
+  -H "authorization: Bearer $AGENT_KEY" \
+  -H 'content-type: application/json' \
+  -d '{
+        "session_id": "standup-2026-03-04",
+        "scope_path": "/marketing/social",
+        "peer_key": "raj",
+        "content": "Understood. I will review copy on Mondays."
+      }'
+```
+
+Each named speaker joins the session participants, so a statement extracted from
+this window can be about Amelia or Raj. The relaying agent is not a subject of
+what it carried.
 
 ## What comes back
 

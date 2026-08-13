@@ -49,9 +49,17 @@ defmodule MemHouse.Retrieval.Query do
   Fields:
 
   * `account_id` — the tenant. Every statement filters on it.
-  * `actor` — the resolved caller. Its `peer_id` decides which `provisional`
-    statements are visible: only those whose subject is that peer. A nil
-    `peer_id` does not narrow them at all, so pass one on any peer-facing path.
+  * `actor` — the resolved caller. Its `peer_id` is the reader identity: it
+    decides which `provisional` statements are visible (only those about that
+    peer) and which personal ones are (again, only that peer's own). A
+    peer-facing query with no `peer_id` reads public statements only.
+  * `internal_reader?` — lifts the reader restriction entirely, for server-side
+    work that must see the whole corpus: projection rebuild, dream-time, and
+    the evaluation harness. It is never derived from request input, and it is
+    not the `:internal?` option of `MemHouse.Retrieval.retrieve/3`, which only
+    unlocks hand-picked strategy lists and grants no extra data. It defaults to
+    false, so a construction site that forgets it loses recall rather than
+    leaking.
   * `text` — the query string. Empty text makes the text-driven strategies
     report themselves inapplicable rather than returning everything.
   * `target` — `:knowledge`, `:documents`, or `:all`. Answer generation uses
@@ -85,7 +93,8 @@ defmodule MemHouse.Retrieval.Query do
     :query_embedding,
     scope_ids: [],
     seed_ids: [],
-    max_candidates: 50
+    max_candidates: 50,
+    internal_reader?: false
   ]
 
   @type t :: %__MODULE__{}

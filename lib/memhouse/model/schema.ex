@@ -41,6 +41,9 @@ defmodule MemHouse.Model.Schema.Extraction do
     claim must name a subject in prose. These checks give the repair loop a
     deterministic floor; the extractor still decides whether a supported fact
     is durable enough to propose.
+  - **Statements are about people.** A candidate naming a relaying agent, in
+    `subject_ref` or in its prose, is rejected. Knowledge filed against the
+    process that carried it is misattribution governance cannot detect.
   - **Subject is independent of source.** The model names the subject itself. A
     `peer` subject must be one of the known peer keys supplied in the context,
     and a `scope` subject must be exactly the current scope path. Nothing else
@@ -214,6 +217,7 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
          {:ok, subject_ref} <- valid_subject_ref(item, subject_type, context),
          :ok <- durable_statement(statement, subject_type, subject_ref),
+         :ok <- human_subject_statement(statement, context),
          {:ok, source_message_ids} <- source_message_ids(item, context),
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
@@ -368,6 +372,29 @@ defmodule MemHouse.Model.Schema.Extraction do
       true ->
         :ok
     end
+  end
+
+  # Knowledge is about people, not about the software that carried it. A relaying
+  # agent's own key and the generic ways a model refers to itself are refused in
+  # the statement text, not only in `subject_ref`: a claim about a human wearing
+  # the relay's name is misattribution that governance then treats as consented,
+  # because the "subject" is the process consenting to itself.
+  #
+  # Matching is case-insensitive and bounded by word edges, so a participant
+  # whose name merely contains a forbidden term is unaffected. Only terms the
+  # caller supplies are refused; nothing is inferred from the prose.
+  defp human_subject_statement(statement, context) do
+    context
+    |> Map.get(:forbidden_subject_terms, [])
+    |> Enum.find(&names_term?(statement, &1))
+    |> case do
+      nil -> :ok
+      _term -> {:error, ["statement must be about a person, not about the relaying agent"]}
+    end
+  end
+
+  defp names_term?(statement, term) do
+    String.match?(statement, ~r/\b#{Regex.escape(term)}\b/iu)
   end
 
   # Peer keys are opaque identities in some deployments (`agent-1`), while a

@@ -270,6 +270,11 @@ GateRule cannot waive it. Use this only for benchmarks, evaluations, or
 synthetic deployments without real subjects. MemHouse logs it at boot and
 reports it on `GET /api/ready`.
 
+It also widens Gate B: an `auto_place` matrix cell then places personal
+knowledge without a human. Restricted knowledge stays manual whatever is
+configured. The default is unchanged — leave this false and every personal
+item still waits for a person.
+
 An individual Account can be marked the same way without touching the whole
 deployment — see [Governance](../concepts/governance.md) for the
 account-level `consent_mode` setting, which an account administrator

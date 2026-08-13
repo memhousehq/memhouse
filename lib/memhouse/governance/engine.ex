@@ -1088,14 +1088,34 @@ defmodule MemHouse.Governance.Engine do
   defp evidence_rank("direct"), do: 1
   defp evidence_rank("indirect"), do: 0
 
-  # Gate B places automatically only when the cell says so, the sensitivity is
-  # not personal or restricted, and enough independent sources corroborate the
-  # item. Sensitive knowledge always needs a human placement decision.
-  defp auto_gate_b?(knowledge, rule, _target_level),
+  # Gate B places automatically only when the cell says so, the sensitivity may be
+  # placed without a human, and enough independent sources corroborate the item.
+  defp auto_gate_b?(knowledge, rule, _target_level, actor),
     do:
       rule.gate_b_mode == "auto_place" &&
-        knowledge.sensitivity in ["public", "internal"] &&
+        auto_placeable_sensitivity?(knowledge, actor) &&
         knowledge.corroboration_count >= rule.minimum_corroboration
+
+  # Public and internal knowledge is nobody's alone, so a matrix cell may place it.
+  #
+  # Personal knowledge belongs to its subject and normally waits for a person to
+  # place it. An Account that has declared it has no human subject — `consent_mode`
+  # `"auto"`, or an unattended deployment — is the one exception: consent there is
+  # settled and written as a real audited row before this gate is consulted, so
+  # holding the item would only park it forever with nobody to release it. That
+  # declaration is what a benchmark makes, and it is why a benchmark corpus becomes
+  # retrievable at all.
+  #
+  # Restricted knowledge is never placed automatically, whatever the Account has
+  # declared. A deployment-wide switch must not be able to reach the one band that
+  # exists to demand a human.
+  defp auto_placeable_sensitivity?(%{sensitivity: "restricted"}, _actor), do: false
+
+  defp auto_placeable_sensitivity?(%{sensitivity: "personal"} = knowledge, actor),
+    do: auto_consent?(knowledge.account_id, actor)
+
+  defp auto_placeable_sensitivity?(knowledge, _actor),
+    do: knowledge.sensitivity in ["public", "internal"]
 
   # Returns {outcome, consent}, where consent is the resolve_consent/5 result — reused by
   # evaluate_proposal/3's :defer branch so the same proposal never resolves (and, for the auto
@@ -1126,7 +1146,7 @@ defmodule MemHouse.Governance.Engine do
       end
 
     outcome =
-      if auto_gate_a?(knowledge, rule) && auto_gate_b?(knowledge, rule, target_level) &&
+      if auto_gate_a?(knowledge, rule) && auto_gate_b?(knowledge, rule, target_level, actor) &&
            consent_ok?,
          do: :accept,
          else: :defer

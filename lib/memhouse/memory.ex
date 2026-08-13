@@ -58,9 +58,9 @@ defmodule MemHouse.Memory do
 
   `attrs` may use atom or string keys; they are normalized to strings.
   `"scope_path"`, `"session_id"`, and `"content"` are required and a missing
-  one raises `KeyError`. `"peer_key"` is required as well, unless
-  `identity_actor` already identifies the Peer. Optional keys:
+  one raises `KeyError`. Optional keys:
 
+  - `"peer_key"` — who spoke the turn. See the three paths below.
   - `"peer_name"` — display name used when the Peer row is first created.
   - `"role"` — speaker role, defaults to `"user"`.
   - `"occurred_at"` — `DateTime` or ISO 8601 string. Anything unparseable
@@ -68,10 +68,17 @@ defmodule MemHouse.Memory do
   - `"account_key"` or `"account_id"` — internal Account selection, consulted
     only when `identity_actor` is `nil`.
 
+  Three paths decide who the turn is attributed to. A machine credential may
+  relay a conversation it was not part of, so a `"peer_key"` names the speaker
+  and the Peer is created on first use; the key is trusted as supplied, and
+  relaying transfers no authority — the write is still bounded by the calling
+  credential's own grants. A password session always speaks as its own Peer and
+  a `"peer_key"` in the body is ignored, so nobody can post under another
+  person's name. An internal caller carries no Peer and must supply
+  `"peer_key"`, which raises `KeyError` when absent.
+
   Missing scopes, sessions, session-scope links, and session participants are
-  created on the way in, so a caller never has to provision them first. An
-  authenticated caller always speaks as its own existing Peer; only the internal
-  `"peer_key"` path creates a Peer that does not exist yet.
+  created on the way in, so a caller never has to provision them first.
 
   Returns `{:ok, message}`, where `message` holds the message's public
   attributes with string keys. Extraction never runs in the caller. The
@@ -260,11 +267,14 @@ defmodule MemHouse.Memory do
   @doc false
   def document_observation(account_id, actor, attrs)
       when is_binary(account_id) and is_map(actor) and is_map(attrs) do
+    {subject_peer_keys, agent_peer_keys} = non_agent_peer_keys(account_id, actor)
+
     observation =
       attrs
       |> normalize_attrs()
       |> Map.put("source_type", "document")
-      |> Map.put("known_peer_keys", known_peer_keys(account_id, actor))
+      |> Map.put("known_peer_keys", subject_peer_keys)
+      |> Map.put("agent_peer_keys", agent_peer_keys)
 
     context = %{
       account_id: account_id,
@@ -301,14 +311,17 @@ defmodule MemHouse.Memory do
 
   - `"scope_path"` — defaults to `"/poc"`. The named scope and every ancestor
     on its path are read; scopes the caller may not see simply do not appear.
+  - `"peer_key"` — the peer the rows are read for, resolved and applied exactly
+    as in `search/2`.
   - `"state"` — lifecycle state, defaults to `"active"`.
   - `"limit"` — row cap, defaults to 12.
 
-  With the default state and an authenticated Peer, the result is everything
-  `active` plus that Peer's own `provisional` items — provisional knowledge is
-  usable only by the peer it is about and must not leak to anyone else. An
-  internal actor that carries no Peer sees all provisional items. Any other
-  requested state matches exactly, with no provisional widening.
+  The reader rule is the one retrieval applies, because this is the other route
+  to the same statements. With the default state the result is everything
+  `active` the reader may see, plus that reader's own `provisional` items —
+  provisional knowledge is usable only by the peer it is about. Any other
+  requested state matches exactly, with no provisional widening. Internal
+  callers read the corpus unnarrowed.
 
   Rows come back highest confidence first, ties broken by most recently
   inserted. Each row is the knowledge item's public attributes with string
@@ -323,7 +336,8 @@ defmodule MemHouse.Memory do
 
       rows =
         with_account(filters, fn account, actor ->
-          scopes = visible_scopes(account.id, actor, Map.get(filters, "scope_path", "/poc"))
+          {reader, internal_reader?} = reader_and_posture!(account, actor, filters)
+          scopes = visible_scopes(account.id, reader, Map.get(filters, "scope_path", "/poc"))
           scope_ids = Enum.map(scopes, & &1.id)
           scope_paths = Map.new(scopes, &{&1.id, &1.path})
 
@@ -334,11 +348,11 @@ defmodule MemHouse.Memory do
           })
 
           scope_ids
-          |> knowledge_read_query(state, actor)
+          |> knowledge_read_query(state, reader, internal_reader?)
           |> Ash.Query.sort(confidence: :desc, inserted_at: :desc)
           |> Ash.Query.limit(limit)
           |> Ash.Query.set_tenant(account.id)
-          |> Ash.read!(actor: actor)
+          |> Ash.read!(actor: reader)
           |> Enum.map(fn item ->
             item
             |> record_to_map()
@@ -359,6 +373,12 @@ defmodule MemHouse.Memory do
   - `"query"` — the search text, defaults to an empty string.
   - `"scope_path"` — defaults to `"/poc"`; the scope and its ancestors are
     searched, so knowledge written higher in the tree is reachable from below.
+  - `"peer_key"` — the peer the results are read for, trusted as supplied.
+    A reader sees public and internal statements, its own, scope-subject
+    statements, and anything promoted to scope or account level. A machine
+    credential that names no reader is reading for nobody and sees public
+    statements only; a password session with no `"peer_key"` reads as itself.
+    Raises `ArgumentError` when the key names no Peer.
   - `"profile"` — named retrieval profile, defaults to `"balanced"`.
   - `"limit"` — candidate cap, defaults to 12. It bounds each strategy's
     contribution as well as the fused list.
@@ -423,17 +443,19 @@ defmodule MemHouse.Memory do
 
       {retrieval, scope_count} =
         with_account(filters, fn account, actor ->
+          {reader, internal_reader?} = reader_and_posture!(account, actor, filters)
+
           scopes =
             account.id
             |> visible_scopes(
-              actor,
+              reader,
               scope_path,
               Map.get(filters, "include_cross_links", false) in [true, "true", "1"]
             )
 
           retrieval_query = %RetrievalQuery{
             account_id: account.id,
-            actor: actor,
+            actor: reader,
             scope_ids: Enum.map(scopes, & &1.id),
             text: query,
             # Internal knob: `ask/2` narrows retrieval to knowledge so an answer
@@ -442,7 +464,8 @@ defmodule MemHouse.Memory do
             as_of: parse_datetime(Map.get(filters, "as_of")),
             min_score: parse_float(Map.get(filters, "min_score")),
             source_filters: Map.get(filters, "source_filters", %{}),
-            max_candidates: limit
+            max_candidates: limit,
+            internal_reader?: internal_reader?
           }
 
           # Only a server-side identity, or an authorized diagnostic grant, counts
@@ -535,7 +558,9 @@ defmodule MemHouse.Memory do
 
     result =
       attrs
-      |> Map.take(~w(query scope_path profile include_cross_links as_of min_score source_filters))
+      |> Map.take(
+        ~w(query scope_path profile include_cross_links as_of min_score source_filters peer_key)
+      )
       |> Map.put("_diagnostic", grant)
       |> search(actor)
 
@@ -646,8 +671,10 @@ defmodule MemHouse.Memory do
   a projection miss may fall back to a live retrieval run, and that fallback is
   reported in the result rather than hidden.
 
-  `attrs` accepts `"scope_path"` (defaults to `"/poc"`), `"session_id"`, and
-  `"budget_chars"`. Returns a string-keyed map including `"session_summary"`,
+  `attrs` accepts `"scope_path"` (defaults to `"/poc"`), `"session_id"`,
+  `"budget_chars"`, and `"peer_key"` — the peer the context is assembled for,
+  resolved and applied exactly as in `search/2`. It selects the peer-profile
+  slice as well as what the live fallback may return. Returns a string-keyed map including `"session_summary"`,
   `"scope_cards"`, `"entity_cards"`, `"peer_profile"`, `"knowledge"`,
   `"projection_cache_hit"`, and `"fast_fallback"` — the last two describing how the answer was produced:
   whether any stored projection was reused, and whether a miss fell back to
@@ -661,8 +688,9 @@ defmodule MemHouse.Memory do
 
       context =
         with_account(attrs, fn account, actor ->
-          scopes = visible_scopes(account.id, actor, Map.get(attrs, "scope_path", "/poc"))
-          MemHouse.Context.get(account, actor, scopes, attrs)
+          {reader, internal_reader?} = reader_and_posture!(account, actor, attrs)
+          scopes = visible_scopes(account.id, reader, Map.get(attrs, "scope_path", "/poc"))
+          MemHouse.Context.get(account, reader, scopes, attrs, internal_reader?)
         end)
 
       Observability.set_attributes(:memory, %{
@@ -715,27 +743,28 @@ defmodule MemHouse.Memory do
     )
   end
 
-  # An authenticated caller always speaks as its own Peer; a `"peer_key"` in the
-  # request body is ignored on this path, so nobody can post observations under
-  # someone else's name. The role grants are re-resolved instead of reused from
-  # authentication because the scope being written to may have been created a few
-  # lines earlier in this very request. The Peer row is loaded with an
-  # Account-level system actor, since the caller's own scope grants are precisely
-  # what is being recomputed and cannot be relied on yet.
-  defp request_peer_and_actor!(account, %Actor{peer_id: peer_id} = actor, _attrs)
+  # Resolves the Peer a turn is attributed to, and the actor that authorizes the
+  # write. They are not always the same identity.
+  #
+  # The role grants are re-resolved instead of reused from authentication because
+  # the scope being written to may have been created a few lines earlier in this
+  # very request. The Peer row is loaded with an Account-level system actor, since
+  # the caller's own scope grants are precisely what is being recomputed and
+  # cannot be relied on yet.
+  defp request_peer_and_actor!(account, %Actor{peer_id: peer_id} = actor, attrs)
        when is_binary(peer_id) do
     system = Actor.for_account(account, role: :system)
-    peer = read_one_by_id!(Peer, peer_id, account.id, system)
+    credential_peer = read_one_by_id!(Peer, peer_id, account.id, system)
 
     refreshed_actor =
-      RoleResolver.resolve(account, peer,
+      RoleResolver.resolve(account, credential_peer,
         identity_id: actor.identity_id,
         kind: actor.identity_kind,
         assurance: actor.assurance,
         api_key: %{scope_id: actor.credential_scope_id}
       )
 
-    {peer, refreshed_actor}
+    {relayed_peer!(account, refreshed_actor, credential_peer, attrs), refreshed_actor}
   end
 
   # Internal callers (background work, the evaluation harness) carry no Peer, so
@@ -751,6 +780,104 @@ defmodule MemHouse.Memory do
       )
 
     {peer, actor}
+  end
+
+  # An agent that relays a conversation is not a party to it. When a machine
+  # credential names a `"peer_key"` other than its own, the turn is attributed to
+  # that Peer, because a transcript's speakers — not the process that forwarded
+  # them — are who statements are about.
+  #
+  # Authority does not travel with the attribution: the returned actor stays the
+  # credential's own, so relaying as a Peer with wider grants cannot widen what
+  # the request may write. The named key is trusted on the credential's word;
+  # per-Peer authentication is not implemented yet, and until it is, a machine
+  # credential can attribute an observation to any Peer in its Account.
+  #
+  # A human password session always speaks as itself. Somebody signed in as
+  # themselves has no relaying role to play, and honouring the field there would
+  # only let one person post under another's name.
+  defp relayed_peer!(account, %Actor{identity_kind: kind} = actor, credential_peer, attrs)
+       when kind in [:api_key, :system] do
+    case Map.get(attrs, "peer_key") do
+      key when is_binary(key) and key != "" and key != credential_peer.key ->
+        # Resolved before it is created. `Peer.:ensure` lists `kind` among its
+        # upsert fields and `ensure_peer!/4` always says "human", so creating
+        # blindly would rewrite an existing agent Peer as a person — and an agent
+        # that passes for human is back on the subject allowlist.
+        Peer
+        |> Ash.Query.filter(key == ^key)
+        |> Ash.Query.limit(1)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+        |> case do
+          %Peer{} = existing -> existing
+          nil -> ensure_peer!(account.id, actor, key, Map.get(attrs, "peer_name"))
+        end
+
+      _own_or_absent ->
+        credential_peer
+    end
+  end
+
+  defp relayed_peer!(_account, _actor, credential_peer, _attrs), do: credential_peer
+
+  # Who a read is performed for, and whether it is performed for anybody at all.
+  #
+  # Retrieval is peer-scoped: personal knowledge belongs to its subject, and only
+  # what has been promoted to a scope is shared. So a read needs a reader. An
+  # agent calling on somebody's behalf names them in `"peer_key"`, trusted on the
+  # same terms as ingest, and reads what that peer may read — without inheriting
+  # that peer's grants, which stay the calling credential's.
+  #
+  # Only `peer_id` moves. `role`, `scope_ids`, and `scope_roles` stay the calling
+  # credential's, which is what keeps a scope-restricted agent from reaching further
+  # by naming a better-placed peer. That matters more than it looks:
+  # `KnowledgeItem`'s read policy grants a self-view on `subject_peer_id ==
+  # actor(:peer_id)` that ignores scope entirely. Every read path here also filters
+  # on the scopes resolved from this actor, so the two together still bound the
+  # result to the credential's reach — remove that filter and the self-view becomes
+  # an Account-wide read.
+  #
+  # The internal posture is derived from the absence of an authenticated identity,
+  # never from the attributes: `identity_actor/1` matches a real `%Actor{}` struct,
+  # which decoded JSON cannot produce, so a request cannot ask to become internal.
+  # It covers background work and the evaluation harness, which read the corpus as
+  # it is because there is nobody to read it for.
+  #
+  # Raises `ArgumentError` for a `"peer_key"` naming no Peer. Falling back to the
+  # credential's own peer would answer a question nobody asked.
+  defp reader_and_posture!(account, actor, attrs) do
+    case Map.get(attrs, "peer_key") do
+      key when is_binary(key) and key != "" ->
+        {%{actor | peer_id: reader_peer!(account, key).id}, false}
+
+      _absent ->
+        {default_reader(actor), is_nil(actor.peer_id) and is_nil(identity_actor(attrs))}
+    end
+  end
+
+  # A person signed in as themselves is the reader; there is nobody else they could be.
+  #
+  # A machine credential is not. It holds a Peer so it can be authorized, but that Peer is
+  # infrastructure, not a party to anybody's conversation, and reading as it would hand an
+  # agent whatever an agent happens to be the subject of. An agent that does not say who it
+  # is asking for is asking for nobody, and gets the public corpus.
+  defp default_reader(%Actor{identity_kind: :password} = actor), do: actor
+  defp default_reader(%Actor{identity_kind: :api_key} = actor), do: %{actor | peer_id: nil}
+  defp default_reader(actor), do: actor
+
+  defp reader_peer!(account, key) do
+    system = Actor.for_account(account, role: :system)
+
+    Peer
+    |> Ash.Query.filter(key == ^key)
+    |> Ash.Query.limit(1)
+    |> Ash.Query.set_tenant(account.id)
+    |> Ash.read_one!(actor: system)
+    |> case do
+      %Peer{} = peer -> peer
+      nil -> raise ArgumentError, "peer_key names no peer in this account"
+    end
   end
 
   # Creates every missing scope along the path and returns the deepest one.
@@ -826,8 +953,8 @@ defmodule MemHouse.Memory do
 
   # Builds the extractor's input: the raw message plus the surrounding facts it
   # needs to attribute a statement — who spoke (peer key), where it was said
-  # (scope path), and every Peer key in the Account, so the model can only name a
-  # peer that actually exists.
+  # (scope path), and who took part in the conversation, so the model can only
+  # name a peer who was actually there.
   defp fetch_message!(account, actor, message_id) do
     message =
       Message
@@ -850,12 +977,16 @@ defmodule MemHouse.Memory do
       |> Enum.sort_by(&{&1.occurred_at, &1.inserted_at, &1.id})
       |> Enum.map(&message_with_peer_key(&1, account.id, actor))
 
+    {subject_peer_keys, agent_peer_keys} =
+      session_peer_keys(account.id, actor, message.session_id)
+
     message
     |> message_with_peer_key(account.id, actor)
     |> Map.merge(%{
       "scope_path" => scope.path,
       "account_key" => account.key,
-      "known_peer_keys" => known_peer_keys(account.id, actor),
+      "known_peer_keys" => subject_peer_keys,
+      "agent_peer_keys" => agent_peer_keys,
       "window_messages" => window_messages
     })
   end
@@ -1182,15 +1313,51 @@ defmodule MemHouse.Memory do
 
   defp record_extraction_result({:error, error}), do: {:error, error}
 
-  # The extractor may only name a peer that already exists, so it is handed the
-  # Account's full key list. Sorted so the prompt is byte-stable between runs,
-  # which keeps recorded evaluation runs reproducible.
-  defp known_peer_keys(account_id, actor) do
+  # Who a statement extracted from this session may be about: the peers who took
+  # part in it. An agent that relayed the conversation enrols as a participant
+  # like anyone else, and is split out here — an infrastructure identity is never
+  # the subject of a personal claim, and an allowlist holding one is how a whole
+  # corpus ends up filed against a robot.
+  #
+  # Returns `{subject_keys, agent_keys}`. The second list is not an allowlist: it
+  # is what statement text is checked against, so a candidate that names the
+  # relaying agent is rejected rather than stored.
+  #
+  # Membership is not filtered by `left_at`. A peer who has since left still
+  # spoke the turns in the window.
+  defp session_peer_keys(account_id, actor, session_id) do
+    peer_ids =
+      SessionParticipant
+      |> Ash.Query.filter(session_id == ^session_id)
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.read!(actor: actor)
+      |> Enum.map(& &1.peer_id)
+
+    Peer
+    |> Ash.Query.filter(id in ^peer_ids)
+    |> Ash.Query.sort(key: :asc)
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.read!(actor: actor)
+    |> split_peer_keys()
+  end
+
+  # A document has no conversational turn and therefore no participant set, so
+  # the allowlist stays Account-wide. Removing agents still matters: a document
+  # is uploaded by a peer, never authored by the machine that carried it.
+  #
+  # Sorted so the prompt is byte-stable between runs, which keeps recorded
+  # evaluation runs reproducible.
+  defp non_agent_peer_keys(account_id, actor) do
     Peer
     |> Ash.Query.sort(key: :asc)
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
-    |> Enum.map(& &1.key)
+    |> split_peer_keys()
+  end
+
+  defp split_peer_keys(peers) do
+    {agents, subjects} = Enum.split_with(peers, &(&1.kind == "agent"))
+    {Enum.map(subjects, & &1.key), Enum.map(agents, & &1.key)}
   end
 
   # Who a statement is about, resolved independently of who said it. The returned
@@ -1349,28 +1516,57 @@ defmodule MemHouse.Memory do
 
   defp put_identity_actor(attrs, _actor), do: attrs
 
-  # Visibility rule for the default listing. Provisional knowledge is usable only
-  # by the peer it is about, so an authenticated caller sees active items plus its
-  # own provisional ones. An internal actor with no peer (jobs, evaluation runs)
-  # sees every provisional item. Any explicitly requested state matches exactly,
-  # with no provisional widening.
-  defp knowledge_read_query(scope_ids, "active", %{peer_id: peer_id})
+  # Visibility rule for the listing, matching what retrieval enforces — this is the
+  # other route to the same statements, and a rule applied on only one of them is
+  # not a rule. Provisional knowledge is usable only by the peer it is about, and
+  # personal knowledge stays with its subject until promotion carries it wider.
+  # Any explicitly requested state matches exactly, with no provisional widening.
+  #
+  # An internal reader (jobs, evaluation runs) reads the corpus unnarrowed.
+  defp knowledge_read_query(scope_ids, "active", _actor, true) do
+    KnowledgeItem
+    |> Ash.Query.filter(scope_id in ^scope_ids and state in ["active", "provisional"])
+  end
+
+  defp knowledge_read_query(scope_ids, state, _actor, true) do
+    KnowledgeItem
+    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state)
+  end
+
+  defp knowledge_read_query(scope_ids, "active", %{peer_id: peer_id}, false)
        when is_binary(peer_id) do
     KnowledgeItem
     |> Ash.Query.filter(
       scope_id in ^scope_ids and
         (state == "active" or (state == "provisional" and subject_peer_id == ^peer_id))
     )
+    |> readable_by_peer(peer_id)
   end
 
-  defp knowledge_read_query(scope_ids, "active", _actor) do
-    KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state in ["active", "provisional"])
-  end
-
-  defp knowledge_read_query(scope_ids, state, _actor) do
+  defp knowledge_read_query(scope_ids, state, %{peer_id: peer_id}, false)
+       when is_binary(peer_id) do
     KnowledgeItem
     |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state)
+    |> readable_by_peer(peer_id)
+  end
+
+  # A reader with no peer identifies nobody, so only public statements are theirs to read.
+  defp knowledge_read_query(scope_ids, "active", _actor, false) do
+    KnowledgeItem
+    |> Ash.Query.filter(scope_id in ^scope_ids and state == "active" and sensitivity == "public")
+  end
+
+  defp knowledge_read_query(scope_ids, state, _actor, false) do
+    KnowledgeItem
+    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state and sensitivity == "public")
+  end
+
+  defp readable_by_peer(query, peer_id) do
+    Ash.Query.filter(
+      query,
+      sensitivity in ["public", "internal"] or is_nil(subject_peer_id) or
+        subject_peer_id == ^peer_id or target_level in ["scope", "account"]
+    )
   end
 
   defp ingest_run_status(%{extraction_completed_at: completed_at}, _run)
@@ -1414,7 +1610,7 @@ defmodule MemHouse.Memory do
 
   defp ingest_status_knowledge(account_id, actor, message) do
     [message.scope_id]
-    |> knowledge_read_query("active", actor)
+    |> knowledge_read_query("active", actor, actor.identity_kind == :system)
     |> Ash.Query.filter(^message.id in source_message_ids)
     |> Ash.Query.sort(inserted_at: :asc, id: :asc)
     |> Ash.Query.set_tenant(account_id)

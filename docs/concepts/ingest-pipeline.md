@@ -25,6 +25,25 @@ All four commit or roll back together, preventing observations without audit
 entries and jobs without observations. Oban shares PostgreSQL, so job insertion
 participates in the transaction.
 
+## Who a turn is attributed to
+
+A turn belongs to the speaker, not to the credential that sent it. An agent that
+relays somebody else's conversation names that speaker as `peer_key` in the
+body. The Peer is created on first use, and an existing Peer is resolved rather
+than rewritten, so relaying an agent's key cannot re-file it as a person.
+
+The named key is trusted. Per-peer authentication is not implemented yet, so a
+machine credential can attribute an observation to any Peer in its Account.
+
+Authority does not travel with the attribution. The write keeps the calling
+credential's own roles and authorized scopes, so speaking as a Peer with wider
+grants cannot widen what the request may write.
+
+A password session always speaks as itself and ignores a `peer_key` in the body.
+An internal caller carries no Peer and must supply one. The audit entry records
+both identities: the relaying credential as the actor, and the speaker as
+`speaker_peer_id`.
+
 ## What happens after the response
 
 Extraction always runs after the response in the durable `ingest` job lane:
@@ -81,7 +100,7 @@ is automatic and has no operator setting.
 Candidates must match schemas derived from their Ash resources. Invalid output
 gets bounded repair attempts, then rejection.
 
-Extraction also does five things a naive extractor gets wrong:
+Extraction also does what a naive extractor gets wrong:
 
 - **Keeps durable knowledge.** The extractor records stable facts,
   preferences, relationships, possessions, skills, commitments, plans, and
@@ -96,6 +115,15 @@ Extraction also does five things a naive extractor gets wrong:
   model is asked to rewrite it; if it cannot, the observation waits for retry.
 - **Resolves subject independently of source.** Who a statement is about is
   decided on its own, not assumed to be the speaker.
+- **Bounds who a statement may be about.** The model is offered the session's
+  participants, minus agent peers, and a peer subject must be one of them. The
+  speaker is on that list only because it took part, not automatically, so an
+  agent that merely relayed the conversation is not a possible subject. Document
+  extraction has no session and uses the Account's non-agent peers instead.
+- **Refuses a claim about a machine.** Validation rejects a statement that names
+  an agent peer key, or a generic machine referent such as "the assistant", "the
+  agent", "the ai", "the chatbot", or "the bot". Such a statement is a claim
+  about a person, misfiled onto the process that carried it.
 - **Derives source evidence.** A statement from its own peer subject is direct;
   every other source-to-subject relationship is indirect and receives the
   third-party confidence discount.

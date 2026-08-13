@@ -395,10 +395,11 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         "Avery's medical appointment is scheduled for next Thursday."
       )
 
-    # consent_mode: "auto" settles consent, but it cannot widen personal
-    # knowledge automatically. Sensitivity requires a human Gate B placement.
+    # consent_mode: "auto" settles consent, and settled consent is what personal
+    # knowledge was waiting for. An Account that has declared it has no human
+    # subject has nobody left to hold the item for.
     assert knowledge.sensitivity == "personal"
-    assert knowledge.state == "held"
+    assert knowledge.state == "active"
 
     consent =
       DataLayer.with_actor(actor, fn account, current_actor ->
@@ -413,6 +414,37 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert consent.channel == "auto:account_mode"
     assert consent.target_scope_id == knowledge.scope_id
     assert consent.decided_by_peer_id == nil
+  end
+
+  test "restricted knowledge is held even when the Account consents automatically" do
+    %{actor: actor} = bootstrap_human!("auto-consent-restricted")
+
+    create_gate_rule!(actor, %{
+      target_level: "scope",
+      sensitivity: "restricted",
+      gate_a_mode: "auto_keep",
+      gate_b_mode: "auto_place",
+      minimum_confidence: 0.0,
+      minimum_corroboration: 1
+    })
+
+    set_consent_mode!(actor, "auto")
+
+    knowledge =
+      propose_direct!(
+        actor,
+        "/governance/auto-consent-restricted",
+        "scope",
+        "Avery's passport number is on file.",
+        sensitivity: "restricted"
+      )
+
+    # The one band an Account-wide declaration must never reach. A matrix cell says
+    # auto_place and consent is settled, and it is still held: restricted knowledge
+    # exists to require a person, so a switch that could place it would empty the
+    # band of its only meaning.
+    assert knowledge.sensitivity == "restricted"
+    assert knowledge.state == "held"
 
     assert Engine.decide(actor, validation_for!(actor, knowledge.id).id, "approve").knowledge.state ==
              "active"
@@ -465,7 +497,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         "Avery's medical appointment is scheduled for next Thursday."
       )
 
-    assert knowledge.state == "held"
+    assert knowledge.state == "active"
 
     consent =
       DataLayer.with_actor(actor, fn account, current_actor ->
@@ -936,7 +968,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   # Engine.evaluate_proposal/3 the same way MemHouse.Memory's real call site does — with no
   # target_scope_id opt — which is exactly the case that had no route to a consent request at
   # all before this change.
-  defp propose_direct!(actor, scope_path, target_level, statement) do
+  defp propose_direct!(actor, scope_path, target_level, statement, overrides \\ []) do
     # Bootstraps the scope through an ordinary, non-personal ingest, since scopes are otherwise
     # created on demand only by that path.
     ingest!(actor, "propose-direct-bootstrap-#{scope_path}", scope_path, "The team uses Elixir.")
@@ -968,7 +1000,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         kind: "fact",
         confidence: 1.0,
         evidence_level: "direct",
-        sensitivity: "personal",
+        sensitivity: Keyword.get(overrides, :sensitivity, "personal"),
         state: "proposed",
         target_level: target_level,
         extracting_model: "test:direct-propose",

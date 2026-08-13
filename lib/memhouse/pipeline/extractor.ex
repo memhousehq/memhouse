@@ -49,7 +49,11 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-7"
+  @prompt_version "extract-8"
+
+  # Ways a model names the process instead of a person. Deployment-specific
+  # identities are added per observation; these hold everywhere.
+  @generic_machine_referents ["the assistant", "the agent", "the ai", "the chatbot", "the bot"]
 
   @doc """
   The identity of the extraction-and-pipeline contract this build implements.
@@ -119,6 +123,11 @@ defmodule MemHouse.Pipeline.Extractor do
         message. A statement about a peer must name that peer directly. Do not
         invent facts.
 
+        An observation may be relayed by an agent that was not part of the
+        conversation. The agent is never a subject and must never appear in a
+        statement. Never write "the assistant", "the agent", or a relaying
+        identity as the person a claim is about.
+
         Start each candidate with concise reasoning, then its natural-language
         statement, then confidence_percentage. Rate your confidence percentage
         on an integer scale from 1 to 100 (where 1 is completely uncertain and
@@ -146,10 +155,10 @@ defmodule MemHouse.Pipeline.Extractor do
       %{
         role: "user",
         content: """
-        Source peer key: #{schema_context.source_peer_key}
-        Source role: #{Map.get(message, "role", "user")}
+        Speaker peer key: #{schema_context.source_peer_key}
+        Speaker role: #{Map.get(message, "role", "user")}
         Current scope: #{schema_context.scope_path}
-        Known peer keys: #{Enum.join(schema_context.known_peer_keys, ", ")}
+        Conversation participants: #{Enum.join(schema_context.known_peer_keys, ", ")}
         Observed at: #{observed_at(schema_context.occurred_at)}
 
         Anchored observation:
@@ -207,9 +216,10 @@ defmodule MemHouse.Pipeline.Extractor do
   # standalone callers that pass no context (tooling and tests); the pipeline
   # always supplies the real Account, scope, and peer.
   #
-  # The source peer key is appended to the known-peer list unconditionally: a
-  # speaker must always be nameable as a subject of their own statement, even if
-  # the caller forgot to include them.
+  # The known-peer list is taken as given. The speaker used to be appended to it
+  # unconditionally, which made an agent relaying somebody else's conversation a
+  # legal subject of claims about them; the caller now decides who was actually
+  # present.
   defp schema_context(message, context) do
     source_peer_key = Map.fetch!(message, "peer_key")
 
@@ -228,13 +238,23 @@ defmodule MemHouse.Pipeline.Extractor do
     # Falls back to now only for a standalone caller that assembled an
     # observation without one. Both pipeline paths always carry a stored time.
     |> Map.put(:occurred_at, Map.get(message, "occurred_at") || MemHouse.Clock.utc_now())
-    |> Map.put(
-      :known_peer_keys,
-      message
-      |> Map.get("known_peer_keys", [source_peer_key])
-      |> Kernel.++([source_peer_key])
-      |> Enum.uniq()
-    )
+    |> Map.put(:known_peer_keys, Map.get(message, "known_peer_keys", [source_peer_key]))
+    |> Map.put(:forbidden_subject_terms, forbidden_subject_terms(message))
+  end
+
+  # Identities a statement may not be written about, whatever the model proposes.
+  #
+  # The subject allowlist already stops a machine identity becoming
+  # `subject_ref`, but nothing stopped one appearing in the prose — a statement
+  # like "The assistant is allergic to shellfish" is a claim about a person,
+  # misfiled onto the process that carried it. Governance then reads that
+  # subject as having consented to itself.
+  #
+  # Two sources: the Account's agent peers, which the caller supplies because it
+  # is the only side that knows which identities are machines, and the generic
+  # ways a model refers to itself.
+  defp forbidden_subject_terms(message) do
+    Enum.uniq(Map.get(message, "agent_peer_keys", []) ++ @generic_machine_referents)
   end
 
   defp window_text(messages, fallback_occurred_at) do

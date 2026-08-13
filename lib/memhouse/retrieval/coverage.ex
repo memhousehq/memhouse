@@ -31,17 +31,18 @@ defmodule MemHouse.Retrieval.Coverage do
   Reads index coverage for several scopes at once.
 
   `scope_ids` must already be the scopes the caller may read; this function
-  filters by them, it does not derive them. `peer_id` narrows provisional
-  statements to their subject and should be the caller's peer id on any
-  peer-facing path; nil disables the narrowing and is for system callers.
+  filters by them, it does not derive them. `peer_id` is the reader and should
+  be the caller's peer id on any peer-facing path. `internal_reader?` counts the
+  whole corpus and belongs to the rebuild that has to cover it; a peer-facing
+  caller passes false, and with a nil peer that counts public statements only.
 
   Returns a map keyed by scope id. Every requested scope is present, so a scope
   with no statements reads as zeros rather than as a missing key.
   """
-  def scopes(account_id, scope_ids, peer_id \\ nil) do
+  def scopes(account_id, scope_ids, peer_id, internal_reader?) do
     measured =
       account_id
-      |> Store.index_coverage(scope_ids, peer_id)
+      |> Store.index_coverage(scope_ids, peer_id, internal_reader?)
       |> Map.new(fn row ->
         statements = row["statement_count"]
         embedded = row["embedded_count"]
@@ -64,8 +65,8 @@ defmodule MemHouse.Retrieval.Coverage do
   @doc """
   Reads index coverage for one scope, zero-filled when the scope holds nothing.
   """
-  def scope(account_id, scope_id, peer_id \\ nil) do
-    account_id |> scopes([scope_id], peer_id) |> Map.fetch!(scope_id)
+  def scope(account_id, scope_id, peer_id, internal_reader?) do
+    account_id |> scopes([scope_id], peer_id, internal_reader?) |> Map.fetch!(scope_id)
   end
 
   # A scope with nothing to index is fully indexed, so an alert on a low ratio

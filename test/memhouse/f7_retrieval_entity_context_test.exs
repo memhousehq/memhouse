@@ -1994,6 +1994,18 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       pipeline = pipeline_actor(actor)
       source_ids = Enum.map([first, second, third], & &1.knowledge.id)
 
+      # The third statement is personal and about a peer, so it reaches a shared card only once
+      # it has been promoted above peer level — which is where its subject agreed to the wider
+      # audience. Without this the card would be built from two sources and carry neither the
+      # summary nor the strictest sensitivity the rest of this test checks.
+      GovernanceEngine.transition!(
+        third.knowledge,
+        pipeline,
+        %{target_level: "scope"},
+        reason: "f7_entity_card_promoted",
+        channel: "pipeline"
+      )
+
       entity =
         create!(
           Entity,
@@ -2251,7 +2263,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     coverage =
       first.account.id
-      |> MemHouse.Retrieval.index_coverage([first.scope.id])
+      |> MemHouse.Retrieval.index_coverage([first.scope.id], nil, true)
       |> Map.fetch!(first.scope.id)
 
     assert coverage.statement_count == 3
@@ -2601,7 +2613,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     # The scope holds a governed statement and no vectors — exactly the state a cancelled
     # projection refresh leaves behind, and the state that was previously unobservable.
-    before = MemHouse.Retrieval.index_coverage(seeded.account.id, [seeded.scope.id])
+    before = MemHouse.Retrieval.index_coverage(seeded.account.id, [seeded.scope.id], nil, true)
 
     assert %{
              statement_count: 1,
@@ -2616,7 +2628,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     # A scope that was never written to reads as zeros rather than as an absent key, and
     # counts as covered: there is nothing to index, so an alert on the ratio must not fire.
     empty_scope_id = Ecto.UUID.generate()
-    empty = MemHouse.Retrieval.index_coverage(seeded.account.id, [empty_scope_id])
+    empty = MemHouse.Retrieval.index_coverage(seeded.account.id, [empty_scope_id], nil, true)
 
     assert %{statement_count: 0, embedded_count: 0, coverage: 1.0} =
              Map.fetch!(empty, empty_scope_id)
@@ -2626,7 +2638,9 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert {:ok, %{index: %{indexed: 1}}} =
              MemHouse.Retrieval.rebuild_scope(seeded.account.id, seeded.scope.id)
 
-    after_rebuild = MemHouse.Retrieval.index_coverage(seeded.account.id, [seeded.scope.id])
+    after_rebuild =
+      MemHouse.Retrieval.index_coverage(seeded.account.id, [seeded.scope.id], nil, true)
+
     coverage = Map.fetch!(after_rebuild, seeded.scope.id)
 
     assert coverage.statement_count == 1
@@ -2703,7 +2717,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       [Ecto.UUID.dump!(first.account.id), Ecto.UUID.dump!(second.knowledge.id)]
     )
 
-    coverage = MemHouse.Retrieval.index_coverage(first.account.id, [first.scope.id])
+    coverage = MemHouse.Retrieval.index_coverage(first.account.id, [first.scope.id], nil, true)
     coverage = Map.fetch!(coverage, first.scope.id)
 
     assert coverage.statement_count == 2
