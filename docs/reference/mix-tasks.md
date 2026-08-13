@@ -12,6 +12,7 @@ listed where available.
 | `memhouse.portability.import` | Load or verify an archive |
 | `memhouse.reembed` | Enqueue or inspect an embedding transition |
 | `memhouse.model.check` | Probe structured output for every generative role |
+| `memhouse.governance.autoshare` | Let one Account keep and place knowledge without a human |
 | `memhouse.eval.smoke` | Developer sanity pass over the real write/read path |
 | `memhouse.eval.benchmark` | Run one benchmark fixture and score it |
 | `memhouse.eval.release` | Run the deterministic release matrix |
@@ -134,6 +135,47 @@ provider to reach, so the command does not fail on it.
 The probe uses the roles from deployment configuration, sends the configured
 timeouts and output caps unchanged, and writes no usage row. A per-Account role
 override is not covered.
+
+---
+
+## `memhouse.governance.autoshare`
+
+```bash
+mix memhouse.governance.autoshare --account-key eval-benchmark
+```
+
+| Switch | Notes |
+| --- | --- |
+| `--account-key`, `-a` | Required. Names the Account to configure. Raises when absent or unknown |
+
+Writes nine Account-wide gate rule cells — `peer`, `scope`, and `account`
+target level crossed with `public`, `internal`, and `personal` sensitivity —
+and prints the count. An existing Account-wide cell is updated in place. Each
+cell gets:
+
+| Field | Value |
+| --- | --- |
+| `gate_a_mode` | `auto_keep` |
+| `gate_b_mode` | `auto_place` |
+| `minimum_confidence` | `0.0` |
+| `minimum_evidence_level` | `indirect` |
+| `minimum_corroboration` | `1` |
+| `requires_consent` | `false` |
+| `active` | `true` |
+
+`restricted` gets no cell. No cell can place it automatically.
+
+The task does not change consent. Personal knowledge also needs its subject's
+agreement, which `requires_consent: false` cannot waive, and only a human
+account administrator may declare an Account has no subject to give it. The
+task prints a reminder when neither that Account's `consent_mode` is `auto` nor
+`MEMHOUSE_GOVERNANCE_UNATTENDED` is true — see
+[Governance](../concepts/governance.md#consent-for-personal-knowledge).
+
+!!! danger "It loosens governance for the whole Account"
+    Every proposal except `restricted` then bypasses human review, held back
+    only by consent. Run it on a benchmark or evaluation Account, never on one
+    holding real memory.
 
 ---
 

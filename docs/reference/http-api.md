@@ -122,6 +122,8 @@ Records one raw observation. The only write path an agent has.
 | `session_id` | yes | — | Created on demand |
 | `scope_path` | yes | — | Created on demand |
 | `content` | yes | — | The observation text |
+| `peer_key` | no | the calling peer, when one exists | Who spoke the turn. The Peer is created on first use. Internal callers without a peer must provide this explicitly |
+| `peer_name` | no | the key | Display name, used only when that Peer is created |
 | `role` | no | `"user"` | Speaker role |
 | `occurred_at` | no | now | ISO 8601, for backfill. No offset means UTC; an unparseable value falls back to now |
 
@@ -134,8 +136,24 @@ Returns **202** after the raw observation and extraction job commit:
 The request never calls a model or returns knowledge. Extraction always runs in
 the durable `ingest` job lane.
 
-The acting peer comes from the credential. A `peer_key` in the body is honoured
-only for internal callers that carry no peer of their own.
+Three paths decide who the turn is attributed to:
+
+- A **machine credential** — an API key or an internal system identity — may
+  relay a conversation it was not part of. A `peer_key` in the body attributes
+  the turn to that named speaker.
+- A **password session** always speaks as itself. A `peer_key` in the body is
+  ignored, so nobody can post under another person's name.
+- An **internal caller** carries no peer of its own and must supply `peer_key`.
+
+The named key is trusted as supplied. Per-peer authentication is not implemented
+yet, so a machine credential can attribute an observation to any Peer in its
+Account.
+
+Relaying transfers no authority. The write keeps the calling credential's own
+roles and authorised scopes, so naming a Peer with wider grants cannot widen
+what the request may write. An existing Peer is resolved rather than rewritten.
+See [Who a turn is attributed to](../concepts/ingest-pipeline.md#who-a-turn-is-attributed-to)
+and [Recording observations](../guides/ingesting-observations.md).
 
 A missing required field raises, which surfaces as an error status rather than
 a partially written session.
@@ -175,6 +193,7 @@ All fields optional.
 | --- | --- | --- |
 | `query` | `""` | Terms match individually; `"phrase"`, `-term`, and `or` narrow. See [Retrieval and context](../concepts/retrieval.md) |
 | `scope_path` | `"/poc"` | Selects the scope **and its ancestors** |
+| `peer_key` | none | The peer the results are read for. A machine credential that names none reads **public statements only** |
 | `profile` | `"balanced"` | `fast`, `balanced`, `thorough` |
 | `limit` | `12` | Candidate cap |
 | `include_cross_links` | off | Requires authorisation at both endpoints |
@@ -182,6 +201,16 @@ All fields optional.
 | `min_score` | none | |
 | `source_filters` | none | |
 | `deadline` | profile default | `"disabled"` removes the budget; offline only |
+
+`peer_key` names the peer the results are read **for**. It is trusted as
+supplied, exactly as on ingest. Naming a reader borrows nothing from it: scope
+authorisation stays the caller's. The named reader sees public and internal
+statements, its own statements, statements about the scope rather than about a
+person, and anything promoted to scope or account level. A password session that
+names no peer reads as itself. A key naming no Peer in the Account is an error,
+not an empty result. No request can ask to read the whole corpus; that posture
+belongs to server-side work alone. See
+[A read is performed for a peer](../concepts/retrieval.md#a-read-is-performed-for-a-peer).
 
 Returns `{"data": result}` with the profile name, `profile_version` (`"f7-1"`),
 the fused `candidates`, and three per-strategy outcomes:
@@ -218,8 +247,8 @@ retrieval. A raw `strategies` override is refused for external callers.
 
 ## `POST /api/v1/ask`
 
-`question` is required; every `search` field is also accepted, but `profile`
-defaults to `"thorough"`.
+`question` is required; every `search` field is also accepted, including
+`peer_key`, but `profile` defaults to `"thorough"`.
 
 Returns the search payload merged with `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and
@@ -281,8 +310,15 @@ A missing `question` raises rather than answering over an empty query.
 | Field | Default |
 | --- | --- |
 | `scope_path` | `"/poc"` |
+| `peer_key` | none |
 | `session_id` | none |
 | `budget_chars` | unset |
+
+`peer_key` names the peer the context is assembled for, on the
+[same terms as `search`](#post-apiv1search): a machine credential that names
+none gets public statements only. Scope cards and entity cards are shared
+projections and carry shareable statements only, so a personal peer-level
+statement never appears in one.
 
 Returns `{"data": context}` with `knowledge`, `session_summary`, `scope_cards`,
 `entity_cards`, `peer_profile`, `profile_version`, and two diagnostics:
@@ -357,11 +393,13 @@ Query parameters:
 | Parameter | Default |
 | --- | --- |
 | `scope_path` | `"/poc"` |
+| `peer_key` | none |
 | `state` | `"active"` |
 | `limit` | `12` |
 
 Covers the named scope plus its ancestors, ordered by confidence then recency,
-each row annotated with the `scope_path` it lives at.
+each row annotated with the `scope_path` it lives at. `peer_key` selects the
+reader on the [same terms as `search`](#post-apiv1search).
 
 Read-only by design: there is deliberately no POST counterpart.
 

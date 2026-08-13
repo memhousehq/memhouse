@@ -42,10 +42,10 @@ else meaning human review. A source speaking about itself is `direct`; every
 other source-to-subject relationship is `indirect`. Model confidence is shown
 to reviewers but never authorizes automatic acceptance.
 
-Gate B has `auto_place` (place public or internal knowledge when corroboration
-clears the cell's minimum) and human review. Personal and restricted knowledge
-always need a human placement decision. This remains true when an Account has
-declared automatic subject consent.
+Gate B has `auto_place` (place knowledge when corroboration clears the cell's
+minimum) and human review. It covers public and internal knowledge always, and
+personal knowledge only in an Account that consents automatically. Restricted
+knowledge always needs a human placement decision.
 
 ## Target levels and blast radius
 
@@ -89,6 +89,11 @@ Two off-by-default switches support that case:
 
 Either switch writes a normal auditable consent record; it does not skip
 consent. `GateRule` still controls Gate A/B and cannot waive consent.
+
+Either switch also widens Gate B: an `auto_place` cell then places personal
+knowledge, not only public and internal. Restricted knowledge stays manual
+whatever is configured. Both switches are off by default, so an Account that
+has not opted in still queues every personal item for a human.
 
 ## Who may decide
 

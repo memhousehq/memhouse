@@ -78,13 +78,14 @@ defmodule MemHouse.Retrieval do
   indefinitely, while full-text search — a generated column — keeps answering.
   This read is how that is noticed.
 
-  `scope_ids` must already be authorized; `peer_id` narrows provisional
-  statements to their subject and is nil only for system callers.
+  `scope_ids` must already be authorized. `peer_id` is the reader whose view is
+  being counted, and `internal_reader?` counts the whole corpus instead. Neither
+  has a default, so no caller inherits system visibility by omission.
 
   Returns a map keyed by scope id, each value carrying `statement_count`,
   `embedded_count`, `mention_count`, `coverage`, and `embedding_identities`.
   """
-  defdelegate index_coverage(account_id, scope_ids, peer_id \\ nil),
+  defdelegate index_coverage(account_id, scope_ids, peer_id, internal_reader?),
     to: MemHouse.Retrieval.Coverage,
     as: :scopes
 end

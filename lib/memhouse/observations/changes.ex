@@ -104,7 +104,11 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueMessage do
       with {:ok, _audit} <-
              Audit.append(actor, message.account_id, %{
                scope_id: message.scope_id,
-               actor_peer_id: message.peer_id,
+               # Who submitted the turn, which is not always who spoke it: an agent
+               # may relay a conversation it was not part of. The audited actor is
+               # the credential, so a relayed turn stays traceable to the process
+               # that sent it, and the speaker is recorded beside it.
+               actor_peer_id: actor_peer_id(actor, message),
                category: "observation",
                action: "message.ingested",
                resource_type: "message",
@@ -113,7 +117,8 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueMessage do
                content_hash: message.content_hash,
                metadata: %{
                  "role" => message.role,
-                 "session_id" => message.session_id
+                 "session_id" => message.session_id,
+                 "speaker_peer_id" => message.peer_id
                }
              }),
            {:ok, _run} <- Pipeline.enqueue_message_extraction(message, actor),
@@ -123,6 +128,11 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueMessage do
       end
     end)
   end
+
+  # An internal actor carries no Peer, so the speaker stands in as the audited
+  # actor there — the alternative is an audit row with no actor at all.
+  defp actor_peer_id(%{peer_id: peer_id}, _message) when is_binary(peer_id), do: peer_id
+  defp actor_peer_id(_actor, message), do: message.peer_id
 
   # Test-only escape hatch. Setting the private context flag below makes this hook fail *after*
   # the message row, the audit entry, and both jobs have been written, which is the only way to

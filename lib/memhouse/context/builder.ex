@@ -177,11 +177,18 @@ defmodule MemHouse.Context.Builder do
       fn _account, actor ->
         scope = read_one!(Scope, scope_id, account_id, actor)
 
-        # Shared projections may only contain settled knowledge. Provisional rows are read
+        # Shared projections may only contain settled knowledge that is actually shareable.
+        # Settled is not the same as shared: an active statement about one peer, still at peer
+        # level, belongs to that peer alone, and a card built from it would hand it to everyone
+        # who reads the scope — past every rule retrieval applies. Provisional rows are read
         # separately for the subject-keyed peer channel below.
         scope_knowledge =
           KnowledgeItem
           |> Ash.Query.filter(scope_id == ^scope_id and state == "active" and is_nil(deleted_at))
+          |> Ash.Query.filter(
+            sensitivity in ["public", "internal"] or is_nil(subject_peer_id) or
+              target_level in ["scope", "account"]
+          )
           |> Ash.Query.sort(confidence: :desc, updated_at: :desc)
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
@@ -304,12 +311,21 @@ defmodule MemHouse.Context.Builder do
     )
   end
 
+  # A statement anyone reading the scope may see: public, about the scope rather than a person,
+  # or promoted above peer level, which is where its subject consented to the wider audience.
+  # The same test the retrieval store applies, in Elixir, because entity cards start from a list
+  # that already includes the peer channel.
+  defp shareable?(item) do
+    item.sensitivity in ["public", "internal"] or is_nil(item.subject_peer_id) or
+      item.target_level in ["scope", "account"]
+  end
+
   # EntityMention is only an internal grouping index. The card stores the id as a private cache
   # coordinate, while its visible content is built exclusively from governed statement fields.
   defp build_entity_card_attrs!(scope, knowledge, mentions, account_id, actor) do
     active_by_id =
       knowledge
-      |> Enum.filter(&(&1.state == "active"))
+      |> Enum.filter(&(&1.state == "active" and shareable?(&1)))
       |> Map.new(&{&1.id, &1})
 
     mentions
@@ -674,7 +690,10 @@ defmodule MemHouse.Context.Builder do
       scope_ids: [scope.id],
       text: "#{scope.name} context",
       target: :knowledge,
-      max_candidates: max(length(knowledge), 1)
+      max_candidates: max(length(knowledge), 1),
+      # Ranks what a projection will be built from. The shareable filter is applied where the
+      # sources are read; ranking a narrowed set here would shrink every card twice over.
+      internal_reader?: true
     }
 
     ranked_ids =

@@ -26,6 +26,33 @@ flowchart LR
 Each strategy applies Account, scope, lifecycle, provisional-subject, and source
 filters **inside its query**. The API does not post-filter candidates.
 
+## A read is performed for a peer
+
+Personal knowledge belongs to its subject, so a read needs a reader. `search`,
+`ask`, `get_context`, and the knowledge listing all accept `peer_key`, which
+names the peer the results are read for. The key is trusted as supplied, the
+same as on [ingest](ingest-pipeline.md#who-a-turn-is-attributed-to).
+
+| The caller | Reads for | And sees |
+| --- | --- | --- |
+| Names `peer_key` | That peer | Public and internal statements, that peer's own statements, statements about the scope rather than about a person, and anything promoted to scope or account level |
+| A machine credential naming no peer | Nobody | Public statements only |
+| A password session naming no peer | Itself | The same as a named reader |
+| Server-side work — projection rebuild, dream-time, evaluation | Nobody in particular | The whole corpus, narrowed only by lifecycle |
+
+Promotion above peer level is the consent record: an above-peer proposal waits
+until its subject agrees, so a scope-level statement has already been agreed to.
+See [governance](governance.md#consent-for-personal-knowledge).
+
+Naming a reader borrows nothing from it. Scope authorization stays the calling
+credential's. A `peer_key` that names no peer is an error, not a fallback to
+the caller. The server-side posture comes from the absence of an authenticated
+identity, never from the request, so a caller cannot ask for the whole corpus.
+
+A shared projection is filtered before it is built. A scope card or an entity
+card carries shareable statements only — public or internal, about the scope, or
+promoted — so a personal peer-level statement never reaches a shared projection.
+
 ## How semantic retrieval embeds a query
 
 The configured embedder can set a model-specific query prefix. MemHouse adds it

@@ -5,8 +5,13 @@ defmodule MemHouse.Retrieval.Store do
   Implements read-only retrieval SQL that cannot be expressed through Ash.
 
   Every query must filter Account, authorized scopes, active lifecycle, soft deletion, and the
-  provisional subject before candidates leave this boundary. Peer-facing callers must supply a
-  peer id. Scope joins also match Account.
+  reader before candidates leave this boundary. Scope joins also match Account.
+
+  `visible_knowledge/2` builds that reader filter and every knowledge query interpolates it.
+  A peer-facing reader sees anything not personal, its own statements, scope-subject statements,
+  and anything promoted to scope or account level; with no reader peer it sees public statements
+  only. An internal reader sees the whole corpus and is the only way past this, which is why the
+  flag is passed explicitly and never derived from request input.
 
   Knowledge queries share one result shape; chunk queries synthesize compatible fields. Scores
   are strategy-local. SQL is static and all caller values are bound parameters. Durable writes
@@ -72,6 +77,7 @@ defmodule MemHouse.Retrieval.Store do
   Raises `Postgrex.Error` if the statement fails.
   """
   def lexical(query, limit) do
+    internal_reader? = query.internal_reader?
     analysis = LexicalQueryAnalyzer.analyze(query.text)
     shortlist = limit * @lexical_shortlist_multiplier
 
@@ -88,10 +94,7 @@ defmodule MemHouse.Retrieval.Store do
           JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
           WHERE k.account_id = $1
             AND k.scope_id = ANY($2)
-            AND (
-              k.state = 'active'
-              OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-            )
+        #{visible_knowledge("$3", internal_reader?)}
             AND k.deleted_at IS NULL
             AND (k.expires_at IS NULL OR k.expires_at > now())
             AND k.search_vector @@ #{tsquery}
@@ -193,6 +196,7 @@ defmodule MemHouse.Retrieval.Store do
   end
 
   defp semantic_query(query, embedding, identity, limit) do
+    internal_reader? = query.internal_reader?
     vector = vector_literal(embedding)
     labels = MemHouse.Retrieval.DiskannLabels.for_scope_ids!(query.account_id, query.scope_ids)
 
@@ -208,10 +212,7 @@ defmodule MemHouse.Retrieval.Store do
             JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
             WHERE k.account_id = $1
               AND k.scope_id = ANY($2)
-              AND (
-                k.state = 'active'
-                OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-              )
+              #{visible_knowledge("$3", internal_reader?)}
               AND k.deleted_at IS NULL
               AND (k.expires_at IS NULL OR k.expires_at > now())
               AND k.embedding IS NOT NULL
@@ -232,10 +233,7 @@ defmodule MemHouse.Retrieval.Store do
             JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
             WHERE k.account_id = $1
               AND k.scope_id = ANY($2)
-              AND (
-                k.state = 'active'
-                OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-              )
+              #{visible_knowledge("$3", internal_reader?)}
               AND k.deleted_at IS NULL
               AND (k.expires_at IS NULL OR k.expires_at > now())
               AND k.embedding IS NOT NULL
@@ -359,6 +357,7 @@ defmodule MemHouse.Retrieval.Store do
   `Postgrex.Error` if the statement fails.
   """
   def temporal(query, limit) do
+    internal_reader? = query.internal_reader?
     as_of = query.as_of || MemHouse.Clock.utc_now()
 
     sql = """
@@ -376,10 +375,7 @@ defmodule MemHouse.Retrieval.Store do
     JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
     WHERE k.account_id = $1
       AND k.scope_id = ANY($2)
-      AND (
-        k.state = 'active'
-        OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-      )
+    #{visible_knowledge("$3", internal_reader?)}
       AND k.deleted_at IS NULL
       AND k.inserted_at <= $4
       AND (k.expires_at IS NULL OR k.expires_at > $4)
@@ -415,6 +411,8 @@ defmodule MemHouse.Retrieval.Store do
   targets documents. Raises `Postgrex.Error` if the statement fails.
   """
   def salience_recency(query, limit) do
+    internal_reader? = query.internal_reader?
+
     sql = """
     SELECT #{@knowledge_columns},
            (
@@ -427,10 +425,7 @@ defmodule MemHouse.Retrieval.Store do
     JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
     WHERE k.account_id = $1
       AND k.scope_id = ANY($2)
-      AND (
-        k.state = 'active'
-        OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-      )
+    #{visible_knowledge("$3", internal_reader?)}
       AND k.deleted_at IS NULL
       AND (k.expires_at IS NULL OR k.expires_at > now())
     ORDER BY score DESC, k.updated_at DESC
@@ -478,6 +473,7 @@ defmodule MemHouse.Retrieval.Store do
   `Postgrex.Error` if the statement fails.
   """
   def entity_match(query, limit) do
+    internal_reader? = query.internal_reader?
     terms = entity_terms(query.text)
 
     sql = """
@@ -486,10 +482,7 @@ defmodule MemHouse.Retrieval.Store do
       FROM knowledge_items AS k
       WHERE k.account_id = $1
         AND k.scope_id = ANY($2)
-        AND (
-          k.state = 'active'
-          OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-        )
+    #{visible_knowledge("$3", internal_reader?)}
         AND k.deleted_at IS NULL
         AND (k.expires_at IS NULL OR k.expires_at > now())
     ),
@@ -607,6 +600,8 @@ defmodule MemHouse.Retrieval.Store do
   no seed ids. Raises `Postgrex.Error` if the statement fails.
   """
   def relation_expand(query, limit) do
+    internal_reader? = query.internal_reader?
+
     sql = """
     WITH structural AS (
       SELECT
@@ -670,10 +665,7 @@ defmodule MemHouse.Retrieval.Store do
     JOIN knowledge_items AS k ON k.id = expanded.knowledge_id AND k.account_id = $1
     JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
     WHERE k.scope_id = ANY($2)
-      AND (
-        k.state = 'active'
-        OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-      )
+    #{visible_knowledge("$3", internal_reader?)}
       AND k.deleted_at IS NULL
       AND (k.expires_at IS NULL OR k.expires_at > now())
     GROUP BY k.id, s.path
@@ -692,6 +684,61 @@ defmodule MemHouse.Retrieval.Store do
     else
       []
     end
+  end
+
+  # The reader filter every knowledge query interpolates. `peer` is the SQL parameter holding the
+  # reader's peer id; `internal_reader?` is the caller's own posture, never a value from a request.
+  #
+  # An internal reader is reading on nobody's behalf — a projection rebuild, dream-time, an
+  # evaluation run — and must see the corpus as it is, so only lifecycle narrows it.
+  #
+  # A peer-facing reader with a peer sees anything not personal, its own statements, statements
+  # about the scope rather than about a person, and anything promoted to scope or account level.
+  # Promotion is the consent record: an above-peer proposal parks in `held` until its subject
+  # agrees, so an `active` row at scope level has already been agreed to.
+  #
+  # A reader with no peer identifies nobody and sees public statements only.
+  defp visible_knowledge(peer, true) do
+    """
+    AND k.state IN ('active', 'provisional')
+        -- An internal reader ignores the reader peer, but the parameter is still bound.
+        -- The cast is what gives PostgreSQL its type; nothing else here refers to it.
+        AND (#{peer}::uuid IS NULL OR TRUE)\
+    """
+  end
+
+  defp visible_knowledge(peer, false) do
+    """
+    AND (
+          k.state = 'active'
+          OR (k.state = 'provisional'
+              AND #{peer}::uuid IS NOT NULL AND k.subject_peer_id = #{peer})
+        )
+        #{readable_by(peer)}\
+    """
+  end
+
+  # The reader half alone, for the query that already spells its own lifecycle filter.
+  defp co_mention_sensitivity(_peer, true), do: ""
+  defp co_mention_sensitivity(peer, false), do: readable_by(peer)
+
+  # Parenthesised in full rather than relying on `AND` binding tighter than `OR`. This is the
+  # clause that decides who reads whose memory; it must be right by reading, not by precedence.
+  defp readable_by(peer) do
+    """
+    AND (
+          (k.sensitivity = 'public')
+          OR (
+            #{peer}::uuid IS NOT NULL
+            AND (
+              k.sensitivity = 'internal'
+              OR k.subject_peer_id IS NULL
+              OR k.subject_peer_id = #{peer}
+              OR k.target_level IN ('scope', 'account')
+            )
+          )
+        )\
+    """
   end
 
   # Builds static `tsquery` SQL for the analyzer's bound values. The analyzer never generates SQL;
@@ -786,10 +833,13 @@ defmodule MemHouse.Retrieval.Store do
   Counts other visible statements sharing an entity with one seed and returns
   up to `limit` of their ids.
 
-  Account, authorized scope, lifecycle, soft-delete, and provisional-subject
-  filters are applied before an id is counted or leaves this boundary. The
-  result contains only the total and statement ids; no entity or mention
-  identity is returned. An empty authorized-scope list fails closed.
+  Account, authorized scope, lifecycle, soft-delete, and reader filters are
+  applied before an id is counted or leaves this boundary. The result contains
+  only the total and statement ids; no entity or mention identity is returned.
+  An empty authorized-scope list fails closed.
+
+  `internal_reader?` carries the caller's posture and has no default: a browser
+  read and a rebuild must each say which one it is.
   """
   def co_mentioned_knowledge(
         account_id,
@@ -797,9 +847,11 @@ defmodule MemHouse.Retrieval.Store do
         scope_ids,
         visible_states,
         peer_id,
+        internal_reader?,
         limit
       )
-      when is_list(scope_ids) and is_list(visible_states) and is_integer(limit) and limit > 0 do
+      when is_list(scope_ids) and is_list(visible_states) and is_boolean(internal_reader?) and
+             is_integer(limit) and limit > 0 do
     sql = """
     WITH seed_entities AS (
       SELECT DISTINCT entity_id
@@ -816,6 +868,7 @@ defmodule MemHouse.Retrieval.Store do
         AND k.scope_id = ANY($3)
         AND (k.state = ANY($4) OR ($5::uuid IS NOT NULL AND k.subject_peer_id = $5))
         AND (k.state <> 'provisional' OR ($5::uuid IS NOT NULL AND k.subject_peer_id = $5))
+        #{co_mention_sensitivity("$5", internal_reader?)}
         AND k.deleted_at IS NULL
         AND (k.expires_at IS NULL OR k.expires_at > now())
     )
@@ -846,6 +899,7 @@ defmodule MemHouse.Retrieval.Store do
         _scope_ids,
         _states,
         _peer_id,
+        _internal_reader?,
         _limit
       ),
       do: %{count: 0, ids: []}
@@ -962,10 +1016,11 @@ defmodule MemHouse.Retrieval.Store do
   is the query that makes that state visible.
 
   The visible set is the one the indexer covers — active plus provisional, minus
-  soft deletions — narrowed by the same provisional-subject rule every other
-  query here applies, so a caller never learns the count of provisional
-  statements about someone else. A nil `peer_id` disables that narrowing and is
-  for system callers only.
+  soft deletions — narrowed by the same reader rule every other query here
+  applies, so a caller never learns the count of statements it could not read.
+  `internal_reader?` lifts that narrowing for the rebuild that has to cover the
+  whole corpus; a peer-facing caller with a nil `peer_id` counts only public
+  statements.
 
   Returns one map per scope that has at least one visible statement, carrying
   `scope_id`, `statement_count`, `embedded_count`, `mention_count`,
@@ -975,7 +1030,8 @@ defmodule MemHouse.Retrieval.Store do
   nothing visible are absent rather than zero-filled. Raises `Postgrex.Error` if
   the statement fails.
   """
-  def index_coverage(account_id, scope_ids, peer_id) do
+  def index_coverage(account_id, scope_ids, peer_id, internal_reader?)
+      when is_boolean(internal_reader?) do
     sql = """
     WITH visible AS (
       SELECT k.id, k.scope_id,
@@ -985,10 +1041,7 @@ defmodule MemHouse.Retrieval.Store do
       FROM knowledge_items AS k
       WHERE k.account_id = $1
         AND k.scope_id = ANY($2)
-        AND (
-          k.state = 'active'
-          OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-        )
+        #{visible_knowledge("$3", internal_reader?)}
         AND k.deleted_at IS NULL
     ),
     mentions AS (
@@ -1033,6 +1086,7 @@ defmodule MemHouse.Retrieval.Store do
   filters. No entity or statement identity leaves this boundary.
   """
   def entity_match_status(query) do
+    internal_reader? = query.internal_reader?
     terms = entity_terms(query.text)
 
     sql = """
@@ -1051,10 +1105,7 @@ defmodule MemHouse.Retrieval.Store do
       JOIN entity_mentions AS m ON m.entity_id = e.id AND m.account_id = $1
       JOIN knowledge_items AS k ON k.id = m.knowledge_item_id AND k.account_id = $1
       WHERE k.scope_id = ANY($2)
-        AND (
-          k.state = 'active'
-          OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
-        )
+        #{visible_knowledge("$3", internal_reader?)}
         AND k.deleted_at IS NULL
         AND (k.expires_at IS NULL OR k.expires_at > now())
       LIMIT 1

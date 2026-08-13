@@ -38,7 +38,7 @@ defmodule MemHouse.Retrieval.Rebuild do
   # Measured after the write phase, so the event describes what a reader would
   # now find rather than what this run intended to write. Ids and counts only.
   defp emit_coverage(account_id, scope_id, index) do
-    coverage = Coverage.scope(account_id, scope_id)
+    coverage = Coverage.scope(account_id, scope_id, nil, true)
 
     :telemetry.execute(
       [:memhouse, :retrieval, :projection_refresh],

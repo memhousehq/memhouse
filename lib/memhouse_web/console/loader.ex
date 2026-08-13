@@ -240,7 +240,8 @@ defmodule MemHouseWeb.Console.Loader do
         MemHouse.Retrieval.index_coverage(
           account.id,
           Enum.map(scopes, & &1.id),
-          actor.peer_id
+          actor.peer_id,
+          false
         )
 
       rows =
@@ -695,7 +696,7 @@ defmodule MemHouseWeb.Console.Loader do
 
         if scope do
           coverage =
-            MemHouse.Retrieval.index_coverage(account.id, [scope.id], actor.peer_id)
+            MemHouse.Retrieval.index_coverage(account.id, [scope.id], actor.peer_id, false)
             |> Map.fetch!(scope.id)
 
           chain =
@@ -1018,6 +1019,7 @@ defmodule MemHouseWeb.Console.Loader do
         authorized_scope_ids(actor),
         Access.visible_states(actor),
         actor.peer_id,
+        false,
         @panel_limit
       )
 
@@ -1104,7 +1106,8 @@ defmodule MemHouseWeb.Console.Loader do
       scope_ids: [scope_id],
       actor: actor,
       text: query_text,
-      target: :knowledge
+      target: :knowledge,
+      internal_reader?: false
     })
   end
 

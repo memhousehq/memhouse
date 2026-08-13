@@ -51,9 +51,11 @@ defmodule MemHouse.Context do
   @doc """
   Builds one context payload for an already-authenticated caller.
 
-  `account` is the resolved Account, `actor` the resolved caller (its `peer_id`, when present,
-  selects which peer profile slice is included), and `scopes` the Scope structs the caller may
-  read, nearest first. `attrs` is the string-keyed request map and may carry `"session_id"`
+  `account` is the resolved Account, `actor` the resolved caller, and `scopes` the Scope structs
+  the caller may read, nearest first. The actor's `peer_id` is the reader: it selects which peer
+  profile slice is included and which statements the live fallback may return.
+  `internal_reader?` lifts that reader restriction for server-side work that must see the whole
+  corpus; it is never derived from `attrs`. `attrs` is the string-keyed request map and may carry `"session_id"`
   (either the internal id or the caller-supplied external id), `"query"` and `"limit"` which are
   used only if the live fallback runs, and `"budget_chars"` to override the configured default
   budget.
@@ -73,19 +75,33 @@ defmodule MemHouse.Context do
   is a deliberate contract transition: callers key off it, the HTTP controller tests pin it,
   and a change needs a changelog entry alongside the updated baseline evidence.
   """
-  def get(account, actor, scopes, attrs) do
+  def get(account, actor, scopes, attrs, internal_reader?) do
     scope_ids = Enum.map(scopes, & &1.id)
     session_id = resolve_session_id(account.id, actor, scope_ids, attrs["session_id"])
-    {scope_cards, scope_hits} = scope_cards(account.id, actor, scopes)
-    {peer_profiles, peer_hits} = peer_profiles(account.id, actor, scopes)
-    {entity_cards, entity_hits} = entity_cards(account.id, actor, scopes)
-    {session_summary, session_hit} = session_summary(account.id, actor, scopes, session_id)
+
+    # Peerless non-internal readers should not receive cached projections that contain internal
+    # content. Skip projection reads for them and use the live fallback instead.
+    public_only? = not internal_reader? and not is_binary(actor.peer_id)
+
+    {scope_cards, scope_hits} =
+      if public_only?, do: {[], 0}, else: scope_cards(account.id, actor, scopes)
+
+    {peer_profiles, peer_hits} =
+      if public_only?, do: {[], 0}, else: peer_profiles(account.id, actor, scopes)
+
+    {entity_cards, entity_hits} =
+      if public_only?, do: {[], 0}, else: entity_cards(account.id, actor, scopes)
+
+    {session_summary, session_hit} =
+      if public_only?,
+        do: {nil, false},
+        else: session_summary(account.id, actor, scopes, session_id)
 
     projection_knowledge =
       projection_knowledge(scope_cards, peer_profiles, entity_cards)
 
     {knowledge, fallback?} =
-      knowledge(account.id, actor, scope_ids, attrs, projection_knowledge)
+      knowledge(account.id, actor, scope_ids, attrs, projection_knowledge, internal_reader?)
 
     budget = parse_int(Map.get(attrs, "budget_chars"), retrieval_config(:context_budget_chars))
 
@@ -206,10 +222,17 @@ defmodule MemHouse.Context do
   # The live fallback is entered only when the projections yielded no statement at all. Any
   # projection knowledge, however small, is preferred over a fresh retrieval pass, because the
   # point of this call is to stay off the retrieval path on the per-turn latency budget.
-  defp knowledge(_account_id, _actor, _scope_ids, _attrs, [_ | _] = projection_knowledge),
-    do: {projection_knowledge, false}
+  defp knowledge(
+         _account_id,
+         _actor,
+         _scope_ids,
+         _attrs,
+         [_ | _] = projection_knowledge,
+         _internal?
+       ),
+       do: {projection_knowledge, false}
 
-  defp knowledge(account_id, actor, scope_ids, attrs, []) do
+  defp knowledge(account_id, actor, scope_ids, attrs, [], internal_reader?) do
     query = %Query{
       account_id: account_id,
       actor: actor,
@@ -218,7 +241,8 @@ defmodule MemHouse.Context do
       target: :knowledge,
       # Unit: candidate statements. A deliberately small default: this is a warm-start context
       # payload, not a search result, and it still has to fit the character budget below.
-      max_candidates: parse_int(Map.get(attrs, "limit"), 8)
+      max_candidates: parse_int(Map.get(attrs, "limit"), 8),
+      internal_reader?: internal_reader?
     }
 
     # `:fast` is the only profile named on this path. As shipped it runs no rerank and

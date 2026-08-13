@@ -11,6 +11,31 @@ changelog entry and contract-version transition.
 
 ### Added
 
+- `POST /api/v1/ingest` accepts `peer_key` from a machine credential, which
+  names the peer that spoke the turn. The Peer is created on first use. See the
+  attribution entry under Changed for what the field does and what it does not
+  do.
+
+- `POST /api/v1/search`, `POST /api/v1/ask`, `POST /api/v1/context`, and
+  `GET /api/v1/knowledge` accept `peer_key`, which names the peer the results
+  are read for. See the peer-scoped read entry under Changed.
+
+- `mix memhouse.governance.autoshare --account-key KEY` writes the Account-wide
+  gate rule cells that let an Account accept and place knowledge without a
+  person. It covers every combination of peer, scope, and account level with
+  public, internal, and personal sensitivity, and sets `gate_a_mode`
+  `auto_keep`, `gate_b_mode` `auto_place`, `minimum_evidence_level`
+  `"indirect"`, and `minimum_corroboration` `1`. The evidence floor is the
+  field that decides whether the rest has any effect: it defaults to `direct`,
+  a claim is direct only when its subject is the peer who spoke it, and most of
+  a relayed conversation is one participant speaking about another. Requiring
+  two independent sources would hold a benchmark corpus for the same reason, so
+  corroboration drops to one. `restricted` is left alone, because no cell can
+  make it automatic. The task does not touch consent: only a human account
+  administrator may set `consent_mode`, so it prints a reminder instead. It
+  loosens governance for a whole Account. Run it on a benchmark or evaluation
+  Account, never on one holding somebody's real memory.
+
 - `mix memhouse.model.check` probes structured output for `ingest_extractor`,
   `dream_reasoner`, and `dialectic_agent`, asking each for one small object and
   printing status, provider, model, duration, and a content-free error class.
@@ -153,6 +178,65 @@ changelog entry and contract-version transition.
   describe the release gate. Both gates enforced the retired anchor system.
 
 ### Changed
+
+- An authenticated caller is no longer always the speaker. A machine
+  credential — identity kind `:api_key` or `:system` — that sends `peer_key`
+  attributes the turn to that named Peer, created on first use. An agent
+  relaying a conversation submits turns it did not speak, and the old rule
+  filed all of them against the agent: every personal statement was recorded
+  about an infrastructure identity, consent was granted by the wrong party to
+  itself, the personal-knowledge hold could never fire, and erasure by subject
+  could not reach a human's statements. A password session still always speaks
+  as itself and ignores a `peer_key` in the body, so nobody can post under
+  another person's name. An internal caller carries no Peer and must supply
+  one. The named key is trusted as sent; per-peer authentication is not built
+  yet. Authority does not transfer: the actor keeps the calling credential's
+  own roles and authorized scopes, so relaying as a peer with wider grants
+  cannot widen what the request may write. An existing Peer is resolved rather
+  than upserted, so relaying an agent's key cannot rewrite it as human. The
+  `message.ingested` audit entry now records the relaying credential as
+  `actor_peer_id` and the speaker as metadata `speaker_peer_id`. ADR 0018
+  records the decision and the alternative it rules out. Issue:
+  https://github.com/memhousehq/memhouse/issues/165
+
+- Retrieval is now performed for a named peer. `search`, `ask`, `get_context`,
+  and the knowledge listing accept `peer_key`, trusted on the same terms as
+  ingest, naming the peer the results are read for. That peer reads public and
+  internal statements, its own statements, statements about the scope rather
+  than about a person, and anything promoted to scope or account level;
+  promotion is where the subject agreed to the wider audience. A machine
+  credential that names no peer reads public statements only, because a caller
+  that does not say who it is asking for is asking for nobody. A password
+  session with no `peer_key` still reads as itself. Server-side work —
+  projection rebuild, dream-time, the evaluation harness — reads the whole
+  corpus, and that posture comes from the absence of an authenticated identity,
+  never from request input. Shared scope cards and entity cards are now built
+  from shareable statements alone, so a personal peer-level statement no longer
+  reaches a shared projection. Naming a peer grants none of that peer's
+  authority. The `f7-1` retrieval contract is unchanged.
+
+- Extraction prompt `extract-8` is offered the session's participants, minus
+  agent-kind peers, as the subjects a statement may be about. It replaces the
+  whole-Account peer list, and the speaker is no longer appended to the
+  allowlist unconditionally. Document extraction has no session, so it uses the
+  Account's non-agent peers. A new deterministic validation floor rejects a
+  candidate whose statement names a machine identity — an agent peer key, or
+  "the assistant", "the agent", "the ai", "the chatbot", or "the bot". The
+  allowlist alone stopped a machine becoming `subject_ref`, but nothing stopped
+  one appearing in the prose, and a claim about a person misfiled onto the
+  process that carried it is read by governance as a subject consenting to
+  itself. The prompt moves from `extract-7` to `extract-8`; the `f5-1` pipeline
+  contract is unchanged.
+
+- Gate B may now place personal knowledge automatically when the Account has
+  declared that it has no human subject — `consent_mode` `"auto"`, or a
+  deployment running with `MEMHOUSE_GOVERNANCE_UNATTENDED=true`. Consent there
+  is already settled and written as a real audited row before the gate is
+  consulted, so holding the item only parked it forever with nobody to release
+  it. `restricted` knowledge is never placed automatically, whatever the
+  Account declares: a deployment-wide switch must not reach the one band that
+  exists to demand a person. The default posture is unchanged. An Account that
+  has not opted in still queues everything for a human.
 
 - `AGENTS.md` and `CONTRIBUTING.md` now direct a contributor to the modules and
   tests first, and to `specs/` only for a decision, unbuilt work, a module

@@ -80,7 +80,18 @@ defmodule MemHouse.F7RetrievalEntityContextTest.Provider do
 
   @doc "Stops the recorder. Must run in `on_exit` so the next test starts from empty."
   def stop do
-    if Process.whereis(__MODULE__), do: Agent.stop(__MODULE__)
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> stop_if_alive(pid)
+    end
+  end
+
+  # The recorder can die between the lookup above and the stop below, and an exit raised out of
+  # `on_exit` would abandon the rest of teardown. Already stopped is the outcome asked for.
+  defp stop_if_alive(pid) do
+    Agent.stop(pid)
+  catch
+    :exit, _reason -> :ok
   end
 
   defp record(call), do: Agent.update(__MODULE__, &[call | &1])
@@ -288,8 +299,17 @@ defmodule MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider d
   Disarms the provider. Safe to call when nothing is armed; always returns `:ok`.
   """
   def stop do
-    if pid = Process.whereis(__MODULE__), do: Agent.stop(pid)
-    :ok
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> stop_if_alive(pid)
+    end
+  end
+
+  # Same race as the recorder above: already stopped is the outcome asked for.
+  defp stop_if_alive(pid) do
+    Agent.stop(pid)
+  catch
+    :exit, _reason -> :ok
   end
 
   @doc """
@@ -436,8 +456,11 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     # Retrieval profiles are restored too: one test deliberately sets a zero-millisecond
     # deadline, and leaving that in place would make every later test return nothing.
+    # The application environment is restored before the recorder is stopped, and never after.
+    # `:model_provider` is global: if teardown fails part-way with it still naming this module,
+    # every later test that calls a model reaches a process that is gone, and one failure here
+    # becomes dozens elsewhere.
     on_exit(fn ->
-      MemHouse.F7RetrievalEntityContextTest.Provider.stop()
       Application.put_env(:memhouse, :model_roles, original_roles)
       Application.put_env(:memhouse, :retrieval_profiles, original_retrieval)
 
@@ -446,6 +469,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       else
         Application.delete_env(:memhouse, :model_provider)
       end
+
+      MemHouse.F7RetrievalEntityContextTest.Provider.stop()
     end)
 
     :ok
@@ -2228,6 +2253,21 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       pipeline = pipeline_actor(actor)
       source_ids = Enum.map([first, second, third], & &1.knowledge.id)
 
+      # The third statement is personal and about a peer, so it reaches a shared card only once
+      # it has been promoted above peer level — which is where its subject agreed to the wider
+      # audience. Without this the card would be built from two sources and carry neither the
+      # summary nor the strictest sensitivity the rest of this test checks.
+      #
+      # The promotion is written directly because this fixture is about card content, not about
+      # the consent path; `test/memhouse/f4_real_gate_a_b_governance_test.exs` owns that evidence.
+      GovernanceEngine.transition!(
+        third.knowledge,
+        pipeline,
+        %{target_level: "scope"},
+        reason: "f7_entity_card_promoted",
+        channel: "pipeline"
+      )
+
       entity =
         create!(
           Entity,
@@ -2485,7 +2525,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     coverage =
       first.account.id
-      |> MemHouse.Retrieval.index_coverage([first.scope.id])
+      |> MemHouse.Retrieval.index_coverage([first.scope.id], nil, true)
       |> Map.fetch!(first.scope.id)
 
     assert coverage.statement_count == 3
@@ -2835,7 +2875,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     # The scope holds a governed statement and no vectors — exactly the state a cancelled
     # projection refresh leaves behind, and the state that was previously unobservable.
-    before = MemHouse.Retrieval.index_coverage(seeded.account.id, [seeded.scope.id])
+    before = MemHouse.Retrieval.index_coverage(seeded.account.id, [seeded.scope.id], nil, true)
 
     assert %{
              statement_count: 1,
@@ -2850,7 +2890,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     # A scope that was never written to reads as zeros rather than as an absent key, and
     # counts as covered: there is nothing to index, so an alert on the ratio must not fire.
     empty_scope_id = Ecto.UUID.generate()
-    empty = MemHouse.Retrieval.index_coverage(seeded.account.id, [empty_scope_id])
+    empty = MemHouse.Retrieval.index_coverage(seeded.account.id, [empty_scope_id], nil, true)
 
     assert %{statement_count: 0, embedded_count: 0, coverage: 1.0} =
              Map.fetch!(empty, empty_scope_id)
@@ -2860,7 +2900,9 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert {:ok, %{index: %{indexed: 1}}} =
              MemHouse.Retrieval.rebuild_scope(seeded.account.id, seeded.scope.id)
 
-    after_rebuild = MemHouse.Retrieval.index_coverage(seeded.account.id, [seeded.scope.id])
+    after_rebuild =
+      MemHouse.Retrieval.index_coverage(seeded.account.id, [seeded.scope.id], nil, true)
+
     coverage = Map.fetch!(after_rebuild, seeded.scope.id)
 
     assert coverage.statement_count == 1
@@ -2937,7 +2979,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       [Ecto.UUID.dump!(first.account.id), Ecto.UUID.dump!(second.knowledge.id)]
     )
 
-    coverage = MemHouse.Retrieval.index_coverage(first.account.id, [first.scope.id])
+    coverage = MemHouse.Retrieval.index_coverage(first.account.id, [first.scope.id], nil, true)
     coverage = Map.fetch!(coverage, first.scope.id)
 
     assert coverage.statement_count == 2

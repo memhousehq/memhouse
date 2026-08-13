@@ -179,7 +179,10 @@ defmodule MemHouse.Pipeline.DreamTime do
       text: Enum.map_join(snapshot.delta, "\n", & &1.statement),
       target: :knowledge,
       scope_ids: [snapshot.scope_id],
-      max_candidates: @working_set_limit
+      max_candidates: @working_set_limit,
+      # Reasoning over the scope's corpus is done on nobody's behalf, so it must
+      # not be narrowed to a reader that does not exist.
+      internal_reader?: true
     }
 
     retrieved =

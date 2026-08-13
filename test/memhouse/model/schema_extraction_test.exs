@@ -161,4 +161,42 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
     assert {:ok, [_]} = cast_item(candidate)
   end
+
+  test "rejects a statement about the relaying agent" do
+    context = Map.put(context(), :forbidden_subject_terms, ["relay-agent", "the assistant"])
+
+    for statement <- [
+          "The assistant is allergic to shellfish.",
+          "Relay-agent joined the mentorship programme."
+        ] do
+      candidate = item(90) |> Map.put("statement", statement)
+
+      assert {:error, ["items[0].statement must be about a person, not about the relaying agent"]} =
+               Extraction.cast(%{"items" => [candidate]}, context)
+    end
+  end
+
+  test "matches a hyphenated agent key whole, and not inside a longer one" do
+    context = Map.put(context(), :forbidden_subject_terms, ["membench-agent", "bot"])
+
+    # A key is usually hyphenated, so a boundary rule that treats the hyphen as a separator
+    # tears the key apart and never matches the identity it exists to catch.
+    rejected = item(90) |> Map.put("statement", "Membench-agent joined the mentorship programme.")
+
+    assert {:error, ["items[0].statement must be about a person, not about the relaying agent"]} =
+             Extraction.cast(%{"items" => [rejected]}, context)
+
+    # The same boundary must still refuse to find a short key inside a longer hyphenated one.
+    kept = item(90) |> Map.put("statement", "Avery deployed the bot-x release on Friday.")
+
+    assert {:ok, [_]} = Extraction.cast(%{"items" => [kept]}, context)
+  end
+
+  test "keeps a person whose name merely contains a forbidden term" do
+    context = Map.put(context(), :forbidden_subject_terms, ["bot"])
+    candidate = item(90) |> Map.put("statement", "Avery bottles cider every autumn.")
+
+    # Word edges matter: a substring match would refuse half the language.
+    assert {:ok, [_]} = Extraction.cast(%{"items" => [candidate]}, context)
+  end
 end

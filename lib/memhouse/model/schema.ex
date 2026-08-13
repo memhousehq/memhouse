@@ -41,6 +41,9 @@ defmodule MemHouse.Model.Schema.Extraction do
     claim must name a subject in prose. These checks give the repair loop a
     deterministic floor; the extractor still decides whether a supported fact
     is durable enough to propose.
+  - **Statements are about people.** A candidate naming a relaying agent, in
+    `subject_ref` or in its prose, is rejected. Knowledge filed against the
+    process that carried it is misattribution governance cannot detect.
   - **Subject is independent of source.** The model names the subject itself. A
     `peer` subject must be one of the known peer keys supplied in the context,
     and a `scope` subject must be exactly the current scope path. Nothing else
@@ -69,6 +72,20 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Knowledge.Statement
+
+  # Generic ways a model names the process instead of a person. These are matched only in the
+  # statement's subject position. Agent-specific peer keys are supplied per validation context.
+  @generic_machine_referents ["the assistant", "the agent", "the ai", "the chatbot", "the bot"]
+
+  # Anchored to the start of the statement, because a generic referent is refused as the thing a
+  # claim is about, not as a thing a claim mentions. "Melanie recommends the assistant." is a
+  # fact about Melanie; "The assistant is allergic to shellfish." is a person's fact misfiled.
+  @generic_referent_subject Regex.compile!(
+                              "\\A(" <>
+                                Enum.map_join(@generic_machine_referents, "|", &Regex.escape/1) <>
+                                ")\\b",
+                              "iu"
+                            )
 
   # Candidate fields taken straight from the knowledge resource's attributes.
   # `confidence_percentage` is normalized to the persisted `confidence` value
@@ -181,6 +198,10 @@ defmodule MemHouse.Model.Schema.Extraction do
   """
   @impl true
   def cast(object, context) when is_map(object) and is_map(context) do
+    # Prepare generic machine referent matchers once per validation context and reuse them
+    # across all statements rather than rebuilding the regex for each one.
+    context = prepare_forbidden_term_matchers(context)
+
     case fetch(object, "items") do
       items when is_list(items) ->
         items
@@ -214,6 +235,7 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
          {:ok, subject_ref} <- valid_subject_ref(item, subject_type, context),
          :ok <- durable_statement(statement, subject_type, subject_ref),
+         :ok <- human_subject_statement(statement, context),
          {:ok, source_message_ids} <- source_message_ids(item, context),
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
@@ -368,6 +390,52 @@ defmodule MemHouse.Model.Schema.Extraction do
       true ->
         :ok
     end
+  end
+
+  # Knowledge is about people, not about the software that carried it. A relaying
+  # agent's own key and the generic ways a model refers to itself are refused in
+  # the statement text, not only in `subject_ref`: a claim about a human wearing
+  # the relay's name is misattribution that governance then treats as consented,
+  # because the "subject" is the process consenting to itself.
+  #
+  # Generic machine referents (e.g., "the assistant", "the agent") are matched only in the
+  # statement's subject position using case-insensitive word-boundary matching. Agent peer keys
+  # are compared as exact opaque values (case-sensitive, whole-word) so keys such as "bot-" remain
+  # valid when they don't match an agent's actual key. Only terms the caller supplies are refused;
+  # nothing is inferred from the prose.
+  defp human_subject_statement(statement, context) do
+    cond do
+      String.match?(statement, @generic_referent_subject) ->
+        {:error, ["statement must be about a person, not about the relaying agent"]}
+
+      Enum.any?(Map.get(context, :agent_peer_keys, []), &names_agent_peer?(statement, &1)) ->
+        {:error, ["statement must be about a person, not about the relaying agent"]}
+
+      true ->
+        :ok
+    end
+  end
+
+  # Splits the caller's forbidden terms once per response, rather than per candidate. What is
+  # left after removing the generic referents is the deployment's own agent peer keys.
+  defp prepare_forbidden_term_matchers(context) do
+    Map.put(
+      context,
+      :agent_peer_keys,
+      Map.get(context, :forbidden_subject_terms, []) -- @generic_machine_referents
+    )
+  end
+
+  # An agent peer key matches anywhere in the statement, case-insensitively because prose
+  # capitalises it at the start of a sentence.
+  #
+  # The boundaries exclude hyphens as well as word characters, which `\\b` alone does not. A key
+  # is usually hyphenated — `membench-agent`, `agent-1` — and splitting the statement on
+  # punctuation would tear those apart and never match the very identities this exists to catch.
+  # Excluding the hyphen on both sides keeps them whole while still refusing to find `bot`
+  # inside `bot-x`.
+  defp names_agent_peer?(statement, agent_key) do
+    String.match?(statement, ~r/(?<![\w-])#{Regex.escape(agent_key)}(?![\w-])/iu)
   end
 
   # Peer keys are opaque identities in some deployments (`agent-1`), while a

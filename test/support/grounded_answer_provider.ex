@@ -55,8 +55,19 @@ defmodule MemHouse.Model.GroundedAnswerProvider do
   unconditionally.
   """
   def stop do
-    if Process.whereis(__MODULE__), do: Agent.stop(__MODULE__)
-    :ok
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> stop_if_alive(pid)
+    end
+  end
+
+  # The agent can die between the lookup above and the stop below. An exit raised out of
+  # `on_exit` abandons the rest of teardown, and these providers are installed as the global
+  # `:model_provider`, so an abandoned restore leaves every later test calling a dead process.
+  defp stop_if_alive(pid) do
+    Agent.stop(pid)
+  catch
+    :exit, _reason -> :ok
   end
 
   @doc """
