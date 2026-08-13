@@ -64,6 +64,18 @@ jobs:
           otp-version: "27"
           elixir-version: "1.18"
 
+      # Release preparation uses the same test build as CI. The fallback lets a lock-file
+      # update reuse unchanged dependencies while Mix recompiles only the packages that moved.
+      # This avoids rebuilding native dependencies and keeps their upstream warnings out of
+      # ordinary release logs without suppressing first-party compiler warnings.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-beam-test-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-beam-test-
+
       - name: Validate version and update release metadata
         id: metadata
         shell: bash
@@ -123,6 +135,7 @@ jobs:
         run: |
           mix deps.get
           mix format --check-formatted
+          mix compile --warnings-as-errors
           mix test test/memhouse/f11_evaluation_ci_release_readiness_test.exs
           mix memhouse.release.check --tag "${{ steps.metadata.outputs.tag }}" --allow-missing-eval
 

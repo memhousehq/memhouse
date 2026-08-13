@@ -66,7 +66,20 @@ successfully. See `specs/process/release-checklist.md`.
 Run **Prepare release PR** manually from `main`, entering a semantic version
 without its `v` prefix. It moves the current `Unreleased` changelog content
 into a dated release entry, updates the tracked release-version references,
-checks the metadata, and opens a release-preparation PR.
+checks the metadata, compiles with warnings as errors, and opens a
+release-preparation PR. The job caches the test dependencies and build output by
+`mix.lock`. A changed lock file can reuse unchanged dependencies from the most
+recent test cache.
+
+A cold build can still report warnings from `toml` 0.7.0, the Rust code in
+`ortex` 0.1.10, Oban 2.23.1, and Ash 3.31.3. These are the current upstream
+releases. The Oban and Ash upgrades did not remove their unused-clause and
+deprecated `igniter/2` warnings. MemHouse accepts these dependency warnings until
+an upstream release fixes them. It does not suppress compiler warnings because
+suppression could hide a warning in MemHouse code. A cold native dependency
+download can also produce an OTP 27 TLS logger formatter error. This is cosmetic,
+occurs before compilation, and does not change the release result. A cache hit
+avoids these cold-build messages.
 
 Merging that PR invokes **Publish merged release**. It tags the merged version,
 publishes the GitHub Release, and dispatches `release.yml` to build and attach
