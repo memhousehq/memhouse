@@ -176,6 +176,22 @@ defmodule MemHouse.Model.SchemaExtractionTest do
     end
   end
 
+  test "matches a hyphenated agent key whole, and not inside a longer one" do
+    context = Map.put(context(), :forbidden_subject_terms, ["membench-agent", "bot"])
+
+    # A key is usually hyphenated, so a boundary rule that treats the hyphen as a separator
+    # tears the key apart and never matches the identity it exists to catch.
+    rejected = item(90) |> Map.put("statement", "Membench-agent joined the mentorship programme.")
+
+    assert {:error, ["items[0].statement must be about a person, not about the relaying agent"]} =
+             Extraction.cast(%{"items" => [rejected]}, context)
+
+    # The same boundary must still refuse to find a short key inside a longer hyphenated one.
+    kept = item(90) |> Map.put("statement", "Avery deployed the bot-x release on Friday.")
+
+    assert {:ok, [_]} = Extraction.cast(%{"items" => [kept]}, context)
+  end
+
   test "keeps a person whose name merely contains a forbidden term" do
     context = Map.put(context(), :forbidden_subject_terms, ["bot"])
     candidate = item(90) |> Map.put("statement", "Avery bottles cider every autumn.")

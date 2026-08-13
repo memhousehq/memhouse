@@ -426,16 +426,16 @@ defmodule MemHouse.Model.Schema.Extraction do
     )
   end
 
-  # Agent peer keys are matched case-insensitively as complete punctuation-delimited tokens
-  # anywhere in the statement. Case-folding handles sentence-initial capitalization; token
-  # matching prevents partial matches like "bot-" matching "bot-x".
+  # An agent peer key matches anywhere in the statement, case-insensitively because prose
+  # capitalises it at the start of a sentence.
+  #
+  # The boundaries exclude hyphens as well as word characters, which `\\b` alone does not. A key
+  # is usually hyphenated — `membench-agent`, `agent-1` — and splitting the statement on
+  # punctuation would tear those apart and never match the very identities this exists to catch.
+  # Excluding the hyphen on both sides keeps them whole while still refusing to find `bot`
+  # inside `bot-x`.
   defp names_agent_peer?(statement, agent_key) do
-    statement_lower = String.downcase(statement)
-    key_lower = String.downcase(agent_key)
-
-    statement_lower
-    |> String.split(~r/[\s\p{P}]+/u)
-    |> Enum.any?(&(&1 == key_lower))
+    String.match?(statement, ~r/(?<![\w-])#{Regex.escape(agent_key)}(?![\w-])/iu)
   end
 
   # Peer keys are opaque identities in some deployments (`agent-1`), while a
