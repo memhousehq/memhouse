@@ -1230,9 +1230,21 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     # Elapsed time already travelled as `:outcomes` metadata, where a metrics reporter cannot
     # summarise it. As a measurement on its own event it is aggregatable per component, which is
     # what turns "the request took 855 ms" into "this strategy took 855 ms".
-    assert_receive {^events, %{elapsed_ms: elapsed_ms}, %{component: "lexical", status: status}}
+    assert_receive {^events, %{elapsed_ms: elapsed_ms},
+                    %{
+                      account_id: account_id,
+                      profile: profile,
+                      component: "lexical",
+                      status: status,
+                      reason_class: reason_class
+                    }}
+
     assert is_integer(elapsed_ms) and elapsed_ms >= 0
+    assert account_id == seeded.account.id
+    assert profile == "balanced"
     assert status in ["completed", "dropped"]
+    # reason_class is nil for completed, or a string for dropped/degraded
+    assert is_nil(reason_class) or is_binary(reason_class)
   end
 
   test "entity resolution is internal, alias retrieval is scoped, and public surfaces stay opaque" do

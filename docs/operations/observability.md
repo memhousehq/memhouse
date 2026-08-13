@@ -162,8 +162,11 @@ reuses the same pipeline run.
 Each component of a retrieval also emits
 `[:memhouse, :retrieval, :component]`, measuring `elapsed_ms`, tagged with
 `account_id`, `profile`, `component`, `status`, and `reason_class`. Strategies
-run concurrently, so the request latency is the slowest component, not their
-sum. Summarise `elapsed_ms` by `component` to see which one sets it.
+within a phase run concurrently, but phases run sequentially (seed, then
+expand), and profile resolution, fusion, and reranking also contribute to the
+total latency. The `[:memhouse, :retrieval, :outcomes]` event reports
+end-to-end `latency_ms`. Summarise `elapsed_ms` by `component` to see which
+strategy contributed the most.
 
 A dropped component still reports the time it was allowed to spend, so read
 `status` alongside the duration.
