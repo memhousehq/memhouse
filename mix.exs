@@ -149,7 +149,7 @@ defmodule MemHouse.MixProject do
       # HTTP client. Several packages pull it in on their own version ranges — the model
       # client, the S3 client, and the authentication strategies among them — so it is
       # overridden to keep them all on one version.
-      {:req, "~> 0.6.3", override: true},
+      {:req, "~> 0.7.2", override: true},
       # Tokenizer for the local embedding model: it turns text into the exact token ids
       # that model expects, and supplies the token counts recorded for usage accounting.
       {:tokenizers, "~> 0.5"},
