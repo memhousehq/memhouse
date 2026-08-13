@@ -2,12 +2,10 @@
 
 defmodule MemHouse.Model.SchemaExtractionTest do
   @moduledoc """
-  Pins `MemHouse.Model.Schema.Extraction.cast/2` percentage handling.
+  Pins the ordered extraction schema and its anchored confidence levels.
 
-  Providers receive a strict integer `confidence_percentage` schema from 1
-  through 100. The cast path accepts a decorated string defensively, strips
-  non-digits, then normalizes the valid percentage to the stored 0.0–1.0
-  fraction. It never persists model reasoning.
+  The cast path maps three model choices to stable stored fractions. It never
+  persists model reasoning or model-supplied operation and revalidation policy.
   """
 
   use ExUnit.Case, async: true
@@ -29,22 +27,21 @@ defmodule MemHouse.Model.SchemaExtractionTest do
     }
   end
 
-  defp item(confidence_percentage) do
+  defp item(confidence_level) do
     %{
       "reasoning" => "The source says this directly.",
       "statement" => "Avery prefers weekly release summaries.",
       "kind" => "preference",
       "subject_type" => "peer",
       "subject_ref" => "avery",
-      "confidence_percentage" => confidence_percentage,
+      "confidence_level" => confidence_level,
       "sensitivity" => "internal",
-      "target_level" => "peer",
-      "update_operation" => "add"
+      "target_level" => "peer"
     }
   end
 
-  defp cast_confidence(confidence_percentage) do
-    case Extraction.cast(%{"items" => [item(confidence_percentage)]}, context()) do
+  defp cast_confidence(confidence_level) do
+    case Extraction.cast(%{"items" => [item(confidence_level)]}, context()) do
       {:ok, [candidate]} -> {:ok, candidate.confidence}
       {:error, errors} -> {:error, errors}
     end
@@ -52,66 +49,59 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
   defp cast_item(item), do: Extraction.cast(%{"items" => [item]}, context())
 
-  test "accepts a native JSON integer and normalizes it" do
-    assert {:ok, 0.9} = cast_confidence(90)
+  test "maps the anchored confidence levels to stored values" do
+    assert {:ok, 1.0} = cast_confidence("stated_explicitly")
+    assert {:ok, 0.8} = cast_confidence("clearly_implied")
+    assert {:ok, 0.6} = cast_confidence("inferred")
   end
 
-  test "advertises a required 1..100 integer confidence percentage" do
+  test "repeated casts keep confidence and the gate-side evidence decision stable" do
+    response = %{"items" => [item("clearly_implied")]}
+
+    assert {:ok, [first]} = Extraction.cast(response, context())
+    assert {:ok, [second]} = Extraction.cast(response, context())
+    assert {first.confidence, first.evidence_level} == {0.8, "direct"}
+    assert {first.confidence, first.evidence_level} == {second.confidence, second.evidence_level}
+  end
+
+  test "advertises ordered properties and described enums" do
+    candidate = get_in(Extraction.json_schema(), ["properties", "items", "items"])
+
     confidence =
-      Extraction.json_schema()
-      |> get_in(["properties", "items", "items", "properties", "confidence_percentage"])
+      get_in(candidate, ["properties", "confidence_level"])
 
-    assert confidence["type"] == "integer"
-    assert confidence["minimum"] == 1
-    assert confidence["maximum"] == 100
+    assert confidence["enum"] == ~w(stated_explicitly clearly_implied inferred)
 
-    assert ["reasoning", "statement", "confidence_percentage" | _] =
-             get_in(Extraction.json_schema(), ["properties", "items", "items", "required"])
+    assert ["reasoning", "statement", "confidence_level" | _] = candidate["propertyOrdering"]
+    refute Map.has_key?(candidate["properties"], "update_operation")
+    refute Map.has_key?(candidate["properties"], "revalidate_after")
+    assert is_binary(candidate["properties"]["kind"]["description"])
+    assert is_binary(candidate["properties"]["sensitivity"]["description"])
+    assert is_binary(candidate["properties"]["target_level"]["description"])
   end
 
-  test "strips non-numeric characters before validating a percentage" do
-    assert {:ok, 0.93} = cast_confidence("confidence: 93%")
-  end
-
-  test "accepts a numeric string after sanitation" do
-    assert {:ok, 1.0} = cast_confidence("100")
-  end
-
-  test "rejects a percentage above 100" do
-    assert {:error, ["items[0].confidence_percentage must be between 1 and 100"]} =
-             cast_confidence(101)
-  end
-
-  test "rejects a sanitized percentage above 100" do
-    assert {:error, ["items[0].confidence_percentage must be between 1 and 100"]} =
-             cast_confidence("101%")
-  end
-
-  test "rejects a string without digits" do
-    assert {:error, ["items[0].confidence_percentage must be between 1 and 100"]} =
-             cast_confidence("high")
-  end
-
-  test "rejects a missing percentage" do
-    assert {:error, ["items[0].confidence_percentage must be between 1 and 100"]} =
-             cast_confidence(nil)
+  test "rejects an invalid confidence level" do
+    assert {:error, ["items[0].confidence_level is invalid"]} = cast_confidence("high")
+    assert {:error, ["items[0].confidence_level must be a string"]} = cast_confidence(nil)
   end
 
   test "derives direct evidence from the resolved source and subject" do
-    assert {:ok, [candidate]} = cast_item(item(90))
+    assert {:ok, [candidate]} = cast_item(item("stated_explicitly"))
     assert candidate.evidence_level == "direct"
-    assert candidate.confidence == 0.9
+    assert candidate.confidence == 1.0
   end
 
   test "accepts source ids from the supplied conversation window" do
-    candidate = item(90) |> Map.put("source_message_ids", [@message_id, @other_message_id])
+    candidate =
+      item("stated_explicitly")
+      |> Map.put("source_message_ids", [@message_id, @other_message_id])
 
     assert {:ok, [casted]} = cast_item(candidate)
     assert casted.source_message_ids == [@message_id, @other_message_id]
   end
 
   test "rejects a source id outside the supplied conversation window" do
-    candidate = item(90) |> Map.put("source_message_ids", [Ecto.UUID.generate()])
+    candidate = item("stated_explicitly") |> Map.put("source_message_ids", [Ecto.UUID.generate()])
 
     assert {:error,
             [
@@ -122,7 +112,7 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
   test "derives indirect evidence and its discount from source and subject" do
     indirect =
-      item(90)
+      item("stated_explicitly")
       |> Map.merge(%{
         "statement" => "Other prefers weekly release summaries.",
         "subject_ref" => "other"
@@ -132,11 +122,13 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
     assert {:ok, [candidate]} = Extraction.cast(%{"items" => [indirect]}, context)
     assert candidate.evidence_level == "indirect"
-    assert candidate.confidence == 0.675
+    assert candidate.confidence == 0.75
   end
 
   test "rejects a question instead of storing it as knowledge" do
-    question = item(90) |> Map.put("statement", "Does Avery prefer weekly release summaries?")
+    question =
+      item("stated_explicitly")
+      |> Map.put("statement", "Does Avery prefer weekly release summaries?")
 
     assert {:error, ["items[0].statement must assert knowledge, not record a question"]} =
              cast_item(question)
@@ -144,20 +136,22 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
   test "rejects a speech-act transcription" do
     transcription =
-      item(90) |> Map.put("statement", "Avery said that weekly release summaries are best.")
+      item("stated_explicitly")
+      |> Map.put("statement", "Avery said that weekly release summaries are best.")
 
     assert {:error, ["items[0].statement must assert the fact, not record a speech act"]} =
              cast_item(transcription)
   end
 
   test "rejects a peer claim that does not name its subject" do
-    generic = item(90) |> Map.put("statement", "Running can really boost your mood.")
+    generic =
+      item("stated_explicitly") |> Map.put("statement", "Running can really boost your mood.")
 
     assert {:error, ["items[0].statement must name its peer subject"]} = cast_item(generic)
   end
 
   test "keeps a proper name that ends in ing" do
-    candidate = item(90) |> Map.put("statement", "Vanishing indexer statement.")
+    candidate = item("stated_explicitly") |> Map.put("statement", "Vanishing indexer statement.")
 
     assert {:ok, [_]} = cast_item(candidate)
   end
@@ -169,7 +163,7 @@ defmodule MemHouse.Model.SchemaExtractionTest do
           "The assistant is allergic to shellfish.",
           "Relay-agent joined the mentorship programme."
         ] do
-      candidate = item(90) |> Map.put("statement", statement)
+      candidate = item("stated_explicitly") |> Map.put("statement", statement)
 
       assert {:error, ["items[0].statement must be about a person, not about the relaying agent"]} =
                Extraction.cast(%{"items" => [candidate]}, context)
@@ -181,20 +175,26 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
     # A key is usually hyphenated, so a boundary rule that treats the hyphen as a separator
     # tears the key apart and never matches the identity it exists to catch.
-    rejected = item(90) |> Map.put("statement", "Membench-agent joined the mentorship programme.")
+    rejected =
+      item("stated_explicitly")
+      |> Map.put("statement", "Membench-agent joined the mentorship programme.")
 
     assert {:error, ["items[0].statement must be about a person, not about the relaying agent"]} =
              Extraction.cast(%{"items" => [rejected]}, context)
 
     # The same boundary must still refuse to find a short key inside a longer hyphenated one.
-    kept = item(90) |> Map.put("statement", "Avery deployed the bot-x release on Friday.")
+    kept =
+      item("stated_explicitly")
+      |> Map.put("statement", "Avery deployed the bot-x release on Friday.")
 
     assert {:ok, [_]} = Extraction.cast(%{"items" => [kept]}, context)
   end
 
   test "keeps a person whose name merely contains a forbidden term" do
     context = Map.put(context(), :forbidden_subject_terms, ["bot"])
-    candidate = item(90) |> Map.put("statement", "Avery bottles cider every autumn.")
+
+    candidate =
+      item("stated_explicitly") |> Map.put("statement", "Avery bottles cider every autumn.")
 
     # Word edges matter: a substring match would refuse half the language.
     assert {:ok, [_]} = Extraction.cast(%{"items" => [candidate]}, context)

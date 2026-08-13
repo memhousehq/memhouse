@@ -173,10 +173,9 @@ defmodule MemHouse.IngestRelayTest do
         "kind" => "fact",
         "subject_type" => "peer",
         "subject_ref" => "melanie",
-        "confidence_percentage" => 90,
+        "confidence_level" => "stated_explicitly",
         "sensitivity" => "internal",
         "target_level" => "peer",
-        "update_operation" => "add",
         "source_message_ids" => [message["id"]]
       }
     ])

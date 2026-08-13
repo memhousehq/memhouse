@@ -33,12 +33,10 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest.Provider do
           "kind" => kind(statement),
           "subject_type" => "peer",
           "subject_ref" => Keyword.fetch!(opts, :source_peer_key),
-          "confidence_percentage" => 82,
+          "confidence_level" => "clearly_implied",
           "sensitivity" => "internal",
           "target_level" => "peer",
-          "update_operation" => "add",
           "expires_at" => nil,
-          "revalidate_after" => nil,
           "relevant_from" => nil,
           "relevant_until" => nil
         }

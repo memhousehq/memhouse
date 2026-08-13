@@ -30,9 +30,9 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   ## What one candidate is
 
-  A candidate includes statement, classification, confidence, sensitivity,
-  target level, independent subject, operation, expiry, revalidation, and a
-  validity window.
+  A candidate includes statement, classification, an anchored confidence
+  level, sensitivity, target level, independent subject, expiry, and a validity
+  window.
 
   ## Rules this module enforces
 
@@ -88,22 +88,24 @@ defmodule MemHouse.Model.Schema.Extraction do
                             )
 
   # Candidate fields taken straight from the knowledge resource's attributes.
-  # `confidence_percentage` is normalized to the persisted `confidence` value
-  # after validation, so it deliberately is not part of this list.
+  # `confidence_level` is normalized to the persisted `confidence` value after
+  # validation, so it deliberately is not part of this list.
   @knowledge_fields ~w(statement kind confidence sensitivity target_level)a
 
-  # Expiry, the revalidation due date, and the two ends of the validity window
-  # are independent of each other and of when the claim was believed. All four
-  # are optional and nullable, so a timeless fact simply leaves them empty.
-  @temporal_fields ~w(expires_at revalidate_after relevant_from relevant_until)a
+  # Expiry and the two ends of the validity window are independent of each
+  # other and of when the claim was believed. Revalidation is governance
+  # policy, not a model decision.
+  @temporal_fields ~w(expires_at relevant_from relevant_until)a
 
   # The only two things a statement may be about. Source is separate: who said
   # it is not who it is about.
   @subject_types ~w(peer scope)
 
-  # What the extractor proposes doing with the candidate. `no_op` exists so the
-  # model can decline explicitly instead of inventing an empty statement.
-  @operations ~w(add merge supersede_candidate no_op)
+  @confidence_levels %{
+    "stated_explicitly" => 1.0,
+    "clearly_implied" => 0.8,
+    "inferred" => 0.6
+  }
 
   # Enumerations that the JSON schema advertises and `cast/2` re-checks. The
   # attributes themselves carry no enum constraint, so these must be kept equal
@@ -112,6 +114,15 @@ defmodule MemHouse.Model.Schema.Extraction do
     kind: ~w(fact preference event relation skill),
     sensitivity: ~w(public internal personal restricted),
     target_level: ~w(peer scope account)
+  }
+
+  @enum_descriptions %{
+    kind:
+      "fact is stable information; preference is a choice; event has a time; relation connects people or things; skill is an ability",
+    sensitivity:
+      "public can be shared; internal stays in the Account; personal concerns one person; restricted needs the most care",
+    target_level:
+      "peer stays with one person; scope is for the current scope; account is Account-wide"
   }
 
   @doc """
@@ -143,30 +154,42 @@ defmodule MemHouse.Model.Schema.Extraction do
          }}
       end)
 
+    property_order =
+      ~w(reasoning statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids expires_at relevant_from relevant_until)
+
     candidate =
       %{
         "type" => "object",
         "description" =>
-          "Return fields in this order: reasoning, statement, confidence_percentage, then the remaining fields.",
+          "Write reasoning first, then statement, then rate that completed statement with confidence_level.",
         "additionalProperties" => false,
         "properties" =>
           knowledge_properties
           |> Map.merge(temporal_properties)
           |> Map.merge(%{
             "reasoning" => %{"type" => "string", "minLength" => 1},
-            "confidence_percentage" => %{"type" => "integer", "minimum" => 1, "maximum" => 100},
-            "subject_type" => %{"type" => "string", "enum" => @subject_types},
+            "confidence_level" => %{
+              "type" => "string",
+              "enum" => ~w(stated_explicitly clearly_implied inferred),
+              "description" =>
+                "stated_explicitly means the source states the claim; clearly_implied means the claim follows directly; inferred requires interpretation"
+            },
+            "subject_type" => %{
+              "type" => "string",
+              "enum" => @subject_types,
+              "description" => "peer identifies one person; scope identifies the current scope"
+            },
             "subject_ref" => %{"type" => "string", "minLength" => 1},
             "source_message_ids" => %{
               "type" => "array",
               "items" => %{"type" => "string", "format" => "uuid"},
               "minItems" => 1,
               "uniqueItems" => true
-            },
-            "update_operation" => %{"type" => "string", "enum" => @operations}
+            }
           }),
+        "propertyOrdering" => property_order,
         "required" =>
-          ~w(reasoning statement confidence_percentage kind subject_type subject_ref sensitivity target_level update_operation)
+          ~w(reasoning statement confidence_level kind subject_type subject_ref sensitivity target_level)
       }
 
     %{
@@ -240,7 +263,6 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
-         {:ok, operation} <- enum(item, "update_operation", @operations),
          {:ok, temporal} <- temporal(item),
          :ok <- temporal_order(temporal),
          casted <-
@@ -254,7 +276,7 @@ defmodule MemHouse.Model.Schema.Extraction do
              evidence_level: evidence_level(subject_type, subject_ref, context),
              sensitivity: sensitivity,
              target_level: target_level,
-             update_operation: operation
+             revalidate_after: nil
            }
            |> Map.merge(temporal),
          :ok <- validate_ash_action(casted, context) do
@@ -345,6 +367,7 @@ defmodule MemHouse.Model.Schema.Extraction do
 
     base
     |> maybe_put("enum", Map.get(@allowed, name))
+    |> maybe_put("description", Map.get(@enum_descriptions, name))
     |> maybe_put("minimum", constraints[:min])
     |> maybe_put("maximum", constraints[:max])
     |> maybe_put("minLength", constraints[:min_length])
@@ -501,30 +524,20 @@ defmodule MemHouse.Model.Schema.Extraction do
     end
   end
 
-  # The wire field is deliberately a human-friendly whole percentage. Providers
-  # occasionally decorate an otherwise useful value (for example, `"93%"`), so
-  # validation retains only digits before it checks the 1..100 interval. The
-  # normalized fraction is the value that reaches governance and storage.
+  # A small anchored scale is reproducible enough for downstream ordering. The
+  # normalized fraction preserves the existing durable storage contract.
   defp confidence(item) do
-    case fetch(item, "confidence_percentage") do
-      value when is_integer(value) ->
-        confidence_percentage_in_range(value)
-
+    case fetch(item, "confidence_level") do
       value when is_binary(value) ->
-        case value |> String.replace(~r/[^0-9]/, "") |> Integer.parse() do
-          {percentage, ""} -> confidence_percentage_in_range(percentage)
-          _other -> {:error, ["confidence_percentage must be between 1 and 100"]}
+        case Map.fetch(@confidence_levels, String.downcase(value)) do
+          {:ok, confidence} -> {:ok, confidence}
+          :error -> {:error, ["confidence_level is invalid"]}
         end
 
       _other ->
-        {:error, ["confidence_percentage must be between 1 and 100"]}
+        {:error, ["confidence_level must be a string"]}
     end
   end
-
-  defp confidence_percentage_in_range(value) when value in 1..100, do: {:ok, value / 100}
-
-  defp confidence_percentage_in_range(_value),
-    do: {:error, ["confidence_percentage must be between 1 and 100"]}
 
   defp temporal(item) do
     @temporal_fields

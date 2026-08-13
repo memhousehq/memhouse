@@ -18,9 +18,8 @@ defmodule MemHouse.Pipeline.Extractor do
   - **Source evidence is derived.** The resolved source and subject produce a
     stable direct or indirect level; indirect claims receive the third-party
     confidence discount during validation.
-  - **Declining is explicit.** A candidate emitted with the `no_op` operation is
-    dropped here rather than becoming an empty statement that would later look
-    like real knowledge.
+  - **Declining emits no candidate.** An empty candidate cannot later look like
+    real knowledge.
 
   ## Failure behaviour
 
@@ -49,7 +48,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-8"
+  @prompt_version "extract-9"
 
   # Ways a model names the process instead of a person. Deployment-specific
   # identities are added per observation; these hold everywhere.
@@ -129,15 +128,14 @@ defmodule MemHouse.Pipeline.Extractor do
         identity as the person a claim is about.
 
         Start each candidate with concise reasoning, then its natural-language
-        statement, then confidence_percentage. Rate your confidence percentage
-        on an integer scale from 1 to 100 (where 1 is completely uncertain and
-        100 is absolute certainty). Resolve subject independently from source. A peer subject_ref must be
+        statement, then confidence_level. Rate the statement you just wrote as
+        stated_explicitly, clearly_implied, or inferred. Resolve subject independently from source. A peer subject_ref must be
         one of the supplied known peer keys. Use the current scope path only for
         a scope subject. Each candidate must cite source_message_ids drawn only
         from the supplied conversation window. The source-to-subject relationship is derived by
         MemHouse. Propose sensitivity and the independent
-        expiry, revalidation, and relevant-window timestamps. Use no_op by
-        omitting the candidate rather than emitting an empty statement.
+        expiry and relevant-window timestamps. Decline by omitting the
+        candidate rather than emitting an empty statement.
 
         The observation carries the time it was made. Resolve every relative
         date against that time — "last weekend", "yesterday", "next month" —
@@ -190,14 +188,7 @@ defmodule MemHouse.Pipeline.Extractor do
            opts
          ) do
       {:ok, items, provenance} ->
-        # Declined candidates are dropped here rather than downstream, so an
-        # explicit "nothing to record" never reaches the writer as a row. Every
-        # surviving candidate carries the provider/model/version provenance of
-        # the call that produced it.
-        {:ok,
-         items
-         |> Enum.reject(&(&1.update_operation == "no_op"))
-         |> Enum.map(&Map.merge(&1, provenance))}
+        {:ok, Enum.map(items, &Map.merge(&1, provenance))}
 
       {:error, error} ->
         {:error, error}

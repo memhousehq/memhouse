@@ -213,12 +213,10 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
       "kind" => "event",
       "subject_type" => "peer",
       "subject_ref" => "#{account_key}-peer",
-      "confidence_percentage" => 80,
+      "confidence_level" => "clearly_implied",
       "sensitivity" => "public",
       "target_level" => "peer",
-      "update_operation" => "add",
       "expires_at" => nil,
-      "revalidate_after" => nil,
       "relevant_from" => nil,
       "relevant_until" => nil
     }
