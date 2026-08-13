@@ -76,8 +76,8 @@ defmodule MemHouse.Pipeline.Extractor do
 
   Returns `{:ok, candidates}`, where each candidate is the validated schema
   value merged with the provider, model, and version provenance that produced
-  it. Candidates the model declined (`no_op`) are already removed, so an empty
-  list means "this observation contains no durable memory", not a failure.
+  it. Candidates the model declined are omitted from the items array, so an
+  empty list means "this observation contains no durable memory", not a failure.
 
   Returns the generator's `{:error, reason}` unchanged: a provider transport or
   credential failure, or `{:error, {:structured_validation_failed, errors}}`

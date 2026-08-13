@@ -72,9 +72,8 @@ Each candidate also includes:
 
 - kind, sensitivity, and target level;
 - peer or current-scope subject, independently of the source Peer;
-- `add`, `merge`, `supersede_candidate`, or `no_op`;
-- schema-derived direct or indirect source evidence with a confidence discount; and
-- expiry, revalidation, and valid-time bounds.
+- schema-derived direct or indirect source evidence with a confidence discount;
+- expiry and valid-time bounds; and
 - message source ids from the bounded same-session extraction window. The
   validator rejects ids outside that window; each retained id becomes durable
   provenance for the knowledge item.
@@ -100,11 +99,10 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-Each candidate also includes an anchored `confidence_level`, which is normalized to a fixed
-confidence fraction after validation. The `extract-9`
-and `f5-1` prompt and pipeline versions enforce subject rules: agent peers are excluded from
-the subject allowlist and machine referents are refused, preserving the verified contract
-that knowledge is about people and never about the infrastructure that carried it.
+The `extract-9` and `f5-1` prompt and pipeline versions enforce subject rules:
+agent peers are excluded from the subject allowlist and machine referents are
+refused, preserving the verified contract that knowledge is about people and
+never about the infrastructure that carried it.
 
 ## Embeddings
 
