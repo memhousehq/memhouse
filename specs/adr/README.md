@@ -25,6 +25,7 @@ settled by the blueprint specs.
 | `0015-indexed-embedding-dimensions.md` | Configured embedding widths must have a matching installed vector index. |
 | `0015-windowed-message-extraction.md` | Bounded same-session extraction windows with schema-validated source provenance. |
 | `0016-bounded-projection-summaries.md` | Context projections store bounded summaries and pinned facts, not raw knowledge rows. |
+| `0017-entity-match-selectivity.md` | Entity frequency is measured per request inside the retrieval query, never cached on the Account-global entity row. |
 
 Conventions for future ADRs:
 
