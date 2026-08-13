@@ -1257,7 +1257,12 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     # Bounded, because `min_score` filtering and the `low_score` disagreement hint both read
     # this raw score. An unbounded sum would silently change what those two mean.
-    assert Enum.all?(candidates, &(&1["rrf_score"] > 0))
+    raw_candidates =
+      entity_match_raw_candidates!("f7-entity-idf", "/f7/entity-idf", "What did Melanie say to Rivet")
+
+    assert Enum.all?(raw_candidates, fn candidate ->
+             candidate.score >= 0.0 and candidate.score <= 1.0
+           end)
   end
 
   test "entity_match reports nothing when every entity the query names saturates the scope" do
@@ -3016,6 +3021,37 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       "strategies" => ["entity_match"],
       "deadline" => "disabled"
     })["candidates"]
+  end
+
+  # Calls entity_match strategy directly to access raw per-candidate scores before fusion.
+  # Returns a list of `%Candidate{}` structs with the raw `score` field intact.
+  defp entity_match_raw_candidates!(account_key, scope_path, query_text) do
+    DataLayer.with_account_key(account_key, fn account, actor ->
+      scope =
+        Scope
+        |> Ash.Query.filter(path == ^scope_path)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      peer = read_peer!(account.id, actor)
+      actor = %{actor | peer_id: peer.id}
+
+      query = %Query{
+        account_id: account.id,
+        actor: actor,
+        scope_ids: [scope.id],
+        text: query_text,
+        target: :knowledge
+      }
+
+      budget = %MemHouse.Retrieval.Budget{
+        started_at: MemHouse.Clock.monotonic_ms(),
+        max_candidates: 50,
+        deadline?: false
+      }
+
+      Strategies.EntityMatch.candidates(query, budget)
+    end)
   end
 
   # Distinct governed statements that name nobody, so the only entity signal a test sees is the
