@@ -523,6 +523,35 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert 1 == Enum.find_index(proposed, &(&1.id == target.id)) + 1
   end
 
+  test "fused separation is bounded by the fusion constant, not by how well anything matched" do
+    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+    k = Keyword.fetch!(profiles, :rrf_k)
+    %{strategies: strategies, weights: weights} = Keyword.fetch!(profiles, :balanced)
+    total_weight = strategies |> Enum.map(&Map.get(weights, &1, 1.0)) |> Enum.sum()
+
+    # Unanimous rank 1 is the best any candidate can ever score, and unanimous rank 4 is still
+    # a strong result. Every strategy returns both, so the pair differs only in rank.
+    lists =
+      for strategy <- strategies do
+        {strategy, [candidate("best", strategy, 1), candidate("fourth", strategy, 4)]}
+      end
+
+    [top, next] = Fusion.reciprocal_rank(lists, weights, 10)
+
+    assert top.id == "best"
+    assert next.id == "fourth"
+
+    # Both bounds are functions of `rrf_k` and the profile weights alone. No corpus, embedding,
+    # or analyzer change can widen them, so the ceiling is a property of the merge rather than
+    # of the match.
+    assert_in_delta top.score, total_weight / (k + 1), 1.0e-12
+    assert_in_delta next.score, total_weight / (k + 4), 1.0e-12
+
+    # Three whole rank positions of unanimous disagreement move the score by a few percent, so
+    # the ordering a caller sees is close to a tie however certain a strategy was.
+    assert (top.score - next.score) / top.score < 0.05
+  end
+
   test "an ordinary question keeps lexical evidence in the default top twelve" do
     answer =
       seed_active!(
