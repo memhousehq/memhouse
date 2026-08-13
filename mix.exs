@@ -137,7 +137,7 @@ defmodule MemHouse.MixProject do
       {:rag, "~> 0.2.3"},
       # Splits extracted text into chunks on semantic boundaries and reports byte offsets,
       # so a retrieved chunk can be pointed back at its exact location in the original.
-      {:text_chunker, "~> 0.6.1"},
+      {:text_chunker, "~> 0.7.0"},
       # S3-compatible object storage for document blobs. This is one of two interchangeable
       # blob adapters chosen at runtime; the other writes to a local directory, so object
       # storage is never a requirement.
