@@ -544,8 +544,13 @@ defmodule MemHouse.Retrieval.Store do
         AND (r.source_knowledge_id = ANY($4) OR r.target_knowledge_id = ANY($4))
     ),
     shared_entity AS (
-      SELECT DISTINCT other.knowledge_item_id AS knowledge_id,
-             least(seed.confidence, other.confidence) AS edge_score
+      -- One row per neighbour, not one per shared mention. A hub entity mentioned by hundreds of
+      -- statements makes this join produce seeds x mentions rows; aggregating here collapses them
+      -- before the union instead of carrying them into it. `max` matches the outer aggregate:
+      -- the statement's own confidence is constant per neighbour, so the strongest edge wins
+      -- either way.
+      SELECT other.knowledge_item_id AS knowledge_id,
+             max(least(seed.confidence, other.confidence)) AS edge_score
       FROM entity_mentions AS seed
       JOIN entity_mentions AS other
         ON other.account_id = seed.account_id
@@ -553,6 +558,7 @@ defmodule MemHouse.Retrieval.Store do
        AND other.knowledge_item_id <> seed.knowledge_item_id
       WHERE seed.account_id = $1
         AND seed.knowledge_item_id = ANY($4)
+      GROUP BY other.knowledge_item_id
     ),
     scope_expanded AS (
       SELECT related.id AS knowledge_id, 1.0::float8 AS edge_score
