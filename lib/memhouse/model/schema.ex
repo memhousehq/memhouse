@@ -77,6 +77,16 @@ defmodule MemHouse.Model.Schema.Extraction do
   # statement's subject position. Agent-specific peer keys are supplied per validation context.
   @generic_machine_referents ["the assistant", "the agent", "the ai", "the chatbot", "the bot"]
 
+  # Anchored to the start of the statement, because a generic referent is refused as the thing a
+  # claim is about, not as a thing a claim mentions. "Melanie recommends the assistant." is a
+  # fact about Melanie; "The assistant is allergic to shellfish." is a person's fact misfiled.
+  @generic_referent_subject Regex.compile!(
+                              "\\A(" <>
+                                Enum.map_join(@generic_machine_referents, "|", &Regex.escape/1) <>
+                                ")\\b",
+                              "iu"
+                            )
+
   # Candidate fields taken straight from the knowledge resource's attributes.
   # `confidence_percentage` is normalized to the persisted `confidence` value
   # after validation, so it deliberately is not part of this list.
@@ -395,8 +405,7 @@ defmodule MemHouse.Model.Schema.Extraction do
   # nothing is inferred from the prose.
   defp human_subject_statement(statement, context) do
     cond do
-      Map.get(context, :generic_term_matcher) &&
-          String.match?(statement, Map.fetch!(context, :generic_term_matcher)) ->
+      String.match?(statement, @generic_referent_subject) ->
         {:error, ["statement must be about a person, not about the relaying agent"]}
 
       Enum.any?(Map.get(context, :agent_peer_keys, []), &names_agent_peer?(statement, &1)) ->
@@ -407,34 +416,20 @@ defmodule MemHouse.Model.Schema.Extraction do
     end
   end
 
-  # Prepare forbidden term matchers once per validation context. Generic machine referents are
-  # matched in subject position only; agent peer keys are matched as exact opaque whole words.
+  # Splits the caller's forbidden terms once per response, rather than per candidate. What is
+  # left after removing the generic referents is the deployment's own agent peer keys.
   defp prepare_forbidden_term_matchers(context) do
-    forbidden_terms = Map.get(context, :forbidden_subject_terms, [])
-    generic_terms = @generic_machine_referents
-    agent_peer_keys = forbidden_terms -- generic_terms
-
-    generic_term_matcher =
-      if Enum.empty?(generic_terms) do
-        nil
-      else
-        # Match generic terms only in subject position (start of statement, case-insensitive)
-        pattern =
-          generic_terms
-          |> Enum.map(&Regex.escape/1)
-          |> Enum.join("|")
-
-        Regex.compile!("\\A(#{pattern})\\b", "iu")
-      end
-
-    context
-    |> Map.put(:generic_term_matcher, generic_term_matcher)
-    |> Map.put(:agent_peer_keys, agent_peer_keys)
+    Map.put(
+      context,
+      :agent_peer_keys,
+      Map.get(context, :forbidden_subject_terms, []) -- @generic_machine_referents
+    )
   end
 
-  # Agent peer keys are opaque strings that must match exactly as whole words.
+  # Agent peer keys match as whole words anywhere in the statement, and case-insensitively: a
+  # key is opaque, but prose capitalises it at the start of a sentence.
   defp names_agent_peer?(statement, agent_key) do
-    String.match?(statement, ~r/\b#{Regex.escape(agent_key)}\b/u)
+    String.match?(statement, ~r/\b#{Regex.escape(agent_key)}\b/iu)
   end
 
   # Peer keys are opaque identities in some deployments (`agent-1`), while a

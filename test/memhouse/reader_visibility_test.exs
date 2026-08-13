@@ -124,41 +124,34 @@ defmodule MemHouse.ReaderVisibilityTest do
     refute "Caroline is allergic to shellfish." in listed(ctx, "melanie")
   end
 
-  test "a nil peer_id machine credential without peer_key sees public statements only in context", ctx do
+  test "a reader who names nobody gets no cached projection either", ctx do
     seed!(ctx, "caroline", "Caroline is allergic to shellfish.", sensitivity: "personal")
     seed!(ctx, "caroline", "Caroline holds the allotment gate rota.", sensitivity: "public")
     seed!(ctx, "caroline", "Caroline tracks the build pipeline.", sensitivity: "internal")
 
-    # Create a machine credential with no peer. An internal caller must explicitly provide peer_key
-    # for ingest, but for reads it represents a peerless non-internal reader.
-    DataLayer.with_account_key(account_key(), [role: :member], fn _account, peerless_actor ->
-      # Force peer_id to nil to simulate a peerless machine credential
-      peerless_actor = %{peerless_actor | peer_id: nil}
+    # Retrieval narrows a peerless reader to public statements, but a scope card is built from
+    # everything shareable, internal included. Serving one to this reader would hand back through
+    # a projection exactly what the query refused, so the projections are skipped entirely and
+    # the live fallback answers instead.
+    statements =
+      DataLayer.with_account_key(account_key(), [role: :member], fn account, actor ->
+        reader = %{actor | peer_id: nil}
 
-      context_result =
-        MemHouse.Context.get(
-          MemHouse.DataLayer.with_free_account(fn account, _actor -> account end),
-          peerless_actor,
-          [
-            MemHouse.Topology.Scope
-            |> Ash.Query.filter(path == ^@scope)
-            |> Ash.Query.set_tenant(
-              MemHouse.DataLayer.with_free_account(fn account, _actor -> account.id end)
-            )
-            |> Ash.read_one!(actor: %{peerless_actor | scope_ids: :all})
-          ],
-          %{},
-          false
-        )
+        scope =
+          MemHouse.Topology.Scope
+          |> Ash.Query.filter(path == ^@scope)
+          |> Ash.Query.set_tenant(account.id)
+          |> Ash.read_one!(actor: %{reader | scope_ids: :all})
 
-      knowledge_statements =
-        context_result["knowledge"]
+        account
+        |> MemHouse.Context.get(reader, [scope], %{}, false)
+        |> Map.fetch!("knowledge")
         |> Enum.map(& &1["statement"])
+      end)
 
-      assert "Caroline holds the allotment gate rota." in knowledge_statements
-      refute "Caroline is allergic to shellfish." in knowledge_statements
-      refute "Caroline tracks the build pipeline." in knowledge_statements
-    end)
+    assert "Caroline holds the allotment gate rota." in statements
+    refute "Caroline is allergic to shellfish." in statements
+    refute "Caroline tracks the build pipeline." in statements
   end
 
   # Writes one active statement about `subject_key` directly, so a test names the exact

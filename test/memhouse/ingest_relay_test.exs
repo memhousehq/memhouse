@@ -190,41 +190,6 @@ defmodule MemHouse.IngestRelayTest do
     refute user =~ "relay-agent"
   end
 
-  test "ingest status for a relayed message shows speaker-private provisional knowledge", ctx do
-    # Relay a message on behalf of a speaker
-    {:ok, message} = relay(ctx.agent_actor, "caroline", "Caroline keeps bees on her allotment.")
-
-    # Extract it with personal speaker-private knowledge
-    PromptCaptureProvider.start!([
-      %{
-        "reasoning" => "Direct statement about Caroline.",
-        "statement" => "Caroline keeps bees on her allotment.",
-        "kind" => "fact",
-        "subject_type" => "peer",
-        "subject_ref" => "caroline",
-        "confidence_percentage" => 90,
-        "sensitivity" => "personal",
-        "target_level" => "peer",
-        "update_operation" => "add",
-        "source_message_ids" => [message["id"]]
-      }
-    ])
-
-    {:ok, _} = Memory.extract_message(message["id"], ctx.bootstrap.account.key)
-
-    # The agent checks the status of the relayed message. The knowledge is speaker-private
-    # (personal peer-level about Caroline), so it should appear in the status response because
-    # the status is read as the message's speaker (Caroline), not as the calling credential
-    # (the agent).
-    status = Memory.ingest_status(message["id"], ctx.agent_actor)
-
-    knowledge_statements =
-      status["knowledge"]
-      |> Enum.map(& &1["statement"])
-
-    assert "Caroline keeps bees on her allotment." in knowledge_statements
-  end
-
   defp relay(actor, peer_key, content) do
     Memory.ingest_message(
       %{

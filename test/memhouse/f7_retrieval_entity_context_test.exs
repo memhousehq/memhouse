@@ -1999,20 +1999,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       # audience. Without this the card would be built from two sources and carry neither the
       # summary nor the strictest sensitivity the rest of this test checks.
       #
-      # TEST FIXTURE: This represents an already-consented and approved promotion. In production,
-      # personal knowledge requires verified subject consent before promotion above peer level.
-      # Record synthetic consent before the promotion to preserve the contract that promotion
-      # requires consent, even in test fixtures.
-      {:ok, _consent} =
-        GovernanceEngine.subject_consent(
-          actor,
-          third.knowledge.id,
-          third.scope.id,
-          "grant",
-          true,
-          "human_ui"
-        )
-
+      # The promotion is written directly because this fixture is about card content, not about
+      # the consent path; `test/memhouse/f4_real_gate_a_b_governance_test.exs` owns that evidence.
       GovernanceEngine.transition!(
         third.knowledge,
         pipeline,

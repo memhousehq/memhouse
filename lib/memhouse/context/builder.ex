@@ -691,8 +691,8 @@ defmodule MemHouse.Context.Builder do
       text: "#{scope.name} context",
       target: :knowledge,
       max_candidates: max(length(knowledge), 1),
-      # Ranks what a projection will be built from. Shared projections must contain only public
-      # and internal statements, so the internal reader posture is needed.
+      # Ranks what a projection will be built from. The shareable filter is applied where the
+      # sources are read; ranking a narrowed set here would shrink every card twice over.
       internal_reader?: true
     }
 

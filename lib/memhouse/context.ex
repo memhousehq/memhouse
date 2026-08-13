@@ -83,10 +83,19 @@ defmodule MemHouse.Context do
     # content. Skip projection reads for them and use the live fallback instead.
     public_only? = not internal_reader? and not is_binary(actor.peer_id)
 
-    {scope_cards, scope_hits} = if public_only?, do: {[], 0}, else: scope_cards(account.id, actor, scopes)
-    {peer_profiles, peer_hits} = if public_only?, do: {[], 0}, else: peer_profiles(account.id, actor, scopes)
-    {entity_cards, entity_hits} = if public_only?, do: {[], 0}, else: entity_cards(account.id, actor, scopes)
-    {session_summary, session_hit} = if public_only?, do: {nil, false}, else: session_summary(account.id, actor, scopes, session_id)
+    {scope_cards, scope_hits} =
+      if public_only?, do: {[], 0}, else: scope_cards(account.id, actor, scopes)
+
+    {peer_profiles, peer_hits} =
+      if public_only?, do: {[], 0}, else: peer_profiles(account.id, actor, scopes)
+
+    {entity_cards, entity_hits} =
+      if public_only?, do: {[], 0}, else: entity_cards(account.id, actor, scopes)
+
+    {session_summary, session_hit} =
+      if public_only?,
+        do: {nil, false},
+        else: session_summary(account.id, actor, scopes, session_id)
 
     projection_knowledge =
       projection_knowledge(scope_cards, peer_profiles, entity_cards)

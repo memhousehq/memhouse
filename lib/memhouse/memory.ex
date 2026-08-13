@@ -1608,15 +1608,12 @@ defmodule MemHouse.Memory do
 
   defp ingest_status_knowledge(_account_id, _actor, %{extraction_completed_at: nil}), do: []
 
+  # Read as the caller, never as the message's speaker. Relaying a turn is not a claim to be
+  # the person who spoke it, so an agent that submits Caroline's turn does not thereby earn
+  # Caroline's personal knowledge back in the status response.
   defp ingest_status_knowledge(account_id, actor, message) do
-    # Read knowledge extracted from this message as the message's speaker, not the calling
-    # credential. When an agent relays a turn on behalf of a peer, the status response should
-    # include provisional knowledge visible to that speaker, preserving the caller's roles and
-    # scopes but using the message's peer_id for visibility filtering.
-    reader_actor = %{actor | peer_id: message.peer_id}
-
     [message.scope_id]
-    |> knowledge_read_query("active", reader_actor, actor.identity_kind == :system)
+    |> knowledge_read_query("active", actor, actor.identity_kind == :system)
     |> Ash.Query.filter(^message.id in source_message_ids)
     |> Ash.Query.sort(inserted_at: :asc, id: :asc)
     |> Ash.Query.set_tenant(account_id)
