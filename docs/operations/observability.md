@@ -157,6 +157,20 @@ missing mention index. It enqueues the ordinary full scope rebuild with a
 stable corpus watermark. Repeating reconciliation before the corpus changes
 reuses the same pipeline run.
 
+## Finding which retrieval component spent the time
+
+Each component of a retrieval also emits
+`[:memhouse, :retrieval, :component]`, measuring `elapsed_ms`, tagged with
+`account_id`, `profile`, `component`, `status`, and `reason_class`. Strategies
+within a phase run concurrently, but phases run sequentially (seed, then
+expand), and profile resolution, fusion, and reranking also contribute to the
+total latency. The `[:memhouse, :retrieval, :outcomes]` event reports
+end-to-end `latency_ms`. Summarise `elapsed_ms` by `component` to see which
+strategy contributed the most.
+
+A dropped component still reports the time it was allowed to spend, so read
+`status` alongside the duration.
+
 ## Knowing when retrieval ran degraded
 
 Each retrieval component that was dropped, or completed with a reason class,

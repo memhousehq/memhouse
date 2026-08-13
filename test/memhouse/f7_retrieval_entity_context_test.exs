@@ -1147,6 +1147,121 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              Enum.find(result["retrieval_outcomes"], &(&1.component == "reranker"))
   end
 
+  test "shared-entity expansion yields one row per neighbour, at its strongest edge" do
+    seed = seed_active!("f7-hub", "/f7/hub", "Avery signed off on the Orchid ledger.")
+
+    neighbour =
+      seed_active!(
+        "f7-hub",
+        "/f7/hub",
+        "Melanie reviewed the Orchid ledger rollout.",
+        "hub-session"
+      )
+
+    DataLayer.with_account_key("f7-hub", fn account, actor ->
+      pipeline = pipeline_actor(actor)
+
+      entity =
+        create!(
+          Entity,
+          :create_from_pipeline,
+          %{
+            canonical_name: "orchid ledger",
+            kind: "system",
+            aliases: ["orchid ledger"],
+            derived_from: [seed.knowledge.id, neighbour.knowledge.id]
+          },
+          account.id,
+          pipeline
+        )
+
+      # Two surface forms on one seed is what multiplies the neighbour: each pairing produces a
+      # different edge score, so deduplicating on the pair keeps both. A hub entity is the same
+      # shape at scale, which is why the branch has to collapse to the neighbour itself.
+      for {surface_form, confidence} <- [{"Orchid ledger", 0.4}, {"the ledger", 0.9}] do
+        create!(
+          EntityMention,
+          :create_from_pipeline,
+          %{
+            knowledge_item_id: seed.knowledge.id,
+            scope_id: seed.scope.id,
+            entity_id: entity.id,
+            surface_form: surface_form,
+            confidence: confidence
+          },
+          account.id,
+          pipeline
+        )
+      end
+
+      create!(
+        EntityMention,
+        :create_from_pipeline,
+        %{
+          knowledge_item_id: neighbour.knowledge.id,
+          scope_id: neighbour.scope.id,
+          entity_id: entity.id,
+          surface_form: "Orchid ledger",
+          confidence: 1.0
+        },
+        account.id,
+        pipeline
+      )
+    end)
+
+    query = %Query{
+      account_id: seed.account.id,
+      actor: seed.actor,
+      text: "",
+      target: :knowledge,
+      scope_ids: [seed.scope.id],
+      seed_ids: [seed.knowledge.id]
+    }
+
+    rows = MemHouse.Retrieval.Store.relation_expand(query, 50)
+
+    assert [%{"score" => score, "confidence" => confidence}] = rows
+    assert hd(rows)["id"] == neighbour.knowledge.id
+
+    # The weaker 0.4 mention shares the neighbour with the 0.9 one, so it can only lower the
+    # score or add a row. It must do neither.
+    assert_in_delta score, 0.9 * confidence, 0.000001
+  end
+
+  test "each retrieval component reports its own elapsed time as a measurement" do
+    seeded = seed_active!("f7-timing", "/f7/timing", "Avery owns the release checklist.")
+
+    assert {:ok, %{indexed: 1}} = Indexer.rebuild_scope(seeded.account.id, seeded.scope.id)
+
+    events = attach_component_telemetry!()
+
+    Memory.search(%{
+      "account_key" => "f7-timing",
+      "scope_path" => "/f7/timing",
+      "query" => "release checklist",
+      "profile" => "balanced"
+    })
+
+    # Elapsed time already travelled as `:outcomes` metadata, where a metrics reporter cannot
+    # summarise it. As a measurement on its own event it is aggregatable per component, which is
+    # what turns "the request took 855 ms" into "this strategy took 855 ms".
+    assert_receive {^events, %{elapsed_ms: elapsed_ms},
+                    %{
+                      account_id: account_id,
+                      profile: profile,
+                      component: "lexical",
+                      status: status,
+                      reason_class: reason_class
+                    }}
+
+    assert is_integer(elapsed_ms) and elapsed_ms >= 0
+    assert account_id == seeded.account.id
+    assert profile == "balanced"
+    assert status in ["completed", "dropped"]
+    # reason_class is nil for completed, or a string for dropped/degraded
+    assert is_nil(reason_class) or is_binary(reason_class)
+  end
+
   test "entity resolution is internal, alias retrieval is scoped, and public surfaces stay opaque" do
     seeded = seed_active!("f7-entity", "/f7/entity", "Avery owns the release checklist.")
 
@@ -3428,13 +3543,23 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   # as the message tag, so an assertion can prove the event fired with the counts an operator
   # would alert on.
   defp attach_projection_refresh_telemetry! do
-    handler_id = {__MODULE__, :projection_refresh, System.unique_integer()}
+    attach_telemetry!(:projection_refresh, [:memhouse, :retrieval, :projection_refresh])
+  end
+
+  # Same forwarding for the per-component timing event, which is what attributes a slow request
+  # to one strategy.
+  defp attach_component_telemetry! do
+    attach_telemetry!(:component, [:memhouse, :retrieval, :component])
+  end
+
+  defp attach_telemetry!(tag, event) do
+    handler_id = {__MODULE__, tag, System.unique_integer()}
     test_process = self()
 
     :ok =
       :telemetry.attach(
         handler_id,
-        [:memhouse, :retrieval, :projection_refresh],
+        event,
         fn _event, measurements, metadata, _config ->
           send(test_process, {handler_id, measurements, metadata})
         end,

@@ -498,7 +498,30 @@ defmodule MemHouse.Retrieval.Engine do
       }
     )
 
+    report_component_timings(account_id, result)
     report_degradation(account_id, result)
+  end
+
+  # The per-component elapsed time already rides along as `:outcomes` metadata, where a metrics
+  # reporter cannot aggregate it: attributing a slow request to one strategy then needs the raw
+  # events. Repeat it as a measurement, one event per component, so which strategy owns the
+  # latency is a summary over `elapsed_ms` by `component` rather than an investigation.
+  defp report_component_timings(account_id, result) do
+    for outcome <- result.retrieval_outcomes do
+      :telemetry.execute(
+        [:memhouse, :retrieval, :component],
+        %{elapsed_ms: outcome.elapsed_ms},
+        %{
+          account_id: account_id,
+          profile: result.profile,
+          component: outcome.component,
+          status: outcome.status,
+          reason_class: outcome.reason_class
+        }
+      )
+    end
+
+    :ok
   end
 
   # One counter increment and one warning per degraded component. A caller that ignores the
