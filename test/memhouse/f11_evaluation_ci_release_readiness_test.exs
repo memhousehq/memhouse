@@ -172,6 +172,9 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
     # tags, then publishes the GitHub Release that invokes the artifact lane.
     assert prepare_release =~ "workflow_dispatch:"
     assert prepare_release =~ "replace_existing_release"
+    assert prepare_release =~ "actions/cache@v6"
+    assert prepare_release =~ "hashFiles('mix.lock')"
+    assert prepare_release =~ "mix compile --warnings-as-errors"
     assert prepare_release =~ "mix memhouse.release.check"
     assert prepare_release =~ "branch=\"\${branch}-repair\""
     assert prepare_release =~ "gh pr create"
