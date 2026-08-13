@@ -25,7 +25,7 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/ingest \
 | `session_id` | yes | — | Any stable string. The session and its scope/participant links are created on demand. |
 | `scope_path` | yes | — | Created on demand if it does not exist. |
 | `content` | yes | — | The raw text of the observation. |
-| `peer_key` | no | your credential's peer | Who spoke the turn. Created on first use. |
+| `peer_key` | no | your credential's peer, when one exists | Who spoke the turn. Created on first use. Internal callers without a peer must provide this explicitly. |
 | `peer_name` | no | the key | Display name, used only when that peer is created. |
 | `role` | no | `"user"` | Who was speaking. |
 | `occurred_at` | no | now | When it was said, if backfilling. |

@@ -84,11 +84,18 @@ defmodule MemHouse.ReaderVisibilityTest do
   test "a reader who names nobody sees public statements only", ctx do
     seed!(ctx, "caroline", "Caroline is allergic to shellfish.", sensitivity: "personal")
     seed!(ctx, "caroline", "Caroline holds the allotment gate rota.", sensitivity: "public")
+    seed!(ctx, "caroline", "Caroline tracks the build pipeline.", sensitivity: "internal")
 
     found = statements(ctx, nil)
+    listed_found = listed(ctx, nil)
 
     assert "Caroline holds the allotment gate rota." in found
     refute "Caroline is allergic to shellfish." in found
+    refute "Caroline tracks the build pipeline." in found
+
+    assert "Caroline holds the allotment gate rota." in listed_found
+    refute "Caroline is allergic to shellfish." in listed_found
+    refute "Caroline tracks the build pipeline." in listed_found
   end
 
   test "internal knowledge is shared, because internal is not personal", ctx do
@@ -115,6 +122,43 @@ defmodule MemHouse.ReaderVisibilityTest do
     # Two doors to the same statements. A rule applied to only one of them is not a rule.
     assert "Caroline is allergic to shellfish." in listed(ctx, "caroline")
     refute "Caroline is allergic to shellfish." in listed(ctx, "melanie")
+  end
+
+  test "a nil peer_id machine credential without peer_key sees public statements only in context", ctx do
+    seed!(ctx, "caroline", "Caroline is allergic to shellfish.", sensitivity: "personal")
+    seed!(ctx, "caroline", "Caroline holds the allotment gate rota.", sensitivity: "public")
+    seed!(ctx, "caroline", "Caroline tracks the build pipeline.", sensitivity: "internal")
+
+    # Create a machine credential with no peer. An internal caller must explicitly provide peer_key
+    # for ingest, but for reads it represents a peerless non-internal reader.
+    DataLayer.with_account_key(account_key(), [role: :member], fn _account, peerless_actor ->
+      # Force peer_id to nil to simulate a peerless machine credential
+      peerless_actor = %{peerless_actor | peer_id: nil}
+
+      context_result =
+        MemHouse.Context.get(
+          MemHouse.DataLayer.with_free_account(fn account, _actor -> account end),
+          peerless_actor,
+          [
+            MemHouse.Topology.Scope
+            |> Ash.Query.filter(path == ^@scope)
+            |> Ash.Query.set_tenant(
+              MemHouse.DataLayer.with_free_account(fn account, _actor -> account.id end)
+            )
+            |> Ash.read_one!(actor: %{peerless_actor | scope_ids: :all})
+          ],
+          %{},
+          false
+        )
+
+      knowledge_statements =
+        context_result["knowledge"]
+        |> Enum.map(& &1["statement"])
+
+      assert "Caroline holds the allotment gate rota." in knowledge_statements
+      refute "Caroline is allergic to shellfish." in knowledge_statements
+      refute "Caroline tracks the build pipeline." in knowledge_statements
+    end)
   end
 
   # Writes one active statement about `subject_key` directly, so a test names the exact

@@ -691,8 +691,8 @@ defmodule MemHouse.Context.Builder do
       text: "#{scope.name} context",
       target: :knowledge,
       max_candidates: max(length(knowledge), 1),
-      # Ranks what a projection will be built from. A rebuild that saw only
-      # public statements would silently shrink every card.
+      # Ranks what a projection will be built from. Shared projections must contain only public
+      # and internal statements, so the internal reader posture is needed.
       internal_reader?: true
     }
 

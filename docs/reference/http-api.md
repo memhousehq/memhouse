@@ -122,7 +122,7 @@ Records one raw observation. The only write path an agent has.
 | `session_id` | yes | — | Created on demand |
 | `scope_path` | yes | — | Created on demand |
 | `content` | yes | — | The observation text |
-| `peer_key` | no | the calling peer | Who spoke the turn. The Peer is created on first use |
+| `peer_key` | no | the calling peer, when one exists | Who spoke the turn. The Peer is created on first use. Internal callers without a peer must provide this explicitly |
 | `peer_name` | no | the key | Display name, used only when that Peer is created |
 | `role` | no | `"user"` | Speaker role |
 | `occurred_at` | no | now | ISO 8601, for backfill. No offset means UTC; an unparseable value falls back to now |

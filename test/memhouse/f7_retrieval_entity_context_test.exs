@@ -1998,6 +1998,21 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       # it has been promoted above peer level — which is where its subject agreed to the wider
       # audience. Without this the card would be built from two sources and carry neither the
       # summary nor the strictest sensitivity the rest of this test checks.
+      #
+      # TEST FIXTURE: This represents an already-consented and approved promotion. In production,
+      # personal knowledge requires verified subject consent before promotion above peer level.
+      # Record synthetic consent before the promotion to preserve the contract that promotion
+      # requires consent, even in test fixtures.
+      {:ok, _consent} =
+        GovernanceEngine.subject_consent(
+          actor,
+          third.knowledge.id,
+          third.scope.id,
+          "grant",
+          true,
+          "human_ui"
+        )
+
       GovernanceEngine.transition!(
         third.knowledge,
         pipeline,

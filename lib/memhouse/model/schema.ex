@@ -73,6 +73,10 @@ defmodule MemHouse.Model.Schema.Extraction do
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Knowledge.Statement
 
+  # Generic ways a model names the process instead of a person. These are matched only in the
+  # statement's subject position. Agent-specific peer keys are supplied per validation context.
+  @generic_machine_referents ["the assistant", "the agent", "the ai", "the chatbot", "the bot"]
+
   # Candidate fields taken straight from the knowledge resource's attributes.
   # `confidence_percentage` is normalized to the persisted `confidence` value
   # after validation, so it deliberately is not part of this list.
@@ -184,6 +188,10 @@ defmodule MemHouse.Model.Schema.Extraction do
   """
   @impl true
   def cast(object, context) when is_map(object) and is_map(context) do
+    # Prepare generic machine referent matchers once per validation context and reuse them
+    # across all statements rather than rebuilding the regex for each one.
+    context = prepare_forbidden_term_matchers(context)
+
     case fetch(object, "items") do
       items when is_list(items) ->
         items
@@ -380,21 +388,53 @@ defmodule MemHouse.Model.Schema.Extraction do
   # the relay's name is misattribution that governance then treats as consented,
   # because the "subject" is the process consenting to itself.
   #
-  # Matching is case-insensitive and bounded by word edges, so a participant
-  # whose name merely contains a forbidden term is unaffected. Only terms the
-  # caller supplies are refused; nothing is inferred from the prose.
+  # Generic machine referents (e.g., "the assistant", "the agent") are matched only in the
+  # statement's subject position using case-insensitive word-boundary matching. Agent peer keys
+  # are compared as exact opaque values (case-sensitive, whole-word) so keys such as "bot-" remain
+  # valid when they don't match an agent's actual key. Only terms the caller supplies are refused;
+  # nothing is inferred from the prose.
   defp human_subject_statement(statement, context) do
-    context
-    |> Map.get(:forbidden_subject_terms, [])
-    |> Enum.find(&names_term?(statement, &1))
-    |> case do
-      nil -> :ok
-      _term -> {:error, ["statement must be about a person, not about the relaying agent"]}
+    cond do
+      Map.get(context, :generic_term_matcher) &&
+          String.match?(statement, Map.fetch!(context, :generic_term_matcher)) ->
+        {:error, ["statement must be about a person, not about the relaying agent"]}
+
+      Enum.any?(Map.get(context, :agent_peer_keys, []), &names_agent_peer?(statement, &1)) ->
+        {:error, ["statement must be about a person, not about the relaying agent"]}
+
+      true ->
+        :ok
     end
   end
 
-  defp names_term?(statement, term) do
-    String.match?(statement, ~r/\b#{Regex.escape(term)}\b/iu)
+  # Prepare forbidden term matchers once per validation context. Generic machine referents are
+  # matched in subject position only; agent peer keys are matched as exact opaque whole words.
+  defp prepare_forbidden_term_matchers(context) do
+    forbidden_terms = Map.get(context, :forbidden_subject_terms, [])
+    generic_terms = @generic_machine_referents
+    agent_peer_keys = forbidden_terms -- generic_terms
+
+    generic_term_matcher =
+      if Enum.empty?(generic_terms) do
+        nil
+      else
+        # Match generic terms only in subject position (start of statement, case-insensitive)
+        pattern =
+          generic_terms
+          |> Enum.map(&Regex.escape/1)
+          |> Enum.join("|")
+
+        Regex.compile!("\\A(#{pattern})\\b", "iu")
+      end
+
+    context
+    |> Map.put(:generic_term_matcher, generic_term_matcher)
+    |> Map.put(:agent_peer_keys, agent_peer_keys)
+  end
+
+  # Agent peer keys are opaque strings that must match exactly as whole words.
+  defp names_agent_peer?(statement, agent_key) do
+    String.match?(statement, ~r/\b#{Regex.escape(agent_key)}\b/u)
   end
 
   # Peer keys are opaque identities in some deployments (`agent-1`), while a

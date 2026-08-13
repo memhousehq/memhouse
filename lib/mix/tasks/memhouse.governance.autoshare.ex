@@ -72,9 +72,9 @@ defmodule Mix.Tasks.Memhouse.Governance.Autoshare do
     unless consent_mode == "auto" or MemHouse.Governance.UnattendedMode.enabled?() do
       Mix.shell().info("""
 
-      Personal knowledge will still be held: it needs its subject's consent, and this
-      Account has nobody to give it. An account administrator must set consent_mode to
-      "auto", or the deployment must run with MEMHOUSE_GOVERNANCE_UNATTENDED=true.
+      Personal knowledge still needs human review: peer-level proposals become provisional,
+      while scope and account proposals become held. An account administrator must set
+      consent_mode to "auto", or the deployment must run with MEMHOUSE_GOVERNANCE_UNATTENDED=true.
       """)
     end
   end
@@ -88,12 +88,18 @@ defmodule Mix.Tasks.Memhouse.Governance.Autoshare do
   #
   # `minimum_corroboration: 1` for the same reason: a benchmark statement is usually said
   # once, and requiring two independent sources would hold the whole corpus.
+  #
+  # The upsert flow preserves versioned history: when an effective rule exists and its values
+  # differ from the requested attributes, a new version is created instead of updating the
+  # existing rule in place. The model's priority/version ordering selects the effective row.
   defp write_rule!(account_id, actor, target_level, sensitivity) do
     existing =
       GateRule
       |> Ash.Query.filter(
-        is_nil(scope_id) and target_level == ^target_level and sensitivity == ^sensitivity
+        is_nil(scope_id) and target_level == ^target_level and sensitivity == ^sensitivity and
+          active == true
       )
+      |> Ash.Query.sort(priority: :desc, version: :desc)
       |> Ash.Query.set_tenant(account_id)
       |> Ash.read!(actor: actor)
 
@@ -108,11 +114,26 @@ defmodule Mix.Tasks.Memhouse.Governance.Autoshare do
     }
 
     case existing do
-      [rule | _] ->
-        rule
-        |> Ash.Changeset.for_update(:update, attrs)
-        |> Ash.Changeset.set_tenant(account_id)
-        |> Ash.update!(actor: actor)
+      [effective_rule | _] ->
+        # Compare the effective rule's values with the requested attrs
+        if rule_matches?(effective_rule, attrs) do
+          # Values match; no-op
+          effective_rule
+        else
+          # Values differ; create a successor version with the same priority
+          GateRule
+          |> Ash.Changeset.for_create(
+            :create,
+            Map.merge(attrs, %{
+              target_level: target_level,
+              sensitivity: sensitivity,
+              priority: effective_rule.priority,
+              version: effective_rule.version + 1
+            })
+          )
+          |> Ash.Changeset.set_tenant(account_id)
+          |> Ash.create!(actor: actor)
+        end
 
       [] ->
         GateRule
@@ -123,5 +144,16 @@ defmodule Mix.Tasks.Memhouse.Governance.Autoshare do
         |> Ash.Changeset.set_tenant(account_id)
         |> Ash.create!(actor: actor)
     end
+  end
+
+  # Compare the effective rule's decision fields with the requested attributes for idempotent no-op.
+  defp rule_matches?(rule, attrs) do
+    rule.minimum_confidence == attrs.minimum_confidence and
+      rule.minimum_evidence_level == attrs.minimum_evidence_level and
+      rule.gate_a_mode == attrs.gate_a_mode and
+      rule.gate_b_mode == attrs.gate_b_mode and
+      rule.minimum_corroboration == attrs.minimum_corroboration and
+      rule.requires_consent == attrs.requires_consent and
+      rule.active == attrs.active
   end
 end

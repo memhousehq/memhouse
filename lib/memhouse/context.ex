@@ -78,10 +78,15 @@ defmodule MemHouse.Context do
   def get(account, actor, scopes, attrs, internal_reader?) do
     scope_ids = Enum.map(scopes, & &1.id)
     session_id = resolve_session_id(account.id, actor, scope_ids, attrs["session_id"])
-    {scope_cards, scope_hits} = scope_cards(account.id, actor, scopes)
-    {peer_profiles, peer_hits} = peer_profiles(account.id, actor, scopes)
-    {entity_cards, entity_hits} = entity_cards(account.id, actor, scopes)
-    {session_summary, session_hit} = session_summary(account.id, actor, scopes, session_id)
+
+    # Peerless non-internal readers should not receive cached projections that contain internal
+    # content. Skip projection reads for them and use the live fallback instead.
+    public_only? = not internal_reader? and not is_binary(actor.peer_id)
+
+    {scope_cards, scope_hits} = if public_only?, do: {[], 0}, else: scope_cards(account.id, actor, scopes)
+    {peer_profiles, peer_hits} = if public_only?, do: {[], 0}, else: peer_profiles(account.id, actor, scopes)
+    {entity_cards, entity_hits} = if public_only?, do: {[], 0}, else: entity_cards(account.id, actor, scopes)
+    {session_summary, session_hit} = if public_only?, do: {nil, false}, else: session_summary(account.id, actor, scopes, session_id)
 
     projection_knowledge =
       projection_knowledge(scope_cards, peer_profiles, entity_cards)

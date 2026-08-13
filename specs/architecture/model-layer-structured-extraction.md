@@ -99,6 +99,12 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
+Each candidate also includes an integer `confidence_percentage` input in the range 1-100,
+which is normalized to a confidence fraction (0.01-1.00) after validation. The `extract-8`
+and `f5-1` prompt and pipeline versions enforce subject rules: agent peers are excluded from
+the subject allowlist and machine referents are refused, preserving the verified contract
+that knowledge is about people and never about the infrastructure that carried it.
+
 ## Embeddings
 
 `MemHouse.Model.Embedding.Ortex` implements `AshAi.EmbeddingModel` using local
