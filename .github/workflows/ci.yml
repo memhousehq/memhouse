@@ -89,7 +89,7 @@ jobs:
       # never point the suite at a real database.
       MEMHOUSE_TEST_DATABASE_URL: ecto://postgres:postgres@127.0.0.1:5432/memhouse_f11_external
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "27"
@@ -97,12 +97,20 @@ jobs:
       # Cache keyed on the dependency lock file only, because that is what decides which
       # dependencies get compiled. A source change reuses the restored build directory and
       # lets the compiler's own change tracking recompile what actually moved.
-      - uses: actions/cache@v5
+      #
+      # `restore-keys` matches the same prefix without the hash, so a changed lock file
+      # restores the previous entry instead of starting from nothing. Mix then recompiles
+      # only the dependencies whose lock entry moved. Without the fallback every dependency
+      # bump rebuilt all of them, and a dependency that fetches a precompiled native binary
+      # during compilation fetched it again, so an upstream outage failed the run for a
+      # reason unrelated to the change under test.
+      - uses: actions/cache@v6
         with:
           path: |
             deps
             _build
           key: ${{ runner.os }}-beam-test-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-beam-test-
       - run: mix deps.get
       # Fails when the declared data model and the committed migrations plus schema
       # snapshots disagree. Catching that here matters because a missing migration would
@@ -161,7 +169,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - id: beam
         uses: erlef/setup-beam@v1
         with:
@@ -177,13 +185,18 @@ jobs:
       # "Old PLT file" rather than rebuilding it. Since `otp-version: "27"` resolves to
       # whatever 27.x the runner image ships, a patch bump would otherwise restore a PLT
       # the new OTP refuses, and an unchanged lockfile would keep restoring it forever.
-      - uses: actions/cache@v5
+      #
+      # The fallback prefix keeps both versions for that same reason. Truncating it to
+      # `-dialyzer-` would restore a PLT built by a different OTP, which is the failure the
+      # key was written to prevent.
+      - uses: actions/cache@v6
         with:
           path: |
             deps
             _build
             priv/plts
           key: ${{ runner.os }}-dialyzer-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-dialyzer-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
       - run: mix deps.get
       - run: mix dialyzer
 
@@ -200,17 +213,20 @@ jobs:
     # verifies the database asset, boots it, and only then starts the suite.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "27"
           elixir-version: "1.18"
-      - uses: actions/cache@v5
+      # Prefix fallback for the reason given in the external PostgreSQL lane: a changed lock
+      # file must not force every dependency to be fetched and rebuilt.
+      - uses: actions/cache@v6
         with:
           path: |
             deps
             _build
           key: ${{ runner.os }}-beam-pg0-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-beam-pg0-
       - run: mix deps.get
       # Needs network access: the database asset is downloaded from upstream and checked
       # against a digest pinned in the repository. Every other setting the release needs is
@@ -230,19 +246,21 @@ jobs:
     env:
       MIX_ENV: prod
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "27"
           elixir-version: "1.18"
       # Separate cache key from the test lanes: production build output is not
-      # interchangeable with test build output and sharing a key would poison both.
-      - uses: actions/cache@v5
+      # interchangeable with test build output and sharing a key would poison both. The
+      # prefix fallback stays inside that separation.
+      - uses: actions/cache@v6
         with:
           path: |
             deps
             _build
           key: ${{ runner.os }}-beam-prod-${{ hashFiles('mix.lock') }}
+          restore-keys: ${{ runner.os }}-beam-prod-
       # Production dependencies only, which also proves that nothing on a production path
       # has picked up an accidental dependency on a development or test package.
       - run: mix deps.get --only prod

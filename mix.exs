@@ -107,13 +107,13 @@ defmodule MemHouse.MixProject do
       # without checking `mix hex.audit`.
       {:ash, "~> 3.31"},
       {:ash_authentication, "~> 4.14"},
-      {:ash_ai, "~> 0.7.3"},
+      {:ash_ai, "~> 0.8.2"},
       {:ash_postgres, "~> 2.11"},
       {:ash_oban, "~> 0.8.10"},
       # Code-generation engine behind the migration and resource-snapshot tasks. It is a
       # build-time tool only, so it is kept out of the started application; the override
       # keeps the several Ash packages that depend on it on one version.
-      {:igniter, "~> 0.6.16", override: true, runtime: false},
+      {:igniter, "~> 0.8.3", override: true, runtime: false},
       # Boolean satisfiability solver used by Ash to evaluate authorization policies.
       # Removing it does not simplify anything: policy checks stop working.
       {:simple_sat, "~> 0.1.4"},
@@ -137,7 +137,7 @@ defmodule MemHouse.MixProject do
       {:rag, "~> 0.2.3"},
       # Splits extracted text into chunks on semantic boundaries and reports byte offsets,
       # so a retrieved chunk can be pointed back at its exact location in the original.
-      {:text_chunker, "~> 0.6.1"},
+      {:text_chunker, "~> 0.7.0"},
       # S3-compatible object storage for document blobs. This is one of two interchangeable
       # blob adapters chosen at runtime; the other writes to a local directory, so object
       # storage is never a requirement.
@@ -149,7 +149,7 @@ defmodule MemHouse.MixProject do
       # HTTP client. Several packages pull it in on their own version ranges — the model
       # client, the S3 client, and the authentication strategies among them — so it is
       # overridden to keep them all on one version.
-      {:req, "~> 0.6.3", override: true},
+      {:req, "~> 0.7.2", override: true},
       # Tokenizer for the local embedding model: it turns text into the exact token ids
       # that model expects, and supplies the token counts recorded for usage accounting.
       {:tokenizers, "~> 0.5"},

@@ -1,0 +1,51 @@
+version: 2
+updates:
+  # -------------------------------------------------------------
+  # Elixir / Hex dependencies (mix.exs)
+  # -------------------------------------------------------------
+  - package-ecosystem: "mix"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # Groups Ash, AshPostgres, AshPhoenix, Spark, etc.
+      ash-ecosystem:
+        applies-to: version-updates
+        patterns:
+          - "ash*"
+          - "spark"
+          - "igniter"
+      # Groups Phoenix, Ecto, LiveView, Bandit, etc.
+      phoenix-ecosystem:
+        applies-to: version-updates
+        patterns:
+          - "phoenix*"
+          - "ecto*"
+          - "live_view*"
+          - "jason"
+          - "bandit"
+
+  # -------------------------------------------------------------
+  # Docker (Dockerfile & compose.yml)
+  # -------------------------------------------------------------
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(deps-docker)"
+
+  # -------------------------------------------------------------
+  # GitHub Actions (.github/workflows/*)
+  # -------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci(deps)"

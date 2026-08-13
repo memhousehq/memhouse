@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
-# ADR 0017: Relayed attribution and peer-scoped reads
+# ADR 0018: Relayed attribution and peer-scoped reads
 
 Status: Accepted.
 

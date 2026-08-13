@@ -78,6 +78,44 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
+- Retrieval strategies no longer return a statement whose `expires_at` has
+  passed. Expiry is a timestamp and the sweeper that rewrites `state` to
+  `expired` runs as a job, so a row stays `active` with a past expiry until
+  that job lands. The active, non-expired predicate now applies consistently
+  across `lexical`, both `semantic` branches, `entity_match`,
+  `relation_expand`, and `co_mentioned_knowledge`. `temporal` and
+  `salience_recency` already applied it. An expired statement is no longer
+  retrievable through any visible-knowledge query path.
+
+- `entity_match` now ranks by how much the entities a query names narrow the
+  scope, not by how confident the extractor was. Matching was set membership
+  with no gradient, so every statement mentioning a matched entity was equally
+  matched and ordering fell to `mention.confidence * knowledge.confidence` —
+  near `1.0` for anything the extractor was sure was said. In a scope about two
+  or three people, nearly every statement names one of them, so the strategy
+  returned a confidence-ordered dump of the scope on almost every query.
+
+  Each matched entity is now weighted by inverse frequency over the authorized
+  scopes' visible statements, and a statement scores the share of that weight
+  its own mentions carry, times its confidence. Scores stay in `0..1`, which
+  `min_score` filtering and the `low_score` disagreement hint both rely on.
+  Frequency is measured per request rather than cached: entities are
+  Account-global while rebuilds are per-scope, so a stored figure would be
+  stale for every scope but the last one rebuilt. See
+  `specs/adr/0017-entity-match-selectivity.md`.
+
+  Three settings bound it, all with new environment overrides:
+  `MEMHOUSE_RETRIEVAL_ENTITY_FREQUENCY_CEILING` (default `0.5`),
+  `MEMHOUSE_RETRIEVAL_ENTITY_CEILING_MIN_STATEMENTS` (default `20`), and
+  `MEMHOUSE_RETRIEVAL_ENTITY_PER_ENTITY_CAP` (default `25`).
+
+  A query naming only entities above the ceiling now contributes nothing
+  instead of contributing the scope. That also repairs
+  `disagreement.query_dependent_empty`, which `entity_match` previously held
+  `false` on every query that named anyone, asserting the run had understood a
+  question it had not. Profile weights are unchanged; `entity_match` stays at
+  `0.9` pending held-out fusion tuning.
+
 - Reranking can now actually run, and a run that lost it says so. Three
   independent defects stopped the stage that decides the final order:
 
@@ -157,7 +195,7 @@ changelog entry and contract-version transition.
   cannot widen what the request may write. An existing Peer is resolved rather
   than upserted, so relaying an agent's key cannot rewrite it as human. The
   `message.ingested` audit entry now records the relaying credential as
-  `actor_peer_id` and the speaker as metadata `speaker_peer_id`. ADR 0017
+  `actor_peer_id` and the speaker as metadata `speaker_peer_id`. ADR 0018
   records the decision and the alternative it rules out. Issue:
   https://github.com/memhousehq/memhouse/issues/165
 

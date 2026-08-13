@@ -333,15 +333,13 @@ defmodule MemHouse.Model.Providers.ReqLLM do
   # Req 0.6 passes only pool_timeout and receive_timeout to Finch. The callback
   # supplies all three limits from the resolved role so a future Req change
   # cannot silently restore Finch's five-second pool-checkout default.
-  defp finch_request(%{request_timeout: nil}), do: nil
-
   defp finch_request(timeouts) do
     timeouts = Enum.reject(timeouts, fn {_key, value} -> is_nil(value) end)
 
     fn request, finch_request, finch_name, finch_options ->
       case Finch.request(
              finch_request,
-             finch_name,
+             finch_name(finch_name),
              Keyword.merge(finch_options, timeouts)
            ) do
         {:ok, response} ->
@@ -352,6 +350,12 @@ defmodule MemHouse.Model.Providers.ReqLLM do
       end
     end
   end
+
+  # ReqLLM 1.20 configures Req with `[name: ReqLLM.Finch]`; Req hands that
+  # keyword list to its callback even though Finch expects the registered name.
+  # Accept both shapes so calls keep using ReqLLM's configured pool.
+  defp finch_name(name) when is_atom(name), do: name
+  defp finch_name(options) when is_list(options), do: Keyword.fetch!(options, :name)
 
   # OpenRouter's forced synthetic tool is not reliable for gpt-oss models: it
   # may finish after reasoning without making the required call. Its native

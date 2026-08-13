@@ -334,4 +334,26 @@ strategy able to cost the reranker its allowance.
 It limits only the final ranked candidates sent to the `ask` answer model.
 Search still returns its full requested candidate list.
 
+### Entity-match selectivity
+
+The `entity_match` strategy weights each entity a query names by how much that
+entity narrows the scope. Three settings bound it:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `MEMHOUSE_RETRIEVAL_ENTITY_FREQUENCY_CEILING` | `0.5` | Share of a scope's visible statements an entity may be mentioned by before the strategy refuses to rank on it. Clamped to `0..1` |
+| `MEMHOUSE_RETRIEVAL_ENTITY_CEILING_MIN_STATEMENTS` | `20` | Visible statements a scope needs before the ceiling applies |
+| `MEMHOUSE_RETRIEVAL_ENTITY_PER_ENTITY_CAP` | `25` | Most statements one entity may contribute to a single list |
+
+In a scope about two people, both names appear in nearly every statement, so
+matching on them ranks the scope rather than the question. Lower the ceiling to
+demand more selectivity, at the cost of recall on common names. When every
+entity a query names sits above the ceiling, the strategy contributes nothing
+and `disagreement.query_dependent_empty` reports that no strategy resolved the
+question — that is the intended result, not a failure.
+
+The minimum-statements setting exists because frequency over a handful of
+statements measures nothing: in a four-statement scope every entity looks
+ubiquitous. Below it the ceiling is skipped and recall is preserved.
+
 Profile changes require product review; PostgreSQL location changes do not.

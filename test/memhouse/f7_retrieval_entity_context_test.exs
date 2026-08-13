@@ -359,6 +359,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   use MemHouse.DataCase, async: false
 
   alias MemHouse.Actor
+  alias MemHouse.Clock
   alias MemHouse.Context.Builder
   alias MemHouse.DataLayer
   alias MemHouse.Documents
@@ -375,7 +376,17 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   alias MemHouse.Identity
   alias MemHouse.Memory
   alias MemHouse.Observations.Session
-  alias MemHouse.Retrieval.{Candidate, EntityResolver, Fusion, Indexer, Profile, Query}
+
+  alias MemHouse.Retrieval.{
+    Budget,
+    Candidate,
+    EntityResolver,
+    Fusion,
+    Indexer,
+    Profile,
+    Query
+  }
+
   alias MemHouse.Retrieval.DiagnosticGrant
   alias MemHouse.Retrieval.Strategies
   alias MemHouse.Topology.{Scope, ScopeRelation}
@@ -393,6 +404,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     Strategies.EntityMatch,
     Strategies.RelationExpand
   ]
+
+  # Names both the scope-wide entity and the selective one, so the same text can be sent
+  # through the search response and through the strategy directly and be compared.
+  @entity_idf_query "What did Melanie say to Rivet"
 
   setup do
     original_provider = Application.get_env(:memhouse, :model_provider)
@@ -1194,6 +1209,110 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     refute Enum.any?(MemHouseWeb.Router.__routes__(), fn route ->
              String.contains?(route.path, "entit")
            end)
+  end
+
+  test "entity_match drops a statement whose expiry passed before the sweeper moved its state" do
+    seeded =
+      seed_active!("f7-entity-expiry", "/f7/entity-expiry", "Avery owns the release checklist.")
+
+    assert {:ok, %{mentions: mentions}} =
+             EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+
+    assert mentions >= 1
+
+    assert [%{"id" => id}] = entity_match_candidates!("f7-entity-expiry", "/f7/entity-expiry")
+    assert id == seeded.knowledge.id
+
+    # Expiry is a timestamp; the sweeper that rewrites `state` to "expired" runs as a job. In
+    # the window between the two the row is still "active" with a past `expires_at`, and every
+    # other visible-knowledge query already refuses it. This one must agree, or an expired
+    # statement stays retrievable through whichever entity it happens to name.
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      GovernanceEngine.transition!(
+        seeded.knowledge,
+        pipeline_actor(actor),
+        %{state: "active", expires_at: DateTime.add(DateTime.utc_now(), -1, :second)},
+        reason: "f7_test_expire",
+        channel: "pipeline"
+      )
+    end)
+
+    # Verify the row is actually active with a past expires_at before asserting retrieval behavior.
+    updated_knowledge =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        KnowledgeItem
+        |> Ash.Query.filter(id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+      end)
+
+    assert updated_knowledge.state == "active"
+    assert DateTime.compare(updated_knowledge.expires_at, DateTime.utc_now()) == :lt
+
+    assert [] == entity_match_candidates!("f7-entity-expiry", "/f7/entity-expiry")
+  end
+
+  test "entity_match ranks a selective entity's statements above a scope-wide one's" do
+    seeds = seed_statements!("f7-entity-idf", "/f7/entity-idf", 6)
+
+    # "Melanie" names most of the scope, so learning that a statement mentions her narrows
+    # nothing. "Rivet" names two statements, so it narrows a great deal. Ranking must follow
+    # that difference and not the extractor's confidence, which is uniform here.
+    mention_entity!("f7-entity-idf", "Melanie", seeds)
+    selective = Enum.take(seeds, 2)
+    mention_entity!("f7-entity-idf", "Rivet", selective)
+
+    candidates = entity_match_candidates!("f7-entity-idf", "/f7/entity-idf", @entity_idf_query)
+
+    assert length(candidates) == 6
+
+    assert candidates |> Enum.take(2) |> Enum.map(& &1["id"]) |> Enum.sort() ==
+             selective |> Enum.map(& &1.knowledge.id) |> Enum.sort()
+
+    # Bounded, because `min_score` filtering and the `low_score` disagreement hint both read
+    # the strategy's own score. An unbounded sum would silently change what those two mean.
+    # The count is asserted first: over an empty list `Enum.all?/2` holds vacuously and would
+    # report a bound this never checked.
+    raw = entity_match_strategy_candidates!("f7-entity-idf", "/f7/entity-idf", @entity_idf_query)
+
+    assert length(raw) == 6
+    assert Enum.all?(raw, &(&1.score >= 0.0 and &1.score <= 1.0))
+  end
+
+  test "entity_match reports nothing when every entity the query names saturates the scope" do
+    put_retrieval_config!(entity_match_ceiling_min_statements: 4)
+
+    seeds = seed_statements!("f7-entity-hub", "/f7/entity-hub", 5)
+    mention_entity!("f7-entity-hub", "Melanie", seeds)
+
+    # Every statement mentions her, so the strategy has no way to prefer one over another and
+    # would otherwise return the scope in extractor-confidence order. Reporting empty is what
+    # lets `query_dependent_empty` say the run never understood the question.
+    result =
+      Memory.search(%{
+        "account_key" => "f7-entity-hub",
+        "scope_path" => "/f7/entity-hub",
+        "query" => "Melanie",
+        "strategies" => ["entity_match"],
+        "deadline" => "disabled"
+      })
+
+    assert result["candidates"] == []
+    assert result["disagreement"]["query_dependent_empty"]
+  end
+
+  test "entity_match caps how many statements one entity may contribute" do
+    put_retrieval_config!(
+      entity_match_ceiling_min_statements: 100,
+      entity_match_per_entity_cap: 2
+    )
+
+    seeds = seed_statements!("f7-entity-cap", "/f7/entity-cap", 5)
+    mention_entity!("f7-entity-cap", "Melanie", seeds)
+
+    # The ceiling is out of reach here, so without a cap one hub entity fills the whole list
+    # and crowds out every other strategy's contribution to fusion.
+    assert length(entity_match_candidates!("f7-entity-cap", "/f7/entity-cap", "Melanie")) == 2
   end
 
   test "Indexer.rebuild_scope keeps a billed embedding call metered when the write phase fails" do
@@ -2923,6 +3042,112 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   # Ingest alone leaves an item awaiting approval, which retrieval correctly hides. These
   # tests are about ranking and authorization, not about the approval lifecycle, so the item
   # is transitioned to `active` through the ordinary governance engine under the pipeline
+  # Runs entity_match alone, so what comes back is that strategy's own ranking rather than a
+  # fused list another strategy could have supplied the same ids to.
+  defp entity_match_candidates!(account_key, scope_path, query \\ "Avery") do
+    Memory.search(%{
+      "account_key" => account_key,
+      "scope_path" => scope_path,
+      "query" => query,
+      "strategies" => ["entity_match"],
+      "deadline" => "disabled"
+    })["candidates"]
+  end
+
+  # The strategy's own score, which the search response does not carry: candidates reach a
+  # caller with the fused `rrf_score`, so the bound that `min_score` and the `low_score` hint
+  # depend on cannot be observed through `Memory.search/1` at all.
+  defp entity_match_strategy_candidates!(account_key, scope_path, query_text) do
+    DataLayer.with_account_key(account_key, fn account, actor ->
+      scope =
+        Scope
+        |> Ash.Query.filter(path == ^scope_path)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      peer = read_peer!(account.id, actor)
+
+      query = %Query{
+        account_id: account.id,
+        actor: %{actor | peer_id: peer.id},
+        scope_ids: [scope.id],
+        text: query_text,
+        target: :knowledge
+      }
+
+      budget = %Budget{
+        started_at: Clock.monotonic_ms(),
+        max_candidates: 50,
+        deadline?: false
+      }
+
+      Strategies.EntityMatch.candidates(query, budget)
+    end)
+  end
+
+  # Distinct governed statements that name nobody, so the only entity signal a test sees is the
+  # one it states through `mention_entity!/3`.
+  defp seed_statements!(account_key, scope_path, count) do
+    Enum.map(1..count, fn index ->
+      seed_active!(
+        account_key,
+        scope_path,
+        "Release note number #{index} records a routine deployment step.",
+        "idf-#{index}"
+      )
+    end)
+  end
+
+  # One entity mentioned by exactly the given statements. Resolution is bypassed so a test can
+  # state the frequency it is measuring instead of hoping the fixture extractor produces it.
+  defp mention_entity!(account_key, surface_form, seeds) do
+    DataLayer.with_account_key(account_key, fn account, actor ->
+      pipeline = pipeline_actor(actor)
+
+      entity =
+        create!(
+          Entity,
+          :create_from_pipeline,
+          %{
+            canonical_name: surface_form,
+            kind: "person",
+            aliases: [surface_form],
+            derived_from: Enum.map(seeds, & &1.knowledge.id)
+          },
+          account.id,
+          pipeline
+        )
+
+      Enum.each(seeds, fn seed ->
+        create!(
+          EntityMention,
+          :create_from_pipeline,
+          %{
+            knowledge_item_id: seed.knowledge.id,
+            scope_id: seed.scope.id,
+            entity_id: entity.id,
+            surface_form: surface_form,
+            confidence: 1.0
+          },
+          account.id,
+          pipeline
+        )
+      end)
+    end)
+  end
+
+  # The suite's setup restores the whole keyword list on exit, so a test may narrow one knob to
+  # a fixture it can afford to seed rather than to production's scale.
+  defp put_retrieval_config!(overrides) do
+    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Enum.reduce(overrides, profiles, fn {key, value}, acc -> Keyword.put(acc, key, value) end)
+    )
+  end
+
   # actor — deliberately going through the engine, not around it, so the transition writes
   # its lifecycle and audit records like any other.
   defp seed_active!(

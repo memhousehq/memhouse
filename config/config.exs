@@ -238,6 +238,23 @@ config :memhouse, :retrieval_profiles,
   # the conventional published value and is kept for comparability with the
   # recorded evaluation baselines.
   rrf_k: 60,
+  # Fraction of the authorized scopes' visible statements an entity may be
+  # mentioned by before `entity_match` refuses to rank on it. An entity above
+  # this line separates nothing: in a conversation about two people, both names
+  # appear nearly everywhere, and matching on them returns the scope in
+  # extractor-confidence order. A query whose every matched entity is above the
+  # ceiling contributes no candidates at all, which is what lets
+  # `query_dependent_empty` report that the run never resolved the question.
+  entity_match_frequency_ceiling: 0.5,
+  # Visible statements a scope needs before the ceiling above is applied. Below
+  # it, frequency is noise — in a four-statement scope every entity looks
+  # ubiquitous — and dropping the strategy would cost recall to measure
+  # nothing. Unit: statements.
+  entity_match_ceiling_min_statements: 20,
+  # Most statements any single entity may contribute to one `entity_match`
+  # list. Without it a hub entity that clears the ceiling still fills the list
+  # alone and crowds every other strategy out of fusion. Unit: statements.
+  entity_match_per_entity_cap: 25,
   # Not read by the application. The per-strategy and fused-list cap comes from
   # the request's `limit` (defaulting to 12 for search and 8 for context
   # assembly), not from this value.

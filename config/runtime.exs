@@ -639,6 +639,34 @@ retrieval_profiles =
     )
     |> max(0)
   )
+  # How selective an entity must be before `entity_match` will rank on it. The ceiling is
+  # clamped into `0..1` because a value outside it either disables the strategy or disables the
+  # check, both silently. See `config/config.exs` for what each setting decides.
+  |> Keyword.put(
+    :entity_match_frequency_ceiling,
+    env_float.(
+      "MEMHOUSE_RETRIEVAL_ENTITY_FREQUENCY_CEILING",
+      Float.to_string(Keyword.fetch!(retrieval_profiles, :entity_match_frequency_ceiling))
+    )
+    |> max(0.0)
+    |> min(1.0)
+  )
+  |> Keyword.put(
+    :entity_match_ceiling_min_statements,
+    env_integer.(
+      "MEMHOUSE_RETRIEVAL_ENTITY_CEILING_MIN_STATEMENTS",
+      Integer.to_string(Keyword.fetch!(retrieval_profiles, :entity_match_ceiling_min_statements))
+    )
+    |> max(0)
+  )
+  |> Keyword.put(
+    :entity_match_per_entity_cap,
+    env_integer.(
+      "MEMHOUSE_RETRIEVAL_ENTITY_PER_ENTITY_CAP",
+      Integer.to_string(Keyword.fetch!(retrieval_profiles, :entity_match_per_entity_cap))
+    )
+    |> max(1)
+  )
   |> Keyword.put(
     :answer_context_limit,
     env_integer.(

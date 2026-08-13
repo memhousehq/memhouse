@@ -87,7 +87,7 @@ jobs:
       # because a model name is not confidential and the report has to name it anyway.
       MEMHOUSE_MODEL_DREAM: ${{ vars.MEMHOUSE_EVAL_JUDGE_MODEL }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "27"
