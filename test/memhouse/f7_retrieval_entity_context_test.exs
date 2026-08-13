@@ -359,6 +359,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   use MemHouse.DataCase, async: false
 
   alias MemHouse.Actor
+  alias MemHouse.Clock
   alias MemHouse.Context.Builder
   alias MemHouse.DataLayer
   alias MemHouse.Documents
@@ -375,7 +376,17 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   alias MemHouse.Identity
   alias MemHouse.Memory
   alias MemHouse.Observations.Session
-  alias MemHouse.Retrieval.{Candidate, EntityResolver, Fusion, Indexer, Profile, Query}
+
+  alias MemHouse.Retrieval.{
+    Budget,
+    Candidate,
+    EntityResolver,
+    Fusion,
+    Indexer,
+    Profile,
+    Query
+  }
+
   alias MemHouse.Retrieval.DiagnosticGrant
   alias MemHouse.Retrieval.Strategies
   alias MemHouse.Topology.{Scope, ScopeRelation}
@@ -393,6 +404,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     Strategies.EntityMatch,
     Strategies.RelationExpand
   ]
+
+  # Names both the scope-wide entity and the selective one, so the same text can be sent
+  # through the search response and through the strategy directly and be compared.
+  @entity_idf_query "What did Melanie say to Rivet"
 
   setup do
     original_provider = Application.get_env(:memhouse, :model_provider)
@@ -1247,8 +1262,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     selective = Enum.take(seeds, 2)
     mention_entity!("f7-entity-idf", "Rivet", selective)
 
-    candidates =
-      entity_match_candidates!("f7-entity-idf", "/f7/entity-idf", "What did Melanie say to Rivet")
+    candidates = entity_match_candidates!("f7-entity-idf", "/f7/entity-idf", @entity_idf_query)
 
     assert length(candidates) == 6
 
@@ -1256,13 +1270,13 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              selective |> Enum.map(& &1.knowledge.id) |> Enum.sort()
 
     # Bounded, because `min_score` filtering and the `low_score` disagreement hint both read
-    # this raw score. An unbounded sum would silently change what those two mean.
-    raw_candidates =
-      entity_match_raw_candidates!("f7-entity-idf", "/f7/entity-idf", "What did Melanie say to Rivet")
+    # the strategy's own score. An unbounded sum would silently change what those two mean.
+    # The count is asserted first: over an empty list `Enum.all?/2` holds vacuously and would
+    # report a bound this never checked.
+    raw = entity_match_strategy_candidates!("f7-entity-idf", "/f7/entity-idf", @entity_idf_query)
 
-    assert Enum.all?(raw_candidates, fn candidate ->
-             candidate.score >= 0.0 and candidate.score <= 1.0
-           end)
+    assert length(raw) == 6
+    assert Enum.all?(raw, &(&1.score >= 0.0 and &1.score <= 1.0))
   end
 
   test "entity_match reports nothing when every entity the query names saturates the scope" do
@@ -3023,9 +3037,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     })["candidates"]
   end
 
-  # Calls entity_match strategy directly to access raw per-candidate scores before fusion.
-  # Returns a list of `%Candidate{}` structs with the raw `score` field intact.
-  defp entity_match_raw_candidates!(account_key, scope_path, query_text) do
+  # The strategy's own score, which the search response does not carry: candidates reach a
+  # caller with the fused `rrf_score`, so the bound that `min_score` and the `low_score` hint
+  # depend on cannot be observed through `Memory.search/1` at all.
+  defp entity_match_strategy_candidates!(account_key, scope_path, query_text) do
     DataLayer.with_account_key(account_key, fn account, actor ->
       scope =
         Scope
@@ -3034,18 +3049,17 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         |> Ash.read_one!(actor: actor)
 
       peer = read_peer!(account.id, actor)
-      actor = %{actor | peer_id: peer.id}
 
       query = %Query{
         account_id: account.id,
-        actor: actor,
+        actor: %{actor | peer_id: peer.id},
         scope_ids: [scope.id],
         text: query_text,
         target: :knowledge
       }
 
-      budget = %MemHouse.Retrieval.Budget{
-        started_at: MemHouse.Clock.monotonic_ms(),
+      budget = %Budget{
+        started_at: Clock.monotonic_ms(),
         max_candidates: 50,
         deadline?: false
       }
