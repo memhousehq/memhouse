@@ -1196,6 +1196,47 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
            end)
   end
 
+  test "entity_match drops a statement whose expiry passed before the sweeper moved its state" do
+    seeded =
+      seed_active!("f7-entity-expiry", "/f7/entity-expiry", "Avery owns the release checklist.")
+
+    assert {:ok, %{mentions: mentions}} =
+             EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+
+    assert mentions >= 1
+
+    assert [%{"id" => id}] = entity_match_candidates!("f7-entity-expiry", "/f7/entity-expiry")
+    assert id == seeded.knowledge.id
+
+    # Expiry is a timestamp; the sweeper that rewrites `state` to "expired" runs as a job. In
+    # the window between the two the row is still "active" with a past `expires_at`, and every
+    # other visible-knowledge query already refuses it. This one must agree, or an expired
+    # statement stays retrievable through whichever entity it happens to name.
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      GovernanceEngine.transition!(
+        seeded.knowledge,
+        pipeline_actor(actor),
+        %{state: "active", expires_at: DateTime.add(DateTime.utc_now(), -1, :second)},
+        reason: "f7_test_expire",
+        channel: "pipeline"
+      )
+    end)
+
+    # Verify the row is actually active with a past expires_at before asserting retrieval behavior.
+    updated_knowledge =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        KnowledgeItem
+        |> Ash.Query.filter(id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+      end)
+
+    assert updated_knowledge.state == "active"
+    assert DateTime.compare(updated_knowledge.expires_at, DateTime.utc_now()) == :lt
+
+    assert [] == entity_match_candidates!("f7-entity-expiry", "/f7/entity-expiry")
+  end
+
   test "Indexer.rebuild_scope keeps a billed embedding call metered when the write phase fails" do
     seeded = seed_active!("f7-index-vanish", "/f7/index-vanish", "Vanishing indexer statement.")
 
@@ -2906,6 +2947,18 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   # Ingest alone leaves an item awaiting approval, which retrieval correctly hides. These
   # tests are about ranking and authorization, not about the approval lifecycle, so the item
   # is transitioned to `active` through the ordinary governance engine under the pipeline
+  # Runs entity_match alone, so what comes back is that strategy's own visibility decision
+  # rather than a fused list another strategy could have supplied the same id to.
+  defp entity_match_candidates!(account_key, scope_path) do
+    Memory.search(%{
+      "account_key" => account_key,
+      "scope_path" => scope_path,
+      "query" => "Avery",
+      "strategies" => ["entity_match"],
+      "deadline" => "disabled"
+    })["candidates"]
+  end
+
   # actor — deliberately going through the engine, not around it, so the transition writes
   # its lifecycle and audit records like any other.
   defp seed_active!(

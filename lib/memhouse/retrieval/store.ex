@@ -93,6 +93,7 @@ defmodule MemHouse.Retrieval.Store do
               OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
             )
             AND k.deleted_at IS NULL
+            AND (k.expires_at IS NULL OR k.expires_at > now())
             AND k.search_vector @@ #{tsquery}
           ORDER BY base_score DESC, k.confidence DESC, k.inserted_at DESC
           LIMIT $6
@@ -212,6 +213,7 @@ defmodule MemHouse.Retrieval.Store do
                 OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
               )
               AND k.deleted_at IS NULL
+              AND (k.expires_at IS NULL OR k.expires_at > now())
               AND k.embedding IS NOT NULL
               AND k.embedding_provider = $5
               AND k.embedding_model = $6
@@ -235,6 +237,7 @@ defmodule MemHouse.Retrieval.Store do
                 OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
               )
               AND k.deleted_at IS NULL
+              AND (k.expires_at IS NULL OR k.expires_at > now())
               AND k.embedding IS NOT NULL
               AND k.embedding_provider = $5
               AND k.embedding_model = $6
@@ -484,6 +487,7 @@ defmodule MemHouse.Retrieval.Store do
         OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
       )
       AND k.deleted_at IS NULL
+      AND (k.expires_at IS NULL OR k.expires_at > now())
       AND EXISTS (
         SELECT 1
         FROM unnest(e.aliases || ARRAY[e.canonical_name]) AS alias
@@ -589,6 +593,7 @@ defmodule MemHouse.Retrieval.Store do
         OR (k.state = 'provisional' AND ($3::uuid IS NULL OR k.subject_peer_id = $3))
       )
       AND k.deleted_at IS NULL
+      AND (k.expires_at IS NULL OR k.expires_at > now())
     GROUP BY k.id, s.path
     ORDER BY score DESC, k.updated_at DESC
     LIMIT $5
@@ -730,6 +735,7 @@ defmodule MemHouse.Retrieval.Store do
         AND (k.state = ANY($4) OR ($5::uuid IS NOT NULL AND k.subject_peer_id = $5))
         AND (k.state <> 'provisional' OR ($5::uuid IS NOT NULL AND k.subject_peer_id = $5))
         AND k.deleted_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > now())
     )
     SELECT id, count(*) OVER()::bigint AS total_count
     FROM visible
