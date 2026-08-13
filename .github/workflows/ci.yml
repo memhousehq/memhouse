@@ -97,7 +97,7 @@ jobs:
       # Cache keyed on the dependency lock file only, because that is what decides which
       # dependencies get compiled. A source change reuses the restored build directory and
       # lets the compiler's own change tracking recompile what actually moved.
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: |
             deps
@@ -177,7 +177,7 @@ jobs:
       # "Old PLT file" rather than rebuilding it. Since `otp-version: "27"` resolves to
       # whatever 27.x the runner image ships, a patch bump would otherwise restore a PLT
       # the new OTP refuses, and an unchanged lockfile would keep restoring it forever.
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: |
             deps
@@ -205,7 +205,7 @@ jobs:
         with:
           otp-version: "27"
           elixir-version: "1.18"
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: |
             deps
@@ -237,7 +237,7 @@ jobs:
           elixir-version: "1.18"
       # Separate cache key from the test lanes: production build output is not
       # interchangeable with test build output and sharing a key would poison both.
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: |
             deps
