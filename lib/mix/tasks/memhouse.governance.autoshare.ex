@@ -54,19 +54,26 @@ defmodule Mix.Tasks.Memhouse.Governance.Autoshare do
 
     account_key = Keyword.get(opts, :account_key) || Mix.raise("--account-key is required")
 
-    {written, consent_mode} =
+    {outcomes, consent_mode} =
       DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account,
                                                                                    actor ->
-        rules =
+        outcomes =
           for level <- @levels, sensitivity <- @sensitivities do
             write_rule!(account.id, actor, level, sensitivity)
           end
 
-        {rules, account.consent_mode}
+        {outcomes, account.consent_mode}
+      end)
+
+    written_count =
+      Enum.count(outcomes, fn
+        {:created, _rule} -> true
+        {:successor, _rule} -> true
+        {:unchanged, _rule} -> false
       end)
 
     Mix.shell().info("account: #{account_key}")
-    Mix.shell().info("gate rules written: #{length(written)}")
+    Mix.shell().info("gate rules written: #{written_count}")
     Mix.shell().info("consent_mode: #{consent_mode}")
 
     unless consent_mode == "auto" or MemHouse.Governance.UnattendedMode.enabled?() do
@@ -118,31 +125,37 @@ defmodule Mix.Tasks.Memhouse.Governance.Autoshare do
         # Compare the effective rule's values with the requested attrs
         if rule_matches?(effective_rule, attrs) do
           # Values match; no-op
-          effective_rule
+          {:unchanged, effective_rule}
         else
           # Values differ; create a successor version with the same priority
-          GateRule
-          |> Ash.Changeset.for_create(
-            :create,
-            Map.merge(attrs, %{
-              target_level: target_level,
-              sensitivity: sensitivity,
-              priority: effective_rule.priority,
-              version: effective_rule.version + 1
-            })
-          )
-          |> Ash.Changeset.set_tenant(account_id)
-          |> Ash.create!(actor: actor)
+          rule =
+            GateRule
+            |> Ash.Changeset.for_create(
+              :create,
+              Map.merge(attrs, %{
+                target_level: target_level,
+                sensitivity: sensitivity,
+                priority: effective_rule.priority,
+                version: effective_rule.version + 1
+              })
+            )
+            |> Ash.Changeset.set_tenant(account_id)
+            |> Ash.create!(actor: actor)
+
+          {:successor, rule}
         end
 
       [] ->
-        GateRule
-        |> Ash.Changeset.for_create(
-          :create,
-          Map.merge(attrs, %{target_level: target_level, sensitivity: sensitivity})
-        )
-        |> Ash.Changeset.set_tenant(account_id)
-        |> Ash.create!(actor: actor)
+        rule =
+          GateRule
+          |> Ash.Changeset.for_create(
+            :create,
+            Map.merge(attrs, %{target_level: target_level, sensitivity: sensitivity})
+          )
+          |> Ash.Changeset.set_tenant(account_id)
+          |> Ash.create!(actor: actor)
+
+        {:created, rule}
     end
   end
 
