@@ -153,12 +153,14 @@ defmodule MemHouse.IngestRelayTest do
     original = Application.get_env(:memhouse, :model_provider)
     Application.put_env(:memhouse, :model_provider, PromptCaptureProvider)
 
+    # Restore the global provider before stopping the recorder, never after: a teardown that
+    # fails part-way must not leave `:model_provider` naming a process that is gone.
     on_exit(fn ->
-      PromptCaptureProvider.stop()
-
       if original,
         do: Application.put_env(:memhouse, :model_provider, original),
         else: Application.delete_env(:memhouse, :model_provider)
+
+      PromptCaptureProvider.stop()
     end)
 
     {:ok, _} = relay(ctx.agent_actor, "caroline", "Caroline keeps bees on her allotment.")
