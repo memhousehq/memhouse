@@ -328,8 +328,9 @@ defmodule MemHouse.Operations.PipelineRun do
       upsert_identity :idempotency_key
       upsert_fields [:idempotency_key]
       change set_attribute(:kind, "projection_refresh")
-      # The run key coalesces a scope burst. This delay lets the burst settle.
-      change run_oban_trigger(:projection_refresh, schedule_in: 5)
+      # Schedule for bucket end plus five seconds. The idempotency key uses a ten-second bucket, so
+      # execution must occur after that bucket closes to include all writes within it.
+      change run_oban_trigger(:projection_refresh, schedule_in: 15)
     end
 
     create :enqueue_connector_sync do

@@ -625,7 +625,8 @@ defmodule MemHouse.Governance.Engine do
   end
 
   # Projections, vectors, and entity mentions are one dependency-ordered cache.
-  # Ordinary writes use a delayed scope bucket, so a burst creates one rebuild.
+  # Ordinary writes use a ten-second scope bucket with execution after bucket close, so a burst
+  # creates one rebuild.
   defp enqueue_derived_refreshes!(knowledge, actor) do
     {:ok, _projection_run} =
       Pipeline.enqueue_derived_refresh(

@@ -245,9 +245,9 @@ defmodule MemHouse.Pipeline do
   @doc """
   Schedules one delayed derived-cache refresh for a burst of governed writes.
 
-  Writes in the same scope and ten-second bucket reuse one durable run. The
-  five-second delay lets the common ingest burst settle before the full
-  replay-safe refresh runs. The job carries only identifiers and a bucket key.
+  Writes in the same scope and ten-second bucket reuse one durable run.
+  Execution is scheduled for bucket end plus five seconds, ensuring all writes
+  within the bucket are included. The job carries only identifiers and a bucket key.
   """
   @spec enqueue_derived_refresh(Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
