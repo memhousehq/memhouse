@@ -76,16 +76,31 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
       assert prompt =~ "not as a dated utterance or observation frame"
       assert prompt =~ "ISO YYYY-MM-DD"
     end
+
+    test "classifies by durable meaning and keeps valid time independent" do
+      Memory.extract_message(seed_message!("obs-taxonomy"))
+
+      prompt = system_prompt()
+
+      assert prompt =~ "Use event only when the claim's"
+      assert prompt =~ "whole durable content is that something occurred"
+      assert prompt =~ "Avery prefers concise"
+      assert prompt =~ ~s(status updates." is preference)
+      assert prompt =~ ~s("Avery mentors Sam." is relation)
+      assert prompt =~ ~s("Avery can administer PostgreSQL." is skill)
+      assert prompt =~ "Valid time is independent of kind"
+      refute prompt =~ "whatever else it also asserts"
+    end
   end
 
-  describe "valid-time on an event" do
+  describe "valid time" do
     setup :capture_prompts
 
-    test "anchors an event the model left undated to the observation time" do
+    test "does not turn observation time into an event validity window" do
       assert {:ok, [knowledge]} = Memory.extract_message(seed_message!("obs-anchor"))
 
       assert knowledge["kind"] == "event"
-      assert DateTime.compare(knowledge["relevant_from"], @observed_at) == :eq
+      assert knowledge["relevant_from"] == nil
     end
 
     test "keeps a relevant_from the model supplied" do
@@ -116,24 +131,16 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
     end
   end
 
-  describe "the resource refuses an undatable event" do
-    test "an event with neither relevant_from nor an observation time is invalid" do
-      # The writer always supplies one of the two, so this can only be reached by
-      # a new call site that forgot. Enforcing it here rather than at each caller
-      # is what keeps "an event is datable" true of the table, not of one path.
-      refute create_changeset(kind: "event").valid?
+  describe "the resource keeps belief time and valid time independent" do
+    test "an event without a known validity window is valid" do
+      assert create_changeset(kind: "event").valid?
     end
 
-    test "an event is valid once an observation time anchors it" do
+    test "observation time does not become relevant_from" do
       changeset = create_changeset(kind: "event", observed_at: @observed_at)
 
       assert changeset.valid?
-
-      assert DateTime.compare(
-               Ash.Changeset.get_attribute(changeset, :relevant_from),
-               @observed_at
-             ) ==
-               :eq
+      assert Ash.Changeset.get_attribute(changeset, :relevant_from) == nil
     end
 
     test "a non-event needs no window" do

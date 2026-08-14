@@ -48,7 +48,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-9"
+  @prompt_version "extract-10"
 
   # Ways a model names the process instead of a person. Deployment-specific
   # identities are added per observation; these hold everywhere.
@@ -144,10 +144,20 @@ defmodule MemHouse.Pipeline.Extractor do
         Keep an ISO YYYY-MM-DD date in the statement only when the date itself
         is part of the claim.
 
-        Use kind "event" for anything that happened at a point or over a span of
-        time, whatever else it also asserts. Give an event relevant_from, and
-        relevant_until as well when it spans more than an instant. Leave the
-        relevant window empty for a statement with no time of its own.
+        Classify a claim by what remains useful after the moment passes. Use
+        fact for stable information, preference for a choice, relation for a
+        connection, and skill for an ability. Use event only when the claim's
+        whole durable content is that something occurred. Apply this precedence
+        even when the source stated the claim at a specific time.
+
+        Examples: "Avery works at Northstar." is fact. "Avery prefers concise
+        status updates." is preference. "Avery mentors Sam." is relation.
+        "Avery can administer PostgreSQL." is skill. "Avery launched Northstar
+        on 2026-08-12." is event.
+
+        Valid time is independent of kind. Set relevant_from and relevant_until
+        when the claim itself has a time or span. Leave them empty when it does
+        not. Do not invent a validity window from the observation time.
         """
       },
       %{

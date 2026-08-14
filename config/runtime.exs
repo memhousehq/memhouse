@@ -548,7 +548,7 @@ config :memhouse, :model_roles,
     provider: generation_provider,
     model: generation_model.("MEMHOUSE_MODEL_INGEST", "openai/gpt-oss-120b"),
     model_version: generation_version,
-    prompt_version: "extract-9",
+    prompt_version: "extract-10",
     pipeline_version: "f5-1",
     options: generation_options
   },

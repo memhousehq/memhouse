@@ -99,7 +99,7 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-The `extract-9` and `f5-1` prompt and pipeline versions enforce subject rules:
+The `extract-10` and `f5-1` prompt and pipeline versions enforce subject rules:
 agent peers are excluded from the subject allowlist and machine referents are
 refused, preserving the verified contract that knowledge is about people and
 never about the infrastructure that carried it.
@@ -136,7 +136,7 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-9` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-10` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.

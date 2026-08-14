@@ -179,6 +179,14 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Extraction prompt `extract-10` classifies a claim by its durable meaning.
+  Stable facts, preferences, relations, and skills keep those kinds even when
+  they were stated or became true at a known time. `event` is only for a claim
+  whose durable content is that something occurred. Worked examples pin all
+  five kinds. Valid time is independent of kind, and the pipeline no longer
+  copies observation time into an event with no known validity window. The
+  pipeline contract remains `f5-1`.
+
 - Extraction prompt `extract-9` removes unused operation and revalidation
   judgements. It orders reasoning and the completed statement before an
   anchored `stated_explicitly`, `clearly_implied`, or `inferred` confidence

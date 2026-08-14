@@ -149,17 +149,21 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   test "editing an event's wording keeps the validity window the original carried" do
     %{actor: actor} = bootstrap_human!("edit-window")
 
+    window_start = ~U[2023-07-04 00:00:00Z]
+
     knowledge =
-      ingest!(
+      propose_direct!(
         actor,
-        "edit-window-item",
         "/private/work",
-        "Avery shipped the release train checklist on Tuesday."
+        "peer",
+        "Avery shipped the release train checklist on Tuesday.",
+        kind: "event",
+        relevant_from: window_start
       )
 
     # The premise: this really is a dated event, so there is a window to lose.
     assert knowledge.kind == "event"
-    assert %DateTime{} = window_start = knowledge.relevant_from
+    assert DateTime.compare(knowledge.relevant_from, window_start) == :eq
 
     validation = validation_for!(actor, knowledge.id)
 
@@ -997,14 +1001,15 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         scope_id: scope.id,
         subject_peer_id: actor.peer_id,
         statement: statement,
-        kind: "fact",
+        kind: Keyword.get(overrides, :kind, "fact"),
         confidence: 1.0,
         evidence_level: "direct",
         sensitivity: Keyword.get(overrides, :sensitivity, "personal"),
         state: "proposed",
         target_level: target_level,
         extracting_model: "test:direct-propose",
-        pipeline_version: "f5-1"
+        pipeline_version: "f5-1",
+        relevant_from: Keyword.get(overrides, :relevant_from)
       })
       |> Ash.create!(actor: pipeline)
 
