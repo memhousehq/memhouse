@@ -3110,11 +3110,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert id == seeded.knowledge.id
   end
 
-  # The index names below are frozen: they are what the hand-written migration DDL created,
-  # and the query planner will not use an index that has been renamed or dropped. A missing
-  # index does not fail any other test — retrieval still returns correct results, just by
-  # sequential scan — so this is the only place a silent performance cliff gets caught.
-  test "F7 migration installs FTS and DiskANN indexes" do
+  # The query planner will not use an index that has been renamed or dropped. Retrieval still
+  # returns correct results by sequential scan, so this test protects the indexes that have SQL
+  # readers and rejects the entity index that has none.
+  test "F7 migrations install only indexes with query consumers" do
     assert %{rows: rows} =
              Ecto.Adapters.SQL.query!(
                Repo,
@@ -3139,7 +3138,6 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert Enum.map(rows, &hd/1) == [
              "document_chunks_embedding_diskann_1024_idx",
              "document_chunks_search_vector_idx",
-             "entities_alias_embedding_diskann_1024_idx",
              "knowledge_items_embedding_diskann_1024_idx",
              "knowledge_items_search_vector_idx",
              "projections_clean_entity_cards_index"

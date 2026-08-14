@@ -127,8 +127,8 @@ not float-array stand-ins. Every vector retains provider, model, version, and
 dimensions. The retrieval migration adds:
 
 - StreamingDiskANN cosine expression indexes for the pinned 1024-dimensional
-  knowledge, chunk, and entity collections. Knowledge and chunks also carry a
-  private per-Account scope label. The index uses the `smallint[]` overlap
+  knowledge and chunk collections. Both collections also carry a private
+  per-Account scope label. The index uses the `smallint[]` overlap
   filter during graph traversal for authorized scopes;
 - a generated document-chunk `tsvector` and GIN index;
 - the existing knowledge-statement GIN index as the lexical path; and
