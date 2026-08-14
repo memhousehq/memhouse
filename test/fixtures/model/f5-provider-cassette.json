@@ -8,7 +8,6 @@
         "value": {
           "items": [
             {
-              "reasoning": "The source states Avery's preference directly.",
               "supporting_span": "Avery prefers weekly release summaries.",
               "statement": "Avery prefers weekly release summaries.",
               "kind": "preference",
@@ -29,7 +28,6 @@
         "value": {
           "items": [
             {
-              "reasoning": "The source states Avery's preference directly.",
               "supporting_span": "Avery prefers weekly release summaries.",
               "statement": "Avery prefers weekly release summaries.",
               "kind": "preference",

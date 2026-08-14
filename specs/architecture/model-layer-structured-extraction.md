@@ -51,8 +51,9 @@ tool calling.
 The extraction JSON schema is derived from `KnowledgeItem` attributes and the
 candidate is validated against `create_from_pipeline`. OpenRouter receives it
 through its native strict JSON-schema response format. The schema uses
-`propertyOrdering` to put concise validation-only reasoning and the completed
-natural-language statement before `confidence_level`. The three anchored
+`propertyOrdering` to put the completed natural-language statement before
+`confidence_level`. The extractor does not request validation-only reasoning
+that no durable output uses. The three anchored
 levels map to fixed stored values: `stated_explicitly` to 1.0,
 `clearly_implied` to 0.8, and `inferred` to 0.6. Revalidation remains gate-rule
 policy, and declining produces no candidate. Gate A receives a deterministic
@@ -99,7 +100,7 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-The `extract-10` and `f5-1` prompt and pipeline versions enforce subject and
+The `extract-11` and `f5-1` prompt and pipeline versions enforce subject and
 source-grounding rules:
 agent peers are excluded from the subject allowlist and machine referents are
 refused, preserving the verified contract that knowledge is about people and
@@ -140,7 +141,7 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-10` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-11` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.
@@ -148,9 +149,9 @@ Message extraction uses a trailing six-message same-session window, with the
 target message as its explicit anchor. Relative dates resolve against the
 observation time into `relevant_from` and `relevant_until`; statement text does
 not repeat that time unless a date is part of the claim. Readers render the
-structured valid-time fields when they need the date. Its prompt explicitly
-requires confidence as a JSON fraction from `0.0` through `1.0`; the
-Ash-derived JSON schema independently enforces the same numeric bounds.
+structured valid-time fields when they need the date. Its prompt requires
+`confidence_level` as `stated_explicitly`, `clearly_implied`, or `inferred`;
+`Extraction.cast/2` maps these labels to fixed stored numeric fractions.
 
 `MemHouse.Model.Usage` is the one durable emission point. Each provider call,
 including every repair attempt and returned provider error, appends one

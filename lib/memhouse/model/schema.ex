@@ -100,6 +100,12 @@ defmodule MemHouse.Model.Schema.Extraction do
   # policy, not a model decision.
   @temporal_fields ~w(expires_at relevant_from relevant_until)a
 
+  @candidate_fields (@knowledge_fields ++
+                       @temporal_fields ++
+                       ~w(supporting_span confidence_level subject_type subject_ref source_message_ids)a)
+                    |> Enum.map(&Atom.to_string/1)
+                    |> MapSet.new()
+
   # The only two things a statement may be about. Source is separate: who said
   # it is not who it is about.
   @subject_types ~w(peer scope)
@@ -158,19 +164,18 @@ defmodule MemHouse.Model.Schema.Extraction do
       end)
 
     property_order =
-      ~w(reasoning supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids expires_at relevant_from relevant_until)
+      ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids expires_at relevant_from relevant_until)
 
     candidate =
       %{
         "type" => "object",
         "description" =>
-          "Write reasoning first, then statement, then rate that completed statement with confidence_level.",
+          "Copy supporting_span, write the statement, then rate it with confidence_level.",
         "additionalProperties" => false,
         "properties" =>
           knowledge_properties
           |> Map.merge(temporal_properties)
           |> Map.merge(%{
-            "reasoning" => %{"type" => "string", "minLength" => 1},
             "supporting_span" => %{
               "type" => "string",
               "minLength" => 1,
@@ -198,7 +203,7 @@ defmodule MemHouse.Model.Schema.Extraction do
           }),
         "propertyOrdering" => property_order,
         "required" =>
-          ~w(reasoning statement confidence_level kind subject_type subject_ref sensitivity target_level)
+          ~w(statement confidence_level kind subject_type subject_ref sensitivity target_level)
       }
 
     %{
@@ -261,7 +266,7 @@ defmodule MemHouse.Model.Schema.Extraction do
   # expensive step — only runs on a candidate that is already well formed.
   # Confidence is computed rather than copied: see `source_confidence/4`.
   defp cast_item(item, context) when is_map(item) do
-    with {:ok, _reasoning} <- non_empty_string(item, "reasoning"),
+    with :ok <- candidate_keys(item, context),
          {:ok, statement} <- readable_statement(item),
          {:ok, kind} <- enum(item, "kind", allowed(:kind)),
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
@@ -295,6 +300,24 @@ defmodule MemHouse.Model.Schema.Extraction do
   end
 
   defp cast_item(_item, _context), do: {:error, ["candidate must be an object"]}
+
+  defp candidate_keys(item, context) do
+    keys =
+      Enum.map(Map.keys(item), fn
+        key when is_binary(key) -> key
+        key when is_atom(key) -> Atom.to_string(key)
+        _key -> :invalid
+      end)
+
+    allowed =
+      context
+      |> Map.get(:extraction_extra_fields, [])
+      |> Enum.reduce(@candidate_fields, &MapSet.put(&2, &1))
+
+    if Enum.all?(keys, &MapSet.member?(allowed, &1)),
+      do: :ok,
+      else: {:error, ["candidate contains unsupported fields"]}
+  end
 
   defp source_message_ids(item, context) do
     allowed = Map.get(context, :window_message_ids, [])
@@ -480,10 +503,7 @@ defmodule MemHouse.Model.Schema.Extraction do
       String.contains?(statement, "?") ->
         {:error, ["statement must assert knowledge, not record a question"]}
 
-      String.match?(
-        statement,
-        ~r/\b(?:said|says|told|asked|greeted|replied|mentioned|wrote|texted)\b/iu
-      ) ->
+      speech_act_transcription?(statement) ->
         {:error, ["statement must assert the fact, not record a speech act"]}
 
       subject_type == "peer" and not statement_names_subject?(statement) ->
@@ -492,6 +512,26 @@ defmodule MemHouse.Model.Schema.Extraction do
       true ->
         :ok
     end
+  end
+
+  # Some verbs describe only a conversational turn. Reporting verbs can also describe durable
+  # work (for example, "Avery wrote a book"), so they are refused only when they introduce the
+  # content of a message. This keeps the deterministic floor narrow enough to avoid classifying
+  # durability from prose while still rejecting the known transcription shapes.
+  defp speech_act_transcription?(statement) do
+    conversational_turn? =
+      String.match?(
+        statement,
+        ~r/\b(?:asked|greeted|replied|texted|thanked|congratulated|complimented|welcomed|wished)\b/iu
+      )
+
+    reported_content? =
+      String.match?(
+        statement,
+        ~r/\b(?i:said|says|told|mentioned|wrote)\b\s*(?:(?:(?i:to)\s+)?\p{Lu}[\p{L}\p{N}_-]*(?:\s+\p{Lu}[\p{L}\p{N}_-]*){0,2}\s*)?(?i:that\b|[:,]|["“])/u
+      )
+
+    conversational_turn? or reported_content?
   end
 
   # Knowledge is about people, not about the software that carried it. A relaying
@@ -765,7 +805,10 @@ defmodule MemHouse.Model.Schema.Reasoning do
     with {:ok, raw_items} <- items(object),
          :ok <- deduction_limit(raw_items),
          :ok <- reject_controlled_item_fields(raw_items),
-         {:ok, items} <- MemHouse.Model.Schema.Extraction.cast(%{"items" => raw_items}, context),
+         extraction_context =
+           Map.put(context, :extraction_extra_fields, ~w(reasoning contributor_ids)),
+         {:ok, items} <-
+           MemHouse.Model.Schema.Extraction.cast(%{"items" => raw_items}, extraction_context),
          {:ok, items} <- validate_deduction_contributors(items, raw_items, context),
          {:ok, raw_relations} <- relations(object),
          :ok <- relation_limit(raw_relations),

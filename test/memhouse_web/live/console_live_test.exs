@@ -523,6 +523,9 @@ defmodule MemHouseWeb.ConsoleLiveTest do
       html = conn |> sign_in(token) |> get("/console/operations") |> html_response(200)
 
       assert html =~ "Readiness"
+      assert html =~ "Extractor calls per message"
+      assert html =~ "Extractor tokens per message"
+      assert html =~ "Extractor cost per message"
       assert html =~ "Entity resolution quality"
       assert html =~ "Singleton entity rate"
       assert html =~ "50.0%"

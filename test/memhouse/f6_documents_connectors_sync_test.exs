@@ -28,7 +28,6 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest.Provider do
       |> Enum.reject(&(String.length(&1) < 8 or String.starts_with?(&1, "#")))
       |> Enum.map(fn statement ->
         %{
-          "reasoning" => "The source states this directly.",
           "supporting_span" => statement,
           "statement" => statement,
           "kind" => kind(statement),
