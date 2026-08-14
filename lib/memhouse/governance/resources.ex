@@ -390,7 +390,7 @@ defmodule MemHouse.Governance.GateDecision do
   was actually settled — an automatic rule outcome, a curator decision, or a transcript-verified
   peer answer — and false on the rows written when a proposal is only queued for review.
 
-  Rows are append-only. `statement_hash` is private and metadata is content-safe.
+  Rows are immutable while retained. `statement_hash` is private and metadata is content-safe.
   """
 
   use MemHouse.Resource, domain: MemHouse.Governance, table: "gate_decisions"
@@ -405,7 +405,6 @@ defmodule MemHouse.Governance.GateDecision do
   actions do
     defaults [:read]
 
-    # Append-only history: deliberately no update or destroy counterpart.
     create :record do
       accept [
         :validation_item_id,
@@ -425,6 +424,10 @@ defmodule MemHouse.Governance.GateDecision do
         :decided_at
       ]
     end
+
+    destroy :prune do
+      require_atomic? false
+    end
   end
 
   # Decision history is governance evidence, so both writing and reading it are limited to a
@@ -437,6 +440,11 @@ defmodule MemHouse.Governance.GateDecision do
 
     policy action(:record) do
       authorize_if {MemHouse.Policy.HumanRoleIn, roles: [:account_admin, :curator]}
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
+
+    policy action(:prune) do
+      authorize_if {MemHouse.Policy.RoleIn, roles: [:system]}
       authorize_if actor_attribute_equals(:pipeline?, true)
     end
 

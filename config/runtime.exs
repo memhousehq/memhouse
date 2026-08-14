@@ -72,6 +72,47 @@ env_integer! = fn key, default ->
   end
 end
 
+retention_days = fn key, default ->
+  value = env_integer!.(key, Integer.to_string(default))
+
+  if value < 1 do
+    raise "#{key} must be at least 1"
+  end
+
+  value
+end
+
+retention = [
+  oban_jobs_days: retention_days.("MEMHOUSE_RETENTION_OBAN_JOBS_DAYS", 7),
+  pipeline_runs_days: retention_days.("MEMHOUSE_RETENTION_PIPELINE_RUNS_DAYS", 30),
+  usage_events_days: retention_days.("MEMHOUSE_RETENTION_USAGE_EVENTS_DAYS", 400),
+  gate_decisions_days: retention_days.("MEMHOUSE_RETENTION_GATE_DECISIONS_DAYS", 3_650),
+  lifecycle_events_days: retention_days.("MEMHOUSE_RETENTION_LIFECYCLE_EVENTS_DAYS", 3_650),
+  batch_size: env_integer!.("MEMHOUSE_RETENTION_BATCH_SIZE", "10000")
+]
+
+if retention[:batch_size] < 1 do
+  raise "MEMHOUSE_RETENTION_BATCH_SIZE must be at least 1"
+end
+
+config :memhouse, :retention, retention
+
+oban_config = Application.fetch_env!(:memhouse, Oban)
+
+plugins =
+  oban_config
+  |> Keyword.fetch!(:plugins)
+  |> Enum.map(fn
+    {Oban.Plugins.Pruner, options} ->
+      {Oban.Plugins.Pruner,
+       Keyword.put(options, :max_age, retention[:oban_jobs_days] * 24 * 60 * 60)}
+
+    plugin ->
+      plugin
+  end)
+
+config :memhouse, Oban, Keyword.put(oban_config, :plugins, plugins)
+
 # A connection-pool capacity of zero or less would make every hosted model call
 # wait forever. Reject it at boot, before ReqLLM starts its shared Finch pool.
 env_positive_integer! = fn key, default ->

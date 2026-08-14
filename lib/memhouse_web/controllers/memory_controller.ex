@@ -35,7 +35,7 @@ defmodule MemHouseWeb.MemoryController do
 
     Returns `%{"data" => summary}` holding the exact recorded usage-event count, API
     request and ingest counts, input/output/embedding token totals overall and per model
-    role, logical storage bytes, an estimated model cost in USD, and aggregate
+    role, durable and operational storage bytes, an estimated model cost in USD, and aggregate
     extractor calls, tokens, and cost per ingested message.
   """
   def costs(conn, _params) do

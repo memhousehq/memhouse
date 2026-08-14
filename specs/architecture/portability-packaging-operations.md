@@ -43,7 +43,7 @@ The archive schema is `memhouse-account-1`. A gzip tar contains:
 
 - `manifest.json` with Account identity, embedder provenance, resource counts
   and checksums, blob checksums, audit head/count, and explicit exclusions;
-- one streaming, keyset-paginated JSONL file for each of 33 portable durable
+- one streaming, keyset-paginated JSONL file for each portable durable
   Resources;
 - checksum-addressed original document blobs.
 
@@ -52,8 +52,9 @@ tar paths, unknown schemas/resources, checksum or count mismatches, blob hash
 mismatches, and any branched, cyclic, disconnected, or content-tampered audit
 chain before opening its write transaction. All durable restoration uses
 private Ash actions under the system/pipeline actor, preserving ids, valid
-times, belief times, lifecycle history, usage events, pipeline replay keys, and
-content-safe audit hashes. Deferred self-links are restored only after their
+times, belief times, and content-safe audit hashes. Retained lifecycle history,
+usage events, and pipeline replay keys stay local to the source installation.
+Deferred self-links are restored only after their
 rows exist.
 
 Credentials, password hashes, secret values, vectors, document chunks,

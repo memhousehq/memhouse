@@ -631,7 +631,7 @@ end
 
 defmodule MemHouse.Knowledge.LifecycleEvent do
   @moduledoc """
-  Append-only evidence of one knowledge lifecycle transition.
+  Retained evidence of one knowledge lifecycle transition.
 
   Events are written in the same transaction as the state change and retain content-safe actor,
   reason, channel, and timing data.
@@ -649,10 +649,12 @@ defmodule MemHouse.Knowledge.LifecycleEvent do
   actions do
     defaults [:read]
 
-    # Append-only. Called from the knowledge transition change and from the extraction pipeline
-    # when a statement is first proposed, never directly by a surface.
     create :record do
       accept [:knowledge_item_id, :scope_id, :from_state, :to_state, :reason, :occurred_at]
+    end
+
+    destroy :prune do
+      require_atomic? false
     end
   end
 
@@ -670,6 +672,11 @@ defmodule MemHouse.Knowledge.LifecycleEvent do
     # the aging sweeper must also be able to record what they did.
     policy action(:record) do
       authorize_if {MemHouse.Policy.RoleIn, roles: [:account_admin, :curator, :system]}
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
+
+    policy action(:prune) do
+      authorize_if {MemHouse.Policy.RoleIn, roles: [:system]}
       authorize_if actor_attribute_equals(:pipeline?, true)
     end
   end

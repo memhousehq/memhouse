@@ -233,6 +233,7 @@ defmodule MemHouse.Portability.Archive do
       # derived caches are missing by design and not through data loss.
       "excluded" => %{
         "derived_resources" => Enum.map(Registry.derived_resources(), &resource_name/1),
+        "operational_resources" => Enum.map(Registry.operational_resources(), &resource_name/1),
         "credential_resources" => Enum.map(Registry.credential_resources(), &resource_name/1),
         "vectors" => "rebuild_on_import",
         "secrets" => "never_exported"

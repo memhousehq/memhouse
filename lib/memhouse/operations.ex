@@ -19,7 +19,7 @@ end
 
 defmodule MemHouse.Operations.UsageEvent do
   @moduledoc """
-  Append-only ledger for HTTP and model usage.
+  Retained ledger for HTTP and model usage.
 
   This table is authoritative; ETS budget counters are rebuildable. Writers store exact counts
   and reviewed content-safe metadata with complete model provenance. Only internal actors write
@@ -37,9 +37,11 @@ defmodule MemHouse.Operations.UsageEvent do
   end
 
   actions do
-    # There is deliberately no update or destroy action: append-only is what
-    # makes a past billing period reconstructible.
     defaults [:read]
+
+    destroy :prune do
+      require_atomic? false
+    end
 
     create :record do
       accept [
@@ -80,6 +82,11 @@ defmodule MemHouse.Operations.UsageEvent do
     # making requests, but must never author one directly — a caller that could
     # write its own usage rows could understate what it consumed.
     policy action(:record) do
+      authorize_if {MemHouse.Policy.RoleIn, roles: [:system]}
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
+
+    policy action(:prune) do
       authorize_if {MemHouse.Policy.RoleIn, roles: [:system]}
       authorize_if actor_attribute_equals(:pipeline?, true)
     end
@@ -456,6 +463,10 @@ defmodule MemHouse.Operations.PipelineRun do
       change set_attribute(:last_error_class, nil)
       change set_attribute(:processed_at, nil)
     end
+
+    destroy :prune do
+      require_atomic? false
+    end
   end
 
   policies do
@@ -472,7 +483,7 @@ defmodule MemHouse.Operations.PipelineRun do
 
     # Enqueueing and completing runs is internal only. An external caller must
     # never be able to schedule, replay, or mark pipeline work.
-    policy action_type([:create, :update]) do
+    policy action_type([:create, :update, :destroy]) do
       authorize_if {MemHouse.Policy.RoleIn, roles: [:system]}
       authorize_if actor_attribute_equals(:pipeline?, true)
     end

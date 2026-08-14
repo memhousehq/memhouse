@@ -135,7 +135,7 @@ one, without rewriting history.
 **Tombstone** — the marker left when a remote document is deleted, so that
 knowledge with surviving provenance is not retracted.
 
-**Usage ledger** — the durable, exact record of every model call
+**Usage ledger** — the retained, exact record of every model call
 (`UsageEvent`). The ETS counters in front of it are rebuildable.
 
 **Valid time** — when a claim is true in the world (`relevant_from`,

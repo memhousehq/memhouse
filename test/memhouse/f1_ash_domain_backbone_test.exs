@@ -204,7 +204,7 @@ defmodule MemHouse.F1AshDomainBackboneTest do
              |> Ash.create(actor: admin)
   end
 
-  test "content is create-only except for the F4 erasure action and ledgers remain append-only" do
+  test "content and audit stay durable while lifecycle history has one retention action" do
     # Observations are written once. The single destroy action is subject erasure, which is a
     # deliberate right-to-be-forgotten path, not an ordinary delete; the one update action
     # accepts only `extraction_completed_at`, not the stored content. A second destroy action
@@ -212,10 +212,10 @@ defmodule MemHouse.F1AshDomainBackboneTest do
     assert action_types(Message) == [:create, :destroy, :read, :update]
     assert Ash.Resource.Info.action(Message, :erase).type == :destroy
 
-    # Lifecycle and audit are ledgers: create and read only. With no update or destroy action
-    # there is no supported way to rewrite or drop history, which is what makes the audit
-    # hash chain and the lifecycle trail worth anything.
-    assert action_types(LifecycleEvent) == [:create, :read]
+    # Lifecycle rows are immutable while retained. Only the internal retention worker can remove
+    # an expired row. Audit has no destroy action and remains the permanent evidence chain.
+    assert action_types(LifecycleEvent) == [:create, :destroy, :read]
+    assert Ash.Resource.Info.action(LifecycleEvent, :prune).type == :destroy
     assert action_types(AuditEvent) == [:create, :read]
 
     # A knowledge statement is fixed at mint time. Merging duplicates and moving an item

@@ -258,6 +258,23 @@ document semantics.
 
 Dream-time is throttled first when a limit bites.
 
+## Operational retention
+
+MemHouse removes terminal queue and operational-ledger rows on a fixed schedule. It never prunes
+messages, knowledge items, audit events, or dream-time watermarks.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MEMHOUSE_RETENTION_OBAN_JOBS_DAYS` | `7` | Terminal Oban job history |
+| `MEMHOUSE_RETENTION_PIPELINE_RUNS_DAYS` | `30` | Completed, cancelled, or discarded pipeline runs |
+| `MEMHOUSE_RETENTION_USAGE_EVENTS_DAYS` | `400` | Exact usage and model-cost history |
+| `MEMHOUSE_RETENTION_GATE_DECISIONS_DAYS` | `3650` | Governance decision history |
+| `MEMHOUSE_RETENTION_LIFECYCLE_EVENTS_DAYS` | `3650` | Knowledge transition history |
+| `MEMHOUSE_RETENTION_BATCH_SIZE` | `10000` | Maximum rows removed from each ledger per daily pass |
+
+All values must be positive integers. A shorter horizon reduces storage but also shortens the
+history available to usage summaries and governance history views.
+
 ## Governance
 
 | Variable | Default | Meaning |

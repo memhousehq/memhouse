@@ -34,7 +34,8 @@ This map implements `FR-TOP-*`, `FR-KN-*`, `FR-FORM-*`, `FR-GOV-*`,
 - Knowledge statements are immutable. Only a pipeline actor may call
   `create_from_pipeline` or `merge_from_pipeline`; merge cannot change the
   statement.
-- Provenance, lifecycle, audit, and usage events are append-only.
+- Provenance and audit events are durable. Lifecycle, gate, usage, and terminal pipeline history
+  are immutable while retained and are removed only by the internal retention worker.
 - Policy, model-role, retrieval-profile, role-grant, and skill-card mutations
   require a governance or system role.
 - Entity and entity-mention actions are pipeline-internal and have no public
