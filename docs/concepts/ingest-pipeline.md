@@ -129,16 +129,21 @@ Extraction also does what a naive extractor gets wrong:
   third-party confidence discount.
 - **Uses bounded conversation evidence.** Message extraction sends the target
   message and up to five earlier messages from the same session and scope. A
-  candidate can cite only ids from that window. Each cited id becomes durable
-  provenance.
+  candidate can cite only ids from that window. It must also quote an exact
+  supporting span from a cited message. Validation rejects a statement date
+  that appears in neither the cited text nor a resolvable relative-time phrase.
+  Each cited id becomes durable provenance. The supporting span validates the
+  proposal but is not copied into knowledge, logs, or job arguments.
 - **Records complete provenance.** Provider, model, version, prompt, and
   pipeline identity travel with the result.
 
 ### Replay is safe
 
 Deterministic idempotency keys make replay and overlapping message windows merge
-provenance instead of creating duplicate statements. The reconciler finds durable
-records whose jobs never ran. Account administrators can enqueue it independently with
+provenance instead of creating duplicate statements. The hourly reconciler
+finds stale durable records whose jobs never ran. It ignores work younger than
+5 minutes and reads at most 100 records of each type per pass. Account
+administrators can enqueue an extra pass with
 `POST /api/v1/operations/reconcile`.
 
 ### A provider outage delays freshness; it does not lose data
@@ -162,8 +167,8 @@ limit:
 | `portability` | 1 | Rebuild work after a logical archive import |
 | `reconciler` | 1 | Durable records whose job never ran |
 
-Portability and reconciliation are serialised to one at a time because each
-walks an entire Account.
+Portability and reconciliation are serialised to one at a time. Reconciliation
+uses bounded batches, so its cost does not grow with the full Account backlog.
 
 `MEMHOUSE_INGEST_QUEUE_LIMIT` changes the ingest limit at boot. It must be
 paired with a `MEMHOUSE_MODEL_STREAM_POOL_SIZE` at least as large as the

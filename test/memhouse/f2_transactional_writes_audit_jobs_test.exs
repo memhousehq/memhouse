@@ -37,6 +37,7 @@ defmodule VanishingSubjectProvider do
        value: %{
          "items" => [
            %{
+             "supporting_span" => "Avery prefers concise weekly release summaries.",
              "statement" => "Avery prefers concise weekly release summaries.",
              "kind" => "preference",
              "subject_type" => "peer",
@@ -151,16 +152,15 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert run_count == 1
     assert job_count == 1
 
-    # Exactly one reconciler record per Account, not one per ingest. The reconciler re-enqueues
-    # observations whose extraction never completed; its idempotency key is per Account, so
-    # repeated ingests collapse onto the same record instead of flooding the queue.
+    # Ingest does not schedule an Account-wide sweep. The hourly maintenance
+    # scheduler owns reconciliation, so request volume cannot flood its serial queue.
     assert scalar!(
              """
              SELECT count(*) FROM pipeline_runs
              WHERE account_id = $1 AND kind = 'reconciler'
              """,
              [Ecto.UUID.dump!(account_id)]
-           ) == 1
+           ) == 0
   end
 
   test "forced failure after audit and enqueue rolls back raw write, audit, run, and job" do
@@ -203,6 +203,74 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     # All four counters unchanged. A single one moving means that write escaped the
     # transaction and the four effects are no longer atomic.
     assert account_counts("f2-rollback") == before
+  end
+
+  test "reconciliation terminates a cancelled job and replays it on a later sweep" do
+    assert {:ok, message} =
+             Memory.ingest_message(ingest_attrs("f2-cancelled-reaper", "cancelled-session"))
+
+    account_id = account_id!("f2-cancelled-reaper")
+
+    %{rows: [[run_id, replay_key]]} =
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        """
+        UPDATE pipeline_runs
+        SET updated_at = now() - interval '10 minutes'
+        WHERE target_id = $1 AND kind = 'extraction'
+        RETURNING id, idempotency_key
+        """,
+        [Ecto.UUID.dump!(message["id"])]
+      )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      UPDATE oban_jobs SET state = 'cancelled', cancelled_at = now()
+      WHERE args->>'idempotency_key' = $1
+      """,
+      [replay_key]
+    )
+
+    assert {:ok, %{terminated: 1}} = MemHouse.Pipeline.Reconciler.run(account_id)
+
+    assert %{rows: [["cancelled", "ObanJobCancelled"]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT status, last_error_class FROM pipeline_runs WHERE id = $1",
+               [run_id]
+             )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "UPDATE pipeline_runs SET updated_at = now() - interval '10 minutes' WHERE id = $1",
+      [run_id]
+    )
+
+    assert {:ok, %{replayed: 1}} = MemHouse.Pipeline.Reconciler.run(account_id)
+
+    assert %{rows: [["pending", 1]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT run.status,
+                      count(job.id) FILTER (WHERE job.state = 'available')
+               FROM pipeline_runs AS run
+               LEFT JOIN oban_jobs AS job
+                 ON job.args->>'idempotency_key' = run.idempotency_key
+               WHERE run.id = $1
+               GROUP BY run.status
+               """,
+               [run_id]
+             )
+
+    # Oban inserts through its own connection in this test lane, so remove the
+    # two test jobs explicitly instead of leaving them for a later drain test.
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "DELETE FROM oban_jobs WHERE args->>'idempotency_key' = $1",
+      [replay_key]
+    )
   end
 
   test "AshOban extraction executes the ingest Reactor and marks durable processing complete" do

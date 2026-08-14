@@ -221,6 +221,7 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
 
   defp candidate(account_key, overrides) do
     %{
+      "supporting_span" => "Last weekend I joined a mentorship program for LGBTQ youth.",
       "statement" => "Caroline joined a mentorship program last weekend.",
       "kind" => "event",
       "subject_type" => "peer",

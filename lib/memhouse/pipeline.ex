@@ -47,6 +47,7 @@ defmodule MemHouse.Pipeline do
     "reconciler" => :enqueue_reconciler,
     "entity_resolution" => :enqueue_entity_resolution,
     "reembed" => :enqueue_reembed,
+    "validation_continuation" => :enqueue_validation_continuation,
     "answer_correlation" => :enqueue_answer_correlation
   }
 
@@ -137,8 +138,9 @@ defmodule MemHouse.Pipeline do
   @doc """
   Schedules a reconciliation sweep for one Account.
 
-  Re-enqueues durable observations that did not finish. Equal watermarks share a run; `nil` uses
-  the current time and creates distinct work. Pass a watermark to coalesce callers.
+  Re-enqueues stale durable work that did not finish. Equal watermarks share a run; `nil` uses
+  the current time and creates distinct operator-requested work. Scheduled callers must pass
+  their Cron slot so retries coalesce.
 
   Returns `{:ok, run}` or `{:error, reason}`.
   """
@@ -161,18 +163,23 @@ defmodule MemHouse.Pipeline do
   end
 
   @doc """
-  Schedules the time-driven lifecycle work for one Account and Cron slot.
+  Schedules time-driven maintenance for one Account and Cron slot.
 
   `scheduled_at` is the Cron job's scheduled time. It is part of all replay
   keys, so delayed execution and retries reuse the same dream-time, expiry,
-  and revalidation runs. Call inside an Account
+  revalidation, and reconciliation runs. Call inside an Account
   transaction; all run rows and jobs then commit together.
 
-  Returns `{:ok, %{dream_time: run, revalidation: run, expiry: run}}` or an error.
+  Returns the four named runs or an error.
   """
   @spec enqueue_lifecycle_sweeps(Ecto.UUID.t(), map(), DateTime.t()) ::
           {:ok,
-           %{dream_time: PipelineRun.t(), revalidation: PipelineRun.t(), expiry: PipelineRun.t()}}
+           %{
+             dream_time: PipelineRun.t(),
+             revalidation: PipelineRun.t(),
+             expiry: PipelineRun.t(),
+             reconciler: PipelineRun.t()
+           }}
           | {:error, term()}
   def enqueue_lifecycle_sweeps(account_id, actor, %DateTime{} = scheduled_at) do
     payload = %{"scheduled_at" => DateTime.to_iso8601(scheduled_at)}
@@ -213,8 +220,15 @@ defmodule MemHouse.Pipeline do
                payload: payload
              },
              actor
-           ) do
-      {:ok, %{dream_time: dream_time, revalidation: revalidation, expiry: expiry}}
+           ),
+         {:ok, reconciler} <- enqueue_reconciler(account_id, actor, scheduled_at) do
+      {:ok,
+       %{
+         dream_time: dream_time,
+         revalidation: revalidation,
+         expiry: expiry,
+         reconciler: reconciler
+       }}
     end
   end
 
@@ -335,6 +349,62 @@ defmodule MemHouse.Pipeline do
         scoped_actor
       )
     end)
+  end
+
+  @doc """
+  Records that the Oban job for a durable run ended without completing it.
+
+  `status` is `"cancelled"` or `"discarded"`. `error_class` is a fixed,
+  content-safe classification. Reconciliation uses this before a later sweep
+  replays the deterministic run.
+  """
+  @spec mark_terminated(PipelineRun.t(), String.t(), String.t(), map()) ::
+          {:ok, PipelineRun.t()} | {:error, term()}
+  def mark_terminated(%PipelineRun{} = run, status, error_class, actor)
+      when status in ["cancelled", "discarded"] and is_binary(error_class) do
+    run
+    |> Ash.Changeset.new()
+    |> Ash.Changeset.set_tenant(run.account_id)
+    |> Ash.Changeset.for_update(:mark_terminated, %{
+      status: status,
+      last_error_class: error_class,
+      processed_at: Clock.utc_now()
+    })
+    |> Ash.update(actor: pipeline_actor(actor))
+  end
+
+  @doc """
+  Replays one run that a prior reconciliation sweep marked terminal.
+
+  The run keeps its deterministic identity. The reset and its lane's ordinary
+  enqueue action share the caller's Account transaction, so the replacement
+  job cannot commit without the pending state.
+  """
+  @spec requeue_terminated(PipelineRun.t(), map()) ::
+          {:ok, PipelineRun.t()} | {:error, term()}
+  def requeue_terminated(%PipelineRun{} = run, actor)
+      when run.status in ["cancelled", "discarded"] do
+    actor = pipeline_actor(actor)
+
+    with {:ok, reset} <-
+           run
+           |> Ash.Changeset.new()
+           |> Ash.Changeset.set_tenant(run.account_id)
+           |> Ash.Changeset.for_update(:requeue_terminated, %{})
+           |> Ash.update(actor: actor) do
+      enqueue(
+        reset.kind,
+        reset.account_id,
+        %{
+          scope_id: reset.scope_id,
+          target_type: reset.target_type,
+          target_id: reset.target_id,
+          idempotency_key: reset.idempotency_key,
+          payload: reset.payload
+        },
+        actor
+      )
+    end
   end
 
   @doc """

@@ -48,7 +48,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-10"
+  @prompt_version "extract-11"
 
   # Ways a model names the process instead of a person. Deployment-specific
   # identities are added per observation; these hold everywhere.
@@ -129,8 +129,10 @@ defmodule MemHouse.Pipeline.Extractor do
         statement. Never write "the assistant", "the agent", or a relaying
         identity as the person a claim is about.
 
-        Start each candidate with its natural-language statement, then
-        confidence_level. Rate the statement you just wrote as
+        Start each candidate by copying the shortest exact supporting_span
+        from a source message that entails the claim. A question supports only
+        that the question was asked; it never supports an answer. Then write
+        the natural-language statement and confidence_level. Rate the statement as
         stated_explicitly, clearly_implied, or inferred. Resolve subject independently from source. A peer subject_ref must be
         one of the supplied known peer keys. Use the current scope path only for
         a scope subject. Each candidate must cite source_message_ids drawn only
@@ -141,8 +143,9 @@ defmodule MemHouse.Pipeline.Extractor do
         candidate rather than emitting an empty statement.
 
         The observation carries the time it was made. Resolve every relative
-        date against that time — "last weekend", "yesterday", "next month" —
-        and record the result in relevant_from and relevant_until. Leave each
+        date against that time. Supported forms are yesterday, today, tonight,
+        tomorrow, and a number of days, weeks, months, or years ago or from now.
+        Record the result in relevant_from and relevant_until. Leave each
         field null when the source does not state or imply that boundary. Write the
         statement as the claim, not as a dated utterance or observation frame.
         Keep an ISO YYYY-MM-DD date in the statement only when the date itself
@@ -239,6 +242,7 @@ defmodule MemHouse.Pipeline.Extractor do
     |> Map.put(:source_peer_key, source_peer_key)
     |> Map.put(:scope_path, Map.fetch!(message, "scope_path"))
     |> Map.put(:window_messages, Map.get(context, :window_messages, [message]))
+    |> Map.put(:grounding_mode, :ingest)
     |> Map.put(
       :window_message_ids,
       Map.get(context, :window_message_ids, List.wrap(Map.get(message, "id")))

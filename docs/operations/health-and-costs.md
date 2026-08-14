@@ -18,8 +18,8 @@ Point orchestrator **liveness** probes here.
 
 ## Readiness: `GET /api/ready`
 
-Unauthenticated. Checks the database, Oban, queue depth, model roles, model
-call health, and the configured embedding index.
+Unauthenticated. Checks the database, Oban, queue depth, unfinished pipeline
+runs, model roles, model call health, and the configured embedding index.
 Returns 200 when all are `ok`; otherwise 503.
 
 The body is the whole check map: per-component status, queue depths by queue
@@ -48,6 +48,10 @@ provider failure does not make the application unready while durable jobs can
 retry. `unmetered` means the provider returned no token usage, so the estimate
 cannot include that call's unknown cost.
 
+`checks.pipeline_runs.unfinished` groups all non-completed durable runs by
+kind. Each group reports its count and `oldest_age_seconds`. This exposes
+stranded work without exposing targets, payloads, or Account identities.
+
 ### Reading queue depth
 
 Queue depths appear by queue and job state. What to watch:
@@ -58,6 +62,15 @@ Queue depths appear by queue and job state. What to watch:
 | `projection` backlog growing | Context reads will report `fast_fallback: true` until it drains |
 | `lifecycle` never draining | Revalidation and expiry sweeps are stuck; stale knowledge may still satisfy requirements |
 | `reconciler` non-empty | Durable records whose job never ran are being recovered — expected briefly after a crash |
+
+Reconciliation runs once per hourly maintenance slot. It ignores work younger
+than 5 minutes and processes at most 100 messages, document versions,
+connectors, and scopes per pass. An administrator can request an extra pass
+with `POST /api/v1/operations/reconcile`.
+
+A cancelled or discarded Oban job changes its durable run to the matching
+terminal state. A run with no Oban row changes to `discarded`. The next sweep
+replays the same deterministic run, so queue cleanup cannot leave it pending.
 
 ## Cost: `GET /api/v1/operations/costs`
 

@@ -187,6 +187,11 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Extraction prompt `extract-11` requires an exact supporting span from a cited
+  source. Schema validation rejects missing cited content, question-only spans,
+  and ISO dates that do not occur in the source or resolve from a bounded
+  relative expression against the observation time.
+
 - Extraction prompt `extract-10` classifies a claim by its durable meaning.
   Stable facts, preferences, relations, and skills keep those kinds even when
   they were stated or became true at a known time. `event` is only for a claim

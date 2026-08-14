@@ -4,8 +4,8 @@ defmodule MemHouse.Pipeline.Reconciler do
   @moduledoc """
   The safety net that finds durable work no job is going to finish.
 
-  Jobs can die or exhaust retries after durable ingest. This sweep finds unfinished records in one
-  Account and enqueues them again.
+  Jobs can die or exhaust retries after durable ingest. This scheduled sweep finds stale,
+  unfinished records in one Account and enqueues one bounded batch again.
 
   Re-enqueueing is safe because the original deterministic key reuses an existing run.
 
@@ -24,13 +24,17 @@ defmodule MemHouse.Pipeline.Reconciler do
   alias MemHouse.Documents.ConnectorConfig
   alias MemHouse.Observations.DocumentVersion
   alias MemHouse.Observations.Message
+  alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline
   alias MemHouse.Retrieval.Store
 
   require Ash.Query
 
+  @batch_size 100
+  @stale_after_seconds 300
+
   @doc """
-  Sweeps one Account and re-enqueues everything that looks unfinished.
+  Sweeps one Account and re-enqueues one bounded batch of stale work.
 
   The whole sweep runs inside a single Account-scoped transaction under a system
   pipeline actor: the reads need to see rows no ordinary caller may read, and
@@ -39,7 +43,15 @@ defmodule MemHouse.Pipeline.Reconciler do
   setting row-level security reads, so the sweep cannot reach another tenant's
   rows.
 
-  Returns `{:ok, counts}` with `:messages`, `:documents`, `:connectors`, `:scopes`, and
+  Work younger than 5 minutes is left to its current job. Each source query is limited to 100
+  rows and ordered by insertion time and id. A later hourly sweep continues with what remains.
+
+  A cancelled or discarded Oban job first moves its run to the matching terminal state. A
+  missing job moves its run to `discarded`. The next sweep replays that deterministic run. This
+  two-pass sequence makes the job end durable before recovery starts.
+
+  Returns `{:ok, counts}` with `:replayed`, `:terminated`, `:messages`, `:documents`,
+  `:connectors`, `:scopes`, and
   `:reconciled` (their sum). The counts report how many enqueues *succeeded*,
   not how much new work was created — a record whose run already exists is
   counted as reconciled because the upsert succeeded. A steady non-zero count
@@ -51,16 +63,23 @@ defmodule MemHouse.Pipeline.Reconciler do
   """
   @spec run(Ecto.UUID.t()) :: {:ok, map()}
   def run(account_id) do
+    stale_before = DateTime.add(Clock.utc_now(), -@stale_after_seconds, :second)
+
     counts =
       DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn
         _account, actor ->
+          replayed = replay_terminated(account_id, actor, stale_before)
+          terminated = terminate_stranded(account_id, actor, stale_before)
+
           # A message is stamped as extracted only after every knowledge row it
           # produced is written, so an unstamped message is either still in
           # flight or was abandoned. Both cases want the same treatment: offer
           # the work again under its existing replay key.
           messages =
             Message
-            |> Ash.Query.filter(is_nil(extraction_completed_at))
+            |> Ash.Query.filter(is_nil(extraction_completed_at) and inserted_at <= ^stale_before)
+            |> Ash.Query.sort(inserted_at: :asc, id: :asc)
+            |> Ash.Query.limit(@batch_size)
             |> Ash.Query.set_tenant(account_id)
             |> Ash.read!(actor: actor)
             |> Enum.count(fn message ->
@@ -71,7 +90,11 @@ defmodule MemHouse.Pipeline.Reconciler do
           # exhausted its job attempts has no other route back into processing.
           documents =
             DocumentVersion
-            |> Ash.Query.filter(processing_status in ["pending", "failed"])
+            |> Ash.Query.filter(
+              processing_status in ["pending", "failed"] and inserted_at <= ^stale_before
+            )
+            |> Ash.Query.sort(inserted_at: :asc, id: :asc)
+            |> Ash.Query.limit(@batch_size)
             |> Ash.Query.set_tenant(account_id)
             |> Ash.read!(actor: actor)
             |> Enum.count(fn version ->
@@ -89,6 +112,8 @@ defmodule MemHouse.Pipeline.Reconciler do
             |> Ash.Query.filter(
               status == "active" and (is_nil(next_sync_at) or next_sync_at <= ^now)
             )
+            |> Ash.Query.sort(next_sync_at: :asc_nils_first, id: :asc)
+            |> Ash.Query.limit(@batch_size)
             |> Ash.Query.set_tenant(account_id)
             |> Ash.read!(actor: actor)
             |> Enum.count(fn connector ->
@@ -97,7 +122,7 @@ defmodule MemHouse.Pipeline.Reconciler do
 
           scopes =
             account_id
-            |> Store.scopes_missing_mentions()
+            |> Store.scopes_missing_mentions(@batch_size)
             |> Enum.count(fn row ->
               watermark =
                 "mentions:#{row["statement_count"]}:#{row["latest_statement_at"]}"
@@ -113,9 +138,63 @@ defmodule MemHouse.Pipeline.Reconciler do
               )
             end)
 
-          %{messages: messages, documents: documents, connectors: connectors, scopes: scopes}
+          %{
+            replayed: replayed,
+            terminated: terminated,
+            messages: messages,
+            documents: documents,
+            connectors: connectors,
+            scopes: scopes
+          }
       end)
 
     {:ok, Map.put(counts, :reconciled, Enum.sum(Map.values(counts)))}
+  end
+
+  defp replay_terminated(account_id, actor, stale_before) do
+    PipelineRun
+    |> Ash.Query.filter(status in ["cancelled", "discarded"] and updated_at <= ^stale_before)
+    |> Ash.Query.sort(updated_at: :asc, id: :asc)
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.read!(actor: actor, page: [limit: @batch_size])
+    |> Map.fetch!(:results)
+    |> Enum.count(fn run -> match?({:ok, _run}, Pipeline.requeue_terminated(run, actor)) end)
+  end
+
+  defp terminate_stranded(account_id, actor, stale_before) do
+    runs =
+      PipelineRun
+      |> Ash.Query.filter(status in ["pending", "failed"] and updated_at <= ^stale_before)
+      |> Ash.Query.sort(updated_at: :asc, id: :asc)
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.read!(actor: actor, page: [limit: @batch_size])
+      |> Map.fetch!(:results)
+
+    states = Store.latest_oban_job_states(Enum.map(runs, & &1.idempotency_key))
+
+    Enum.count(runs, fn run ->
+      case Map.get(states, run.idempotency_key) do
+        "cancelled" ->
+          match?(
+            {:ok, _run},
+            Pipeline.mark_terminated(run, "cancelled", "ObanJobCancelled", actor)
+          )
+
+        "discarded" ->
+          match?(
+            {:ok, _run},
+            Pipeline.mark_terminated(run, "discarded", "ObanJobDiscarded", actor)
+          )
+
+        nil ->
+          match?(
+            {:ok, _run},
+            Pipeline.mark_terminated(run, "discarded", "ObanJobMissing", actor)
+          )
+
+        _active_or_completed ->
+          false
+      end
+    end)
   end
 end
