@@ -239,6 +239,14 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     # they are never estimated from request counts.
     assert summary.tokens == %{input: 0, output: 0, embedding: 0}
 
+    assert summary.ingest_economics == %{
+             messages: 1,
+             calls: 0,
+             calls_per_message: 0.0,
+             tokens_per_message: 0.0,
+             cost_per_message: 0.0
+           }
+
     assert summary.model_calls == %{
              window_seconds: 86_400,
              attempts: 0,
@@ -327,6 +335,51 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
              error_rate: 1.0,
              unmetered: 1,
              error_classes: %{"request_timeout" => 1}
+           }
+  end
+
+  test "ingest economics include every extractor call and operator-supplied cost" do
+    account_key = "f10-ingest-economics-#{System.unique_integer([:positive])}"
+
+    {_account, actor, config} =
+      DataLayer.with_account_key(
+        account_key,
+        [role: :account_admin, pipeline?: true],
+        fn account, actor ->
+          {account, actor,
+           Config.resolve(:ingest_extractor, %{account_id: account.id, actor: actor})}
+        end
+      )
+
+    original_rates = Application.get_env(:memhouse, :model_cost_per_million, %{})
+
+    Application.put_env(:memhouse, :model_cost_per_million, %{
+      "ingest_extractor" => %{input: 1.0, output: 2.0}
+    })
+
+    on_exit(fn -> Application.put_env(:memhouse, :model_cost_per_million, original_rates) end)
+
+    assert :ok = Metering.record_api(actor, %{operation: "api.ingest", status: "ok"})
+
+    assert :ok =
+             Usage.emit(
+               %{account_id: actor.account_id, actor: actor},
+               config,
+               %{
+                 operation: :structured,
+                 status: :ok,
+                 duration_ms: 50,
+                 usage: %{input_tokens: 600, output_tokens: 400},
+                 metadata: %{}
+               }
+             )
+
+    assert Metering.summary(actor).ingest_economics == %{
+             messages: 1,
+             calls: 1,
+             calls_per_message: 1.0,
+             tokens_per_message: 1000.0,
+             cost_per_message: 0.0014
            }
   end
 

@@ -128,7 +128,6 @@ defmodule MemHouse.Model.Providers.Deterministic do
     |> Enum.take(6)
     |> Enum.map(fn statement ->
       %{
-        "reasoning" => "The observation states this directly.",
         "statement" => statement,
         "kind" => infer_kind(statement),
         "subject_type" => "peer",

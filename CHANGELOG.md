@@ -179,6 +179,11 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Extraction prompt `extract-10` removes the candidate `reasoning` field. The
+  field was required for every candidate but was not stored or used after
+  validation. The schema now asks for the statement first and then its anchored
+  confidence level, which reduces discarded structured output.
+
 - Extraction prompt `extract-9` removes unused operation and revalidation
   judgements. It orders reasoning and the completed statement before an
   anchored `stated_explicitly`, `clearly_implied`, or `inferred` confidence
