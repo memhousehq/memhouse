@@ -401,10 +401,7 @@ defmodule MemHouse.Model.Schema.Extraction do
       String.contains?(statement, "?") ->
         {:error, ["statement must assert knowledge, not record a question"]}
 
-      String.match?(
-        statement,
-        ~r/\b(?:said|says|told|asked|greeted|replied|mentioned|wrote|texted)\b/iu
-      ) ->
+      speech_act_transcription?(statement) ->
         {:error, ["statement must assert the fact, not record a speech act"]}
 
       subject_type == "peer" and not statement_names_subject?(statement) ->
@@ -413,6 +410,26 @@ defmodule MemHouse.Model.Schema.Extraction do
       true ->
         :ok
     end
+  end
+
+  # Some verbs describe only a conversational turn. Reporting verbs can also describe durable
+  # work (for example, "Avery wrote a book"), so they are refused only when they introduce the
+  # content of a message. This keeps the deterministic floor narrow enough to avoid classifying
+  # durability from prose while still rejecting the known transcription shapes.
+  defp speech_act_transcription?(statement) do
+    conversational_turn? =
+      String.match?(
+        statement,
+        ~r/\b(?:asked|greeted|replied|texted|thanked|congratulated|complimented|welcomed|wished)\b/iu
+      )
+
+    reported_content? =
+      String.match?(
+        statement,
+        ~r/\b(?:said|says|told|mentioned|wrote)\b\s*(?:that\b|[:,]|["“])/iu
+      )
+
+    conversational_turn? or reported_content?
   end
 
   # Knowledge is about people, not about the software that carried it. A relaying

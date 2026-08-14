@@ -134,13 +134,31 @@ defmodule MemHouse.Model.SchemaExtractionTest do
              cast_item(question)
   end
 
-  test "rejects a speech-act transcription" do
-    transcription =
-      item("stated_explicitly")
-      |> Map.put("statement", "Avery said that weekly release summaries are best.")
+  test "rejects speech-act transcriptions and conversational filler" do
+    for statement <- [
+          "Avery said that weekly release summaries are best.",
+          "Avery wrote: \"Weekly release summaries are best.\"",
+          "Avery greeted Melanie.",
+          "Avery thanked Melanie for the help.",
+          "Avery complimented Melanie's bowl.",
+          "Avery wished Melanie a great time."
+        ] do
+      transcription = item("stated_explicitly") |> Map.put("statement", statement)
 
-    assert {:error, ["items[0].statement must assert the fact, not record a speech act"]} =
-             cast_item(transcription)
+      assert {:error, ["items[0].statement must assert the fact, not record a speech act"]} =
+               cast_item(transcription)
+    end
+  end
+
+  test "keeps durable actions that use a reporting verb" do
+    for statement <- [
+          "Avery wrote a book about retrieval systems.",
+          "Avery mentioned Melanie in the release notes."
+        ] do
+      candidate = item("stated_explicitly") |> Map.put("statement", statement)
+
+      assert {:ok, [_]} = cast_item(candidate)
+    end
   end
 
   test "rejects a peer claim that does not name its subject" do
