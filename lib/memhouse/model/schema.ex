@@ -426,7 +426,7 @@ defmodule MemHouse.Model.Schema.Extraction do
     reported_content? =
       String.match?(
         statement,
-        ~r/\b(?:said|says|told|mentioned|wrote)\b\s*(?:that\b|[:,]|["“])/iu
+        ~r/\b(?i:said|says|told|mentioned|wrote)\b\s*(?:(?:(?i:to)\s+)?\p{Lu}[\p{L}\p{N}_-]*(?:\s+\p{Lu}[\p{L}\p{N}_-]*){0,2}\s*)?(?i:that\b|[:,]|["“])/u
       )
 
     conversational_turn? or reported_content?

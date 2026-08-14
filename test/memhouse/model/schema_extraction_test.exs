@@ -137,6 +137,9 @@ defmodule MemHouse.Model.SchemaExtractionTest do
   test "rejects speech-act transcriptions and conversational filler" do
     for statement <- [
           "Avery said that weekly release summaries are best.",
+          "Avery said to Melanie: weekly release summaries are best.",
+          "Avery told Melanie that weekly release summaries are best.",
+          "Avery mentioned to Melanie that weekly release summaries are best.",
           "Avery wrote: \"Weekly release summaries are best.\"",
           "Avery greeted Melanie.",
           "Avery thanked Melanie for the help.",
