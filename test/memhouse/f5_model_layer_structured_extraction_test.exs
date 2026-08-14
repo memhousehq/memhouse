@@ -95,6 +95,30 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
            |> Map.fetch!(:valid?)
   end
 
+  test "an Account with a stale extractor role cannot stamp a new prompt with an old identity" do
+    message = seed_raw!("f5-stale-prompt", "avery", "Avery prefers weekly summaries.")
+    account_id = account_id!("f5-stale-prompt")
+
+    put_role!(account_id, :ingest_extractor,
+      provider: "openrouter",
+      model: "openai/gpt-oss-120b",
+      model_version: "2026-07",
+      prompt_version: "extract-9",
+      pipeline_version: "f5-1"
+    )
+
+    assert {:error,
+            {:prompt_version_mismatch, %{expected: "extract-10", configured: "extract-9"}}} =
+             Memory.extract_message_for_account(message["id"], account_id)
+
+    assert %{rows: [[nil]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT extraction_completed_at FROM messages WHERE id = $1",
+               [Ecto.UUID.dump!(message["id"])]
+             )
+  end
+
   test "structured extraction repairs once, resolves subject, and persists full provenance and usage" do
     message = seed_raw!("f5-repair", "avery", "Avery prefers weekly release summaries.")
     account_id = account_id!("f5-repair")

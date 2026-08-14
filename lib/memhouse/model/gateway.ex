@@ -51,6 +51,9 @@ defmodule MemHouse.Model.Gateway do
   Returns `{:error, reason}` on provider failure. Use
   `MemHouse.Model.StructuredGenerator` rather than this function unless you are
   implementing that loop: raw provider output must never be trusted as-is.
+  When `opts[:prompt_version]` is present, a different configured version
+  returns `{:error, {:prompt_version_mismatch, details}}` before the provider
+  call so provenance cannot name a prompt that did not produce the request.
   """
   def structured_once(role, messages, schema, context, opts \\ []) do
     case structured_once_with_usage(role, messages, schema, context, opts) do
@@ -68,11 +71,24 @@ defmodule MemHouse.Model.Gateway do
   def structured_once_with_usage(role, messages, schema, context, opts \\ []) do
     config = Config.resolve(role, context)
 
-    case invoke(:structured, config, context, opts, fn provider ->
-           provider.structured(config, messages, schema, opts)
-         end) do
-      {:ok, %Result{value: value, usage: usage}} -> {:ok, value, config, usage || %{}}
-      {:error, error} -> {:error, error}
+    with :ok <- matching_prompt_version(config, opts) do
+      case invoke(:structured, config, context, opts, fn provider ->
+             provider.structured(config, messages, schema, opts)
+           end) do
+        {:ok, %Result{value: value, usage: usage}} -> {:ok, value, config, usage || %{}}
+        {:error, error} -> {:error, error}
+      end
+    end
+  end
+
+  defp matching_prompt_version(config, opts) do
+    case Keyword.fetch(opts, :prompt_version) do
+      {:ok, expected} when expected != config.prompt_version ->
+        {:error,
+         {:prompt_version_mismatch, %{expected: expected, configured: config.prompt_version}}}
+
+      _match_or_unspecified ->
+        :ok
     end
   end
 

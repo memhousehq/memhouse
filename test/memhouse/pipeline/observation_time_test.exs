@@ -201,7 +201,6 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
 
   defp candidate(account_key, overrides) do
     %{
-      "reasoning" => "The observation states this directly.",
       "statement" => "Caroline joined a mentorship program last weekend.",
       "kind" => "event",
       "subject_type" => "peer",

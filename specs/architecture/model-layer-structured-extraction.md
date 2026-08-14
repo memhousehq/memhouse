@@ -51,8 +51,9 @@ tool calling.
 The extraction JSON schema is derived from `KnowledgeItem` attributes and the
 candidate is validated against `create_from_pipeline`. OpenRouter receives it
 through its native strict JSON-schema response format. The schema uses
-`propertyOrdering` to put concise validation-only reasoning and the completed
-natural-language statement before `confidence_level`. The three anchored
+`propertyOrdering` to put the completed natural-language statement before
+`confidence_level`. The extractor does not request validation-only reasoning
+that no durable output uses. The three anchored
 levels map to fixed stored values: `stated_explicitly` to 1.0,
 `clearly_implied` to 0.8, and `inferred` to 0.6. Revalidation remains gate-rule
 policy, and declining produces no candidate. Gate A receives a deterministic
@@ -146,8 +147,9 @@ observation time into `relevant_from` and `relevant_until` only when the source
 states or implies the boundary; statement text does not repeat that time unless
 a date is part of the claim. Observation time never supplies valid time, and
 expiry remains governance policy. Readers render the structured valid-time
-fields when they need the date. The prompt uses fixed confidence levels that
-the schema maps to stored fractions.
+fields when they need the date. The prompt requires
+`confidence_level` as `stated_explicitly`, `clearly_implied`, or `inferred`;
+`Extraction.cast/2` maps these labels to fixed stored numeric fractions.
 
 `MemHouse.Model.Usage` is the one durable emission point. Each provider call,
 including every repair attempt and returned provider error, appends one

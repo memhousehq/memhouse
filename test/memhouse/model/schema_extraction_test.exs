@@ -2,10 +2,10 @@
 
 defmodule MemHouse.Model.SchemaExtractionTest do
   @moduledoc """
-  Pins the ordered extraction schema and its anchored confidence levels.
+  Pins the compact extraction schema and its anchored confidence levels.
 
-  The cast path maps three model choices to stable stored fractions. It never
-  persists model reasoning or model-supplied operation and revalidation policy.
+  The cast path maps three model choices to stable stored fractions. It does not
+  request reasoning, an operation, or a revalidation policy from the model.
   """
 
   use ExUnit.Case, async: true
@@ -29,7 +29,6 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
   defp item(confidence_level) do
     %{
-      "reasoning" => "The source says this directly.",
       "statement" => "Avery prefers weekly release summaries.",
       "kind" => "preference",
       "subject_type" => "peer",
@@ -72,7 +71,8 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
     assert confidence["enum"] == ~w(stated_explicitly clearly_implied inferred)
 
-    assert ["reasoning", "statement", "confidence_level" | _] = candidate["propertyOrdering"]
+    assert ["statement", "confidence_level" | _] = candidate["propertyOrdering"]
+    refute Map.has_key?(candidate["properties"], "reasoning")
     refute Map.has_key?(candidate["properties"], "update_operation")
     refute Map.has_key?(candidate["properties"], "revalidate_after")
     refute Map.has_key?(candidate["properties"], "expires_at")
@@ -98,6 +98,13 @@ defmodule MemHouse.Model.SchemaExtractionTest do
   test "rejects an invalid confidence level" do
     assert {:error, ["items[0].confidence_level is invalid"]} = cast_confidence("high")
     assert {:error, ["items[0].confidence_level must be a string"]} = cast_confidence(nil)
+  end
+
+  test "rejects fields outside the advertised candidate schema" do
+    candidate = Map.put(item("stated_explicitly"), "reasoning", "Discarded output")
+
+    assert {:error, ["items[0].candidate contains unsupported fields"]} =
+             cast_item(candidate)
   end
 
   test "derives direct evidence from the resolved source and subject" do
@@ -149,13 +156,34 @@ defmodule MemHouse.Model.SchemaExtractionTest do
              cast_item(question)
   end
 
-  test "rejects a speech-act transcription" do
-    transcription =
-      item("stated_explicitly")
-      |> Map.put("statement", "Avery said that weekly release summaries are best.")
+  test "rejects speech-act transcriptions and conversational filler" do
+    for statement <- [
+          "Avery said that weekly release summaries are best.",
+          "Avery said to Melanie: weekly release summaries are best.",
+          "Avery told Melanie that weekly release summaries are best.",
+          "Avery mentioned to Melanie that weekly release summaries are best.",
+          "Avery wrote: \"Weekly release summaries are best.\"",
+          "Avery greeted Melanie.",
+          "Avery thanked Melanie for the help.",
+          "Avery complimented Melanie's bowl.",
+          "Avery wished Melanie a great time."
+        ] do
+      transcription = item("stated_explicitly") |> Map.put("statement", statement)
 
-    assert {:error, ["items[0].statement must assert the fact, not record a speech act"]} =
-             cast_item(transcription)
+      assert {:error, ["items[0].statement must assert the fact, not record a speech act"]} =
+               cast_item(transcription)
+    end
+  end
+
+  test "keeps durable actions that use a reporting verb" do
+    for statement <- [
+          "Avery wrote a book about retrieval systems.",
+          "Avery mentioned Melanie in the release notes."
+        ] do
+      candidate = item("stated_explicitly") |> Map.put("statement", statement)
+
+      assert {:ok, [_]} = cast_item(candidate)
+    end
   end
 
   test "rejects a peer claim that does not name its subject" do

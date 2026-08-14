@@ -78,6 +78,14 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
+- The packaged pg0 build now uses Rust 1.88. Its resolved ICU dependencies no
+  longer compile with the previous Rust 1.86 toolchain.
+
+- Extraction validation now rejects thanks, compliments, greetings, wishes,
+  and other conversational-turn transcriptions before they can become
+  proposed knowledge. Reporting verbs reject only quoted or reported message
+  content, so durable actions such as writing a book remain valid candidates.
+
 - Retrieval strategies no longer return a statement whose `expires_at` has
   passed. Expiry is a timestamp and the sweeper that rewrites `state` to
   `expired` runs as a job, so a row stays `active` with a past expiry until
@@ -182,6 +190,11 @@ changelog entry and contract-version transition.
 - Extraction prompt `extract-10` no longer asks the model to set knowledge
   expiry or copies observation time into valid time. Temporal retrieval now
   ranks dated text matches by distance from the requested time.
+
+- Extraction prompt `extract-10` removes the candidate `reasoning` field. The
+  field was required for every candidate but was not stored or used after
+  validation. The schema now asks for the statement first and then its anchored
+  confidence level, which reduces discarded structured output.
 
 - Extraction prompt `extract-9` removes unused operation and revalidation
   judgements. It orders reasoning and the completed statement before an

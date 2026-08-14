@@ -36,7 +36,6 @@ defmodule MemHouse.Knowledge.StatementReadabilityTest do
 
   defp item(statement) do
     %{
-      "reasoning" => "The source says this directly.",
       "statement" => statement,
       "kind" => "fact",
       "subject_type" => "peer",
