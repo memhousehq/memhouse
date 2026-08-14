@@ -40,17 +40,39 @@ defmodule MemHouse.Retrieval.Indexer do
     end
   end
 
+  @doc """
+  Embeds only indexable statements that do not yet have a vector.
+
+  This is the ordinary governed-write path. Existing vectors remain valid
+  until the explicit re-embed workflow replaces their embedding identity.
+  """
+  def refresh_scope(account_id, scope_id) do
+    label = DiskannLabels.ensure_scope!(account_id, scope_id)
+    {items, actor} = read_items!(account_id, scope_id, missing_only?: true)
+
+    case items do
+      [] -> {:ok, %{indexed: 0}}
+      items -> embed_then_write(items, account_id, scope_id, actor, label)
+    end
+  end
+
   # Read active/provisional, non-deleted items and retain the plain actor for external embedding.
-  defp read_items!(account_id, scope_id) do
+  defp read_items!(account_id, scope_id, opts \\ []) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        items =
+        query =
           KnowledgeItem
           |> Ash.Query.filter(
             scope_id == ^scope_id and state in ["active", "provisional"] and is_nil(deleted_at)
           )
+
+        query =
+          if opts[:missing_only?], do: Ash.Query.filter(query, is_nil(embedding)), else: query
+
+        items =
+          query
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
 

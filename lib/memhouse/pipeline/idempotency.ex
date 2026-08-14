@@ -79,6 +79,14 @@ defmodule MemHouse.Pipeline.Idempotency do
   def projection_refresh(scope_id, watermark),
     do: key(:projection_refresh, [scope_id, watermark])
 
+  @doc "Key for derived-cache work caused by ordinary governed writes in one scope."
+  @spec derived_refresh(Ecto.UUID.t(), atom(), DateTime.t(), pos_integer()) :: String.t()
+  def derived_refresh(scope_id, kind, %DateTime{} = changed_at, window_seconds)
+      when kind in [:projection_refresh, :entity_resolution] and window_seconds > 0 do
+    bucket = div(DateTime.to_unix(changed_at, :second), window_seconds)
+    key(kind, [scope_id, bucket])
+  end
+
   @doc """
   Key for rebuilding a scope's entity and mention caches up to a watermark.
 

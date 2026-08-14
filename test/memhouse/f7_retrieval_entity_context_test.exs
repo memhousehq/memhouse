@@ -2966,6 +2966,12 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert [%{provider: "fixture", model: "f7-fixture", version: "1", dimensions: 3}] =
              coverage.embedding_identities
 
+    # Ordinary refreshes do not re-embed the unchanged corpus. A new governed
+    # statement has no vector and joins the next batch; existing identities are
+    # replaced only by the explicit re-embed workflow.
+    assert {:ok, %{indexed: 0}} =
+             MemHouse.Retrieval.Indexer.refresh_scope(seeded.account.id, seeded.scope.id)
+
     assert_receive {^events, measurements, metadata}
     assert measurements.indexed == 1
     assert measurements.statements == 1

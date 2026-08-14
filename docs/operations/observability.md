@@ -125,6 +125,13 @@ Every completed projection refresh emits the telemetry event
 `1.0` when the scope has nothing to index), tagged with `account_id` and
 `scope_id`.
 
+Ordinary governed writes in one scope coalesce into a ten-second run bucket and
+wait five seconds before execution. One refresh updates vectors, entity
+mentions, and context projections in dependency order. A burst produces at
+most one refresh run per scope and bucket. Its embedder batch contains only
+statements without vectors. Explicit rebuild and re-embed operations retain
+their full-corpus behavior.
+
 Alert on `coverage` below your threshold. Embeddings and entity mentions are
 written by this lane alone, so a refresh that was cancelled or never enqueued
 leaves the scope holding every statement while semantic and entity recall stay
