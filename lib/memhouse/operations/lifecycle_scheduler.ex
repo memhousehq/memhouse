@@ -2,11 +2,11 @@
 
 defmodule MemHouse.Operations.LifecycleScheduler do
   @moduledoc """
-  Starts durable lifecycle sweeps from the hourly Cron slot.
+  Starts durable maintenance sweeps from the hourly Cron slot.
 
   Cron only starts this worker. The worker never changes knowledge directly:
   it enters the configured community Account and creates the ordinary
-  dream-time, expiry, and revalidation pipeline runs in that Account
+  dream-time, expiry, revalidation, and reconciliation pipeline runs in that Account
   transaction. The scheduled timestamp is the replay watermark, so a late or retried Cron job cannot
   create duplicate sweeps.
   """

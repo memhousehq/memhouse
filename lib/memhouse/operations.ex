@@ -432,6 +432,28 @@ defmodule MemHouse.Operations.PipelineRun do
       change MemHouse.Pipeline.Changes.DeclareAccount
       change MemHouse.Pipeline.Changes.MarkRunFailed
     end
+
+    # Reconciliation records an Oban terminal state before it attempts replay
+    # in a later sweep. The reason is a fixed content-safe classification.
+    update :mark_terminated do
+      accept [:status, :last_error_class, :processed_at]
+      require_atomic? false
+      validate attribute_in(:status, ~w(cancelled discarded))
+      validate {MemHouse.Operations.Validations.CurrentStatusIn, statuses: ~w(pending failed)}
+    end
+
+    # The reconciler follows this reset with the lane's ordinary enqueue action
+    # in the same Account transaction. The create action owns its one trigger.
+    update :requeue_terminated do
+      require_atomic? false
+
+      validate {MemHouse.Operations.Validations.CurrentStatusIn,
+                statuses: ~w(cancelled discarded)}
+
+      change set_attribute(:status, "pending")
+      change set_attribute(:last_error_class, nil)
+      change set_attribute(:processed_at, nil)
+    end
   end
 
   policies do
@@ -708,5 +730,31 @@ defmodule MemHouse.Operations.PipelineRun do
     # resource is tenant-scoped. This constraint is the replay guarantee: two
     # concurrent enqueues of the same work resolve to one row.
     identity :idempotency_key, [:idempotency_key]
+  end
+end
+
+defmodule MemHouse.Operations.Validations.CurrentStatusIn do
+  @moduledoc """
+  Validates that a PipelineRun's current status is in an allowed set.
+
+  Guards state transitions by checking the pre-update status value.
+  """
+
+  use Ash.Resource.Validation
+
+  @impl true
+  def validate(changeset, opts, _context) do
+    allowed_statuses = Keyword.fetch!(opts, :statuses)
+    current_status = changeset.data.status
+
+    if current_status in allowed_statuses do
+      :ok
+    else
+      {:error,
+       field: :status,
+       message:
+         "current status must be one of #{inspect(allowed_statuses)}, " <>
+           "got #{inspect(current_status)}"}
+    end
   end
 end

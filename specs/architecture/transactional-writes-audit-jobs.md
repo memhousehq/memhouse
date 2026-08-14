@@ -33,12 +33,13 @@ completed processing and only knowledge visible to that actor.
 request the same work repeatedly. Oban remains the single execution engine in
 both deployment modes.
 
-The account-admin reconciliation operation enqueues the Account sweep directly,
-so recovery does not depend on another ingest request arriving.
+Reconciliation does not run from ingest. The account-admin operation enqueues
+an extra Account sweep directly, so recovery does not depend on another ingest
+request arriving.
 
-Expiry and revalidation have no request-side event. The sole Oban Cron entry
+Expiry, revalidation, and reconciliation have no request-side event. The sole Oban Cron entry
 therefore starts `LifecycleScheduler` hourly. It opens the provisioned
-community Account and creates the two normal `PipelineRun` rows through Ash.
+community Account and creates the normal `PipelineRun` rows through Ash.
 The Account, sweep kind, and Cron `scheduled_at` slot form each replay key, so
 late execution and retry reuse work. See `ADR-0014`.
 
@@ -129,8 +130,15 @@ portability owns logical import/export.
 Knowledge merges take a transaction-scoped, Account/key advisory lock before
 the exact-statement check. Replay reuses the knowledge item, attribution, and
 provenance rows and does not append a second creation lifecycle event. The
-Account-scoped reconciler scans raw messages without
-`extraction_completed_at` and re-enqueues the deterministic extraction key.
+Account-scoped reconciler ignores work younger than 5 minutes. It scans at
+most 100 messages, document versions, connectors, and scopes per pass, in a
+stable oldest-first order, and re-enqueues deterministic keys. A later hourly
+slot continues with what remains.
+
+For a cancelled or discarded Oban job, the first sweep records the matching
+terminal run state. A missing job records `discarded`. The next sweep returns
+the same deterministic run to `pending` and inserts its lane job. This keeps
+job termination observable without changing replay identity.
 
 `MemHouse.Pipeline.Lock` is the transactional-writes infrastructure exception
 that uses a parameterized PostgreSQL advisory-lock query. It performs no

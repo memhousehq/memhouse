@@ -135,6 +135,8 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert result.checks.oban.status == "ok"
     assert result.checks.queues.status == "ok"
     assert result.checks.lifecycle_sweeps.status == "ok"
+    assert result.checks.pipeline_runs.status == "ok"
+    assert is_map(result.checks.pipeline_runs.unfinished)
 
     assert Map.keys(result.checks.lifecycle_sweeps.last_completed_at) |> Enum.sort() == [
              "expiry",
