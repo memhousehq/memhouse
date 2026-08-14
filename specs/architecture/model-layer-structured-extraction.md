@@ -50,11 +50,12 @@ tool calling.
 
 The extraction JSON schema is derived from `KnowledgeItem` attributes and the
 candidate is validated against `create_from_pipeline`. OpenRouter receives it
-through its native strict JSON-schema response format. Each candidate starts
-with a concise validation-only reasoning string and its natural-language
-statement, then an integer `confidence_percentage` from 1 through 100. The
-validator strips non-digits from that field, checks the range, and divides by
-100 before it records the resulting confidence. Gate A receives a deterministic
+through its native strict JSON-schema response format. The schema uses
+`propertyOrdering` to put concise validation-only reasoning and the completed
+natural-language statement before `confidence_level`. The three anchored
+levels map to fixed stored values: `stated_explicitly` to 1.0,
+`clearly_implied` to 0.8, and `inferred` to 0.6. Revalidation remains gate-rule
+policy, and declining produces no candidate. Gate A receives a deterministic
 source-to-subject evidence level after schema validation. Reasoning is not
 persisted, metered, or logged.
 
@@ -71,9 +72,8 @@ Each candidate also includes:
 
 - kind, sensitivity, and target level;
 - peer or current-scope subject, independently of the source Peer;
-- `add`, `merge`, `supersede_candidate`, or `no_op`;
-- schema-derived direct or indirect source evidence with a confidence discount; and
-- expiry, revalidation, and valid-time bounds.
+- schema-derived direct or indirect source evidence with a confidence discount;
+- expiry and valid-time bounds; and
 - message source ids from the bounded same-session extraction window. The
   validator rejects ids outside that window; each retained id becomes durable
   provenance for the knowledge item.
@@ -99,11 +99,10 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-Each candidate also includes an integer `confidence_percentage` input in the range 1-100,
-which is normalized to a confidence fraction (0.01-1.00) after validation. The `extract-8`
-and `f5-1` prompt and pipeline versions enforce subject rules: agent peers are excluded from
-the subject allowlist and machine referents are refused, preserving the verified contract
-that knowledge is about people and never about the infrastructure that carried it.
+The `extract-9` and `f5-1` prompt and pipeline versions enforce subject rules:
+agent peers are excluded from the subject allowlist and machine referents are
+refused, preserving the verified contract that knowledge is about people and
+never about the infrastructure that carried it.
 
 ## Embeddings
 
@@ -137,7 +136,7 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-8` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-9` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.

@@ -41,10 +41,9 @@ defmodule MemHouse.Knowledge.StatementReadabilityTest do
       "kind" => "fact",
       "subject_type" => "peer",
       "subject_ref" => "avery",
-      "confidence_percentage" => 90,
+      "confidence_level" => "stated_explicitly",
       "sensitivity" => "internal",
-      "target_level" => "peer",
-      "update_operation" => "add"
+      "target_level" => "peer"
     }
   end
 

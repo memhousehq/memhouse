@@ -63,10 +63,9 @@ defmodule MemHouse.Model.SchemaReasoningTest do
         "kind" => "preference",
         "subject_type" => "peer",
         "subject_ref" => "avery",
-        "confidence_percentage" => 90,
+        "confidence_level" => "stated_explicitly",
         "sensitivity" => "internal",
         "target_level" => "peer",
-        "update_operation" => "add",
         "contributor_ids" => [@source_id, @target_id]
       },
       attrs

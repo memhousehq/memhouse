@@ -179,6 +179,12 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Extraction prompt `extract-9` removes unused operation and revalidation
+  judgements. It orders reasoning and the completed statement before an
+  anchored `stated_explicitly`, `clearly_implied`, or `inferred` confidence
+  level. These levels map to fixed stored confidence values for deterministic
+  downstream ranking. Revalidation stays under governance policy.
+
 - An authenticated caller is no longer always the speaker. A machine
   credential — identity kind `:api_key` or `:system` — that sends `peer_key`
   attributes the turn to that named Peer, created on first use. An agent

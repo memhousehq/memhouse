@@ -13,10 +13,9 @@
               "kind": "preference",
               "subject_type": "peer",
               "subject_ref": "avery",
-              "confidence_percentage": 150,
+              "confidence_level": "unsupported",
               "sensitivity": "internal",
-              "target_level": "peer",
-              "update_operation": "add"
+              "target_level": "peer"
             }
           ]
         },
@@ -34,12 +33,10 @@
               "kind": "preference",
               "subject_type": "peer",
               "subject_ref": "avery",
-              "confidence_percentage": 93,
+              "confidence_level": "stated_explicitly",
               "sensitivity": "internal",
               "target_level": "peer",
-              "update_operation": "add",
               "expires_at": null,
-              "revalidate_after": "2026-10-01T00:00:00Z",
               "relevant_from": null,
               "relevant_until": null
             }

@@ -106,7 +106,7 @@ defmodule MemHouse.Model.Providers.Deterministic do
   # a stand-in for extraction, not extraction: it understands nothing.
   #
   # The candidates it emits are still ordinary proposals — they carry a modest
-  # 0.55 confidence, are attributed to the speaking peer, and go through the
+  # inferred confidence, are attributed to the speaking peer, and go through the
   # same validation and governance as anything a real model produces. Nothing
   # here can shortcut a gate.
   defp extraction_items(messages, opts) do
@@ -134,12 +134,10 @@ defmodule MemHouse.Model.Providers.Deterministic do
         "subject_type" => "peer",
         "subject_ref" => source_peer_key,
         "source_message_ids" => source_message_ids,
-        "confidence_percentage" => 55,
+        "confidence_level" => "inferred",
         "sensitivity" => infer_sensitivity(statement),
         "target_level" => "peer",
-        "update_operation" => "add",
         "expires_at" => nil,
-        "revalidate_after" => nil,
         "relevant_from" => nil,
         "relevant_until" => nil
       }
