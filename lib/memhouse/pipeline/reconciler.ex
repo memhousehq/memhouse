@@ -26,7 +26,6 @@ defmodule MemHouse.Pipeline.Reconciler do
   alias MemHouse.Observations.Message
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline
-  alias MemHouse.Repo
   alias MemHouse.Retrieval.Store
 
   require Ash.Query
@@ -171,7 +170,7 @@ defmodule MemHouse.Pipeline.Reconciler do
       |> Ash.read!(actor: actor, page: [limit: @batch_size])
       |> Map.fetch!(:results)
 
-    states = latest_job_states(Enum.map(runs, & &1.idempotency_key))
+    states = Store.latest_oban_job_states(Enum.map(runs, & &1.idempotency_key))
 
     Enum.count(runs, fn run ->
       case Map.get(states, run.idempotency_key) do
@@ -197,23 +196,5 @@ defmodule MemHouse.Pipeline.Reconciler do
           false
       end
     end)
-  end
-
-  # Oban owns this infrastructure table. The query is read-only and receives
-  # replay keys only; it cannot expose job arguments or stored content.
-  # sobelow_skip ["SQL.Query"]
-  defp latest_job_states([]), do: %{}
-
-  defp latest_job_states(keys) do
-    sql = """
-    SELECT DISTINCT ON (args->>'idempotency_key')
-           args->>'idempotency_key', state
-    FROM oban_jobs
-    WHERE args->>'idempotency_key' = ANY($1)
-    ORDER BY args->>'idempotency_key', id DESC
-    """
-
-    %{rows: rows} = Ecto.Adapters.SQL.query!(Repo, sql, [keys])
-    Map.new(rows, fn [key, state] -> {key, state} end)
   end
 end

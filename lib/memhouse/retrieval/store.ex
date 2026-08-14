@@ -1166,6 +1166,32 @@ defmodule MemHouse.Retrieval.Store do
     all(sql, [db_uuid!(account_id), limit])
   end
 
+  @doc """
+  Finds the latest Oban job state for each idempotency key.
+
+  Queries the `oban_jobs` infrastructure table by replay keys and returns the
+  most recent state per key. An empty key list returns an empty map without
+  querying.
+
+  Returns a map from idempotency key to job state string (`"pending"`,
+  `"available"`, `"executing"`, `"completed"`, `"cancelled"`, `"discarded"`).
+  Raises `Postgrex.Error` if the statement fails.
+  """
+  def latest_oban_job_states([]), do: %{}
+
+  def latest_oban_job_states(keys) when is_list(keys) do
+    sql = """
+    SELECT DISTINCT ON (args->>'idempotency_key')
+           args->>'idempotency_key' AS idempotency_key, state
+    FROM oban_jobs
+    WHERE args->>'idempotency_key' = ANY($1)
+    ORDER BY args->>'idempotency_key', id DESC
+    """
+
+    rows = all(sql, [keys])
+    Map.new(rows, fn row -> {row["idempotency_key"], row["state"]} end)
+  end
+
   # Merge only halves scored by the same function, then restore the shared cap.
   defp top(rows, limit),
     do: rows |> Enum.sort_by(&(&1["score"] || 0.0), :desc) |> Enum.take(limit)
