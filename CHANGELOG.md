@@ -192,6 +192,14 @@ changelog entry and contract-version transition.
   and ISO dates that do not occur in the source or resolve from a bounded
   relative expression against the observation time.
 
+- Extraction prompt `extract-10` classifies a claim by its durable meaning.
+  Stable facts, preferences, relations, and skills keep those kinds even when
+  they were stated or became true at a known time. `event` is only for a claim
+  whose durable content is that something occurred. Worked examples pin all
+  five kinds. Valid time is independent of kind, and the pipeline no longer
+  copies observation time into an event with no known validity window. The
+  pipeline contract remains `f5-1`.
+
 - Extraction prompt `extract-10` removes the candidate `reasoning` field. The
   field was required for every candidate but was not stored or used after
   validation. The schema now asks for the statement first and then its anchored
