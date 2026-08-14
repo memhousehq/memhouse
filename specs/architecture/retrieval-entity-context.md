@@ -202,8 +202,13 @@ declared by the Ash domain backbone. The dream-time resolver processes active
 governed statements using:
 
 1. exact normalized alias matching;
-2. Nx cosine over pinned alias embeddings; and
-3. `dream_reasoner` structured adjudication only in the ambiguous band.
+2. Nx cosine over pinned alias embeddings to select a candidate; and
+3. `dream_reasoner` structured adjudication for every non-exact merge.
+
+The mention spotter removes reviewed closed-class words, common sentence-start
+artefacts, and timezone abbreviations. It does not join forms across sentence
+or line boundaries. Ordinary title-cased names can produce the `person` kind;
+calendar names remain concepts.
 
 Unresolved mentions degrade retrieval coverage; they never block ingest.
 Mentions inherit visibility exclusively from their knowledge statement.

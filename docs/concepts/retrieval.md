@@ -159,6 +159,10 @@ callers cannot select strategies directly.
 Dream-time entity resolution links aliases such as "Dana", "Dana R.", and
 "our copy lead" across validated statements.
 
+The mention index rejects closed-class words, common sentence artefacts, and
+timezone abbreviations. Exact aliases merge directly. Embedding similarity can
+select a possible match, but a model must confirm every non-exact merge.
+
 Entity rows and mentions are **rebuildable, pipeline-internal caches**. The
 rows themselves reach no surface: no canonical name, alias, or entity id
 appears in HTTP, MCP, SDK, LiveView, projection, or retrieval output.

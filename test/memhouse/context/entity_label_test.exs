@@ -95,6 +95,12 @@ defmodule MemHouse.Context.EntityLabelTest do
       assert EntityLabel.kind(["billing service"]) == "concept"
     end
 
+    test "classifies ordinary names as people without treating calendar names as people" do
+      assert EntityLabel.kind(["Caroline"]) == "person"
+      assert EntityLabel.kind(["Ada Lovelace"]) == "person"
+      assert EntityLabel.kind(["October"]) == "concept"
+    end
+
     test "considers forms too untidy to display" do
       # An email is a poor label and an excellent person signal, so kind sees the unfiltered set.
       assert EntityLabel.label(["alex@corp.example. Ada"]) == nil

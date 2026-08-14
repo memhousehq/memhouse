@@ -78,6 +78,13 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
+- Entity-index rebuilds no longer create hubs for closed-class words, common
+  sentence-start artefacts, or timezone abbreviations. The spotter also stops
+  at sentence and line boundaries. Ordinary title-cased names can now produce
+  the `person` kind, while calendar names remain concepts. Embedding similarity
+  now selects a candidate only; every non-exact entity merge requires explicit
+  model confirmation. Rebuild affected scopes to remove old derived rows.
+
 - The packaged pg0 build now uses Rust 1.88. Its resolved ICU dependencies no
   longer compile with the previous Rust 1.86 toolchain.
 

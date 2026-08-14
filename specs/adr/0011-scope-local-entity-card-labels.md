@@ -101,9 +101,8 @@ the cluster map.
 - Offline and online nodes already diverge here. `:entity_resolution` is unrecognised by the
   deterministic provider, so offline runs resolve entities more finely. At two sources that
   divergence becomes visible in the console as different card counts and labels.
-- The guarantee is narrow and must be quoted narrowly: a form that *is* a closed-class word is
-  rejected. A determiner absorbed into a multiword form survives, because the spotter emits
-  `The Helix API` as one form and no token filter removes its leading word.
+- The mention spotter now removes leading closed-class and sentence-start noise before it writes
+  a form. Existing cards lose these prefixes after their scope is rebuilt.
 
 ## Anchors
 
