@@ -65,8 +65,10 @@ blobs through the configured blob adapter, commits resource restoration once,
 then enqueues replay-keyed scope and document rebuild work. Independent
 provenance and immutable document history remain intact.
 
-`enqueue_rebuild!` creates new target-local `PipelineRun` rows. Their idempotency keys use the
-verified manifest hash, so repeated import recovery does not duplicate rebuild work.
+`enqueue_rebuild!` creates new target-local `PipelineRun` rows. Each Account-scoped idempotency
+key combines the target import id with the verified manifest hash. Repeated recovery of the same
+import reuses its rebuild work. A separate fresh-Account import has its own Account identity even
+when it uses the same manifest.
 
 ## Operational surfaces
 

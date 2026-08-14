@@ -82,8 +82,11 @@ defmodule MemHouse.Retrieval.Store do
       {:ok, %{rows: [[durable, operational]]}} ->
         %{durable: integer(durable), operational: integer(operational)}
 
-      _other ->
-        %{durable: 0, operational: 0}
+      {:error, error} ->
+        raise error
+
+      {:ok, result} ->
+        raise "unexpected storage query result: #{inspect(result)}"
     end
   end
 
