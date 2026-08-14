@@ -122,7 +122,6 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueMessage do
                }
              }),
            {:ok, _run} <- Pipeline.enqueue_message_extraction(message, actor),
-           {:ok, _reconciler} <- Pipeline.enqueue_reconciler(message.account_id, actor),
            :ok <- maybe_fail(changeset) do
         {:ok, message}
       end
@@ -135,8 +134,8 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueMessage do
   defp actor_peer_id(_actor, message), do: message.peer_id
 
   # Test-only escape hatch. Setting the private context flag below makes this hook fail *after*
-  # the message row, the audit entry, and both jobs have been written, which is the only way to
-  # prove from the outside that all four really do roll back together. Nothing in production
+  # the message row, the audit entry, and extraction job have been written, which is the only way
+  # to prove from the outside that all effects really do roll back together. Nothing in production
   # sets the flag; do not remove it without replacing that regression evidence.
   #
   # The `f2_` in the flag name and the "F2" in the failure message are a frozen legacy tag with
@@ -167,8 +166,8 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueDocument do
   @doc """
   Registers the after-action hook that audits the version and enqueues its pipeline work.
 
-  Returns the changeset. At run time the hook returns `{:ok, version}` once the audit entry, the
-  extraction run, and the reconciler run are durable, or the first error, which aborts the
+  Returns the changeset. At run time the hook returns `{:ok, version}` once the audit entry and
+  extraction run are durable, or the first error, which aborts the
   transaction.
   """
   @impl true
@@ -195,8 +194,7 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueDocument do
                  "byte_size" => version.byte_size
                }
              }),
-           {:ok, _run} <- Pipeline.enqueue_document_extraction(version, actor),
-           {:ok, _reconciler} <- Pipeline.enqueue_reconciler(version.account_id, actor) do
+           {:ok, _run} <- Pipeline.enqueue_document_extraction(version, actor) do
         {:ok, version}
       end
     end)

@@ -372,8 +372,10 @@ new observation. The Account comes from the credential. The response is **202**:
 {"data":{"run_id":"e303e6b4-686c-4dc6-b076-29d6addcb3fd","status":"accepted"}}
 ```
 
-The sweep finds durable observations whose extraction did not finish and
-re-enqueues their replay-safe work.
+The sweep finds stale durable work whose job did not finish and re-enqueues its
+replay-safe run. It ignores work younger than 5 minutes and processes at most
+100 messages, document versions, connectors, and scopes per pass. The hourly
+maintenance schedule runs the same bounded sweep.
 
 ---
 

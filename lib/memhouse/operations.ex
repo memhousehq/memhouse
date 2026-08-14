@@ -432,6 +432,23 @@ defmodule MemHouse.Operations.PipelineRun do
       change MemHouse.Pipeline.Changes.DeclareAccount
       change MemHouse.Pipeline.Changes.MarkRunFailed
     end
+
+    # Reconciliation records an Oban terminal state before it attempts replay
+    # in a later sweep. The reason is a fixed content-safe classification.
+    update :mark_terminated do
+      accept [:status, :last_error_class, :processed_at]
+      require_atomic? false
+      validate attribute_in(:status, ~w(cancelled discarded))
+    end
+
+    # The reconciler follows this reset with the lane's ordinary enqueue action
+    # in the same Account transaction. The create action owns its one trigger.
+    update :requeue_terminated do
+      require_atomic? false
+      change set_attribute(:status, "pending")
+      change set_attribute(:last_error_class, nil)
+      change set_attribute(:processed_at, nil)
+    end
   end
 
   policies do

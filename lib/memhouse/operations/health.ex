@@ -53,6 +53,7 @@ defmodule MemHouse.Operations.Health do
       oban: oban_check(),
       queues: queue_check(),
       lifecycle_sweeps: lifecycle_sweeps_check(),
+      pipeline_runs: pipeline_runs_check(),
       model_roles: model_roles_check(),
       model_calls: model_calls_check(),
       embedding_index: embedding_index_check()
@@ -209,6 +210,42 @@ defmodule MemHouse.Operations.Health do
   end
 
   defp never_completed, do: Map.new(@lifecycle_kinds, &{&1, "never"})
+
+  # Pipeline runs contain content-safe operational identities only. Counts and
+  # oldest age show stranded work without exposing targets, payloads, or Accounts.
+  defp pipeline_runs_check do
+    DataLayer.with_existing_free_account(fn _account, _actor -> pipeline_runs_query() end)
+  rescue
+    Ecto.NoResultsError -> %{status: "ok", unfinished: %{}}
+    error -> %{status: "error", error_class: error_class(error)}
+  end
+
+  # SQL is static. The Account is fixed by the transaction-local RLS setting.
+  # sobelow_skip ["SQL.Query"]
+  defp pipeline_runs_query do
+    sql = """
+    SELECT kind,
+           count(*),
+           floor(extract(epoch FROM (now() - min(inserted_at))))::bigint
+    FROM pipeline_runs
+    WHERE status <> 'completed'
+    GROUP BY kind
+    ORDER BY kind
+    """
+
+    case Ecto.Adapters.SQL.query(Repo, sql, [], timeout: 2_000) do
+      {:ok, %{rows: rows}} ->
+        unfinished =
+          Map.new(rows, fn [kind, count, oldest_age_seconds] ->
+            {kind, %{count: count, oldest_age_seconds: oldest_age_seconds}}
+          end)
+
+        %{status: "ok", unfinished: unfinished}
+
+      {:error, error} ->
+        %{status: "error", error_class: error_class(error)}
+    end
+  end
 
   # Reports which provider, model, and model version each Account-level role is
   # pointing at. Only the identities are exposed; API keys and endpoint

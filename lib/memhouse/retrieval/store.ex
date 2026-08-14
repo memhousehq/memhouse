@@ -1145,7 +1145,7 @@ defmodule MemHouse.Retrieval.Store do
   count and latest update. It is for the Account reconciler, which already runs
   under a system actor and row-level security.
   """
-  def scopes_missing_mentions(account_id) do
+  def scopes_missing_mentions(account_id, limit \\ 100) do
     sql = """
     SELECT k.scope_id,
            count(*)::bigint AS statement_count,
@@ -1159,9 +1159,11 @@ defmodule MemHouse.Retrieval.Store do
       AND (k.expires_at IS NULL OR k.expires_at > now())
     GROUP BY k.scope_id
     HAVING count(m.id) = 0
+    ORDER BY max(k.updated_at), k.scope_id
+    LIMIT $2
     """
 
-    all(sql, [db_uuid!(account_id)])
+    all(sql, [db_uuid!(account_id), limit])
   end
 
   # Merge only halves scored by the same function, then restore the shared cap.
