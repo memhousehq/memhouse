@@ -8,27 +8,35 @@ defmodule MemHouse.Retrieval.EntityResolver do
   expose entity ids, canonical names, aliases, or surface forms; retrieval returns authorized
   statements only.
 
-  Resolution tries case-insensitive aliases, vector similarity, then a model only for ambiguous
-  similarity. It uses short read and write transactions around an in-memory/model phase; never
-  hold a database connection during model calls. Failures skip a form without blocking rebuild.
+  Resolution tries case-insensitive aliases, then uses vector similarity to select a candidate
+  for model confirmation. It uses short read and write transactions around an in-memory/model
+  phase; never hold a database connection during model calls. Failures skip a form without
+  blocking rebuild.
   """
 
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{Entity, EntityMention, KnowledgeItem}
   alias MemHouse.Model.{Embedding, Gateway}
-  alias MemHouse.Retrieval.Vector
+  alias MemHouse.Retrieval.{LexicalQueryAnalyzer, Vector}
 
   require Ash.Query
 
-  # Cosine bands: match directly at 0.86+, ask the model at 0.72-0.86, otherwise create. False
-  # merges cross identities; duplicates only reduce recall.
-  @match_threshold 0.86
+  # Cosine similarity selects candidates only. It measures relatedness, so even a high score
+  # cannot prove identity. False merges cross identities; duplicates only reduce recall.
   @reject_threshold 0.72
 
-  # Cheap spotting accepts up to four capitalized words and email addresses; false positives cost
-  # derived storage, not correctness.
-  @mention_regex ~r/\b(?:[A-Z][[:alnum:]@._-]*)(?:\s+[A-Z][[:alnum:]@._-]*){0,3}\b/u
+  # Horizontal space is deliberate. `\s` joins names across sentence and line boundaries.
+  @mention_regex ~r/\b(?:[A-Z][[:alnum:]@._-]*)(?:[ \t]+[A-Z][[:alnum:]@._-]*){0,3}\b/u
   @email_regex ~r/\b[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}\b/u
+  @timezone_abbreviations MapSet.new(
+                            ~w(UTC GMT CET CEST EET EEST EST EDT CST CDT MST MDT PST PDT)
+                          )
+  @sentence_noise MapSet.new(
+                    ~w(also because but can could did do does finally first here how however if in it keep meanwhile next no now on or please she so still then there these they this those thus today tomorrow tonight we what when where which who why wow yesterday you your)
+                  )
+  @non_person_names MapSet.new(
+                      ~w(January February March April May June July August September October November December Monday Tuesday Wednesday Thursday Friday Saturday Sunday)
+                    )
 
   @doc """
   Rebuilds the entity index for one scope from scratch.
@@ -103,8 +111,9 @@ defmodule MemHouse.Retrieval.EntityResolver do
   defp resolve_statements(drafts, statements, account_id, actor) do
     {drafts, mentions} =
       Enum.reduce(statements, {drafts, []}, fn knowledge, {drafts, mentions} ->
-        Enum.reduce(surface_forms(knowledge.statement), {drafts, mentions}, fn surface,
-                                                                               {drafts, mentions} ->
+        Enum.reduce(mention_surfaces(knowledge.statement), {drafts, mentions}, fn surface,
+                                                                                  {drafts,
+                                                                                   mentions} ->
           case resolve_entity(drafts, knowledge, surface, account_id, actor) do
             # Unresolved on purpose: the similarity was ambiguous and the model
             # said no, or embedding failed. Recording no mention is the safe
@@ -122,15 +131,51 @@ defmodule MemHouse.Retrieval.EntityResolver do
     {drafts, Enum.reverse(mentions)}
   end
 
-  # Candidate names in one statement. Single characters are rejected as noise
-  # (initials, stray capitals), and case-insensitive de-duplication stops "Ada"
-  # and "ADA" in one sentence from producing two mentions of the same entity.
-  defp surface_forms(statement) do
+  @doc """
+  Returns the bounded surface forms that can enter the private mention index.
+
+  The spotter rejects single characters, reviewed English boilerplate, common sentence-start
+  artefacts, and timezone abbreviations. It does not join candidates across line boundaries.
+  Results are case-insensitively unique within one statement.
+  """
+  def mention_surfaces(statement) when is_binary(statement) do
     (Regex.scan(@mention_regex, statement) ++ Regex.scan(@email_regex, statement))
     |> Enum.map(&hd/1)
+    |> Enum.flat_map(&String.split(&1, ~r/[.!?][ \t]+/u, trim: true))
     |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(String.length(&1) < 2))
+    |> Enum.map(&drop_leading_noise/1)
+    |> Enum.reject(&invalid_surface?/1)
     |> Enum.uniq_by(&String.downcase/1)
+  end
+
+  def mention_surfaces(_statement), do: []
+
+  defp invalid_surface?(nil), do: true
+  defp invalid_surface?(surface), do: String.length(surface) < 2 or non_referential?(surface)
+
+  defp non_referential?(surface) do
+    case String.split(surface) do
+      [token] ->
+        LexicalQueryAnalyzer.boilerplate?(token) or
+          MapSet.member?(@timezone_abbreviations, String.upcase(token)) or
+          MapSet.member?(@sentence_noise, String.downcase(token))
+
+      _tokens ->
+        false
+    end
+  end
+
+  defp drop_leading_noise(surface) do
+    case surface |> String.split() |> Enum.drop_while(&noise_token?/1) do
+      [] -> nil
+      tokens -> Enum.join(tokens, " ")
+    end
+  end
+
+  defp noise_token?(token) do
+    LexicalQueryAnalyzer.boilerplate?(token) or
+      MapSet.member?(@timezone_abbreviations, String.upcase(token)) or
+      MapSet.member?(@sentence_noise, String.downcase(token))
   end
 
   # The mention a resolved surface form will become. It carries the statement's
@@ -191,16 +236,9 @@ defmodule MemHouse.Retrieval.EntityResolver do
           end)
           |> Enum.max_by(&elem(&1, 1), fn -> {nil, 0.0} end)
 
-        # Clause order encodes the three similarity bands. Note the third
-        # clause: a middling score whose adjudication said "not the same" ends
-        # the attempt with no mention, rather than falling through to create a
-        # new entity. That is deliberate — the model just said the surface form
-        # resembles an existing entity without being it, which is exactly the
-        # situation where inventing a near-duplicate entity would be wrong.
+        # Similarity only selects a candidate. Every non-exact merge needs an explicit
+        # coreference decision; related names such as two months can otherwise score highly.
         cond do
-          index && score >= @match_threshold ->
-            fold(drafts, index, knowledge.id, surface, account_id, actor)
-
           index && score >= @reject_threshold &&
               adjudicate?(surface, Enum.at(drafts, index).canonical_name, context) ->
             fold(drafts, index, knowledge.id, surface, account_id, actor)
@@ -537,18 +575,27 @@ defmodule MemHouse.Retrieval.EntityResolver do
   Returns one of `"person"`, `"org"`, `"system"`, or `"concept"`. The order of the branches is
   the contract: an address that also carries a company suffix stays a person.
 
-  Nothing in retrieval branches on the answer, so a wrong guess costs nothing there and is not
-  worth a model call. `MemHouse.Context.EntityLabel` does surface it on a card, where a wrong
-  guess is visible but still harmless. Callers must reuse this function rather than copy the
-  rules; two implementations would drift apart silently.
+  A title-cased name is a person unless it is a calendar name or carries an organization or
+  system marker. This makes ordinary human names reachable without a model call. It remains a
+  display hint: retrieval never branches on the answer. `MemHouse.Context.EntityLabel` surfaces
+  it on a card. Callers must reuse this function rather than copy the rules.
   """
   def infer_kind(surface) do
     cond do
       String.contains?(surface, "@") -> "person"
       String.match?(surface, ~r/\b(?:Inc|LLC|Ltd|Corp|Org)\b/) -> "org"
       String.match?(surface, ~r/\b(?:API|DB|OS|Server|System)\b/) -> "system"
+      person_name?(surface) -> "person"
       true -> "concept"
     end
+  end
+
+  defp person_name?(surface) do
+    tokens = String.split(surface)
+
+    tokens != [] and length(tokens) <= 3 and
+      Enum.all?(tokens, &String.match?(&1, ~r/^\p{Lu}[\p{Ll}'-]+$/u)) and
+      not Enum.any?(tokens, &MapSet.member?(@non_person_names, &1))
   end
 
   # Shared create helper. The tenant is set before the changeset is built for

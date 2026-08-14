@@ -118,9 +118,10 @@ consistent with every other knowledge path.
 Cheap first; the expensive step runs only where the cheap ones are ambiguous.
 
 1. Exact alias match.
-2. Alias-embedding similarity above a configured match threshold.
-3. Dream-reasoner adjudication (`AD-MODEL-1` capability behaviour), for the band
-   between the match threshold and the reject threshold only.
+2. Alias-embedding similarity above a configured candidate threshold.
+3. Dream-reasoner adjudication (`AD-MODEL-1` capability behaviour) for every
+   non-exact candidate. Embedding similarity measures relatedness, not identity,
+   and cannot merge entities by itself.
 
 Step 3 uses the dream-time token budget and sheds first under pressure
 (`AD-PIPE-3`, `AD-PIPE-4`), leaving unresolved mentions instead of stalling the

@@ -43,10 +43,9 @@ candidate is rejected when it contains `". "`, a newline, a tab, a doubled space
 form is itself a closed-class English word. A card with no surviving candidate carries no label
 and renders as an ordinal.
 
-Shortest wins the tie-break, not longest. Surface forms are stored byte-exact, and the mention
-spotter joins capitalised words across `\s+`, which crosses sentence boundaries. Longest reliably
-selects that artefact. Per-statement deduplication also makes small cards a frequency tie, so the
-tie-break decides most labels rather than a few.
+Shortest wins the tie-break, not longest. Surface forms are stored byte-exact. Per-statement
+deduplication also makes small cards a frequency tie, so the tie-break decides most labels rather
+than a few.
 
 The period rule targets `". "` rather than any period. The spotter admits periods inside one
 token, so rejecting all of them would discard every email address, and with it every `person`
@@ -101,9 +100,8 @@ the cluster map.
 - Offline and online nodes already diverge here. `:entity_resolution` is unrecognised by the
   deterministic provider, so offline runs resolve entities more finely. At two sources that
   divergence becomes visible in the console as different card counts and labels.
-- The guarantee is narrow and must be quoted narrowly: a form that *is* a closed-class word is
-  rejected. A determiner absorbed into a multiword form survives, because the spotter emits
-  `The Helix API` as one form and no token filter removes its leading word.
+- The mention spotter now removes leading closed-class and sentence-start noise before it writes
+  a form. Existing cards lose these prefixes after their scope is rebuilt.
 
 ## Anchors
 

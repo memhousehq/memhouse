@@ -56,6 +56,12 @@ defmodule MemHouse.Retrieval.LexicalQueryAnalyzer do
 
   def analyze(_text), do: analyze("")
 
+  @doc "Returns whether one token is reviewed English query boilerplate."
+  def boilerplate?(token) when is_binary(token),
+    do: MapSet.member?(@boilerplate, String.downcase(token))
+
+  def boilerplate?(_token), do: false
+
   defp tokens(text), do: Regex.scan(~r/[\p{L}\p{N}][\p{L}\p{N}'-]*/u, text) |> List.flatten()
 
   # Terms are interpolated as `tsquery` text, never as SQL. `tokens/1` admits only letters,
