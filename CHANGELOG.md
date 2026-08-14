@@ -187,9 +187,16 @@ changelog entry and contract-version transition.
 
 ### Changed
 
-- Extraction prompt `extract-10` no longer asks the model to set knowledge
-  expiry or copies observation time into valid time. Temporal retrieval now
-  ranks dated text matches by distance from the requested time.
+- Extraction prompt `extract-10` classifies a claim by its durable meaning.
+  Stable facts, preferences, relations, and skills keep those kinds even when
+  they were stated or became true at a known time. `event` is only for a claim
+  whose durable content is that something occurred. Worked examples pin all
+  five kinds. Valid time is independent of kind, and the pipeline no longer
+  copies observation time into an event with no known validity window. The
+  pipeline contract remains `f5-1`.
+
+- Extraction no longer asks the model to set knowledge expiry. Temporal
+  retrieval now ranks dated text matches by distance from the requested time.
 
 - Extraction prompt `extract-10` removes the candidate `reasoning` field. The
   field was required for every candidate but was not stored or used after

@@ -307,7 +307,7 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest do
     assert extracted =~ "Native office-style extraction"
   end
 
-  test "a document observation time does not become event valid time" do
+  test "a document observation time does not become an event validity window" do
     %{account: account, actor: actor, scope: scope} = context!("f6-event-window")
 
     assert {:ok, %{version: version}} =
@@ -323,6 +323,8 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest do
 
     %{knowledge: knowledge} = document_derivations(account.id, actor, version.document_id)
 
+    # The version time records when MemHouse observed the source. It does not say
+    # when the event was valid, so the pipeline must not copy it into valid time.
     events = Enum.filter(knowledge, &(&1.kind == "event"))
     assert events != []
     assert Enum.all?(events, &is_nil(&1.relevant_from))

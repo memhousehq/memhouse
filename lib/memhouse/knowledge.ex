@@ -89,8 +89,8 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
         :pipeline_version
       ]
 
-      # When the observation was made. It belongs to the source, not to the claim. Kept as an
-      # action argument for pipeline callers; it never supplies valid time.
+      # When the observation was made. Not an attribute: it belongs to the source and lets
+      # extraction resolve relative claim dates without turning belief time into valid time.
       argument :observed_at, :utc_datetime_usec
 
       # Canonicalises the statement text first, so the hash below and the readability validation

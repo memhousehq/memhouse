@@ -148,7 +148,7 @@ defmodule MemHouse.AskGroundedAbstentionTest do
     assert result["answer_degraded"] == nil
   end
 
-  test "does not present observation time as the claim's valid time" do
+  test "does not date a statement from when it was observed" do
     bootstrap = bootstrap_human!("dated")
 
     {_knowledge_id, scope_path, _session_id} =
@@ -162,6 +162,8 @@ defmodule MemHouse.AskGroundedAbstentionTest do
 
     ask(actor, scope_path)
 
+    # The observation time says when MemHouse learned the claim, not when the
+    # event occurred. Copying it into the answer prompt would invent valid time.
     assert [prompt] = GroundedAnswerProvider.prompts()
     refute prompt =~ "2023-07-17"
   end

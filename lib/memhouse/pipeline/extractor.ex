@@ -148,12 +148,23 @@ defmodule MemHouse.Pipeline.Extractor do
         Keep an ISO YYYY-MM-DD date in the statement only when the date itself
         is part of the claim.
 
-        Use kind "event" for anything that happened at a point or over a span of
-        time, whatever else it also asserts. Give an event relevant_from only
-        when the source dates it, and relevant_until only when the source says
-        when it stopped being true. Never copy the observation time into valid
-        time. Never emit equal relevant_from and relevant_until values. Leave
-        the relevant window empty for a statement with no time of its own.
+        Classify a claim by what remains useful after the moment passes. Use
+        fact for stable information, preference for a choice, relation for a
+        connection, and skill for an ability. Use event only when the claim's
+        whole durable content is that something occurred. Apply this precedence
+        even when the source stated the claim at a specific time.
+
+        Examples: "Avery works at Northstar." is fact. "Avery prefers concise
+        status updates." is preference. "Avery mentors Sam." is relation.
+        "Avery can administer PostgreSQL." is skill. "Avery launched Northstar
+        on 2026-08-12." is event.
+
+        Valid time is independent of kind. Set relevant_from and relevant_until
+        only when the source states or implies that the claim has a time or
+        span. Set relevant_until only when the source says when the claim
+        stopped being true. Leave the fields empty when the source gives no
+        boundary. Do not invent a validity window from the observation time,
+        and never emit equal relevant_from and relevant_until values.
         """
       },
       %{

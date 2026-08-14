@@ -80,10 +80,13 @@ Keep these dimensions independent:
   statement whose subject is the colleague and whose source is the agent.
 - **Belief time is not valid time.** A fact can be freshly learned and long
   expired, or old and still true.
-- **Valid time needs source evidence.** Set `relevant_from` or
-  `relevant_until` only when the source states or implies that boundary. The
-  observation's `occurred_at` remains belief-time evidence and never supplies
-  valid time. An undated event stays undated.
+- **Kind is not valid time.** Classify a claim by its durable meaning. A stable
+  fact, preference, relation, or skill keeps that kind even when it has a known
+  start or end. An event is a claim whose durable content is that something
+  occurred. Any kind can have `relevant_from` and `relevant_until` when the
+  source states or implies that the claim has a validity window. The
+  observation's `occurred_at` is belief-time evidence and never becomes valid
+  time by itself.
 - **A date is not an observation frame.** The extractor records relative dates
   in valid-time fields. It keeps a date in the statement only when that date is
   part of the claim. Readers render valid time when they need it.

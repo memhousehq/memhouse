@@ -146,19 +146,23 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert %DateTime{} = second.revalidate_after
   end
 
-  test "editing an event's wording keeps its absence of unsupported valid time" do
+  test "editing an event's wording keeps its source-grounded valid time" do
     %{actor: actor} = bootstrap_human!("edit-window")
 
+    window_start = ~U[2023-07-04 00:00:00Z]
+
     knowledge =
-      ingest!(
+      propose_direct!(
         actor,
-        "edit-window-item",
         "/private/work",
-        "Avery shipped the release train checklist on Tuesday."
+        "peer",
+        "Avery shipped the release train checklist on Tuesday.",
+        kind: "event",
+        relevant_from: window_start
       )
 
     assert knowledge.kind == "event"
-    assert knowledge.relevant_from == nil
+    assert DateTime.compare(knowledge.relevant_from, window_start) == :eq
 
     validation = validation_for!(actor, knowledge.id)
 
@@ -167,7 +171,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         "statement" => "Avery shipped the release train checklist on Tuesday 4 July 2023."
       })
 
-    assert edited.replacement.relevant_from == nil
+    assert DateTime.compare(edited.replacement.relevant_from, window_start) == :eq
   end
 
   test "curator Gate A actions are human-only and scope-held proposals never surface" do
@@ -993,14 +997,15 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         scope_id: scope.id,
         subject_peer_id: actor.peer_id,
         statement: statement,
-        kind: "fact",
+        kind: Keyword.get(overrides, :kind, "fact"),
         confidence: 1.0,
         evidence_level: "direct",
         sensitivity: Keyword.get(overrides, :sensitivity, "personal"),
         state: "proposed",
         target_level: target_level,
         extracting_model: "test:direct-propose",
-        pipeline_version: "f5-1"
+        pipeline_version: "f5-1",
+        relevant_from: Keyword.get(overrides, :relevant_from)
       })
       |> Ash.create!(actor: pipeline)
 

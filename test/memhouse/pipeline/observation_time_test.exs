@@ -76,13 +76,33 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
       assert prompt =~ "not as a dated utterance or observation frame"
       assert prompt =~ "ISO YYYY-MM-DD"
     end
+
+    test "classifies by durable meaning and keeps valid time independent" do
+      Memory.extract_message(seed_message!("obs-taxonomy"))
+
+      prompt = system_prompt()
+
+      assert prompt =~ "Use event only when the claim's"
+      assert prompt =~ "whole durable content is that something occurred"
+      assert prompt =~ "Avery prefers concise"
+      assert prompt =~ ~s(status updates." is preference)
+      assert prompt =~ ~s("Avery mentors Sam." is relation)
+      assert prompt =~ ~s("Avery can administer PostgreSQL." is skill)
+      assert prompt =~ "Valid time is independent of kind"
+      refute prompt =~ "whatever else it also asserts"
+    end
   end
 
-  describe "valid-time on an event" do
+  describe "valid time" do
     setup :capture_prompts
 
-    test "does not copy observation time into an undated event" do
-      assert {:ok, [knowledge]} = Memory.extract_message(seed_message!("obs-anchor"))
+    test "does not turn observation time into an event validity window" do
+      assert {:ok, [knowledge]} =
+               Memory.extract_message(
+                 seed_message!("obs-anchor",
+                   statement: "Caroline joined a mentorship program."
+                 )
+               )
 
       assert knowledge["kind"] == "event"
       assert knowledge["relevant_from"] == nil
@@ -117,8 +137,8 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
     end
   end
 
-  describe "the resource keeps belief time separate from valid time" do
-    test "an undated event is valid" do
+  describe "the resource keeps belief time and valid time independent" do
+    test "an event without a known validity window is valid" do
       assert create_changeset(kind: "event").valid?
     end
 
