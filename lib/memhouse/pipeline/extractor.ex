@@ -226,6 +226,7 @@ defmodule MemHouse.Pipeline.Extractor do
     |> Map.put(:source_peer_key, source_peer_key)
     |> Map.put(:scope_path, Map.fetch!(message, "scope_path"))
     |> Map.put(:window_messages, Map.get(context, :window_messages, [message]))
+    |> Map.put(:grounding_mode, :ingest)
     |> Map.put(
       :window_message_ids,
       Map.get(context, :window_message_ids, List.wrap(Map.get(message, "id")))

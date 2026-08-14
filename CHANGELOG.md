@@ -188,8 +188,9 @@ changelog entry and contract-version transition.
 ### Changed
 
 - Extraction prompt `extract-11` requires an exact supporting span from a cited
-  source. Schema validation rejects missing spans and invented ISO dates before
-  a candidate can become proposed knowledge.
+  source. Schema validation rejects missing cited content, question-only spans,
+  and ISO dates that do not occur in the source or resolve from a bounded
+  relative expression against the observation time.
 
 - Extraction prompt `extract-10` removes the candidate `reasoning` field. The
   field was required for every candidate but was not stored or used after

@@ -23,6 +23,7 @@ defmodule MemHouse.Model.SchemaExtractionTest do
       scope_id: @scope_id,
       known_peer_keys: ["avery"],
       source_peer_key: "avery",
+      grounding_mode: :ingest,
       window_message_ids: [@message_id, @other_message_id],
       window_messages: [
         %{
@@ -84,6 +85,7 @@ defmodule MemHouse.Model.SchemaExtractionTest do
              candidate["propertyOrdering"]
 
     assert candidate["properties"]["supporting_span"]["minLength"] == 1
+    assert "supporting_span" in candidate["required"]
     refute Map.has_key?(candidate["properties"], "reasoning")
     refute Map.has_key?(candidate["properties"], "update_operation")
     refute Map.has_key?(candidate["properties"], "revalidate_after")
@@ -138,6 +140,31 @@ defmodule MemHouse.Model.SchemaExtractionTest do
              cast_item(candidate)
   end
 
+  test "rejects ingest grounding when cited content is unavailable" do
+    missing_content = %{context() | window_messages: []}
+
+    assert {:error, ["items[0].cited source content must be available for grounding"]} =
+             Extraction.cast(%{"items" => [item("stated_explicitly")]}, missing_content)
+  end
+
+  test "rejects an answer supported only by a question" do
+    question_context = %{
+      context()
+      | window_messages: [%{"id" => @message_id, "content" => "What pets does Avery have?"}],
+        window_message_ids: [@message_id]
+    }
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => "What pets does Avery have?",
+        "statement" => "Avery has a dog."
+      })
+
+    assert {:error, ["items[0].supporting_span must assert knowledge, not ask a question"]} =
+             Extraction.cast(%{"items" => [candidate]}, question_context)
+  end
+
   test "rejects an invented date even when the candidate quotes a question" do
     context = %{
       context()
@@ -155,18 +182,20 @@ defmodule MemHouse.Model.SchemaExtractionTest do
         "source_message_ids" => [@message_id]
       })
 
-    assert {:error, ["items[0].statement must be supported by its cited source text"]} =
+    assert {:error, ["items[0].supporting_span must assert knowledge, not ask a question"]} =
              Extraction.cast(%{"items" => [candidate]}, context)
   end
 
   test "accepts a resolved date when the cited source gives relative time" do
-    context = %{
+    context =
       context()
-      | window_messages: [
+      |> Map.merge(%{
+        window_messages: [
           %{"id" => @message_id, "content" => "Avery moved home four years ago."}
         ],
-        window_message_ids: [@message_id]
-    }
+        window_message_ids: [@message_id],
+        occurred_at: ~U[2026-08-14 12:00:00Z]
+      })
 
     candidate =
       item("stated_explicitly")
@@ -177,6 +206,11 @@ defmodule MemHouse.Model.SchemaExtractionTest do
       })
 
     assert {:ok, [_]} = Extraction.cast(%{"items" => [candidate]}, context)
+
+    mismatched = Map.put(candidate, "statement", "Avery moved home in 2021-08-14.")
+
+    assert {:error, ["items[0].statement must be supported by its cited source text"]} =
+             Extraction.cast(%{"items" => [mismatched]}, context)
   end
 
   test "derives indirect evidence and its discount from source and subject" do

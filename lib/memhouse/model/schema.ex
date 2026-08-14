@@ -203,7 +203,7 @@ defmodule MemHouse.Model.Schema.Extraction do
           }),
         "propertyOrdering" => property_order,
         "required" =>
-          ~w(statement confidence_level kind subject_type subject_ref sensitivity target_level)
+          ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level)
       }
 
     %{
@@ -343,20 +343,28 @@ defmodule MemHouse.Model.Schema.Extraction do
   end
 
   # Dream-time deductions reuse the candidate shape but have contributor
-  # validation of their own. Raw ingest context supplies `window_messages`,
-  # which enables this stricter evidence boundary without exposing content in
-  # errors, telemetry, or persisted knowledge.
+  # validation of their own. Raw ingest marks its context explicitly so missing
+  # cited content cannot silently disable this stricter evidence boundary.
   defp grounded_in_sources(item, statement, source_message_ids, context) do
-    source_texts =
-      context
-      |> Map.get(:window_messages, [])
-      |> Map.new(&{fetch(&1, "id"), fetch(&1, "content")})
-      |> Map.take(source_message_ids)
-      |> Map.values()
-      |> Enum.filter(&is_binary/1)
+    messages = Map.get(context, :window_messages, [])
+    messages_by_id = Map.new(messages, &{fetch(&1, "id"), fetch(&1, "content")})
+    source_texts = Enum.map(source_message_ids, &Map.get(messages_by_id, &1))
 
-    if source_texts == [] do
+    if Map.get(context, :grounding_mode) != :ingest do
       :ok
+    else
+      validate_source_grounding(item, statement, source_texts, context)
+    end
+  end
+
+  defp validate_source_grounding(_item, _statement, source_texts, _context)
+       when source_texts == [] do
+    {:error, ["cited source content must be available for grounding"]}
+  end
+
+  defp validate_source_grounding(item, statement, source_texts, context) do
+    if Enum.any?(source_texts, &(not is_binary(&1))) do
+      {:error, ["cited source content must be available for grounding"]}
     else
       case non_empty_string(item, "supporting_span") do
         {:ok, supporting_span} ->
@@ -364,7 +372,10 @@ defmodule MemHouse.Model.Schema.Extraction do
             not Enum.any?(source_texts, &String.contains?(&1, supporting_span)) ->
               {:error, ["supporting_span must be exact text from a cited source"]}
 
-            not dates_grounded?(statement, source_texts) ->
+            question?(supporting_span) ->
+              {:error, ["supporting_span must assert knowledge, not ask a question"]}
+
+            not dates_grounded?(statement, source_texts, Map.get(context, :occurred_at)) ->
               {:error, ["statement must be supported by its cited source text"]}
 
             true ->
@@ -377,11 +388,22 @@ defmodule MemHouse.Model.Schema.Extraction do
     end
   end
 
-  defp dates_grounded?(statement, source_texts) do
+  defp question?(text) do
+    String.ends_with?(String.trim(text), "?") or
+      String.match?(
+        text,
+        ~r/^\s*(?:who|what|when|where|why|how|is|are|was|were|do|does|did|can|could|will|would|has|have|had)\b/iu
+      )
+  end
+
+  defp dates_grounded?(statement, source_texts, occurred_at) do
     dates = Regex.scan(~r/\b\d{4}-\d{2}-\d{2}\b/u, statement) |> List.flatten()
     source = Enum.join(source_texts, " ")
 
-    dates == [] or Enum.all?(dates, &date_present?(&1, source)) or relative_time?(source)
+    dates == [] or
+      Enum.all?(dates, fn date ->
+        date_present?(date, source) or date_resolved?(date, source, occurred_at)
+      end)
   end
 
   defp date_present?(date, source) do
@@ -404,11 +426,62 @@ defmodule MemHouse.Model.Schema.Extraction do
     end
   end
 
-  defp relative_time?(source) do
-    String.match?(
-      source,
-      ~r/\b(?:today|tonight|yesterday|tomorrow|last|next|ago|this\s+(?:morning|afternoon|evening|week|month|year)|\d+\s+(?:day|week|month|year)s?\s+(?:ago|from\s+now))\b/iu
-    )
+  defp date_resolved?(date, source, %DateTime{} = occurred_at) do
+    with {:ok, expected} <- Date.from_iso8601(date),
+         {:ok, resolved} <- resolve_relative_date(source, DateTime.to_date(occurred_at)) do
+      expected == resolved
+    else
+      _error -> false
+    end
+  end
+
+  defp date_resolved?(_date, _source, _occurred_at), do: false
+
+  defp resolve_relative_date(source, observed_on) do
+    cond do
+      String.match?(source, ~r/\byesterday\b/iu) ->
+        {:ok, Date.add(observed_on, -1)}
+
+      String.match?(source, ~r/\btoday|tonight\b/iu) ->
+        {:ok, observed_on}
+
+      String.match?(source, ~r/\btomorrow\b/iu) ->
+        {:ok, Date.add(observed_on, 1)}
+
+      match =
+          Regex.run(
+            ~r/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\b/iu,
+            source
+          ) ->
+        resolve_relative_amount(observed_on, match)
+
+      true ->
+        :error
+    end
+  end
+
+  defp resolve_relative_amount(observed_on, [_text, amount, unit, direction]) do
+    multiplier = if String.downcase(direction) == "ago", do: -1, else: 1
+    amount = relative_amount(amount) * multiplier
+
+    case String.downcase(unit) do
+      "day" -> {:ok, Date.add(observed_on, amount)}
+      "week" -> {:ok, Date.add(observed_on, amount * 7)}
+      "month" -> {:ok, Date.shift(observed_on, month: amount)}
+      "year" -> {:ok, Date.shift(observed_on, year: amount)}
+    end
+  end
+
+  defp relative_amount(amount) do
+    case Integer.parse(amount) do
+      {value, ""} ->
+        value
+
+      :error ->
+        ~w(one two three four five six seven eight nine ten eleven twelve)
+        |> Enum.find_index(&(&1 == String.downcase(amount)))
+        |> Kernel.+(1)
+    end
   end
 
   # Final gate: build the real pipeline create changeset and ask whether it is
