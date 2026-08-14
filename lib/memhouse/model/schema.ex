@@ -452,7 +452,7 @@ defmodule MemHouse.Model.Schema.Extraction do
     named_dates =
       [
         {~r/\byesterday\b/iu, Date.add(observed_on, -1)},
-        {~r/\btoday|tonight\b/iu, observed_on},
+        {~r/\b(?:today|tonight)\b/iu, observed_on},
         {~r/\btomorrow\b/iu, Date.add(observed_on, 1)}
       ]
       |> Enum.flat_map(fn {pattern, date} ->
