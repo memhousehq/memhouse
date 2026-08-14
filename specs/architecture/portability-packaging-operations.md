@@ -52,8 +52,9 @@ tar paths, unknown schemas/resources, checksum or count mismatches, blob hash
 mismatches, and any branched, cyclic, disconnected, or content-tampered audit
 chain before opening its write transaction. All durable restoration uses
 private Ash actions under the system/pipeline actor, preserving ids, valid
-times, belief times, and content-safe audit hashes. Retained lifecycle history,
-usage events, and pipeline replay keys stay local to the source installation.
+times, belief times, and content-safe audit hashes. `LifecycleEvent`, `GateDecision`,
+`UsageEvent`, and `PipelineRun` source rows stay local to the source installation and are not
+restored.
 Deferred self-links are restored only after their
 rows exist.
 
@@ -63,6 +64,9 @@ metadata are not portable. Import targets a fresh Account, stores verified
 blobs through the configured blob adapter, commits resource restoration once,
 then enqueues replay-keyed scope and document rebuild work. Independent
 provenance and immutable document history remain intact.
+
+`enqueue_rebuild!` creates new target-local `PipelineRun` rows. Their idempotency keys use the
+verified manifest hash, so repeated import recovery does not duplicate rebuild work.
 
 ## Operational surfaces
 

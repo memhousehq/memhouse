@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->
 
-# ADR-0017: Bound operational history
+# ADR-0019: Bound operational history
 
 ## Status
 
@@ -18,6 +18,26 @@ settles stranded runs before a later retention pass can delete them.
 
 Account archives exclude retained operational history. Import rebuilds pipeline work from the
 durable source rows and starts new local usage and governance-history horizons.
+
+The additional `excluded.operational_resources` manifest field is additive under
+`memhouse-account-1`. Import already ignores unknown exclusion metadata. Old archives that carry
+operational JSONL files remain valid; new exports omit those files.
+
+## Rejected alternative
+
+Keeping all history forever needs no cleanup code, but it makes queue polling, backup, restore,
+and local pg0 storage degrade for the life of an installation. A fixed hard-coded horizon also
+fails because diagnostic and governance needs differ. Configurable bounded retention keeps the
+permanent-data boundary explicit and gives operators control.
+
+## Implementation
+
+- `MemHouse.Operations.Retention` and its focused test own Account-scoped ledger cleanup.
+- `Oban.Plugins.Pruner` owns terminal job cleanup.
+- `MemHouse.Pipeline.Reconciler` settles stranded work before it becomes eligible.
+- `MemHouse.Portability.Registry` and `MemHouse.Portability.Archive` own export exclusions and
+  target-local rebuild behavior.
+- The portability and operations contract tests cover schedule, archive, and storage behavior.
 
 ## Consequences
 

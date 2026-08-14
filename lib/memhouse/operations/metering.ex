@@ -4,7 +4,7 @@ defmodule MemHouse.Operations.Metering do
   @moduledoc """
   Records Account usage and builds operator summaries.
 
-  UsageEvent is the only durable ledger. Metadata is reduced to a reviewed content-safe allowlist,
+  UsageEvent is the exact retained ledger. Metadata is reduced to a reviewed content-safe allowlist,
   token and duration units remain explicit, and self-hosted cost estimates use operator-provided
   rates rather than hidden billing state.
   """
@@ -14,7 +14,6 @@ defmodule MemHouse.Operations.Metering do
   alias MemHouse.DataLayer
   alias MemHouse.Operations.BudgetCounter
   alias MemHouse.Operations.UsageEvent
-  alias MemHouse.Repo
 
   @token_metrics [:input_tokens, :output_tokens, :embedding_tokens]
   @model_health_window_seconds 86_400
@@ -130,7 +129,7 @@ defmodule MemHouse.Operations.Metering do
 
       ingests = metadata_sum(events, "ingest_count")
 
-      storage = storage_bytes(actor.account_id)
+      storage = MemHouse.Retrieval.Store.storage_bytes(actor.account_id)
 
       %{
         account_id: actor.account_id,
@@ -231,48 +230,6 @@ defmodule MemHouse.Operations.Metering do
     |> Enum.filter(&is_integer/1)
     |> Enum.sum()
   end
-
-  # Raw SQL rather than an Ash aggregate because this sums byte lengths across
-  # three unrelated tables in one round trip. It is read-only, the statement is
-  # a fixed literal, and the Account id is the one bound parameter — and it is
-  # the filter on each of the three subqueries.
-  #
-  # "Logical" means the size of the durable content itself — message text,
-  # knowledge statements, and stored document bytes — not the on-disk size of
-  # the database. Rebuildable derivations (vectors, chunks, projections) are
-  # excluded on purpose, so the number reflects what an export would carry.
-  #
-  # A failed query yields zero rather than raising: storage size is an
-  # informational field and must not take down the whole summary. That
-  # forgiveness is why this must stay inside the summary's Account-scoped
-  # transaction: run with no Account declared, the row-level security policies
-  # on all three tables filter every row away and the honest-looking zero it
-  # returns would be indistinguishable from an empty Account.
-  # sobelow_skip ["SQL.Query"]
-  defp storage_bytes(account_id) do
-    sql = """
-    SELECT
-      COALESCE((SELECT sum(octet_length(content)) FROM messages WHERE account_id = $1), 0) +
-      COALESCE((SELECT sum(octet_length(statement)) FROM knowledge_items WHERE account_id = $1), 0) +
-      COALESCE((SELECT sum(byte_size) FROM document_versions WHERE account_id = $1), 0),
-      COALESCE((SELECT sum(pg_column_size(row)) FROM pipeline_runs AS row WHERE account_id = $1), 0) +
-      COALESCE((SELECT sum(pg_column_size(row)) FROM usage_events AS row WHERE account_id = $1), 0) +
-      COALESCE((SELECT sum(pg_column_size(row)) FROM gate_decisions AS row WHERE account_id = $1), 0) +
-      COALESCE((SELECT sum(pg_column_size(row)) FROM knowledge_lifecycle_events AS row WHERE account_id = $1), 0) +
-      COALESCE((SELECT sum(pg_column_size(row)) FROM oban_jobs AS row WHERE args->>'tenant' = $2), 0)
-    """
-
-    case Ecto.Adapters.SQL.query(Repo, sql, [Ecto.UUID.dump!(account_id), account_id]) do
-      {:ok, %{rows: [[durable, operational]]}} ->
-        %{durable: integer(durable), operational: integer(operational)}
-
-      _other ->
-        %{durable: 0, operational: 0}
-    end
-  end
-
-  defp integer(%Decimal{} = value), do: Decimal.to_integer(value)
-  defp integer(value) when is_integer(value), do: value
 
   defp storage_ratio(%{durable: 0, operational: 0}), do: 0.0
   defp storage_ratio(%{durable: 0}), do: nil

@@ -59,6 +59,38 @@ defmodule MemHouse.Retrieval.Store do
   """
 
   @doc """
+  Returns durable-content and operational-history bytes for one Account.
+
+  The fixed read-only query measures content bytes for durable data and row bytes for retained
+  ledgers and Account-owned Oban jobs. It must run inside an Account-scoped transaction.
+  """
+  # sobelow_skip ["SQL.Query"]
+  def storage_bytes(account_id) do
+    sql = """
+    SELECT
+      COALESCE((SELECT sum(octet_length(content)) FROM messages WHERE account_id = $1), 0) +
+      COALESCE((SELECT sum(octet_length(statement)) FROM knowledge_items WHERE account_id = $1), 0) +
+      COALESCE((SELECT sum(byte_size) FROM document_versions WHERE account_id = $1), 0),
+      COALESCE((SELECT sum(pg_column_size(row)) FROM pipeline_runs AS row WHERE account_id = $1), 0) +
+      COALESCE((SELECT sum(pg_column_size(row)) FROM usage_events AS row WHERE account_id = $1), 0) +
+      COALESCE((SELECT sum(pg_column_size(row)) FROM gate_decisions AS row WHERE account_id = $1), 0) +
+      COALESCE((SELECT sum(pg_column_size(row)) FROM knowledge_lifecycle_events AS row WHERE account_id = $1), 0) +
+      COALESCE((SELECT sum(pg_column_size(row)) FROM oban_jobs AS row WHERE args->>'tenant' = $2), 0)
+    """
+
+    case Ecto.Adapters.SQL.query(Repo, sql, [Ecto.UUID.dump!(account_id), account_id]) do
+      {:ok, %{rows: [[durable, operational]]}} ->
+        %{durable: integer(durable), operational: integer(operational)}
+
+      _other ->
+        %{durable: 0, operational: 0}
+    end
+  end
+
+  defp integer(%Decimal{} = value), do: Decimal.to_integer(value)
+  defp integer(value) when is_integer(value), do: value
+
+  @doc """
   Full-text search over governed statements and document chunks.
 
   Searches requested targets and ranks with `ts_rank_cd`, then merges and truncates to `limit`.

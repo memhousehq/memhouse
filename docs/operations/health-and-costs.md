@@ -93,7 +93,7 @@ usage and cost, so it contributes only to the call ratio.
 
 ```mermaid
 flowchart LR
-    CALL[Every model call] --> UE[(UsageEvent ledger<br/>retained, exact)]
+    CALL[Every model call] --> UE[(UsageEvent ledger<br/>exact in its retention horizon)]
     UE --> SUM[Account summary]
     RATES["MEMHOUSE_MODEL_COSTS_JSON<br/>operator-supplied rates"] --> SUM
     SUM --> OUT[Estimated cost in USD]
@@ -113,7 +113,7 @@ When a limit bites, **dream-time is throttled first**: background reasoning
 yields before user-facing ingest and retrieval do.
 
 The ETS counters in front of the ledger are rebuildable caches. The ledger
-itself is durable and exact.
+itself is exact within its retention horizon.
 
 ## Trace correlation
 

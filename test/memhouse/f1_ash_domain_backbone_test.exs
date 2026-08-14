@@ -216,6 +216,12 @@ defmodule MemHouse.F1AshDomainBackboneTest do
     # an expired row. Audit has no destroy action and remains the permanent evidence chain.
     assert action_types(LifecycleEvent) == [:create, :destroy, :read]
     assert Ash.Resource.Info.action(LifecycleEvent, :prune).type == :destroy
+
+    assert LifecycleEvent
+           |> Ash.Resource.Info.actions()
+           |> Enum.filter(&(&1.type == :destroy))
+           |> Enum.map(& &1.name) == [:prune]
+
     assert action_types(AuditEvent) == [:create, :read]
 
     # A knowledge statement is fixed at mint time. Merging duplicates and moving an item

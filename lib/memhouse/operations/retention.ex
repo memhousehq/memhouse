@@ -4,7 +4,7 @@ defmodule MemHouse.Operations.Retention do
   @moduledoc """
   Removes expired operational history without touching durable memory or audit evidence.
 
-  The daily worker enters the configured community Account and uses internal Ash destroy
+  One community release owns one Account. The daily worker enters that configured Account and uses internal Ash destroy
   actions. Active pipeline runs are never eligible. Raw messages, knowledge items, audit events,
   and rebuild watermarks have no prune action and cannot be reached by this worker.
   """

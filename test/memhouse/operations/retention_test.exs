@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Operations.RetentionTest do
+  @moduledoc "Tests bounded deletion of expired operational history."
   use MemHouse.DataCase, async: false
 
   alias MemHouse.DataLayer
@@ -44,6 +45,10 @@ defmodule MemHouse.Operations.RetentionTest do
            recent_usage: recent_usage
          }, actor}
       end)
+
+    zero_durable_summary = MemHouse.Operations.Metering.summary(actor)
+    assert zero_durable_summary.storage.operational_bytes > 0
+    assert is_nil(zero_durable_summary.storage.operational_to_durable_ratio)
 
     counts =
       DataLayer.with_account_id(account.id, [role: :system, pipeline?: true], fn _account,

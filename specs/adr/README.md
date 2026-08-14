@@ -21,12 +21,13 @@ settled by the blueprint specs.
 | `0012-deterministic-gate-a-evidence.md` | Gate A automates only schema-derived source evidence, never model confidence. |
 | `0013-dream-time-knowledge-consolidation.md` | Dream-time merges corroborated facts and derives bounded set aggregates. |
 | `0014-lifecycle-sweep-scheduling.md` | Cron starts Account-scoped, replay-safe expiry and revalidation runs. |
-| `0017-operational-retention.md` | Terminal queue state and operational ledgers have bounded retention horizons. |
 | `0015-local-cross-encoder-reranking.md` | Dedicated local cross-encoder role for deadline-bounded reranking. |
 | `0015-indexed-embedding-dimensions.md` | Configured embedding widths must have a matching installed vector index. |
 | `0015-windowed-message-extraction.md` | Bounded same-session extraction windows with schema-validated source provenance. |
 | `0016-bounded-projection-summaries.md` | Context projections store bounded summaries and pinned facts, not raw knowledge rows. |
 | `0017-entity-match-selectivity.md` | Entity frequency is measured per request inside the retrieval query, never cached on the Account-global entity row. |
+| `0018-relayed-attribution-and-peer-scoped-reads.md` | Relayed observations preserve speaker identity, and callers select the peer used for scope reads. |
+| `0019-operational-retention.md` | Terminal queue state and operational ledgers have bounded retention horizons. |
 
 Conventions for future ADRs:
 
