@@ -427,37 +427,36 @@ defmodule MemHouse.Model.Schema.Extraction do
   end
 
   defp date_resolved?(date, source, %DateTime{} = occurred_at) do
-    with {:ok, expected} <- Date.from_iso8601(date),
-         {:ok, resolved} <- resolve_relative_date(source, DateTime.to_date(occurred_at)) do
-      expected == resolved
-    else
-      _error -> false
+    case Date.from_iso8601(date) do
+      {:ok, expected} ->
+        source
+        |> resolve_relative_dates(DateTime.to_date(occurred_at))
+        |> Enum.member?(expected)
+
+      _error ->
+        false
     end
   end
 
   defp date_resolved?(_date, _source, _occurred_at), do: false
 
-  defp resolve_relative_date(source, observed_on) do
-    cond do
-      String.match?(source, ~r/\byesterday\b/iu) ->
-        {:ok, Date.add(observed_on, -1)}
+  defp resolve_relative_dates(source, observed_on) do
+    named_dates =
+      [
+        {~r/\byesterday\b/iu, Date.add(observed_on, -1)},
+        {~r/\btoday|tonight\b/iu, observed_on},
+        {~r/\btomorrow\b/iu, Date.add(observed_on, 1)}
+      ]
+      |> Enum.flat_map(fn {pattern, date} ->
+        if String.match?(source, pattern), do: [date], else: []
+      end)
 
-      String.match?(source, ~r/\btoday|tonight\b/iu) ->
-        {:ok, observed_on}
+    amount_dates =
+      ~r/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\b/iu
+      |> Regex.scan(source)
+      |> Enum.map(&resolve_relative_amount(observed_on, &1))
 
-      String.match?(source, ~r/\btomorrow\b/iu) ->
-        {:ok, Date.add(observed_on, 1)}
-
-      match =
-          Regex.run(
-            ~r/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\b/iu,
-            source
-          ) ->
-        resolve_relative_amount(observed_on, match)
-
-      true ->
-        :error
-    end
+    named_dates ++ amount_dates
   end
 
   defp resolve_relative_amount(observed_on, [_text, amount, unit, direction]) do
@@ -465,10 +464,10 @@ defmodule MemHouse.Model.Schema.Extraction do
     amount = relative_amount(amount) * multiplier
 
     case String.downcase(unit) do
-      "day" -> {:ok, Date.add(observed_on, amount)}
-      "week" -> {:ok, Date.add(observed_on, amount * 7)}
-      "month" -> {:ok, Date.shift(observed_on, month: amount)}
-      "year" -> {:ok, Date.shift(observed_on, year: amount)}
+      "day" -> Date.add(observed_on, amount)
+      "week" -> Date.add(observed_on, amount * 7)
+      "month" -> Date.shift(observed_on, month: amount)
+      "year" -> Date.shift(observed_on, year: amount)
     end
   end
 

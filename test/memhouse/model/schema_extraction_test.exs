@@ -213,6 +213,65 @@ defmodule MemHouse.Model.SchemaExtractionTest do
              Extraction.cast(%{"items" => [mismatched]}, context)
   end
 
+  test "resolves every advertised relative-date form" do
+    for {expression, expected_date} <- [
+          {"yesterday", "2026-08-13"},
+          {"today", "2026-08-14"},
+          {"tonight", "2026-08-14"},
+          {"tomorrow", "2026-08-15"},
+          {"two days ago", "2026-08-12"},
+          {"2 weeks ago", "2026-07-31"},
+          {"one month ago", "2026-07-14"},
+          {"one year ago", "2025-08-14"},
+          {"2 days from now", "2026-08-16"}
+        ] do
+      source = "Avery scheduled the release #{expression}."
+
+      relative_context =
+        context()
+        |> Map.merge(%{
+          window_messages: [%{"id" => @message_id, "content" => source}],
+          window_message_ids: [@message_id],
+          occurred_at: ~U[2026-08-14 12:00:00Z]
+        })
+
+      candidate =
+        item("stated_explicitly")
+        |> Map.merge(%{
+          "supporting_span" => source,
+          "statement" => "Avery scheduled the release for #{expected_date}."
+        })
+
+      assert {:ok, [_]} = Extraction.cast(%{"items" => [candidate]}, relative_context)
+    end
+  end
+
+  test "checks all relative expressions in cited text" do
+    source = "Avery reviewed it yesterday and will publish two days from now."
+
+    relative_context =
+      context()
+      |> Map.merge(%{
+        window_messages: [%{"id" => @message_id, "content" => source}],
+        window_message_ids: [@message_id],
+        occurred_at: ~U[2026-08-14 12:00:00Z]
+      })
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => source,
+        "statement" => "Avery will publish on 2026-08-16."
+      })
+
+    assert {:ok, [_]} = Extraction.cast(%{"items" => [candidate]}, relative_context)
+
+    mismatched = Map.put(candidate, "statement", "Avery will publish on 2026-08-17.")
+
+    assert {:error, ["items[0].statement must be supported by its cited source text"]} =
+             Extraction.cast(%{"items" => [mismatched]}, relative_context)
+  end
+
   test "derives indirect evidence and its discount from source and subject" do
     indirect =
       item("stated_explicitly")

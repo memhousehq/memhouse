@@ -142,11 +142,12 @@ defmodule MemHouse.Pipeline.Extractor do
         candidate rather than emitting an empty statement.
 
         The observation carries the time it was made. Resolve every relative
-        date against that time — "last weekend", "yesterday", "next month" —
-        and record the result in relevant_from and relevant_until. Write the
-        statement as the claim, not as a dated utterance or observation frame.
-        Keep an ISO YYYY-MM-DD date in the statement only when the date itself
-        is part of the claim.
+        date against that time. Supported forms are yesterday, today, tonight,
+        tomorrow, and a number of days, weeks, months, or years ago or from now.
+        Record the result in relevant_from and relevant_until. Write the statement
+        as the claim, not as a dated utterance or observation frame. Keep an
+        ISO YYYY-MM-DD date in the statement only when the date itself is part
+        of the claim.
 
         Use kind "event" for anything that happened at a point or over a span of
         time, whatever else it also asserts. Give an event relevant_from, and
