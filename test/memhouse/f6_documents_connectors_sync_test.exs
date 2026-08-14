@@ -29,6 +29,7 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest.Provider do
       |> Enum.map(fn statement ->
         %{
           "reasoning" => "The source states this directly.",
+          "supporting_span" => statement,
           "statement" => statement,
           "kind" => kind(statement),
           "subject_type" => "peer",

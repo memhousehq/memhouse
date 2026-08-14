@@ -169,6 +169,7 @@ defmodule MemHouse.IngestRelayTest do
     PromptCaptureProvider.start!([
       %{
         "reasoning" => "The observation states this directly.",
+        "supporting_span" => "Melanie teaches watercolour on Tuesdays.",
         "statement" => "Melanie teaches watercolour on Tuesdays.",
         "kind" => "fact",
         "subject_type" => "peer",

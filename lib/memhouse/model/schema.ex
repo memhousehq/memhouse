@@ -53,7 +53,10 @@ defmodule MemHouse.Model.Schema.Extraction do
     `direct`; every other source-to-subject relationship is `indirect`. The
     same deterministic relationship applies the third-party confidence discount.
   - **Message provenance is bounded.** A candidate may cite only message ids
-    supplied in the extractor's conversation window.
+    supplied in the extractor's conversation window. During ingest extraction,
+    its supporting span must occur verbatim in one of those cited messages.
+    A statement date must also be present in cited text or resolve from a
+    relative-time expression in that text.
   - **Time bounds must be coherent.** A validity window that starts after it
     ends is rejected.
   - **Nothing here activates knowledge.** A valid candidate is still only a
@@ -155,7 +158,7 @@ defmodule MemHouse.Model.Schema.Extraction do
       end)
 
     property_order =
-      ~w(reasoning statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids expires_at relevant_from relevant_until)
+      ~w(reasoning supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids expires_at relevant_from relevant_until)
 
     candidate =
       %{
@@ -168,6 +171,12 @@ defmodule MemHouse.Model.Schema.Extraction do
           |> Map.merge(temporal_properties)
           |> Map.merge(%{
             "reasoning" => %{"type" => "string", "minLength" => 1},
+            "supporting_span" => %{
+              "type" => "string",
+              "minLength" => 1,
+              "description" =>
+                "Exact source text that supports the claim; ingest validation requires it to occur in a cited message"
+            },
             "confidence_level" => %{
               "type" => "string",
               "enum" => ~w(stated_explicitly clearly_implied inferred),
@@ -260,6 +269,7 @@ defmodule MemHouse.Model.Schema.Extraction do
          :ok <- durable_statement(statement, subject_type, subject_ref),
          :ok <- human_subject_statement(statement, context),
          {:ok, source_message_ids} <- source_message_ids(item, context),
+         :ok <- grounded_in_sources(item, statement, source_message_ids, context),
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
@@ -307,6 +317,75 @@ defmodule MemHouse.Model.Schema.Extraction do
       _other ->
         {:error, ["source_message_ids must be a non-empty array"]}
     end
+  end
+
+  # Dream-time deductions reuse the candidate shape but have contributor
+  # validation of their own. Raw ingest context supplies `window_messages`,
+  # which enables this stricter evidence boundary without exposing content in
+  # errors, telemetry, or persisted knowledge.
+  defp grounded_in_sources(item, statement, source_message_ids, context) do
+    source_texts =
+      context
+      |> Map.get(:window_messages, [])
+      |> Map.new(&{fetch(&1, "id"), fetch(&1, "content")})
+      |> Map.take(source_message_ids)
+      |> Map.values()
+      |> Enum.filter(&is_binary/1)
+
+    if source_texts == [] do
+      :ok
+    else
+      case non_empty_string(item, "supporting_span") do
+        {:ok, supporting_span} ->
+          cond do
+            not Enum.any?(source_texts, &String.contains?(&1, supporting_span)) ->
+              {:error, ["supporting_span must be exact text from a cited source"]}
+
+            not dates_grounded?(statement, source_texts) ->
+              {:error, ["statement must be supported by its cited source text"]}
+
+            true ->
+              :ok
+          end
+
+        {:error, _error} ->
+          {:error, ["supporting_span must be exact text from a cited source"]}
+      end
+    end
+  end
+
+  defp dates_grounded?(statement, source_texts) do
+    dates = Regex.scan(~r/\b\d{4}-\d{2}-\d{2}\b/u, statement) |> List.flatten()
+    source = Enum.join(source_texts, " ")
+
+    dates == [] or Enum.all?(dates, &date_present?(&1, source)) or relative_time?(source)
+  end
+
+  defp date_present?(date, source) do
+    case Date.from_iso8601(date) do
+      {:ok, parsed} ->
+        month = parsed |> Calendar.strftime("%B") |> Regex.escape()
+        short_month = parsed |> Calendar.strftime("%b") |> Regex.escape()
+        day = parsed.day
+        year = parsed.year
+
+        String.contains?(source, date) or
+          String.match?(source, ~r/\b#{day}\s+(?:#{month}|#{short_month})\s+#{year}\b/iu) or
+          String.match?(
+            source,
+            ~r/\b(?:#{month}|#{short_month})\s+#{day}(?:st|nd|rd|th)?,?\s+#{year}\b/iu
+          )
+
+      _error ->
+        false
+    end
+  end
+
+  defp relative_time?(source) do
+    String.match?(
+      source,
+      ~r/\b(?:today|tonight|yesterday|tomorrow|last|next|ago|this\s+(?:morning|afternoon|evening|week|month|year)|\d+\s+(?:day|week|month|year)s?\s+(?:ago|from\s+now))\b/iu
+    )
   end
 
   # Final gate: build the real pipeline create changeset and ask whether it is

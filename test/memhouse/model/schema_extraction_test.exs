@@ -23,17 +23,26 @@ defmodule MemHouse.Model.SchemaExtractionTest do
       scope_id: @scope_id,
       known_peer_keys: ["avery"],
       source_peer_key: "avery",
-      window_message_ids: [@message_id, @other_message_id]
+      window_message_ids: [@message_id, @other_message_id],
+      window_messages: [
+        %{
+          "id" => @message_id,
+          "content" => "Avery prefers weekly release summaries."
+        },
+        %{"id" => @other_message_id, "content" => "Avery sends them on Friday."}
+      ]
     }
   end
 
   defp item(confidence_level) do
     %{
       "reasoning" => "The source says this directly.",
+      "supporting_span" => "Avery prefers weekly release summaries.",
       "statement" => "Avery prefers weekly release summaries.",
       "kind" => "preference",
       "subject_type" => "peer",
       "subject_ref" => "avery",
+      "source_message_ids" => [@message_id],
       "confidence_level" => confidence_level,
       "sensitivity" => "internal",
       "target_level" => "peer"
@@ -72,7 +81,10 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
     assert confidence["enum"] == ~w(stated_explicitly clearly_implied inferred)
 
-    assert ["reasoning", "statement", "confidence_level" | _] = candidate["propertyOrdering"]
+    assert ["reasoning", "supporting_span", "statement", "confidence_level" | _] =
+             candidate["propertyOrdering"]
+
+    assert candidate["properties"]["supporting_span"]["minLength"] == 1
     refute Map.has_key?(candidate["properties"], "update_operation")
     refute Map.has_key?(candidate["properties"], "revalidate_after")
     assert is_binary(candidate["properties"]["kind"]["description"])
@@ -108,6 +120,56 @@ defmodule MemHouse.Model.SchemaExtractionTest do
               "items[0].source_message_ids must be unique ids from the supplied observation window"
             ]} =
              cast_item(candidate)
+  end
+
+  test "rejects a supporting span that is not in a cited message" do
+    candidate =
+      item("stated_explicitly")
+      |> Map.put("supporting_span", "Avery has been married for twelve years.")
+
+    assert {:error, ["items[0].supporting_span must be exact text from a cited source"]} =
+             cast_item(candidate)
+  end
+
+  test "rejects an invented date even when the candidate quotes a question" do
+    context = %{
+      context()
+      | window_messages: [
+          %{"id" => @message_id, "content" => "How long have you been married?"}
+        ],
+        window_message_ids: [@message_id]
+    }
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => "How long have you been married?",
+        "statement" => "Avery was married on 2023-06-09.",
+        "source_message_ids" => [@message_id]
+      })
+
+    assert {:error, ["items[0].statement must be supported by its cited source text"]} =
+             Extraction.cast(%{"items" => [candidate]}, context)
+  end
+
+  test "accepts a resolved date when the cited source gives relative time" do
+    context = %{
+      context()
+      | window_messages: [
+          %{"id" => @message_id, "content" => "Avery moved home four years ago."}
+        ],
+        window_message_ids: [@message_id]
+    }
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => "Avery moved home four years ago.",
+        "statement" => "Avery moved home in 2022-08-14.",
+        "source_message_ids" => [@message_id]
+      })
+
+    assert {:ok, [_]} = Extraction.cast(%{"items" => [candidate]}, context)
   end
 
   test "derives indirect evidence and its discount from source and subject" do

@@ -129,8 +129,11 @@ Extraction also does what a naive extractor gets wrong:
   third-party confidence discount.
 - **Uses bounded conversation evidence.** Message extraction sends the target
   message and up to five earlier messages from the same session and scope. A
-  candidate can cite only ids from that window. Each cited id becomes durable
-  provenance.
+  candidate can cite only ids from that window. It must also quote an exact
+  supporting span from a cited message. Validation rejects a statement date
+  that appears in neither the cited text nor a resolvable relative-time phrase.
+  Each cited id becomes durable provenance. The supporting span validates the
+  proposal but is not copied into knowledge, logs, or job arguments.
 - **Records complete provenance.** Provider, model, version, prompt, and
   pipeline identity travel with the result.
 

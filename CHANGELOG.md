@@ -179,6 +179,10 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Extraction prompt `extract-10` requires an exact supporting span from a cited
+  source. Schema validation rejects missing spans and invented ISO dates before
+  a candidate can become proposed knowledge.
+
 - Extraction prompt `extract-9` removes unused operation and revalidation
   judgements. It orders reasoning and the completed statement before an
   anchored `stated_explicitly`, `clearly_implied`, or `inferred` confidence
