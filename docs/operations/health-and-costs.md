@@ -71,8 +71,9 @@ curl -fsS http://127.0.0.1:4000/api/v1/operations/costs \
 Returns the exact recorded usage-event count, API request and ingest counts,
 input/output/embedding token totals overall and per model role, logical storage
 bytes, estimated model cost in USD, and prior-24-hour model-call health. It also
-reports extractor calls, tokens, and estimated cost per ingested message. These
-ratios use the Account's full retained ledger, including failed model calls.
+reports extractor calls, tokens, and estimated cost per ingested message. Call
+counts include failed extractor calls. An unmetered failure has unknown token
+usage and cost, so it contributes only to the call ratio.
 
 ```mermaid
 flowchart LR

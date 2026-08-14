@@ -4,8 +4,8 @@ defmodule MemHouse.Model.SchemaExtractionTest do
   @moduledoc """
   Pins the compact extraction schema and its anchored confidence levels.
 
-  The cast path maps three model choices to stable stored fractions. It never
-  asks for no discarded reasoning or model-supplied operation and revalidation policy.
+  The cast path maps three model choices to stable stored fractions. It does not
+  request reasoning, an operation, or a revalidation policy from the model.
   """
 
   use ExUnit.Case, async: true
@@ -83,6 +83,13 @@ defmodule MemHouse.Model.SchemaExtractionTest do
   test "rejects an invalid confidence level" do
     assert {:error, ["items[0].confidence_level is invalid"]} = cast_confidence("high")
     assert {:error, ["items[0].confidence_level must be a string"]} = cast_confidence(nil)
+  end
+
+  test "rejects fields outside the advertised candidate schema" do
+    candidate = Map.put(item("stated_explicitly"), "reasoning", "Discarded output")
+
+    assert {:error, ["items[0].candidate contains unsupported fields"]} =
+             cast_item(candidate)
   end
 
   test "derives direct evidence from the resolved source and subject" do

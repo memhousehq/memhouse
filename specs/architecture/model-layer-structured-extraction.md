@@ -145,9 +145,9 @@ Message extraction uses a trailing six-message same-session window, with the
 target message as its explicit anchor. Relative dates resolve against the
 observation time into `relevant_from` and `relevant_until`; statement text does
 not repeat that time unless a date is part of the claim. Readers render the
-structured valid-time fields when they need the date. Its prompt explicitly
-requires confidence as a JSON fraction from `0.0` through `1.0`; the
-Ash-derived JSON schema independently enforces the same numeric bounds.
+structured valid-time fields when they need the date. Its prompt requires
+`confidence_level` as `stated_explicitly`, `clearly_implied`, or `inferred`;
+`Extraction.cast/2` maps these labels to fixed stored numeric fractions.
 
 `MemHouse.Model.Usage` is the one durable emission point. Each provider call,
 including every repair attempt and returned provider error, appends one
