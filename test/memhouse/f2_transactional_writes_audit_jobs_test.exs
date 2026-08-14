@@ -37,6 +37,7 @@ defmodule VanishingSubjectProvider do
        value: %{
          "items" => [
            %{
+             "supporting_span" => "Avery prefers concise weekly release summaries.",
              "statement" => "Avery prefers concise weekly release summaries.",
              "kind" => "preference",
              "subject_type" => "peer",

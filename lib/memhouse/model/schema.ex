@@ -53,7 +53,10 @@ defmodule MemHouse.Model.Schema.Extraction do
     `direct`; every other source-to-subject relationship is `indirect`. The
     same deterministic relationship applies the third-party confidence discount.
   - **Message provenance is bounded.** A candidate may cite only message ids
-    supplied in the extractor's conversation window.
+    supplied in the extractor's conversation window. During ingest extraction,
+    its supporting span must occur verbatim in one of those cited messages.
+    A statement date must also be present in cited text or resolve from a
+    relative-time expression in that text.
   - **Time bounds must be coherent.** A validity window that starts after it
     ends is rejected.
   - **Nothing here activates knowledge.** A valid candidate is still only a
@@ -105,7 +108,7 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   @candidate_fields (@knowledge_fields ++
                        @temporal_fields ++
-                       ~w(confidence_level subject_type subject_ref source_message_ids)a)
+                       ~w(supporting_span confidence_level subject_type subject_ref source_message_ids)a)
                     |> Enum.map(&Atom.to_string/1)
                     |> MapSet.new()
 
@@ -168,17 +171,24 @@ defmodule MemHouse.Model.Schema.Extraction do
       end)
 
     property_order =
-      ~w(statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids relevant_from relevant_until)
+      ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids relevant_from relevant_until)
 
     candidate =
       %{
         "type" => "object",
-        "description" => "Write the statement, then rate it with confidence_level.",
+        "description" =>
+          "Copy supporting_span, write the statement, then rate it with confidence_level.",
         "additionalProperties" => false,
         "properties" =>
           knowledge_properties
           |> Map.merge(temporal_properties)
           |> Map.merge(%{
+            "supporting_span" => %{
+              "type" => "string",
+              "minLength" => 1,
+              "description" =>
+                "Exact source text that supports the claim; ingest validation requires it to occur in a cited message"
+            },
             "confidence_level" => %{
               "type" => "string",
               "enum" => ~w(stated_explicitly clearly_implied inferred),
@@ -200,7 +210,7 @@ defmodule MemHouse.Model.Schema.Extraction do
           }),
         "propertyOrdering" => property_order,
         "required" =>
-          ~w(statement confidence_level kind subject_type subject_ref sensitivity target_level)
+          ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level)
       }
 
     %{
@@ -271,6 +281,7 @@ defmodule MemHouse.Model.Schema.Extraction do
          :ok <- durable_statement(statement, subject_type, subject_ref),
          :ok <- human_subject_statement(statement, context),
          {:ok, source_message_ids} <- source_message_ids(item, context),
+         :ok <- grounded_in_sources(item, statement, source_message_ids, context),
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
@@ -336,6 +347,147 @@ defmodule MemHouse.Model.Schema.Extraction do
 
       _other ->
         {:error, ["source_message_ids must be a non-empty array"]}
+    end
+  end
+
+  # Dream-time deductions reuse the candidate shape but have contributor
+  # validation of their own. Raw ingest marks its context explicitly so missing
+  # cited content cannot silently disable this stricter evidence boundary.
+  defp grounded_in_sources(item, statement, source_message_ids, context) do
+    messages = Map.get(context, :window_messages, [])
+    messages_by_id = Map.new(messages, &{fetch(&1, "id"), fetch(&1, "content")})
+    source_texts = Enum.map(source_message_ids, &Map.get(messages_by_id, &1))
+
+    if Map.get(context, :grounding_mode) != :ingest do
+      :ok
+    else
+      validate_source_grounding(item, statement, source_texts, context)
+    end
+  end
+
+  defp validate_source_grounding(_item, _statement, source_texts, _context)
+       when source_texts == [] do
+    {:error, ["cited source content must be available for grounding"]}
+  end
+
+  defp validate_source_grounding(item, statement, source_texts, context) do
+    if Enum.any?(source_texts, &(not is_binary(&1))) do
+      {:error, ["cited source content must be available for grounding"]}
+    else
+      case non_empty_string(item, "supporting_span") do
+        {:ok, supporting_span} ->
+          cond do
+            not Enum.any?(source_texts, &String.contains?(&1, supporting_span)) ->
+              {:error, ["supporting_span must be exact text from a cited source"]}
+
+            question?(supporting_span) ->
+              {:error, ["supporting_span must assert knowledge, not ask a question"]}
+
+            not dates_grounded?(statement, source_texts, Map.get(context, :occurred_at)) ->
+              {:error, ["statement must be supported by its cited source text"]}
+
+            true ->
+              :ok
+          end
+
+        {:error, _error} ->
+          {:error, ["supporting_span must be exact text from a cited source"]}
+      end
+    end
+  end
+
+  defp question?(text) do
+    String.ends_with?(String.trim(text), "?") or
+      String.match?(
+        text,
+        ~r/^\s*(?:who|what|when|where|why|how|is|are|was|were|do|does|did|can|could|will|would|has|have|had)\b/iu
+      )
+  end
+
+  defp dates_grounded?(statement, source_texts, occurred_at) do
+    dates = Regex.scan(~r/\b\d{4}-\d{2}-\d{2}\b/u, statement) |> List.flatten()
+    source = Enum.join(source_texts, " ")
+
+    dates == [] or
+      Enum.all?(dates, fn date ->
+        date_present?(date, source) or date_resolved?(date, source, occurred_at)
+      end)
+  end
+
+  defp date_present?(date, source) do
+    case Date.from_iso8601(date) do
+      {:ok, parsed} ->
+        month = parsed |> Calendar.strftime("%B") |> Regex.escape()
+        short_month = parsed |> Calendar.strftime("%b") |> Regex.escape()
+        day = parsed.day
+        year = parsed.year
+
+        String.contains?(source, date) or
+          String.match?(source, ~r/\b#{day}\s+(?:#{month}|#{short_month})\s+#{year}\b/iu) or
+          String.match?(
+            source,
+            ~r/\b(?:#{month}|#{short_month})\s+#{day}(?:st|nd|rd|th)?,?\s+#{year}\b/iu
+          )
+
+      _error ->
+        false
+    end
+  end
+
+  defp date_resolved?(date, source, %DateTime{} = occurred_at) do
+    case Date.from_iso8601(date) do
+      {:ok, expected} ->
+        source
+        |> resolve_relative_dates(DateTime.to_date(occurred_at))
+        |> Enum.member?(expected)
+
+      _error ->
+        false
+    end
+  end
+
+  defp date_resolved?(_date, _source, _occurred_at), do: false
+
+  defp resolve_relative_dates(source, observed_on) do
+    named_dates =
+      [
+        {~r/\byesterday\b/iu, Date.add(observed_on, -1)},
+        {~r/\b(?:today|tonight)\b/iu, observed_on},
+        {~r/\btomorrow\b/iu, Date.add(observed_on, 1)}
+      ]
+      |> Enum.flat_map(fn {pattern, date} ->
+        if String.match?(source, pattern), do: [date], else: []
+      end)
+
+    amount_dates =
+      ~r/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\b/iu
+      |> Regex.scan(source)
+      |> Enum.map(&resolve_relative_amount(observed_on, &1))
+
+    named_dates ++ amount_dates
+  end
+
+  defp resolve_relative_amount(observed_on, [_text, amount, unit, direction]) do
+    multiplier = if String.downcase(direction) == "ago", do: -1, else: 1
+    amount = relative_amount(amount) * multiplier
+
+    case String.downcase(unit) do
+      "day" -> Date.add(observed_on, amount)
+      "week" -> Date.add(observed_on, amount * 7)
+      "month" -> Date.shift(observed_on, month: amount)
+      "year" -> Date.shift(observed_on, year: amount)
+    end
+  end
+
+  defp relative_amount(amount) do
+    case Integer.parse(amount) do
+      {value, ""} ->
+        value
+
+      :error ->
+        ~w(one two three four five six seven eight nine ten eleven twelve)
+        |> Enum.find_index(&(&1 == String.downcase(amount)))
+        |> Kernel.+(1)
     end
   end
 

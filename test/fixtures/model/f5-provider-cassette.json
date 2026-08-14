@@ -8,6 +8,7 @@
         "value": {
           "items": [
             {
+              "supporting_span": "Avery prefers weekly release summaries.",
               "statement": "Avery prefers weekly release summaries.",
               "kind": "preference",
               "subject_type": "peer",
@@ -27,6 +28,7 @@
         "value": {
           "items": [
             {
+              "supporting_span": "Avery prefers weekly release summaries.",
               "statement": "Avery prefers weekly release summaries.",
               "kind": "preference",
               "subject_type": "peer",

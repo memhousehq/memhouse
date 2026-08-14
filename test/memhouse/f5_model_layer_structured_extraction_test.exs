@@ -108,7 +108,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     )
 
     assert {:error,
-            {:prompt_version_mismatch, %{expected: "extract-10", configured: "extract-9"}}} =
+            {:prompt_version_mismatch, %{expected: "extract-11", configured: "extract-9"}}} =
              Memory.extract_message_for_account(message["id"], account_id)
 
     assert %{rows: [[nil]]} =
@@ -127,7 +127,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-10",
+      prompt_version: "extract-11",
       pipeline_version: "f5-1"
     )
 
@@ -148,7 +148,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert knowledge["extracting_provider"] == "openrouter"
     assert knowledge["extracting_model"] == "openai/gpt-oss-120b"
     assert knowledge["extracting_model_version"] == "2026-07"
-    assert knowledge["prompt_version"] == "extract-10"
+    assert knowledge["prompt_version"] == "extract-11"
     assert knowledge["pipeline_version"] == "f5-1"
 
     # Two usage events, not one: the failed first attempt is metered too. Repairs cost real
@@ -162,7 +162,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
                  %Decimal{coef: 44},
                  "openrouter",
                  "2026-07",
-                 "extract-10",
+                 "extract-11",
                  "f5-1"
                ]
              ]
@@ -186,7 +186,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # Provenance is what lets an operator answer "which model asserted this, under which
     # prompt and pipeline revision?" years later. All five identity columns must be present;
     # a knowledge row whose origin cannot be reconstructed is not auditable.
-    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-10", "f5-1"]]} =
+    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-11", "f5-1"]]} =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -326,7 +326,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "unavailable-model",
       model_version: "1",
-      prompt_version: "extract-10",
+      prompt_version: "extract-11",
       pipeline_version: "f5-1"
     )
 
@@ -385,7 +385,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-10",
+      prompt_version: "extract-11",
       pipeline_version: "f5-1"
     )
 
