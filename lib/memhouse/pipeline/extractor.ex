@@ -82,8 +82,10 @@ defmodule MemHouse.Pipeline.Extractor do
   Returns the generator's `{:error, reason}` unchanged: a provider transport or
   credential failure, or `{:error, {:structured_validation_failed, errors}}`
   when the model could not produce schema-valid output within the repair
-  budget. Either way the caller can leave the observation unprocessed and let
-  the durable job retry.
+  budget. Returns `{:error, {:prompt_version_mismatch, details}}` before a model
+  call when the Account's active extractor role names another prompt version.
+  In each case the caller can leave the observation unprocessed for operator
+  repair and retry.
 
   Raises `KeyError` when the observation is missing `"content"`, `"peer_key"`,
   or `"scope_path"` — those are required by the caller that assembled it, and a
@@ -127,8 +129,8 @@ defmodule MemHouse.Pipeline.Extractor do
         statement. Never write "the assistant", "the agent", or a relaying
         identity as the person a claim is about.
 
-        Start each candidate with concise reasoning, then its natural-language
-        statement, then confidence_level. Rate the statement you just wrote as
+        Start each candidate with its natural-language statement, then
+        confidence_level. Rate the statement you just wrote as
         stated_explicitly, clearly_implied, or inferred. Resolve subject independently from source. A peer subject_ref must be
         one of the supplied known peer keys. Use the current scope path only for
         a scope subject. Each candidate must cite source_message_ids drawn only

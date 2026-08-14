@@ -37,7 +37,6 @@ defmodule VanishingSubjectProvider do
        value: %{
          "items" => [
            %{
-             "reasoning" => "The source states Avery's preference directly.",
              "statement" => "Avery prefers concise weekly release summaries.",
              "kind" => "preference",
              "subject_type" => "peer",

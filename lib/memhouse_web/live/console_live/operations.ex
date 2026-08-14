@@ -183,6 +183,12 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
           <.tile label="Model failures (24 h)" value={@usage.model_calls.errors} />
           <.tile label="Model error rate (24 h)" value={percent(@usage.model_calls.error_rate)} />
           <.tile label="Unmetered failures (24 h)" value={@usage.model_calls.unmetered} />
+          <.tile label="Extractor calls per message" value={@usage.ingest_economics.calls_per_message} />
+          <.tile label="Extractor tokens per message" value={@usage.ingest_economics.tokens_per_message} />
+          <.tile
+            label="Extractor cost per message"
+            value={"#{@usage.ingest_economics.cost_per_message} #{@usage.currency}"}
+          />
         </div>
 
         <p :if={@usage.model_calls.unmetered > 0} class="hint">
