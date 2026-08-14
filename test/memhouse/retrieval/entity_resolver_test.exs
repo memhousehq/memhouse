@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Retrieval.EntityResolverTest do
+  @moduledoc """
+  Tests entity mention spotting and noise removal.
+  """
   use ExUnit.Case, async: true
 
   alias MemHouse.Retrieval.EntityResolver
@@ -20,5 +23,9 @@ defmodule MemHouse.Retrieval.EntityResolverTest do
 
   test "mention spotting reuses query boilerplate without removing names such as Will" do
     assert EntityResolver.mention_surfaces("What did Will tell Avery?") == ["Will", "Avery"]
+  end
+
+  test "mention spotting drops leading noise such as prepositions" do
+    assert EntityResolver.mention_surfaces("In Ada Lovelace") == ["Ada Lovelace"]
   end
 end
