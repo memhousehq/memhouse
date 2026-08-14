@@ -128,15 +128,18 @@ defmodule MemHouse.Operations.Metering do
         |> Enum.group_by(& &1.model_role)
         |> Map.new(fn {role, role_events} -> {role, token_totals(role_events)} end)
 
+      ingests = metadata_sum(events, "ingest_count")
+
       %{
         account_id: actor.account_id,
         event_count: length(events),
         api_requests: metadata_sum(events, "request_count"),
-        ingests: metadata_sum(events, "ingest_count"),
+        ingests: ingests,
         tokens: token_totals(events),
         tokens_by_role: by_role,
         logical_storage_bytes: logical_storage_bytes(actor.account_id),
         estimated_model_cost: estimated_cost(by_role),
+        ingest_economics: ingest_economics(events, by_role, ingests),
         model_calls: model_call_health(events),
         currency: "USD"
       }
@@ -192,6 +195,24 @@ defmodule MemHouse.Operations.Metering do
   defp rate(_numerator, 0), do: 0.0
   defp rate(numerator, denominator), do: Float.round(numerator / denominator, 4)
 
+  defp ingest_economics(events, by_role, ingests) do
+    extractor_events = Enum.filter(events, &(&1.model_role == "ingest_extractor"))
+    tokens = Map.get(by_role, "ingest_extractor", %{input: 0, output: 0, embedding: 0})
+    token_count = tokens.input + tokens.output + tokens.embedding
+    cost = estimated_role_cost("ingest_extractor", tokens)
+
+    %{
+      messages: ingests,
+      calls: length(extractor_events),
+      calls_per_message: rate(length(extractor_events), ingests),
+      tokens_per_message: rate(token_count, ingests),
+      cost_per_message: per_message_cost(cost, ingests)
+    }
+  end
+
+  defp per_message_cost(_cost, 0), do: 0.0
+  defp per_message_cost(cost, messages), do: Float.round(cost / messages, 6)
+
   # Metadata is a free-form map on the ledger row, so a value written by an
   # older build may be any shape. Non-integers are dropped rather than crashing
   # the summary: a malformed historical row must not make the operator view
@@ -243,16 +264,18 @@ defmodule MemHouse.Operations.Metering do
   # number. Rounded to six decimal places because a single small call can cost
   # a fraction of a cent and truncating further would report it as free.
   defp estimated_cost(by_role) do
-    rates = Application.get_env(:memhouse, :model_cost_per_million, %{})
-
     Enum.reduce(by_role, 0.0, fn {role, totals}, result ->
-      role_rates = Map.get(rates, role, %{})
-
-      result +
-        totals.input / 1_000_000 * Map.get(role_rates, :input, 0.0) +
-        totals.output / 1_000_000 * Map.get(role_rates, :output, 0.0) +
-        totals.embedding / 1_000_000 * Map.get(role_rates, :embedding, 0.0)
+      result + estimated_role_cost(role, totals)
     end)
     |> Float.round(6)
+  end
+
+  defp estimated_role_cost(role, totals) do
+    rates = Application.get_env(:memhouse, :model_cost_per_million, %{})
+    role_rates = Map.get(rates, role, %{})
+
+    totals.input / 1_000_000 * Map.get(role_rates, :input, 0.0) +
+      totals.output / 1_000_000 * Map.get(role_rates, :output, 0.0) +
+      totals.embedding / 1_000_000 * Map.get(role_rates, :embedding, 0.0)
   end
 end

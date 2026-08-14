@@ -155,19 +155,17 @@ defmodule MemHouse.Model.Schema.Extraction do
       end)
 
     property_order =
-      ~w(reasoning statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids expires_at relevant_from relevant_until)
+      ~w(statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids expires_at relevant_from relevant_until)
 
     candidate =
       %{
         "type" => "object",
-        "description" =>
-          "Write reasoning first, then statement, then rate that completed statement with confidence_level.",
+        "description" => "Write the statement, then rate it with confidence_level.",
         "additionalProperties" => false,
         "properties" =>
           knowledge_properties
           |> Map.merge(temporal_properties)
           |> Map.merge(%{
-            "reasoning" => %{"type" => "string", "minLength" => 1},
             "confidence_level" => %{
               "type" => "string",
               "enum" => ~w(stated_explicitly clearly_implied inferred),
@@ -189,7 +187,7 @@ defmodule MemHouse.Model.Schema.Extraction do
           }),
         "propertyOrdering" => property_order,
         "required" =>
-          ~w(reasoning statement confidence_level kind subject_type subject_ref sensitivity target_level)
+          ~w(statement confidence_level kind subject_type subject_ref sensitivity target_level)
       }
 
     %{
@@ -252,8 +250,7 @@ defmodule MemHouse.Model.Schema.Extraction do
   # expensive step — only runs on a candidate that is already well formed.
   # Confidence is computed rather than copied: see `source_confidence/4`.
   defp cast_item(item, context) when is_map(item) do
-    with {:ok, _reasoning} <- non_empty_string(item, "reasoning"),
-         {:ok, statement} <- readable_statement(item),
+    with {:ok, statement} <- readable_statement(item),
          {:ok, kind} <- enum(item, "kind", allowed(:kind)),
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
          {:ok, subject_ref} <- valid_subject_ref(item, subject_type, context),

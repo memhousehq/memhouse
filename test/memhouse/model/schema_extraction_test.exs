@@ -2,10 +2,10 @@
 
 defmodule MemHouse.Model.SchemaExtractionTest do
   @moduledoc """
-  Pins the ordered extraction schema and its anchored confidence levels.
+  Pins the compact extraction schema and its anchored confidence levels.
 
   The cast path maps three model choices to stable stored fractions. It never
-  persists model reasoning or model-supplied operation and revalidation policy.
+  asks for no discarded reasoning or model-supplied operation and revalidation policy.
   """
 
   use ExUnit.Case, async: true
@@ -29,7 +29,6 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
   defp item(confidence_level) do
     %{
-      "reasoning" => "The source says this directly.",
       "statement" => "Avery prefers weekly release summaries.",
       "kind" => "preference",
       "subject_type" => "peer",
@@ -72,7 +71,8 @@ defmodule MemHouse.Model.SchemaExtractionTest do
 
     assert confidence["enum"] == ~w(stated_explicitly clearly_implied inferred)
 
-    assert ["reasoning", "statement", "confidence_level" | _] = candidate["propertyOrdering"]
+    assert ["statement", "confidence_level" | _] = candidate["propertyOrdering"]
+    refute Map.has_key?(candidate["properties"], "reasoning")
     refute Map.has_key?(candidate["properties"], "update_operation")
     refute Map.has_key?(candidate["properties"], "revalidate_after")
     assert is_binary(candidate["properties"]["kind"]["description"])

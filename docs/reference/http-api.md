@@ -412,6 +412,9 @@ Account-admin only; any other role gets 403.
 Returns exact usage-event counts, API request and ingest counts,
 input/output/embedding token totals overall and per model role, logical storage
 bytes, and an estimated cost in USD computed from operator-supplied rates.
+`ingest_economics` reports extractor calls, tokens, and estimated cost per
+ingested message over the full retained ledger. Failed extractor calls count in
+the ratios because they consumed provider capacity.
 
 ---
 

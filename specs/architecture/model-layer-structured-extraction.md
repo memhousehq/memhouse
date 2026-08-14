@@ -51,8 +51,9 @@ tool calling.
 The extraction JSON schema is derived from `KnowledgeItem` attributes and the
 candidate is validated against `create_from_pipeline`. OpenRouter receives it
 through its native strict JSON-schema response format. The schema uses
-`propertyOrdering` to put concise validation-only reasoning and the completed
-natural-language statement before `confidence_level`. The three anchored
+`propertyOrdering` to put the completed natural-language statement before
+`confidence_level`. The extractor does not request validation-only reasoning
+that no durable output uses. The three anchored
 levels map to fixed stored values: `stated_explicitly` to 1.0,
 `clearly_implied` to 0.8, and `inferred` to 0.6. Revalidation remains gate-rule
 policy, and declining produces no candidate. Gate A receives a deterministic
@@ -99,7 +100,7 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-The `extract-9` and `f5-1` prompt and pipeline versions enforce subject rules:
+The `extract-10` and `f5-1` prompt and pipeline versions enforce subject rules:
 agent peers are excluded from the subject allowlist and machine referents are
 refused, preserving the verified contract that knowledge is about people and
 never about the infrastructure that carried it.
@@ -136,7 +137,7 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-9` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-10` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.
