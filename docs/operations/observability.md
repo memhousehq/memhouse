@@ -126,14 +126,11 @@ Every completed projection refresh emits the telemetry event
 `scope_id`.
 
 Ordinary governed writes in one scope coalesce into a ten-second run bucket.
-Execution is scheduled for bucket end plus five seconds. One refresh updates vectors, entity
-mentions, and context projections in dependency order. A burst produces at
-most one refresh run per scope and bucket. Its embedder batch contains only
-statements without vectors.
-
-Import rebuild is the only workflow that re-embeds the full corpus.
-Reconciliation uses the incremental projection_refresh path. Erasure rebuilds
-derived caches without re-embedding vectors.
+A 15-second delay guarantees that the bucket closes before execution. One
+refresh updates vectors, entity mentions, and context projections in dependency
+order. A burst produces at most one refresh run per scope and bucket. Its
+embedder batch contains only statements without vectors. Explicit rebuild and
+re-embed operations retain their full-corpus behavior.
 
 Alert on `coverage` below your threshold. Embeddings and entity mentions are
 written by this lane alone, so a refresh that was cancelled or never enqueued
