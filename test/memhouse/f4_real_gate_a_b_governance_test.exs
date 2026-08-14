@@ -146,7 +146,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert %DateTime{} = second.revalidate_after
   end
 
-  test "editing an event's wording keeps the validity window the original carried" do
+  test "editing an event's wording keeps its source-grounded valid time" do
     %{actor: actor} = bootstrap_human!("edit-window")
 
     window_start = ~U[2023-07-04 00:00:00Z]
@@ -161,7 +161,6 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         relevant_from: window_start
       )
 
-    # The premise: this really is a dated event, so there is a window to lose.
     assert knowledge.kind == "event"
     assert DateTime.compare(knowledge.relevant_from, window_start) == :eq
 
@@ -172,9 +171,6 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         "statement" => "Avery shipped the release train checklist on Tuesday 4 July 2023."
       })
 
-    # A correction to the wording is not a claim that the event has no date. Dropping
-    # the window here would silently undate an event that arrived with one, and the
-    # replacement is the row retrieval serves from then on.
     assert DateTime.compare(edited.replacement.relevant_from, window_start) == :eq
   end
 

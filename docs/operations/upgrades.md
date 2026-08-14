@@ -94,6 +94,12 @@ Watch queue depths on `/api/ready`. A new version may enqueue projection or
 index rebuilds; `/api/v1/context` reports `fast_fallback: true` until
 projections warm up.
 
+The temporal-policy migration clears expiry values proposed by older extraction
+prompts. It also clears equal valid-time boundaries and start times that exactly
+copied a source message timestamp. These values had no policy or source
+evidence. The migration does not change authored knowledge or governance-set
+API-key expiry.
+
 The 1024-dimensional Qwen3 transition needs an explicit re-embed after the
 schema migration:
 

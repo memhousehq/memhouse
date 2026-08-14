@@ -135,13 +135,15 @@ defmodule MemHouse.Pipeline.Extractor do
         one of the supplied known peer keys. Use the current scope path only for
         a scope subject. Each candidate must cite source_message_ids drawn only
         from the supplied conversation window. The source-to-subject relationship is derived by
-        MemHouse. Propose sensitivity and the independent
-        expiry and relevant-window timestamps. Decline by omitting the
+        MemHouse. Propose sensitivity and source-grounded relevant-window
+        timestamps. Expiry is governance policy and is not part of extraction.
+        Decline by omitting the
         candidate rather than emitting an empty statement.
 
         The observation carries the time it was made. Resolve every relative
         date against that time — "last weekend", "yesterday", "next month" —
-        and record the result in relevant_from and relevant_until. Write the
+        and record the result in relevant_from and relevant_until. Leave each
+        field null when the source does not state or imply that boundary. Write the
         statement as the claim, not as a dated utterance or observation frame.
         Keep an ISO YYYY-MM-DD date in the statement only when the date itself
         is part of the claim.
@@ -158,8 +160,11 @@ defmodule MemHouse.Pipeline.Extractor do
         on 2026-08-12." is event.
 
         Valid time is independent of kind. Set relevant_from and relevant_until
-        when the claim itself has a time or span. Leave them empty when it does
-        not. Do not invent a validity window from the observation time.
+        only when the source states or implies that the claim has a time or
+        span. Set relevant_until only when the source says when the claim
+        stopped being true. Leave the fields empty when the source gives no
+        boundary. Do not invent a validity window from the observation time,
+        and never emit equal relevant_from and relevant_until values.
         """
       },
       %{

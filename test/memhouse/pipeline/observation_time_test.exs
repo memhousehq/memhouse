@@ -3,7 +3,7 @@
 defmodule MemHouse.Pipeline.ObservationTimeTest do
   @moduledoc """
   Covers the belief-time a caller asserts on an observation, from the ingest
-  body to the extraction prompt to the valid-time stamped on an event.
+  body to the extraction prompt and its separation from valid time.
 
   A conversational corpus is almost always backfilled: the turn happened months
   before it was ingested. Every "when did X happen" answer depends on this chain
@@ -106,6 +106,7 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
 
       assert knowledge["kind"] == "event"
       assert knowledge["relevant_from"] == nil
+      assert knowledge["expires_at"] == nil
     end
 
     test "keeps a relevant_from the model supplied" do
@@ -227,7 +228,6 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
       "confidence_level" => "clearly_implied",
       "sensitivity" => "public",
       "target_level" => "peer",
-      "expires_at" => nil,
       "relevant_from" => nil,
       "relevant_until" => nil
     }
