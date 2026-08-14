@@ -500,8 +500,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert Enum.all?(@strategies, &is_boolean(&1.query_dependent?()))
     assert Strategies.Semantic.query_dependent?()
     assert Strategies.Lexical.query_dependent?()
+    assert Strategies.Temporal.query_dependent?()
     assert Strategies.EntityMatch.query_dependent?()
-    refute Strategies.Temporal.query_dependent?()
     refute Strategies.SalienceRecency.query_dependent?()
     refute Strategies.RelationExpand.query_dependent?()
 
@@ -867,6 +867,15 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
   test "an explicit as_of query retains temporal recall" do
     seeded = seed_active!("f7-as-of", "/f7/as-of", "Avery led the 2025 migration.")
+
+    seeded.knowledge
+    |> Ash.Changeset.for_update(:transition, %{
+      state: "active",
+      relevant_from: ~U[2025-01-01 00:00:00Z],
+      reason: "f7_test_date",
+      channel: "pipeline"
+    })
+    |> Ash.update!(actor: pipeline_actor(seeded.actor))
 
     result =
       Memory.search(%{

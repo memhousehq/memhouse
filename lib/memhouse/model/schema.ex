@@ -95,10 +95,16 @@ defmodule MemHouse.Model.Schema.Extraction do
   # validation, so it deliberately is not part of this list.
   @knowledge_fields ~w(statement kind confidence sensitivity target_level)a
 
-  # Expiry and the two ends of the validity window are independent of each
-  # other and of when the claim was believed. Revalidation is governance
-  # policy, not a model decision.
-  @temporal_fields ~w(expires_at relevant_from relevant_until)a
+  # Valid time comes from the observation. Expiry and revalidation are
+  # governance policy and never enter the model contract.
+  @temporal_fields ~w(relevant_from relevant_until)a
+
+  @temporal_descriptions %{
+    relevant_from:
+      "when the claim became true, only when the source states or implies a date; otherwise null",
+    relevant_until:
+      "when the claim stopped being true, only when the source states or implies an end date; otherwise null"
+  }
 
   @candidate_fields (@knowledge_fields ++
                        @temporal_fields ++
@@ -156,6 +162,7 @@ defmodule MemHouse.Model.Schema.Extraction do
       Map.new(@temporal_fields, fn name ->
         {Atom.to_string(name),
          %{
+           "description" => Map.fetch!(@temporal_descriptions, name),
            "anyOf" => [
              %{"type" => "string", "format" => "date-time"},
              %{"type" => "null"}
@@ -164,7 +171,7 @@ defmodule MemHouse.Model.Schema.Extraction do
       end)
 
     property_order =
-      ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids expires_at relevant_from relevant_until)
+      ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids relevant_from relevant_until)
 
     candidate =
       %{
@@ -291,7 +298,8 @@ defmodule MemHouse.Model.Schema.Extraction do
              evidence_level: evidence_level(subject_type, subject_ref, context),
              sensitivity: sensitivity,
              target_level: target_level,
-             revalidate_after: nil
+             revalidate_after: nil,
+             expires_at: nil
            }
            |> Map.merge(temporal),
          :ok <- validate_ash_action(casted, context) do
@@ -755,9 +763,9 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   defp temporal_order(%{relevant_from: from, relevant_until: until})
        when not is_nil(from) and not is_nil(until) do
-    if DateTime.compare(from, until) in [:lt, :eq],
+    if DateTime.compare(from, until) == :lt,
       do: :ok,
-      else: {:error, ["relevant_from must not be after relevant_until"]}
+      else: {:error, ["relevant_from must be before relevant_until"]}
   end
 
   defp temporal_order(_temporal), do: :ok

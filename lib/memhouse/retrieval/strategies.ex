@@ -168,8 +168,9 @@ defmodule MemHouse.Retrieval.Strategies.Temporal do
   @moduledoc """
   Prefers statements in force at the query's reference time.
 
-  Uses validity time, distinct from record time and salience. This cheap seed strategy needs no
-  text or model and can still find superseded facts for historical queries.
+  Uses text plus validity time, distinct from record time and salience. This
+  cheap seed strategy needs no model and can find dated facts near a requested
+  historical instant.
   """
   @behaviour MemHouse.Retrieval.Strategy
 
@@ -182,23 +183,20 @@ defmodule MemHouse.Retrieval.Strategies.Temporal do
   @impl true
   def stage, do: :seed
   @impl true
-  def query_dependent?, do: false
+  def query_dependent?, do: true
 
   @doc """
   True only for an explicit point-in-time query that wants governed statements.
 
-  `as_of` is the public temporal intent marker. Running this strategy for every
-  ordinary question would add a query-independent list that can bury lexical
-  evidence. Document chunks have no validity period, so document-only queries
-  skip it too.
+  `as_of` is the public temporal intent marker. Document chunks have no validity
+  period, so document-only queries skip it.
   """
   @impl true
   def applicable?(query), do: not is_nil(query.as_of) and query.target in [:knowledge, :all]
 
   @doc """
-  Returns authorized statements scored by whether they were in force at the
-  query's reference time, excluding those not yet recorded or already expired
-  at that instant.
+  Returns authorized text matches scored by distance from the query's reference
+  time, excluding undated, not-yet-recorded, and expired statements.
   """
   @impl true
   def candidates(query, budget) do

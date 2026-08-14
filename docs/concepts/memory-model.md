@@ -84,8 +84,9 @@ Keep these dimensions independent:
   fact, preference, relation, or skill keeps that kind even when it has a known
   start or end. An event is a claim whose durable content is that something
   occurred. Any kind can have `relevant_from` and `relevant_until` when the
-  claim has a validity window. The observation's `occurred_at` is belief-time
-  evidence and never becomes valid time by itself.
+  source states or implies that the claim has a validity window. The
+  observation's `occurred_at` is belief-time evidence and never becomes valid
+  time by itself.
 - **A date is not an observation frame.** The extractor records relative dates
   in valid-time fields. It keeps a date in the statement only when that date is
   part of the claim. Readers render valid time when they need it.

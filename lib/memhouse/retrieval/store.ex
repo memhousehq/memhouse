@@ -347,10 +347,11 @@ defmodule MemHouse.Retrieval.Store do
   end
 
   @doc """
-  Ranks statements by whether they were true at a point in time.
+  Ranks dated, text-matching statements by distance from a point in time.
 
-  Uses `as_of` or now, excluding not-yet-recorded and expired rows. Scores are coarse: in-force,
-  undated, or out-of-force.
+  Uses `as_of` or now. A window that covers that instant ranks first. Other
+  windows decay with the distance from their nearest boundary. Undated and
+  text-unrelated rows do not consume the candidate limit.
 
   Knowledge only — document chunks carry no validity period. Returns
   column-keyed maps, or an empty list when the query targets documents. Raises
@@ -362,14 +363,15 @@ defmodule MemHouse.Retrieval.Store do
 
     sql = """
     SELECT #{@knowledge_columns},
-           (
+           (1.0 / (1.0 + EXTRACT(EPOCH FROM
              CASE
-               WHEN k.relevant_from IS NULL AND k.relevant_until IS NULL THEN 0.5
                WHEN (k.relevant_from IS NULL OR k.relevant_from <= $4)
-                AND (k.relevant_until IS NULL OR k.relevant_until >= $4) THEN 1.0
-               ELSE 0.1
+                AND (k.relevant_until IS NULL OR k.relevant_until >= $4)
+                 THEN interval '0 seconds'
+               WHEN k.relevant_from > $4 THEN k.relevant_from - $4
+               ELSE $4 - k.relevant_until
              END
-           )::float8 AS score,
+           ) / 86400.0))::float8 AS score,
            'knowledge' AS candidate_type
     FROM knowledge_items AS k
     JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
@@ -377,10 +379,12 @@ defmodule MemHouse.Retrieval.Store do
       AND k.scope_id = ANY($2)
     #{visible_knowledge("$3", internal_reader?)}
       AND k.deleted_at IS NULL
+      AND (k.relevant_from IS NOT NULL OR k.relevant_until IS NOT NULL)
+      AND to_tsvector('english', k.statement) @@ websearch_to_tsquery('english', $5)
       AND k.inserted_at <= $4
       AND (k.expires_at IS NULL OR k.expires_at > $4)
     ORDER BY score DESC, k.inserted_at DESC
-    LIMIT $5
+    LIMIT $6
     """
 
     if query.target in [:knowledge, :all] do
@@ -389,6 +393,7 @@ defmodule MemHouse.Retrieval.Store do
         db_uuids!(query.scope_ids),
         db_uuid(query.actor.peer_id),
         as_of,
+        query.text,
         limit
       ])
     else

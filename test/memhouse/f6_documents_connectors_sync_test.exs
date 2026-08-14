@@ -36,7 +36,6 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest.Provider do
           "confidence_level" => "clearly_implied",
           "sensitivity" => "internal",
           "target_level" => "peer",
-          "expires_at" => nil,
           "relevant_from" => nil,
           "relevant_until" => nil
         }
@@ -329,7 +328,6 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest do
     # when the event was valid, so the pipeline must not copy it into valid time.
     events = Enum.filter(knowledge, &(&1.kind == "event"))
     assert events != []
-
     assert Enum.all?(events, &is_nil(&1.relevant_from))
   end
 
