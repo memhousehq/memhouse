@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Repo.Migrations.DropUnusedEntityAliasEmbeddingIndex do
-  @moduledoc false
+  @moduledoc "Removes the entity alias vector index that has no SQL reader."
 
   use Ecto.Migration
 
@@ -10,10 +10,12 @@ defmodule MemHouse.Repo.Migrations.DropUnusedEntityAliasEmbeddingIndex do
   @disable_ddl_transaction true
   @disable_migration_lock true
 
+  @doc "Drops the unused entity alias DiskANN index without blocking writes."
   def up do
     execute "DROP INDEX CONCURRENTLY IF EXISTS entities_alias_embedding_diskann_1024_idx"
   end
 
+  @doc "Restores the entity alias DiskANN index from the current index settings."
   def down do
     execute """
     CREATE INDEX CONCURRENTLY entities_alias_embedding_diskann_1024_idx
