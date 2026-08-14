@@ -36,7 +36,6 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest.Provider do
           "confidence_level" => "clearly_implied",
           "sensitivity" => "internal",
           "target_level" => "peer",
-          "expires_at" => nil,
           "relevant_from" => nil,
           "relevant_until" => nil
         }
@@ -309,7 +308,7 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest do
     assert extracted =~ "Native office-style extraction"
   end
 
-  test "an event derived from a document is anchored to the version's observation time" do
+  test "a document observation time does not become event valid time" do
     %{account: account, actor: actor, scope: scope} = context!("f6-event-window")
 
     assert {:ok, %{version: version}} =
@@ -325,13 +324,9 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest do
 
     %{knowledge: knowledge} = document_derivations(account.id, actor, version.document_id)
 
-    # A document has no conversational turn to date it, so the version's own
-    # observation time is the anchor. Without one this path would either write an
-    # undatable event or fail the resource's own rule that an event is datable.
     events = Enum.filter(knowledge, &(&1.kind == "event"))
     assert events != []
-
-    assert Enum.all?(events, &(DateTime.compare(&1.relevant_from, version.occurred_at) == :eq))
+    assert Enum.all?(events, &is_nil(&1.relevant_from))
   end
 
   test "incremental connector sync detects hashes, supersedes prior knowledge, and tombstones deletes" do

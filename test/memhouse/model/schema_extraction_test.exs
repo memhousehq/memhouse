@@ -75,9 +75,24 @@ defmodule MemHouse.Model.SchemaExtractionTest do
     assert ["reasoning", "statement", "confidence_level" | _] = candidate["propertyOrdering"]
     refute Map.has_key?(candidate["properties"], "update_operation")
     refute Map.has_key?(candidate["properties"], "revalidate_after")
+    refute Map.has_key?(candidate["properties"], "expires_at")
     assert is_binary(candidate["properties"]["kind"]["description"])
     assert is_binary(candidate["properties"]["sensitivity"]["description"])
     assert is_binary(candidate["properties"]["target_level"]["description"])
+    assert candidate["properties"]["relevant_from"]["description"] =~ "otherwise null"
+    assert candidate["properties"]["relevant_until"]["description"] =~ "otherwise null"
+  end
+
+  test "rejects an equal valid-time boundary" do
+    timestamp = "2026-08-14T07:00:00Z"
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.put("relevant_from", timestamp)
+      |> Map.put("relevant_until", timestamp)
+
+    assert {:error, ["items[0].relevant_from must be before relevant_until"]} =
+             cast_item(candidate)
   end
 
   test "rejects an invalid confidence level" do

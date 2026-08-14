@@ -148,7 +148,7 @@ defmodule MemHouse.AskGroundedAbstentionTest do
     assert result["answer_degraded"] == nil
   end
 
-  test "shows the answerer when a dated statement was true" do
+  test "does not present observation time as the claim's valid time" do
     bootstrap = bootstrap_human!("dated")
 
     {_knowledge_id, scope_path, _session_id} =
@@ -162,11 +162,8 @@ defmodule MemHouse.AskGroundedAbstentionTest do
 
     ask(actor, scope_path)
 
-    # The statement's own words are relative, so the window is the only thing in
-    # the prompt that can date it. Without it the model answers "the weekend
-    # before the freeze" and resolves it against whatever date it holds.
     assert [prompt] = GroundedAnswerProvider.prompts()
-    assert prompt =~ "2023-07-17"
+    refute prompt =~ "2023-07-17"
   end
 
   test "passes the caller reference time and states the validity rule once" do

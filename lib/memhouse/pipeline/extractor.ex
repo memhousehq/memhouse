@@ -48,7 +48,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-9"
+  @prompt_version "extract-10"
 
   # Ways a model names the process instead of a person. Deployment-specific
   # identities are added per observation; these hold everywhere.
@@ -133,21 +133,25 @@ defmodule MemHouse.Pipeline.Extractor do
         one of the supplied known peer keys. Use the current scope path only for
         a scope subject. Each candidate must cite source_message_ids drawn only
         from the supplied conversation window. The source-to-subject relationship is derived by
-        MemHouse. Propose sensitivity and the independent
-        expiry and relevant-window timestamps. Decline by omitting the
+        MemHouse. Propose sensitivity and source-grounded relevant-window
+        timestamps. Expiry is governance policy and is not part of extraction.
+        Decline by omitting the
         candidate rather than emitting an empty statement.
 
         The observation carries the time it was made. Resolve every relative
         date against that time — "last weekend", "yesterday", "next month" —
-        and record the result in relevant_from and relevant_until. Write the
+        and record the result in relevant_from and relevant_until. Leave each
+        field null when the source does not state or imply that boundary. Write the
         statement as the claim, not as a dated utterance or observation frame.
         Keep an ISO YYYY-MM-DD date in the statement only when the date itself
         is part of the claim.
 
         Use kind "event" for anything that happened at a point or over a span of
-        time, whatever else it also asserts. Give an event relevant_from, and
-        relevant_until as well when it spans more than an instant. Leave the
-        relevant window empty for a statement with no time of its own.
+        time, whatever else it also asserts. Give an event relevant_from only
+        when the source dates it, and relevant_until only when the source says
+        when it stopped being true. Never copy the observation time into valid
+        time. Never emit equal relevant_from and relevant_until values. Leave
+        the relevant window empty for a statement with no time of its own.
         """
       },
       %{

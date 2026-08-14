@@ -197,7 +197,7 @@ All fields optional.
 | `profile` | `"balanced"` | `fast`, `balanced`, `thorough` |
 | `limit` | `12` | Candidate cap |
 | `include_cross_links` | off | Requires authorisation at both endpoints |
-| `as_of` | unset | Read memory as it stood then. Omitting it also turns the `temporal` strategy off, so a point-in-time question must send it |
+| `as_of` | unset | Read memory as it stood then. This enables text-matched temporal ranking by distance from that time |
 | `min_score` | none | |
 | `source_filters` | none | |
 | `deadline` | profile default | `"disabled"` removes the budget; offline only |
@@ -217,10 +217,10 @@ the fused `candidates`, and three per-strategy outcomes:
 `contributed_strategies` (returned candidates), `empty_strategies` (ran, matched
 nothing), and `dropped_strategies` (disabled, timed out, or failed).
 Each knowledge candidate carries `relevant_from` and `relevant_until` — the
-window in which the claim is true, both nullable, and both populated for a
-statement of kind `event`. Use them to date an answer; the statement text alone
-may say "last weekend". Document-chunk candidates have no validity period and
-omit the pair.
+window in which the claim is true. Both are nullable and require source
+evidence, including for an event. Use them to date an answer; the statement text
+alone may say "last weekend". Document-chunk candidates have no validity period
+and omit the pair.
 
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.

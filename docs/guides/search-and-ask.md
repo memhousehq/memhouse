@@ -86,9 +86,9 @@ order. Add a distinguishing term — a place, an artifact, a date — to get it
 back.
 
 !!! warning "Check the flag, not the page"
-    `temporal` and `salience_recency` never read your query text, so they do not
-    run for an ordinary text search: `temporal` needs an explicit `as_of`, and
-    `salience_recency` only serves a blank-query context read. When
+    `temporal` runs only with an explicit `as_of` and returns dated text matches.
+    `salience_recency` does not read your query text and only serves a
+    blank-query context read. When
     `disagreement.query_dependent_empty` is `true`, none of the strategies that
     do read your text produced a candidate, and the search returns an empty
     page rather than the scope in recency order. A run in that state usually

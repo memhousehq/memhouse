@@ -114,15 +114,14 @@ cannot say "nothing was found".
 A response separates strategies that **contributed** candidates, strategies that
 ran and found **nothing**, and strategies that were **dropped** — disabled,
 timed out, or failed. Collapsing the middle case into either of the others hides
-the run worth knowing about: `temporal` and `salience_recency` read no query
-text, so applicability must keep them from turning a text-search miss into a
-recency page.
+the run worth knowing about: `salience_recency` reads no query text, so
+applicability must keep it from turning a text-search miss into a recency page.
 `disagreement.query_dependent_empty` is the flag for exactly that state.
 
-For ordinary text searches, Temporal runs only when you pass `as_of`, and
-SalienceRecency does not add a general recency list. That keeps the visible
-head based on evidence about the question. Blank context fallback may still
-use salience-recency, and explicit historical reads retain temporal recall.
+Temporal runs only when you pass `as_of`. It filters to dated text matches and
+ranks them by distance from that instant. SalienceRecency does not add a general
+recency list. That keeps the visible head based on evidence about the question.
+Blank context fallback may still use salience-recency.
 
 ## Profiles
 

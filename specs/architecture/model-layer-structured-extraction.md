@@ -99,7 +99,7 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-The `extract-9` and `f5-1` prompt and pipeline versions enforce subject rules:
+The `extract-10` and `f5-1` prompt and pipeline versions enforce subject rules:
 agent peers are excluded from the subject allowlist and machine referents are
 refused, preserving the verified contract that knowledge is about people and
 never about the infrastructure that carried it.
@@ -136,17 +136,18 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-9` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-10` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.
 Message extraction uses a trailing six-message same-session window, with the
 target message as its explicit anchor. Relative dates resolve against the
-observation time into `relevant_from` and `relevant_until`; statement text does
-not repeat that time unless a date is part of the claim. Readers render the
-structured valid-time fields when they need the date. Its prompt explicitly
-requires confidence as a JSON fraction from `0.0` through `1.0`; the
-Ash-derived JSON schema independently enforces the same numeric bounds.
+observation time into `relevant_from` and `relevant_until` only when the source
+states or implies the boundary; statement text does not repeat that time unless
+a date is part of the claim. Observation time never supplies valid time, and
+expiry remains governance policy. Readers render the structured valid-time
+fields when they need the date. The prompt uses fixed confidence levels that
+the schema maps to stored fractions.
 
 `MemHouse.Model.Usage` is the one durable emission point. Each provider call,
 including every repair attempt and returned provider error, appends one

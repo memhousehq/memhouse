@@ -36,7 +36,6 @@
               "confidence_level": "stated_explicitly",
               "sensitivity": "internal",
               "target_level": "peer",
-              "expires_at": null,
               "relevant_from": null,
               "relevant_until": null
             }

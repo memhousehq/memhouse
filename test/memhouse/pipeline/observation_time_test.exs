@@ -3,7 +3,7 @@
 defmodule MemHouse.Pipeline.ObservationTimeTest do
   @moduledoc """
   Covers the belief-time a caller asserts on an observation, from the ingest
-  body to the extraction prompt to the valid-time stamped on an event.
+  body to the extraction prompt and its separation from valid time.
 
   A conversational corpus is almost always backfilled: the turn happened months
   before it was ingested. Every "when did X happen" answer depends on this chain
@@ -81,11 +81,12 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
   describe "valid-time on an event" do
     setup :capture_prompts
 
-    test "anchors an event the model left undated to the observation time" do
+    test "does not copy observation time into an undated event" do
       assert {:ok, [knowledge]} = Memory.extract_message(seed_message!("obs-anchor"))
 
       assert knowledge["kind"] == "event"
-      assert DateTime.compare(knowledge["relevant_from"], @observed_at) == :eq
+      assert knowledge["relevant_from"] == nil
+      assert knowledge["expires_at"] == nil
     end
 
     test "keeps a relevant_from the model supplied" do
@@ -116,24 +117,16 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
     end
   end
 
-  describe "the resource refuses an undatable event" do
-    test "an event with neither relevant_from nor an observation time is invalid" do
-      # The writer always supplies one of the two, so this can only be reached by
-      # a new call site that forgot. Enforcing it here rather than at each caller
-      # is what keeps "an event is datable" true of the table, not of one path.
-      refute create_changeset(kind: "event").valid?
+  describe "the resource keeps belief time separate from valid time" do
+    test "an undated event is valid" do
+      assert create_changeset(kind: "event").valid?
     end
 
-    test "an event is valid once an observation time anchors it" do
+    test "observation time does not become relevant_from" do
       changeset = create_changeset(kind: "event", observed_at: @observed_at)
 
       assert changeset.valid?
-
-      assert DateTime.compare(
-               Ash.Changeset.get_attribute(changeset, :relevant_from),
-               @observed_at
-             ) ==
-               :eq
+      assert Ash.Changeset.get_attribute(changeset, :relevant_from) == nil
     end
 
     test "a non-event needs no window" do
@@ -216,7 +209,6 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
       "confidence_level" => "clearly_implied",
       "sensitivity" => "public",
       "target_level" => "peer",
-      "expires_at" => nil,
       "relevant_from" => nil,
       "relevant_until" => nil
     }

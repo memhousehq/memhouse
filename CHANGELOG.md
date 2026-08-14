@@ -179,6 +179,10 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Extraction prompt `extract-10` no longer asks the model to set knowledge
+  expiry or copies observation time into valid time. Temporal retrieval now
+  ranks dated text matches by distance from the requested time.
+
 - Extraction prompt `extract-9` removes unused operation and revalidation
   judgements. It orders reasoning and the completed statement before an
   anchored `stated_explicitly`, `clearly_implied`, or `inferred` confidence
