@@ -20,6 +20,8 @@ if [ "$output_dir" != "$expected_output_dir" ]; then
   exit 2
 fi
 postgres_version=18.1.0
+# pgvectorscale's locked transitive ICU crates require Rust 1.88. Keep this exact so release
+# builds do not change compiler versions when the stable channel advances.
 rust_toolchain=1.88.0
 vectorscale_version=$(tr -d '[:space:]' < "$repo_root/rel/pgvectorscale/VERSION")
 source_commit=$(tr -d '[:space:]' < "$repo_root/rel/pgvectorscale/SOURCE_COMMIT")

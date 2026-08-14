@@ -439,6 +439,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert vectorscale_checksums =~ "linux-aarch64-gnu.tar.gz"
     assert vectorscale_checksums =~ "linux-x86_64-gnu.tar.gz"
     vectorscale_build = File.read!("scripts/build-pgvectorscale")
+    assert vectorscale_build =~ "rust_toolchain=1.88.0"
     assert vectorscale_build =~ "Linux:x86_64|Linux:amd64"
     assert vectorscale_build =~ "target-feature=+avx2,+fma"
     assert File.read!("config/runtime.exs") =~ ~s("linux-arm64")

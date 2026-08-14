@@ -132,9 +132,9 @@ which silently dates the turn to the moment you loaded it — check the stored
 `occurred_at` on the first few messages of a backfill before running the rest.
 
 `occurred_at` matters more than it looks. It is what the extractor resolves
-"last weekend" or "yesterday" against, and what dates an event whose statement
-carries no absolute date of its own. Load a transcript without it and every
-statement it produces is anchored to your import run.
+"last weekend" or "yesterday" against. It does not become a claim's valid time
+when the source gives no date. Load a transcript without it and relative dates
+can resolve against the import time.
 
 The extractor stores the resolved date in `relevant_from` and
 `relevant_until`. It does not add an observation-time prefix to the statement.

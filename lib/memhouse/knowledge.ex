@@ -89,8 +89,8 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
         :pipeline_version
       ]
 
-      # When the observation was made. Not an attribute: it belongs to the source, not to the
-      # claim, and it is only ever used to date an event the caller left undated.
+      # When the observation was made. Not an attribute: it belongs to the source and lets
+      # extraction resolve relative claim dates without turning belief time into valid time.
       argument :observed_at, :utc_datetime_usec
 
       # Canonicalises the statement text first, so the hash below and the readability validation
@@ -102,10 +102,6 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       # all key off it.
       change MemHouse.Knowledge.Changes.HashStatement
 
-      # Runs before the validation below, which is what lets a caller supply either an explicit
-      # `relevant_from` or the observation time to derive one from.
-      change MemHouse.Knowledge.Changes.AnchorEventValidity
-
       # A statement a reader cannot read is not knowledge, whatever else is valid about the row.
       # Enforced here rather than at the extractor so no write path can bypass it.
       validate MemHouse.Knowledge.Validations.ReadableStatement
@@ -115,11 +111,6 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       validate attribute_in(:sensitivity, ~w(public internal personal restricted))
       validate attribute_in(:state, ~w(proposed))
       validate attribute_in(:target_level, ~w(peer scope account))
-
-      # An event asserts that something happened at a time, so a row claiming one has to say
-      # when. Enforced on the row rather than at each writer: a caller that knows neither the
-      # date nor the observation time does not know enough to record an event at all.
-      validate present(:relevant_from), where: [attribute_equals(:kind, "event")]
     end
 
     # Re-observing the same statement corroborates the existing row instead of creating a
