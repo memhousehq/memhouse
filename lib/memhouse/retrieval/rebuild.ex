@@ -35,6 +35,23 @@ defmodule MemHouse.Retrieval.Rebuild do
     end
   end
 
+  @doc """
+  Refreshes caches after ordinary governed writes in a scope.
+
+  Only statements without vectors enter the batched embedder call. Entity and
+  projection stages still refresh the scope because lifecycle changes can
+  remove sources as well as add them.
+  """
+  def refresh_scope(account_id, scope_id) do
+    with {:ok, index} <- MemHouse.Retrieval.Indexer.refresh_scope(account_id, scope_id),
+         {:ok, entities} <-
+           MemHouse.Retrieval.EntityResolver.rebuild_scope(account_id, scope_id),
+         {:ok, projections} <- MemHouse.Context.Builder.refresh_scope(account_id, scope_id) do
+      emit_coverage(account_id, scope_id, index)
+      {:ok, %{index: index, entities: entities, projections: projections}}
+    end
+  end
+
   # Measured after the write phase, so the event describes what a reader would
   # now find rather than what this run intended to write. Ids and counts only.
   defp emit_coverage(account_id, scope_id, index) do

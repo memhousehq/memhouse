@@ -328,7 +328,9 @@ defmodule MemHouse.Operations.PipelineRun do
       upsert_identity :idempotency_key
       upsert_fields [:idempotency_key]
       change set_attribute(:kind, "projection_refresh")
-      change run_oban_trigger(:projection_refresh)
+
+      # The delay exceeds the ten-second bucket, so execution starts only after the bucket closes.
+      change run_oban_trigger(:projection_refresh, schedule_in: 15)
     end
 
     create :enqueue_connector_sync do

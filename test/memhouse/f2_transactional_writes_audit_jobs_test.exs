@@ -618,6 +618,19 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert Idempotency.projection_refresh(scope_id, 42) !=
              Idempotency.entity_resolution(scope_id, 42)
 
+    changed_at = ~U[2026-08-14 10:00:01.123456Z]
+    same_bucket = ~U[2026-08-14 10:00:09.999999Z]
+    next_bucket = ~U[2026-08-14 10:00:10.000000Z]
+
+    assert Idempotency.derived_refresh(scope_id, :projection_refresh, changed_at, 10) ==
+             Idempotency.derived_refresh(scope_id, :projection_refresh, same_bucket, 10)
+
+    assert Idempotency.derived_refresh(scope_id, :projection_refresh, changed_at, 10) !=
+             Idempotency.derived_refresh(scope_id, :projection_refresh, next_bucket, 10)
+
+    assert Idempotency.derived_refresh(scope_id, :projection_refresh, changed_at, 10) !=
+             Idempotency.derived_refresh(scope_id, :entity_resolution, changed_at, 10)
+
     assert Idempotency.import_rebuild("import-1", "manifest-a") !=
              Idempotency.import_rebuild("import-1", "manifest-b")
 

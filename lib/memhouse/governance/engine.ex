@@ -36,7 +36,6 @@ defmodule MemHouse.Governance.Engine do
   alias MemHouse.Knowledge.KnowledgeRelation
   alias MemHouse.Knowledge.Provenance
   alias MemHouse.Pipeline
-  alias MemHouse.Pipeline.Idempotency
   alias MemHouse.Pipeline.Lock
   alias MemHouse.Topology.Scope
 
@@ -625,40 +624,15 @@ defmodule MemHouse.Governance.Engine do
     updated
   end
 
-  # Projections, entity mentions, and cached context are rebuildable derivations of governed
-  # knowledge, so a state change must schedule their rebuild rather than edit them in place.
-  #
-  # The item's post-update timestamp is the idempotency watermark: replaying the same
-  # transition, or two transitions landing on the same scope at the same instant, collapses
-  # onto one job instead of queueing duplicate rebuild work.
+  # Projections, vectors, and entity mentions are one dependency-ordered cache.
+  # Ordinary writes use a ten-second scope bucket with execution after bucket close, so a burst
+  # creates one rebuild.
   defp enqueue_derived_refreshes!(knowledge, actor) do
-    watermark = DateTime.to_iso8601(knowledge.updated_at)
-
     {:ok, _projection_run} =
-      Pipeline.enqueue(
-        "projection_refresh",
+      Pipeline.enqueue_derived_refresh(
         knowledge.account_id,
-        %{
-          scope_id: knowledge.scope_id,
-          target_type: "scope",
-          target_id: knowledge.scope_id,
-          idempotency_key: Idempotency.projection_refresh(knowledge.scope_id, watermark),
-          payload: %{"knowledge_id" => knowledge.id}
-        },
-        actor
-      )
-
-    {:ok, _entity_run} =
-      Pipeline.enqueue(
-        "entity_resolution",
-        knowledge.account_id,
-        %{
-          scope_id: knowledge.scope_id,
-          target_type: "scope",
-          target_id: knowledge.scope_id,
-          idempotency_key: Idempotency.entity_resolution(knowledge.scope_id, watermark),
-          payload: %{"knowledge_id" => knowledge.id}
-        },
+        knowledge.scope_id,
+        knowledge.updated_at,
         actor
       )
 

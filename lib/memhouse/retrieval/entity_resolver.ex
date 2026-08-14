@@ -301,7 +301,7 @@ defmodule MemHouse.Retrieval.EntityResolver do
   end
 
   # Folds a newly matched surface form into the draft at `index`: appends the
-  # alias, records the statement it came from, and re-embeds. Both lists are
+  # alias and records the statement it came from. Both lists are
   # append-and-deduplicate, never replace, so repeated rebuilds converge
   # instead of oscillating.
   defp fold(drafts, index, knowledge_id, surface, account_id, actor) do
@@ -312,25 +312,17 @@ defmodule MemHouse.Retrieval.EntityResolver do
 
     # The alias embedding covers the canonical name and every alias joined
     # together, so an entity known by several names sits between them in vector
-    # space and each of those names matches it. It is recomputed on every fold,
-    # including one that adds no new alias.
+    # space and each of those names matches it. An exact alias hit does not
+    # change that text and must not spend another embedder call.
     #
     # A failed embedding leaves the previous vector in place: the alias list
     # still grew, so exact matching improves and only the fuzzy tier lags until
     # the next rebuild.
     embedding_attrs =
-      case Embedding.embed([Enum.join([draft.canonical_name | aliases], " ")], context) do
-        {:ok, result} ->
-          %{
-            alias_embedding: hd(result.vectors),
-            embedding_provider: result.provider,
-            embedding_model: result.model,
-            embedding_version: result.version,
-            embedding_dimensions: result.dimensions
-          }
-
-        {:error, _error} ->
-          %{}
+      if aliases == draft.aliases do
+        %{}
+      else
+        embed_aliases(draft, aliases, context)
       end
 
     updated =
@@ -339,6 +331,22 @@ defmodule MemHouse.Retrieval.EntityResolver do
       |> Map.merge(embedding_attrs)
 
     {:ok, List.replace_at(drafts, index, updated), updated.key}
+  end
+
+  defp embed_aliases(draft, aliases, context) do
+    case Embedding.embed([Enum.join([draft.canonical_name | aliases], " ")], context) do
+      {:ok, result} ->
+        %{
+          alias_embedding: hd(result.vectors),
+          embedding_provider: result.provider,
+          embedding_model: result.model,
+          embedding_version: result.version,
+          embedding_dimensions: result.dimensions
+        }
+
+      {:error, _error} ->
+        %{}
+    end
   end
 
   # Phase three. Everything durable happens here, in one short transaction with

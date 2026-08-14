@@ -151,8 +151,14 @@ exported, returned, audited, telemetered, or placed in job arguments. An
 Account with more than 65,536 live scopes fails label allocation rather than
 sharing a label.
 
-`projection_refresh` is the replay-safe rebuild job. It backfills knowledge
-vectors, resolves entities, and refreshes projections. Document import already
+`projection_refresh` is the replay-safe rebuild job. Ordinary governed writes
+use one key per scope and ten-second time bucket. A five-second trailing delay
+lets burst writes coalesce before the job backfills knowledge vectors, resolves
+entities, and refreshes projections. The dependency-ordered job replaces the
+redundant per-write entity job. Reconciliation, erasure, import, and explicit
+maintenance retain corpus-derived full-rebuild keys. The coalesced path batches
+only statements without vectors; it does not re-embed the unchanged corpus.
+Document import already
 re-enters ordinary document ingest, which rebuilds chunk vectors and causes
 governed knowledge to enqueue the same derived-cache jobs.
 
@@ -250,8 +256,9 @@ Cards carry the strictest source sensitivity, a bounded summary with model
 provenance, and a bounded set of pinned source excerpts. Full source ids remain
 private on the projection row. Updates carry a watermark, delta count, source
 ids, dirty state, and a bounded full-compaction cadence.
-Lifecycle changes mark affected projections dirty and enqueue deterministic
-entity/projection jobs in the same transaction as the state change.
+Lifecycle changes mark affected projections dirty and enqueue one deterministic,
+delayed projection job in the same transaction as the state change. That job
+also refreshes entities and mentions before it writes projections.
 
 Projection keys also carry a private audience-contract namespace. A stricter
 stored-content rule advances that namespace, so nodes running the new code

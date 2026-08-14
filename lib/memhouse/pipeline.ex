@@ -257,6 +257,31 @@ defmodule MemHouse.Pipeline do
   end
 
   @doc """
+  Schedules one delayed derived-cache refresh for a burst of governed writes.
+
+  Writes in the same scope and ten-second bucket reuse one durable run.
+  A 15-second delay guarantees that the bucket closes before execution, so all
+  writes in it are included. The job carries only identifiers and a bucket key.
+  """
+  @spec enqueue_derived_refresh(Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t(), map()) ::
+          {:ok, PipelineRun.t()} | {:error, term()}
+  def enqueue_derived_refresh(account_id, scope_id, %DateTime{} = changed_at, actor) do
+    enqueue(
+      "projection_refresh",
+      account_id,
+      %{
+        scope_id: scope_id,
+        target_type: "scope",
+        target_id: scope_id,
+        idempotency_key:
+          Idempotency.derived_refresh(scope_id, :projection_refresh, changed_at, 10),
+        payload: %{"mode" => "coalesced"}
+      },
+      actor
+    )
+  end
+
+  @doc """
   Schedules a resumable Account-wide vector rebuild for one embedding identity.
 
   One identity creates one durable run. Progress contains only phase, UUID

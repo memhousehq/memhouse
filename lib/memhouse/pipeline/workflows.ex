@@ -68,9 +68,10 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
   not turn that into an error: a retry loop is exactly what the throttle exists
   to prevent.
 
-  The two rebuild lanes are enqueued keyed by scope plus a watermark, so a burst
-  of changes in one scope coalesces onto a single run instead of scheduling one
-  rebuild per change.
+  Ordinary governed writes enqueue only `projection_refresh`. Its scope-window
+  key and trailing delay coalesce a burst, and its dependency-ordered rebuild
+  includes entity resolution. The separate entity lane remains for explicit
+  maintenance work and compatible queued jobs.
   """
 
   use Ash.Reactor
@@ -102,7 +103,11 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
           MemHouse.Retrieval.EntityResolver.rebuild_scope(run.account_id, run.scope_id)
 
         "projection_refresh" ->
-          MemHouse.Retrieval.rebuild_scope(run.account_id, run.scope_id)
+          if run.payload["mode"] == "coalesced" do
+            MemHouse.Retrieval.Rebuild.refresh_scope(run.account_id, run.scope_id)
+          else
+            MemHouse.Retrieval.rebuild_scope(run.account_id, run.scope_id)
+          end
 
         _other ->
           MemHouse.Pipeline.Workflows.Stage.run(run)
