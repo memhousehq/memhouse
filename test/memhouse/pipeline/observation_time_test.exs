@@ -97,7 +97,12 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
     setup :capture_prompts
 
     test "does not turn observation time into an event validity window" do
-      assert {:ok, [knowledge]} = Memory.extract_message(seed_message!("obs-anchor"))
+      assert {:ok, [knowledge]} =
+               Memory.extract_message(
+                 seed_message!("obs-anchor",
+                   statement: "Caroline joined a mentorship program."
+                 )
+               )
 
       assert knowledge["kind"] == "event"
       assert knowledge["relevant_from"] == nil
