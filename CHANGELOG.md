@@ -78,6 +78,9 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
+- The packaged pg0 build now uses Rust 1.88. Its resolved ICU dependencies no
+  longer compile with the previous Rust 1.86 toolchain.
+
 - Extraction validation now rejects thanks, compliments, greetings, wishes,
   and other conversational-turn transcriptions before they can become
   proposed knowledge. Reporting verbs reject only quoted or reported message
