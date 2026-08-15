@@ -1862,7 +1862,15 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     # The DiskANN settings must apply when semantic retrieval runs with indexed
     # vectors, not only when lexical search computes them without using them.
-    scope_id = Scope.id_from_path!(admin.account_id, scope_path)
+    scope_id =
+      DataLayer.with_actor(admin, fn account, actor ->
+        Scope
+        |> Ash.Query.filter(path == ^scope_path)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+        |> Map.fetch!(:id)
+      end)
+
     assert {:ok, %{indexed: indexed}} = Indexer.rebuild_scope(admin.account_id, scope_id)
     assert indexed == 40
 
