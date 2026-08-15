@@ -1887,7 +1887,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       )
 
     assert "semantic" in semantic_result["contributed_strategies"]
-    assert length(semantic_result["candidates"]) > 0
+    assert semantic_result["candidates"] != []
 
     assert %{
              query_search_list_size: 200,
