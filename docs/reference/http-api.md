@@ -198,7 +198,7 @@ All fields optional.
 | `limit` | `12` | Candidate cap |
 | `include_cross_links` | off | Requires authorisation at both endpoints |
 | `as_of` | unset | Read memory as it stood then. This enables text-matched temporal ranking by distance from that time |
-| `min_score` | none | |
+| `min_score` | none | Drops candidates below this score inside each strategy, before fusion |
 | `source_filters` | none | |
 | `deadline` | profile default | `"disabled"` removes the budget; offline only |
 
@@ -222,9 +222,15 @@ evidence, including for an event. Use them to date an answer; the statement text
 alone may say "last weekend". Document-chunk candidates have no validity period
 and omit the pair.
 
-Each candidate also carries `fusion_score`, a value from 0 to 1 that combines
-per-strategy normalized scores, profile weights, and a rank tie-break.
-`rrf_score` is a deprecated alias with the same value for this contract version.
+Each candidate also carries `strategies`, the names of the retrieval strategies
+that returned it, and `fusion_score`, a value from 0 to 1. Fusion normalizes
+scores inside each strategy list, combines 95% normalized score with a 5% rank
+tie-break, applies profile weights, and divides by the weights of the strategies
+that ran. The value is a ranking signal, not a probability or relevance
+percentage. Do not compare it across profiles, apply a relevance threshold to
+it, or re-sort the response. Use `min_score` to filter strategy-local scores
+before fusion. `rrf_score` is a deprecated alias with the same value for this
+contract version.
 
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.

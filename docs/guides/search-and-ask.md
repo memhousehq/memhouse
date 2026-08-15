@@ -27,7 +27,7 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
 | `limit` | `12` | Candidate cap. |
 | `include_cross_links` | off | Follow scope relations you are authorised for at both ends. |
 | `as_of` | now | Read memory as it stood at a point in time. |
-| `min_score` | none | Drop weakly fused candidates. |
+| `min_score` | none | Drop candidates below this score inside each strategy, before fusion. |
 | `source_filters` | none | Restrict by provenance kind. |
 | `deadline` | profile default | `"disabled"` removes the time budget — offline use only. |
 
@@ -54,6 +54,11 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
 - `candidates` is **already in the right order.** Do not re-sort by a
   per-strategy score: those scores live in different spaces and comparing them
   degrades results.
+- Each candidate's `strategies` list names the retrieval strategies that
+  returned it. Its `fusion_score` is the normalized, weighted fusion value used
+  for ordering. It is not a probability or relevance percentage. Do not compare
+  it across profiles or apply a relevance threshold to it. `rrf_score` is a
+  deprecated alias for the same value.
 - `dropped_strategies` lists strategies that did not run: they missed the
   deadline or a dependency was unavailable. `semantic` appears here when the
   embedder failed. Frequent deadline drops mean the profile's budget is too
