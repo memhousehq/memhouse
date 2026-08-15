@@ -251,9 +251,12 @@ defmodule MemHouse.Retrieval.Store do
     end)
   end
 
-  defp diskann_attnum_assertion?(%Postgrex.Error{postgres: postgres}) do
-    postgres.code == :internal_error and postgres.message == "assertion failed: attnum > 0"
-  end
+  defp diskann_attnum_assertion?(%Postgrex.Error{
+         postgres: %{code: :internal_error, message: "assertion failed: attnum > 0"}
+       }),
+       do: true
+
+  defp diskann_attnum_assertion?(%Postgrex.Error{}), do: false
 
   defp semantic_query(query, embedding, identity, limit) do
     internal_reader? = query.internal_reader?
