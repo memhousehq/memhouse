@@ -105,11 +105,10 @@ defmodule MemHouse.Retrieval.Budget do
   The wall-clock deadline and candidate cap handed to every strategy.
 
   The budget is measured once, at the start of the whole request, and shared by
-  all phases. It is a *total* ceiling covering seed strategies, expansion, and
-  any model-backed reranking — not a per-strategy timeout — so work late in the
-  request naturally gets whatever the earlier work left over. A strategy that
-  runs past it is abandoned and reported as dropped; it is never retried,
-  because a retry would spend the same budget the caller is already out of.
+  all phases. It is a total ceiling covering seed strategies, expansion, and
+  any model-backed reranking. The engine also applies a per-strategy ceiling,
+  clamped to this remaining budget. A strategy that runs past either ceiling is
+  abandoned and reported as dropped. It is never retried.
 
   `deadline?: false` disables the clock entirely (`remaining_ms/1` answers
   `:infinity`). That mode exists for evaluation runs and for dream-time

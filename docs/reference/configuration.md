@@ -337,7 +337,13 @@ because they are behaviour rather than infrastructure. The shipped values:
 
 Fusion uses reciprocal rank with `k = 60`. `enabled_strategies` is a
 deployment-level allowlist: a strategy absent from it never runs, whatever a
-profile asks for. `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `120`.
+profile asks for. `MEMHOUSE_RETRIEVAL_STRATEGY_TIMEOUT_MS` defaults to `750`.
+It caps each strategy independently and is clamped to the remaining
+strategy-phase budget. Rerank reservation may further reduce the budget used by
+`MemHouse.Retrieval.Engine.retrieve/3`. A deadline-free evaluation run does not
+use this cap.
+
+`MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `120`.
 It is the most time reranking may use, but the request's remaining profile
 deadline always wins when it is smaller. Raising it can improve thorough-search
 ranking at the cost of tail latency; it cannot extend the 1500 ms hard ceiling.

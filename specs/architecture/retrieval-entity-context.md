@@ -30,8 +30,10 @@ time relevance, salience, and mention confidence are never treated as
 comparable scores. The `:thorough` profile optionally reranks only the fused
 head through `MemHouse.Model.Gateway`. Reranking and grounded answers hold no
 transaction; the model layer scopes its own configuration read and usage write.
-A hard remaining-time budget wraps strategies and reranking. Reranking receives
-an independently configured timeout clamped to the remaining hard deadline.
+A hard remaining-time budget wraps strategies and reranking. Each strategy
+receives a configured timeout clamped to the remaining strategy-phase budget;
+rerank reservation may further reduce that budget. The reranker receives its
+configured timeout clamped to the remaining hard deadline.
 Timeouts are dropped, not retried, and every response preserves the compatible
 dropped-name list while adding content-free component timings and deterministic
 reason classes plus pre-fusion cross-strategy disagreement.
@@ -101,8 +103,9 @@ ceilings through:
 
 - `MEMHOUSE_RETRIEVAL_ENABLED_STRATEGIES`;
 - `MEMHOUSE_RETRIEVAL_FAST_DEADLINE_MS`;
-- `MEMHOUSE_RETRIEVAL_BALANCED_DEADLINE_MS`; and
-- `MEMHOUSE_RETRIEVAL_THOROUGH_DEADLINE_MS`.
+- `MEMHOUSE_RETRIEVAL_BALANCED_DEADLINE_MS`;
+- `MEMHOUSE_RETRIEVAL_THOROUGH_DEADLINE_MS`;
+- `MEMHOUSE_RETRIEVAL_STRATEGY_TIMEOUT_MS`; and
 - `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS`.
 
 Raw strategy lists and rerank overrides remain restricted to internal/system and
@@ -178,22 +181,21 @@ Request-local diagnostics classify partial coverage and distinguish no resolved
 entity from a resolved entity with no authorized statements without returning
 cache identities or content.
 
-Lexical search applies the versioned `lexical-question-v2` analyzer before its
+Lexical search applies the versioned `lexical-question-v3` analyzer before its
 static, parameterized FTS query. For plain English questions it removes a
 reviewed interrogative set, retains the remaining query terms, names, and dates,
-and adds a bounded proximity boost. It does not expand terms with a hand-written
+and adds a bounded phrase boost. It does not expand terms with a hand-written
 synonym list. Quoted phrases and negation retain `websearch_to_tsquery`
 semantics. The content-free retrieval diagnostic records the analyzer identity;
 query text remains absent from diagnostics and telemetry.
 
-The proximity boost is a second `tsquery`. `tsquery`'s `<N>` operator matches an
-exact lexeme distance, so "near" is spelled as a disjunction over every distance
-in an eight-lexeme window, in both orders, for each adjacent pair of the first
-four retained terms. That expression is bounded but an order of magnitude dearer
-than the base rank, so it is scored over a base-ranked shortlist of five times
-the caller's limit rather than the whole match set. A row outside the shortlist
-keeps its base rank and cannot be promoted; the deadline budget therefore holds
-for a broad query.
+The phrase boost is a second `tsquery`. It contains one ordered phrase clause
+for each adjacent pair of the first four retained terms. The linear expression
+is scored over a base-ranked shortlist of two times the caller's limit. A row
+outside the shortlist cannot be promoted.
+
+Entity name lookup uses a GIN index over the normalized lowercase alias and
+canonical-name array. The index is rebuildable with the other entity cache data.
 
 `Indexer.rebuild_scope/2` and `EntityResolver.rebuild_scope/2` use a short read
 transaction, connection-free model calls, and one final write transaction. The
