@@ -1860,6 +1860,32 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              query_rescore: 100
            } = MemHouse.Retrieval.Diagnostics.latest(admin.account_id)
 
+    # The DiskANN settings must apply when semantic retrieval runs with indexed
+    # vectors, not only when lexical search computes them without using them.
+    scope_id = Scope.id_from_path!(admin.account_id, scope_path)
+    assert {:ok, %{indexed: indexed}} = Indexer.rebuild_scope(admin.account_id, scope_id)
+    assert indexed == 40
+
+    semantic_result =
+      Memory.search(
+        %{
+          "scope_path" => scope_path,
+          "query" => "release checklist",
+          "limit" => "100",
+          "strategies" => ["semantic"],
+          "deadline" => "disabled"
+        },
+        %{admin | identity_kind: :system}
+      )
+
+    assert "semantic" in semantic_result["contributed_strategies"]
+    assert length(semantic_result["candidates"]) > 0
+
+    assert %{
+             query_search_list_size: 200,
+             query_rescore: 100
+           } = MemHouse.Retrieval.Diagnostics.latest(admin.account_id)
+
     assert_raise ArgumentError, ~r/unknown retrieval strategy/, fn ->
       Memory.diagnostic_search(
         %{"scope_path" => scope_path, "query" => "release", "strategies" => ["not_a_strategy"]},

@@ -381,8 +381,8 @@ defmodule MemHouse.Memory do
     statements only; a password session with no `"peer_key"` reads as itself.
     Raises `ArgumentError` when the key names no Peer.
   - `"profile"` — named retrieval profile, defaults to `"balanced"`.
-  - `"limit"` — candidate cap, defaults to 12 and is clamped to 100. It bounds
-    each strategy's contribution as well as the fused list.
+  - `"limit"` — candidate cap, defaults to 12 and is clamped to the inclusive
+    range 1..100. It bounds each strategy's contribution as well as the fused list.
   - `"deadline"` — the string `"disabled"` removes the profile's latency bound.
     Intended for evaluation runs; a request path should leave it on.
   - `"include_cross_links"` — `true`, `"true"`, or `"1"` also searches scopes
