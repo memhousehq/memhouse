@@ -198,7 +198,7 @@ All fields optional.
 | `limit` | `12` | Candidate cap |
 | `include_cross_links` | off | Requires authorisation at both endpoints |
 | `as_of` | unset | Read memory as it stood then. This enables text-matched temporal ranking by distance from that time |
-| `min_score` | none | |
+| `min_score` | none | Drops candidates below this score inside each strategy, before fusion |
 | `source_filters` | none | |
 | `deadline` | profile default | `"disabled"` removes the budget; offline only |
 
@@ -221,6 +221,14 @@ window in which the claim is true. Both are nullable and require source
 evidence, including for an event. Use them to date an answer; the statement text
 alone may say "last weekend". Document-chunk candidates have no validity period
 and omit the pair.
+
+Each candidate also carries `strategies`, the names of the retrieval strategies
+that returned it, and `rrf_score`, its weighted reciprocal-rank fusion score.
+The score is the sum of `weight / (rrf_k + rank)` for those strategies. It is a
+ranking value, not a similarity, probability, or relevance percentage. Its
+scale depends on the profile weights and `rrf_k`. Do not compare it across
+profiles, apply a relevance threshold to it, or re-sort the response. Use
+`min_score` to filter strategy-local scores before fusion.
 
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.
