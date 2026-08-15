@@ -219,13 +219,40 @@ defmodule MemHouse.Retrieval.Store do
   `Postgrex.Error` if the statement fails.
   """
   def semantic(query, embedding, identity, limit) do
-    {:ok, rows} =
-      Repo.transaction(fn ->
-        configure_diskann_query!(limit)
-        semantic_query(query, embedding, identity, limit)
-      end)
-
+    {:ok, rows} = run_semantic_query(query, embedding, identity, limit, true)
     rows
+  rescue
+    error in Postgrex.Error ->
+      if diskann_attnum_assertion?(error) do
+        require Logger
+
+        Logger.warning(
+          "DiskANN query failed with the PostgreSQL 18 attnum assertion; retrying with index scans disabled",
+          component: :semantic,
+          reason_class: :diskann_index_error
+        )
+
+        {:ok, rows} = run_semantic_query(query, embedding, identity, limit, false)
+        rows
+      else
+        reraise error, __STACKTRACE__
+      end
+  end
+
+  defp run_semantic_query(query, embedding, identity, limit, indexscan?) do
+    Repo.transaction(fn ->
+      configure_diskann_query!(limit)
+
+      unless indexscan? do
+        Ecto.Adapters.SQL.query!(Repo, "SET LOCAL enable_indexscan = off", [])
+      end
+
+      semantic_query(query, embedding, identity, limit)
+    end)
+  end
+
+  defp diskann_attnum_assertion?(%Postgrex.Error{postgres: postgres}) do
+    postgres.code == :internal_error and postgres.message == "assertion failed: attnum > 0"
   end
 
   defp semantic_query(query, embedding, identity, limit) do
