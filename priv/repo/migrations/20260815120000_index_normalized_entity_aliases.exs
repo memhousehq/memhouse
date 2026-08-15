@@ -5,8 +5,9 @@ defmodule MemHouse.Repo.Migrations.IndexNormalizedEntityAliases do
 
   use Ecto.Migration
 
-  # Disable DDL transaction so the concurrent index build can proceed.
+  # A concurrent index cannot run in a DDL transaction or under Ecto's migration lock.
   @disable_ddl_transaction true
+  @disable_migration_lock true
 
   @doc "Creates an immutable normalizer and its rebuildable GIN expression index."
   def up do
