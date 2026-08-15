@@ -534,6 +534,9 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
       assert fallback_account_id == account.id
       assert current_account_id() == account.id
+
+      # Verify fallback's SET LOCAL does not leak to enclosing transaction
+      assert current_setting("enable_indexscan") == "on"
     end)
   end
 
@@ -3600,6 +3603,17 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       )
 
     account_id
+  end
+
+  defp current_setting(name) do
+    %{rows: [[value]]} =
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "SELECT current_setting($1)",
+        [name]
+      )
+
+    value
   end
 
   # actor — deliberately going through the engine, not around it, so the transition writes

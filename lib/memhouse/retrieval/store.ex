@@ -239,7 +239,9 @@ defmodule MemHouse.Retrieval.Store do
   Runs a DiskANN query and retries the PostgreSQL 18 assertion fallback in one savepoint.
 
   The savepoint keeps an enclosing Account-scoped transaction usable after the indexed query
-  aborts. Other PostgreSQL errors are re-raised. This function is public only so the database
+  aborts. Other PostgreSQL errors are re-raised. Session-local settings the fallback changes,
+  such as `enable_indexscan`, are rolled back before the savepoint releases, so they do not
+  leak into the rest of the enclosing transaction. This function is public only so the database
   regression test can produce the server error without depending on a specific vectorscale bug.
   """
   def with_diskann_assertion_fallback(primary, fallback)
@@ -267,6 +269,7 @@ defmodule MemHouse.Retrieval.Store do
               )
 
               result = fallback.()
+              sql!("ROLLBACK TO SAVEPOINT memhouse_diskann_attempt")
               sql!("RELEASE SAVEPOINT memhouse_diskann_attempt")
               result
             else
