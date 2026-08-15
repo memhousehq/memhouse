@@ -94,10 +94,15 @@ defmodule MemHouse.Retrieval.Engine do
 
     # Interleave before fusion for a diverse expansion frontier. Expansion is query-independent,
     # so only the trustworthy seed head may cause more database work. Taking before `uniq` keeps
-    # the frontier bounded even when strategies agree.
+    # the frontier bounded even when strategies agree. Filter for knowledge candidates before
+    # sorting and capping so document chunks do not waste seed slots; relation_expand is
+    # knowledge-only.
     seed_ids =
       seed_lists
       |> Enum.flat_map(fn {_strategy, candidates} -> candidates end)
+      |> Enum.filter(fn candidate ->
+        candidate.record["candidate_type"] == "knowledge"
+      end)
       |> Enum.sort_by(& &1.rank)
       |> Enum.take(min(query.max_candidates, retrieval_config(:expand_seed_limit)))
       |> Enum.map(& &1.id)
