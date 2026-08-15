@@ -221,7 +221,7 @@ defmodule MemHouse.Retrieval.Store do
   def semantic(query, embedding, identity, limit) do
     {:ok, rows} =
       Repo.transaction(fn ->
-        configure_diskann_query!()
+        configure_diskann_query!(limit)
         semantic_query(query, embedding, identity, limit)
       end)
 
@@ -365,12 +365,22 @@ defmodule MemHouse.Retrieval.Store do
     top(knowledge ++ documents, limit)
   end
 
-  defp configure_diskann_query! do
+  @doc "Returns the transaction-local DiskANN query settings for a candidate limit."
+  def diskann_query_settings(limit) when is_integer(limit) and limit > 0 do
     config = Application.fetch_env!(:memhouse, :diskann)
 
+    [
+      query_search_list_size: max(Keyword.fetch!(config, :query_search_list_size), limit * 2),
+      query_rescore: max(Keyword.fetch!(config, :query_rescore), limit)
+    ]
+  end
+
+  defp configure_diskann_query!(limit) do
+    settings = diskann_query_settings(limit)
+
     for {setting, value} <- [
-          {"diskann.query_search_list_size", Keyword.fetch!(config, :query_search_list_size)},
-          {"diskann.query_rescore", Keyword.fetch!(config, :query_rescore)}
+          {"diskann.query_search_list_size", settings[:query_search_list_size]},
+          {"diskann.query_rescore", settings[:query_rescore]}
         ] do
       Ecto.Adapters.SQL.query!(Repo, "SELECT set_config($1, $2, true)", [
         setting,
@@ -627,8 +637,10 @@ defmodule MemHouse.Retrieval.Store do
   * **scope relation** — statements in a scope explicitly related to a seed's
     scope, scored 1.0.
 
-  Expansion is exactly one hop. Scope links require both endpoints authorized. The outer query
-  applies scope, lifecycle, soft-delete, and provisional-subject filters to every expanded id.
+  Expansion is exactly one hop. Scope links require both endpoints authorized. Shared-entity
+  expansion ignores entities that cover too much of the visible corpus and caps neighbours per
+  seed. The outer query applies scope, lifecycle, soft-delete, and provisional-subject filters to
+  every expanded id.
 
   Knowledge only. Returns an empty list when the query targets documents or has
   no seed ids. Raises `Postgrex.Error` if the statement fails.
@@ -637,7 +649,34 @@ defmodule MemHouse.Retrieval.Store do
     internal_reader? = query.internal_reader?
 
     sql = """
-    WITH structural AS (
+    WITH visible AS (
+      SELECT k.id
+      FROM knowledge_items AS k
+      WHERE k.account_id = $1
+        AND k.scope_id = ANY($2)
+    #{visible_knowledge("$3", internal_reader?)}
+        AND k.deleted_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > now())
+    ),
+    corpus AS (
+      SELECT greatest(count(*), 1)::float8 AS statements FROM visible
+    ),
+    mention_frequency AS (
+      SELECT m.entity_id,
+             count(DISTINCT m.knowledge_item_id) / corpus.statements AS frequency,
+             corpus.statements
+      FROM entity_mentions AS m
+      JOIN visible ON visible.id = m.knowledge_item_id
+      CROSS JOIN corpus
+      WHERE m.account_id = $1
+      GROUP BY m.entity_id, corpus.statements
+    ),
+    eligible_entity AS (
+      SELECT entity_id
+      FROM mention_frequency
+      WHERE statements < $6 OR frequency <= $7
+    ),
+    structural AS (
       SELECT
         CASE
           WHEN r.source_knowledge_id = ANY($4) THEN r.target_knowledge_id
@@ -648,22 +687,31 @@ defmodule MemHouse.Retrieval.Store do
       WHERE r.account_id = $1
         AND (r.source_knowledge_id = ANY($4) OR r.target_knowledge_id = ANY($4))
     ),
-    shared_entity AS (
-      -- One row per neighbour, not one per shared mention. A hub entity mentioned by hundreds of
-      -- statements makes this join produce seeds x mentions rows; aggregating here collapses them
-      -- before the union instead of carrying them into it. `max` matches the outer aggregate:
-      -- the statement's own confidence is constant per neighbour, so the strongest edge wins
-      -- either way.
-      SELECT other.knowledge_item_id AS knowledge_id,
-             max(least(seed.confidence, other.confidence)) AS edge_score
+    seed_mention AS (
+      SELECT seed.knowledge_item_id, seed.entity_id, max(seed.confidence)::float8 AS confidence
       FROM entity_mentions AS seed
-      JOIN entity_mentions AS other
-        ON other.account_id = seed.account_id
-       AND other.entity_id = seed.entity_id
-       AND other.knowledge_item_id <> seed.knowledge_item_id
+      JOIN eligible_entity ON eligible_entity.entity_id = seed.entity_id
       WHERE seed.account_id = $1
         AND seed.knowledge_item_id = ANY($4)
-      GROUP BY other.knowledge_item_id
+      GROUP BY seed.knowledge_item_id, seed.entity_id
+    ),
+    shared_entity AS (
+      SELECT neighbour.knowledge_id, neighbour.edge_score
+      FROM (SELECT DISTINCT knowledge_item_id FROM seed_mention) AS seed
+      CROSS JOIN LATERAL (
+        SELECT other.knowledge_item_id AS knowledge_id,
+               max(least(seed_entity.confidence, other.confidence))::float8 AS edge_score
+        FROM seed_mention AS seed_entity
+        JOIN entity_mentions AS other
+          ON other.account_id = $1
+         AND other.entity_id = seed_entity.entity_id
+         AND other.knowledge_item_id <> seed.knowledge_item_id
+        JOIN visible ON visible.id = other.knowledge_item_id
+        WHERE seed_entity.knowledge_item_id = seed.knowledge_item_id
+        GROUP BY other.knowledge_item_id
+        ORDER BY edge_score DESC, other.knowledge_item_id
+        LIMIT $8
+      ) AS neighbour
     ),
     scope_expanded AS (
       SELECT related.id AS knowledge_id, 1.0::float8 AS edge_score
@@ -713,7 +761,10 @@ defmodule MemHouse.Retrieval.Store do
         db_uuids!(query.scope_ids),
         db_uuid(query.actor.peer_id),
         db_uuids!(query.seed_ids),
-        limit
+        limit,
+        retrieval_config(:relation_expand_ceiling_min_statements),
+        retrieval_config(:relation_expand_frequency_ceiling),
+        retrieval_config(:relation_expand_per_seed_cap)
       ])
     else
       []

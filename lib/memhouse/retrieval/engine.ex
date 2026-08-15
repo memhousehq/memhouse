@@ -92,13 +92,19 @@ defmodule MemHouse.Retrieval.Engine do
       |> Enum.filter(&(&1.stage() == :seed))
       |> run_phase(query, strategy_budget, concurrent?)
 
-    # Interleave before fusion for a diverse, bounded expansion frontier. Taking before `uniq`
-    # keeps the frontier bounded even when strategies agree.
+    # Interleave before fusion for a diverse expansion frontier. Expansion is query-independent,
+    # so only the trustworthy seed head may cause more database work. Taking before `uniq` keeps
+    # the frontier bounded even when strategies agree. Filter for knowledge candidates before
+    # sorting and capping so document chunks do not waste seed slots; relation_expand is
+    # knowledge-only.
     seed_ids =
       seed_lists
       |> Enum.flat_map(fn {_strategy, candidates} -> candidates end)
+      |> Enum.filter(fn candidate ->
+        candidate.record["candidate_type"] == "knowledge"
+      end)
       |> Enum.sort_by(& &1.rank)
-      |> Enum.take(query.max_candidates)
+      |> Enum.take(min(query.max_candidates, retrieval_config(:expand_seed_limit)))
       |> Enum.map(& &1.id)
       |> Enum.uniq()
 
@@ -182,7 +188,7 @@ defmodule MemHouse.Retrieval.Engine do
         result
       end
 
-    emit_outcomes(query.account_id, result, profile.deadline_ms)
+    emit_outcomes(query.account_id, result, profile.deadline_ms, query.max_candidates)
     result
   end
 
@@ -505,8 +511,8 @@ defmodule MemHouse.Retrieval.Engine do
   defp finite_remaining(:infinity), do: nil
   defp finite_remaining(value), do: value
 
-  defp emit_outcomes(account_id, result, deadline_ms) do
-    MemHouse.Retrieval.Diagnostics.record(account_id, result, deadline_ms)
+  defp emit_outcomes(account_id, result, deadline_ms, max_candidates) do
+    MemHouse.Retrieval.Diagnostics.record(account_id, result, deadline_ms, max_candidates)
 
     :telemetry.execute(
       [:memhouse, :retrieval, :outcomes],

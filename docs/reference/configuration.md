@@ -221,11 +221,14 @@ extension is unavailable.
 | `MEMHOUSE_DISKANN_SEARCH_LIST_SIZE` | `100` | Candidate list used to build the graph; `10` to `1000` |
 | `MEMHOUSE_DISKANN_MAX_ALPHA` | `1.2` | Build-time pruning factor; `1.0` to `5.0` |
 | `MEMHOUSE_DISKANN_NUM_DIMENSIONS` | `0` | Indexed MRL prefix from `1` to `1024`; `0` uses all dimensions |
-| `MEMHOUSE_DISKANN_QUERY_SEARCH_LIST_SIZE` | `100` | Approximate candidates visited per query; `1` to `10000` |
-| `MEMHOUSE_DISKANN_QUERY_RESCORE` | `50` | Candidates rescored from full heap vectors; `0` to `1000` |
+| `MEMHOUSE_DISKANN_QUERY_SEARCH_LIST_SIZE` | `100` | Minimum approximate candidates visited per query; `1` to `10000` |
+| `MEMHOUSE_DISKANN_QUERY_RESCORE` | `50` | Minimum candidates rescored from full heap vectors; `0` to `1000` |
 
 The five build settings require an index rebuild to take effect. Query settings
-are transaction-local and apply to each semantic retrieval call.
+are transaction-local and apply to each semantic retrieval call. The effective
+search-list size is the larger of its configured minimum and twice the request
+limit. The effective rescore count is the larger of its configured minimum and
+the request limit.
 
 !!! warning "Bump the embedding version on any artefact change"
     Provider, model, version, and dimensions together are the vector-space
@@ -356,6 +359,15 @@ strategy able to cost the reranker its allowance.
 `MEMHOUSE_ANSWER_CONTEXT_LIMIT` defaults to `12` and is clamped to `1..50`.
 It limits only the final ranked candidates sent to the `ask` answer model.
 Search still returns its full requested candidate list.
+
+`MEMHOUSE_RETRIEVAL_EXPAND_SEED_LIMIT` defaults to `10`. It limits every
+expand-stage strategy to the head of the rank-interleaved seed lists.
+`MEMHOUSE_RETRIEVAL_RELATION_PER_SEED_CAP` defaults to `10`. It limits the
+shared-entity neighbours that one seed can add. Shared-entity expansion also
+ignores an entity mentioned by more than
+`MEMHOUSE_RETRIEVAL_RELATION_FREQUENCY_CEILING` of the authorized visible
+corpus (default `0.5`) once that corpus reaches
+`MEMHOUSE_RETRIEVAL_RELATION_CEILING_MIN_STATEMENTS` (default `20`).
 
 ### Entity-match selectivity
 

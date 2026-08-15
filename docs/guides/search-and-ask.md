@@ -24,7 +24,7 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
 | `query` | `""` | The search text. A full question works; `"phrase"`, `-term`, and `or` narrow it. |
 | `scope_path` | `"/poc"` | Selects this scope **and its ancestors**. |
 | `profile` | `"balanced"` | `fast`, `balanced`, or `thorough`. |
-| `limit` | `12` | Candidate cap. |
+| `limit` | `12` | Candidate cap. Values are clamped to `1` through `100`. |
 | `include_cross_links` | off | Follow scope relations you are authorised for at both ends. |
 | `as_of` | now | Read memory as it stood at a point in time. |
 | `min_score` | none | Drop candidates below this score inside each strategy, before fusion. |
