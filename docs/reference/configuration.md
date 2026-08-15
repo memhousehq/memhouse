@@ -329,15 +329,16 @@ controls from within that Account rather than from the environment.
 Profiles are configured in application config rather than the environment,
 because they are behaviour rather than infrastructure. The shipped values:
 
-| Profile | Strategies | Weights | Rerank | Deadline |
-| --- | --- | --- | --- | --- |
-| `fast` | semantic, salience-recency | 1.0, 0.8 | no | 100 ms |
-| `balanced` | semantic, lexical, temporal, entity-match | 1.0, 1.0, 0.7, 0.9 | no | 300 ms |
-| `thorough` | the above plus salience-recency and relation-expand | +0.8, 0.6 | yes | 1500 ms |
+| Profile | Strategies | Weights | `rrf_k` | Rerank | Deadline |
+| --- | --- | --- | --- | --- | --- |
+| `fast` | semantic, salience-recency | 1.0, 0.8 | 15 | no | 100 ms |
+| `balanced` | semantic, lexical, temporal, entity-match | 1.0, 1.0, 0.7, 0.9 | 15 | no | 300 ms |
+| `thorough` | the above plus salience-recency and relation-expand | +0.8, 0.6 | 15 | yes | 1500 ms |
 
-Fusion uses reciprocal rank with `k = 60`. `enabled_strategies` is a
-deployment-level allowlist: a strategy absent from it never runs, whatever a
-profile asks for. `MEMHOUSE_RETRIEVAL_STRATEGY_TIMEOUT_MS` defaults to `750`.
+Fusion normalizes each strategy's returned scores and uses reciprocal rank as a
+5% tie-break. `enabled_strategies` is a deployment-level allowlist: a strategy
+absent from it never runs, whatever a profile asks for.
+`MEMHOUSE_RETRIEVAL_STRATEGY_TIMEOUT_MS` defaults to `750`.
 It caps each strategy independently and is clamped to the remaining
 strategy-phase budget. Rerank reservation may further reduce the budget used by
 `MemHouse.Retrieval.Engine.retrieve/3`. A deadline-free evaluation run does not

@@ -139,7 +139,7 @@ and that alone says nothing about whether they are right.
 **Explain the ranking** answers the question the fused list cannot: whether a
 candidate was never generated, or was generated and then demoted. Its table
 gives each returned candidate's per-strategy local rank and score, that list's
-reciprocal-rank contribution, the fused rank, and the final rank.
+normalized weighted contribution, the fused rank, and the final rank.
 `outside_rerank_head` means the candidate stayed in the fused tail;
 `rerank_unavailable` means the reranker did not complete. Strategy scores use
 different scales, so compare ranks and fusion contributions, never scores

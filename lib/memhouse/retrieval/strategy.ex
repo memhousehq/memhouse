@@ -7,9 +7,8 @@ defmodule MemHouse.Retrieval.Candidate do
   A candidate is always *strategy-local*. `score` is whatever that strategy's
   own scoring produces — a cosine similarity, a full-text rank, a time
   relevance step, a salience product — and those numbers are on unrelated
-  scales. Never compare, average, or threshold `score` across two strategies;
-  only `rank`, the candidate's 1-based position within its own strategy's list,
-  is meaningful between strategies, and that is what fusion consumes.
+  scales. Never compare or threshold `score` across two strategies. Fusion
+  normalizes each returned list before it combines scores.
 
   `record` is the database row already stripped of the raw score, and it is
   what eventually reaches the caller, so it must never be filled with anything
@@ -18,7 +17,7 @@ defmodule MemHouse.Retrieval.Candidate do
   strategies that voted for the candidate.
 
   After fusion the struct is reused with `strategy: :fusion`, `score` holding
-  the fused reciprocal-rank total, and `rank` renumbered over the merged list.
+  the score-aware fusion value, and `rank` renumbered over the merged list.
   """
 
   @enforce_keys [:id, :score, :rank, :strategy, :record]

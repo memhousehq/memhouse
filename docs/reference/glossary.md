@@ -47,8 +47,8 @@ content and scrubs shared provenance; *strict* also removes knowledge sourced
 only through that subject. Neither retracts a claim with surviving independent
 provenance.
 
-**Fusion** — merging several strategies' *ranks* (not scores) with weighted
-reciprocal rank, `k = 60`.
+**Fusion** — merging normalized per-strategy scores with profile weights and a
+small reciprocal-rank tie-break.
 
 **Gate A** — decides whether a candidate statement is kept, rejected, or
 deferred for review.
@@ -84,8 +84,9 @@ supervises for itself.
 
 **Pipeline** — the extraction machinery, and the only writer of knowledge.
 
-**Profile** — a named, versioned retrieval bundle: strategies, weights, rerank
-flag, and deadline. `fast`, `balanced`, `thorough`.
+**Profile** — a named, versioned retrieval bundle: strategies, weights, rrf_k
+rank tie-break constant, rerank flag, and deadline. `fast`, `balanced`,
+`thorough`.
 
 **Projection** — rebuildable peer profiles, scope cards, session summaries, and
 context payloads derived from knowledge.
@@ -98,8 +99,8 @@ came from, while validation is pending.
 
 **Raw observation** — what agents submit: a message, or a document version.
 
-**Reciprocal rank fusion** — the merge algorithm: a candidate at rank `r`
-contributes `weight / (k + r)`.
+**Score-aware fusion** — the merge algorithm. It normalizes scores inside each
+strategy list, then adds a small reciprocal-rank tie-break and profile weights.
 
 **Rerank** — an optional model-backed reordering of the fused head, used only
 by the `thorough` profile.

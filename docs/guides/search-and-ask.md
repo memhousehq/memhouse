@@ -38,7 +38,9 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
   "data": {
     "profile": "balanced",
     "profile_version": "f7-1",
-    "candidates": [ ... ],
+    "candidates": [
+      { "id": "...", "fusion_score": 0.84, "rrf_score": 0.84 }
+    ],
     "contributed_strategies": ["semantic", "lexical", "entity_match"],
     "empty_strategies": [],
     "dropped_strategies": ["temporal"],
@@ -53,9 +55,10 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
   per-strategy score: those scores live in different spaces and comparing them
   degrades results.
 - Each candidate's `strategies` list names the retrieval strategies that
-  returned it. Its `rrf_score` is the weighted reciprocal-rank fusion value used
-  for ordering. It is not a similarity, probability, or relevance percentage.
-  Do not compare it across profiles or apply a relevance threshold to it.
+  returned it. Its `fusion_score` is the normalized, weighted fusion value used
+  for ordering. It is not a probability or relevance percentage. Do not compare
+  it across profiles or apply a relevance threshold to it. `rrf_score` is a
+  deprecated alias for the same value.
 - `dropped_strategies` lists strategies that did not run: they missed the
   deadline or a dependency was unavailable. `semantic` appears here when the
   embedder failed. Frequent deadline drops mean the profile's budget is too
@@ -68,8 +71,7 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
 - `degraded` is the short form of the same news: `true` when a component was
   dropped or completed with a reason class, with the names in
   `degraded_components`. A dropped `reranker` is the case to watch, because the
-  results still look ordered by relevance when they are ordered by reciprocal
-  rank alone.
+  results still look model-ordered when they are ordered by fusion alone.
 - `pre_rerank_remaining_ms` shows how much of the hard ceiling remained before
   reranking. Reranking receives the smaller of that value and
   `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS`, and a run with `deadline` set to

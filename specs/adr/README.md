@@ -28,6 +28,7 @@ settled by the blueprint specs.
 | `0017-entity-match-selectivity.md` | Entity frequency is measured per request inside the retrieval query, never cached on the Account-global entity row. |
 | `0018-relayed-attribution-and-peer-scoped-reads.md` | Relayed observations preserve speaker identity, and callers select the peer used for scope reads. |
 | `0019-operational-retention.md` | Terminal queue state and operational ledgers have bounded retention horizons. |
+| `0020-score-aware-retrieval-fusion.md` | Normalize scores per strategy before weighted fusion and retain rank only as a tie-break. |
 
 Conventions for future ADRs:
 

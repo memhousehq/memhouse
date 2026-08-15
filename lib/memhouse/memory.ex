@@ -413,8 +413,8 @@ defmodule MemHouse.Memory do
   `"degraded"` is the one field a caller can check without interpreting the
   outcomes. It is true whenever a component was dropped or completed with a
   reason class, and `"degraded_components"` names those components. The case
-  that matters is a dropped reranker: the results still arrive, ordered by
-  reciprocal rank alone, and nothing else in the payload says the stage that
+  that matters is a dropped reranker: the results still arrive in fusion
+  order, and nothing else in the payload says the stage that
   decides relevance never ran.
 
   A strategy that ran and matched nothing lands in `"empty_strategies"`. When

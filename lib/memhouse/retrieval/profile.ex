@@ -2,7 +2,7 @@
 
 defmodule MemHouse.Retrieval.Profile do
   @moduledoc """
-  Resolves retrieval strategies, weights, reranking, deadline, and version.
+  Resolves retrieval strategies, fusion settings, reranking, deadline, and version.
 
   Starts with `:fast`, `:balanced`, or `:thorough` defaults, applies the nearest active scope
   override or Account fallback, then the deployment allowlist. Disabled strategies remain visible
@@ -45,7 +45,7 @@ defmodule MemHouse.Retrieval.Profile do
   * `:internal?` (default false) — asserts the caller is server-side or an
     evaluation harness.
 
-  Returns name, version, ordered strategies/modules, weights, rerank flag, deadline in
+  Returns name, version, ordered strategies/modules, weights, fusion constant, rerank flag, deadline in
   milliseconds, and deployment-disabled strategies.
 
   Raises `ArgumentError` for an unknown profile name, an unknown strategy name,
@@ -64,6 +64,7 @@ defmodule MemHouse.Retrieval.Profile do
       end
 
     profile = merge_persisted(base, configured)
+    profile = %{profile | rrf_k: positive_rrf_k!(profile.rrf_k)}
     enabled = enabled_strategy_names()
     internal? = Keyword.get(opts, :internal?, false)
 
@@ -144,9 +145,15 @@ defmodule MemHouse.Retrieval.Profile do
       |> Map.get("weights", base.weights)
       |> Map.new(fn {key, value} -> {normalize_strategy!(key), value * 1.0} end)
 
+    effective_rrf_k = Map.get(config, "rrf_k", base.rrf_k)
+    effective_rerank = Map.get(config, "rerank", base.rerank)
+
     # A 10-hex-character (40-bit) tuning digest disambiguates authored versions.
     digest =
-      :crypto.hash(:sha256, :erlang.term_to_binary({strategies, weights, config["rerank"]}))
+      :crypto.hash(
+        :sha256,
+        :erlang.term_to_binary({strategies, weights, effective_rrf_k, effective_rerank})
+      )
       |> Base.encode16(case: :lower)
       |> binary_part(0, 10)
 
@@ -155,7 +162,8 @@ defmodule MemHouse.Retrieval.Profile do
       | version: "f7-#{record.version}-#{digest}",
         strategies: strategies,
         weights: weights,
-        rerank: Map.get(config, "rerank", base.rerank),
+        rrf_k: effective_rrf_k,
+        rerank: effective_rerank,
         deadline_ms: record.deadline_ms
     }
   end
@@ -170,6 +178,7 @@ defmodule MemHouse.Retrieval.Profile do
       version: Map.fetch!(values, :version),
       strategies: Map.fetch!(values, :strategies),
       weights: Map.fetch!(values, :weights),
+      rrf_k: Map.fetch!(values, :rrf_k),
       rerank: Map.fetch!(values, :rerank),
       deadline_ms: Map.fetch!(values, :deadline_ms)
     }
@@ -207,6 +216,11 @@ defmodule MemHouse.Retrieval.Profile do
 
   defp normalize_strategy!(name),
     do: raise(ArgumentError, "unknown retrieval strategy: #{inspect(name)}")
+
+  defp positive_rrf_k!(value) when is_number(value) and value > 0, do: value * 1.0
+
+  defp positive_rrf_k!(value),
+    do: raise(ArgumentError, "retrieval profile rrf_k must be positive, got: #{inspect(value)}")
 
   # Normalize persisted atom/string keys recursively.
   defp stringify_keys(map) do

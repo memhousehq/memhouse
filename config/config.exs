@@ -199,6 +199,7 @@ config :memhouse, :retrieval_profiles,
     version: "f7-1",
     strategies: [:semantic, :salience_recency],
     weights: %{semantic: 1.0, salience_recency: 0.8},
+    rrf_k: 15,
     rerank: false,
     deadline_ms: 100
   },
@@ -206,6 +207,7 @@ config :memhouse, :retrieval_profiles,
     version: "f7-1",
     strategies: [:semantic, :lexical, :temporal, :entity_match],
     weights: %{semantic: 1.0, lexical: 1.0, temporal: 0.7, entity_match: 0.9},
+    rrf_k: 15,
     rerank: false,
     deadline_ms: 300
   },
@@ -227,6 +229,7 @@ config :memhouse, :retrieval_profiles,
       entity_match: 0.9,
       relation_expand: 0.6
     },
+    rrf_k: 15,
     # Only this profile pays for a model-backed rerank of the fused head, which
     # is why its deadline is several times larger.
     rerank: true,
@@ -242,12 +245,6 @@ config :memhouse, :retrieval_profiles,
     :entity_match,
     :relation_expand
   ],
-  # Reciprocal-rank-fusion constant, in rank units: a candidate at rank r in one
-  # strategy's list contributes weight / (rrf_k + r). A large k flattens the
-  # curve so the single top hit of one strategy cannot dominate the merge; 60 is
-  # the conventional published value and is kept for comparability with the
-  # recorded evaluation baselines.
-  rrf_k: 60,
   # Fraction of the authorized scopes' visible statements an entity may be
   # mentioned by before `entity_match` refuses to rank on it. An entity above
   # this line separates nothing: in a conversation about two people, both names

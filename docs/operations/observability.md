@@ -187,8 +187,8 @@ logged at warning level and returned to the caller as `degraded` and
 `degraded_components`.
 
 Alert on a sustained rate for `component: "reranker"`. A dropped reranker
-changes nothing else in the result: the candidates still arrive, ordered by
-reciprocal rank alone. Only `degraded`, `degraded_components`, and this counter
+changes nothing else in the result: the candidates still arrive in fusion
+order. Only `degraded`, `degraded_components`, and this counter
 say that the stage which judges relevance never ran.
 
 The reason class says what to do about it. For the reranker, `"timeout"` means

@@ -223,12 +223,14 @@ alone may say "last weekend". Document-chunk candidates have no validity period
 and omit the pair.
 
 Each candidate also carries `strategies`, the names of the retrieval strategies
-that returned it, and `rrf_score`, its weighted reciprocal-rank fusion score.
-The score is the sum of `weight / (rrf_k + rank)` for those strategies. It is a
-ranking value, not a similarity, probability, or relevance percentage. Its
-scale depends on the profile weights and `rrf_k`. Do not compare it across
-profiles, apply a relevance threshold to it, or re-sort the response. Use
-`min_score` to filter strategy-local scores before fusion.
+that returned it, and `fusion_score`, a value from 0 to 1. Fusion normalizes
+scores inside each strategy list, combines 95% normalized score with a 5% rank
+tie-break, applies profile weights, and divides by the weights of the strategies
+that ran. The value is a ranking signal, not a probability or relevance
+percentage. Do not compare it across profiles, apply a relevance threshold to
+it, or re-sort the response. Use `min_score` to filter strategy-local scores
+before fusion. `rrf_score` is a deprecated alias with the same value for this
+contract version.
 
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.
@@ -240,7 +242,7 @@ strategies to pay for it.
 class, and `degraded_components` names those components. Check it before
 presenting results as relevance-ordered, and read the reranker's reason class to
 know how much ordering was lost. A dropped or `invalid_result` reranker leaves
-every candidate in reciprocal-rank order; `partial_rankings` means the model
+every candidate in fusion order; `partial_rankings` means the model
 ordered the candidates it judged and only the rest kept fusion order.
 
 `disagreement.query_dependent_empty` is `true` when no strategy that reads the

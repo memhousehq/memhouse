@@ -24,10 +24,10 @@ Production seed strategies run concurrently; expansion then traverses knowledge
 relations, permission-filtered scope relations, and shared-entity edges. SQL
 sandbox tests run the same contracts serially on their shared connection.
 
-Each source list has its own cutoff and cap. Weighted reciprocal-rank fusion
-uses only within-strategy rank (`k = 60`), so pgvector similarity, FTS rank,
-time relevance, salience, and mention confidence are never treated as
-comparable scores. The `:thorough` profile optionally reranks only the fused
+Each source list has its own cutoff and cap. Score-aware fusion min-max
+normalizes each strategy's returned scores, then combines 95% normalized score
+with a 5% reciprocal-rank tie-break. The profile supplies weights and `rrf_k`;
+the default is 15. The `:thorough` profile optionally reranks only the fused
 head through `MemHouse.Model.Gateway`. Reranking and grounded answers hold no
 transaction; the model layer scopes its own configuration read and usage write.
 A hard remaining-time budget wraps strategies and reranking. Each strategy
@@ -42,7 +42,7 @@ Fusion destroys the evidence of how a candidate arrived, which leaves an
 operator unable to tell a candidate that no strategy generated from one that
 fusion or reranking demoted. `MemHouse.Retrieval.Trace` reconstructs that for a
 single run when a `DiagnosticGrant` asks for it: per-strategy local rank and
-score, each list's `weight / (k + rank)` contribution, the pre-rerank fused
+score, each list's normalized weighted contribution, the pre-rerank fused
 rank, the final rank, and why a candidate was or was not reranked. It reports
 only candidates the same response already returned, and the engine builds it
 after ranking, so it changes no ordering. It is returned in the result and
