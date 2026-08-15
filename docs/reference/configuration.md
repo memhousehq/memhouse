@@ -351,6 +351,15 @@ strategy able to cost the reranker its allowance.
 It limits only the final ranked candidates sent to the `ask` answer model.
 Search still returns its full requested candidate list.
 
+`MEMHOUSE_RETRIEVAL_EXPAND_SEED_LIMIT` defaults to `10`. It limits every
+expand-stage strategy to the head of the rank-interleaved seed lists.
+`MEMHOUSE_RETRIEVAL_RELATION_PER_SEED_CAP` defaults to `10`. It limits the
+shared-entity neighbours that one seed can add. Shared-entity expansion also
+ignores an entity mentioned by more than
+`MEMHOUSE_RETRIEVAL_RELATION_FREQUENCY_CEILING` of the authorized visible
+corpus (default `0.5`) once that corpus reaches
+`MEMHOUSE_RETRIEVAL_RELATION_CEILING_MIN_STATEMENTS` (default `20`).
+
 ### Entity-match selectivity
 
 The `entity_match` strategy weights each entity a query names by how much that

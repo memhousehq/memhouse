@@ -92,13 +92,14 @@ defmodule MemHouse.Retrieval.Engine do
       |> Enum.filter(&(&1.stage() == :seed))
       |> run_phase(query, strategy_budget, concurrent?)
 
-    # Interleave before fusion for a diverse, bounded expansion frontier. Taking before `uniq`
-    # keeps the frontier bounded even when strategies agree.
+    # Interleave before fusion for a diverse expansion frontier. Expansion is query-independent,
+    # so only the trustworthy seed head may cause more database work. Taking before `uniq` keeps
+    # the frontier bounded even when strategies agree.
     seed_ids =
       seed_lists
       |> Enum.flat_map(fn {_strategy, candidates} -> candidates end)
       |> Enum.sort_by(& &1.rank)
-      |> Enum.take(query.max_candidates)
+      |> Enum.take(min(query.max_candidates, retrieval_config(:expand_seed_limit)))
       |> Enum.map(& &1.id)
       |> Enum.uniq()
 
