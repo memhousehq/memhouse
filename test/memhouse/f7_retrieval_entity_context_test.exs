@@ -433,7 +433,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     Fusion,
     Indexer,
     Profile,
-    Query
+    Query,
+    Store
   }
 
   alias MemHouse.Retrieval.DiagnosticGrant
@@ -503,6 +504,37 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end)
 
     :ok
+  end
+
+  test "DiskANN assertion fallback recovers inside an Account-scoped transaction" do
+    seeded = seed_active!("f7-diskann-savepoint", "/f7/diskann-savepoint", "Avery owns release.")
+
+    DataLayer.with_actor(seeded.actor, fn account, _actor ->
+      fallback_account_id =
+        Store.with_diskann_assertion_fallback(
+          fn ->
+            assert current_account_id() == account.id
+
+            Ecto.Adapters.SQL.query!(MemHouse.Repo, """
+            DO $$
+            BEGIN
+              RAISE EXCEPTION USING
+                ERRCODE = 'XX000',
+                MESSAGE = 'assertion failed: attnum > 0';
+            END
+            $$
+            """)
+          end,
+          fn ->
+            Ecto.Adapters.SQL.query!(MemHouse.Repo, "SET LOCAL enable_indexscan = off", [])
+            assert current_account_id() == account.id
+            account.id
+          end
+        )
+
+      assert fallback_account_id == account.id
+      assert current_account_id() == account.id
+    end)
   end
 
   test "all shipped strategies satisfy the independent contract and profile stages" do
@@ -3557,6 +3589,17 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       scope_ids: [seed.scope.id],
       seed_ids: [seed.knowledge.id]
     }
+  end
+
+  defp current_account_id do
+    %{rows: [[account_id]]} =
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "SELECT current_setting('memhouse.account_id')",
+        []
+      )
+
+    account_id
   end
 
   # actor — deliberately going through the engine, not around it, so the transition writes
