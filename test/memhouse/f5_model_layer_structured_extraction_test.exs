@@ -202,6 +202,38 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              )
   end
 
+  test "a missing structured object retries the original request within the repair budget" do
+    message = seed_raw!("f5-missing-object", "avery", "Avery prefers weekly summaries.")
+    account_id = account_id!("f5-missing-object")
+
+    put_role!(account_id, :ingest_extractor,
+      provider: "openrouter",
+      model: "openai/gpt-oss-120b",
+      model_version: "2026-08",
+      prompt_version: "extract-11",
+      pipeline_version: "f5-1"
+    )
+
+    CassetteProvider.start!(@cassette, "missing_then_valid")
+    Application.put_env(:memhouse, :model_provider, CassetteProvider)
+
+    assert {:ok, [knowledge]} = Memory.extract_message_for_account(message["id"], account_id)
+    assert knowledge["statement"] == "Avery prefers weekly summaries."
+
+    assert %{rows: [[2, 1, 1]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT count(*),
+                      count(*) FILTER (WHERE status = 'error'),
+                      count(*) FILTER (WHERE status = 'ok')
+               FROM usage_events
+               WHERE account_id = $1 AND model_role = 'ingest_extractor'
+               """,
+               [Ecto.UUID.dump!(account_id)]
+             )
+  end
+
   test "one cassette provider injects reasoner, dialectic, embedding, and rerank capabilities" do
     _message = seed_raw!("f5-capabilities", "avery", "Avery prefers weekly summaries.")
     account_id = account_id!("f5-capabilities")
