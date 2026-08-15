@@ -1290,6 +1290,87 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert_in_delta score, 0.9 * confidence, 0.000001
   end
 
+  test "shared-entity expansion caps neighbours per seed" do
+    put_retrieval_config!(
+      relation_expand_ceiling_min_statements: 100,
+      relation_expand_per_seed_cap: 2
+    )
+
+    seed = seed_active!("f7-expand-cap", "/f7/expand-cap", "Orchid has a release ledger.")
+
+    neighbours =
+      for index <- 1..4 do
+        seed_active!(
+          "f7-expand-cap",
+          "/f7/expand-cap",
+          "Neighbour #{index} has unrelated content.",
+          "cap-session-#{index}"
+        )
+      end
+
+    DataLayer.with_account_key("f7-expand-cap", fn account, actor ->
+      pipeline = pipeline_actor(actor)
+
+      entity =
+        create!(
+          Entity,
+          :create_from_pipeline,
+          %{
+            canonical_name: "orchid",
+            kind: "system",
+            aliases: ["orchid"],
+            derived_from: [seed.knowledge.id | Enum.map(neighbours, & &1.knowledge.id)]
+          },
+          account.id,
+          pipeline
+        )
+
+      Enum.each([{seed, 1.0} | Enum.zip(neighbours, [0.9, 0.8, 0.7, 0.6])], fn
+        {item, confidence} ->
+          create!(
+            EntityMention,
+            :create_from_pipeline,
+            %{
+              knowledge_item_id: item.knowledge.id,
+              scope_id: item.scope.id,
+              entity_id: entity.id,
+              surface_form: "Orchid",
+              confidence: confidence
+            },
+            account.id,
+            pipeline
+          )
+      end)
+    end)
+
+    rows = MemHouse.Retrieval.Store.relation_expand(expansion_query(seed), 50)
+
+    assert Enum.map(rows, & &1["id"]) ==
+             neighbours |> Enum.take(2) |> Enum.map(& &1.knowledge.id)
+  end
+
+  test "shared-entity expansion excludes hub entities" do
+    put_retrieval_config!(
+      relation_expand_ceiling_min_statements: 4,
+      relation_expand_frequency_ceiling: 0.5
+    )
+
+    statements =
+      for index <- 1..4 do
+        seed_active!(
+          "f7-expand-hub",
+          "/f7/expand-hub",
+          "Statement #{index} mentions the common topic.",
+          "hub-session-#{index}"
+        )
+      end
+
+    mention_entity!("f7-expand-hub", "common topic", statements)
+
+    assert [] ==
+             MemHouse.Retrieval.Store.relation_expand(expansion_query(hd(statements)), 50)
+  end
+
   test "each retrieval component reports its own elapsed time as a measurement" do
     seeded = seed_active!("f7-timing", "/f7/timing", "Avery owns the release checklist.")
 
@@ -3327,6 +3408,17 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       :retrieval_profiles,
       Enum.reduce(overrides, profiles, fn {key, value}, acc -> Keyword.put(acc, key, value) end)
     )
+  end
+
+  defp expansion_query(seed) do
+    %Query{
+      account_id: seed.account.id,
+      actor: seed.actor,
+      text: "",
+      target: :knowledge,
+      scope_ids: [seed.scope.id],
+      seed_ids: [seed.knowledge.id]
+    }
   end
 
   # actor — deliberately going through the engine, not around it, so the transition writes
