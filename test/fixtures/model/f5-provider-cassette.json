@@ -114,6 +114,26 @@
         "usage": {"input_tokens": 60, "output_tokens": 20}
       }
     ],
+    "missing_until_exhausted": [
+      {
+        "operation": "structured",
+        "role": "ingest_extractor",
+        "task": "extraction",
+        "error": "missing_structured_object"
+      },
+      {
+        "operation": "structured",
+        "role": "ingest_extractor",
+        "task": "extraction",
+        "error": "missing_structured_object"
+      },
+      {
+        "operation": "structured",
+        "role": "ingest_extractor",
+        "task": "extraction",
+        "error": "missing_structured_object"
+      }
+    ],
     "provider_outage": [
       {
         "operation": "structured",
