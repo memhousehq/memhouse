@@ -195,7 +195,7 @@ All fields optional.
 | `scope_path` | `"/poc"` | Selects the scope **and its ancestors** |
 | `peer_key` | none | The peer the results are read for. A machine credential that names none reads **public statements only** |
 | `profile` | `"balanced"` | `fast`, `balanced`, `thorough` |
-| `limit` | `12` | Candidate cap |
+| `limit` | `12` | Candidate cap; clamped to `1` through `100` |
 | `include_cross_links` | off | Requires authorisation at both endpoints |
 | `as_of` | unset | Read memory as it stood then. This enables text-matched temporal ranking by distance from that time |
 | `min_score` | none | Drops candidates below this score inside each strategy, before fusion |

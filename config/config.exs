@@ -262,6 +262,18 @@ config :memhouse, :retrieval_profiles,
   # list. Without it a hub entity that clears the ceiling still fills the list
   # alone and crowds every other strategy out of fusion. Unit: statements.
   entity_match_per_entity_cap: 25,
+  # Only this many candidates from the rank-interleaved seed lists form the
+  # frontier for every expand-stage strategy. Unit: statements.
+  expand_seed_limit: 10,
+  # Most shared-entity neighbours one seed may add before the outer candidate
+  # cap. This bounds the lateral branch at seeds times this value. Unit: statements.
+  relation_expand_per_seed_cap: 10,
+  # Shared-entity expansion ignores an entity above this fraction of the
+  # authorized visible corpus. A ubiquitous name is not evidence of a relation.
+  relation_expand_frequency_ceiling: 0.5,
+  # Apply the frequency ceiling only when the visible corpus is large enough
+  # for the ratio to be meaningful. Unit: statements.
+  relation_expand_ceiling_min_statements: 20,
   # Not read by the application. The per-strategy and fused-list cap comes from
   # the request's `limit` (defaulting to 12 for search and 8 for context
   # assembly), not from this value.

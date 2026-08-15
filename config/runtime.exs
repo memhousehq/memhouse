@@ -709,6 +709,41 @@ retrieval_profiles =
     |> max(1)
   )
   |> Keyword.put(
+    :expand_seed_limit,
+    env_integer.(
+      "MEMHOUSE_RETRIEVAL_EXPAND_SEED_LIMIT",
+      Integer.to_string(Keyword.fetch!(retrieval_profiles, :expand_seed_limit))
+    )
+    |> max(1)
+  )
+  |> Keyword.put(
+    :relation_expand_per_seed_cap,
+    env_integer.(
+      "MEMHOUSE_RETRIEVAL_RELATION_PER_SEED_CAP",
+      Integer.to_string(Keyword.fetch!(retrieval_profiles, :relation_expand_per_seed_cap))
+    )
+    |> max(1)
+  )
+  |> Keyword.put(
+    :relation_expand_frequency_ceiling,
+    env_float.(
+      "MEMHOUSE_RETRIEVAL_RELATION_FREQUENCY_CEILING",
+      Float.to_string(Keyword.fetch!(retrieval_profiles, :relation_expand_frequency_ceiling))
+    )
+    |> max(0.0)
+    |> min(1.0)
+  )
+  |> Keyword.put(
+    :relation_expand_ceiling_min_statements,
+    env_integer.(
+      "MEMHOUSE_RETRIEVAL_RELATION_CEILING_MIN_STATEMENTS",
+      Integer.to_string(
+        Keyword.fetch!(retrieval_profiles, :relation_expand_ceiling_min_statements)
+      )
+    )
+    |> max(0)
+  )
+  |> Keyword.put(
     :answer_context_limit,
     env_integer.(
       "MEMHOUSE_ANSWER_CONTEXT_LIMIT",

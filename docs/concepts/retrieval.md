@@ -195,6 +195,11 @@ scope — but only after **both** endpoint scopes pass the caller's
 authorisation. A cross-link never grants access; it only follows access the
 caller already has.
 
+Expansion uses only the head of the interleaved seed lists. Shared-entity
+edges ignore entities that occur throughout the visible corpus and cap the
+neighbours contributed by each seed. These bounds prevent one common entity
+from turning a small result request into a scan of the whole scope.
+
 ## Vectors carry an identity
 
 An embedding is stored with its provider, model, version, and dimensions. Those
