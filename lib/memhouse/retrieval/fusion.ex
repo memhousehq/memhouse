@@ -26,7 +26,7 @@ defmodule MemHouse.Retrieval.Fusion do
 
   `k` must be positive.
   """
-  def score_aware([], _weights, _k, _limit), do: []
+  def score_aware([], _weights, k, _limit) when is_number(k) and k > 0, do: []
 
   def score_aware(lists, weights, k, limit) when is_number(k) and k > 0 do
     weighted_lists = normalized_lists(lists, weights, k)
@@ -59,8 +59,12 @@ defmodule MemHouse.Retrieval.Fusion do
     |> Enum.map(fn {candidate, rank} -> %{candidate | rank: rank} end)
   end
 
+  def score_aware(_lists, _weights, k, _limit) do
+    raise ArgumentError, "fusion requires positive rrf_k, got: #{inspect(k)}"
+  end
+
   @doc "Returns each candidate's score-aware contribution for diagnostic output."
-  def contributions([], _weights, _k), do: %{}
+  def contributions([], _weights, k) when is_number(k) and k > 0, do: %{}
 
   def contributions(lists, weights, k) when is_number(k) and k > 0 do
     total_weight = total_weight!(lists, weights)
@@ -70,6 +74,10 @@ defmodule MemHouse.Retrieval.Fusion do
         into: %{} do
       {{candidate.id, strategy}, contribution / total_weight}
     end
+  end
+
+  def contributions(_lists, _weights, k) do
+    raise ArgumentError, "fusion requires positive rrf_k, got: #{inspect(k)}"
   end
 
   @doc """
@@ -149,6 +157,16 @@ defmodule MemHouse.Retrieval.Fusion do
   defp weight(weights, strategy), do: Map.get(weights, strategy, 1.0) * 1.0
 
   defp total_weight!(lists, weights) do
+    # Validate each configured weight before calculating the total.
+    for {strategy, _candidates} <- lists do
+      w = Map.get(weights, strategy, 1.0)
+
+      unless is_number(w) and w >= 0 do
+        raise ArgumentError,
+              "fusion requires non-negative numeric strategy weights, got #{inspect(w)} for #{strategy}"
+      end
+    end
+
     total = Enum.sum(for {strategy, _candidates} <- lists, do: weight(weights, strategy))
 
     if total > 0 do

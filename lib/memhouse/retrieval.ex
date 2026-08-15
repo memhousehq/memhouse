@@ -18,7 +18,9 @@ defmodule MemHouse.Retrieval do
     means adding those filters to it.
   * **Strategy scores are not comparable.** Cosine similarity, full-text rank,
     a time-relevance step function, a salience decay product, and mention
-    confidence live on unrelated scales. They are merged by rank, not by value.
+    confidence live on unrelated scales. Score-aware fusion normalizes each
+    strategy's scores locally, then combines them using profile weights and
+    the rrf_k rank tie-break constant.
   * **Entity and mention rows are private caches.** They exist only to widen
     recall. No canonical name, alias, surface form, or entity id may appear in
     anything this module returns.
@@ -106,7 +108,8 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
 
   Changing a profile changes answers, so the version a caller sees is derived,
   not just copied: it combines the authored `version` integer with a digest of
-  the strategies, weights, rank constant, and rerank flag actually in force.
+  the strategies, weights, effective rrf_k rank constant, and rerank flag
+  actually in force.
   """
 
   use MemHouse.Resource,
@@ -128,10 +131,18 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
     # strategies, weights, and deadline in place, or retires it via `active`.
     create :create do
       accept [:scope_id, :name, :version, :strategy_config, :deadline_ms, :active]
+      validate MemHouse.Retrieval.ValidateRrfK
     end
 
     update :update do
       accept [:strategy_config, :deadline_ms, :active]
+      validate MemHouse.Retrieval.ValidateRrfK
+    end
+
+    # Portability import bypasses normal validations, but rrf_k must still be
+    # validated to prevent invalid configuration from entering the database.
+    update :portability_import do
+      validate MemHouse.Retrieval.ValidateRrfK
     end
   end
 
@@ -172,5 +183,57 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
     # republishing a tuning require a version bump rather than silently
     # duplicating a competing configuration for the same scope.
     identity :scope_name_version, [:scope_id, :name, :version]
+  end
+end
+
+defmodule MemHouse.Retrieval.ValidateRrfK do
+  @moduledoc """
+  Validates that strategy_config.rrf_k is a positive numeric value when present.
+
+  Absent rrf_k values are permitted so compiled defaults continue to apply.
+  Zero, negative, and non-numeric values are rejected before storage.
+  """
+
+  use Ash.Resource.Validation
+
+  @impl true
+  def validate(changeset, _opts, _context) do
+    case Ash.Changeset.get_attribute(changeset, :strategy_config) do
+      nil ->
+        :ok
+
+      config when is_map(config) ->
+        validate_rrf_k(config)
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp validate_rrf_k(config) do
+    case config do
+      %{"rrf_k" => rrf_k} when is_number(rrf_k) and rrf_k > 0 ->
+        :ok
+
+      %{"rrf_k" => rrf_k} when is_number(rrf_k) ->
+        {:error, field: :strategy_config, message: "rrf_k must be positive, got: #{rrf_k}"}
+
+      %{"rrf_k" => rrf_k} ->
+        {:error,
+         field: :strategy_config, message: "rrf_k must be a positive number, got: #{inspect(rrf_k)}"}
+
+      %{rrf_k: rrf_k} when is_number(rrf_k) and rrf_k > 0 ->
+        :ok
+
+      %{rrf_k: rrf_k} when is_number(rrf_k) ->
+        {:error, field: :strategy_config, message: "rrf_k must be positive, got: #{rrf_k}"}
+
+      %{rrf_k: rrf_k} ->
+        {:error,
+         field: :strategy_config, message: "rrf_k must be a positive number, got: #{inspect(rrf_k)}"}
+
+      _no_rrf_k ->
+        :ok
+    end
   end
 end

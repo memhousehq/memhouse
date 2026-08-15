@@ -581,6 +581,28 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert next.score < 0.05
   end
 
+  test "cross-strategy fusion with equal weights ranks strong candidates above weak ones" do
+    # Two strategies each return the same strong rank-1 and weak rank-2 candidates.
+    # Score-aware fusion with equal weights should preserve the strong candidate
+    # ahead of the weak one, demonstrating behavior beyond pure RRF.
+    strong = candidate("strong-answer", :lexical, 1, 10.0)
+    weak = candidate("weak-match", :lexical, 2, 2.0)
+
+    lists = [
+      lexical: [strong, weak],
+      semantic: [
+        candidate("strong-answer", :semantic, 1, 0.95),
+        candidate("weak-match", :semantic, 2, 0.30)
+      ]
+    ]
+
+    fused = Fusion.score_aware(lists, %{lexical: 1.0, semantic: 1.0}, 60, 10)
+
+    assert length(fused) == 2
+    assert Enum.at(fused, 0).id == "strong-answer"
+    assert Enum.at(fused, 1).id == "weak-match"
+  end
+
   test "an ordinary question keeps lexical evidence in the default top twelve" do
     answer =
       seed_active!(

@@ -145,11 +145,14 @@ defmodule MemHouse.Retrieval.Profile do
       |> Map.get("weights", base.weights)
       |> Map.new(fn {key, value} -> {normalize_strategy!(key), value * 1.0} end)
 
+    effective_rrf_k = Map.get(config, "rrf_k", base.rrf_k)
+    effective_rerank = Map.get(config, "rerank", base.rerank)
+
     # A 10-hex-character (40-bit) tuning digest disambiguates authored versions.
     digest =
       :crypto.hash(
         :sha256,
-        :erlang.term_to_binary({strategies, weights, config["rrf_k"], config["rerank"]})
+        :erlang.term_to_binary({strategies, weights, effective_rrf_k, effective_rerank})
       )
       |> Base.encode16(case: :lower)
       |> binary_part(0, 10)
@@ -159,8 +162,8 @@ defmodule MemHouse.Retrieval.Profile do
       | version: "f7-#{record.version}-#{digest}",
         strategies: strategies,
         weights: weights,
-        rrf_k: Map.get(config, "rrf_k", base.rrf_k),
-        rerank: Map.get(config, "rerank", base.rerank),
+        rrf_k: effective_rrf_k,
+        rerank: effective_rerank,
         deadline_ms: record.deadline_ms
     }
   end
