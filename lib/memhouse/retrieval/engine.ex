@@ -205,9 +205,10 @@ defmodule MemHouse.Retrieval.Engine do
 
   defp run_phase(modules, query, budget, concurrent?) do
     applicable = Enum.filter(modules, & &1.applicable?(query))
-    timeout = Budget.remaining_ms(budget)
+    remaining = Budget.remaining_ms(budget)
+    timeout = strategy_timeout(remaining)
 
-    if timeout == 0 do
+    if remaining == 0 do
       # Report applicable work that the exhausted budget prevented.
       {[],
        Enum.map(applicable, fn module ->
@@ -236,14 +237,30 @@ defmodule MemHouse.Retrieval.Engine do
             outcome(strategy, "dependency_unavailable", elapsed_ms, remaining_ms)
 
           {{:exit, :timeout}, index} ->
-            outcome(Enum.at(applicable, index).name(), "timeout", timeout, 0)
+            outcome(
+              Enum.at(applicable, index).name(),
+              "timeout",
+              timeout,
+              finite_remaining(Budget.remaining_ms(budget))
+            )
 
           {{:exit, _reason}, index} ->
-            outcome(Enum.at(applicable, index).name(), "provider_error", timeout, 0)
+            outcome(
+              Enum.at(applicable, index).name(),
+              "provider_error",
+              timeout,
+              finite_remaining(Budget.remaining_ms(budget))
+            )
         end)
 
       {completed, outcomes}
     end
+  end
+
+  defp strategy_timeout(:infinity), do: :infinity
+
+  defp strategy_timeout(remaining) do
+    min(remaining, retrieval_config(:strategy_timeout_ms))
   end
 
   defp execute_modules(modules, query, budget, timeout, concurrent?) do
@@ -276,14 +293,21 @@ defmodule MemHouse.Retrieval.Engine do
       )
       |> Enum.to_list()
     else
-      # The single-connection test path can enforce deadlines only between strategies.
-      Enum.map(modules, fn module ->
-        if Budget.remaining_ms(budget) == 0 do
-          {:exit, :timeout}
-        else
-          {:ok, run.(module)}
-        end
-      end)
+      # The single-connection test path cannot kill work, so it classifies an overrun after the
+      # strategy returns and enforces the remaining budget before starting the next strategy.
+      Enum.map(modules, &run_serial(&1, run, budget, timeout))
+    end
+  end
+
+  defp run_serial(module, run, budget, timeout) do
+    if Budget.remaining_ms(budget) == 0 do
+      {:exit, :timeout}
+    else
+      started_at = MemHouse.Clock.monotonic_ms()
+      result = run.(module)
+      elapsed = MemHouse.Clock.monotonic_ms() - started_at
+
+      if timeout != :infinity and elapsed > timeout, do: {:exit, :timeout}, else: {:ok, result}
     end
   end
 

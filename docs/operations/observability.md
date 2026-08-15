@@ -191,14 +191,14 @@ changes nothing else in the result: the candidates still arrive in fusion
 order. Only `degraded`, `degraded_components`, and this counter
 say that the stage which judges relevance never ran.
 
-The reason class says what to do about it. `"timeout"` means the reranker did
-not answer within its allowance, which is the smaller of
+The reason class says what to do about it. For the reranker, `"timeout"` means
+the model did not answer within the smaller of
 `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` and the budget left when the stage began.
 The timeout outcome records that allowance as its `elapsed_ms`; read
 `pre_rerank_remaining_ms` on the same result to see which of the two was
-binding, then raise the timeout, or the profile deadline if the reranker was
-reached with too little left. `reserved_rerank_ms` is not the reranker's
-timeout — it only keeps the strategies from spending the budget first.
+binding, then raise the reranker timeout, or the profile deadline if the
+reranker was reached with too little left. `reserved_rerank_ms` is not the
+reranker's timeout — it only keeps the strategies from spending the budget first.
 `"provider_error"` is the provider failing rather than lagging.
 `"partial_rankings"` is the mildest: the model judged only part of the head, and
 that part was applied, so only the unjudged remainder kept fusion order.

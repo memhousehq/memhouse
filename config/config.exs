@@ -288,6 +288,11 @@ config :memhouse, :retrieval_profiles,
   # evaluation run is not clamped at all, because it is measuring the reranked
   # ordering itself.
   rerank_timeout_ms: 120,
+  # Maximum milliseconds one retrieval strategy may run. The engine also clamps this to the
+  # remaining strategy-phase budget. This prevents one lane from consuming the full
+  # thorough-profile strategy budget and leaving no time for expansion or reranking.
+  # Rerank reservation may further reduce the budget used by MemHouse.Retrieval.Engine.retrieve/3.
+  strategy_timeout_ms: 750,
   # Maximum number of final ranked candidates sent to the answer model. Search
   # still returns its full requested candidate list. This bound controls answer
   # prompt cost without changing retrieval recall or citation authorization.

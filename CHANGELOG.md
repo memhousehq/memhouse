@@ -92,6 +92,12 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
+- Lexical retrieval now uses a linear adjacent-phrase boost over a `2 × limit`
+  shortlist instead of a distance-and-direction fan-out over `5 × limit` rows.
+  Entity-name lookup uses a normalized GIN expression index instead of
+  lowercasing an unnested alias array for every entity row. One strategy can no
+  longer consume the full thorough-profile phase budget.
+
 - Entity-index rebuilds no longer create hubs for closed-class words, common
   sentence-start artefacts, or timezone abbreviations. The spotter also stops
   at sentence and line boundaries. Ordinary title-cased names can now produce
