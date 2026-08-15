@@ -27,6 +27,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
   alias MemHouse.Model.Usage
   alias MemHouse.Operations.Health
   alias MemHouse.Operations.Metering
+  alias MemHouse.Pipeline
   alias MemHouse.Portability
   alias MemHouse.Portability.AuditVerifier
   alias MemHouse.Portability.Registry
@@ -181,22 +182,28 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
   end
 
   test "readiness formats completed lifecycle sweep timestamps" do
-    expiry_at = ~N[2026-08-15 17:00:00.913243]
-    revalidation_at = ~N[2026-08-15 17:00:00.912005]
-
-    DataLayer.with_free_account(fn account, _actor ->
-      insert_completed_run!(account.id, "expiry", expiry_at)
-      insert_completed_run!(account.id, "revalidation", revalidation_at)
-    end)
+    expected = complete_lifecycle_runs!()
 
     result = Health.readiness()
 
     assert result.status == "ready"
     assert result.checks.lifecycle_sweeps.status == "ok"
+    assert result.checks.lifecycle_sweeps.last_completed_at == expected
 
-    assert result.checks.lifecycle_sweeps.last_completed_at == %{
-             "expiry" => "2026-08-15T17:00:00.913243",
-             "revalidation" => "2026-08-15T17:00:00.912005"
+    assert {:ok, _expiry} = NaiveDateTime.from_iso8601(expected["expiry"])
+    assert {:ok, _revalidation} = NaiveDateTime.from_iso8601(expected["revalidation"])
+  end
+
+  test "readiness reports never when no lifecycle sweep has completed" do
+    DataLayer.with_free_account(fn _account, _actor -> :ok end)
+
+    result = Health.readiness()
+
+    assert result.status == "ready"
+
+    assert result.checks.lifecycle_sweeps == %{
+             status: "ok",
+             last_completed_at: %{"expiry" => "never", "revalidation" => "never"}
            }
   end
 
@@ -539,24 +546,30 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert File.stat!(target).mtime == first
   end
 
-  defp insert_completed_run!(account_id, kind, processed_at) do
-    id = Ecto.UUID.generate()
+  defp complete_lifecycle_runs! do
+    {runs, actor} =
+      DataLayer.with_free_account(fn account, actor ->
+        assert {:ok, runs} =
+                 Pipeline.enqueue_lifecycle_sweeps(account.id, actor, DateTime.utc_now())
 
-    Repo.query!(
-      """
-      INSERT INTO pipeline_runs
-        (id, account_id, kind, target_type, idempotency_key, payload, status,
-         attempt_count, processed_at, inserted_at, updated_at)
-      VALUES ($1, $2, $3, 'account', $4, '{}', 'completed', 0, $5, $5, $5)
-      """,
-      [
-        Ecto.UUID.dump!(id),
-        Ecto.UUID.dump!(account_id),
-        kind,
-        "readiness:#{kind}:#{id}",
-        processed_at
-      ]
-    )
+        {runs, actor}
+      end)
+
+    [expiry: runs.expiry, revalidation: runs.revalidation]
+    |> Map.new(fn {kind, run} ->
+      completed =
+        run
+        |> Ash.Changeset.for_update(:execute)
+        |> Ash.Changeset.set_context(%{warn_on_transaction_hooks?: false})
+        |> Ash.update!(actor: actor)
+
+      timestamp =
+        completed.processed_at
+        |> DateTime.to_naive()
+        |> NaiveDateTime.to_iso8601()
+
+      {Atom.to_string(kind), timestamp}
+    end)
   end
 
   # A minimal audit event in the shape the verifier reads from an archive. Every field here
