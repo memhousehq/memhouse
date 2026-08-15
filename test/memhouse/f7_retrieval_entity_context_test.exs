@@ -987,8 +987,11 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     refute pottery.knowledge.id in melanie_ids
     assert Enum.find_index(caroline_ids, &(&1 == caroline.knowledge.id)) < 12
 
-    assert %{lexical_analyzer: "lexical-question-v2"} =
-             MemHouse.Retrieval.Diagnostics.latest(melanie.account.id)
+    assert %{
+             lexical_analyzer: "lexical-question-v2",
+             query_search_list_size: 100,
+             query_rescore: 50
+           } = MemHouse.Retrieval.Diagnostics.latest(melanie.account.id)
   end
 
   test "lexical question analysis preserves quoted phrases, negation, dates, and safe empty input" do
@@ -1918,6 +1921,59 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       )
 
     assert clamped["diagnostic"]["limit"] == DiagnosticGrant.max_limit()
+
+    ordinary_clamped =
+      Memory.search(
+        %{
+          "scope_path" => scope_path,
+          "query" => "release",
+          "limit" => "100000",
+          "strategies" => ["lexical"],
+          "deadline" => "disabled"
+        },
+        %{admin | identity_kind: :system}
+      )
+
+    assert length(ordinary_clamped["candidates"]) == 40
+
+    assert %{
+             query_search_list_size: 200,
+             query_rescore: 100
+           } = MemHouse.Retrieval.Diagnostics.latest(admin.account_id)
+
+    # The DiskANN settings must apply when semantic retrieval runs with indexed
+    # vectors, not only when lexical search computes them without using them.
+    scope_id =
+      DataLayer.with_actor(admin, fn account, actor ->
+        Scope
+        |> Ash.Query.filter(path == ^scope_path)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+        |> Map.fetch!(:id)
+      end)
+
+    assert {:ok, %{indexed: indexed}} = Indexer.rebuild_scope(admin.account_id, scope_id)
+    assert indexed == 40
+
+    semantic_result =
+      Memory.search(
+        %{
+          "scope_path" => scope_path,
+          "query" => "release checklist",
+          "limit" => "100",
+          "strategies" => ["semantic"],
+          "deadline" => "disabled"
+        },
+        %{admin | identity_kind: :system}
+      )
+
+    assert "semantic" in semantic_result["contributed_strategies"]
+    assert semantic_result["candidates"] != []
+
+    assert %{
+             query_search_list_size: 200,
+             query_rescore: 100
+           } = MemHouse.Retrieval.Diagnostics.latest(admin.account_id)
 
     assert_raise ArgumentError, ~r/unknown retrieval strategy/, fn ->
       Memory.diagnostic_search(
