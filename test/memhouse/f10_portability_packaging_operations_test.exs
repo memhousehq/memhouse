@@ -180,6 +180,26 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert map_size(result.checks.model_roles.configured) == 5
   end
 
+  test "readiness formats completed lifecycle sweep timestamps" do
+    expiry_at = ~N[2026-08-15 17:00:00.913243]
+    revalidation_at = ~N[2026-08-15 17:00:00.912005]
+
+    DataLayer.with_free_account(fn account, _actor ->
+      insert_completed_run!(account.id, "expiry", expiry_at)
+      insert_completed_run!(account.id, "revalidation", revalidation_at)
+    end)
+
+    result = Health.readiness()
+
+    assert result.status == "ready"
+    assert result.checks.lifecycle_sweeps.status == "ok"
+
+    assert result.checks.lifecycle_sweeps.last_completed_at == %{
+             "expiry" => "2026-08-15T17:00:00.913243",
+             "revalidation" => "2026-08-15T17:00:00.912005"
+           }
+  end
+
   test "embedding index rejects an embedder width without an installed index" do
     original_roles = Application.fetch_env!(:memhouse, :model_roles)
 
@@ -517,6 +537,26 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     first = File.stat!(target).mtime
     assert :ok = MemHouse.Pg0.stage_vectorscale!(config)
     assert File.stat!(target).mtime == first
+  end
+
+  defp insert_completed_run!(account_id, kind, processed_at) do
+    id = Ecto.UUID.generate()
+
+    Repo.query!(
+      """
+      INSERT INTO pipeline_runs
+        (id, account_id, kind, target_type, idempotency_key, payload, status,
+         attempt_count, processed_at, inserted_at, updated_at)
+      VALUES ($1, $2, $3, 'account', $4, '{}', 'completed', 0, $5, $5, $5)
+      """,
+      [
+        Ecto.UUID.dump!(id),
+        Ecto.UUID.dump!(account_id),
+        kind,
+        "readiness:#{kind}:#{id}",
+        processed_at
+      ]
+    )
   end
 
   # A minimal audit event in the shape the verifier reads from an archive. Every field here

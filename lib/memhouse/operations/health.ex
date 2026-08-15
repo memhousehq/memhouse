@@ -199,7 +199,7 @@ defmodule MemHouse.Operations.Health do
       {:ok, %{rows: rows}} ->
         last_completed_at =
           Enum.reduce(rows, never_completed(), fn [kind, processed_at], acc ->
-            Map.put(acc, kind, DateTime.to_iso8601(processed_at))
+            Map.put(acc, kind, NaiveDateTime.to_iso8601(processed_at))
           end)
 
         %{status: "ok", last_completed_at: last_completed_at}
