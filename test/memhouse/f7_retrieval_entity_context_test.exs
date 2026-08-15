@@ -188,19 +188,23 @@ defmodule MemHouse.F7RetrievalEntityContextTest.SlowEmbedderProvider do
 
   alias MemHouse.Model.Providers.Deterministic
 
+  @doc "Generates structured output matching the given schema."
   @impl true
   def structured(config, messages, schema, opts),
     do: Deterministic.structured(config, messages, schema, opts)
 
+  @doc "Generates a chat completion."
   @impl true
   def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
 
+  @doc "Generates embeddings with an 80-millisecond delay before delegating to Deterministic.embed/3."
   @impl true
   def embed(config, texts, opts) do
     Process.sleep(80)
     Deterministic.embed(config, texts, opts)
   end
 
+  @doc "Reranks documents by relevance to the query."
   @impl true
   def rerank(config, query, documents, opts),
     do: Deterministic.rerank(config, query, documents, opts)

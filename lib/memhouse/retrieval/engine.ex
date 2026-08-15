@@ -290,7 +290,15 @@ defmodule MemHouse.Retrieval.Engine do
         if Budget.remaining_ms(budget) == 0 do
           {:exit, :timeout}
         else
-          {:ok, run.(module)}
+          started_at = MemHouse.Clock.monotonic_ms()
+          result = run.(module)
+          elapsed = MemHouse.Clock.monotonic_ms() - started_at
+
+          if timeout != :infinity and elapsed > timeout do
+            {:exit, :timeout}
+          else
+            {:ok, result}
+          end
         end
       end)
     end

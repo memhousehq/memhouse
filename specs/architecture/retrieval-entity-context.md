@@ -30,9 +30,10 @@ time relevance, salience, and mention confidence are never treated as
 comparable scores. The `:thorough` profile optionally reranks only the fused
 head through `MemHouse.Model.Gateway`. Reranking and grounded answers hold no
 transaction; the model layer scopes its own configuration read and usage write.
-A hard remaining-time budget wraps strategies and reranking. Each strategy and
-the reranker receive independently configured timeouts clamped to the remaining
-hard deadline.
+A hard remaining-time budget wraps strategies and reranking. Each strategy
+receives a configured timeout clamped to the remaining strategy-phase budget;
+rerank reservation may further reduce that budget. The reranker receives its
+configured timeout clamped to the remaining hard deadline.
 Timeouts are dropped, not retried, and every response preserves the compatible
 dropped-name list while adding content-free component timings and deterministic
 reason classes plus pre-fusion cross-strategy disagreement.

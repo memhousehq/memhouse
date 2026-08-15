@@ -5,6 +5,9 @@ defmodule MemHouse.Repo.Migrations.IndexNormalizedEntityAliases do
 
   use Ecto.Migration
 
+  # Disable DDL transaction so the concurrent index build can proceed.
+  @disable_ddl_transaction true
+
   @doc "Creates an immutable normalizer and its rebuildable GIN expression index."
   def up do
     # Entity aliases are a rebuildable private cache. Normalize them in one immutable function so
@@ -26,8 +29,11 @@ defmodule MemHouse.Repo.Migrations.IndexNormalizedEntityAliases do
     $$
     """
 
+    # Build the index concurrently to avoid blocking writes to the entities table.
+    # A failed concurrent build may leave an invalid index; remove it with
+    # DROP INDEX CONCURRENTLY IF EXISTS entities_normalized_aliases_gin_idx before retrying.
     execute """
-    CREATE INDEX entities_normalized_aliases_gin_idx
+    CREATE INDEX CONCURRENTLY entities_normalized_aliases_gin_idx
     ON entities
     USING gin (memhouse_normalized_entity_aliases(aliases, canonical_name))
     """
@@ -35,7 +41,7 @@ defmodule MemHouse.Repo.Migrations.IndexNormalizedEntityAliases do
 
   @doc "Drops the normalized entity-name index and its helper function."
   def down do
-    execute "DROP INDEX IF EXISTS entities_normalized_aliases_gin_idx"
+    execute "DROP INDEX CONCURRENTLY IF EXISTS entities_normalized_aliases_gin_idx"
     execute "DROP FUNCTION IF EXISTS memhouse_normalized_entity_aliases(text[], text)"
   end
 end

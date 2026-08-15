@@ -339,7 +339,7 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
           <.tile
             label="Strategy timeout"
             value={"#{@operations.retrieval_runtime.strategy_timeout_ms} ms"}
-            note="clamped to remaining deadline"
+            note="clamped to remaining strategy-phase budget"
           />
         </div>
 
