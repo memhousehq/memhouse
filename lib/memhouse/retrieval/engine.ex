@@ -285,22 +285,21 @@ defmodule MemHouse.Retrieval.Engine do
       )
       |> Enum.to_list()
     else
-      # The single-connection test path can enforce deadlines only between strategies.
-      Enum.map(modules, fn module ->
-        if Budget.remaining_ms(budget) == 0 do
-          {:exit, :timeout}
-        else
-          started_at = MemHouse.Clock.monotonic_ms()
-          result = run.(module)
-          elapsed = MemHouse.Clock.monotonic_ms() - started_at
+      # The single-connection test path cannot kill work, so it classifies an overrun after the
+      # strategy returns and enforces the remaining budget before starting the next strategy.
+      Enum.map(modules, &run_serial(&1, run, budget, timeout))
+    end
+  end
 
-          if timeout != :infinity and elapsed > timeout do
-            {:exit, :timeout}
-          else
-            {:ok, result}
-          end
-        end
-      end)
+  defp run_serial(module, run, budget, timeout) do
+    if Budget.remaining_ms(budget) == 0 do
+      {:exit, :timeout}
+    else
+      started_at = MemHouse.Clock.monotonic_ms()
+      result = run.(module)
+      elapsed = MemHouse.Clock.monotonic_ms() - started_at
+
+      if timeout != :infinity and elapsed > timeout, do: {:exit, :timeout}, else: {:ok, result}
     end
   end
 
