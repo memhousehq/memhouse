@@ -514,19 +514,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         Store.with_diskann_assertion_fallback(
           fn ->
             assert current_account_id() == account.id
-
-            Ecto.Adapters.SQL.query!(MemHouse.Repo, """
-            DO $$
-            BEGIN
-              RAISE EXCEPTION USING
-                ERRCODE = 'XX000',
-                MESSAGE = 'assertion failed: attnum > 0';
-            END
-            $$
-            """)
+            Store.raise_diskann_assertion_for_test!()
           end,
           fn ->
-            Ecto.Adapters.SQL.query!(MemHouse.Repo, "SET LOCAL enable_indexscan = off", [])
+            Store.disable_indexscan_for_test!()
             assert current_account_id() == account.id
             account.id
           end
@@ -536,7 +527,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       assert current_account_id() == account.id
 
       # Verify fallback's SET LOCAL does not leak to enclosing transaction
-      assert current_setting("enable_indexscan") == "on"
+      assert Store.database_setting_for_test!("enable_indexscan") == "on"
     end)
   end
 
@@ -3595,25 +3586,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   end
 
   defp current_account_id do
-    %{rows: [[account_id]]} =
-      Ecto.Adapters.SQL.query!(
-        MemHouse.Repo,
-        "SELECT current_setting('memhouse.account_id')",
-        []
-      )
-
-    account_id
-  end
-
-  defp current_setting(name) do
-    %{rows: [[value]]} =
-      Ecto.Adapters.SQL.query!(
-        MemHouse.Repo,
-        "SELECT current_setting($1)",
-        [name]
-      )
-
-    value
+    Store.database_setting_for_test!("memhouse.account_id")
   end
 
   # actor — deliberately going through the engine, not around it, so the transition writes

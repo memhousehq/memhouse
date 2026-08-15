@@ -248,16 +248,16 @@ defmodule MemHouse.Retrieval.Store do
       when is_function(primary, 0) and is_function(fallback, 0) do
     {:ok, result} =
       Repo.transaction(fn ->
-        sql!("SAVEPOINT memhouse_diskann_attempt")
+        diskann_savepoint!(:create)
 
         try do
           result = primary.()
-          sql!("RELEASE SAVEPOINT memhouse_diskann_attempt")
+          diskann_savepoint!(:release)
           result
         rescue
           error in Postgrex.Error ->
             stacktrace = __STACKTRACE__
-            sql!("ROLLBACK TO SAVEPOINT memhouse_diskann_attempt")
+            diskann_savepoint!(:rollback)
 
             if diskann_attnum_assertion?(error) do
               require Logger
@@ -269,11 +269,11 @@ defmodule MemHouse.Retrieval.Store do
               )
 
               result = fallback.()
-              sql!("ROLLBACK TO SAVEPOINT memhouse_diskann_attempt")
-              sql!("RELEASE SAVEPOINT memhouse_diskann_attempt")
+              diskann_savepoint!(:rollback)
+              diskann_savepoint!(:release)
               result
             else
-              sql!("RELEASE SAVEPOINT memhouse_diskann_attempt")
+              diskann_savepoint!(:release)
               reraise error, stacktrace
             end
         end
@@ -282,7 +282,48 @@ defmodule MemHouse.Retrieval.Store do
     result
   end
 
-  defp sql!(statement), do: Ecto.Adapters.SQL.query!(Repo, statement, [])
+  defp diskann_savepoint!(:create),
+    do: Ecto.Adapters.SQL.query!(Repo, "SAVEPOINT memhouse_diskann_attempt", [])
+
+  defp diskann_savepoint!(:rollback),
+    do: Ecto.Adapters.SQL.query!(Repo, "ROLLBACK TO SAVEPOINT memhouse_diskann_attempt", [])
+
+  defp diskann_savepoint!(:release),
+    do: Ecto.Adapters.SQL.query!(Repo, "RELEASE SAVEPOINT memhouse_diskann_attempt", [])
+
+  if Mix.env() == :test do
+    @doc "Raises the exact PostgreSQL error used to test DiskANN fallback recovery."
+    def raise_diskann_assertion_for_test! do
+      Ecto.Adapters.SQL.query!(Repo, """
+      DO $$
+      BEGIN
+        RAISE EXCEPTION USING
+          ERRCODE = 'XX000',
+          MESSAGE = 'assertion failed: attnum > 0';
+      END
+      $$
+      """)
+    end
+
+    @doc "Changes index-scan behavior inside a database fallback regression test."
+    def disable_indexscan_for_test!,
+      do: Ecto.Adapters.SQL.query!(Repo, "SET LOCAL enable_indexscan = off", [])
+
+    @doc "Returns one allowlisted transaction setting for database fallback regression tests."
+    def database_setting_for_test!("memhouse.account_id") do
+      %{rows: [[value]]} =
+        Ecto.Adapters.SQL.query!(Repo, "SELECT current_setting('memhouse.account_id')", [])
+
+      value
+    end
+
+    def database_setting_for_test!("enable_indexscan") do
+      %{rows: [[value]]} =
+        Ecto.Adapters.SQL.query!(Repo, "SELECT current_setting('enable_indexscan')", [])
+
+      value
+    end
+  end
 
   defp diskann_attnum_assertion?(%Postgrex.Error{
          postgres: %{code: :internal_error, message: "assertion failed: attnum > 0"}
