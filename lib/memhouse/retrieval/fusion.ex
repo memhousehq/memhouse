@@ -2,11 +2,11 @@
 
 defmodule MemHouse.Retrieval.Fusion do
   @moduledoc """
-  Merges strategy candidate lists by rank and measures their pre-fusion disagreement.
+  Merges strategy candidate lists by normalized score and rank, and measures disagreement.
 
-  Strategy scores use incomparable scales, so fusion uses rank only. Each strategy contributes
-  `weight / (k + rank)`; agreement accumulates naturally. Disagreement must be measured before
-  fusion destroys the separate lists.
+  Each strategy's returned score range is normalized independently. Fusion combines that
+  comparable value with a small reciprocal-rank tie-break. Agreement accumulates naturally.
+  Disagreement must be measured before fusion destroys the separate lists.
   """
 
   alias MemHouse.Retrieval.Candidate
@@ -18,32 +18,32 @@ defmodule MemHouse.Retrieval.Fusion do
   `lists` is a list of `{strategy_name, candidates}` pairs; `weights` maps a
   strategy name to its multiplier, defaulting to 1.0 for anything unlisted.
 
-  The fused score sums `weight / (k + rank)` for each strategy, using 1-based rank and the
-  configured fusion constant.
+  The fused score is the weighted mean of each strategy's contribution. A contribution is 95%
+  normalized local score and 5% normalized reciprocal rank, using 1-based rank and `k`.
 
   Returns at most `limit` fused candidates with dense 1-based ranks and contributing strategies.
   For duplicates, the highest local-score copy is retained deterministically.
 
-  Raises `KeyError` if the fusion constant is missing from configuration.
+  `k` must be positive.
   """
-  def reciprocal_rank(lists, weights, limit) do
-    k = retrieval_config(:rrf_k)
+  def score_aware([], _weights, _k, _limit), do: []
 
-    lists
+  def score_aware(lists, weights, k, limit) when is_number(k) and k > 0 do
+    weighted_lists = normalized_lists(lists, weights, k)
+    total_weight = total_weight!(lists, weights)
+
+    weighted_lists
     |> Enum.flat_map(fn {_strategy, candidates} -> candidates end)
-    |> Enum.group_by(& &1.id)
-    |> Enum.map(fn {_id, candidates} ->
-      # Local scores are intentionally excluded because their scales differ.
-      score =
-        Enum.reduce(candidates, 0.0, fn candidate, total ->
-          weight = Map.get(weights, candidate.strategy, 1.0)
-          total + weight / (k + candidate.rank)
-        end)
+    |> Enum.group_by(fn {candidate, _contribution} -> candidate.id end)
+    |> Enum.map(fn {_id, rows} ->
+      candidates = Enum.map(rows, &elem(&1, 0))
+      score = Enum.sum(for {_candidate, contribution} <- rows, do: contribution) / total_weight
 
       strategies = candidates |> Enum.map(& &1.strategy) |> Enum.uniq()
 
-      # Pick one duplicate deterministically; fusion does not use its local score.
-      %Candidate{} = representative = Enum.max_by(candidates, & &1.score)
+      %Candidate{} =
+        representative =
+        Enum.max_by(candidates, &{&1.score, Atom.to_string(&1.strategy)})
 
       %Candidate{
         representative
@@ -53,10 +53,23 @@ defmodule MemHouse.Retrieval.Fusion do
           evidence: %{"strategies" => strategies}
       }
     end)
-    |> Enum.sort_by(& &1.score, :desc)
+    |> Enum.sort_by(&{-&1.score, &1.id})
     |> Enum.take(limit)
     |> Enum.with_index(1)
     |> Enum.map(fn {candidate, rank} -> %{candidate | rank: rank} end)
+  end
+
+  @doc "Returns each candidate's score-aware contribution for diagnostic output."
+  def contributions([], _weights, _k), do: %{}
+
+  def contributions(lists, weights, k) when is_number(k) and k > 0 do
+    total_weight = total_weight!(lists, weights)
+
+    for {strategy, candidates} <- normalized_lists(lists, weights, k),
+        {candidate, contribution} <- candidates,
+        into: %{} do
+      {{candidate.id, strategy}, contribution / total_weight}
+    end
   end
 
   @doc """
@@ -109,10 +122,39 @@ defmodule MemHouse.Retrieval.Fusion do
     }
   end
 
-  # This setting changes every profile's ranking.
-  defp retrieval_config(key) do
-    :memhouse
-    |> Application.fetch_env!(:retrieval_profiles)
-    |> Keyword.fetch!(key)
+  defp normalized_lists(lists, weights, k) do
+    Enum.map(lists, fn {strategy, candidates} ->
+      scores = Enum.map(candidates, & &1.score)
+      {minimum, maximum} = score_range(scores)
+
+      normalized =
+        Enum.map(candidates, fn candidate ->
+          local_score = normalize(candidate.score, minimum, maximum)
+          rank_score = (k + 1) / (k + candidate.rank)
+          contribution = weight(weights, strategy) * (0.95 * local_score + 0.05 * rank_score)
+          {candidate, contribution}
+        end)
+
+      {strategy, normalized}
+    end)
+  end
+
+  defp score_range([]), do: {0.0, 0.0}
+  defp score_range(scores), do: Enum.min_max(scores)
+
+  # A singleton or tied list has no observed tail. Keep it fully relevant and let rank break ties.
+  defp normalize(_score, minimum, maximum) when minimum == maximum, do: 1.0
+  defp normalize(score, minimum, maximum), do: (score - minimum) / (maximum - minimum)
+
+  defp weight(weights, strategy), do: Map.get(weights, strategy, 1.0) * 1.0
+
+  defp total_weight!(lists, weights) do
+    total = Enum.sum(for {strategy, _candidates} <- lists, do: weight(weights, strategy))
+
+    if total > 0 do
+      total
+    else
+      raise ArgumentError, "fusion requires a positive total strategy weight"
+    end
   end
 end

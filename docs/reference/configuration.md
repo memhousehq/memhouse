@@ -326,15 +326,16 @@ controls from within that Account rather than from the environment.
 Profiles are configured in application config rather than the environment,
 because they are behaviour rather than infrastructure. The shipped values:
 
-| Profile | Strategies | Weights | Rerank | Deadline |
-| --- | --- | --- | --- | --- |
-| `fast` | semantic, salience-recency | 1.0, 0.8 | no | 100 ms |
-| `balanced` | semantic, lexical, temporal, entity-match | 1.0, 1.0, 0.7, 0.9 | no | 300 ms |
-| `thorough` | the above plus salience-recency and relation-expand | +0.8, 0.6 | yes | 1500 ms |
+| Profile | Strategies | Weights | `rrf_k` | Rerank | Deadline |
+| --- | --- | --- | --- | --- | --- |
+| `fast` | semantic, salience-recency | 1.0, 0.8 | 15 | no | 100 ms |
+| `balanced` | semantic, lexical, temporal, entity-match | 1.0, 1.0, 0.7, 0.9 | 15 | no | 300 ms |
+| `thorough` | the above plus salience-recency and relation-expand | +0.8, 0.6 | 15 | yes | 1500 ms |
 
-Fusion uses reciprocal rank with `k = 60`. `enabled_strategies` is a
-deployment-level allowlist: a strategy absent from it never runs, whatever a
-profile asks for. `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `120`.
+Fusion normalizes each strategy's returned scores and uses reciprocal rank as a
+5% tie-break. `enabled_strategies` is a deployment-level allowlist: a strategy
+absent from it never runs, whatever a profile asks for.
+`MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `120`.
 It is the most time reranking may use, but the request's remaining profile
 deadline always wins when it is smaller. Raising it can improve thorough-search
 ranking at the cost of tail latency; it cannot extend the 1500 ms hard ceiling.

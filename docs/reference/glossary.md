@@ -47,8 +47,8 @@ content and scrubs shared provenance; *strict* also removes knowledge sourced
 only through that subject. Neither retracts a claim with surviving independent
 provenance.
 
-**Fusion** — merging several strategies' *ranks* (not scores) with weighted
-reciprocal rank, `k = 60`.
+**Fusion** — merging normalized per-strategy scores with profile weights and a
+small reciprocal-rank tie-break.
 
 **Gate A** — decides whether a candidate statement is kept, rejected, or
 deferred for review.
@@ -98,8 +98,8 @@ came from, while validation is pending.
 
 **Raw observation** — what agents submit: a message, or a document version.
 
-**Reciprocal rank fusion** — the merge algorithm: a candidate at rank `r`
-contributes `weight / (k + r)`.
+**Score-aware fusion** — the merge algorithm. It normalizes scores inside each
+strategy list, then adds a small reciprocal-rank tie-break and profile weights.
 
 **Rerank** — an optional model-backed reordering of the fused head, used only
 by the `thorough` profile.

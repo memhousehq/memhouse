@@ -9,6 +9,14 @@ changelog entry and contract-version transition.
 
 ## [Unreleased]
 
+### Changed
+
+- Retrieval now normalizes scores inside each strategy list before weighted
+  fusion. A 5% reciprocal-rank term breaks ties, with `rrf_k` set per profile
+  and defaulting to 15. Candidates expose `fusion_score`; `rrf_score` remains
+  as a deprecated alias for this contract version. Recorded `poc-0` reports
+  remain immutable evidence of the previous `k = 60` RRF baseline. See ADR 0020.
+
 ### Added
 
 - Operational retention now prunes terminal Oban jobs and expired pipeline, usage, gate-decision,

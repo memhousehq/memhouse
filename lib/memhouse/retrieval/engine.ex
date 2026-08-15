@@ -2,11 +2,11 @@
 
 defmodule MemHouse.Retrieval.Engine do
   @moduledoc """
-  Runs retrieval strategies under one deadline, fuses their ranks, and optionally reranks.
+  Runs retrieval strategies under one deadline, fuses their scores and ranks, and optionally reranks.
 
   Seed strategies run first. Their interleaved, bounded ids feed expansion strategies; this
-  chooses the expansion frontier, not the final order. Weighted reciprocal-rank fusion orders all
-  candidates, then a model may rerank the fused head.
+  chooses the expansion frontier, not the final order. Score-aware fusion orders all candidates
+  with normalized local scores and a rank tie-break, then a model may rerank the head.
 
   The budget includes profile resolution, strategies, and reranking. A reranking profile
   withholds `rerank_reserved_ms` from its strategy phases, so the stage that decides the final
@@ -51,7 +51,8 @@ defmodule MemHouse.Retrieval.Engine do
 
   Returns profile metadata, latency in milliseconds, contributed, empty, and dropped
   strategies, the degradation summary, the milliseconds withheld for reranking, pre-fusion
-  disagreement, and ranked records with `rrf_score` and contributing strategies.
+  disagreement, and ranked records with `fusion_score`, its deprecated `rrf_score` alias, and
+  contributing strategies.
 
   Raises `ArgumentError` for an unknown profile or strategy name, or for a
   strategy list from a non-internal caller. A strategy killed by the deadline
@@ -110,7 +111,7 @@ defmodule MemHouse.Retrieval.Engine do
       |> run_phase(expanded_query, strategy_budget, concurrent?)
 
     lists = seed_lists ++ expand_lists
-    fused = Fusion.reciprocal_rank(lists, profile.weights, query.max_candidates)
+    fused = Fusion.score_aware(lists, profile.weights, profile.rrf_k, query.max_candidates)
     pre_rerank_remaining_ms = Budget.remaining_ms(budget)
 
     {ranked, rerank_outcome} =
@@ -174,6 +175,7 @@ defmodule MemHouse.Retrieval.Engine do
             fused,
             ranked,
             profile.weights,
+            profile.rrf_k,
             retrieval_config(:rerank_head),
             rerank_outcome
           )
@@ -551,9 +553,10 @@ defmodule MemHouse.Retrieval.Engine do
     :ok
   end
 
-  # Do not expose incomparable strategy-local scores.
+  # Do not expose incomparable strategy-local scores. Keep the alias for one contract version.
   defp candidate_map(%Candidate{} = candidate) do
     candidate.record
+    |> Map.put("fusion_score", candidate.score)
     |> Map.put("rrf_score", candidate.score)
     |> Map.put(
       "strategies",

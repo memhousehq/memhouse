@@ -186,7 +186,7 @@ defmodule MemHouseWeb.ConsoleLive.Knowledge do
                   />
                 </td>
                 <td class="nowrap" data-label="Score">
-                  {Float.round((candidate["rrf_score"] || 0) * 1.0, 4)}
+                  {Float.round((candidate["fusion_score"] || 0) * 1.0, 4)}
                 </td>
                 <td class="muted" data-label="Found by">
                   {Enum.join(candidate["strategies"] || [], ", ")}

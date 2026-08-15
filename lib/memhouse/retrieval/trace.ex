@@ -19,13 +19,14 @@ defmodule MemHouse.Retrieval.Trace do
   ordering, and `ranked` is the final ordering. Candidates outside the rerank
   head and candidates whose rerank could not complete are labelled separately.
   """
-  def build(lists, fused, ranked, weights, rerank_head, rerank_outcome) do
+  def build(lists, fused, ranked, weights, rrf_k, rerank_head, rerank_outcome) do
     local_candidates =
       lists
       |> Enum.flat_map(fn {_strategy, candidates} -> candidates end)
       |> Enum.group_by(& &1.id)
 
     fused_ranks = Map.new(fused, &{&1.id, &1.rank})
+    contributions = MemHouse.Retrieval.Fusion.contributions(lists, weights, rrf_k)
     rerank_status = rerank_status(rerank_outcome)
 
     %{
@@ -38,27 +39,24 @@ defmodule MemHouse.Retrieval.Trace do
             "id" => candidate.id,
             "fused_rank" => fused_rank,
             "final_rank" => candidate.rank,
+            "fusion_score" => candidate.score,
             "rrf_score" => candidate.score,
             "rerank_status" => candidate_rerank_status(fused_rank, rerank_head, rerank_status),
-            "strategies" => strategy_rows(local, weights)
+            "strategies" => strategy_rows(local, contributions)
           }
         end)
     }
   end
 
-  defp strategy_rows(candidates, weights) do
-    k = retrieval_config(:rrf_k)
-
+  defp strategy_rows(candidates, contributions) do
     candidates
     |> Enum.sort_by(&Atom.to_string(&1.strategy))
     |> Enum.map(fn %Candidate{} = candidate ->
-      weight = Map.get(weights, candidate.strategy, 1.0)
-
       %{
         "strategy" => Atom.to_string(candidate.strategy),
         "local_rank" => candidate.rank,
         "local_score" => candidate.score,
-        "fusion_contribution" => weight / (k + candidate.rank)
+        "fusion_contribution" => Map.fetch!(contributions, {candidate.id, candidate.strategy})
       }
     end)
   end
@@ -71,10 +69,4 @@ defmodule MemHouse.Retrieval.Trace do
   defp candidate_rerank_status(rank, head, _status) when rank > head, do: "outside_rerank_head"
   defp candidate_rerank_status(_rank, _head, :completed), do: "reranked"
   defp candidate_rerank_status(_rank, _head, :unavailable), do: "rerank_unavailable"
-
-  defp retrieval_config(key) do
-    :memhouse
-    |> Application.fetch_env!(:retrieval_profiles)
-    |> Keyword.fetch!(key)
-  end
 end

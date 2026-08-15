@@ -103,6 +103,9 @@ expand deadline.
 
 ### Fusion is reciprocal rank fusion
 
+This subsection is superseded by ADR 0020. The other seams and boundaries in
+this record remain in force.
+
 `score(d) = Σ_s w_s / (k + rank_s(d))`, with `k = 60` and per-strategy weights
 `w_s` from configuration.
 

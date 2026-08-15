@@ -519,62 +519,37 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert Strategies.SalienceRecency.applicable?(%{query | text: nil})
   end
 
-  test "micro-ablation keeps query-independent lists out of an ordinary search head" do
-    target = candidate("answer", :lexical, 1)
+  test "score-aware fusion preserves a strong match over weak local candidates" do
+    target = candidate("answer", :lexical, 1, 12.0)
 
-    query_independent =
-      for rank <- 1..40 do
-        candidate("recent-#{rank}", :temporal, rank)
+    weak =
+      for rank <- 2..40 do
+        candidate("chatter-#{rank}", :lexical, rank, 1.0 / rank)
       end
 
-    recency =
-      for rank <- 1..40 do
-        candidate("recent-#{rank}", :salience_recency, rank)
-      end
-
-    # This fixed fixture models the observed failure: one exact lexical answer
-    # versus two full query-independent lists. Their agreeing distractors bury
-    # the answer despite neither list reading the question.
-    baseline =
-      Fusion.reciprocal_rank(
-        [lexical: [target], temporal: query_independent, salience_recency: recency],
-        %{lexical: 1.0, temporal: 0.7, salience_recency: 0.8},
+    fused =
+      Fusion.score_aware(
+        [lexical: [target | weak]],
+        %{lexical: 1.0},
+        15,
         50
       )
 
-    proposed = Fusion.reciprocal_rank([lexical: [target]], %{lexical: 1.0}, 50)
-
-    assert 32 == Enum.find_index(baseline, &(&1.id == target.id)) + 1
-    assert 1 == Enum.find_index(proposed, &(&1.id == target.id)) + 1
+    assert 1 == Enum.find_index(fused, &(&1.id == target.id)) + 1
   end
 
-  test "fused separation is bounded by the fusion constant, not by how well anything matched" do
-    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
-    k = Keyword.fetch!(profiles, :rrf_k)
-    %{strategies: strategies, weights: weights} = Keyword.fetch!(profiles, :balanced)
-    total_weight = strategies |> Enum.map(&Map.get(weights, &1, 1.0)) |> Enum.sum()
+  test "fusion preserves strong local-score separation after per-strategy normalization" do
+    lists = [
+      lexical: [candidate("best", :lexical, 1, 9.0), candidate("weak", :lexical, 2, 1.0)],
+      semantic: [candidate("best", :semantic, 1, 0.9), candidate("weak", :semantic, 2, 0.2)]
+    ]
 
-    # Unanimous rank 1 is the best any candidate can ever score, and unanimous rank 4 is still
-    # a strong result. Every strategy returns both, so the pair differs only in rank.
-    lists =
-      for strategy <- strategies do
-        {strategy, [candidate("best", strategy, 1), candidate("fourth", strategy, 4)]}
-      end
-
-    [top, next] = Fusion.reciprocal_rank(lists, weights, 10)
+    [top, next] = Fusion.score_aware(lists, %{lexical: 1.0, semantic: 1.0}, 15, 10)
 
     assert top.id == "best"
-    assert next.id == "fourth"
-
-    # Both bounds are functions of `rrf_k` and the profile weights alone. No corpus, embedding,
-    # or analyzer change can widen them, so the ceiling is a property of the merge rather than
-    # of the match.
-    assert_in_delta top.score, total_weight / (k + 1), 1.0e-12
-    assert_in_delta next.score, total_weight / (k + 4), 1.0e-12
-
-    # Three whole rank positions of unanimous disagreement move the score by a few percent, so
-    # the ordering a caller sees is close to a tie however certain a strategy was.
-    assert (top.score - next.score) / top.score < 0.05
+    assert next.id == "weak"
+    assert_in_delta top.score, 1.0, 1.0e-12
+    assert next.score < 0.05
   end
 
   test "an ordinary question keeps lexical evidence in the default top twelve" do
@@ -677,6 +652,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert id == seeded.knowledge.id
     assert "semantic" in strategies
     assert "lexical" in strategies
+
+    [first | _rest] = result["candidates"]
+    assert first["fusion_score"] == first["rrf_score"]
+    assert first["fusion_score"] >= 0.0 and first["fusion_score"] <= 1.0
 
     # Source filters are applied inside retrieval, before fusion. Filtering on a model that
     # did not extract this item must remove it entirely, not merely rank it lower.
@@ -1688,7 +1667,11 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
           scope_id: seeded.scope.id,
           name: "balanced",
           version: 2,
-          strategy_config: %{"strategies" => ["lexical"], "weights" => %{"lexical" => 1}},
+          strategy_config: %{
+            "strategies" => ["lexical"],
+            "weights" => %{"lexical" => 1},
+            "rrf_k" => 10
+          },
           deadline_ms: 111,
           active: true
         },
@@ -1708,6 +1691,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       # parent's. Both scopes are in the query, so this cannot be an accident of filtering.
       profile = Profile.resolve(:balanced, query)
       assert profile.strategies == [:lexical]
+      assert profile.rrf_k == 10.0
       assert profile.deadline_ms == 111
 
       # The reported version is the authored version plus a digest of the effective
@@ -3236,7 +3220,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   end
 
   # The strategy's own score, which the search response does not carry: candidates reach a
-  # caller with the fused `rrf_score`, so the bound that `min_score` and the `low_score` hint
+  # caller with the fused `fusion_score`, so the bound that `min_score` and the `low_score` hint
   # depend on cannot be observed through `Memory.search/1` at all.
   defp entity_match_strategy_candidates!(account_key, scope_path, query_text) do
     DataLayer.with_account_key(account_key, fn account, actor ->
@@ -3594,8 +3578,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     }
   end
 
-  defp candidate(id, strategy, rank) do
-    %Candidate{id: id, score: 1.0, rank: rank, strategy: strategy, record: %{"id" => id}}
+  defp candidate(id, strategy, rank, score) do
+    %Candidate{id: id, score: score, rank: rank, strategy: strategy, record: %{"id" => id}}
   end
 
   defp read_peer!(account_id, actor, key \\ "avery") do

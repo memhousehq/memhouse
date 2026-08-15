@@ -94,8 +94,8 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
   @moduledoc """
   One durable, operator-authored override of a built-in retrieval profile.
 
-  A row overrides strategies, fusion weights, reranking, and deadline for `fast`, `balanced`, or
-  `thorough` at one scope or Account-wide when `scope_id` is nil.
+  A row overrides strategies, fusion weights, rank tie-break constant, reranking, and deadline
+  for `fast`, `balanced`, or `thorough` at one scope or Account-wide when `scope_id` is nil.
 
   Overrides inherit down the scope tree and the nearest authorized scope wins;
   an Account-wide row is the fallback. Among the `active` rows that match a
@@ -106,7 +106,7 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
 
   Changing a profile changes answers, so the version a caller sees is derived,
   not just copied: it combines the authored `version` integer with a digest of
-  the strategies, weights, and rerank flag actually in force.
+  the strategies, weights, rank constant, and rerank flag actually in force.
   """
 
   use MemHouse.Resource,
@@ -157,7 +157,8 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
     attribute :name, :string, allow_nil?: false, public?: true
     attribute :version, :integer, allow_nil?: false, public?: true
     # Optional keys: "strategies" (list), "weights" (map of strategy to float),
-    # and "rerank" (boolean). Absent keys fall back to the compiled defaults.
+    # "rrf_k" (positive number), and "rerank" (boolean). Absent keys fall back
+    # to the compiled defaults.
     attribute :strategy_config, :map, allow_nil?: false, default: %{}
     # Wall-clock ceiling in milliseconds for strategies plus reranking.
     attribute :deadline_ms, :integer, allow_nil?: false, public?: true

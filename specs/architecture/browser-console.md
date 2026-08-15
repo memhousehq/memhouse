@@ -255,7 +255,8 @@ the same judgement as `@panel_limit`: a reader who wants every row wants the
 portability archive.
 
 The retrieval preview renders `Memory.search/2`'s published payload — flattened
-string-keyed records carrying `rrf_score` and `strategies`, with fused order
+string-keyed records carrying `fusion_score`, its deprecated `rrf_score` alias,
+and `strategies`, with fused order
 expressed as position because strategy-local scores are incomparable. It applies
 no further lifecycle narrowing, because `Retrieval.Store` returns `active` plus
 the caller's own `provisional` and nothing else, which is strictly narrower than

@@ -222,6 +222,10 @@ evidence, including for an event. Use them to date an answer; the statement text
 alone may say "last weekend". Document-chunk candidates have no validity period
 and omit the pair.
 
+Each candidate also carries `fusion_score`, a value from 0 to 1 that combines
+per-strategy normalized scores, profile weights, and a rank tie-break.
+`rrf_score` is a deprecated alias with the same value for this contract version.
+
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.
 `pre_rerank_remaining_ms` reports the budget available before reranking, and
@@ -232,7 +236,7 @@ strategies to pay for it.
 class, and `degraded_components` names those components. Check it before
 presenting results as relevance-ordered, and read the reranker's reason class to
 know how much ordering was lost. A dropped or `invalid_result` reranker leaves
-every candidate in reciprocal-rank order; `partial_rankings` means the model
+every candidate in fusion order; `partial_rankings` means the model
 ordered the candidates it judged and only the rest kept fusion order.
 
 `disagreement.query_dependent_empty` is `true` when no strategy that reads the

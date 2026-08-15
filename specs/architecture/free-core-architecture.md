@@ -37,7 +37,7 @@ single-Account, self-hosted memory system:
   point-in-time filters, provenance filters, grounded answers, and abstention
   (`FR-API-*`).
 - Multi-strategy retrieval: semantic, lexical, temporal, salience-recency,
-  entity-match, relation expansion, reciprocal-rank fusion, optional rerank,
+  entity-match, relation expansion, score-aware fusion, optional rerank,
   named versioned profiles, deadlines, and strategy self-reporting
   (`FR-API-25` to `FR-API-29`, `AD-SEAM-3`).
 - Single-node packaging: one Mix release, embedded pinned pg0 by default,
@@ -113,7 +113,7 @@ services.
 | `MemHouse.Knowledge` | Knowledge items, attributions, provenance, lifecycle ledger, relations, current-state materialization | `FR-KN-*`, `FR-FORM-19` to `FR-FORM-23`, `AD-DATA-1` to `AD-DATA-3` |
 | `MemHouse.Governance` | Gate A/B policy, validation queue, consent, peer self-view, contest/redact, audit, history/diff | `FR-GOV-*`, `AD-GOV-*`, `AD-DATA-8` |
 | `MemHouse.Pipeline` | Ingest-time extraction, dream-time reasoning, revalidation/expiry sweeps, connector sync orchestration | `FR-FORM-14` to `FR-FORM-18`, `AD-PIPE-*` |
-| `MemHouse.Retrieval` | Strategy behaviour, seed and expansion strategies, RRF fusion, rerank, profile versions, deadlines | `FR-API-25` to `FR-API-29`, `AD-SEAM-3` |
+| `MemHouse.Retrieval` | Strategy behaviour, seed and expansion strategies, score-aware fusion, rerank, profile versions, deadlines | `FR-API-25` to `FR-API-29`, `AD-SEAM-3` |
 | `MemHouse.Context` | Reasoning-free `get_context`, projection reads, context budget assembly, salience-ranked knowledge slices | `FR-API-4`, `FR-API-5`, `FR-API-10`, `NFR-2` |
 | `MemHouse.Query` | `ask`, `search`, `query_knowledge`, point-in-time and provenance filters, grounding and abstention | `FR-API-1` to `FR-API-8`, `FR-API-23`, `FR-API-24`, `FR-API-26` |
 | `MemHouse.Skills` | Skill requirement cards, inherited requirements, readiness checks, gap reports, elicitation hooks | `FR-SK-*`, `FR-API-9` |

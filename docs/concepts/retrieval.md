@@ -14,8 +14,8 @@ flowchart LR
     F --> S4[SalienceRecency]
     F --> S5[EntityMatch]
     S1 & S2 & S3 & S4 & S5 --> EX[RelationExpand<br/>one hop]
-    EX --> RRF[Weighted reciprocal-rank fusion]
-    RRF --> RR{Rerank?}
+    EX --> FUSION[Score-aware fusion]
+    FUSION --> RR{Rerank?}
     RR -->|thorough profile| M[Model-backed rerank<br/>of the fused head]
     RR -->|otherwise| OUT
     M --> OUT[Ranked candidates<br/>+ contributed, empty, and dropped strategies]
@@ -95,10 +95,14 @@ terms must **all** appear in one statement.
 ## Why fusion, and why you must not re-sort
 
 Each strategy scores in its own space: cosine distance, full-text rank, time
-relevance, salience, mention confidence. Those numbers are **not comparable**.
+relevance, salience, mention confidence. Fusion makes them comparable by
+mapping each returned list's score range from 0 to 1. A singleton or tied list
+maps to 1 because it has no observed tail.
 
-Fusion merges ranks, not scores. A candidate at rank `r` contributes
-`weight / (k + r)`, with the baseline-compatible `k = 60`.
+Each strategy contribution is 95% normalized score and 5% reciprocal-rank
+tie-break. The profile weight then scales the contribution. The final
+`fusion_score` is the weighted mean across configured strategies, so it stays
+between 0 and 1. The rank term uses the profile's `rrf_k`, which defaults to 15.
 
 !!! warning "The returned order is the answer"
     Re-sorting the returned candidates by a raw per-strategy score compares
@@ -126,7 +130,7 @@ Blank context fallback may still use salience-recency.
 ## Profiles
 
 A profile is a named, versioned bundle: which strategies run, their fusion
-weights, whether the head is reranked, and the deadline.
+weights and rank constant, whether the head is reranked, and the deadline.
 
 | Profile | Strategies | Rerank | Deadline | Used by |
 | --- | --- | --- | --- | --- |
