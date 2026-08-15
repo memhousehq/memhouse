@@ -155,14 +155,24 @@ config :memhouse, Oban,
   # scheduler, which then creates ordinary replay-safe PipelineRun rows and
   # their jobs in one transaction. Do not add a trigger cron schedule here.
   #
-  # There is intentionally no Pruner plugin. Operations retains Oban history
-  # until a separate retention policy exists.
   plugins: [
+    # Queue rows are operational. Keep enough history to diagnose recent work,
+    # then remove terminal rows so normal use cannot grow the queue forever.
+    {Oban.Plugins.Pruner, max_age: 7 * 24 * 60 * 60},
     {Oban.Plugins.Cron,
      crontab: [
-       {"0 * * * *", MemHouse.Operations.LifecycleScheduler}
+       {"0 * * * *", MemHouse.Operations.LifecycleScheduler},
+       {"15 2 * * *", MemHouse.Operations.Retention}
      ]}
   ]
+
+config :memhouse, :retention,
+  oban_jobs_days: 7,
+  pipeline_runs_days: 30,
+  usage_events_days: 400,
+  gate_decisions_days: 3_650,
+  lifecycle_events_days: 3_650,
+  batch_size: 10_000
 
 config :ash_oban,
   # Jobs run through Ash actions with authorization on, exactly like an HTTP

@@ -90,6 +90,12 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     # meaningless — silently wrong, not obviously wrong — under a different one.
     refute MemHouse.Accounts.ApiKey in Enum.map(Registry.resources(), &elem(&1, 1))
     assert MemHouse.Knowledge.Projection in Registry.derived_resources()
+    assert MemHouse.Operations.PipelineRun in Registry.operational_resources()
+
+    refute Enum.any?(Registry.resources(), fn {_name, resource} ->
+             resource in Registry.operational_resources()
+           end)
+
     assert :hashed_password in Registry.excluded_attributes(MemHouse.Accounts.Peer)
     assert :embedding in Registry.excluded_attributes(MemHouse.Knowledge.KnowledgeItem)
   end
@@ -157,6 +163,18 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
              cron_options,
              :crontab
            )
+
+    assert {"15 2 * * *", MemHouse.Operations.Retention} in Keyword.fetch!(
+             cron_options,
+             :crontab
+           )
+
+    {Oban.Plugins.Pruner, pruner_options} =
+      Application.fetch_env!(:memhouse, Oban)
+      |> Keyword.fetch!(:plugins)
+      |> Enum.find(fn {plugin, _options} -> plugin == Oban.Plugins.Pruner end)
+
+    assert Keyword.fetch!(pruner_options, :max_age) == 7 * 24 * 60 * 60
 
     # All five roles, and their identities only — never their credentials.
     assert map_size(result.checks.model_roles.configured) == 5
@@ -259,6 +277,9 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
            }
 
     assert is_integer(summary.logical_storage_bytes)
+    assert summary.storage.durable_bytes == summary.logical_storage_bytes
+    assert is_integer(summary.storage.operational_bytes)
+    assert is_boolean(summary.storage.inverted?)
     # Zero because a self-hoster supplies their own rates. MemHouse does not carry hidden
     # pricing: with no configured rate, the honest estimate is 0.0, not a guess.
     assert summary.estimated_model_cost == 0.0

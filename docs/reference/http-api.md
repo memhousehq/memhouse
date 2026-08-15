@@ -411,9 +411,13 @@ Read-only by design: there is deliberately no POST counterpart.
 
 Account-admin only; any other role gets 403.
 
-Returns exact usage-event counts, API request and ingest counts,
-input/output/embedding token totals overall and per model role, logical storage
-bytes, and an estimated cost in USD computed from operator-supplied rates.
+Returns retained usage-event counts, API request and ingest counts,
+input/output/embedding token totals overall and per model role, and an estimated
+cost in USD computed from operator-supplied rates. `storage` separates durable
+content bytes from operational row bytes, reports their ratio, and sets
+`inverted?` when operational storage is larger. `logical_storage_bytes` remains
+an alias for durable bytes. `operational_to_durable_ratio` is `null` when
+durable storage is zero and operational storage is nonzero.
 `ingest_economics` reports extractor calls, tokens, and estimated cost per
 ingested message over the full retained ledger. Call counts include failed
 extractor calls. An unmetered failure has unknown token usage and cost, so it

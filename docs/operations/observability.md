@@ -13,7 +13,7 @@ flowchart LR
     COL --> D[Debug log output]
     COL -. optional .-> LF[Langfuse]
     APP --> LOG[Structured logs<br/>request_id · trace_id · span_id]
-    APP --> LED[(UsageEvent ledger<br/>exact, durable)]
+    APP --> LED[(UsageEvent ledger<br/>exact in its retention horizon)]
 ```
 
 ## Turn it on

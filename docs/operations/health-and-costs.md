@@ -81,16 +81,19 @@ curl -fsS http://127.0.0.1:4000/api/v1/operations/costs \
   -H "authorization: Bearer $ADMIN_TOKEN"
 ```
 
-Returns the exact recorded usage-event count, API request and ingest counts,
-input/output/embedding token totals overall and per model role, logical storage
-bytes, estimated model cost in USD, and prior-24-hour model-call health. It also
+Returns the retained usage-event count, API request and ingest counts,
+input/output/embedding token totals overall and per model role, durable and
+operational storage bytes, estimated model cost in USD, and prior-24-hour
+model-call health. It warns when operational storage is larger than durable
+storage. Configure cleanup in
+[Operational retention](../reference/configuration.md#operational-retention). It also
 reports extractor calls, tokens, and estimated cost per ingested message. Call
 counts include failed extractor calls. An unmetered failure has unknown token
 usage and cost, so it contributes only to the call ratio.
 
 ```mermaid
 flowchart LR
-    CALL[Every model call] --> UE[(UsageEvent ledger<br/>durable, exact)]
+    CALL[Every model call] --> UE[(UsageEvent ledger<br/>exact in its retention horizon)]
     UE --> SUM[Account summary]
     RATES["MEMHOUSE_MODEL_COSTS_JSON<br/>operator-supplied rates"] --> SUM
     SUM --> OUT[Estimated cost in USD]
@@ -110,7 +113,7 @@ When a limit bites, **dream-time is throttled first**: background reasoning
 yields before user-facing ingest and retrieval do.
 
 The ETS counters in front of the ledger are rebuildable caches. The ledger
-itself is durable and exact.
+itself is exact within its retention horizon.
 
 ## Trace correlation
 

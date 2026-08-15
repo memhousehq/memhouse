@@ -33,9 +33,7 @@ defmodule MemHouse.Portability.Registry do
     {"provenances", MemHouse.Knowledge.Provenance},
     {"attributions", MemHouse.Knowledge.Attribution},
     {"knowledge_relations", MemHouse.Knowledge.KnowledgeRelation},
-    {"knowledge_lifecycle_events", MemHouse.Knowledge.LifecycleEvent},
     {"validation_items", MemHouse.Governance.ValidationItem},
-    {"gate_decisions", MemHouse.Governance.GateDecision},
     {"knowledge_consents", MemHouse.Governance.Consent},
     {"peer_queries", MemHouse.Governance.PeerQuery},
     {"peer_query_deliveries", MemHouse.Governance.PeerQueryDelivery},
@@ -43,8 +41,6 @@ defmodule MemHouse.Portability.Registry do
     {"erasure_requests", MemHouse.Governance.ErasureRequest},
     {"role_grants", MemHouse.Topology.RoleGrant},
     {"scope_relations", MemHouse.Topology.ScopeRelation},
-    {"usage_events", MemHouse.Operations.UsageEvent},
-    {"pipeline_runs", MemHouse.Operations.PipelineRun},
     {"audit_events", MemHouse.Governance.AuditEvent}
   ]
 
@@ -57,6 +53,15 @@ defmodule MemHouse.Portability.Registry do
     MemHouse.Knowledge.Entity,
     MemHouse.Knowledge.EntityMention,
     MemHouse.Knowledge.Projection
+  ]
+
+  # Retained operational history does not travel. The target reconstructs work from durable
+  # sources and starts new usage and governance-retention horizons of its own.
+  @operational_resources [
+    MemHouse.Knowledge.LifecycleEvent,
+    MemHouse.Governance.GateDecision,
+    MemHouse.Operations.UsageEvent,
+    MemHouse.Operations.PipelineRun
   ]
 
   # Credential-bearing resources. An archive must never be a way to move
@@ -102,6 +107,9 @@ defmodule MemHouse.Portability.Registry do
   in the archive manifest so the exclusion is visible to whoever inspects it.
   """
   def derived_resources, do: @derived_resources
+
+  @doc "Resources with local retention horizons, which are not exported."
+  def operational_resources, do: @operational_resources
 
   @doc """
   Resources holding authentication material, which never appear in an archive.

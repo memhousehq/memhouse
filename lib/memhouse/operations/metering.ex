@@ -4,7 +4,7 @@ defmodule MemHouse.Operations.Metering do
   @moduledoc """
   Records Account usage and builds operator summaries.
 
-  UsageEvent is the only durable ledger. Metadata is reduced to a reviewed content-safe allowlist,
+  UsageEvent is the exact retained ledger. Metadata is reduced to a reviewed content-safe allowlist,
   token and duration units remain explicit, and self-hosted cost estimates use operator-provided
   rates rather than hidden billing state.
   """
@@ -14,7 +14,6 @@ defmodule MemHouse.Operations.Metering do
   alias MemHouse.DataLayer
   alias MemHouse.Operations.BudgetCounter
   alias MemHouse.Operations.UsageEvent
-  alias MemHouse.Repo
 
   @token_metrics [:input_tokens, :output_tokens, :embedding_tokens]
   @model_health_window_seconds 86_400
@@ -100,13 +99,13 @@ defmodule MemHouse.Operations.Metering do
   Reads the whole ledger for the actor's Account under that actor's own
   authorization, so an actor without administrator rights gets an error rather
   than a redacted answer. Totals are computed in memory from every recorded row
-  — this is exact history, not a sampled or windowed estimate — which means the
-  cost of the call grows with the ledger.
+  — this is exact within the configured retention horizon, not a sampled
+  estimate.
 
   The returned map holds the recorded event count, API request and ingest
   counts, input/output/embedding token totals overall and per model role,
-  logical storage bytes, an estimated model cost, and the currency that
-  estimate is denominated in.
+  durable and operational storage bytes, an estimated model cost, and the
+  currency that estimate is denominated in.
 
   Raises if the actor may not read the ledger.
   """
@@ -130,6 +129,8 @@ defmodule MemHouse.Operations.Metering do
 
       ingests = metadata_sum(events, "ingest_count")
 
+      storage = MemHouse.Retrieval.Store.storage_bytes(actor.account_id)
+
       %{
         account_id: actor.account_id,
         event_count: length(events),
@@ -137,7 +138,13 @@ defmodule MemHouse.Operations.Metering do
         ingests: ingests,
         tokens: token_totals(events),
         tokens_by_role: by_role,
-        logical_storage_bytes: logical_storage_bytes(actor.account_id),
+        logical_storage_bytes: storage.durable,
+        storage: %{
+          durable_bytes: storage.durable,
+          operational_bytes: storage.operational,
+          operational_to_durable_ratio: storage_ratio(storage),
+          inverted?: storage.operational > storage.durable
+        },
         estimated_model_cost: estimated_cost(by_role),
         ingest_economics: ingest_economics(events, by_role, ingests),
         model_calls: model_call_health(events),
@@ -224,38 +231,11 @@ defmodule MemHouse.Operations.Metering do
     |> Enum.sum()
   end
 
-  # Raw SQL rather than an Ash aggregate because this sums byte lengths across
-  # three unrelated tables in one round trip. It is read-only, the statement is
-  # a fixed literal, and the Account id is the one bound parameter — and it is
-  # the filter on each of the three subqueries.
-  #
-  # "Logical" means the size of the durable content itself — message text,
-  # knowledge statements, and stored document bytes — not the on-disk size of
-  # the database. Rebuildable derivations (vectors, chunks, projections) are
-  # excluded on purpose, so the number reflects what an export would carry.
-  #
-  # A failed query yields zero rather than raising: storage size is an
-  # informational field and must not take down the whole summary. That
-  # forgiveness is why this must stay inside the summary's Account-scoped
-  # transaction: run with no Account declared, the row-level security policies
-  # on all three tables filter every row away and the honest-looking zero it
-  # returns would be indistinguishable from an empty Account.
-  # sobelow_skip ["SQL.Query"]
-  defp logical_storage_bytes(account_id) do
-    sql = """
-    SELECT
-      COALESCE((SELECT sum(octet_length(content)) FROM messages WHERE account_id = $1), 0) +
-      COALESCE((SELECT sum(octet_length(statement)) FROM knowledge_items WHERE account_id = $1), 0) +
-      COALESCE((SELECT sum(byte_size) FROM document_versions WHERE account_id = $1), 0)
-    """
+  defp storage_ratio(%{durable: 0, operational: 0}), do: 0.0
+  defp storage_ratio(%{durable: 0}), do: nil
 
-    # Postgres returns a sum of bigints as numeric, which the driver decodes as
-    # a Decimal; the plain-integer clause covers drivers or plans that do not.
-    case Ecto.Adapters.SQL.query(Repo, sql, [Ecto.UUID.dump!(account_id)]) do
-      {:ok, %{rows: [[%Decimal{} = bytes]]}} -> Decimal.to_integer(bytes)
-      {:ok, %{rows: [[bytes]]}} -> bytes
-      _other -> 0
-    end
+  defp storage_ratio(%{durable: durable, operational: operational}) do
+    Float.round(operational / durable, 2)
   end
 
   # Rates are operator-configured price per one million tokens, per model role

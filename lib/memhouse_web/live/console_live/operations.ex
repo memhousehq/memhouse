@@ -174,7 +174,8 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
           <.tile label="Ledger events" value={@usage.event_count} />
           <.tile label="API requests" value={@usage.api_requests} />
           <.tile label="Ingests" value={@usage.ingests} />
-          <.tile label="Logical storage" value={"#{@usage.logical_storage_bytes} B"} />
+          <.tile label="Durable storage" value={"#{@usage.storage.durable_bytes} B"} />
+          <.tile label="Operational storage" value={"#{@usage.storage.operational_bytes} B"} />
           <.tile
             label="Estimated model cost"
             value={"#{@usage.estimated_model_cost} #{@usage.currency}"}
@@ -191,6 +192,9 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
           />
         </div>
 
+        <p :if={@usage.storage.inverted?} class="hint">
+          Operational storage is larger than durable storage. Check retention settings and job health.
+        </p>
         <p :if={@usage.model_calls.unmetered > 0} class="hint">
           Unmetered failures returned no token usage. The cost estimate excludes their unknown cost.
         </p>

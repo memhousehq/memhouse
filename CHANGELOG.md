@@ -11,6 +11,12 @@ changelog entry and contract-version transition.
 
 ### Added
 
+- Operational retention now prunes terminal Oban jobs and expired pipeline, usage, gate-decision,
+  and lifecycle rows on configurable horizons. The operations summary separates durable and
+  operational bytes and warns when operational storage is larger. Account archives no longer
+  carry retained operational history; messages, knowledge, provenance, audit events, and
+  reasoning watermarks remain durable.
+
 - `POST /api/v1/ingest` accepts `peer_key` from a machine credential, which
   names the peer that spoke the turn. The Peer is created on first use. See the
   attribution entry under Changed for what the field does and what it does not
