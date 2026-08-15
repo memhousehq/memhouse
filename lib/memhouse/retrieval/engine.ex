@@ -197,9 +197,10 @@ defmodule MemHouse.Retrieval.Engine do
 
   defp run_phase(modules, query, budget, concurrent?) do
     applicable = Enum.filter(modules, & &1.applicable?(query))
-    timeout = Budget.remaining_ms(budget)
+    remaining = Budget.remaining_ms(budget)
+    timeout = strategy_timeout(remaining)
 
-    if timeout == 0 do
+    if remaining == 0 do
       # Report applicable work that the exhausted budget prevented.
       {[],
        Enum.map(applicable, fn module ->
@@ -228,14 +229,30 @@ defmodule MemHouse.Retrieval.Engine do
             outcome(strategy, "dependency_unavailable", elapsed_ms, remaining_ms)
 
           {{:exit, :timeout}, index} ->
-            outcome(Enum.at(applicable, index).name(), "timeout", timeout, 0)
+            outcome(
+              Enum.at(applicable, index).name(),
+              "timeout",
+              timeout,
+              finite_remaining(Budget.remaining_ms(budget))
+            )
 
           {{:exit, _reason}, index} ->
-            outcome(Enum.at(applicable, index).name(), "provider_error", timeout, 0)
+            outcome(
+              Enum.at(applicable, index).name(),
+              "provider_error",
+              timeout,
+              finite_remaining(Budget.remaining_ms(budget))
+            )
         end)
 
       {completed, outcomes}
     end
+  end
+
+  defp strategy_timeout(:infinity), do: :infinity
+
+  defp strategy_timeout(remaining) do
+    min(remaining, retrieval_config(:strategy_timeout_ms))
   end
 
   defp execute_modules(modules, query, budget, timeout, concurrent?) do

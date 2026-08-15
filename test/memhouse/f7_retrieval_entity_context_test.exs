@@ -181,6 +181,31 @@ defmodule MemHouse.F7RetrievalEntityContextTest.UnavailableEmbedderProvider do
     do: Deterministic.rerank(config, query, documents, opts)
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.SlowEmbedderProvider do
+  @moduledoc "Failure-injection provider for the per-strategy timeout."
+
+  @behaviour MemHouse.Model.Provider
+
+  alias MemHouse.Model.Providers.Deterministic
+
+  @impl true
+  def structured(config, messages, schema, opts),
+    do: Deterministic.structured(config, messages, schema, opts)
+
+  @impl true
+  def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
+
+  @impl true
+  def embed(config, texts, opts) do
+    Process.sleep(80)
+    Deterministic.embed(config, texts, opts)
+  end
+
+  @impl true
+  def rerank(config, query, documents, opts),
+    do: Deterministic.rerank(config, query, documents, opts)
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest.RerankFailureProvider do
   @moduledoc "Failure-injection provider for reranker outcome classification."
 
@@ -987,7 +1012,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     refute pottery.knowledge.id in melanie_ids
     assert Enum.find_index(caroline_ids, &(&1 == caroline.knowledge.id)) < 12
 
-    assert %{lexical_analyzer: "lexical-question-v2"} =
+    assert %{lexical_analyzer: "lexical-question-v3"} =
              MemHouse.Retrieval.Diagnostics.latest(melanie.account.id)
   end
 
@@ -1024,16 +1049,16 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert search.("what does the to ??? & | ;") == []
   end
 
-  test "lexical proximity bonus separates statements the cover-density rank scores identically" do
+  test "lexical phrase bonus separates statements the cover-density rank scores identically" do
     # Both statements carry `melani` and `destress` once, so `ts_rank_cd` over the disjunction
-    # scores them the same and only the proximity bonus can order them. The nearer statement is
-    # seeded first, so the `inserted_at DESC` tiebreak would put the distant one first if the
+    # scores them the same and only the phrase bonus can order them. The ordered statement is
+    # seeded first, so the `inserted_at DESC` tiebreak would put the reversed one first if the
     # bonus contributed nothing.
     near =
       seed_active!(
         "f7-question-proximity",
         "/f7/question-proximity",
-        "Melanie chose destress walks during the quiet spring evenings.",
+        "Melanie destress walks fill the quiet spring evenings.",
         "proximity-near"
       )
 
@@ -1041,7 +1066,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       seed_active!(
         "f7-question-proximity",
         "/f7/question-proximity",
-        "Melanie kept a long steady weekly journal about many other unrelated topics and later learned to destress.",
+        "Destress walks fill the quiet spring evenings for Melanie.",
         "proximity-far"
       )
 
@@ -1870,6 +1895,51 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         member
       )
     end
+  end
+
+  test "one strategy cannot consume the thorough profile phase budget" do
+    seeded = seed_active!("f7-strategy-timeout", "/f7/strategy-timeout", "Avery writes notes.")
+    original_retrieval = Application.fetch_env!(:memhouse, :retrieval_profiles)
+    original_concurrency = Application.fetch_env!(:memhouse, :retrieval_concurrency)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :retrieval_profiles, original_retrieval)
+      Application.put_env(:memhouse, :retrieval_concurrency, original_concurrency)
+    end)
+
+    Application.put_env(
+      :memhouse,
+      :model_provider,
+      MemHouse.F7RetrievalEntityContextTest.SlowEmbedderProvider
+    )
+
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Keyword.put(original_retrieval, :strategy_timeout_ms, 10)
+    )
+
+    Application.put_env(:memhouse, :retrieval_concurrency, true)
+
+    result =
+      Memory.search(%{
+        "account_key" => "f7-strategy-timeout",
+        "scope_path" => seeded.scope.path,
+        "query" => "Avery",
+        "profile" => "thorough",
+        "strategies" => ["semantic"],
+        "rerank" => false
+      })
+
+    assert %{
+             status: "dropped",
+             reason_class: "timeout",
+             elapsed_ms: 10,
+             budget_remaining_ms: remaining
+           } =
+             Enum.find(result["retrieval_outcomes"], &(&1.component == "semantic"))
+
+    assert remaining > 0
   end
 
   test "reranker completion, timeout, provider failure, and malformed output are classified" do
@@ -3128,6 +3198,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
                    "document_chunks_search_vector_idx",
                    "document_chunks_embedding_diskann_1024_idx",
                    "entities_alias_embedding_diskann_1024_idx",
+                   "entities_normalized_aliases_gin_idx",
                    "knowledge_items_embedding_diskann_1024_idx",
                    "knowledge_items_search_vector_idx",
                    "projections_clean_entity_cards_index"
@@ -3138,6 +3209,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert Enum.map(rows, &hd/1) == [
              "document_chunks_embedding_diskann_1024_idx",
              "document_chunks_search_vector_idx",
+             "entities_normalized_aliases_gin_idx",
              "knowledge_items_embedding_diskann_1024_idx",
              "knowledge_items_search_vector_idx",
              "projections_clean_entity_cards_index"

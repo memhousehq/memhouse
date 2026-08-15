@@ -39,11 +39,9 @@ defmodule MemHouse.Retrieval.Store do
 
   alias MemHouse.Retrieval.LexicalQueryAnalyzer
 
-  # How many base-ranked rows stay eligible for the proximity bonus. The bonus is a second
-  # `tsquery` evaluated per row, roughly an order of magnitude dearer than the base rank, so it
-  # runs over a shortlist rather than the whole match set. Five times the caller's limit leaves
-  # room for a proximate answer to climb without letting a broad query pay for thousands of rows.
-  @lexical_shortlist_multiplier 5
+  # How many base-ranked rows stay eligible for the phrase bonus. Two times the caller's limit
+  # leaves promotion room while bounding the second rank calculation on broad queries.
+  @lexical_shortlist_multiplier 2
 
   # Weight of the proximity bonus relative to the base cover-density rank. One extra covered term
   # is worth about `0.1`, so `0.2` lets a tight subject-and-intent match outrank a looser row
@@ -104,8 +102,8 @@ defmodule MemHouse.Retrieval.Store do
   statement rarely carries every content word of a question. `ts_rank_cd` still orders by how many
   query terms a row covers and how densely.
 
-  A normalized query also earns a bounded proximity bonus when two of its terms fall near each
-  other. Only the top `#{@lexical_shortlist_multiplier}x limit` rows by base rank compete for it,
+  A normalized query also earns a bounded phrase bonus when adjacent retained terms occur in
+  order. Only the top `#{@lexical_shortlist_multiplier}x limit` rows by base rank compete for it,
   so a row ranked below that window cannot be promoted.
 
   Returns a list of column-keyed maps with a `score` and a `candidate_type`.
@@ -533,11 +531,7 @@ defmodule MemHouse.Retrieval.Store do
       SELECT e.id
       FROM entities AS e
       WHERE e.account_id = $1
-        AND EXISTS (
-          SELECT 1
-          FROM unnest(e.aliases || ARRAY[e.canonical_name]) AS alias
-          WHERE lower(alias) = ANY($4)
-        )
+        AND memhouse_normalized_entity_aliases(e.aliases, e.canonical_name) && $4::text[]
     ),
     -- One row per entity and statement. An entity named twice in one statement is one
     -- mention here, or it would inflate both the frequency and the statement's own score.
@@ -1134,11 +1128,7 @@ defmodule MemHouse.Retrieval.Store do
       SELECT e.id
       FROM entities AS e
       WHERE e.account_id = $1
-        AND EXISTS (
-          SELECT 1
-          FROM unnest(e.aliases || ARRAY[e.canonical_name]) AS alias
-          WHERE lower(alias) = ANY($4)
-        )
+        AND memhouse_normalized_entity_aliases(e.aliases, e.canonical_name) && $4::text[]
     ), authorized AS (
       SELECT 1
       FROM matched_entities AS e

@@ -191,8 +191,10 @@ changes nothing else in the result: the candidates still arrive, ordered by
 reciprocal rank alone. Only `degraded`, `degraded_components`, and this counter
 say that the stage which judges relevance never ran.
 
-The reason class says what to do about it. `"timeout"` means the reranker did
-not answer within its allowance, which is the smaller of
+The reason class says what to do about it. For a strategy, `"timeout"` means it
+did not answer within the smaller of `MEMHOUSE_RETRIEVAL_STRATEGY_TIMEOUT_MS`
+and the remaining profile deadline. For the reranker, it means the model did
+not answer within the smaller of
 `MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` and the budget left when the stage began.
 The timeout outcome records that allowance as its `elapsed_ms`; read
 `pre_rerank_remaining_ms` on the same result to see which of the two was

@@ -840,6 +840,7 @@ defmodule MemHouseWeb.Console.Loader do
 
     %{
       enabled_strategies: Keyword.fetch!(config, :enabled_strategies),
+      strategy_timeout_ms: Keyword.fetch!(config, :strategy_timeout_ms),
       rerank_timeout_ms: Keyword.fetch!(config, :rerank_timeout_ms),
       profiles:
         for name <- [:fast, :balanced, :thorough], into: %{} do

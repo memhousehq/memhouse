@@ -9,21 +9,15 @@ defmodule MemHouse.Retrieval.LexicalQueryAnalyzer do
   phrases and negation keep PostgreSQL's documented semantics.
   """
 
-  @version "lexical-question-v2"
+  @version "lexical-question-v3"
   @websearch_operators ~r/"|(?:^|\s)-\S|(?:^|\s)or(?:\s|$)/i
   @boilerplate MapSet.new(
                  ~w(a an are could did do does for from how is me tell that the to was what when where which who why would you your)
                )
 
-  # Proximity fan-out. `tsquery`'s `<N>` operator matches an *exact* lexeme distance, so "near"
-  # has to be spelled as a disjunction of every distance in the window, in both orders, for each
-  # adjacent pair. Both bounds are therefore cost limits: clause count is
-  # `(terms - 1) * window * 2`, and the whole expression is re-evaluated per shortlisted row.
-  # A window of 8 covers a subject and its intent separated by a short clause
-  # ("Melanie runs regularly as a way to destress" spans 7 positions) without reaching across a
-  # sentence boundary.
+  # Each retained adjacent pair adds one ordered phrase clause. This keeps construction linear
+  # in the term count and avoids the old distance-and-direction fan-out on every shortlisted row.
   @proximity_terms 4
-  @proximity_window 8
 
   @doc "The version recorded with content-free retrieval diagnostics."
   def version, do: @version
@@ -31,10 +25,9 @@ defmodule MemHouse.Retrieval.LexicalQueryAnalyzer do
   @doc """
   Analyzes one lexical query without calling a model or constructing SQL.
 
-  `matching_text` is an OR-style term set. `proximity_text` is a bounded `tsquery` expression that
-  matches when two retained terms fall near each other in either order, or `nil` when the query
-  has no proximity representation. Websearch queries always return `nil`: the caller asked for an
-  exact parse.
+  `matching_text` is an OR-style term set. `proximity_text` is a bounded `tsquery` expression for
+  adjacent retained-term phrases, or `nil` when the query has no proximity representation.
+  Websearch queries always return `nil`: the caller asked for an exact parse.
   """
   def analyze(text) when is_binary(text) do
     if Regex.match?(@websearch_operators, text) do
@@ -72,11 +65,6 @@ defmodule MemHouse.Retrieval.LexicalQueryAnalyzer do
   defp proximity_text(terms) do
     terms
     |> Enum.chunk_every(2, 1, :discard)
-    |> Enum.flat_map(fn [left, right] ->
-      Enum.flat_map(1..@proximity_window, fn distance ->
-        ["#{left} <#{distance}> #{right}", "#{right} <#{distance}> #{left}"]
-      end)
-    end)
-    |> Enum.join(" | ")
+    |> Enum.map_join(" | ", fn [left, right] -> "#{left} <-> #{right}" end)
   end
 end

@@ -15,10 +15,9 @@ defmodule MemHouse.Retrieval.LexicalQueryAnalyzerTest do
   test "does not expand a query with benchmark-fitted vocabulary" do
     analysis = LexicalQueryAnalyzer.analyze("What does Melanie do to destress?")
 
-    assert analysis.version == "lexical-question-v2"
     assert analysis.matching_text == "Melanie destress"
-    assert analysis.proximity_text =~ "Melanie"
-    assert analysis.proximity_text =~ "destress"
+    assert analysis.version == "lexical-question-v3"
+    assert analysis.proximity_text == "Melanie <-> destress"
 
     terms = String.split(analysis.matching_text)
     refute "stress" in terms
