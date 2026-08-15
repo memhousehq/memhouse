@@ -29,6 +29,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   alias MemHouse.Model.Providers.Ortex, as: OrtexProvider
   alias MemHouse.Model.Reasoner
   alias MemHouse.Model.Schema.DialecticAnswer
+  alias MemHouse.Operations.Metering
 
   # Recorded provider script replayed instead of any network call. Each scenario inside it
   # is an ordered list of expected calls; see the individual tests for which one they arm.
@@ -200,6 +201,62 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
                """,
                [Ecto.UUID.dump!(knowledge["id"])]
              )
+  end
+
+  test "a missing structured object retries the original request within the repair budget" do
+    message = seed_raw!("f5-missing-object", "avery", "Avery prefers weekly summaries.")
+    account_id = account_id!("f5-missing-object")
+
+    put_role!(account_id, :ingest_extractor,
+      provider: "openrouter",
+      model: "openai/gpt-oss-120b",
+      model_version: "2026-08",
+      prompt_version: "extract-11",
+      pipeline_version: "f5-1"
+    )
+
+    CassetteProvider.start!(@cassette, "missing_then_valid")
+    Application.put_env(:memhouse, :model_provider, CassetteProvider)
+
+    assert {:ok, [knowledge]} = Memory.extract_message_for_account(message["id"], account_id)
+    assert knowledge["statement"] == "Avery prefers weekly summaries."
+
+    actor =
+      DataLayer.with_account_id(
+        account_id,
+        [role: :account_admin, pipeline?: true],
+        fn _account, actor -> actor end
+      )
+
+    assert %{attempts: 2, errors: 1} = Metering.summary(actor).model_calls
+  end
+
+  test "missing structured objects stop at the repair budget" do
+    message = seed_raw!("f5-missing-exhausted", "avery", "Avery prefers weekly summaries.")
+    account_id = account_id!("f5-missing-exhausted")
+
+    put_role!(account_id, :ingest_extractor,
+      provider: "openrouter",
+      model: "openai/gpt-oss-120b",
+      model_version: "2026-08",
+      prompt_version: "extract-11",
+      pipeline_version: "f5-1"
+    )
+
+    CassetteProvider.start!(@cassette, "missing_until_exhausted")
+    Application.put_env(:memhouse, :model_provider, CassetteProvider)
+
+    assert {:error, :missing_structured_object} =
+             Memory.extract_message_for_account(message["id"], account_id)
+
+    actor =
+      DataLayer.with_account_id(
+        account_id,
+        [role: :account_admin, pipeline?: true],
+        fn _account, actor -> actor end
+      )
+
+    assert %{attempts: 3, errors: 3} = Metering.summary(actor).model_calls
   end
 
   test "one cassette provider injects reasoner, dialectic, embedding, and rerank capabilities" do

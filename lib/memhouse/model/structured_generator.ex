@@ -53,9 +53,9 @@ defmodule MemHouse.Model.StructuredGenerator do
   versions that produced it.
 
   Failure modes: `{:error, {:structured_validation_failed, errors}}` when the
-  budget is exhausted, or the provider's own `{:error, reason}` — the latter
-  short-circuits immediately, since retrying a transport or credential failure
-  with a repair prompt would only burn budget.
+  budget is exhausted, or the provider's own `{:error, reason}`. A bounded set
+  of transient incomplete-response errors retries the original request within
+  the same budget. Other provider errors short-circuit immediately.
   """
   def generate(role, messages, schema, context, opts \\ [])
       when is_atom(schema) and is_list(messages) and is_map(context) do
@@ -72,37 +72,51 @@ defmodule MemHouse.Model.StructuredGenerator do
 
   # One attempt, then either success, a recursive repair, or a final error.
   #
-  # The `with` deliberately has no else clause: a provider error falls straight
-  # through to the caller unchanged, because re-prompting past a transport,
-  # authentication, or rate-limit failure cannot help.
   defp generate_attempt(role, messages, schema, context, opts, attempt, max_repairs, usage) do
     # Rides along to the usage ledger so a repaired generation is visibly more
     # than one call rather than looking like a single cheap one.
     call_opts = Keyword.put(opts, :repair_attempt, attempt)
 
-    with {:ok, object, config, attempt_usage} <-
-           Gateway.structured_once_with_usage(
-             role,
-             messages,
-             schema.json_schema(),
-             context,
-             call_opts
-           ) do
-      usage = merge_usage(usage, attempt_usage)
+    case Gateway.structured_once_with_usage(
+           role,
+           messages,
+           schema.json_schema(),
+           context,
+           call_opts
+         ) do
+      {:ok, object, config, attempt_usage} ->
+        usage = merge_usage(usage, attempt_usage)
 
-      case schema.cast(object, context) do
-        {:ok, value} ->
-          provenance =
-            config
-            |> Config.provenance()
-            |> maybe_put_usage(opts, usage)
+        case schema.cast(object, context) do
+          {:ok, value} ->
+            provenance =
+              config
+              |> Config.provenance()
+              |> maybe_put_usage(opts, usage)
 
-          {:ok, value, provenance}
+            {:ok, value, provenance}
 
-        {:error, errors} when attempt < max_repairs ->
+          {:error, errors} when attempt < max_repairs ->
+            generate_attempt(
+              role,
+              repair_messages(messages, object, errors),
+              schema,
+              context,
+              opts,
+              attempt + 1,
+              max_repairs,
+              usage
+            )
+
+          {:error, errors} ->
+            {:error, {:structured_validation_failed, errors}}
+        end
+
+      {:error, reason} when attempt < max_repairs ->
+        if retryable_incomplete_response?(reason) do
           generate_attempt(
             role,
-            repair_messages(messages, object, errors),
+            messages,
             schema,
             context,
             opts,
@@ -110,12 +124,18 @@ defmodule MemHouse.Model.StructuredGenerator do
             max_repairs,
             usage
           )
+        else
+          {:error, reason}
+        end
 
-        {:error, errors} ->
-          {:error, {:structured_validation_failed, errors}}
-      end
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  defp retryable_incomplete_response?(:missing_structured_object), do: true
+  defp retryable_incomplete_response?(:provider_upstream_error), do: true
+  defp retryable_incomplete_response?(_reason), do: false
 
   defp merge_usage(total, current) do
     Enum.reduce([:input_tokens, :output_tokens, :embedding_tokens], total, fn key, acc ->
