@@ -182,7 +182,7 @@ defmodule MemHouse.Retrieval.Engine do
         result
       end
 
-    emit_outcomes(query.account_id, result, profile.deadline_ms)
+    emit_outcomes(query.account_id, result, profile.deadline_ms, query.max_candidates)
     result
   end
 
@@ -481,8 +481,8 @@ defmodule MemHouse.Retrieval.Engine do
   defp finite_remaining(:infinity), do: nil
   defp finite_remaining(value), do: value
 
-  defp emit_outcomes(account_id, result, deadline_ms) do
-    MemHouse.Retrieval.Diagnostics.record(account_id, result, deadline_ms)
+  defp emit_outcomes(account_id, result, deadline_ms, max_candidates) do
+    MemHouse.Retrieval.Diagnostics.record(account_id, result, deadline_ms, max_candidates)
 
     :telemetry.execute(
       [:memhouse, :retrieval, :outcomes],

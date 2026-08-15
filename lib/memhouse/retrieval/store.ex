@@ -223,7 +223,7 @@ defmodule MemHouse.Retrieval.Store do
   def semantic(query, embedding, identity, limit) do
     {:ok, rows} =
       Repo.transaction(fn ->
-        configure_diskann_query!()
+        configure_diskann_query!(limit)
         semantic_query(query, embedding, identity, limit)
       end)
 
@@ -367,12 +367,22 @@ defmodule MemHouse.Retrieval.Store do
     top(knowledge ++ documents, limit)
   end
 
-  defp configure_diskann_query! do
+  @doc "Returns the transaction-local DiskANN query settings for a candidate limit."
+  def diskann_query_settings(limit) when is_integer(limit) and limit > 0 do
     config = Application.fetch_env!(:memhouse, :diskann)
 
+    [
+      query_search_list_size: max(Keyword.fetch!(config, :query_search_list_size), limit * 2),
+      query_rescore: max(Keyword.fetch!(config, :query_rescore), limit)
+    ]
+  end
+
+  defp configure_diskann_query!(limit) do
+    settings = diskann_query_settings(limit)
+
     for {setting, value} <- [
-          {"diskann.query_search_list_size", Keyword.fetch!(config, :query_search_list_size)},
-          {"diskann.query_rescore", Keyword.fetch!(config, :query_rescore)}
+          {"diskann.query_search_list_size", settings[:query_search_list_size]},
+          {"diskann.query_rescore", settings[:query_rescore]}
         ] do
       Ecto.Adapters.SQL.query!(Repo, "SELECT set_config($1, $2, true)", [
         setting,

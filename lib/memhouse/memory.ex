@@ -51,6 +51,7 @@ defmodule MemHouse.Memory do
   # caller names no limit. In retrieval it also caps how many candidates each
   # strategy may contribute, so raising it widens the fused candidate pool too.
   @default_limit 12
+  @max_search_limit 100
   @extraction_window_size 6
 
   @doc """
@@ -380,8 +381,8 @@ defmodule MemHouse.Memory do
     statements only; a password session with no `"peer_key"` reads as itself.
     Raises `ArgumentError` when the key names no Peer.
   - `"profile"` — named retrieval profile, defaults to `"balanced"`.
-  - `"limit"` — candidate cap, defaults to 12. It bounds each strategy's
-    contribution as well as the fused list.
+  - `"limit"` — candidate cap, defaults to 12 and is clamped to 100. It bounds
+    each strategy's contribution as well as the fused list.
   - `"deadline"` — the string `"disabled"` removes the profile's latency bound.
     Intended for evaluation runs; a request path should leave it on.
   - `"include_cross_links"` — `true`, `"true"`, or `"1"` also searches scopes
@@ -434,7 +435,9 @@ defmodule MemHouse.Memory do
       grant = diagnostic_grant(filters)
 
       limit =
-        if grant, do: grant.limit, else: parse_int(Map.get(filters, "limit"), @default_limit)
+        if grant,
+          do: grant.limit,
+          else: search_limit(Map.get(filters, "limit"))
 
       deadline? =
         if grant,
@@ -508,6 +511,13 @@ defmodule MemHouse.Memory do
 
       stringify_top_level(retrieval)
     end)
+  end
+
+  defp search_limit(value) do
+    value
+    |> parse_int(@default_limit)
+    |> max(1)
+    |> min(@max_search_limit)
   end
 
   @doc """

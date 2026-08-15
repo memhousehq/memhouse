@@ -22,11 +22,18 @@ defmodule MemHouse.Retrieval.Diagnostics do
     {:ok, nil}
   end
 
+  @doc "Records a summary for callers that do not have a request limit."
+  def record(account_id, result, deadline_ms), do: record(account_id, result, deadline_ms, 12)
+
   @doc "Records one content-free retrieval summary for an Account."
-  def record(account_id, result, deadline_ms) do
+  def record(account_id, result, deadline_ms, max_candidates) do
+    diskann = MemHouse.Retrieval.Store.diskann_query_settings(max_candidates)
+
     summary = %{
       profile: result.profile,
       profile_version: result.profile_version,
+      query_search_list_size: diskann[:query_search_list_size],
+      query_rescore: diskann[:query_rescore],
       lexical_analyzer: MemHouse.Retrieval.LexicalQueryAnalyzer.version(),
       deadline_ms: deadline_ms,
       latency_ms: result.latency_ms,
