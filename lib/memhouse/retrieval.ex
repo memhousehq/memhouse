@@ -136,12 +136,7 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
 
     update :update do
       accept [:strategy_config, :deadline_ms, :active]
-      validate MemHouse.Retrieval.ValidateRrfK
-    end
-
-    # Portability import bypasses normal validations, but rrf_k must still be
-    # validated to prevent invalid configuration from entering the database.
-    update :portability_import do
+      require_atomic? false
       validate MemHouse.Retrieval.ValidateRrfK
     end
   end
@@ -220,7 +215,8 @@ defmodule MemHouse.Retrieval.ValidateRrfK do
 
       %{"rrf_k" => rrf_k} ->
         {:error,
-         field: :strategy_config, message: "rrf_k must be a positive number, got: #{inspect(rrf_k)}"}
+         field: :strategy_config,
+         message: "rrf_k must be a positive number, got: #{inspect(rrf_k)}"}
 
       %{rrf_k: rrf_k} when is_number(rrf_k) and rrf_k > 0 ->
         :ok
@@ -230,7 +226,8 @@ defmodule MemHouse.Retrieval.ValidateRrfK do
 
       %{rrf_k: rrf_k} ->
         {:error,
-         field: :strategy_config, message: "rrf_k must be a positive number, got: #{inspect(rrf_k)}"}
+         field: :strategy_config,
+         message: "rrf_k must be a positive number, got: #{inspect(rrf_k)}"}
 
       _no_rrf_k ->
         :ok
