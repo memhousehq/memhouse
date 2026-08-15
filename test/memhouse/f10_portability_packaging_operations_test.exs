@@ -200,6 +200,20 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
            }
   end
 
+  test "readiness reports never for the free account with no completed lifecycle sweeps" do
+    # The sandbox transaction starts with no completed pipeline runs for the
+    # operator's free account, which `lifecycle_sweeps_check` always reads.
+    result = Health.readiness()
+
+    assert result.status == "ready"
+    assert result.checks.lifecycle_sweeps.status == "ok"
+
+    assert result.checks.lifecycle_sweeps.last_completed_at == %{
+             "expiry" => "never",
+             "revalidation" => "never"
+           }
+  end
+
   test "embedding index rejects an embedder width without an installed index" do
     original_roles = Application.fetch_env!(:memhouse, :model_roles)
 
@@ -540,24 +554,41 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
   end
 
   defp insert_completed_run!(account_id, kind, processed_at) do
+    action = action_for_kind(kind)
     id = Ecto.UUID.generate()
+    idempotency_key = "readiness:#{kind}:#{id}"
 
-    Repo.query!(
-      """
-      INSERT INTO pipeline_runs
-        (id, account_id, kind, target_type, idempotency_key, payload, status,
-         attempt_count, processed_at, inserted_at, updated_at)
-      VALUES ($1, $2, $3, 'account', $4, '{}', 'completed', 0, $5, $5, $5)
-      """,
-      [
-        Ecto.UUID.dump!(id),
-        Ecto.UUID.dump!(account_id),
-        kind,
-        "readiness:#{kind}:#{id}",
-        processed_at
-      ]
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        # Create the pipeline run through the proper enqueue action.
+        run =
+          MemHouse.Operations.PipelineRun
+          |> Ash.Changeset.new()
+          |> Ash.Changeset.set_tenant(account_id)
+          |> Ash.Changeset.for_create(action, %{
+            target_type: "account",
+            target_id: account_id,
+            idempotency_key: idempotency_key,
+            payload: %{}
+          })
+          |> Ash.create!(actor: actor)
+
+        # Stamp completion directly via the data layer. The `:execute` action
+        # would run the real lane workflow and overwrite `processed_at` with
+        # the current time, defeating a fixture that needs a fixed timestamp.
+        Ash.Seed.update!(run, %{
+          status: "completed",
+          processed_at: processed_at,
+          attempt_count: 1
+        })
+      end
     )
   end
+
+  defp action_for_kind("expiry"), do: :enqueue_expiry
+  defp action_for_kind("revalidation"), do: :enqueue_revalidation
 
   # A minimal audit event in the shape the verifier reads from an archive. Every field here
   # is covered by the hash, so none of them may be omitted or reordered when constructing a
