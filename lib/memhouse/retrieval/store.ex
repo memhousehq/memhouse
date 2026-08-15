@@ -219,36 +219,110 @@ defmodule MemHouse.Retrieval.Store do
   `Postgrex.Error` if the statement fails.
   """
   def semantic(query, embedding, identity, limit) do
-    {:ok, rows} = run_semantic_query(query, embedding, identity, limit, true)
-    rows
-  rescue
-    error in Postgrex.Error ->
-      if diskann_attnum_assertion?(error) do
-        require Logger
-
-        Logger.warning(
-          "DiskANN query failed with the PostgreSQL 18 attnum assertion; retrying with index scans disabled",
-          component: :semantic,
-          reason_class: :diskann_index_error
-        )
-
-        {:ok, rows} = run_semantic_query(query, embedding, identity, limit, false)
-        rows
-      else
-        reraise error, __STACKTRACE__
-      end
+    with_diskann_assertion_fallback(
+      fn -> run_semantic_query(query, embedding, identity, limit, true) end,
+      fn -> run_semantic_query(query, embedding, identity, limit, false) end
+    )
   end
 
   defp run_semantic_query(query, embedding, identity, limit, indexscan?) do
-    Repo.transaction(fn ->
-      configure_diskann_query!(limit)
+    configure_diskann_query!(limit)
 
-      unless indexscan? do
-        Ecto.Adapters.SQL.query!(Repo, "SET LOCAL enable_indexscan = off", [])
-      end
+    unless indexscan? do
+      Ecto.Adapters.SQL.query!(Repo, "SET LOCAL enable_indexscan = off", [])
+    end
 
-      semantic_query(query, embedding, identity, limit)
-    end)
+    semantic_query(query, embedding, identity, limit)
+  end
+
+  @doc """
+  Runs a DiskANN query and retries the PostgreSQL 18 assertion fallback in one savepoint.
+
+  The savepoint keeps an enclosing Account-scoped transaction usable after the indexed query
+  aborts. Other PostgreSQL errors are re-raised. Session-local settings the fallback changes,
+  such as `enable_indexscan`, are rolled back before the savepoint releases, so they do not
+  leak into the rest of the enclosing transaction. This function is public only so the database
+  regression test can produce the server error without depending on a specific vectorscale bug.
+  """
+  def with_diskann_assertion_fallback(primary, fallback)
+      when is_function(primary, 0) and is_function(fallback, 0) do
+    {:ok, result} =
+      Repo.transaction(fn ->
+        diskann_savepoint!(:create)
+
+        try do
+          result = primary.()
+          diskann_savepoint!(:release)
+          result
+        rescue
+          error in Postgrex.Error ->
+            stacktrace = __STACKTRACE__
+            diskann_savepoint!(:rollback)
+
+            if diskann_attnum_assertion?(error) do
+              require Logger
+
+              Logger.warning(
+                "DiskANN query failed with the PostgreSQL 18 attnum assertion; retrying with index scans disabled",
+                component: :semantic,
+                reason_class: :diskann_index_error
+              )
+
+              result = fallback.()
+              diskann_savepoint!(:rollback)
+              diskann_savepoint!(:release)
+              result
+            else
+              diskann_savepoint!(:release)
+              reraise error, stacktrace
+            end
+        end
+      end)
+
+    result
+  end
+
+  defp diskann_savepoint!(:create),
+    do: Ecto.Adapters.SQL.query!(Repo, "SAVEPOINT memhouse_diskann_attempt", [])
+
+  defp diskann_savepoint!(:rollback),
+    do: Ecto.Adapters.SQL.query!(Repo, "ROLLBACK TO SAVEPOINT memhouse_diskann_attempt", [])
+
+  defp diskann_savepoint!(:release),
+    do: Ecto.Adapters.SQL.query!(Repo, "RELEASE SAVEPOINT memhouse_diskann_attempt", [])
+
+  if Mix.env() == :test do
+    @doc "Raises the exact PostgreSQL error used to test DiskANN fallback recovery."
+    def raise_diskann_assertion_for_test! do
+      Ecto.Adapters.SQL.query!(Repo, """
+      DO $$
+      BEGIN
+        RAISE EXCEPTION USING
+          ERRCODE = 'XX000',
+          MESSAGE = 'assertion failed: attnum > 0';
+      END
+      $$
+      """)
+    end
+
+    @doc "Changes index-scan behavior inside a database fallback regression test."
+    def disable_indexscan_for_test!,
+      do: Ecto.Adapters.SQL.query!(Repo, "SET LOCAL enable_indexscan = off", [])
+
+    @doc "Returns one allowlisted transaction setting for database fallback regression tests."
+    def database_setting_for_test!("memhouse.account_id") do
+      %{rows: [[value]]} =
+        Ecto.Adapters.SQL.query!(Repo, "SELECT current_setting('memhouse.account_id')", [])
+
+      value
+    end
+
+    def database_setting_for_test!("enable_indexscan") do
+      %{rows: [[value]]} =
+        Ecto.Adapters.SQL.query!(Repo, "SELECT current_setting('enable_indexscan')", [])
+
+      value
+    end
   end
 
   defp diskann_attnum_assertion?(%Postgrex.Error{
