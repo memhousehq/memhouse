@@ -27,6 +27,22 @@ defmodule MemHouse.Pipeline.DreamTime do
   @epoch ~U[1970-01-01 00:00:00.000000Z]
   @working_set_limit 50
 
+  defmodule InvalidCandidate do
+    @moduledoc """
+    Identifies a retrieval result that does not satisfy the knowledge candidate contract.
+
+    The error contains only the candidate position and reason. It never copies
+    statement text or other candidate content into logs or durable job state.
+    """
+
+    defexception [:position, :reason]
+
+    @impl true
+    def message(%__MODULE__{position: position, reason: reason}) do
+      "invalid dream-time retrieval candidate at position #{position}: #{reason}"
+    end
+  end
+
   @doc """
   Dispatches one incremental pass for every Account scope that has new active knowledge.
 
@@ -110,18 +126,19 @@ defmodule MemHouse.Pipeline.DreamTime do
 
   defp reason(snapshot) do
     if MemHouse.Operations.Budget.admit?(snapshot.account_id, snapshot.scope_id, :dream_time) do
-      working_set = thorough_working_set(snapshot)
-      context = reasoning_context(snapshot, working_set)
+      with {:ok, working_set} <- thorough_working_set(snapshot) do
+        context = reasoning_context(snapshot, working_set)
 
-      case Reasoner.reason(
-             %{delta: serialise(snapshot.delta), working_set: serialise(working_set)},
-             context
-           ) do
-        {:ok, result, _provenance} ->
-          {:ok, %{status: :ready, result: result, input_ids: Enum.map(working_set, & &1.id)}}
+        case Reasoner.reason(
+               %{delta: serialise(snapshot.delta), working_set: serialise(working_set)},
+               context
+             ) do
+          {:ok, result, _provenance} ->
+            {:ok, %{status: :ready, result: result, input_ids: Enum.map(working_set, & &1.id)}}
 
-        {:error, error} ->
-          {:error, error}
+          {:error, error} ->
+            {:error, error}
+        end
       end
     else
       {:ok, %{status: :throttled}}
@@ -188,8 +205,61 @@ defmodule MemHouse.Pipeline.DreamTime do
     retrieved =
       Retrieval.retrieve(query, :thorough, deadline?: false, internal?: true, concurrent?: false)
 
-    records = Enum.map(retrieved.candidates, & &1.record)
-    Enum.uniq_by(snapshot.inputs ++ records, & &1.id) |> Enum.take(@working_set_limit)
+    with {:ok, ids} <- candidate_ids(retrieved.candidates) do
+      records = load_candidates(snapshot, ids)
+
+      {:ok,
+       Enum.uniq_by(snapshot.inputs ++ records, & &1.id)
+       |> Enum.take(@working_set_limit)}
+    end
+  end
+
+  @doc false
+  def candidate_ids(candidates) when is_list(candidates) do
+    candidates
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn
+      {%{"candidate_type" => "knowledge", "id" => id}, position}, {:ok, ids}
+      when is_binary(id) ->
+        case Ecto.UUID.cast(id) do
+          {:ok, id} ->
+            {:cont, {:ok, [id | ids]}}
+
+          :error ->
+            {:halt,
+             {:error, %InvalidCandidate{position: position, reason: "invalid knowledge id"}}}
+        end
+
+      {%{"candidate_type" => "knowledge"}, position}, _acc ->
+        {:halt, {:error, %InvalidCandidate{position: position, reason: "missing knowledge id"}}}
+
+      {%{"candidate_type" => _type}, position}, _acc ->
+        {:halt,
+         {:error, %InvalidCandidate{position: position, reason: "unexpected candidate type"}}}
+
+      {_candidate, position}, _acc ->
+        {:halt, {:error, %InvalidCandidate{position: position, reason: "missing knowledge id"}}}
+    end)
+    |> case do
+      {:ok, ids} -> {:ok, Enum.reverse(ids)}
+      error -> error
+    end
+  end
+
+  defp load_candidates(snapshot, ids) do
+    records_by_id =
+      KnowledgeItem
+      |> Ash.Query.filter(id in ^ids and scope_id == ^snapshot.scope_id and state == "active")
+      |> Ash.Query.set_tenant(snapshot.account_id)
+      |> Ash.read!(actor: snapshot.actor)
+      |> Map.new(&{&1.id, &1})
+
+    Enum.flat_map(ids, fn id ->
+      case Map.fetch(records_by_id, id) do
+        {:ok, record} -> [record]
+        :error -> []
+      end
+    end)
   end
 
   defp reasoning_context(snapshot, inputs) do

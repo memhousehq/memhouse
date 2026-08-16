@@ -32,4 +32,32 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     assert {:ok, %{scopes: 0, throttled: 0, items: 0, relations: 0}} =
              DreamTime.run(actor.account_id)
   end
+
+  test "current knowledge candidate maps do not require a private record field" do
+    first_id = Ash.UUID.generate()
+    second_id = Ash.UUID.generate()
+
+    candidates = [
+      %{
+        "candidate_type" => "knowledge",
+        "id" => first_id,
+        "statement" => "The candidate has the public retrieval shape.",
+        "fusion_score" => 0.8,
+        "strategies" => ["semantic", "lexical"]
+      },
+      %{"candidate_type" => "knowledge", "id" => second_id, "fusion_score" => 0.4}
+    ]
+
+    assert {:ok, [^first_id, ^second_id]} = DreamTime.candidate_ids(candidates)
+  end
+
+  test "a malformed candidate returns one content-safe diagnostic error" do
+    assert {:error,
+            %DreamTime.InvalidCandidate{position: 0, reason: "missing knowledge id"} = error} =
+             DreamTime.candidate_ids([
+               %{"candidate_type" => "knowledge", "statement" => "secret"}
+             ])
+
+    refute Exception.message(error) =~ "secret"
+  end
 end
