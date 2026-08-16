@@ -107,7 +107,12 @@ refused, preserving the verified contract that knowledge is about people and
 never about the infrastructure that carried it. Ingest candidates quote an
 exact span from a cited message. Validation also rejects an ISO statement date
 unless cited text contains that date or a relative-time expression that can
-resolve to it.
+resolve to it. When that exact span is first-person, validation derives the
+subject from the cited message's stored speaker key. It ignores the model's
+subject reference and fails closed if the cited evidence does not resolve to
+one known human peer. The cited speaker also determines direct or indirect
+evidence. Validation sends first-person statement prose back for repair because
+an opaque peer key cannot safely supply a display name.
 
 ## Embeddings
 

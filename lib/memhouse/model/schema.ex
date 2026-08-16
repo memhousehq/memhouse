@@ -277,11 +277,13 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, statement} <- readable_statement(item),
          {:ok, kind} <- enum(item, "kind", allowed(:kind)),
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
-         {:ok, subject_ref} <- valid_subject_ref(item, subject_type, context),
-         :ok <- durable_statement(statement, subject_type, subject_ref),
-         :ok <- human_subject_statement(statement, context),
          {:ok, source_message_ids} <- source_message_ids(item, context),
          :ok <- grounded_in_sources(item, statement, source_message_ids, context),
+         {:ok, subject_ref, evidence_source_peer_key} <-
+           valid_subject_ref(item, subject_type, source_message_ids, context),
+         :ok <- self_contained_statement(statement, item),
+         :ok <- durable_statement(statement, subject_type, subject_ref),
+         :ok <- human_subject_statement(statement, context),
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
@@ -294,8 +296,14 @@ defmodule MemHouse.Model.Schema.Extraction do
              subject_type: subject_type,
              subject_ref: subject_ref,
              source_message_ids: source_message_ids,
-             confidence: source_confidence(confidence, subject_type, subject_ref, context),
-             evidence_level: evidence_level(subject_type, subject_ref, context),
+             confidence:
+               source_confidence(
+                 confidence,
+                 subject_type,
+                 subject_ref,
+                 evidence_source_peer_key
+               ),
+             evidence_level: evidence_level(subject_type, subject_ref, evidence_source_peer_key),
              sensitivity: sensitivity,
              target_level: target_level,
              revalidate_after: nil,
@@ -692,26 +700,84 @@ defmodule MemHouse.Model.Schema.Extraction do
   # the caller already knows about, and a scope subject must be exactly the
   # scope the observation arrived in. This is what stops a model from attaching
   # a claim to an unrelated peer or to a scope the caller cannot see.
-  defp valid_subject_ref(item, "peer", context) do
-    with {:ok, ref} <- non_empty_string(item, "subject_ref") do
-      if ref in Map.get(context, :known_peer_keys, []) do
-        {:ok, ref}
-      else
-        {:error,
-         [
-           "subject_ref must name a known peer; for a first-person claim use the speaker peer key"
-         ]}
-      end
+  defp valid_subject_ref(item, "peer", source_message_ids, context) do
+    case first_person_source_peer(item, source_message_ids, context) do
+      {:ok, peer_key} ->
+        {:ok, peer_key, peer_key}
+
+      :not_first_person ->
+        with {:ok, ref} <- non_empty_string(item, "subject_ref") do
+          if ref in Map.get(context, :known_peer_keys, []) do
+            {:ok, ref, Map.get(context, :source_peer_key)}
+          else
+            {:error, ["subject_ref must name a known peer"]}
+          end
+        end
+
+      :unresolved ->
+        {:error, ["first-person subject must resolve to one known cited speaker"]}
     end
   end
 
-  defp valid_subject_ref(item, "scope", context) do
-    with {:ok, ref} <- non_empty_string(item, "subject_ref") do
-      if ref == Map.fetch!(context, :scope_path) do
-        {:ok, ref}
-      else
-        {:error, ["subject_ref must be the current scope path"]}
+  defp valid_subject_ref(item, "scope", source_message_ids, context) do
+    case first_person_source_peer(item, source_message_ids, context) do
+      :not_first_person ->
+        with {:ok, ref} <- non_empty_string(item, "subject_ref") do
+          if ref == Map.fetch!(context, :scope_path) do
+            {:ok, ref, Map.get(context, :source_peer_key)}
+          else
+            {:error, ["subject_ref must be the current scope path"]}
+          end
+        end
+
+      _first_person ->
+        {:error, ["subject_type must be peer for first-person evidence"]}
+    end
+  end
+
+  # A first-person span identifies its subject through durable source metadata,
+  # not through a model-generated identifier. The cited messages must agree on
+  # one known human peer. This keeps relayed or ambiguous evidence fail-closed.
+  defp first_person_source_peer(item, source_message_ids, context) do
+    with {:ok, supporting_span} <- non_empty_string(item, "supporting_span"),
+         true <- first_person?(supporting_span) do
+      peers =
+        context
+        |> Map.get(:window_messages, [])
+        |> Enum.filter(fn message ->
+          fetch(message, "id") in source_message_ids and
+            is_binary(fetch(message, "content")) and
+            String.contains?(fetch(message, "content"), supporting_span)
+        end)
+        |> Enum.map(&fetch(&1, "peer_key"))
+        |> Enum.filter(&(&1 in Map.get(context, :known_peer_keys, [])))
+        |> Enum.reject(&(&1 in Map.get(context, :agent_peer_keys, [])))
+        |> Enum.uniq()
+
+      case peers do
+        [peer_key] -> {:ok, peer_key}
+        _other -> :unresolved
       end
+    else
+      _other -> :not_first_person
+    end
+  end
+
+  defp first_person?(text) do
+    String.match?(text, ~r/^\s*(?:I(?:['’](?:m|ve|d|ll))?\b|my\b|mine\b|me\b)/iu)
+  end
+
+  # Evidence can identify an opaque Peer key, but that key is not display text.
+  # Require the model to provide self-contained prose instead of manufacturing
+  # a human name or persisting a pronoun whose referent disappears on retrieval.
+  defp self_contained_statement(statement, item) do
+    supporting_span = fetch(item, "supporting_span")
+
+    if is_binary(supporting_span) and first_person?(supporting_span) and
+         first_person?(statement) do
+      {:error, ["statement must replace first-person wording with the person's name"]}
+    else
+      :ok
     end
   end
 
@@ -774,19 +840,19 @@ defmodule MemHouse.Model.Schema.Extraction do
   defp temporal_order(_temporal), do: :ok
 
   # Third-party status comes from the resolved subject and known source peer.
-  defp source_confidence(confidence, subject_type, subject_ref, context) do
-    if evidence_level(subject_type, subject_ref, context) == "indirect" do
+  defp source_confidence(confidence, subject_type, subject_ref, source_peer_key) do
+    if evidence_level(subject_type, subject_ref, source_peer_key) == "indirect" do
       Float.round(confidence * 0.75, 4)
     else
       confidence
     end
   end
 
-  defp evidence_level("peer", subject_ref, %{source_peer_key: source_peer_key})
+  defp evidence_level("peer", subject_ref, source_peer_key)
        when subject_ref == source_peer_key,
        do: "direct"
 
-  defp evidence_level(_subject_type, _subject_ref, _context), do: "indirect"
+  defp evidence_level(_subject_type, _subject_ref, _source_peer_key), do: "indirect"
 
   # Looks a key up by its string name whether the map arrived with string or
   # atom keys. Providers, cassettes, and hand-written test fixtures disagree

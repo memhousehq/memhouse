@@ -34,7 +34,7 @@
               "statement": "Avery increased quarterly revenue by closing three enterprise contracts.",
               "kind": "event",
               "subject_type": "peer",
-              "subject_ref": "avery",
+              "subject_ref": "I",
               "confidence_level": "stated_explicitly",
               "sensitivity": "internal",
               "target_level": "peer",

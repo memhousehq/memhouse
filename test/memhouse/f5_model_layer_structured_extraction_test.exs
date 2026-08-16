@@ -203,7 +203,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              )
   end
 
-  test "first-person extraction repairs an unknown subject to the speaker peer key" do
+  test "first-person extraction grounds an unknown subject in the speaker peer key" do
     message =
       seed_raw!(
         "f5-first-person-subject",
