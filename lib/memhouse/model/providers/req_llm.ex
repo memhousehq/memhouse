@@ -293,9 +293,9 @@ defmodule MemHouse.Model.Providers.ReqLLM do
   # Builds the outbound request options: allowlisted configured values, then the
   # resolved credential, then per-call overrides last so a caller's explicit
   # timeout or temperature wins over the stored default. ReqLLM validates its
-  # generation options before a request is built. Req forwards pool and idle
-  # options directly, but needs its supported callback hook for Finch's total
-  # request deadline.
+  # generation options before a request is built. The public
+  # `request_timeout` role option maps to ReqLLM's `total_timeout`, which owns
+  # the complete call budget, including transport retries.
   defp request_opts(%Role{options: options}, overrides) do
     configured =
       @request_option_keys
@@ -313,49 +313,15 @@ defmodule MemHouse.Model.Providers.ReqLLM do
         if is_nil(value), do: acc, else: [{key, value} | acc]
       end)
 
-    timeouts = %{
-      pool_timeout: Keyword.get(overrides, :pool_timeout, Map.get(options, "pool_timeout")),
-      receive_timeout:
-        Keyword.get(overrides, :receive_timeout, Map.get(options, "receive_timeout")),
-      request_timeout:
-        Keyword.get(overrides, :request_timeout, Map.get(options, "request_timeout"))
-    }
+    total_timeout =
+      Keyword.get(overrides, :request_timeout, Map.get(options, "request_timeout"))
 
     configured
     |> maybe_put(:api_key, resolve_api_key(options))
     |> Keyword.merge(Keyword.take(overrides, @request_option_keys))
-    |> maybe_put(
-      :req_http_options,
-      maybe_put(req_http_options, :finch_request, finch_request(timeouts))
-    )
+    |> maybe_put(:total_timeout, total_timeout)
+    |> maybe_put(:req_http_options, req_http_options)
   end
-
-  # Req 0.6 passes only pool_timeout and receive_timeout to Finch. The callback
-  # supplies all three limits from the resolved role so a future Req change
-  # cannot silently restore Finch's five-second pool-checkout default.
-  defp finch_request(timeouts) do
-    timeouts = Enum.reject(timeouts, fn {_key, value} -> is_nil(value) end)
-
-    fn request, finch_request, finch_name, finch_options ->
-      case Finch.request(
-             finch_request,
-             finch_name(finch_name),
-             Keyword.merge(finch_options, timeouts)
-           ) do
-        {:ok, response} ->
-          {request, Req.Response.new(response)}
-
-        {:error, error} ->
-          {request, error}
-      end
-    end
-  end
-
-  # ReqLLM 1.20 configures Req with `[name: ReqLLM.Finch]`; Req hands that
-  # keyword list to its callback even though Finch expects the registered name.
-  # Accept both shapes so calls keep using ReqLLM's configured pool.
-  defp finch_name(name) when is_atom(name), do: name
-  defp finch_name(options) when is_list(options), do: Keyword.fetch!(options, :name)
 
   # OpenRouter's forced synthetic tool is not reliable for gpt-oss models: it
   # may finish after reasoning without making the required call. Its native
