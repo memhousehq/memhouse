@@ -761,6 +761,92 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              )
   end
 
+  test "an API credential reads active internal knowledge as its own peer" do
+    seeded =
+      seed_active!(
+        "f7-api-reader",
+        "/f7/api-reader",
+        "Avery increased quarterly revenue by closing three enterprise contracts."
+      )
+
+    assert seeded.knowledge.state == "active"
+    assert seeded.knowledge.sensitivity == "internal"
+
+    assert {:ok, %{indexed: 1}} = Indexer.rebuild_scope(seeded.account.id, seeded.scope.id)
+
+    exact =
+      Memory.search(
+        %{
+          "scope_path" => seeded.scope.path,
+          "query" => "enterprise contracts",
+          "deadline" => "disabled"
+        },
+        %{seeded.actor | identity_kind: :api_key}
+      )
+
+    assert seeded.knowledge.id in Enum.map(exact["candidates"], & &1["id"])
+    assert "lexical" in exact["contributed_strategies"]
+    assert exact["reader_posture"] == "peer"
+
+    paraphrase =
+      Memory.search(
+        %{
+          "scope_path" => seeded.scope.path,
+          "query" => "What caused the sales team's financial improvement?",
+          "deadline" => "disabled"
+        },
+        %{seeded.actor | identity_kind: :api_key}
+      )
+
+    assert seeded.knowledge.id in Enum.map(paraphrase["candidates"], & &1["id"])
+    assert "semantic" in paraphrase["contributed_strategies"]
+
+    public_only =
+      Memory.search(
+        %{
+          "scope_path" => seeded.scope.path,
+          "query" => "enterprise contracts",
+          "deadline" => "disabled"
+        },
+        %{seeded.actor | identity_kind: :api_key, peer_id: nil}
+      )
+
+    assert public_only["candidates"] == []
+    assert public_only["reader_posture"] == "public_only"
+    assert public_only["disagreement"]["query_dependent_empty"]
+
+    assert %{
+             component: "candidate_filter",
+             status: "completed",
+             reason_class: "authorization_filtered"
+           } =
+             Enum.find(
+               public_only["retrieval_outcomes"],
+               &(&1.component == "candidate_filter")
+             )
+
+    assert Enum.any?(
+             public_only["retrieval_outcomes"],
+             &(&1.component == "temporal" and &1.status == "not_applicable" and
+                 &1.reason_class == "applicability")
+           )
+
+    finite_deadline =
+      Memory.search(
+        %{
+          "scope_path" => seeded.scope.path,
+          "query" => "enterprise contracts"
+        },
+        %{seeded.actor | identity_kind: :api_key, peer_id: nil}
+      )
+
+    assert Enum.any?(
+             finite_deadline["retrieval_outcomes"],
+             &(&1.component == "candidate_filter" and
+                 &1.reason_class == "authorization_filtered")
+           )
+  end
+
   test "lexical retrieval answers a question that no single statement repeats in full" do
     target =
       seed_active!(

@@ -31,7 +31,7 @@ defmodule MemHouse.Retrieval.Engine do
 
   alias MemHouse.DataLayer
   alias MemHouse.Model.Gateway
-  alias MemHouse.Retrieval.{Budget, Candidate, Fusion, Profile, Trace}
+  alias MemHouse.Retrieval.{Budget, Candidate, Fusion, Profile, Store, StrategySupport, Trace}
 
   @doc """
   Executes one retrieval request and returns the response map.
@@ -135,7 +135,14 @@ defmodule MemHouse.Retrieval.Engine do
         outcome(strategy, "disabled", 0, Budget.remaining_ms(budget))
       end)
 
-    outcomes = disabled_outcomes ++ seed_outcomes ++ expand_outcomes ++ List.wrap(rerank_outcome)
+    filter_outcomes = authorization_filter_outcomes(query, lists, budget, concurrent?)
+
+    outcomes =
+      disabled_outcomes ++
+        seed_outcomes ++
+        expand_outcomes ++
+        filter_outcomes ++
+        List.wrap(rerank_outcome)
 
     dropped =
       for %{component: component, status: "dropped"} <- outcomes,
@@ -145,7 +152,7 @@ defmodule MemHouse.Retrieval.Engine do
     # ordering the profile promises, and collapsing it into "completed" hides that.
     degraded_components =
       for %{component: component, status: status, reason_class: reason_class} <- outcomes,
-          status == "dropped" or not is_nil(reason_class),
+          status == "dropped" or (status == "completed" and not is_nil(reason_class)),
           uniq: true,
           do: component
 
@@ -164,6 +171,7 @@ defmodule MemHouse.Retrieval.Engine do
       degraded: degraded_components != [],
       degraded_components: degraded_components,
       retrieval_outcomes: outcomes,
+      reader_posture: reader_posture(query),
       pre_rerank_remaining_ms: finite_remaining(pre_rerank_remaining_ms),
       reserved_rerank_ms: reserved_rerank_ms,
       # Fusion destroys evidence of strategy disagreement.
@@ -200,20 +208,29 @@ defmodule MemHouse.Retrieval.Engine do
     |> Enum.uniq()
   end
 
+  # This content-free value explains which authorization posture narrowed candidates. It does
+  # not reveal whether another reader would have matched hidden rows.
+  defp reader_posture(%{internal_reader?: true}), do: "internal"
+  defp reader_posture(%{actor: %{peer_id: peer_id}}) when is_binary(peer_id), do: "peer"
+  defp reader_posture(_query), do: "public_only"
+
   # Inapplicable strategies are skipped, not reported as degraded.
   defp run_phase([], _query, _budget, _concurrent?), do: {[], []}
 
   defp run_phase(modules, query, budget, concurrent?) do
     applicable = Enum.filter(modules, & &1.applicable?(query))
+    inapplicable = modules -- applicable
+    inapplicable_outcomes = Enum.map(inapplicable, &not_applicable_outcome(&1, budget))
     remaining = Budget.remaining_ms(budget)
     timeout = strategy_timeout(remaining)
 
     if remaining == 0 do
       # Report applicable work that the exhausted budget prevented.
       {[],
-       Enum.map(applicable, fn module ->
-         outcome(module.name(), "deadline_exhausted_before_start", 0, 0)
-       end)}
+       inapplicable_outcomes ++
+         Enum.map(applicable, fn module ->
+           outcome(module.name(), "deadline_exhausted_before_start", 0, 0)
+         end)}
     else
       results = execute_modules(applicable, query, budget, timeout, concurrent?)
 
@@ -253,8 +270,76 @@ defmodule MemHouse.Retrieval.Engine do
             )
         end)
 
-      {completed, outcomes}
+      {completed, inapplicable_outcomes ++ outcomes}
     end
+  end
+
+  defp authorization_filter_outcomes(query, lists, budget, concurrent?) do
+    lexical_empty? = Enum.any?(lists, &match?({:lexical, []}, &1))
+
+    if lexical_empty? and query.target in [:knowledge, :all] and not query.internal_reader? do
+      run_authorization_filter(query, budget, concurrent?)
+    else
+      []
+    end
+  end
+
+  defp run_authorization_filter(query, budget, concurrent?) do
+    remaining = Budget.remaining_ms(budget)
+
+    cond do
+      remaining == 0 ->
+        [outcome(:candidate_filter, "deadline_exhausted_before_start", 0, 0)]
+
+      remaining == :infinity ->
+        authorization_filter_result(query, budget)
+
+      true ->
+        timeout = strategy_timeout(remaining)
+        call = fn -> {:ok, authorization_filter_result(query, budget)} end
+
+        case deadline_call(call, timeout, concurrent?) do
+          {:ok, result} -> result
+          _ -> [outcome(:candidate_filter, "timeout", timeout, 0)]
+        end
+    end
+  end
+
+  defp authorization_filter_result(query, budget) do
+    started_at = MemHouse.Clock.monotonic_ms()
+
+    filtered? =
+      DataLayer.with_actor(query.actor, fn _account, actor ->
+        query
+        |> Map.put(:actor, actor)
+        |> Store.lexical_authorization_candidates(budget.max_candidates)
+        |> StrategySupport.candidates(:lexical, query.min_score || 0.0, query.source_filters)
+        |> Enum.any?()
+      end)
+
+    if filtered? do
+      [
+        %{
+          component: "candidate_filter",
+          status: "completed",
+          reason_class: "authorization_filtered",
+          elapsed_ms: MemHouse.Clock.monotonic_ms() - started_at,
+          budget_remaining_ms: finite_remaining(Budget.remaining_ms(budget))
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  defp not_applicable_outcome(module, budget) do
+    %{
+      component: Atom.to_string(module.name()),
+      status: "not_applicable",
+      reason_class: "applicability",
+      elapsed_ms: 0,
+      budget_remaining_ms: finite_remaining(Budget.remaining_ms(budget))
+    }
   end
 
   defp strategy_timeout(:infinity), do: :infinity

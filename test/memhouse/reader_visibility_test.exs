@@ -5,8 +5,9 @@ defmodule MemHouse.ReaderVisibilityTest do
   Evidence that a read is performed for somebody, and shows only what that somebody may see.
 
   Personal knowledge belongs to its subject until promotion carries it wider, and promotion
-  is where the subject agreed. A reader who names nobody has agreed with nobody, so only
-  public statements are theirs to read.
+  is where the subject agreed. An authenticated identity with a Peer reads as that Peer when it
+  names nobody else. A peerless identity reads public knowledge only. Internal knowledge is
+  shared inside authorized scopes; personal knowledge remains limited to its subject.
   """
 
   use MemHouse.DataCase, async: false
@@ -81,7 +82,7 @@ defmodule MemHouse.ReaderVisibilityTest do
     assert "Caroline is allergic to shellfish." in statements(ctx, "melanie")
   end
 
-  test "a reader who names nobody sees public statements only", ctx do
+  test "a machine credential that names nobody reads as its own peer", ctx do
     seed!(ctx, "caroline", "Caroline is allergic to shellfish.", sensitivity: "personal")
     seed!(ctx, "caroline", "Caroline holds the allotment gate rota.", sensitivity: "public")
     seed!(ctx, "caroline", "Caroline tracks the build pipeline.", sensitivity: "internal")
@@ -91,11 +92,11 @@ defmodule MemHouse.ReaderVisibilityTest do
 
     assert "Caroline holds the allotment gate rota." in found
     refute "Caroline is allergic to shellfish." in found
-    refute "Caroline tracks the build pipeline." in found
+    assert "Caroline tracks the build pipeline." in found
 
     assert "Caroline holds the allotment gate rota." in listed_found
     refute "Caroline is allergic to shellfish." in listed_found
-    refute "Caroline tracks the build pipeline." in listed_found
+    assert "Caroline tracks the build pipeline." in listed_found
   end
 
   test "internal knowledge is shared, because internal is not personal", ctx do
