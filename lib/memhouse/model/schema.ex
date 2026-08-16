@@ -281,7 +281,8 @@ defmodule MemHouse.Model.Schema.Extraction do
          :ok <- grounded_in_sources(item, statement, source_message_ids, context),
          {:ok, subject_ref} <-
            valid_subject_ref(item, subject_type, source_message_ids, context),
-         statement <- normalize_first_person_statement(statement, subject_type, subject_ref, item),
+         statement <-
+           normalize_first_person_statement(statement, subject_type, subject_ref, item),
          :ok <- durable_statement(statement, subject_type, subject_ref),
          :ok <- human_subject_statement(statement, context),
          {:ok, confidence} <- confidence(item),
