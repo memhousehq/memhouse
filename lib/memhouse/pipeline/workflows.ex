@@ -76,6 +76,8 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
 
   use Ash.Reactor
 
+  require Logger
+
   input(:pipeline_run)
 
   step :reason do
@@ -91,9 +93,24 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
           # Budget refusal is a completed run, not a failure: retrying would
           # queue the same denied work again.
           if MemHouse.Operations.Budget.admit?(run.account_id, run.scope_id, :dream_time) do
-            with {:ok, reasoning} <- MemHouse.Pipeline.DreamTime.run(run.account_id),
-                 {:ok, sweep} <- MemHouse.Governance.Sweeper.run(run.account_id, "dream_time") do
-              {:ok, %{reasoning: reasoning, sweep: sweep}}
+            case MemHouse.Pipeline.DreamTime.run(run.account_id) do
+              {:ok, reasoning} ->
+                with {:ok, sweep} <-
+                       MemHouse.Governance.Sweeper.run(run.account_id, "dream_time") do
+                  {:ok, %{reasoning: reasoning, sweep: sweep}}
+                end
+
+              {:error, %MemHouse.Pipeline.DreamTime.InvalidCandidate{} = error} ->
+                Logger.error("dream-time retrieval candidate rejected",
+                  account_id: run.account_id,
+                  pipeline_run_id: run.id,
+                  error_class: inspect(error.__struct__)
+                )
+
+                {:ok, %{status: "rejected", reason_class: "invalid_retrieval_candidate"}}
+
+              {:error, error} ->
+                {:error, error}
             end
           else
             {:ok, %{status: "throttled", lane: "dream_time"}}
