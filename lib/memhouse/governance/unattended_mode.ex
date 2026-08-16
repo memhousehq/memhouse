@@ -7,9 +7,11 @@ defmodule MemHouse.Governance.UnattendedMode do
   `MEMHOUSE_GOVERNANCE_UNATTENDED=true` applies to every Account, unlike per-Account
   `consent_mode`, and supports headless benchmarks or evaluation.
 
-  It affects consent resolution only, not Gate A/B rules. It is boot-time configuration except in
-  tests.
+  It grants consent for personal knowledge and safely rejects restricted proposals before they
+  can require a human decision. It is boot-time configuration except in tests.
   """
+
+  @restricted_reason "restricted_unattended_policy"
 
   @doc """
   True when `MEMHOUSE_GOVERNANCE_UNATTENDED` was set at boot.
@@ -23,4 +25,8 @@ defmodule MemHouse.Governance.UnattendedMode do
     |> Application.get_env(:governance, [])
     |> Keyword.get(:unattended, false)
   end
+
+  @doc "Stable lifecycle reason for restricted proposals withheld in unattended mode."
+  @spec restricted_reason() :: String.t()
+  def restricted_reason, do: @restricted_reason
 end

@@ -105,6 +105,12 @@ defmodule MemHouseWeb.MemoryControllerTest do
                  "configured_dimensions" => 1024,
                  "indexed_dimensions" => [1024]
                }
+             },
+             "governance" => %{
+               "unattended" => false,
+               "status" => "ok",
+               "pending_human_reviews" => 0,
+               "restricted_withheld" => 0
              }
            } = json_response(conn, 200)
 

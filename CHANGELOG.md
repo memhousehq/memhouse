@@ -92,6 +92,11 @@ changelog entry and contract-version transition.
 
 ### Fixed
 
+- Unattended deployments now reject restricted proposals with the audited
+  `restricted_unattended_policy` reason instead of leaving them in a curator
+  queue that no person can drain. `GET /api/ready` reports pending human reviews
+  and the retained count of restricted proposals withheld by this policy.
+
 - Lexical retrieval now uses a linear adjacent-phrase boost over a `2 × limit`
   shortlist instead of a distance-and-direction fan-out over `5 × limit` rows.
   Entity-name lookup uses a normalized GIN expression index instead of

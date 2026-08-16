@@ -10,13 +10,19 @@ defmodule MemHouse.Operations.Health do
   """
 
   alias MemHouse.DataLayer
+  alias MemHouse.Governance.UnattendedMode
+  alias MemHouse.Governance.ValidationItem
+  alias MemHouse.Knowledge.LifecycleEvent
   alias MemHouse.Repo
+
+  require Ash.Query
 
   # Oban job states that represent outstanding work. `completed`, `discarded`,
   # and `cancelled` are excluded deliberately: they are history, and counting
   # them would make queue depth grow forever instead of tracking backlog.
   @queue_states ~w(available scheduled retryable executing)
   @lifecycle_kinds ~w(revalidation expiry)
+  @human_review_states ~w(pending deferred escalated awaiting_consent)
 
   @doc """
   Minimal liveness payload: the process is up and answering.
@@ -38,9 +44,9 @@ defmodule MemHouse.Operations.Health do
   `"error"` status, plus an error class when it failed and queue depths or
   model identities when it did not. Overall status is `"ready"` only when
   every component is `"ok"`; one failure makes it `"not_ready"`. `governance`
-  is disclosure rather than a check — it never affects `status` — and today
-  carries only `unattended`, whether this process has
-  `MEMHOUSE_GOVERNANCE_UNATTENDED` set.
+  is disclosure rather than a check — it never affects `status`. It reports
+  whether this process is unattended, the pending reviews that still require a
+  person, and restricted proposals withheld by the unattended safety policy.
 
   Never raises, and never blocks indefinitely: the database-backed checks carry
   their own timeouts so a hung connection surfaces as an error instead of
@@ -71,10 +77,55 @@ defmodule MemHouse.Operations.Health do
       checks: checks,
       update: MemHouse.Update.status(),
       # Not a pass/fail check like the others above: this is disclosure, not a readiness
-      # gate, so it never affects `status`. An operator or auditor can tell whether subject
-      # consent is being auto-granted for this whole process without reading source.
-      governance: %{unattended: MemHouse.Governance.UnattendedMode.enabled?()}
+      # gate, so it never affects `status`. Setup diagnostics can still fail explicitly when
+      # unattended mode reports work that only a person can settle.
+      governance: governance_status()
     }
+  end
+
+  # Validation and lifecycle rows contain only ids, states, and stable reason codes. These
+  # aggregate counts can therefore be exposed by the unauthenticated deployment probe. Ash
+  # keeps both counts behind the Account tenant and row-level security boundary.
+  defp governance_status do
+    unattended = UnattendedMode.enabled?()
+
+    DataLayer.with_existing_free_account(fn account, actor ->
+      reason = UnattendedMode.restricted_reason()
+
+      pending_human_reviews =
+        ValidationItem
+        |> Ash.Query.filter(state in ^@human_review_states)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.count!(actor: actor)
+
+      restricted_withheld =
+        LifecycleEvent
+        |> Ash.Query.filter(reason == ^reason)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.count!(actor: actor)
+
+      %{
+        unattended: unattended,
+        status: "ok",
+        pending_human_reviews: pending_human_reviews,
+        restricted_withheld: restricted_withheld
+      }
+    end)
+  rescue
+    Ecto.NoResultsError ->
+      %{
+        unattended: UnattendedMode.enabled?(),
+        status: "ok",
+        pending_human_reviews: 0,
+        restricted_withheld: 0
+      }
+
+    error ->
+      %{
+        unattended: UnattendedMode.enabled?(),
+        status: "error",
+        error_class: error_class(error)
+      }
   end
 
   @doc """

@@ -31,6 +31,7 @@ defmodule MemHouse.Governance.Engine do
   alias MemHouse.Governance.GateDecision
   alias MemHouse.Governance.GateRule
   alias MemHouse.Governance.PeerQueue
+  alias MemHouse.Governance.UnattendedMode
   alias MemHouse.Governance.ValidationItem
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Knowledge.KnowledgeRelation
@@ -82,7 +83,43 @@ defmodule MemHouse.Governance.Engine do
     # fallback allows 168 h = 7 days). Only the deferred branch uses it.
     due_at = DateTime.add(Clock.utc_now(), rule.pending_max_age_hours, :hour)
 
-    case proposal_outcome(knowledge, rule, target_level, target_scope_id, actor) do
+    outcome =
+      proposal_outcome_or_unattended(
+        knowledge,
+        rule,
+        target_level,
+        target_scope_id,
+        actor
+      )
+
+    case outcome do
+      {:withhold_restricted, _consent} ->
+        reason = UnattendedMode.restricted_reason()
+
+        knowledge
+        |> transition!(actor, %{state: "rejected", verification: "auto_rejected"},
+          reason: reason,
+          channel: "pipeline"
+        )
+        |> tap(fn updated ->
+          record_decision!(
+            actor,
+            updated,
+            nil,
+            "gate_a_b",
+            "withhold",
+            from_state: knowledge.state,
+            to_state: updated.state,
+            to_level: target_level,
+            channel: "pipeline",
+            verified: true,
+            metadata: %{
+              "reason" => reason,
+              "rule_id" => rule_id(rule)
+            }
+          )
+        end)
+
       {:reject, _consent} ->
         knowledge
         |> transition!(actor, %{state: "rejected", verification: "auto_rejected"},
@@ -1081,8 +1118,9 @@ defmodule MemHouse.Governance.Engine do
   # retrievable at all.
   #
   # Restricted knowledge is never placed automatically, whatever the Account has
-  # declared. A deployment-wide switch must not be able to reach the one band that
-  # exists to demand a human.
+  # declared. In attended mode it waits for a human. Unattended mode intercepts it
+  # before the gates and rejects it with durable evidence, because no person exists
+  # to settle the review safely.
   defp auto_placeable_sensitivity?(%{sensitivity: "restricted"}, _actor), do: false
 
   defp auto_placeable_sensitivity?(%{sensitivity: "personal"} = knowledge, actor),
@@ -1090,6 +1128,27 @@ defmodule MemHouse.Governance.Engine do
 
   defp auto_placeable_sensitivity?(knowledge, _actor),
     do: knowledge.sensitivity in ["public", "internal"]
+
+  defp proposal_outcome_or_unattended(
+         %{sensitivity: "restricted"} = knowledge,
+         rule,
+         target_level,
+         target_scope_id,
+         actor
+       ) do
+    if UnattendedMode.enabled?(),
+      do: {:withhold_restricted, nil},
+      else: proposal_outcome(knowledge, rule, target_level, target_scope_id, actor)
+  end
+
+  defp proposal_outcome_or_unattended(
+         knowledge,
+         rule,
+         target_level,
+         target_scope_id,
+         actor
+       ),
+       do: proposal_outcome(knowledge, rule, target_level, target_scope_id, actor)
 
   # Returns {outcome, consent}, where consent is the resolve_consent/5 result — reused by
   # evaluate_proposal/3's :defer branch so the same proposal never resolves (and, for the auto

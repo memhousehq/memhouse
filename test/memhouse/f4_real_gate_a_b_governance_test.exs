@@ -25,6 +25,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   alias MemHouse.Identity
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
+  alias MemHouse.Operations.Health
   alias MemHouse.Repo
   alias MemHouse.Topology.Scope
 
@@ -448,6 +449,84 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
 
     assert Engine.decide(actor, validation_for!(actor, knowledge.id).id, "approve").knowledge.state ==
              "active"
+  end
+
+  test "unattended mode withholds restricted knowledge without human review" do
+    previous = Application.get_env(:memhouse, :governance, [])
+    Application.put_env(:memhouse, :governance, Keyword.put(previous, :unattended, true))
+    on_exit(fn -> Application.put_env(:memhouse, :governance, previous) end)
+
+    %{actor: actor} = bootstrap_human!("unattended-restricted")
+
+    create_gate_rule!(actor, %{
+      target_level: "peer",
+      sensitivity: "internal",
+      gate_a_mode: "auto_keep",
+      gate_b_mode: "auto_place",
+      minimum_confidence: 0.0,
+      minimum_corroboration: 1
+    })
+
+    create_gate_rule!(actor, %{
+      target_level: "scope",
+      sensitivity: "restricted",
+      gate_a_mode: "auto_keep",
+      gate_b_mode: "auto_place",
+      minimum_confidence: 0.0,
+      minimum_corroboration: 1
+    })
+
+    knowledge =
+      propose_direct!(
+        actor,
+        "/governance/unattended-restricted",
+        "scope",
+        "Avery's passport number is 123456789.",
+        sensitivity: "restricted"
+      )
+
+    assert knowledge.state == "rejected"
+    assert knowledge.verification == "auto_rejected"
+    assert validation_for!(actor, knowledge.id) == nil
+
+    history = Engine.history(actor, knowledge.id)
+    assert List.last(history.lifecycle).reason == "restricted_unattended_policy"
+
+    assert Enum.map(history.gate_decisions, &{&1.gate, &1.decision}) == [
+             {"gate_a_b", "withhold"}
+           ]
+
+    search =
+      Memory.search(
+        %{
+          "scope_path" => "/governance/unattended-restricted",
+          "query" => "passport number 123456789",
+          "deadline" => "disabled"
+        },
+        actor
+      )
+
+    assert search["candidates"] == []
+
+    ask =
+      Memory.ask(
+        %{
+          "scope_path" => "/governance/unattended-restricted",
+          "question" => "What is Avery's passport number?",
+          "deadline" => "disabled"
+        },
+        actor
+      )
+
+    assert ask["abstained"]
+    assert ask["citations"] == []
+
+    assert %{
+             unattended: true,
+             status: "ok",
+             pending_human_reviews: 0,
+             restricted_withheld: 1
+           } = Health.readiness().governance
   end
 
   test "account consent_mode: auto grants consent for an explicit Gate B promotion" do
