@@ -98,6 +98,10 @@ attempts, failures, failure rate, unmetered failures, and content-safe error
 classes. Provider failures do not change readiness because durable jobs retry.
 An unmetered failure returned no token usage, so its cost is unknown.
 
+`governance` reports whether the process is unattended, how many open reviews
+still require a person, and how many restricted proposals the unattended
+policy withheld. These counts are disclosure and do not change the HTTP status.
+
 The payload contains no credentials, secrets, or stored content.
 
 ---

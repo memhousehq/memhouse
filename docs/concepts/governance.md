@@ -15,6 +15,7 @@ flowchart TD
     B -->|auto_place| C{Outstanding subject consent?}
     C -->|yes| D
     C -->|no| ACT[active<br/>retrievable in its scope]
+    P -->|restricted + unattended| W[rejected<br/>withheld without human work]
 
     D{Defer: what level was requested?}
     D -->|peer| PROV[provisional<br/>visible only to the submitting peer]
@@ -45,7 +46,7 @@ to reviewers but never authorizes automatic acceptance.
 Gate B has `auto_place` (place knowledge when corroboration clears the cell's
 minimum) and human review. It covers public and internal knowledge always, and
 personal knowledge only in an Account that consents automatically. Restricted
-knowledge always needs a human placement decision.
+knowledge needs a human placement decision in an attended deployment.
 
 ## Target levels and blast radius
 
@@ -91,9 +92,11 @@ Either switch writes a normal auditable consent record; it does not skip
 consent. `GateRule` still controls Gate A/B and cannot waive consent.
 
 Either switch also widens Gate B: an `auto_place` cell then places personal
-knowledge, not only public and internal. Restricted knowledge stays manual
-whatever is configured. Both switches are off by default, so an Account that
-has not opted in still queues every personal item for a human.
+knowledge, not only public and internal. Restricted knowledge is never placed
+automatically. An attended deployment sends it to human review. An unattended
+deployment rejects it with the lifecycle reason `restricted_unattended_policy`
+and creates no curator queue row. Both switches are off by default, so an
+Account that has not opted in still queues every personal item for a human.
 
 ## Who may decide
 

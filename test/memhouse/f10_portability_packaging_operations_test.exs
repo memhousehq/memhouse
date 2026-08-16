@@ -246,14 +246,26 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
              result.checks.embedding_index
   end
 
-  test "readiness discloses whether this deployment is unattended" do
+  test "readiness reports unattended governance diagnostics" do
     previous = Application.get_env(:memhouse, :governance, [])
 
     Application.put_env(:memhouse, :governance, Keyword.put(previous, :unattended, true))
-    assert Health.readiness().governance.unattended == true
+
+    assert %{
+             unattended: true,
+             status: "ok",
+             pending_human_reviews: 0,
+             restricted_withheld: 0
+           } = Health.readiness().governance
 
     Application.put_env(:memhouse, :governance, Keyword.put(previous, :unattended, false))
-    assert Health.readiness().governance.unattended == false
+
+    assert %{
+             unattended: false,
+             status: "ok",
+             pending_human_reviews: 0,
+             restricted_withheld: 0
+           } = Health.readiness().governance
 
     Application.put_env(:memhouse, :governance, previous)
   end

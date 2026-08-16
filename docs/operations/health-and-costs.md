@@ -52,6 +52,11 @@ cannot include that call's unknown cost.
 kind. Each group reports its count and `oldest_age_seconds`. This exposes
 stranded work without exposing targets, payloads, or Account identities.
 
+`governance.pending_human_reviews` counts open work that requires a person.
+`governance.restricted_withheld` counts restricted proposals rejected under
+the unattended policy. A headless setup check must report a non-zero pending
+human count instead of waiting for a console action that cannot occur.
+
 ### Reading queue depth
 
 Queue depths appear by queue and job state. What to watch:

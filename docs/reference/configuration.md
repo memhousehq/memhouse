@@ -291,9 +291,15 @@ synthetic deployments without real subjects. MemHouse logs it at boot and
 reports it on `GET /api/ready`.
 
 It also widens Gate B: an `auto_place` matrix cell then places personal
-knowledge without a human. Restricted knowledge stays manual whatever is
-configured. The default is unchanged — leave this false and every personal
-item still waits for a person.
+knowledge without a human. Restricted knowledge is never placed automatically.
+When this variable is true, MemHouse rejects a restricted proposal with reason
+`restricted_unattended_policy` and creates no curator queue row. The default is
+unchanged: leave this false and restricted or personal work can wait for a
+person.
+
+`GET /api/ready` reports `pending_human_reviews` and `restricted_withheld` in
+its `governance` object. Use these counts to detect policy mismatches in a
+headless deployment.
 
 An individual Account can be marked the same way without touching the whole
 deployment — see [Governance](../concepts/governance.md) for the

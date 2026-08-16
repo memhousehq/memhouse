@@ -17,6 +17,7 @@ defmodule MemHouse.Operations.Health do
   # them would make queue depth grow forever instead of tracking backlog.
   @queue_states ~w(available scheduled retryable executing)
   @lifecycle_kinds ~w(revalidation expiry)
+  @human_review_states ~w(pending deferred escalated awaiting_consent)
 
   @doc """
   Minimal liveness payload: the process is up and answering.
@@ -38,9 +39,9 @@ defmodule MemHouse.Operations.Health do
   `"error"` status, plus an error class when it failed and queue depths or
   model identities when it did not. Overall status is `"ready"` only when
   every component is `"ok"`; one failure makes it `"not_ready"`. `governance`
-  is disclosure rather than a check — it never affects `status` — and today
-  carries only `unattended`, whether this process has
-  `MEMHOUSE_GOVERNANCE_UNATTENDED` set.
+  is disclosure rather than a check — it never affects `status`. It reports
+  whether this process is unattended, the pending reviews that still require a
+  person, and restricted proposals withheld by the unattended safety policy.
 
   Never raises, and never blocks indefinitely: the database-backed checks carry
   their own timeouts so a hung connection surfaces as an error instead of
@@ -71,10 +72,55 @@ defmodule MemHouse.Operations.Health do
       checks: checks,
       update: MemHouse.Update.status(),
       # Not a pass/fail check like the others above: this is disclosure, not a readiness
-      # gate, so it never affects `status`. An operator or auditor can tell whether subject
-      # consent is being auto-granted for this whole process without reading source.
-      governance: %{unattended: MemHouse.Governance.UnattendedMode.enabled?()}
+      # gate, so it never affects `status`. Setup diagnostics can still fail explicitly when
+      # unattended mode reports work that only a person can settle.
+      governance: governance_status()
     }
+  end
+
+  # Validation and lifecycle rows contain only ids, states, and stable reason codes. These
+  # aggregate counts can therefore be exposed by the unauthenticated deployment probe.
+  # The SQL is fixed; the only parameter is the module-owned list of open states.
+  # sobelow_skip ["SQL.Query"]
+  defp governance_status do
+    unattended = MemHouse.Governance.UnattendedMode.enabled?()
+
+    DataLayer.with_existing_free_account(fn _account, _actor ->
+      sql = """
+      SELECT
+        (SELECT count(*) FROM validation_items WHERE state = ANY($1)),
+        (SELECT count(*) FROM knowledge_lifecycle_events
+         WHERE reason = 'restricted_unattended_policy')
+      """
+
+      case Ecto.Adapters.SQL.query(Repo, sql, [@human_review_states], timeout: 2_000) do
+        {:ok, %{rows: [[pending_human_reviews, restricted_withheld]]}} ->
+          %{
+            unattended: unattended,
+            status: "ok",
+            pending_human_reviews: pending_human_reviews,
+            restricted_withheld: restricted_withheld
+          }
+
+        {:error, error} ->
+          %{unattended: unattended, status: "error", error_class: error_class(error)}
+      end
+    end)
+  rescue
+    Ecto.NoResultsError ->
+      %{
+        unattended: MemHouse.Governance.UnattendedMode.enabled?(),
+        status: "ok",
+        pending_human_reviews: 0,
+        restricted_withheld: 0
+      }
+
+    error ->
+      %{
+        unattended: MemHouse.Governance.UnattendedMode.enabled?(),
+        status: "error",
+        error_class: error_class(error)
+      }
   end
 
   @doc """
