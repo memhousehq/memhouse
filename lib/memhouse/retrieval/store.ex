@@ -207,6 +207,56 @@ defmodule MemHouse.Retrieval.Store do
   end
 
   @doc """
+  Returns active lexical knowledge matches removed only by reader visibility.
+
+  This internal diagnostic uses the same rank and limit as lexical retrieval. The caller must
+  reduce the rows to a content-free outcome before returning a response.
+  """
+  def lexical_authorization_candidates(%{internal_reader?: true}, _limit), do: []
+
+  def lexical_authorization_candidates(query, limit) do
+    analysis = LexicalQueryAnalyzer.analyze(query.text)
+    shortlist = limit * @lexical_shortlist_multiplier
+    parsed = tsquery(analysis, "$4")
+    proximity = proximity_tsquery("$5")
+
+    sql = """
+    WITH shortlist AS (
+      SELECT #{@knowledge_columns}, k.search_vector, k.inserted_at,
+             ts_rank_cd(k.search_vector, #{parsed}) AS base_score
+      FROM knowledge_items AS k
+      JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
+      WHERE k.account_id = $1
+        AND k.scope_id = ANY($2)
+        AND k.state = 'active'
+        AND NOT #{readable_condition("$3")}
+        AND k.deleted_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > now())
+        AND k.search_vector @@ #{parsed}
+      ORDER BY base_score DESC, k.confidence DESC, k.inserted_at DESC
+      LIMIT $6
+    )
+    SELECT #{@knowledge_shortlist_columns},
+           base_score +
+             #{@proximity_weight} * coalesce(ts_rank_cd(search_vector, #{proximity}), 0) AS score,
+           'knowledge' AS candidate_type
+    FROM shortlist
+    ORDER BY score DESC, confidence DESC, inserted_at DESC
+    LIMIT $7
+    """
+
+    all(sql, [
+      db_uuid!(query.account_id),
+      db_uuids!(query.scope_ids),
+      db_uuid(query.actor.peer_id),
+      analysis.matching_text,
+      analysis.proximity_text,
+      shortlist,
+      limit
+    ])
+  end
+
+  @doc """
   Approximate nearest-neighbour search over stored embeddings.
 
   Filters by provider, model, version, and dimensions; incompatible rows require re-embedding.
@@ -914,8 +964,12 @@ defmodule MemHouse.Retrieval.Store do
   # Parenthesised in full rather than relying on `AND` binding tighter than `OR`. This is the
   # clause that decides who reads whose memory; it must be right by reading, not by precedence.
   defp readable_by(peer) do
+    "AND #{readable_condition(peer)}"
+  end
+
+  defp readable_condition(peer) do
     """
-    AND (
+    (
           (k.sensitivity = 'public')
           OR (
             #{peer}::uuid IS NOT NULL

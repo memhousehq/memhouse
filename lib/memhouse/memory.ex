@@ -377,8 +377,8 @@ defmodule MemHouse.Memory do
   - `"peer_key"` — the peer the results are read for, trusted as supplied.
     A reader sees public and internal statements, its own, scope-subject
     statements, and anything promoted to scope or account level. A machine
-    credential that names no reader is reading for nobody and sees public
-    statements only; a password session with no `"peer_key"` reads as itself.
+    credential or password session with no `"peer_key"` reads as its own Peer
+    when the authenticated actor has one. A peerless actor reads public knowledge only.
     Raises `ArgumentError` when the key names no Peer.
   - `"profile"` — named retrieval profile, defaults to `"balanced"`.
   - `"limit"` — candidate cap, defaults to 12 and is clamped to the inclusive
@@ -402,7 +402,7 @@ defmodule MemHouse.Memory do
   Returns a string-keyed map holding `"query"`, `"profile"`,
   `"profile_version"`, `"deadline"`, `"latency_ms"`,
   `"contributed_strategies"`, `"empty_strategies"`, `"dropped_strategies"`,
-  `"degraded"`, `"degraded_components"`, `"retrieval_outcomes"`,
+  `"degraded"`, `"degraded_components"`, `"retrieval_outcomes"`, `"reader_posture"`,
   `"pre_rerank_remaining_ms"`, `"reserved_rerank_ms"`, `"disagreement"`, and
   `"candidates"`. A strategy that ran out of deadline lands in
   `"dropped_strategies"` instead of failing the call, so a partial result is
@@ -862,19 +862,9 @@ defmodule MemHouse.Memory do
         {%{actor | peer_id: reader_peer!(account, key).id}, false}
 
       _absent ->
-        {default_reader(actor), is_nil(actor.peer_id) and is_nil(identity_actor(attrs))}
+        {actor, is_nil(actor.peer_id) and is_nil(identity_actor(attrs))}
     end
   end
-
-  # A person signed in as themselves is the reader; there is nobody else they could be.
-  #
-  # A machine credential is not. It holds a Peer so it can be authorized, but that Peer is
-  # infrastructure, not a party to anybody's conversation, and reading as it would hand an
-  # agent whatever an agent happens to be the subject of. An agent that does not say who it
-  # is asking for is asking for nobody, and gets the public corpus.
-  defp default_reader(%Actor{identity_kind: :password} = actor), do: actor
-  defp default_reader(%Actor{identity_kind: :api_key} = actor), do: %{actor | peer_id: nil}
-  defp default_reader(actor), do: actor
 
   defp reader_peer!(account, key) do
     system = Actor.for_account(account, role: :system)

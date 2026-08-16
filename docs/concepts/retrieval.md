@@ -36,7 +36,8 @@ same as on [ingest](ingest-pipeline.md#who-a-turn-is-attributed-to).
 | The caller | Reads for | And sees |
 | --- | --- | --- |
 | Names `peer_key` | That peer | Public and internal statements, that peer's own statements, statements about the scope rather than about a person, and anything promoted to scope or account level |
-| A machine credential naming no peer | Nobody | Public statements only |
+| A machine credential naming no peer | Its own Peer | The same as a named reader |
+| A peerless credential naming no peer | Nobody | Public statements only |
 | A password session naming no peer | Itself | The same as a named reader |
 | Server-side work — projection rebuild, dream-time, evaluation | Nobody in particular | The whole corpus, narrowed only by lifecycle |
 
@@ -48,6 +49,11 @@ Naming a reader borrows nothing from it. Scope authorization stays the calling
 credential's. A `peer_key` that names no peer is an error, not a fallback to
 the caller. The server-side posture comes from the absence of an authenticated
 identity, never from the request, so a caller cannot ask for the whole corpus.
+
+A machine credential reads as its own Peer by default when its authenticated actor
+has one. This makes knowledge from its observations visible after governance accepts
+and indexes it. A peerless credential reads public statements only. Neither posture
+widens scope authorization. Use `peer_key` when the credential reads for a person.
 
 A shared projection is filtered before it is built. A scope card or an entity
 card carries shareable statements only — public or internal, about the scope, or
@@ -114,6 +120,16 @@ emits a ranked list, including from lists that are all bad, so a fused rank
 cannot say "nothing was found".
 
 ## Three per-strategy outcomes
+
+`reader_posture` reports `peer`, `public_only`, or `internal`. This content-free
+diagnostic explains which authorization posture narrowed candidates. It does not
+reveal whether hidden rows would match for another reader.
+
+When lexical terms match active knowledge but reader visibility removes every
+match, `retrieval_outcomes` adds `candidate_filter` with reason class
+`authorization_filtered`. It returns no hidden ids, text, scores, or counts.
+Strategies skipped by their applicability check report `not_applicable` with
+reason class `applicability`.
 
 A response separates strategies that **contributed** candidates, strategies that
 ran and found **nothing**, and strategies that were **dropped** — disabled,

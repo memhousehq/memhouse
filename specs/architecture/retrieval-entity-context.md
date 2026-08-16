@@ -181,6 +181,14 @@ Request-local diagnostics classify partial coverage and distinguish no resolved
 entity from a resolved entity with no authorized statements without returning
 cache identities or content.
 
+An authenticated identity with a Peer reads as that Peer unless it names another
+reader. A peerless identity reads public knowledge only. The response reports only
+the resulting `peer`, `public_only`, or `internal` reader posture. When lexical
+terms match active knowledge that reader visibility removes, a content-free outcome
+reports only that the authorization stage filtered a match. It returns no hidden
+ids, text, scores, or counts. Scope authorization and personal-subject filtering
+still apply inside each strategy query.
+
 Lexical search applies the versioned `lexical-question-v3` analyzer before its
 static, parameterized FTS query. For plain English questions it removes a
 reviewed interrogative set, retains the remaining query terms, names, and dates,

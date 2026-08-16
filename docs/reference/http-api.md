@@ -193,7 +193,7 @@ All fields optional.
 | --- | --- | --- |
 | `query` | `""` | Terms match individually; `"phrase"`, `-term`, and `or` narrow. See [Retrieval and context](../concepts/retrieval.md) |
 | `scope_path` | `"/poc"` | Selects the scope **and its ancestors** |
-| `peer_key` | none | The peer the results are read for. A machine credential that names none reads **public statements only** |
+| `peer_key` | none | The peer the results are read for. A credential that names none reads as its own Peer when it has one, otherwise public statements only |
 | `profile` | `"balanced"` | `fast`, `balanced`, `thorough` |
 | `limit` | `12` | Candidate cap; clamped to `1` through `100` |
 | `include_cross_links` | off | Requires authorisation at both endpoints |
@@ -206,10 +206,11 @@ All fields optional.
 supplied, exactly as on ingest. Naming a reader borrows nothing from it: scope
 authorisation stays the caller's. The named reader sees public and internal
 statements, its own statements, statements about the scope rather than about a
-person, and anything promoted to scope or account level. A password session that
-names no peer reads as itself. A key naming no Peer in the Account is an error,
-not an empty result. No request can ask to read the whole corpus; that posture
-belongs to server-side work alone. See
+person, and anything promoted to scope or account level. A password session or
+machine credential that names no peer reads as its own Peer when the authenticated
+actor has one. A peerless actor reads public statements only. A key naming no Peer
+in the Account is an error, not an empty result. No request can ask to read the whole
+corpus; that posture belongs to server-side work alone. See
 [A read is performed for a peer](../concepts/retrieval.md#a-read-is-performed-for-a-peer).
 
 Returns `{"data": result}` with the profile name, `profile_version` (`"f7-1"`),
@@ -234,6 +235,11 @@ contract version.
 
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.
+`reader_posture` reports `peer`, `public_only`, or `internal`, so an empty result
+can identify the authorization posture. If lexical matches exist but reader
+visibility removes them all, `retrieval_outcomes` adds the content-free
+`candidate_filter` outcome with reason class `authorization_filtered`.
+Inapplicable strategies report `not_applicable` with reason class `applicability`.
 `pre_rerank_remaining_ms` reports the budget available before reranking, and
 `reserved_rerank_ms` reports how much of the deadline was withheld from the
 strategies to pay for it.
@@ -326,7 +332,8 @@ A missing `question` raises rather than answering over an empty query.
 
 `peer_key` names the peer the context is assembled for, on the
 [same terms as `search`](#post-apiv1search): a machine credential that names
-none gets public statements only. Scope cards and entity cards are shared
+none reads as its own Peer when it has one; a peerless credential reads public
+statements only. Scope cards and entity cards are shared
 projections and carry shareable statements only, so a personal peer-level
 statement never appears in one.
 
