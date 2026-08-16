@@ -48,7 +48,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-11"
+  @prompt_version "extract-12"
 
   # Ways a model names the process instead of a person. Deployment-specific
   # identities are added per observation; these hold everywhere.
@@ -133,9 +133,11 @@ defmodule MemHouse.Pipeline.Extractor do
         from a source message that entails the claim. A question supports only
         that the question was asked; it never supports an answer. Then write
         the natural-language statement and confidence_level. Rate the statement as
-        stated_explicitly, clearly_implied, or inferred. Resolve subject independently from source. A peer subject_ref must be
-        one of the supplied known peer keys. Use the current scope path only for
-        a scope subject. Each candidate must cite source_message_ids drawn only
+        stated_explicitly, clearly_implied, or inferred. Resolve subject independently from source. For a first-person claim,
+        use the Speaker peer key as subject_ref; never use "I", "me", or a
+        display name. Every peer subject_ref must exactly copy one of the
+        supplied Conversation participant keys. Use the current scope path only
+        for a scope subject. Each candidate must cite source_message_ids drawn only
         from the supplied conversation window. The source-to-subject relationship is derived by
         MemHouse. Propose sensitivity and source-grounded relevant-window
         timestamps. Expiry is governance policy and is not part of extraction.

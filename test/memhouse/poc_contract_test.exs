@@ -64,7 +64,7 @@ defmodule MemHouse.PocContractTest do
     assert knowledge["extracting_provider"] == "deterministic"
     assert knowledge["extracting_model"] == "local-structured-fallback"
     assert knowledge["extracting_model_version"] == "1"
-    assert knowledge["prompt_version"] == "extract-11"
+    assert knowledge["prompt_version"] == "extract-12"
     assert knowledge["pipeline_version"] == "f5-1"
     assert knowledge["source_message_ids"] == [message["id"]]
 
