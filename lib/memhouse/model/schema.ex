@@ -719,13 +719,19 @@ defmodule MemHouse.Model.Schema.Extraction do
     end
   end
 
-  defp valid_subject_ref(item, "scope", _source_message_ids, context) do
-    with {:ok, ref} <- non_empty_string(item, "subject_ref") do
-      if ref == Map.fetch!(context, :scope_path) do
-        {:ok, ref, Map.get(context, :source_peer_key)}
-      else
-        {:error, ["subject_ref must be the current scope path"]}
-      end
+  defp valid_subject_ref(item, "scope", source_message_ids, context) do
+    case first_person_source_peer(item, source_message_ids, context) do
+      :not_first_person ->
+        with {:ok, ref} <- non_empty_string(item, "subject_ref") do
+          if ref == Map.fetch!(context, :scope_path) do
+            {:ok, ref, Map.get(context, :source_peer_key)}
+          else
+            {:error, ["subject_ref must be the current scope path"]}
+          end
+        end
+
+      _first_person ->
+        {:error, ["subject_type must be peer for first-person evidence"]}
     end
   end
 
@@ -745,6 +751,7 @@ defmodule MemHouse.Model.Schema.Extraction do
         end)
         |> Enum.map(&fetch(&1, "peer_key"))
         |> Enum.filter(&(&1 in Map.get(context, :known_peer_keys, [])))
+        |> Enum.reject(&(&1 in Map.get(context, :agent_peer_keys, [])))
         |> Enum.uniq()
 
       case peers do

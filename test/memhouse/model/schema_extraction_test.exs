@@ -285,6 +285,58 @@ defmodule MemHouse.Model.SchemaExtractionTest do
              Extraction.cast(%{"items" => [candidate]}, first_person_context)
   end
 
+  test "first-person evidence cannot use a scope subject" do
+    first_person_context = %{
+      context()
+      | window_messages: [
+          %{"id" => @message_id, "peer_key" => "avery", "content" => "I increased revenue."}
+        ],
+        window_message_ids: [@message_id]
+    }
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => "I increased revenue.",
+        "statement" => "Avery increased revenue.",
+        "subject_type" => "scope",
+        "subject_ref" => "/team",
+        "source_message_ids" => [@message_id]
+      })
+
+    assert {:error, ["items[0].subject_type must be peer for first-person evidence"]} =
+             Extraction.cast(%{"items" => [candidate]}, first_person_context)
+  end
+
+  test "first-person grounding excludes agent peer keys" do
+    first_person_context =
+      context()
+      |> Map.merge(%{
+        known_peer_keys: ["avery", "agent-1"],
+        forbidden_subject_terms: ["agent-1"],
+        window_messages: [
+          %{
+            "id" => @message_id,
+            "peer_key" => "agent-1",
+            "content" => "I increased revenue."
+          }
+        ],
+        window_message_ids: [@message_id]
+      })
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => "I increased revenue.",
+        "statement" => "Avery increased revenue.",
+        "subject_ref" => "avery",
+        "source_message_ids" => [@message_id]
+      })
+
+    assert {:error, ["items[0].first-person subject must resolve to one known cited speaker"]} =
+             Extraction.cast(%{"items" => [candidate]}, first_person_context)
+  end
+
   test "accepts source ids from the supplied conversation window" do
     candidate =
       item("stated_explicitly")
