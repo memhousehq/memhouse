@@ -98,7 +98,9 @@ is automatic and has no operator setting.
 ### Structured extraction, not free text
 
 Candidates must match schemas derived from their Ash resources. Invalid output
-gets bounded repair attempts, then rejection.
+gets bounded repair attempts. If an extraction response still mixes valid and
+invalid candidates, MemHouse keeps the valid candidates and omits the invalid
+ones. A malformed or wholly invalid response fails the job for retry.
 
 Extraction also does what a naive extractor gets wrong:
 

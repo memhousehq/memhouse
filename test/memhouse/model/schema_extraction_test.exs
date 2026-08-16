@@ -78,6 +78,32 @@ defmodule MemHouse.Model.SchemaExtractionTest do
     assert {first.confidence, first.evidence_level} == {second.confidence, second.evidence_level}
   end
 
+  test "recovery keeps valid candidates after repair exhaustion" do
+    valid_items = List.duplicate(item("stated_explicitly"), 4)
+
+    invalid_item =
+      item("stated_explicitly")
+      |> Map.put("supporting_span", "A summary that is not in the cited source.")
+
+    response = %{"items" => valid_items ++ [invalid_item]}
+
+    assert {:error, ["items[4].supporting_span must be exact text from a cited source"]} =
+             Extraction.cast(response, context())
+
+    assert {:ok, recovered} = Extraction.recover_after_repairs(response, context())
+    assert length(recovered) == 4
+    assert Enum.all?(recovered, &(&1.statement == "Avery prefers weekly release summaries."))
+  end
+
+  test "recovery refuses a wholly invalid response" do
+    invalid_item =
+      item("stated_explicitly")
+      |> Map.put("supporting_span", "A summary that is not in the cited source.")
+
+    assert :error =
+             Extraction.recover_after_repairs(%{"items" => [invalid_item]}, context())
+  end
+
   test "advertises ordered properties and described enums" do
     candidate = get_in(Extraction.json_schema(), ["properties", "items", "items"])
 

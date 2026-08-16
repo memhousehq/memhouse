@@ -46,8 +46,8 @@ defmodule MemHouse.Model do
 
   Returns `{:error, {:structured_validation_failed, errors}}` when the model
   cannot produce schema-valid output within the repair budget, or
-  `{:error, reason}` for a provider failure. Malformed output is never coerced
-  into knowledge.
+  `{:error, reason}` for a provider failure. After exhaustion, a schema can
+  recover valid collection members without coercing invalid output.
   """
   defdelegate generate_structured(role, messages, schema, context, opts \\ []),
     to: MemHouse.Model.StructuredGenerator,

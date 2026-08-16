@@ -15,6 +15,9 @@ defmodule MemHouse.Model.Schema do
 
   @callback json_schema() :: map()
   @callback cast(map(), map()) :: {:ok, term()} | {:error, [String.t()]}
+  @callback recover_after_repairs(map(), map()) :: {:ok, term()} | :error
+
+  @optional_callbacks recover_after_repairs: 2
 end
 
 defmodule MemHouse.Model.Schema.Extraction do
@@ -65,8 +68,9 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   ## Mistakes to avoid
 
-  - Do not relax `cast/2` to salvage partially valid output. An unparseable
-    response is an error the pipeline retries, not knowledge.
+  - Do not relax `cast/2` to salvage partially valid output. Repair must see
+    every validation error first. `recover_after_repairs/2` may omit invalid
+    candidates only after the repair budget is exhausted.
   - Do not put Account content into an error message: the messages are sent
     back to the model in the repair prompt and appear in error tuples.
   """
@@ -267,6 +271,38 @@ defmodule MemHouse.Model.Schema.Extraction do
   end
 
   def cast(_object, _context), do: {:error, ["response must be an object"]}
+
+  @doc """
+  Returns valid candidates after structured-output repair is exhausted.
+
+  Recovery is allowed only for a well-formed candidate list with at least one
+  valid and one invalid item. A wholly invalid response remains an error so the
+  pipeline job can retry the observation.
+  """
+  @impl true
+  def recover_after_repairs(object, context) when is_map(object) and is_map(context) do
+    context = prepare_forbidden_term_matchers(context)
+
+    case fetch(object, "items") do
+      items when is_list(items) ->
+        {valid, invalid_count} =
+          Enum.reduce(items, {[], 0}, fn item, {valid, invalid_count} ->
+            case cast_item(item, context) do
+              {:ok, casted} -> {[casted | valid], invalid_count}
+              {:error, _errors} -> {valid, invalid_count + 1}
+            end
+          end)
+
+        if valid != [] and invalid_count > 0,
+          do: {:ok, Enum.reverse(valid)},
+          else: :error
+
+      _other ->
+        :error
+    end
+  end
+
+  def recover_after_repairs(_object, _context), do: :error
 
   # Validates one candidate. The `with` chain is ordered cheapest-first and
   # stops at the first failure, so the resource changeset check — the most

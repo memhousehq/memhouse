@@ -16,7 +16,8 @@ defmodule MemHouse.Model.StructuredGenerator do
   Validation failure resends the original messages with errors and the prior object. At most two
   repairs are allowed, even if configuration asks for more. Every attempt is separately metered.
 
-  Exhaustion returns an error. Malformed output is never partially accepted or coerced.
+  Exhaustion returns an error unless a schema defines a safe recovery for valid
+  members of a collection. Recovery never coerces an invalid member.
 
   ## Content safety
 
@@ -109,7 +110,7 @@ defmodule MemHouse.Model.StructuredGenerator do
             )
 
           {:error, errors} ->
-            {:error, {:structured_validation_failed, errors}}
+            recover_or_error(schema, object, context, config, opts, usage, errors)
         end
 
       {:error, reason} when attempt < max_repairs ->
@@ -137,6 +138,25 @@ defmodule MemHouse.Model.StructuredGenerator do
   defp retryable_incomplete_response?(:provider_upstream_error), do: true
   defp retryable_incomplete_response?(_reason), do: false
 
+  defp recover_or_error(schema, object, context, config, opts, usage, errors) do
+    if function_exported?(schema, :recover_after_repairs, 2) do
+      case schema.recover_after_repairs(object, context) do
+        {:ok, value} ->
+          provenance =
+            config
+            |> Config.provenance()
+            |> maybe_put_usage(opts, usage)
+
+          {:ok, value, provenance}
+
+        :error ->
+          {:error, {:structured_validation_failed, errors}}
+      end
+    else
+      {:error, {:structured_validation_failed, errors}}
+    end
+  end
+
   defp merge_usage(total, current) do
     Enum.reduce([:input_tokens, :output_tokens, :embedding_tokens], total, fn key, acc ->
       value = Map.get(current, key, Map.get(current, Atom.to_string(key), 0)) || 0
@@ -162,6 +182,7 @@ defmodule MemHouse.Model.StructuredGenerator do
           content: """
           Repair the previous structured result so it matches the supplied schema.
           Preserve supported facts, do not invent facts, and return only the repaired object.
+          For grounding errors, copy exact supporting text from the cited source in the original messages.
           Validation errors: #{Enum.join(errors, "; ")}
           Previous object: #{Jason.encode!(object)}
           """
