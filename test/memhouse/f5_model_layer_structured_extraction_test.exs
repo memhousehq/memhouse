@@ -109,7 +109,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     )
 
     assert {:error,
-            {:prompt_version_mismatch, %{expected: "extract-11", configured: "extract-9"}}} =
+            {:prompt_version_mismatch, %{expected: "extract-12", configured: "extract-9"}}} =
              Memory.extract_message_for_account(message["id"], account_id)
 
     assert %{rows: [[nil]]} =
@@ -128,7 +128,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-11",
+      prompt_version: "extract-12",
       pipeline_version: "f5-1"
     )
 
@@ -149,7 +149,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert knowledge["extracting_provider"] == "openrouter"
     assert knowledge["extracting_model"] == "openai/gpt-oss-120b"
     assert knowledge["extracting_model_version"] == "2026-07"
-    assert knowledge["prompt_version"] == "extract-11"
+    assert knowledge["prompt_version"] == "extract-12"
     assert knowledge["pipeline_version"] == "f5-1"
 
     # Two usage events, not one: the failed first attempt is metered too. Repairs cost real
@@ -163,7 +163,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
                  %Decimal{coef: 44},
                  "openrouter",
                  "2026-07",
-                 "extract-11",
+                 "extract-12",
                  "f5-1"
                ]
              ]
@@ -187,7 +187,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # Provenance is what lets an operator answer "which model asserted this, under which
     # prompt and pipeline revision?" years later. All five identity columns must be present;
     # a knowledge row whose origin cannot be reconstructed is not auditable.
-    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-11", "f5-1"]]} =
+    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-12", "f5-1"]]} =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -203,6 +203,40 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              )
   end
 
+  test "first-person extraction repairs an unknown subject to the speaker peer key" do
+    message =
+      seed_raw!(
+        "f5-first-person-subject",
+        "avery",
+        "I increased quarterly revenue by closing three enterprise contracts."
+      )
+
+    account_id = account_id!("f5-first-person-subject")
+
+    put_role!(account_id, :ingest_extractor,
+      provider: "openrouter",
+      model: "openai/gpt-oss-120b",
+      model_version: "2026-08",
+      prompt_version: "extract-12",
+      pipeline_version: "f5-1"
+    )
+
+    CassetteProvider.start!(@cassette, "first_person_subject_repair")
+    Application.put_env(:memhouse, :model_provider, CassetteProvider)
+
+    assert {:ok, [knowledge]} = Memory.extract_message_for_account(message["id"], account_id)
+    assert knowledge["subject_peer_id"] == message["peer_id"]
+
+    assert knowledge["statement"] ==
+             "Avery increased quarterly revenue by closing three enterprise contracts."
+
+    assert CassetteProvider.calls() ==
+             [
+               {"structured", "ingest_extractor", "extraction"},
+               {"structured", "ingest_extractor", "extraction"}
+             ]
+  end
+
   test "a missing structured object retries the original request within the repair budget" do
     message = seed_raw!("f5-missing-object", "avery", "Avery prefers weekly summaries.")
     account_id = account_id!("f5-missing-object")
@@ -211,7 +245,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-11",
+      prompt_version: "extract-12",
       pipeline_version: "f5-1"
     )
 
@@ -239,7 +273,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-11",
+      prompt_version: "extract-12",
       pipeline_version: "f5-1"
     )
 
@@ -383,7 +417,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "unavailable-model",
       model_version: "1",
-      prompt_version: "extract-11",
+      prompt_version: "extract-12",
       pipeline_version: "f5-1"
     )
 
@@ -442,7 +476,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-11",
+      prompt_version: "extract-12",
       pipeline_version: "f5-1"
     )
 

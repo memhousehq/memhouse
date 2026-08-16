@@ -436,7 +436,7 @@ config :memhouse, :model_roles,
     provider: "deterministic",
     model: "local-structured-fallback",
     model_version: "1",
-    prompt_version: "extract-11",
+    prompt_version: "extract-12",
     pipeline_version: "f5-1",
     options: %{}
   },

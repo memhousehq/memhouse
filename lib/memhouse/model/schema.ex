@@ -697,7 +697,10 @@ defmodule MemHouse.Model.Schema.Extraction do
       if ref in Map.get(context, :known_peer_keys, []) do
         {:ok, ref}
       else
-        {:error, ["subject_ref must name a known peer"]}
+        {:error,
+         [
+           "subject_ref must name a known peer; for a first-person claim use the speaker peer key"
+         ]}
       end
     end
   end

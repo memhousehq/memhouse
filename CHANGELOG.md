@@ -214,6 +214,10 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Extraction prompt `extract-12` maps first-person claims to the exact speaker
+  peer key. An invalid peer reference now gives the bounded repair loop the same
+  mapping rule.
+
 - Extraction prompt `extract-11` requires an exact supporting span from a cited
   source. Schema validation rejects missing cited content, question-only spans,
   and ISO dates that do not occur in the source or resolve from a bounded
