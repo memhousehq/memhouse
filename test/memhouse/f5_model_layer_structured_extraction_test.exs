@@ -230,7 +230,11 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert knowledge["statement"] ==
              "Avery increased quarterly revenue by closing three enterprise contracts."
 
-    assert CassetteProvider.calls() == [{"structured", "ingest_extractor", "extraction"}]
+    assert CassetteProvider.calls() ==
+             [
+               {"structured", "ingest_extractor", "extraction"},
+               {"structured", "ingest_extractor", "extraction"}
+             ]
   end
 
   test "a missing structured object retries the original request within the repair budget" do

@@ -110,7 +110,9 @@ unless cited text contains that date or a relative-time expression that can
 resolve to it. When that exact span is first-person, validation derives the
 subject from the cited message's stored speaker key. It ignores the model's
 subject reference and fails closed if the cited evidence does not resolve to
-one known human peer.
+one known human peer. The cited speaker also determines direct or indirect
+evidence. Validation sends first-person statement prose back for repair because
+an opaque peer key cannot safely supply a display name.
 
 ## Embeddings
 

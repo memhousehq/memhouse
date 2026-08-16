@@ -116,7 +116,8 @@ Extraction also does what a naive extractor gets wrong:
 - **Resolves subject independently of source.** Who a statement is about is
   decided on its own, not assumed to be the speaker. A first-person claim maps
   to the cited message's speaker key during validation. The model cannot change
-  this mapping.
+  this mapping. Stored prose must replace first-person wording with a person's
+  name; MemHouse does not turn an opaque peer key into display text.
 - **Bounds who a statement may be about.** The model is offered the session's
   participants, minus agent peers, and a peer subject must be one of them. The
   speaker is on that list only because it took part, not automatically, so an

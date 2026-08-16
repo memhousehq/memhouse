@@ -279,10 +279,9 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
          {:ok, source_message_ids} <- source_message_ids(item, context),
          :ok <- grounded_in_sources(item, statement, source_message_ids, context),
-         {:ok, subject_ref} <-
+         {:ok, subject_ref, evidence_source_peer_key} <-
            valid_subject_ref(item, subject_type, source_message_ids, context),
-         statement <-
-           normalize_first_person_statement(statement, subject_type, subject_ref, item),
+         :ok <- self_contained_statement(statement, item),
          :ok <- durable_statement(statement, subject_type, subject_ref),
          :ok <- human_subject_statement(statement, context),
          {:ok, confidence} <- confidence(item),
@@ -297,8 +296,14 @@ defmodule MemHouse.Model.Schema.Extraction do
              subject_type: subject_type,
              subject_ref: subject_ref,
              source_message_ids: source_message_ids,
-             confidence: source_confidence(confidence, subject_type, subject_ref, context),
-             evidence_level: evidence_level(subject_type, subject_ref, context),
+             confidence:
+               source_confidence(
+                 confidence,
+                 subject_type,
+                 subject_ref,
+                 evidence_source_peer_key
+               ),
+             evidence_level: evidence_level(subject_type, subject_ref, evidence_source_peer_key),
              sensitivity: sensitivity,
              target_level: target_level,
              revalidate_after: nil,
@@ -698,12 +703,12 @@ defmodule MemHouse.Model.Schema.Extraction do
   defp valid_subject_ref(item, "peer", source_message_ids, context) do
     case first_person_source_peer(item, source_message_ids, context) do
       {:ok, peer_key} ->
-        {:ok, peer_key}
+        {:ok, peer_key, peer_key}
 
       :not_first_person ->
         with {:ok, ref} <- non_empty_string(item, "subject_ref") do
           if ref in Map.get(context, :known_peer_keys, []) do
-            {:ok, ref}
+            {:ok, ref, Map.get(context, :source_peer_key)}
           else
             {:error, ["subject_ref must name a known peer"]}
           end
@@ -717,7 +722,7 @@ defmodule MemHouse.Model.Schema.Extraction do
   defp valid_subject_ref(item, "scope", _source_message_ids, context) do
     with {:ok, ref} <- non_empty_string(item, "subject_ref") do
       if ref == Map.fetch!(context, :scope_path) do
-        {:ok, ref}
+        {:ok, ref, Map.get(context, :source_peer_key)}
       else
         {:error, ["subject_ref must be the current scope path"]}
       end
@@ -752,44 +757,20 @@ defmodule MemHouse.Model.Schema.Extraction do
   end
 
   defp first_person?(text) do
-    String.match?(text, ~r/^\s*(?:I\b|I'm\b|I've\b|I'd\b|I'll\b|my\b|mine\b|me\b)/iu)
+    String.match?(text, ~r/^\s*(?:I(?:['’](?:m|ve|d|ll))?\b|my\b|mine\b|me\b)/iu)
   end
 
-  # Stored statements must remain meaningful outside the source conversation.
-  # Replace only a leading first-person form after evidence has resolved the
-  # peer. Other wording stays model-authored and still passes ordinary checks.
-  defp normalize_first_person_statement(statement, "peer", peer_key, item) do
+  # Evidence can identify an opaque Peer key, but that key is not display text.
+  # Require the model to provide self-contained prose instead of manufacturing
+  # a human name or persisting a pronoun whose referent disappears on retrieval.
+  defp self_contained_statement(statement, item) do
     supporting_span = fetch(item, "supporting_span")
 
-    if is_binary(supporting_span) and first_person?(supporting_span) do
-      replace_first_person_statement(statement, peer_key)
+    if is_binary(supporting_span) and first_person?(supporting_span) and
+         first_person?(statement) do
+      {:error, ["statement must replace first-person wording with the person's name"]}
     else
-      statement
-    end
-  end
-
-  defp normalize_first_person_statement(statement, _subject_type, _subject_ref, _item),
-    do: statement
-
-  defp replace_first_person_statement(statement, peer_key) do
-    label = uppercase_first(peer_key)
-
-    [
-      {~r/^\s*I'm\s+/iu, "#{label} is "},
-      {~r/^\s*I've\s+/iu, "#{label} has "},
-      {~r/^\s*I'll\s+/iu, "#{label} will "},
-      {~r/^\s*My\s+/iu, "#{label}'s "},
-      {~r/^\s*I\s+/u, "#{label} "}
-    ]
-    |> Enum.find_value(statement, fn {pattern, replacement} ->
-      if Regex.match?(pattern, statement), do: Regex.replace(pattern, statement, replacement)
-    end)
-  end
-
-  defp uppercase_first(value) do
-    case String.next_grapheme(value) do
-      {first, rest} -> String.upcase(first) <> rest
-      nil -> value
+      :ok
     end
   end
 
@@ -852,19 +833,19 @@ defmodule MemHouse.Model.Schema.Extraction do
   defp temporal_order(_temporal), do: :ok
 
   # Third-party status comes from the resolved subject and known source peer.
-  defp source_confidence(confidence, subject_type, subject_ref, context) do
-    if evidence_level(subject_type, subject_ref, context) == "indirect" do
+  defp source_confidence(confidence, subject_type, subject_ref, source_peer_key) do
+    if evidence_level(subject_type, subject_ref, source_peer_key) == "indirect" do
       Float.round(confidence * 0.75, 4)
     else
       confidence
     end
   end
 
-  defp evidence_level("peer", subject_ref, %{source_peer_key: source_peer_key})
+  defp evidence_level("peer", subject_ref, source_peer_key)
        when subject_ref == source_peer_key,
        do: "direct"
 
-  defp evidence_level(_subject_type, _subject_ref, _context), do: "indirect"
+  defp evidence_level(_subject_type, _subject_ref, _source_peer_key), do: "indirect"
 
   # Looks a key up by its string name whether the map arrived with string or
   # atom keys. Providers, cassettes, and hand-written test fixtures disagree

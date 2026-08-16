@@ -192,6 +192,77 @@ defmodule MemHouse.Model.SchemaExtractionTest do
     assert casted.subject_ref == "avery"
   end
 
+  test "first-person evidence uses the cited speaker instead of the anchored speaker" do
+    first_person_context = %{
+      context()
+      | known_peer_keys: ["avery", "anchor"],
+        source_peer_key: "anchor",
+        window_messages: [
+          %{
+            "id" => @message_id,
+            "peer_key" => "avery",
+            "content" => "I increased quarterly revenue."
+          }
+        ],
+        window_message_ids: [@message_id]
+    }
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => "I increased quarterly revenue.",
+        "statement" => "Avery increased quarterly revenue.",
+        "subject_ref" => "anchor",
+        "source_message_ids" => [@message_id]
+      })
+
+    assert {:ok, [casted]} =
+             Extraction.cast(%{"items" => [candidate]}, first_person_context)
+
+    assert casted.subject_ref == "avery"
+    assert casted.evidence_level == "direct"
+    assert casted.confidence == 1.0
+  end
+
+  test "rejects every recognized first-person form in stored statements" do
+    for first_person <- [
+          "I increased revenue.",
+          "I'm leading the account.",
+          "I’m leading the account.",
+          "I've closed three contracts.",
+          "I’ve closed three contracts.",
+          "I'd accepted the target.",
+          "I’d accepted the target.",
+          "I'll publish the report.",
+          "I’ll publish the report.",
+          "My target is quarterly.",
+          "Mine is the quarterly target.",
+          "Me leading the account is durable."
+        ] do
+      first_person_context = %{
+        context()
+        | window_messages: [
+            %{"id" => @message_id, "peer_key" => "avery", "content" => first_person}
+          ],
+          window_message_ids: [@message_id]
+      }
+
+      candidate =
+        item("stated_explicitly")
+        |> Map.merge(%{
+          "supporting_span" => first_person,
+          "statement" => first_person,
+          "subject_ref" => "I",
+          "source_message_ids" => [@message_id]
+        })
+
+      assert {:error,
+              [
+                "items[0].statement must replace first-person wording with the person's name"
+              ]} = Extraction.cast(%{"items" => [candidate]}, first_person_context)
+    end
+  end
+
   test "first-person grounding fails closed without one known cited speaker" do
     first_person_context = %{
       context()

@@ -218,7 +218,9 @@ changelog entry and contract-version transition.
   peer key. An invalid peer reference now gives the bounded repair loop the same
   mapping rule. Validation also derives a first-person subject from the cited
   message's stored speaker key, so model retries cannot preserve a wrong or
-  unknown reference.
+  unknown reference. The cited speaker determines evidence confidence, and
+  first-person stored prose must be repaired instead of synthesized from an
+  opaque peer key.
 
 - Extraction prompt `extract-11` requires an exact supporting span from a cited
   source. Schema validation rejects missing cited content, question-only spans,
