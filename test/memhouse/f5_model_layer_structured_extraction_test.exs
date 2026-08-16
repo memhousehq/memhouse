@@ -203,7 +203,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              )
   end
 
-  test "first-person extraction repairs an unknown subject to the speaker peer key" do
+  test "first-person extraction grounds an unknown subject in the speaker peer key" do
     message =
       seed_raw!(
         "f5-first-person-subject",
@@ -230,11 +230,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert knowledge["statement"] ==
              "Avery increased quarterly revenue by closing three enterprise contracts."
 
-    assert CassetteProvider.calls() ==
-             [
-               {"structured", "ingest_extractor", "extraction"},
-               {"structured", "ingest_extractor", "extraction"}
-             ]
+    assert CassetteProvider.calls() == [{"structured", "ingest_extractor", "extraction"}]
   end
 
   test "a missing structured object retries the original request within the repair budget" do

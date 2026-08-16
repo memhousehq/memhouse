@@ -277,11 +277,13 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, statement} <- readable_statement(item),
          {:ok, kind} <- enum(item, "kind", allowed(:kind)),
          {:ok, subject_type} <- enum(item, "subject_type", @subject_types),
-         {:ok, subject_ref} <- valid_subject_ref(item, subject_type, context),
-         :ok <- durable_statement(statement, subject_type, subject_ref),
-         :ok <- human_subject_statement(statement, context),
          {:ok, source_message_ids} <- source_message_ids(item, context),
          :ok <- grounded_in_sources(item, statement, source_message_ids, context),
+         {:ok, subject_ref} <-
+           valid_subject_ref(item, subject_type, source_message_ids, context),
+         statement <- normalize_first_person_statement(statement, subject_type, subject_ref, item),
+         :ok <- durable_statement(statement, subject_type, subject_ref),
+         :ok <- human_subject_statement(statement, context),
          {:ok, confidence} <- confidence(item),
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
@@ -692,26 +694,101 @@ defmodule MemHouse.Model.Schema.Extraction do
   # the caller already knows about, and a scope subject must be exactly the
   # scope the observation arrived in. This is what stops a model from attaching
   # a claim to an unrelated peer or to a scope the caller cannot see.
-  defp valid_subject_ref(item, "peer", context) do
-    with {:ok, ref} <- non_empty_string(item, "subject_ref") do
-      if ref in Map.get(context, :known_peer_keys, []) do
-        {:ok, ref}
-      else
-        {:error,
-         [
-           "subject_ref must name a known peer; for a first-person claim use the speaker peer key"
-         ]}
-      end
+  defp valid_subject_ref(item, "peer", source_message_ids, context) do
+    case first_person_source_peer(item, source_message_ids, context) do
+      {:ok, peer_key} ->
+        {:ok, peer_key}
+
+      :not_first_person ->
+        with {:ok, ref} <- non_empty_string(item, "subject_ref") do
+          if ref in Map.get(context, :known_peer_keys, []) do
+            {:ok, ref}
+          else
+            {:error, ["subject_ref must name a known peer"]}
+          end
+        end
+
+      :unresolved ->
+        {:error, ["first-person subject must resolve to one known cited speaker"]}
     end
   end
 
-  defp valid_subject_ref(item, "scope", context) do
+  defp valid_subject_ref(item, "scope", _source_message_ids, context) do
     with {:ok, ref} <- non_empty_string(item, "subject_ref") do
       if ref == Map.fetch!(context, :scope_path) do
         {:ok, ref}
       else
         {:error, ["subject_ref must be the current scope path"]}
       end
+    end
+  end
+
+  # A first-person span identifies its subject through durable source metadata,
+  # not through a model-generated identifier. The cited messages must agree on
+  # one known human peer. This keeps relayed or ambiguous evidence fail-closed.
+  defp first_person_source_peer(item, source_message_ids, context) do
+    with {:ok, supporting_span} <- non_empty_string(item, "supporting_span"),
+         true <- first_person?(supporting_span) do
+      peers =
+        context
+        |> Map.get(:window_messages, [])
+        |> Enum.filter(fn message ->
+          fetch(message, "id") in source_message_ids and
+            is_binary(fetch(message, "content")) and
+            String.contains?(fetch(message, "content"), supporting_span)
+        end)
+        |> Enum.map(&fetch(&1, "peer_key"))
+        |> Enum.filter(&(&1 in Map.get(context, :known_peer_keys, [])))
+        |> Enum.uniq()
+
+      case peers do
+        [peer_key] -> {:ok, peer_key}
+        _other -> :unresolved
+      end
+    else
+      _other -> :not_first_person
+    end
+  end
+
+  defp first_person?(text) do
+    String.match?(text, ~r/^\s*(?:I\b|I'm\b|I've\b|I'd\b|I'll\b|my\b|mine\b|me\b)/iu)
+  end
+
+  # Stored statements must remain meaningful outside the source conversation.
+  # Replace only a leading first-person form after evidence has resolved the
+  # peer. Other wording stays model-authored and still passes ordinary checks.
+  defp normalize_first_person_statement(statement, "peer", peer_key, item) do
+    supporting_span = fetch(item, "supporting_span")
+
+    if is_binary(supporting_span) and first_person?(supporting_span) do
+      replace_first_person_statement(statement, peer_key)
+    else
+      statement
+    end
+  end
+
+  defp normalize_first_person_statement(statement, _subject_type, _subject_ref, _item),
+    do: statement
+
+  defp replace_first_person_statement(statement, peer_key) do
+    label = uppercase_first(peer_key)
+
+    [
+      {~r/^\s*I'm\s+/iu, "#{label} is "},
+      {~r/^\s*I've\s+/iu, "#{label} has "},
+      {~r/^\s*I'll\s+/iu, "#{label} will "},
+      {~r/^\s*My\s+/iu, "#{label}'s "},
+      {~r/^\s*I\s+/u, "#{label} "}
+    ]
+    |> Enum.find_value(statement, fn {pattern, replacement} ->
+      if Regex.match?(pattern, statement), do: Regex.replace(pattern, statement, replacement)
+    end)
+  end
+
+  defp uppercase_first(value) do
+    case String.next_grapheme(value) do
+      {first, rest} -> String.upcase(first) <> rest
+      nil -> value
     end
   end
 

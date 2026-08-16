@@ -216,7 +216,9 @@ changelog entry and contract-version transition.
 
 - Extraction prompt `extract-12` maps first-person claims to the exact speaker
   peer key. An invalid peer reference now gives the bounded repair loop the same
-  mapping rule.
+  mapping rule. Validation also derives a first-person subject from the cited
+  message's stored speaker key, so model retries cannot preserve a wrong or
+  unknown reference.
 
 - Extraction prompt `extract-11` requires an exact supporting span from a cited
   source. Schema validation rejects missing cited content, question-only spans,

@@ -22,28 +22,6 @@
           ]
         },
         "usage": {"input_tokens": 70, "output_tokens": 25}
-      },
-      {
-        "operation": "structured",
-        "role": "ingest_extractor",
-        "task": "extraction",
-        "value": {
-          "items": [
-            {
-              "supporting_span": "I increased quarterly revenue by closing three enterprise contracts.",
-              "statement": "Avery increased quarterly revenue by closing three enterprise contracts.",
-              "kind": "event",
-              "subject_type": "peer",
-              "subject_ref": "avery",
-              "confidence_level": "stated_explicitly",
-              "sensitivity": "internal",
-              "target_level": "peer",
-              "relevant_from": null,
-              "relevant_until": null
-            }
-          ]
-        },
-        "usage": {"input_tokens": 85, "output_tokens": 28}
       }
     ],
     "repair_extraction": [

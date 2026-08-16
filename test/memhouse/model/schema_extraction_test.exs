@@ -28,9 +28,14 @@ defmodule MemHouse.Model.SchemaExtractionTest do
       window_messages: [
         %{
           "id" => @message_id,
+          "peer_key" => "avery",
           "content" => "Avery prefers weekly release summaries."
         },
-        %{"id" => @other_message_id, "content" => "Avery sends them on Friday."}
+        %{
+          "id" => @other_message_id,
+          "peer_key" => "avery",
+          "content" => "Avery sends them on Friday."
+        }
       ]
     }
   end
@@ -125,6 +130,88 @@ defmodule MemHouse.Model.SchemaExtractionTest do
     assert {:ok, [candidate]} = cast_item(item("stated_explicitly"))
     assert candidate.evidence_level == "direct"
     assert candidate.confidence == 1.0
+  end
+
+  test "grounds a first-person subject in the cited speaker instead of the model reference" do
+    first_person_context = %{
+      context()
+      | window_messages: [
+          %{
+            "id" => @message_id,
+            "peer_key" => "avery",
+            "content" => "I increased quarterly revenue by closing three enterprise contracts."
+          }
+        ],
+        window_message_ids: [@message_id]
+    }
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" =>
+          "I increased quarterly revenue by closing three enterprise contracts.",
+        "statement" => "Avery increased quarterly revenue by closing three enterprise contracts.",
+        "kind" => "event",
+        "subject_ref" => "I",
+        "source_message_ids" => [@message_id]
+      })
+
+    assert {:ok, [casted]} =
+             Extraction.cast(%{"items" => [candidate]}, first_person_context)
+
+    assert casted.subject_ref == "avery"
+    assert casted.evidence_level == "direct"
+  end
+
+  test "first-person grounding overrides a different known peer" do
+    first_person_context = %{
+      context()
+      | known_peer_keys: ["avery", "other"],
+        window_messages: [
+          %{
+            "id" => @message_id,
+            "peer_key" => "avery",
+            "content" => "My quarterly revenue increased."
+          }
+        ],
+        window_message_ids: [@message_id]
+    }
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => "My quarterly revenue increased.",
+        "statement" => "Avery's quarterly revenue increased.",
+        "subject_ref" => "other",
+        "source_message_ids" => [@message_id]
+      })
+
+    assert {:ok, [casted]} =
+             Extraction.cast(%{"items" => [candidate]}, first_person_context)
+
+    assert casted.subject_ref == "avery"
+  end
+
+  test "first-person grounding fails closed without one known cited speaker" do
+    first_person_context = %{
+      context()
+      | window_messages: [
+          %{"id" => @message_id, "peer_key" => "unknown", "content" => "I increased revenue."}
+        ],
+        window_message_ids: [@message_id]
+    }
+
+    candidate =
+      item("stated_explicitly")
+      |> Map.merge(%{
+        "supporting_span" => "I increased revenue.",
+        "statement" => "Avery increased revenue.",
+        "subject_ref" => "I",
+        "source_message_ids" => [@message_id]
+      })
+
+    assert {:error, ["items[0].first-person subject must resolve to one known cited speaker"]} =
+             Extraction.cast(%{"items" => [candidate]}, first_person_context)
   end
 
   test "accepts source ids from the supplied conversation window" do
