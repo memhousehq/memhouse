@@ -49,14 +49,17 @@ defmodule MemHouse.Model.StructuredGenerator do
   `opts[:max_repairs]` may lower the repair budget but never raise it above the
   built-in ceiling. Remaining options are passed to the provider.
 
-  Returns `{:ok, value, provenance_map}` where `value` is whatever the schema's
-  `cast/2` produced and the provenance map identifies the provider, model, and
-  versions that produced it.
+  Returns `{:ok, value, provenance_map}` where `value` comes from the schema's
+  `cast/2` on success, or from the schema's `recover_after_repairs/2` when
+  repair budget is exhausted but safe recovery succeeds (see "The repair loop"
+  in the moduledoc). The provenance map identifies the provider, model, and
+  versions that produced the response.
 
   Failure modes: `{:error, {:structured_validation_failed, errors}}` when the
-  budget is exhausted, or the provider's own `{:error, reason}`. A bounded set
-  of transient incomplete-response errors retries the original request within
-  the same budget. Other provider errors short-circuit immediately.
+  repair budget is exhausted and no recovery path exists or recovery fails, or
+  the provider's own `{:error, reason}`. A bounded set of transient
+  incomplete-response errors retries the original request within the same
+  budget. Other provider errors short-circuit immediately.
   """
   def generate(role, messages, schema, context, opts \\ [])
       when is_atom(schema) and is_list(messages) and is_map(context) do
