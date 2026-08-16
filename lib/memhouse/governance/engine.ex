@@ -94,9 +94,11 @@ defmodule MemHouse.Governance.Engine do
 
     case outcome do
       {:withhold_restricted, _consent} ->
+        reason = UnattendedMode.restricted_reason()
+
         knowledge
         |> transition!(actor, %{state: "rejected", verification: "auto_rejected"},
-          reason: "restricted_unattended_policy",
+          reason: reason,
           channel: "pipeline"
         )
         |> tap(fn updated ->
@@ -112,7 +114,7 @@ defmodule MemHouse.Governance.Engine do
             channel: "pipeline",
             verified: true,
             metadata: %{
-              "reason" => "restricted_unattended_policy",
+              "reason" => reason,
               "rule_id" => rule_id(rule)
             }
           )

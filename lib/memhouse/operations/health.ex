@@ -10,7 +10,12 @@ defmodule MemHouse.Operations.Health do
   """
 
   alias MemHouse.DataLayer
+  alias MemHouse.Governance.UnattendedMode
+  alias MemHouse.Governance.ValidationItem
+  alias MemHouse.Knowledge.LifecycleEvent
   alias MemHouse.Repo
+
+  require Ash.Query
 
   # Oban job states that represent outstanding work. `completed`, `discarded`,
   # and `cancelled` are excluded deliberately: they are history, and counting
@@ -79,37 +84,37 @@ defmodule MemHouse.Operations.Health do
   end
 
   # Validation and lifecycle rows contain only ids, states, and stable reason codes. These
-  # aggregate counts can therefore be exposed by the unauthenticated deployment probe.
-  # The SQL is fixed; the only parameter is the module-owned list of open states.
-  # sobelow_skip ["SQL.Query"]
+  # aggregate counts can therefore be exposed by the unauthenticated deployment probe. Ash
+  # keeps both counts behind the Account tenant and row-level security boundary.
   defp governance_status do
-    unattended = MemHouse.Governance.UnattendedMode.enabled?()
+    unattended = UnattendedMode.enabled?()
 
-    DataLayer.with_existing_free_account(fn _account, _actor ->
-      sql = """
-      SELECT
-        (SELECT count(*) FROM validation_items WHERE state = ANY($1)),
-        (SELECT count(*) FROM knowledge_lifecycle_events
-         WHERE reason = 'restricted_unattended_policy')
-      """
+    DataLayer.with_existing_free_account(fn account, actor ->
+      reason = UnattendedMode.restricted_reason()
 
-      case Ecto.Adapters.SQL.query(Repo, sql, [@human_review_states], timeout: 2_000) do
-        {:ok, %{rows: [[pending_human_reviews, restricted_withheld]]}} ->
-          %{
-            unattended: unattended,
-            status: "ok",
-            pending_human_reviews: pending_human_reviews,
-            restricted_withheld: restricted_withheld
-          }
+      pending_human_reviews =
+        ValidationItem
+        |> Ash.Query.filter(state in ^@human_review_states)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.count!(actor: actor)
 
-        {:error, error} ->
-          %{unattended: unattended, status: "error", error_class: error_class(error)}
-      end
+      restricted_withheld =
+        LifecycleEvent
+        |> Ash.Query.filter(reason == ^reason)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.count!(actor: actor)
+
+      %{
+        unattended: unattended,
+        status: "ok",
+        pending_human_reviews: pending_human_reviews,
+        restricted_withheld: restricted_withheld
+      }
     end)
   rescue
     Ecto.NoResultsError ->
       %{
-        unattended: MemHouse.Governance.UnattendedMode.enabled?(),
+        unattended: UnattendedMode.enabled?(),
         status: "ok",
         pending_human_reviews: 0,
         restricted_withheld: 0
@@ -117,7 +122,7 @@ defmodule MemHouse.Operations.Health do
 
     error ->
       %{
-        unattended: MemHouse.Governance.UnattendedMode.enabled?(),
+        unattended: UnattendedMode.enabled?(),
         status: "error",
         error_class: error_class(error)
       }

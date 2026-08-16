@@ -81,6 +81,12 @@ model-call check reports a prior-24-hour attempt count, failure rate,
 unmetered-failure count, and error-class counts. Provider failures do not make
 the process unready because durable jobs retry them.
 
+The content-safe `governance` disclosure reports unattended mode, open work
+that still requires a person, and restricted proposals withheld under the
+unattended policy. It reads both durable resources through Account-scoped Ash
+queries. These counts do not change readiness status; setup diagnostics decide
+whether a pending human count is acceptable for their deployment mode.
+
 Every authenticated HTTP request emits an exact `UsageEvent`; ingest requests
 are identified separately. Model usage continues to have one durable emission
 point in `MemHouse.Model.Usage`. Rebuildable ETS counters provide inexpensive

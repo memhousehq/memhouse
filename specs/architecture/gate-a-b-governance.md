@@ -44,8 +44,9 @@ built-in human rule.
 Gate A uses the persisted, schema-derived source evidence level. Only a source
 Peer speaking about itself is `direct`; every other source-to-subject relation
 is `indirect`. Model confidence remains reviewer metadata and is never an
-automatic Gate A input. Gate B never automatically places `personal` or
-`restricted` knowledge.
+automatic Gate A input. Gate B can automatically place `personal` knowledge
+only after declared auto consent. It never automatically places `restricted`
+knowledge.
 
 Gate A produces one of:
 
@@ -87,6 +88,13 @@ Either makes `Engine.resolve_consent/5` write a real pipeline-owned `Consent`
 with `status: "granted"`, `verified: true`, and channel
 `"auto:account_mode"` or `"auto:unattended_deployment"`. Existing readers need
 no special case, and the channel keeps the declaration auditable.
+
+Deployment-wide unattended mode must not create work for a curator who does
+not exist. The engine therefore rejects restricted proposals before it creates
+a validation item. The lifecycle and gate decision use the stable reason
+`restricted_unattended_policy`. The statement stays durable as rejected
+evidence and cannot enter retrieval. Account-scoped auto consent does not make
+this change because the Account can still have a human curator.
 
 When ordinary ingest supplies no `target_scope_id` for a scope-level proposal,
 the gate uses the item's `scope_id` for the hold, validation item, and consent;
