@@ -290,6 +290,8 @@ defmodule MemHouse.Model.Gateway do
   def error_class(%ReqLLM.Error.API.Request{cause: %Finch.TransportError{reason: :timeout}}),
     do: "request_timeout"
 
+  def error_class(%ReqLLM.Error.API.Timeout{kind: :total}), do: "request_timeout"
+
   def error_class(%ReqLLM.Error.API.Request{}), do: "transport_error"
   def error_class(%module{}), do: inspect(module)
   def error_class(error) when is_atom(error), do: Atom.to_string(error)

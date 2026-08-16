@@ -47,10 +47,9 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
   every single generation call for any role that sets it, which is exactly
   what shipped in `a566d30` before this file existed.
 
-  Second, that the configured total request deadline reaches Finch even when
-  the idle receive timeout has not elapsed. Req 0.6 does not forward that
-  Finch option itself, so losing the callback would let a slow response run
-  until the provider closes it.
+  Second, that the configured total request deadline reaches ReqLLM's whole-call
+  budget even when the idle receive timeout has not elapsed. This budget also
+  covers transport retries; a per-request Finch timeout does not.
 
   Third, that a call which completes with HTTP 200 but carries no usable value
   is named for *why* it is unusable. An aggregator can answer 200 with a choice
@@ -67,6 +66,7 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
   use ExUnit.Case, async: true
 
   alias MemHouse.Model.Config.Role
+  alias MemHouse.Model.Gateway
   alias MemHouse.Model.Provider.Result
   alias MemHouse.Model.Providers.ReqLLM, as: Adapter
   alias MemHouse.Model.Providers.ReqLLMTest.StubPlug
@@ -149,7 +149,7 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
              Adapter.chat(config, [%{role: "user", content: "hi"}], [])
   end
 
-  test "the configured total request timeout reaches Finch through Req's callback" do
+  test "the configured total request timeout bounds structured extraction" do
     config =
       stubbed_role(
         completion("stop", %{"role" => "assistant", "content" => "hello"}),
@@ -163,8 +163,10 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
         })
       end)
 
-    assert {:error, %ReqLLM.Error.API.Request{cause: %Finch.TransportError{reason: :timeout}}} =
-             Adapter.chat(config, @messages, [])
+    assert {:error, %ReqLLM.Error.API.Timeout{kind: :total, timeout: 50} = error} =
+             Adapter.structured(config, @messages, @schema, [])
+
+    assert Gateway.error_class(error) == "request_timeout"
   end
 
   test "a generation-only model reranks through strict structured output" do
