@@ -37,6 +37,7 @@ defmodule MemHouse.Pipeline.DreamTime do
 
     defexception [:position, :reason]
 
+    @doc false
     @impl true
     def message(%__MODULE__{position: position, reason: reason}) do
       "invalid dream-time retrieval candidate at position #{position}: #{reason}"
@@ -249,7 +250,9 @@ defmodule MemHouse.Pipeline.DreamTime do
   defp load_candidates(snapshot, ids) do
     records_by_id =
       KnowledgeItem
-      |> Ash.Query.filter(id in ^ids and scope_id == ^snapshot.scope_id and state == "active")
+      |> Ash.Query.filter(
+        id in ^ids and scope_id == ^snapshot.scope_id and state == "active" and is_nil(deleted_at)
+      )
       |> Ash.Query.set_tenant(snapshot.account_id)
       |> Ash.read!(actor: snapshot.actor)
       |> Map.new(&{&1.id, &1})
