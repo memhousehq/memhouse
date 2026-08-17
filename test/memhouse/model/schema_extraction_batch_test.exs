@@ -14,6 +14,7 @@ defmodule MemHouse.Model.SchemaExtractionBatchTest do
 
   alias MemHouse.Model.Schema.ExtractionBatch
   alias MemHouse.Pipeline.ExtractionAdmission
+  alias MemHouse.Pipeline.ExtractionBatcher
 
   setup do
     original = Application.fetch_env!(:memhouse, :extraction_batching)
@@ -91,6 +92,23 @@ defmodule MemHouse.Model.SchemaExtractionBatchTest do
              )
 
     assert identity =~ "utf8-bytes-v1:target=128:context=64:output=16:margin=8"
+  end
+
+  test "classifies deterministic provider output failures for operator repair" do
+    for reason <- [
+          :provider_output_truncated,
+          :provider_content_filtered,
+          :missing_structured_object
+        ] do
+      assert {:repairable, class} = ExtractionBatcher.failure_class(reason)
+      assert class == Atom.to_string(reason)
+    end
+
+    assert ExtractionBatcher.failure_class(:provider_unavailable) ==
+             {:retryable, "provider_transient"}
+
+    assert ExtractionBatcher.failure_class({:structured_validation_failed, ["shape"]}) ==
+             {:terminal, "structured_validation_exhausted"}
   end
 
   defp contexts(first_id, second_id) do

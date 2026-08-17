@@ -26,19 +26,20 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
   @doc "Processes the message named by an extraction PipelineRun."
   def run(run) do
+    claim_id = Ecto.UUID.generate()
     actor_opts = [role: :system, pipeline?: true]
 
     DataLayer.with_account_id(run.account_id, actor_opts, fn _account, actor ->
-      Pipeline.claim_extraction_runs(run.account_id, [run.target_id], actor)
+      Pipeline.claim_extraction_runs(run.account_id, [run.target_id], claim_id, actor)
     end)
     |> case do
-      {:ok, [claimed_run]} -> process_claimed(claimed_run)
+      {:ok, [claimed_run]} -> process_claimed(claimed_run, claim_id)
       {:ok, []} -> {:ok, %{status: "delegated", run_status: "processing"}}
       {:error, error} -> {:error, error}
     end
   end
 
-  defp process_claimed(run) do
+  defp process_claimed(run, claim_id) do
     anchor = Memory.prepare_message_extraction_for_account(run.target_id, run.account_id)
 
     prepared =
@@ -51,11 +52,11 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
         {:ok, %{status: "repairable", run_status: "repairable"}}
 
       selected ->
-        claim_and_extract(run, selected)
+        claim_and_extract(run, claim_id, selected)
     end
   end
 
-  defp claim_and_extract(run, [anchor | siblings]) do
+  defp claim_and_extract(run, claim_id, [anchor | siblings]) do
     identity = ExtractionAdmission.config()[:identity]
     sibling_ids = Enum.map(siblings, & &1.message["id"])
 
@@ -67,7 +68,8 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
           run.account_id,
           [role: :system, pipeline?: true],
           fn _account, actor ->
-            {:ok, claimed} = Pipeline.claim_extraction_runs(run.account_id, sibling_ids, actor)
+            {:ok, claimed} =
+              Pipeline.claim_extraction_runs(run.account_id, sibling_ids, claim_id, actor)
 
             claimed
           end
@@ -106,6 +108,10 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
           {:repairable, reason_class} ->
             mark_all(Map.values(runs), "repairable", reason_class, identity)
             {:ok, %{status: "repairable", run_status: "repairable"}}
+
+          {:terminal, reason_class} ->
+            mark_all(Map.values(runs), "terminal", reason_class, identity)
+            {:ok, %{status: "terminal", run_status: "terminal"}}
 
           {:retryable, reason_class} ->
             # Record every claimed anchor before returning the provider error.
@@ -204,15 +210,30 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     end)
   end
 
-  defp failure_class({:repairable, reason, _details}), do: {:repairable, Atom.to_string(reason)}
-  defp failure_class({:prompt_version_mismatch, _details}), do: {:repairable, "configuration"}
+  @doc false
+  def failure_class({:repairable, reason, _details}), do: {:repairable, Atom.to_string(reason)}
 
-  defp failure_class(%ReqLLM.Error.Invalid{}), do: {:repairable, "configuration"}
-  defp failure_class(%ReqLLM.Error.Validation{}), do: {:repairable, "configuration"}
+  def failure_class({:prompt_version_mismatch, _details}),
+    do: {:repairable, "configuration"}
 
-  defp failure_class(%ReqLLM.Error.API.Request{status: status})
-       when status in [400, 401, 403, 404, 405, 422],
-       do: {:repairable, "provider_configuration"}
+  def failure_class({:structured_validation_failed, _details}),
+    do: {:terminal, "structured_validation_exhausted"}
 
-  defp failure_class(_error), do: {:retryable, "provider_transient"}
+  def failure_class(:provider_output_truncated),
+    do: {:repairable, "provider_output_truncated"}
+
+  def failure_class(:provider_content_filtered),
+    do: {:repairable, "provider_content_filtered"}
+
+  def failure_class(:missing_structured_object),
+    do: {:repairable, "missing_structured_object"}
+
+  def failure_class(%ReqLLM.Error.Invalid{}), do: {:repairable, "configuration"}
+  def failure_class(%ReqLLM.Error.Validation{}), do: {:repairable, "configuration"}
+
+  def failure_class(%ReqLLM.Error.API.Request{status: status})
+      when status in [400, 401, 403, 404, 405, 422],
+      do: {:repairable, "provider_configuration"}
+
+  def failure_class(_error), do: {:retryable, "provider_transient"}
 end

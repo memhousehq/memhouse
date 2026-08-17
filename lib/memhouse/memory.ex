@@ -272,19 +272,17 @@ defmodule MemHouse.Memory do
       run.account_id,
       [role: :system, pipeline?: true],
       fn account, actor ->
-        current_run = read_one_by_id!(PipelineRun, run.id, account.id, actor)
-
         case result do
           %{status: :ok, items: items} ->
             knowledge = Enum.map(items, &insert_knowledge!(account.id, actor, message, &1))
             mark_message_extracted!(account.id, actor, message["id"])
-            {:ok, _run} = Pipeline.complete_extraction_run(current_run, admission_identity, actor)
+            {:ok, _run} = Pipeline.complete_extraction_run(run, admission_identity, actor)
             {:ok, knowledge}
 
           %{status: :terminal, reason_class: reason_class} ->
             {:ok, _run} =
               Pipeline.classify_extraction_run(
-                current_run,
+                run,
                 "terminal",
                 reason_class,
                 admission_identity,

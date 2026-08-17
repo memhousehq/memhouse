@@ -109,7 +109,7 @@ config :memhouse, :extraction_batching,
   context_limit_tokens: 131_072,
   reserved_output_tokens: 8_192,
   safety_margin_tokens: 2_048,
-  claim_timeout_seconds: 300
+  claim_timeout_seconds: 1_200
 
 # The updater verifies release manifests with this embedded Ed25519 public key.
 # It is deliberately not a runtime secret: the matching private key exists only

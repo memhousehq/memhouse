@@ -43,8 +43,11 @@ defmodule MemHouse.Pipeline.Reconciler do
   setting row-level security reads, so the sweep cannot reach another tenant's
   rows.
 
-  Work younger than 5 minutes is left to its current job. Each source query is limited to 100
-  rows and ordered by insertion time and id. A later hourly sweep continues with what remains.
+  Ordinary work younger than 5 minutes is left to its current job. Batched
+  extraction claims use their separately configured lease (20 minutes by
+  default, enough for the bounded structured-repair loop). Each source query
+  is limited to 100 rows and ordered by insertion time and id. A later hourly
+  sweep continues with what remains.
 
   A cancelled or discarded Oban job first moves its run to the matching terminal state. A
   missing job moves its run to `discarded`. The next sweep replays that deterministic run. This

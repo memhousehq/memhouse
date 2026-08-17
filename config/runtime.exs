@@ -141,7 +141,7 @@ config :memhouse, :extraction_batching,
   safety_margin_tokens:
     env_positive_integer!.("MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS", "2048"),
   claim_timeout_seconds:
-    env_positive_integer!.("MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS", "300")
+    env_positive_integer!.("MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS", "1200")
 
 # Rejects ambiguous switches such as auto-migrate.
 env_bool! = fn key, default ->

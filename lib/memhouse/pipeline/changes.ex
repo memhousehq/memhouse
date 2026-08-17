@@ -146,6 +146,11 @@ defmodule MemHouse.Pipeline.Changes.MarkRunFailed do
           log_extraction_failure(run, current.last_error_class)
           preserve_current(changeset, current)
 
+        current.status == "processing" and not is_nil(current.batch_claim_id) ->
+          # A stale worker can fail after reconciliation handed the anchor to a
+          # new claim. Its outer callback must not cancel the new owner.
+          preserve_current(changeset, current)
+
         true ->
           log_extraction_failure(run, class)
           changeset

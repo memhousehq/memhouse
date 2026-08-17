@@ -95,7 +95,7 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS` | `131072` | Whole extraction request context limit used before a call |
 | `MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS` | `8192` | Output capacity reserved during extraction admission |
 | `MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS` | `2048` | Extra whole-request admission margin |
-| `MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS` | `300` | Age after which reconciliation releases an interrupted batch claim |
+| `MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS` | `1200` | Age after which reconciliation releases an interrupted batch claim; the default covers the bounded three-call structured-repair loop |
 | `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
 
 !!! warning "Reasoning models can blow the context window or time out without these"

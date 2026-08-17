@@ -387,6 +387,7 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
                 Pipeline.claim_extraction_runs(
                   account_id,
                   ids,
+                  Ecto.UUID.generate(),
                   actor
                 )
 
@@ -419,6 +420,9 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert {:ok, poison} =
              Memory.ingest_message(ingest_attrs("f2-claim-repair", "claim-repair-session"))
 
+    assert {:ok, operator_repair} =
+             Memory.ingest_message(ingest_attrs("f2-claim-repair", "claim-repair-session"))
+
     account_id = account_id!("f2-claim-repair")
 
     DataLayer.with_account_id(
@@ -428,17 +432,28 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
         {:ok, runs} =
           Pipeline.claim_extraction_runs(
             account_id,
-            [retryable["id"], poison["id"]],
+            [retryable["id"], poison["id"], operator_repair["id"]],
+            Ecto.UUID.generate(),
             actor
           )
 
         poison_run = Enum.find(runs, &(&1.target_id == poison["id"]))
+        repairable_run = Enum.find(runs, &(&1.target_id == operator_repair["id"]))
 
         {:ok, _run} =
           Pipeline.classify_extraction_run(
             poison_run,
             "terminal",
             "structured_validation_exhausted",
+            "stale-claim-test",
+            actor
+          )
+
+        {:ok, _run} =
+          Pipeline.classify_extraction_run(
+            repairable_run,
+            "repairable",
+            "provider_output_truncated",
             "stale-claim-test",
             actor
           )
@@ -449,10 +464,16 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
       Repo,
       """
       UPDATE pipeline_runs
-      SET updated_at = now() - interval '10 minutes'
+      SET updated_at = now() - interval '30 minutes'
       WHERE target_id = ANY($1)
       """,
-      [[Ecto.UUID.dump!(retryable["id"]), Ecto.UUID.dump!(poison["id"])]]
+      [
+        [
+          Ecto.UUID.dump!(retryable["id"]),
+          Ecto.UUID.dump!(poison["id"]),
+          Ecto.UUID.dump!(operator_repair["id"])
+        ]
+      ]
     )
 
     Ecto.Adapters.SQL.query!(
@@ -462,12 +483,24 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
       SET inserted_at = now() - interval '10 minutes'
       WHERE id = ANY($1)
       """,
-      [[Ecto.UUID.dump!(retryable["id"]), Ecto.UUID.dump!(poison["id"])]]
+      [
+        [
+          Ecto.UUID.dump!(retryable["id"]),
+          Ecto.UUID.dump!(poison["id"]),
+          Ecto.UUID.dump!(operator_repair["id"])
+        ]
+      ]
     )
 
     assert {:ok, %{expired_claims: 1, messages: 1}} = Reconciler.run(account_id)
 
-    assert %{rows: [["failed", "BatchClaimExpired"], ["terminal", terminal_reason]]} =
+    assert %{
+             rows: [
+               ["failed", "BatchClaimExpired"],
+               ["repairable", "provider_output_truncated"],
+               ["terminal", terminal_reason]
+             ]
+           } =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -476,10 +509,97 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
                WHERE target_id = ANY($1)
                ORDER BY status
                """,
-               [[Ecto.UUID.dump!(retryable["id"]), Ecto.UUID.dump!(poison["id"])]]
+               [
+                 [
+                   Ecto.UUID.dump!(retryable["id"]),
+                   Ecto.UUID.dump!(poison["id"]),
+                   Ecto.UUID.dump!(operator_repair["id"])
+                 ]
+               ]
              )
 
     assert terminal_reason == "structured_validation_exhausted"
+  end
+
+  test "an expired late worker cannot commit over a replacement claim" do
+    assert {:ok, message} =
+             Memory.ingest_message(ingest_attrs("f2-claim-fence", "claim-fence-session"))
+
+    account_id = account_id!("f2-claim-fence")
+    first_claim_id = Ecto.UUID.generate()
+
+    stale_run =
+      DataLayer.with_account_id(
+        account_id,
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          {:ok, [claimed]} =
+            Pipeline.claim_extraction_runs(
+              account_id,
+              [message["id"]],
+              first_claim_id,
+              actor
+            )
+
+          claimed
+        end
+      )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "UPDATE pipeline_runs SET updated_at = now() - interval '30 minutes' WHERE id = $1",
+      [Ecto.UUID.dump!(stale_run.id)]
+    )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "UPDATE messages SET inserted_at = now() - interval '30 minutes' WHERE id = $1",
+      [Ecto.UUID.dump!(message["id"])]
+    )
+
+    assert {:ok, %{expired_claims: 1, messages: 1}} = Reconciler.run(account_id)
+
+    replacement_claim_id = Ecto.UUID.generate()
+
+    replacement_run =
+      DataLayer.with_account_id(
+        account_id,
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          {:ok, [claimed]} =
+            Pipeline.claim_extraction_runs(
+              account_id,
+              [message["id"]],
+              replacement_claim_id,
+              actor
+            )
+
+          claimed
+        end
+      )
+
+    prepared = Memory.prepare_message_extraction_for_account(message["id"], account_id)
+
+    assert_raise MatchError, fn ->
+      Memory.persist_message_extraction_result!(
+        stale_run,
+        prepared.message,
+        %{status: :ok, items: []},
+        "stale-admission"
+      )
+    end
+
+    assert %{rows: [["processing", ^replacement_claim_id, nil]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT run.status, run.batch_claim_id::text, message.extraction_completed_at
+               FROM pipeline_runs AS run
+               JOIN messages AS message ON message.id = run.target_id
+               WHERE run.id = $1
+               """,
+               [Ecto.UUID.dump!(replacement_run.id)]
+             )
   end
 
   test "a background job finds and finishes its run on a connection with no Account declared" do
@@ -623,6 +743,7 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
           Pipeline.claim_extraction_runs(
             account_id,
             [message["id"]],
+            Ecto.UUID.generate(),
             actor
           )
 

@@ -438,6 +438,7 @@ defmodule MemHouse.Operations.PipelineRun do
     # query, so an executing sibling and a batch owner race on one atomic status
     # transition and exactly one wins.
     update :claim_extraction_batch do
+      accept [:batch_claim_id]
       change set_attribute(:status, "processing")
       change set_attribute(:last_error_class, nil)
     end
@@ -445,16 +446,16 @@ defmodule MemHouse.Operations.PipelineRun do
     # Called inside the same short Account transaction that persists one
     # anchor's governed candidates and message completion stamp.
     update :complete_extraction_anchor do
-      require_atomic? false
       accept [:attempt_count, :processed_at, :payload]
       change set_attribute(:status, "completed")
       change set_attribute(:last_error_class, nil)
+      change set_attribute(:batch_claim_id, nil)
     end
 
     update :classify_extraction_anchor do
-      require_atomic? false
       accept [:status, :attempt_count, :last_error_class, :processed_at, :payload]
       validate attribute_in(:status, ~w(failed repairable terminal))
+      change set_attribute(:batch_claim_id, nil)
     end
 
     update :requeue_extraction_anchor do
@@ -467,12 +468,14 @@ defmodule MemHouse.Operations.PipelineRun do
       change set_attribute(:status, "pending")
       change set_attribute(:last_error_class, nil)
       change set_attribute(:processed_at, nil)
+      change set_attribute(:batch_claim_id, nil)
     end
 
     update :expire_extraction_claim do
       change set_attribute(:status, "failed")
       change set_attribute(:last_error_class, "BatchClaimExpired")
       change set_attribute(:processed_at, nil)
+      change set_attribute(:batch_claim_id, nil)
     end
 
     # Failure path invoked when the job errors. It stores only a classification
@@ -778,6 +781,10 @@ defmodule MemHouse.Operations.PipelineRun do
     # A classification such as an exception module name, never a message.
     # Error messages routinely quote the content that caused them.
     attribute :last_error_class, :string, public?: true
+
+    # Fences late workers after reconciliation expires and reclaims a batch.
+    # It is operational identity only and never leaves operator/internal APIs.
+    attribute :batch_claim_id, :uuid
 
     create_timestamp :inserted_at
     update_timestamp :updated_at

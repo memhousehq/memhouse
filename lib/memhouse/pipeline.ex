@@ -410,7 +410,8 @@ defmodule MemHouse.Pipeline do
   end
 
   @doc false
-  def claim_extraction_runs(account_id, target_ids, actor) when is_list(target_ids) do
+  def claim_extraction_runs(account_id, target_ids, claim_id, actor)
+      when is_list(target_ids) and is_binary(claim_id) do
     result =
       PipelineRun
       |> Ash.Query.filter(
@@ -418,7 +419,7 @@ defmodule MemHouse.Pipeline do
           status in ["pending", "failed"]
       )
       |> Ash.Query.set_tenant(account_id)
-      |> Ash.bulk_update!(:claim_extraction_batch, %{},
+      |> Ash.bulk_update!(:claim_extraction_batch, %{batch_claim_id: claim_id},
         actor: pipeline_actor(actor),
         return_records?: true,
         strategy: [:atomic]
@@ -429,29 +430,54 @@ defmodule MemHouse.Pipeline do
 
   @doc false
   def classify_extraction_run(run, status, error_class, admission_identity, actor)
-      when status in ["failed", "repairable", "terminal"] do
-    run
-    |> Ash.Changeset.for_update(:classify_extraction_anchor, %{
-      status: status,
-      attempt_count: run.attempt_count + 1,
-      last_error_class: error_class,
-      processed_at: if(status == "failed", do: nil, else: Clock.utc_now()),
-      payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
-    })
-    |> Ash.Changeset.set_tenant(run.account_id)
-    |> Ash.update(actor: pipeline_actor(actor))
+      when status in ["failed", "repairable", "terminal"] and
+             not is_nil(run.batch_claim_id) do
+    fenced_extraction_update(
+      run,
+      :classify_extraction_anchor,
+      %{
+        status: status,
+        attempt_count: run.attempt_count + 1,
+        last_error_class: error_class,
+        processed_at: if(status == "failed", do: nil, else: Clock.utc_now()),
+        payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+      },
+      actor
+    )
   end
 
   @doc false
-  def complete_extraction_run(run, admission_identity, actor) do
-    run
-    |> Ash.Changeset.for_update(:complete_extraction_anchor, %{
-      attempt_count: run.attempt_count + 1,
-      processed_at: Clock.utc_now(),
-      payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
-    })
-    |> Ash.Changeset.set_tenant(run.account_id)
-    |> Ash.update(actor: pipeline_actor(actor))
+  def complete_extraction_run(run, admission_identity, actor)
+      when not is_nil(run.batch_claim_id) do
+    fenced_extraction_update(
+      run,
+      :complete_extraction_anchor,
+      %{
+        attempt_count: run.attempt_count + 1,
+        processed_at: Clock.utc_now(),
+        payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+      },
+      actor
+    )
+  end
+
+  defp fenced_extraction_update(run, action, attrs, actor) do
+    result =
+      PipelineRun
+      |> Ash.Query.filter(
+        id == ^run.id and status == "processing" and batch_claim_id == ^run.batch_claim_id
+      )
+      |> Ash.Query.set_tenant(run.account_id)
+      |> Ash.bulk_update!(action, attrs,
+        actor: pipeline_actor(actor),
+        return_records?: true,
+        strategy: [:atomic]
+      )
+
+    case result.records || [] do
+      [updated] -> {:ok, updated}
+      [] -> {:error, :stale_extraction_claim}
+    end
   end
 
   @doc "Explicitly requeues a repairable or terminal message extraction."
