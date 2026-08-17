@@ -74,7 +74,9 @@ second benchmark implementation. A definition has exactly one current and one ex
 variant over an identical source digest. It produces an environment-resolved manifest and a
 comparison bundle. The manifest pins the source revision and dirty/clean state, Postgres mode,
 all model/prompt/pipeline identities, allowlisted generation parameters, profile configuration,
-strategy overrides, evaluation seeds, and named component revisions.
+strategy overrides, evaluation seeds, and executable component bindings. Those bindings are a
+closed map derived from effective runner inputs; unknown or mismatched labels are rejected, and
+fixture replay cannot claim that a component ran.
 
 Account-scoped snapshots of `KnowledgeItem` and `UsageEvent` provide stored-fact, call, token,
 duration, error, and operator-priced cost deltas. The runner also counts candidate source ids that
@@ -83,6 +85,9 @@ gates cover quality regression, recall, citation correctness, unsupported non-ab
 source-membership isolation, cost/token and latency budgets, and dream replay effects. A fixture
 mode exercises the same comparison contract without starting MemHouse, Postgres, or any provider;
 its results are marked fixture evidence and cannot be confused with executed measurements.
+Semantic execute variants synchronously refresh their isolated indexes. Offline mode permits that
+only with existing local Ortex artifacts; it rejects hosted and deterministic stand-in embedders
+rather than making an unapproved provider call or manufacturing vector evidence.
 
 The database identity is always PostgreSQL, with `external` and `pg0` deployment modes. A SQLite
 claim fails definition validation. This follows the shipped data contract: there is no weaker

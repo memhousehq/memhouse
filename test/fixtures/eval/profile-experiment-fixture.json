@@ -74,15 +74,7 @@
       "kind": "current",
       "profile": "balanced",
       "strategies": null,
-      "components": {
-        "extraction_batching": "per-message",
-        "source_search": "knowledge-only",
-        "adaptive_recall": "fixed",
-        "derivation_lineage": "source-message-ids",
-        "retrieval_seeds": "balanced",
-        "projections": "enabled",
-        "dream_triggers": "watermark"
-      },
+      "components": {},
       "fixture_metrics": {
         "ingest": {
           "messages_attempted": 2,
@@ -125,15 +117,7 @@
       "kind": "experimental",
       "profile": "balanced",
       "strategies": ["semantic", "lexical"],
-      "components": {
-        "extraction_batching": "token-budgeted",
-        "source_search": "governed-hybrid",
-        "adaptive_recall": "bounded",
-        "derivation_lineage": "typed",
-        "retrieval_seeds": "minimal-hybrid",
-        "projections": "identity-only",
-        "dream_triggers": "delta-idle-budget"
-      },
+      "components": {},
       "fixture_metrics": {
         "ingest": {
           "messages_attempted": 2,

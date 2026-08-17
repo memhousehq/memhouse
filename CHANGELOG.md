@@ -11,6 +11,14 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Matched execute experiments now accept only a closed set of component
+  bindings derived from the runner's effective profile, strategies, rerank,
+  deadline, semantic-index refresh, dream-time, and durability settings.
+  Unknown or dishonest labels fail validation, and fixture replays cannot
+  claim component execution. The committed comparison now runs the real
+  `balanced` versus `minimal` profile defaults; offline semantic runs require
+  existing local Ortex artifacts and never substitute fake vectors.
+
 - Dream-time now gates work by a durable timestamp-and-id delta cursor, minimum
   changes, idle/interval windows, hard delta/working-set caps, and a whole-call
   elapsed budget. Update reasoning and multi-source synthesis have separate

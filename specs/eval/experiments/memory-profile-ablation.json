@@ -18,17 +18,17 @@
       "benchmark": "memhouse",
       "dataset": "../../../test/fixtures/eval/memhouse-smoke.json",
       "profile": "balanced",
-      "strategies": ["lexical", "temporal", "salience_recency", "entity_match"],
+      "strategies": null,
       "deadline": "disabled",
       "dream_time": false,
       "components": {
-        "extraction_batching": "per-message",
-        "source_search": "knowledge-only",
-        "adaptive_recall": "fixed",
-        "derivation_lineage": "source-message-ids",
-        "retrieval_seeds": "offline-current",
-        "projections": "enabled",
-        "dream_triggers": "watermark"
+        "retrieval_profile": "balanced",
+        "retrieval_strategies": ["semantic", "lexical", "temporal", "entity_match"],
+        "retrieval_rerank": false,
+        "retrieval_deadline": "disabled",
+        "semantic_index_refresh": true,
+        "dream_time": false,
+        "durability_audit": false
       }
     },
     {
@@ -36,18 +36,18 @@
       "kind": "experimental",
       "benchmark": "memhouse",
       "dataset": "../../../test/fixtures/eval/memhouse-smoke.json",
-      "profile": "balanced",
-      "strategies": ["lexical", "salience_recency"],
+      "profile": "minimal",
+      "strategies": null,
       "deadline": "disabled",
       "dream_time": false,
       "components": {
-        "extraction_batching": "token-budgeted",
-        "source_search": "governed-hybrid",
-        "adaptive_recall": "bounded",
-        "derivation_lineage": "typed",
-        "retrieval_seeds": "offline-minimal",
-        "projections": "identity-only",
-        "dream_triggers": "delta-idle-budget"
+        "retrieval_profile": "minimal",
+        "retrieval_strategies": ["semantic", "lexical"],
+        "retrieval_rerank": false,
+        "retrieval_deadline": "disabled",
+        "semantic_index_refresh": true,
+        "dream_time": false,
+        "durability_audit": false
       }
     }
   ],

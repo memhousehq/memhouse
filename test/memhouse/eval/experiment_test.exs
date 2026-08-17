@@ -151,6 +151,98 @@ defmodule MemHouse.Eval.ExperimentTest do
            }
   end
 
+  test "fixture metrics cannot claim executable component ablations", %{tmp_dir: tmp_dir} do
+    definition =
+      put_in(definition(), ["variants", Access.at(0), "components"], %{
+        "retrieval_profile" => "balanced"
+      })
+
+    definition_path = write_definition!(tmp_dir, definition)
+
+    assert_raise ArgumentError, ~r/cannot declare executable components/, fn ->
+      Experiment.run(definition_path)
+    end
+  end
+
+  test "execute component labels must exactly match the runner behavior", %{tmp_dir: tmp_dir} do
+    definition = Jason.decode!(File.read!("specs/eval/experiments/memory-profile-ablation.json"))
+
+    lying_definition =
+      put_in(
+        definition,
+        ["variants", Access.at(1), "components", "semantic_index_refresh"],
+        false
+      )
+
+    lying_path = write_definition!(tmp_dir, lying_definition)
+
+    assert_raise ArgumentError, ~r/component bindings must equal/, fn ->
+      Experiment.mode!(lying_path)
+    end
+
+    unsupported_definition =
+      put_in(
+        definition,
+        ["variants", Access.at(1), "components", "source_search"],
+        "governed-hybrid"
+      )
+
+    unsupported_path = write_definition!(tmp_dir, unsupported_definition)
+
+    assert_raise ArgumentError, ~r/unsupported component keys \["source_search"\]/, fn ->
+      Experiment.mode!(unsupported_path)
+    end
+  end
+
+  test "committed execute definition binds the real minimal semantic and lexical profile" do
+    definition = Jason.decode!(File.read!("specs/eval/experiments/memory-profile-ablation.json"))
+    experimental = Enum.find(definition["variants"], &(&1["kind"] == "experimental"))
+
+    assert Experiment.mode!("specs/eval/experiments/memory-profile-ablation.json") == "execute"
+    assert experimental["profile"] == "minimal"
+    assert experimental["strategies"] == nil
+
+    assert experimental["components"] == %{
+             "retrieval_profile" => "minimal",
+             "retrieval_strategies" => ["semantic", "lexical"],
+             "retrieval_rerank" => false,
+             "retrieval_deadline" => "disabled",
+             "semantic_index_refresh" => true,
+             "dream_time" => false,
+             "durability_audit" => false
+           }
+  end
+
+  test "offline semantic execution refuses missing local artifacts without a stand-in" do
+    roles = Application.fetch_env!(:memhouse, :model_roles)
+    embedder = roles |> Keyword.fetch!(:embedder) |> Map.put(:provider, "ortex")
+    embedder = Map.put(embedder, :options, %{"model_path" => nil, "tokenizer_path" => nil})
+    Application.put_env(:memhouse, :model_roles, Keyword.put(roles, :embedder, embedder))
+    on_exit(fn -> Application.put_env(:memhouse, :model_roles, roles) end)
+
+    assert_raise ArgumentError,
+                 ~r/offline semantic experiment requires existing local Ortex artifacts/,
+                 fn ->
+                   Experiment.assert_offline_capabilities!(
+                     "specs/eval/experiments/memory-profile-ablation.json"
+                   )
+                 end
+
+    deterministic_embedder = Map.put(embedder, :provider, "deterministic")
+
+    Application.put_env(
+      :memhouse,
+      :model_roles,
+      Keyword.put(roles, :embedder, deterministic_embedder)
+    )
+
+    assert_raise ArgumentError, ~r/requires the local Ortex embedder, got "deterministic"/, fn ->
+      Experiment.assert_offline_capabilities!(
+        "specs/eval/experiments/memory-profile-ablation.json"
+      )
+    end
+  end
+
   test "the Mix command writes both artifacts and asserts gates by default", %{tmp_dir: tmp_dir} do
     definition_path = write_definition!(tmp_dir, definition())
     manifest_path = Path.join(tmp_dir, "run-manifest.json")
@@ -227,7 +319,7 @@ defmodule MemHouse.Eval.ExperimentTest do
           "kind" => "current",
           "profile" => "balanced",
           "strategies" => nil,
-          "components" => %{"retrieval" => "current"},
+          "components" => %{},
           "fixture_metrics" => metrics()
         },
         %{
@@ -235,7 +327,7 @@ defmodule MemHouse.Eval.ExperimentTest do
           "kind" => "experimental",
           "profile" => "balanced",
           "strategies" => ["semantic", "lexical"],
-          "components" => %{"retrieval" => "minimal-hybrid"},
+          "components" => %{},
           "fixture_metrics" => metrics()
         }
       ],

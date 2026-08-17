@@ -21,6 +21,15 @@ defmodule MemHouse.Eval.Experiment do
   @bundle_schema "memhouse-comparison-1"
   @variant_kinds ~w(current experimental)
   @stages ~w(ingest quality safety cost latency dream)
+  @execute_component_keys ~w(
+    retrieval_profile
+    retrieval_strategies
+    retrieval_rerank
+    retrieval_deadline
+    semantic_index_refresh
+    dream_time
+    durability_audit
+  )
 
   @doc """
   Runs the definition at `path` and returns `{run_manifest, comparison_bundle}`.
@@ -32,6 +41,11 @@ defmodule MemHouse.Eval.Experiment do
   def run(path, opts \\ []) when is_binary(path) do
     {definition, bytes} = load_definition!(path)
     definition = validate_definition!(definition)
+
+    if definition["mode"] == "execute" and
+         not Keyword.get(opts, :allow_provider_calls, false) do
+      assert_offline_definition!(definition)
+    end
 
     {environment, measured, reports} =
       case definition["mode"] do
@@ -64,6 +78,21 @@ defmodule MemHouse.Eval.Experiment do
   def mode!(path) when is_binary(path) do
     {definition, _bytes} = load_definition!(path)
     validate_definition!(definition)["mode"]
+  end
+
+  @doc """
+  Refuses an execute definition that would make a provider call in offline mode.
+
+  Generation and reranking roles are replaced by deterministic local roles by the Mix task.
+  Semantic retrieval is different: vector identity must remain attached to the real embedder,
+  so an offline run requires an Ortex embedder with both operator-supplied artifacts already
+  present. Hosted and deterministic stand-in embedders are rejected rather than called or used
+  to manufacture semantic evidence.
+  """
+  def assert_offline_capabilities!(path) when is_binary(path) do
+    {definition, _bytes} = load_definition!(path)
+    definition = validate_definition!(definition)
+    assert_offline_definition!(definition)
   end
 
   @doc "Raises when any comparison gate failed; otherwise returns the bundle unchanged."
@@ -146,7 +175,7 @@ defmodule MemHouse.Eval.Experiment do
       unless is_binary(variant["id"]) and variant["id"] != "" and
                is_binary(variant["profile"]) and variant["profile"] != "" and
                valid_strategies?(Map.get(variant, "strategies")) and
-               is_map(Map.get(variant, "components", %{})) do
+               is_map(Map.get(variant, "components")) do
         raise ArgumentError,
               "each variant requires id, kind, profile, null or non-empty strategies, and components"
       end
@@ -156,6 +185,8 @@ defmodule MemHouse.Eval.Experiment do
               not is_binary(Map.get(variant, "benchmark"))) do
         raise ArgumentError, "execute variants require dataset and benchmark"
       end
+
+      validate_component_bindings!(variant, mode)
     end)
   end
 
@@ -165,6 +196,98 @@ defmodule MemHouse.Eval.Experiment do
     do: Enum.all?(strategies, &(is_binary(&1) and &1 != ""))
 
   defp valid_strategies?(_strategies), do: false
+
+  defp validate_component_bindings!(variant, "fixture") do
+    if variant["components"] != %{} do
+      raise ArgumentError,
+            "fixture variant #{inspect(variant["id"])} cannot declare executable components"
+    end
+  end
+
+  defp validate_component_bindings!(variant, "execute") do
+    deadline = Map.get(variant, "deadline", "disabled")
+    dream_time = Map.get(variant, "dream_time", false)
+    durability_audit = Map.get(variant, "durability_audit", false)
+
+    unless deadline in ["enabled", "disabled"] do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} deadline must be enabled or disabled"
+    end
+
+    unless is_boolean(dream_time) and is_boolean(durability_audit) do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} dream_time and durability_audit must be boolean"
+    end
+
+    expected = executable_components(variant)
+    actual = variant["components"]
+
+    if actual != expected do
+      unsupported = Map.keys(actual) -- @execute_component_keys
+
+      detail =
+        if unsupported == [],
+          do: "must equal #{inspect(expected)}",
+          else: "declares unsupported component keys #{inspect(Enum.sort(unsupported))}"
+
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} component bindings #{detail}"
+    end
+  end
+
+  defp executable_components(variant) do
+    profile = profile_configuration!(variant["profile"])
+    strategies = effective_strategies!(variant, profile)
+
+    %{
+      "retrieval_profile" => variant["profile"],
+      "retrieval_strategies" => strategies,
+      "retrieval_rerank" => profile.rerank,
+      "retrieval_deadline" => Map.get(variant, "deadline", "disabled"),
+      "semantic_index_refresh" => "semantic" in strategies,
+      "dream_time" => Map.get(variant, "dream_time", false),
+      "durability_audit" => Map.get(variant, "durability_audit", false)
+    }
+  end
+
+  defp effective_strategies!(variant, profile) do
+    strategies =
+      case variant["strategies"] do
+        nil -> Enum.map(profile.strategies, &Atom.to_string/1)
+        strategies -> strategies
+      end
+
+    registered = Enum.map(MemHouse.Retrieval.Profile.strategy_names(), &Atom.to_string/1)
+
+    case strategies -- registered do
+      [] -> :ok
+      unknown -> raise ArgumentError, "unknown retrieval strategies: #{inspect(unknown)}"
+    end
+
+    enabled =
+      :memhouse
+      |> Application.fetch_env!(:retrieval_profiles)
+      |> Keyword.fetch!(:enabled_strategies)
+      |> Enum.map(&Atom.to_string/1)
+
+    case strategies -- enabled do
+      [] ->
+        strategies
+
+      disabled ->
+        raise ArgumentError,
+              "execute variant #{inspect(variant["id"])} requires deployment-disabled strategies #{inspect(disabled)}"
+    end
+  end
+
+  defp profile_configuration!(name) do
+    name = profile_name!(name)
+
+    :memhouse
+    |> Application.fetch_env!(:retrieval_profiles)
+    |> Keyword.fetch!(name)
+    |> Map.new()
+  end
 
   defp validate_inferences!(claims) when is_list(claims) do
     unless Enum.all?(claims, &(is_map(&1) and non_empty_string?(Map.get(&1, "claim")))) do
@@ -314,25 +437,7 @@ defmodule MemHouse.Eval.Experiment do
         before = Measurement.snapshot(account_key)
         started_at = System.monotonic_time(:millisecond)
 
-        report =
-          Runner.run(dataset,
-            profile: variant["profile"],
-            strategies: variant["strategies"],
-            deadline: Map.get(variant, "deadline", "disabled"),
-            judge: "deterministic",
-            split: definition["dataset"]["split"],
-            account_key: account_key,
-            run_id: "#{run_id}-#{variant["id"]}",
-            limit_cases: Map.get(variant, "limit_cases"),
-            limit_messages: Map.get(variant, "limit_messages"),
-            limit_questions: Map.get(variant, "limit_questions"),
-            dream_time: Map.get(variant, "dream_time", false),
-            durability_audit: Map.get(variant, "durability_audit", false),
-            durability_seed:
-              Map.get(variant, "durability_seed", definition["seeds"]["durability"]),
-            refresh_retrieval: "semantic" in (variant["strategies"] || [])
-          )
-          |> Report.validate!()
+        report = run_variant(dataset, definition, variant, account_key, run_id)
 
         wall_time_ms = System.monotonic_time(:millisecond) - started_at
         measured = Measurement.delta(before, Measurement.snapshot(account_key), wall_time_ms)
@@ -357,6 +462,122 @@ defmodule MemHouse.Eval.Experiment do
     validate_environment!(environment)
     {environment, measured, reports}
   end
+
+  defp run_variant(dataset, definition, variant, account_key, run_id) do
+    components = executable_components(variant)
+
+    with_minimal_profile(variant["profile"], fn ->
+      report =
+        Runner.run(dataset,
+          profile: variant["profile"],
+          strategies: variant["strategies"],
+          deadline: components["retrieval_deadline"],
+          judge: "deterministic",
+          split: definition["dataset"]["split"],
+          account_key: account_key,
+          run_id: "#{run_id}-#{variant["id"]}",
+          limit_cases: Map.get(variant, "limit_cases"),
+          limit_messages: Map.get(variant, "limit_messages"),
+          limit_questions: Map.get(variant, "limit_questions"),
+          dream_time: components["dream_time"],
+          durability_audit: components["durability_audit"],
+          durability_seed: Map.get(variant, "durability_seed", definition["seeds"]["durability"]),
+          refresh_retrieval: components["semantic_index_refresh"]
+        )
+        |> Report.validate!()
+
+      assert_executed_components!(report, variant, components)
+    end)
+  end
+
+  defp with_minimal_profile("minimal", fun) do
+    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Keyword.put(profiles, :minimal_enabled, true)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:memhouse, :retrieval_profiles, profiles)
+    end
+  end
+
+  defp with_minimal_profile(_profile, fun), do: fun.()
+
+  defp assert_executed_components!(report, variant, components) do
+    failed_cases = Enum.filter(report["cases"], &(&1["status"] == "failed"))
+
+    if failed_cases != [] do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} could not execute its declared components: #{length(failed_cases)} runtime-failed case(s)"
+    end
+
+    declared = components["retrieval_strategies"]
+
+    dropped =
+      report["cases"]
+      |> Enum.flat_map(& &1["questions"])
+      |> Enum.flat_map(& &1["dropped_strategies"])
+      |> Enum.filter(&(&1 in declared))
+      |> Enum.uniq()
+
+    if dropped != [] do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} could not execute declared retrieval strategies #{inspect(dropped)}"
+    end
+
+    report
+  end
+
+  defp assert_offline_definition!(%{"mode" => "fixture"}), do: :ok
+
+  defp assert_offline_definition!(%{"mode" => "execute", "variants" => variants}) do
+    assert_offline_variants!(variants)
+  end
+
+  defp assert_offline_variants!([
+         %{"components" => %{"semantic_index_refresh" => true}} | _rest
+       ]),
+       do: assert_local_embedder!()
+
+  defp assert_offline_variants!([_variant | rest]), do: assert_offline_variants!(rest)
+  defp assert_offline_variants!([]), do: :ok
+
+  defp assert_local_embedder! do
+    embedder =
+      :memhouse
+      |> Application.fetch_env!(:model_roles)
+      |> Keyword.fetch!(:embedder)
+      |> Map.new()
+
+    options = embedder |> Map.get(:options, %{}) |> Map.new()
+
+    case Map.get(embedder, :provider) do
+      "ortex" ->
+        missing =
+          for key <- ["model_path", "tokenizer_path"],
+              not local_artifact?(Map.get(options, key)),
+              do: key
+
+        if missing == [] do
+          :ok
+        else
+          raise ArgumentError,
+                "offline semantic experiment requires existing local Ortex artifacts: missing #{Enum.join(missing, ", ")}"
+        end
+
+      provider ->
+        raise ArgumentError,
+              "offline semantic experiment requires the local Ortex embedder, got #{inspect(provider)}; use --live-model only with explicit provider authorization"
+    end
+  end
+
+  defp local_artifact?(path),
+    do: is_binary(path) and path != "" and File.regular?(path)
 
   defp build_run_manifest(definition, bytes, environment) do
     generated_at =
@@ -783,6 +1004,7 @@ defmodule MemHouse.Eval.Experiment do
   defp profile_name!("fast"), do: :fast
   defp profile_name!("balanced"), do: :balanced
   defp profile_name!("thorough"), do: :thorough
+  defp profile_name!("minimal"), do: :minimal
 
   defp profile_name!(name),
     do: raise(ArgumentError, "unknown retrieval profile: #{inspect(name)}")

@@ -22,8 +22,10 @@ window.
 
 - `specs/eval/experiments/memory-profile-ablation.json`
   preregisters the executable smoke comparison and thresholds. It deliberately
-  uses only locally available strategies; semantic evaluation must use the real
-  configured embedder and may not substitute fake vectors.
+  binds the real `balanced` and `minimal` defaults through the harness's closed
+  executable-component map. Semantic evaluation must use the real configured
+  embedder and may not substitute fake vectors; an offline run needs the pinned
+  local artifacts already installed.
 - `specs/eval/results/profile-experiment-fixture-manifest.json` pins the
   deterministic fixture environment and records PostgreSQL as the only
   supported engine.

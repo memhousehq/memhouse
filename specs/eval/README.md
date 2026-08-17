@@ -139,17 +139,20 @@ mix memhouse.eval.experiment \
   --output /private/tmp/memhouse-comparison.json
 ```
 
-The definition records component revisions for extraction batching, source search, adaptive
-recall, lineage, retrieval seeds, projections, and dream triggers. Implemented runtime switches
-such as retrieval strategies and dream-time execution are applied directly; later component
-implementations retain their exact revision in the same map. The source revision and dirty/clean
-state, dataset digest, and explicit sampling/durability seeds prevent results from two different
-inputs or implementations being presented as one ablation.
+Execute definitions use a closed component map derived from executable settings: profile,
+effective strategies, rerank, deadline, semantic-index refresh, dream-time, and durability audit.
+The map must exactly match the runner inputs and resolved profile or validation fails; unknown
+keys are unsupported rather than inert labels. Fixture definitions must keep `components` empty
+because replaying supplied metrics does not execute a component. The source revision and
+dirty/clean state, dataset digest, and explicit sampling/durability seeds prevent results from two
+different inputs or implementations being presented as one ablation.
 
-The committed smoke definition compares only deterministic lexical/recency paths so it runs on a
-checkout with no ONNX artifact. A semantic ablation must name `semantic` explicitly; the harness
-then refreshes that case's derived vector index and fails if the configured embedder is unavailable
-or the strategy drops. It never stores fake deterministic embeddings.
+The committed smoke definition compares the real `balanced` default strategy set with the real
+`minimal` semantic-plus-lexical profile. Both variants refresh the isolated derived vector index.
+An offline run therefore requires an Ortex embedder with existing operator-supplied model and
+tokenizer artifacts; missing artifacts or a hosted/deterministic stand-in embedder are rejected
+before ingestion. `--live-model` is the explicit provider-call boundary and may incur cost. The
+harness never stores fake deterministic embeddings.
 
 The measured section stages quality, citation, abstention, unexpected-source isolation, provider
 usage, operator-priced cost, wall/recall latency, stored facts, and dream-time accounting. Gates

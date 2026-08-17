@@ -215,7 +215,7 @@
     },
     "definition": {
       "schema": "memhouse-experiment-definition-1",
-      "sha256": "ec49ecf4416760a47f1e0b5545a1d7d7421db158076a1c93dbf408d1a2dd7f3e"
+      "sha256": "a981db74b289983c6ba77e9a3a8656d17ebf1eb10362eb67978b02b3b53f2c2d"
     },
     "generated_at": "2026-08-17T12:00:00Z",
     "id": "profile-experiment-fixture",
@@ -276,15 +276,7 @@
     },
     "variants": {
       "current": {
-        "components": {
-          "adaptive_recall": "fixed",
-          "derivation_lineage": "source-message-ids",
-          "dream_triggers": "watermark",
-          "extraction_batching": "per-message",
-          "projections": "enabled",
-          "retrieval_seeds": "balanced",
-          "source_search": "knowledge-only"
-        },
+        "components": {},
         "id": "current",
         "profile": {
           "name": "balanced",
@@ -293,15 +285,7 @@
         }
       },
       "experimental": {
-        "components": {
-          "adaptive_recall": "bounded",
-          "derivation_lineage": "typed",
-          "dream_triggers": "delta-idle-budget",
-          "extraction_batching": "token-budgeted",
-          "projections": "identity-only",
-          "retrieval_seeds": "minimal-hybrid",
-          "source_search": "governed-hybrid"
-        },
+        "components": {},
         "id": "experimental",
         "profile": {
           "name": "balanced",

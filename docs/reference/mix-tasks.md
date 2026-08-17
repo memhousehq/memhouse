@@ -270,9 +270,17 @@ Execute definitions use the deterministic providers by default. `--live-model` i
 opt-in for configured hosted providers and may incur cost. It also performs the normal generative
 role preflight. Both modes write durable rows to their scratch Accounts.
 
-The committed smoke definition uses lexical and recency strategies so it needs no embedding
-artifact. A definition that names `semantic` synchronously refreshes the isolated case index and
-requires the configured local or hosted embedder; MemHouse never substitutes fake vectors.
+Execute definitions have a closed `components` contract. Profile, effective strategy set,
+reranking, deadline, semantic-index refresh, dream-time, and durability-audit values must exactly
+match the behavior passed to the runner. An unknown key or a mismatched value fails validation;
+the map is not free-form provenance. Fixture definitions keep it empty because fixture replay does
+not execute product components.
+
+The committed smoke definition compares the real `balanced` defaults with the real `minimal`
+semantic-plus-lexical profile. Offline execution synchronously refreshes each isolated case index
+and requires existing local Ortex model and tokenizer artifacts. Missing artifacts and hosted or
+deterministic stand-in embedders are rejected before ingestion. `--live-model` is the explicit
+provider-call opt-in and may incur cost; MemHouse never substitutes fake vectors.
 
 Fixture definitions are different: they replay content-free stage measurements without starting
 MemHouse, Postgres, or a provider. They are test evidence, not benchmark evidence, and the bundle

@@ -86,7 +86,7 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
           "dataset" => dataset_path,
           "profile" => "balanced",
           "strategies" => ["lexical"],
-          "components" => %{"retrieval" => "current"}
+          "components" => executable_components("balanced", ["lexical"])
         },
         %{
           "id" => "experimental",
@@ -95,7 +95,7 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
           "dataset" => dataset_path,
           "profile" => "balanced",
           "strategies" => ["lexical"],
-          "components" => %{"retrieval" => "minimal-hybrid"}
+          "components" => executable_components("balanced", ["lexical"])
         }
       ],
       "gates" => %{
@@ -120,5 +120,17 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     |> File.read!()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  defp executable_components(profile, strategies) do
+    %{
+      "retrieval_profile" => profile,
+      "retrieval_strategies" => strategies,
+      "retrieval_rerank" => false,
+      "retrieval_deadline" => "disabled",
+      "semantic_index_refresh" => "semantic" in strategies,
+      "dream_time" => false,
+      "durability_audit" => false
+    }
   end
 end

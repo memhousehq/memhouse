@@ -40,11 +40,14 @@ defmodule Mix.Tasks.Memhouse.Eval.Experiment do
     manifest_path =
       Keyword.get(opts, :manifest_output) || Mix.raise("--manifest-output is required")
 
+    live_model? = Keyword.get(opts, :live_model, false)
+
     if Experiment.mode!(definition_path) == "execute" do
-      if Keyword.get(opts, :live_model, false) do
+      if live_model? do
         Mix.Task.run("app.start")
         Preflight.assert_generative_roles!()
       else
+        Experiment.assert_offline_capabilities!(definition_path)
         Runtime.use_deterministic_models()
         Mix.Task.run("app.start")
       end
@@ -53,7 +56,8 @@ defmodule Mix.Tasks.Memhouse.Eval.Experiment do
     {manifest, bundle} =
       Experiment.run(definition_path,
         account_key: Keyword.get(opts, :account, "eval-experiment"),
-        run_id: Keyword.get(opts, :run_id)
+        run_id: Keyword.get(opts, :run_id),
+        allow_provider_calls: live_model?
       )
 
     write_json!(manifest_path, manifest)
