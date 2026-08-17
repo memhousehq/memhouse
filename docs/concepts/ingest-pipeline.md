@@ -202,6 +202,15 @@ ends that pass with a content-safe diagnostic instead of retrying the same
 deterministic error. The lane is throttled first when token budgets tighten and
 never bypasses governance.
 
+Before consolidation or a model call, a scoped gate checks four independent
+bounds: accumulated eligible changes, time since the latest change, time since
+the last completed pass, and the maximum delta/working-set/call duration for one
+pass. Skips emit only scope ids, counts, decisions, and reason classes. They do
+not advance the watermark. A bounded partial pass stores both the last processed
+timestamp and knowledge id, so same-microsecond rows resume without being lost
+or billed twice. Dream-produced deductions and deterministic consolidation
+outputs do not feed the eligible-change counter back into themselves.
+
 ## What never enters audit metadata or job arguments
 
 Audit entries and Oban arguments may carry ids, states, levels, channels,

@@ -174,6 +174,17 @@ config :memhouse, :retention,
   lifecycle_events_days: 3_650,
   batch_size: 10_000
 
+# Scoped dream-time admission. Defaults preserve the pre-gate behavior while
+# making every bound explicit; production may raise the change, idle, and
+# interval thresholds without changing the writer or watermark contract.
+config :memhouse, :dream_time_gates,
+  min_changes: 1,
+  idle_seconds: 0,
+  min_interval_seconds: 0,
+  max_delta_items: 20,
+  max_working_set_items: 50,
+  max_elapsed_ms: 120_000
+
 config :ash_oban,
   # Jobs run through Ash actions with authorization on, exactly like an HTTP
   # caller. A background job must not be a privilege-escalation path.

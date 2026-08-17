@@ -176,14 +176,14 @@ defmodule MemHouse.Operations.DreamTimeWatermark do
     defaults [:read]
 
     create :start do
-      accept [:scope_id, :input_watermark]
+      accept [:scope_id, :input_watermark, :input_watermark_id]
       upsert? true
       upsert_identity :scope
-      upsert_fields [:input_watermark, :updated_at]
+      upsert_fields [:input_watermark, :input_watermark_id, :updated_at]
     end
 
     update :advance do
-      accept [:input_watermark]
+      accept [:input_watermark, :input_watermark_id]
       require_atomic? false
     end
   end
@@ -209,6 +209,9 @@ defmodule MemHouse.Operations.DreamTimeWatermark do
     attribute :account_id, :uuid, allow_nil?: false
     attribute :scope_id, :uuid, allow_nil?: false
     attribute :input_watermark, :utc_datetime_usec, allow_nil?: false
+    # Completes the cursor when several rows share one timestamp. Without the
+    # id tie-break a bounded pass could skip same-microsecond rows forever.
+    attribute :input_watermark_id, :uuid
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end

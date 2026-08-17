@@ -793,6 +793,64 @@ retrieval_profiles =
 
 config :memhouse, :retrieval_profiles, retrieval_profiles
 
+dream_time_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+
+dream_time_gates =
+  dream_time_gates
+  |> Keyword.put(
+    :min_changes,
+    env_integer.(
+      "MEMHOUSE_DREAM_MIN_CHANGES",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :min_changes))
+    )
+  )
+  |> Keyword.put(
+    :idle_seconds,
+    env_integer.(
+      "MEMHOUSE_DREAM_IDLE_SECONDS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :idle_seconds))
+    )
+  )
+  |> Keyword.put(
+    :min_interval_seconds,
+    env_integer.(
+      "MEMHOUSE_DREAM_MIN_INTERVAL_SECONDS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :min_interval_seconds))
+    )
+  )
+  |> Keyword.put(
+    :max_delta_items,
+    env_integer.(
+      "MEMHOUSE_DREAM_MAX_DELTA_ITEMS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :max_delta_items))
+    )
+  )
+  |> Keyword.put(
+    :max_working_set_items,
+    env_integer.(
+      "MEMHOUSE_DREAM_MAX_WORKING_SET_ITEMS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :max_working_set_items))
+    )
+  )
+  |> Keyword.put(
+    :max_elapsed_ms,
+    env_integer.(
+      "MEMHOUSE_DREAM_MAX_ELAPSED_MS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :max_elapsed_ms))
+    )
+  )
+
+unless Keyword.fetch!(dream_time_gates, :min_changes) > 0 and
+         Keyword.fetch!(dream_time_gates, :idle_seconds) >= 0 and
+         Keyword.fetch!(dream_time_gates, :min_interval_seconds) >= 0 and
+         Keyword.fetch!(dream_time_gates, :max_delta_items) > 0 and
+         Keyword.fetch!(dream_time_gates, :max_working_set_items) > 0 and
+         Keyword.fetch!(dream_time_gates, :max_elapsed_ms) > 0 do
+  raise "dream-time gates require positive limits and non-negative durations"
+end
+
+config :memhouse, :dream_time_gates, dream_time_gates
+
 # Legacy single-credential configuration, predating per-role settings. The
 # ReqLLM provider still consults it, and an `api_key` set here would win over a
 # role's own reference — so it stays nil by design. The reference only names
