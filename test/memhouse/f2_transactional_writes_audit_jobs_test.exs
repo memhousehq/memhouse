@@ -86,6 +86,7 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
   alias MemHouse.Observations.Message
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline
+  alias MemHouse.Pipeline.Changes.ExecuteRun
   alias MemHouse.Pipeline.Idempotency
   alias MemHouse.Pipeline.Reconciler
 
@@ -816,6 +817,68 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert preserved.status == "completed"
     assert preserved.attempt_count == stale_run.attempt_count + 1
     assert is_nil(preserved.batch_claim_id)
+  end
+
+  test "a persisted batch outcome cannot overwrite a concurrent operator requeue" do
+    assert {:ok, message} =
+             Memory.ingest_message(
+               ingest_attrs("f2-batch-requeue-race", "batch-requeue-race-session")
+             )
+
+    account_id = account_id!("f2-batch-requeue-race")
+
+    terminal_run =
+      DataLayer.with_account_id(
+        account_id,
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          {:ok, [claimed]} =
+            Pipeline.claim_extraction_runs(
+              account_id,
+              [message["id"]],
+              Ecto.UUID.generate(),
+              actor
+            )
+
+          {:ok, terminal} =
+            Pipeline.classify_extraction_run(
+              claimed,
+              "terminal",
+              "structured_validation_exhausted",
+              "requeue-race-test",
+              actor
+            )
+
+          {:ok, pending} =
+            terminal
+            |> Ash.Changeset.for_update(:requeue_extraction_anchor, %{})
+            |> Ash.Changeset.set_tenant(account_id)
+            |> Ash.update(actor: actor)
+
+          assert pending.status == "pending"
+          terminal
+        end
+      )
+
+    outcome_changeset =
+      terminal_run
+      |> Ash.Changeset.new()
+      |> ExecuteRun.apply_outcome({:ok, %{run_status: "persisted"}})
+
+    refute Ash.Changeset.changing_attribute?(outcome_changeset, :status)
+    refute Ash.Changeset.changing_attribute?(outcome_changeset, :processed_at)
+    refute Ash.Changeset.changing_attribute?(outcome_changeset, :attempt_count)
+
+    assert %{rows: [["pending", nil, nil]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT status, batch_claim_id, last_error_class
+               FROM pipeline_runs
+               WHERE id = $1
+               """,
+               [Ecto.UUID.dump!(terminal_run.id)]
+             )
   end
 
   test "pipeline replay merges provenance and never duplicates knowledge or lifecycle" do

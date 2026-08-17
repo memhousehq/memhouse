@@ -41,37 +41,32 @@ defmodule MemHouse.Pipeline.Changes.ExecuteRun do
     Ash.Changeset.before_transaction(changeset, fn changeset ->
       run = changeset.data
 
-      case Pipeline.execute(run) do
-        # Another batch owns or already completed this anchor. Leave every
-        # durable field untouched: this action loaded its row before the claim
-        # race and must not write that stale pending state over the owner.
-        {:ok, %{run_status: "delegated"}} ->
-          changeset
-
-        {:ok, %{run_status: status}}
-        when status in ["repairable", "terminal"] ->
-          changeset
-          |> Ash.Changeset.force_change_attribute(:status, status)
-          |> Ash.Changeset.force_change_attribute(
-            :processed_at,
-            if(status == "processing", do: nil, else: Clock.utc_now())
-          )
-          |> Ash.Changeset.force_change_attribute(:attempt_count, run.attempt_count + 1)
-
-        {:ok, _result} ->
-          changeset
-          |> Ash.Changeset.force_change_attribute(:status, "completed")
-          |> Ash.Changeset.force_change_attribute(:processed_at, Clock.utc_now())
-          |> Ash.Changeset.force_change_attribute(:last_error_class, nil)
-          |> Ash.Changeset.force_change_attribute(:attempt_count, run.attempt_count + 1)
-
-        # The error travels no further than the changeset: the row keeps its
-        # current status and stays eligible for retry and reconciliation.
-        {:error, error} ->
-          Ash.Changeset.add_error(changeset, error)
-      end
+      apply_outcome(changeset, Pipeline.execute(run))
     end)
   end
+
+  @doc false
+  def apply_outcome(changeset, {:ok, %{run_status: status}})
+      when status in ["delegated", "persisted"] do
+    # The batching workflow owns all per-anchor durable transitions. This
+    # outer action loaded the row before that work and must not replay stale
+    # status after an owner completion or an operator requeue.
+    changeset
+  end
+
+  def apply_outcome(changeset, {:ok, _result}) do
+    run = changeset.data
+
+    changeset
+    |> Ash.Changeset.force_change_attribute(:status, "completed")
+    |> Ash.Changeset.force_change_attribute(:processed_at, Clock.utc_now())
+    |> Ash.Changeset.force_change_attribute(:last_error_class, nil)
+    |> Ash.Changeset.force_change_attribute(:attempt_count, run.attempt_count + 1)
+  end
+
+  # The error travels no further than the changeset: the row keeps its current
+  # status and stays eligible for retry and reconciliation.
+  def apply_outcome(changeset, {:error, error}), do: Ash.Changeset.add_error(changeset, error)
 end
 
 defmodule MemHouse.Pipeline.Changes.MarkRunFailed do

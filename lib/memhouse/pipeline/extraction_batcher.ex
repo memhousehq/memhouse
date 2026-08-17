@@ -49,7 +49,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     case prepared do
       [] ->
         mark_all([run], "repairable", "oversized", ExtractionAdmission.config()[:identity])
-        {:ok, %{status: "repairable", run_status: "repairable"}}
+        {:ok, %{status: "repairable", run_status: "persisted"}}
 
       selected ->
         claim_and_extract(run, claim_id, selected)
@@ -100,18 +100,17 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
           end)
           |> Map.new()
 
-        anchor_status = Map.fetch!(statuses, run.target_id)
-        {:ok, %{status: "processed", run_status: anchor_status, anchors: statuses}}
+        {:ok, %{status: "processed", run_status: "persisted", anchors: statuses}}
 
       {:error, error} ->
         case failure_class(error) do
           {:repairable, reason_class} ->
             mark_all(Map.values(runs), "repairable", reason_class, identity)
-            {:ok, %{status: "repairable", run_status: "repairable"}}
+            {:ok, %{status: "repairable", run_status: "persisted"}}
 
           {:terminal, reason_class} ->
             mark_all(Map.values(runs), "terminal", reason_class, identity)
-            {:ok, %{status: "terminal", run_status: "terminal"}}
+            {:ok, %{status: "terminal", run_status: "persisted"}}
 
           {:retryable, reason_class} ->
             # Record every claimed anchor before returning the provider error.
