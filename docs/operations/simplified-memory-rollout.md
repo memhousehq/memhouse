@@ -42,7 +42,7 @@ Enable the experimental profile on canary nodes only:
 MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true
 ```
 
-Non-fixed Ask efforts then start from the `minimal` semantic-plus-lexical
+Non-fixed Ask efforts then start from the `minimal` dual-lane-semantic-plus-lexical
 profile and use the bounded read-only recall planner. Explicit `fixed` Ask and
 explicit current-profile searches retain their existing behavior. Dream
 synthesis remains off unless a separate matched evaluation approves it:

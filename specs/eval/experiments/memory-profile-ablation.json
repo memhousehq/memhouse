@@ -42,7 +42,7 @@
       "dream_time": false,
       "components": {
         "retrieval_profile": "minimal",
-        "retrieval_strategies": ["semantic", "lexical"],
+        "retrieval_strategies": ["semantic_dual_lane", "lexical"],
         "retrieval_rerank": false,
         "retrieval_deadline": "disabled",
         "semantic_index_refresh": true,

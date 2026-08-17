@@ -128,7 +128,8 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
       "retrieval_strategies" => strategies,
       "retrieval_rerank" => false,
       "retrieval_deadline" => "disabled",
-      "semantic_index_refresh" => "semantic" in strategies,
+      "semantic_index_refresh" =>
+        Enum.any?(strategies, &(&1 in ["semantic", "semantic_dual_lane"])),
       "dream_time" => false,
       "durability_audit" => false
     }

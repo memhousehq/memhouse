@@ -244,7 +244,7 @@ defmodule MemHouse.Eval.Experiment do
       "retrieval_strategies" => strategies,
       "retrieval_rerank" => profile.rerank,
       "retrieval_deadline" => Map.get(variant, "deadline", "disabled"),
-      "semantic_index_refresh" => "semantic" in strategies,
+      "semantic_index_refresh" => Enum.any?(strategies, &semantic_strategy?/1),
       "dream_time" => Map.get(variant, "dream_time", false),
       "durability_audit" => Map.get(variant, "durability_audit", false)
     }
@@ -279,6 +279,8 @@ defmodule MemHouse.Eval.Experiment do
               "execute variant #{inspect(variant["id"])} requires deployment-disabled strategies #{inspect(disabled)}"
     end
   end
+
+  defp semantic_strategy?(strategy), do: strategy in ["semantic", "semantic_dual_lane"]
 
   defp profile_configuration!(name) do
     name = profile_name!(name)

@@ -148,7 +148,8 @@ dirty/clean state, dataset digest, and explicit sampling/durability seeds preven
 different inputs or implementations being presented as one ablation.
 
 The committed smoke definition compares the real `balanced` default strategy set with the real
-`minimal` semantic-plus-lexical profile. Both variants refresh the isolated derived vector index.
+`minimal` dual-lane-semantic-plus-lexical profile. Both variants refresh the isolated derived
+vector index; the minimal variant also rebuilds its non-authoritative RecallDocument projection.
 An offline run therefore requires an Ortex embedder with existing operator-supplied model and
 tokenizer artifacts; missing artifacts or a hosted/deterministic stand-in embedder are rejected
 before ingestion. `--live-model` is the explicit provider-call boundary and may incur cost. The

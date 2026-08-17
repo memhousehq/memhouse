@@ -13,7 +13,7 @@ defmodule MemHouse.Eval.Runner do
   alias MemHouse.DataLayer
   alias MemHouse.Eval.{Durability, ModelJudge, Reasoning, Scorer}
   alias MemHouse.Memory
-  alias MemHouse.Retrieval.Indexer
+  alias MemHouse.Retrieval.{Indexer, RecallProjector}
   alias MemHouse.Topology.Scope
 
   require Ash.Query
@@ -278,7 +278,8 @@ defmodule MemHouse.Eval.Runner do
 
   # Matched profile experiments need semantic retrieval to measure the corpus just ingested.
   # Ordinary benchmark runs retain their existing queue-shaped behavior; the explicit option
-  # synchronously refreshes only the rebuildable statement index for this isolated case scope.
+  # synchronously refreshes the rebuildable statement index and dual-lane recall projection for
+  # this isolated case scope.
   defp refresh_retrieval!(account_key, scope_path) do
     DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
       scope =
@@ -287,8 +288,10 @@ defmodule MemHouse.Eval.Runner do
         |> Ash.Query.set_tenant(account.id)
         |> Ash.read_one!(actor: actor)
 
-      case Indexer.refresh_scope(account.id, scope.id) do
-        {:ok, _counts} -> :ok
+      with {:ok, _index} <- Indexer.refresh_scope(account.id, scope.id),
+           {:ok, _documents} <- RecallProjector.refresh_scope(account.id, scope.id) do
+        :ok
+      else
         {:error, error} -> raise "evaluation retrieval refresh failed: #{inspect(error)}"
       end
     end)

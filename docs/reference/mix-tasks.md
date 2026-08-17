@@ -277,8 +277,9 @@ the map is not free-form provenance. Fixture definitions keep it empty because f
 not execute product components.
 
 The committed smoke definition compares the real `balanced` defaults with the real `minimal`
-semantic-plus-lexical profile. Offline execution synchronously refreshes each isolated case index
-and requires existing local Ortex model and tokenizer artifacts. Missing artifacts and hosted or
+dual-lane-semantic-plus-lexical profile. Offline execution synchronously refreshes each isolated
+case index and the minimal RecallDocument projection, and requires existing local Ortex model and
+tokenizer artifacts. Missing artifacts and hosted or
 deterministic stand-in embedders are rejected before ingestion. `--live-model` is the explicit
 provider-call opt-in and may incur cost; MemHouse never substitutes fake vectors.
 

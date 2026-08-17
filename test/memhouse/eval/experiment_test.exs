@@ -194,7 +194,7 @@ defmodule MemHouse.Eval.ExperimentTest do
     end
   end
 
-  test "committed execute definition binds the real minimal semantic and lexical profile" do
+  test "committed execute definition binds the real minimal dual-lane and lexical profile" do
     definition = Jason.decode!(File.read!("specs/eval/experiments/memory-profile-ablation.json"))
     experimental = Enum.find(definition["variants"], &(&1["kind"] == "experimental"))
 
@@ -204,7 +204,7 @@ defmodule MemHouse.Eval.ExperimentTest do
 
     assert experimental["components"] == %{
              "retrieval_profile" => "minimal",
-             "retrieval_strategies" => ["semantic", "lexical"],
+             "retrieval_strategies" => ["semantic_dual_lane", "lexical"],
              "retrieval_rerank" => false,
              "retrieval_deadline" => "disabled",
              "semantic_index_refresh" => true,
