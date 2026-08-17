@@ -36,6 +36,7 @@ defmodule MemHouse.Memory do
   alias MemHouse.Observations.SessionParticipant
   alias MemHouse.Observations.SessionScope
   alias MemHouse.Operations.PipelineRun
+  alias MemHouse.Pipeline
   alias MemHouse.Pipeline.Extractor
   alias MemHouse.Pipeline.Idempotency
   alias MemHouse.Pipeline.Lock
@@ -248,6 +249,49 @@ defmodule MemHouse.Memory do
 
       record_extraction_result(extract_then_write(account_id, message_id, message, context))
     end)
+  end
+
+  @doc false
+  def prepare_message_extraction_for_account(message_id, account_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn account, actor ->
+        message = fetch_message!(account, actor, message_id)
+        %{message: message, context: message_context(account, actor, message)}
+      end
+    )
+  end
+
+  @doc false
+  def persist_message_extraction_result!(run, message, result, admission_identity) do
+    DataLayer.with_account_id(
+      run.account_id,
+      [role: :system, pipeline?: true],
+      fn account, actor ->
+        current_run = read_one_by_id!(PipelineRun, run.id, account.id, actor)
+
+        case result do
+          %{status: :ok, items: items} ->
+            knowledge = Enum.map(items, &insert_knowledge!(account.id, actor, message, &1))
+            mark_message_extracted!(account.id, actor, message["id"])
+            {:ok, _run} = Pipeline.complete_extraction_run(current_run, admission_identity, actor)
+            {:ok, knowledge}
+
+          %{status: :terminal, reason_class: reason_class} ->
+            {:ok, _run} =
+              Pipeline.classify_extraction_run(
+                current_run,
+                "terminal",
+                reason_class,
+                admission_identity,
+                actor
+              )
+
+            {:ok, []}
+        end
+      end
+    )
   end
 
   # Builds the extractor input for the parsed text of one document version.
@@ -1717,6 +1761,8 @@ defmodule MemHouse.Memory do
        do: "completed"
 
   defp ingest_run_status(_message, %{status: "failed"}), do: "failed"
+  defp ingest_run_status(_message, %{status: "repairable"}), do: "repairable"
+  defp ingest_run_status(_message, %{status: "terminal"}), do: "terminal"
   defp ingest_run_status(_message, _run), do: "pending"
 
   defp read_ingest_status(account_id, actor, message_id) do

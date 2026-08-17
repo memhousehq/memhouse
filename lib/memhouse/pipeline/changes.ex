@@ -42,6 +42,16 @@ defmodule MemHouse.Pipeline.Changes.ExecuteRun do
       run = changeset.data
 
       case Pipeline.execute(run) do
+        {:ok, %{run_status: status}}
+        when status in ["processing", "repairable", "terminal"] ->
+          changeset
+          |> Ash.Changeset.force_change_attribute(:status, status)
+          |> Ash.Changeset.force_change_attribute(
+            :processed_at,
+            if(status == "processing", do: nil, else: Clock.utc_now())
+          )
+          |> Ash.Changeset.force_change_attribute(:attempt_count, run.attempt_count + 1)
+
         {:ok, _result} ->
           changeset
           |> Ash.Changeset.force_change_attribute(:status, "completed")
@@ -72,6 +82,10 @@ defmodule MemHouse.Pipeline.Changes.MarkRunFailed do
 
   use Ash.Resource.Change
 
+  alias MemHouse.DataLayer
+  alias MemHouse.Operations.PipelineRun
+
+  require Ash.Query
   require Logger
 
   @doc """
@@ -82,30 +96,69 @@ defmodule MemHouse.Pipeline.Changes.MarkRunFailed do
   failure path must always be able to record an outcome.
   """
   @impl true
-  def change(changeset, _opts, _context) do
+  def change(changeset, _opts, context) do
     error = Ash.Changeset.get_argument(changeset, :error)
     class = error_class(error)
     run = changeset.data
 
-    if run.kind == "extraction" do
-      Logger.error("pipeline extraction failed",
-        account_id: run.account_id,
-        scope_id: run.scope_id,
-        pipeline_run_id: run.id,
-        target_type: run.target_type,
-        target_id: run.target_id,
-        message_id: if(run.target_type == "message", do: run.target_id),
-        attempt_count: run.attempt_count + 1,
-        error_class: class
+    failed_changeset =
+      changeset
+      |> Ash.Changeset.force_change_attribute(:status, "failed")
+      |> Ash.Changeset.force_change_attribute(:last_error_class, class)
+      |> Ash.Changeset.force_change_attribute(
+        :attempt_count,
+        changeset.data.attempt_count + 1
       )
-    end
 
-    changeset
-    |> Ash.Changeset.force_change_attribute(:status, "failed")
-    |> Ash.Changeset.force_change_attribute(:last_error_class, class)
-    |> Ash.Changeset.force_change_attribute(
-      :attempt_count,
-      changeset.data.attempt_count + 1
+    if run.kind == "extraction" do
+      preserve_committed_anchor(failed_changeset, run, class, context.actor)
+    else
+      failed_changeset
+    end
+  end
+
+  # A batched extraction commits each anchor before the outer Oban action
+  # records its outcome. If the process crashes after one anchor commit, the
+  # error callback still holds the stale row loaded before the workflow. Read
+  # the current row inside the outcome transaction so that callback cannot
+  # downgrade a completed/isolated anchor back to retryable `failed`.
+  defp preserve_committed_anchor(changeset, run, class, actor) do
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      DataLayer.declare_account!(run.account_id)
+
+      current =
+        PipelineRun
+        |> Ash.Query.filter(id == ^run.id)
+        |> Ash.Query.set_tenant(run.account_id)
+        # The enclosing `mark_failed` action has already been authorized. This
+        # internal current-row read is additionally constrained by tenant, id,
+        # and database RLS; it must also work for AshOban's actorless callback.
+        |> Ash.read_one!(actor: actor, authorize?: false)
+
+      if current.status in ["completed", "repairable", "terminal"] do
+        changeset
+        |> Ash.Changeset.force_change_attribute(:status, current.status)
+        |> Ash.Changeset.force_change_attribute(:last_error_class, current.last_error_class)
+        |> Ash.Changeset.force_change_attribute(:attempt_count, current.attempt_count)
+        |> Ash.Changeset.force_change_attribute(:processed_at, current.processed_at)
+        |> Ash.Changeset.force_change_attribute(:payload, current.payload)
+      else
+        log_extraction_failure(run, class)
+        changeset
+      end
+    end)
+  end
+
+  defp log_extraction_failure(run, class) do
+    Logger.error("pipeline extraction failed",
+      account_id: run.account_id,
+      scope_id: run.scope_id,
+      pipeline_run_id: run.id,
+      target_type: run.target_type,
+      target_id: run.target_id,
+      message_id: if(run.target_type == "message", do: run.target_id),
+      attempt_count: run.attempt_count + 1,
+      error_class: class
     )
   end
 

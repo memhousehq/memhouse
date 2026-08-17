@@ -11,6 +11,14 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Message extraction now token-batches adjacent pending anchors from the same
+  Account, scope, and session through one provider call. Each envelope keeps
+  its original replay key and exact source allowlist; governed effects,
+  completion, and PipelineRun state commit per anchor. Deterministic pre-call
+  admission, repairable/terminal states, stale-claim recovery, and an explicit
+  operator requeue replace implicit replay of poison or oversized sources. The
+  extraction prompt identity advances to `extract-13`.
+
 - Retrieval now normalizes scores inside each strategy list before weighted
   fusion. A 5% reciprocal-rank term breaks ties, with `rrf_k` set per profile
   and defaulting to 15. Candidates expose `fusion_score`; `rrf_score` remains
@@ -219,7 +227,7 @@ changelog entry and contract-version transition.
 
 ### Changed
 
-- Extraction prompt `extract-12` maps first-person claims to the exact speaker
+- Extraction prompt `extract-13` maps first-person claims to the exact speaker
   peer key. For first-person claims, validation ignores the model's
   `subject_ref` and derives the subject from the cited message's stored speaker
   key. Unresolved or ambiguous cited speakers fail closed. The cited speaker

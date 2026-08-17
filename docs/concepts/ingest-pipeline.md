@@ -57,7 +57,7 @@ sequenceDiagram
     participant GOV as Governance engine
     participant IDX as Index and projection work
 
-    J->>G: extraction request (ingest_extractor role)
+    J->>G: token-batched anchored request (ingest_extractor role)
     G->>S: provider output
     S->>S: validate against Ash-derived schema
     alt output does not fit the schema
@@ -71,6 +71,31 @@ sequenceDiagram
     J->>IDX: embed, index, mark projections dirty
 ```
 
+### Anchors batch without becoming one replay unit
+
+An executing message job may claim adjacent unstamped messages from the same
+Account, scope, and session. It does not create a batch row. Every message keeps
+its original deterministic PipelineRun and job identity. The model returns one
+envelope per explicit `anchor_id`, and validation applies that anchor's own
+participant, scope, exact-span, date, and supplied-source allowlists.
+
+Before the provider call, `utf8-bytes-v1` counts the complete serialized
+instructions, schema, anchors, and evidence windows. MemHouse reserves output
+capacity and a safety margin against the configured context limit. This
+provider-independent tokenizer deliberately over-counts ordinary BPE input and
+is part of the experiment identity. Provider usage is post-call accounting, not
+admission. An anchor that cannot fit alone is marked `repairable` as
+`oversized`; it is never silently truncated.
+
+The provider call produces independent anchor outcomes. One short transaction
+commits an anchor's governed candidates, lifecycle/audit effects, completion
+stamp, and PipelineRun completion. A completed sibling is skipped after a
+crash. Structured poison becomes terminal only after bounded repair; transient
+provider/network/capacity errors remain retryable. Credential, configuration,
+and oversized failures are repairable. Normal reconciliation excludes
+repairable and terminal anchors until an administrator explicitly requeues
+them.
+
 ### The model call holds no database connection
 
 Extraction touches the database in two short bursts with the model call
@@ -78,8 +103,8 @@ in between, never in one long transaction:
 
 ```mermaid
 flowchart LR
-    R["read the message<br/>(short transaction)"] --> M["call the model<br/>(no transaction)"]
-    M --> W["write the knowledge<br/>(short transaction)"]
+    R["claim and read anchors<br/>(short transactions)"] --> M["one model call<br/>(no transaction)"]
+    M --> W["write one anchor at a time<br/>(short transaction each)"]
 ```
 
 Model calls may take minutes and up to two repair attempts. Keeping them outside

@@ -25,6 +25,7 @@ There is **no generated OpenAPI description** in this release — see
 | `GET /api/v1/knowledge` | any identity | Governed knowledge query |
 | `GET /api/v1/operations/costs` | account-admin | Usage and estimated cost |
 | `POST /api/v1/operations/reconcile` | account-admin | Enqueue an Account reconciliation sweep |
+| `POST /api/v1/operations/ingest/:message_id/requeue` | account-admin | Explicitly requeue a repairable or terminal extraction anchor |
 | `POST /api/v1/operations/dream` | account-admin | Enqueue an immediate Account dream-time pass |
 | `GET /api/v1/self/knowledge` | human only | Your own record |
 | `POST /api/v1/self/knowledge/:id/contest` | human only | Dispute a statement about you |
@@ -184,9 +185,12 @@ only governed knowledge visible to that caller.
 }
 ```
 
-`status` is `pending`, `failed`, or `completed`. `last_error_class` is a
-content-safe exception class, never a provider message. Missing and unauthorised
-message ids both return the same opaque **404**.
+`status` is `pending`, `failed`, `repairable`, `terminal`, or `completed`.
+`repairable` requires an operator to correct configuration or approve a larger
+context/chunking policy; `terminal` identifies source-specific poison after
+bounded structured repair. `last_error_class` is a content-safe class, never a
+provider message. Missing and unauthorised message ids both return the same
+opaque **404**.
 
 ---
 
@@ -434,6 +438,14 @@ The sweep finds stale durable work whose job did not finish and re-enqueues its
 replay-safe run. It ignores work younger than 5 minutes and processes at most
 100 messages, document versions, connectors, and scopes per pass. The hourly
 maintenance schedule runs the same bounded sweep.
+
+Repairable and terminal extraction anchors are excluded from this automatic
+replay. After correcting credentials, provider configuration, an oversized
+input policy, or source-specific poison, an Account administrator explicitly
+acknowledges the repair boundary with
+`POST /api/v1/operations/ingest/:message_id/requeue`. It returns **202** with
+the ordinary run-id response, or **409** when the anchor is not in a repairable
+or terminal state.
 
 ---
 

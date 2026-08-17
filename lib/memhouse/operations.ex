@@ -433,6 +433,48 @@ defmodule MemHouse.Operations.PipelineRun do
       change MemHouse.Pipeline.Changes.ExecuteRun
     end
 
+    # A running extraction job marks its own replay row before looking for
+    # siblings. Opportunistic batch claims use the same action over a filtered
+    # query, so an executing sibling and a batch owner race on one atomic status
+    # transition and exactly one wins.
+    update :claim_extraction_batch do
+      change set_attribute(:status, "processing")
+      change set_attribute(:last_error_class, nil)
+    end
+
+    # Called inside the same short Account transaction that persists one
+    # anchor's governed candidates and message completion stamp.
+    update :complete_extraction_anchor do
+      require_atomic? false
+      accept [:attempt_count, :processed_at, :payload]
+      change set_attribute(:status, "completed")
+      change set_attribute(:last_error_class, nil)
+    end
+
+    update :classify_extraction_anchor do
+      require_atomic? false
+      accept [:status, :attempt_count, :last_error_class, :processed_at, :payload]
+      validate attribute_in(:status, ~w(failed repairable terminal))
+    end
+
+    update :requeue_extraction_anchor do
+      require_atomic? false
+      accept [:payload]
+
+      validate {MemHouse.Operations.Validations.CurrentStatusIn,
+                statuses: ~w(repairable terminal)}
+
+      change set_attribute(:status, "pending")
+      change set_attribute(:last_error_class, nil)
+      change set_attribute(:processed_at, nil)
+    end
+
+    update :expire_extraction_claim do
+      change set_attribute(:status, "failed")
+      change set_attribute(:last_error_class, "BatchClaimExpired")
+      change set_attribute(:processed_at, nil)
+    end
+
     # Failure path invoked when the job errors. It stores only a classification
     # of the error and bumps the attempt count, leaving the row eligible for a
     # later retry or reconciliation sweep. It carries the same Account

@@ -32,6 +32,8 @@ defmodule MemHouse.Pipeline.Extractor do
 
   alias MemHouse.Model
   alias MemHouse.Model.Schema.Extraction
+  alias MemHouse.Model.Schema.ExtractionBatch
+  alias MemHouse.Pipeline.ExtractionAdmission
 
   # Identity of the extraction-and-pipeline contract this build implements. The
   # same string is configured as every model role's `pipeline_version` — which
@@ -48,7 +50,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-12"
+  @prompt_version "extract-13"
 
   # Ways a model names the process instead of a person. Deployment-specific
   # identities are added per observation; these hold everywhere.
@@ -215,6 +217,136 @@ defmodule MemHouse.Pipeline.Extractor do
       {:error, error} ->
         {:error, error}
     end
+  end
+
+  @doc """
+  Extracts several adjacent anchored observations in one provider call.
+
+  Every entry is `%{message: message, context: context}`. The provider must
+  return one envelope per message with an explicit `anchor_id`; candidate source
+  ids are still checked against that anchor's ordinary bounded window. The
+  return keeps per-anchor success or terminal structured-validation state so a
+  caller can commit siblings independently.
+
+  Whole-call provider failures are returned unchanged. A request that fails
+  deterministic pre-call context admission returns
+  `{:error, {:repairable, :oversized, details}}` without invoking a provider.
+  """
+  def extract_batch(anchors) when is_list(anchors) and anchors != [] do
+    {messages, context, opts} = batch_request(anchors)
+
+    case ExtractionAdmission.admit(messages, ExtractionBatch.json_schema()) do
+      {:ok, admission} ->
+        case Model.generate_structured(
+               :ingest_extractor,
+               messages,
+               ExtractionBatch,
+               context,
+               opts
+             ) do
+          {:ok, results, provenance} ->
+            results =
+              Enum.map(results, fn
+                %{status: :ok, items: items} = result ->
+                  result
+                  |> Map.put(:items, Enum.map(items, &Map.merge(&1, provenance)))
+                  |> Map.put(:admission_identity, admission.identity)
+
+                result ->
+                  Map.put(result, :admission_identity, admission.identity)
+              end)
+
+            {:ok, results}
+
+          {:error, error} ->
+            {:error, error}
+        end
+
+      {:error, details} ->
+        {:error, {:repairable, :oversized, details}}
+    end
+  end
+
+  @doc false
+  def batch_request(anchors) when is_list(anchors) and anchors != [] do
+    prepared =
+      Enum.map(anchors, fn %{message: message, context: context} ->
+        schema_context = schema_context(message, context)
+        %{message: message, context: schema_context}
+      end)
+
+    anchor_contexts = Map.new(prepared, &{&1.message["id"], &1.context})
+
+    messages = [
+      %{role: "system", content: batch_system_prompt()},
+      %{
+        role: "user",
+        content:
+          "Extraction anchors. Return one envelope per anchor.\n\n" <>
+            Enum.map_join(prepared, "\n\n", &batch_anchor_text/1)
+      }
+    ]
+
+    context =
+      prepared
+      |> hd()
+      |> Map.fetch!(:context)
+      |> Map.put(:anchor_contexts, anchor_contexts)
+
+    observations =
+      Enum.map(prepared, fn %{message: message, context: schema_context} ->
+        %{
+          anchor_id: message["id"],
+          observation: message["content"],
+          source_peer_key: schema_context.source_peer_key,
+          source_message_ids: [message["id"]]
+        }
+      end)
+
+    opts = [
+      task: :extraction_batch,
+      batch_observations: observations,
+      prompt_version: @prompt_version
+    ]
+
+    {messages, context, opts}
+  end
+
+  defp batch_system_prompt do
+    """
+    Extract durable, explicit, atomic agent-memory knowledge from multiple
+    anchored observations. Return one envelope for every supplied anchor and
+    copy its exact Anchor id into anchor_id. Keep candidates for different
+    anchors separate.
+
+    For every candidate copy the shortest exact supporting_span, cite only
+    source_message_ids from that anchor's supplied conversation window, name
+    the human or scope subject explicitly, and never invent facts. Questions,
+    greetings, thanks, reactions, speech-act transcripts, and claims about the
+    relaying assistant produce no item. Resolve first-person evidence to its
+    source speaker. The relaying agent is never a subject.
+
+    Preserve stable facts, preferences, relationships, possessions, skills,
+    commitments, plans, and lasting events. Classify sensitivity conservatively;
+    restricted is the safe choice when evidence is ambiguous. Use only the
+    supplied participant keys or current scope as subject_ref. Resolve relative
+    dates against the anchor's observed time, but do not invent validity bounds.
+    confidence_level is stated_explicitly, clearly_implied, or inferred.
+    """
+  end
+
+  defp batch_anchor_text(%{message: message, context: context}) do
+    """
+    Anchor id: #{message["id"]}
+    Speaker peer key: #{context.source_peer_key}
+    Speaker role: #{Map.get(message, "role", "user")}
+    Current scope: #{context.scope_path}
+    Conversation participants: #{Enum.join(context.known_peer_keys, ", ")}
+    Observed at: #{observed_at(context.occurred_at)}
+    Anchored observation: #{message["content"]}
+    Conversation window (id | speaker | observed at | text):
+    #{window_text(context.window_messages, context.occurred_at)}
+    """
   end
 
   # Second precision: no observation is dated more finely than that in practice,

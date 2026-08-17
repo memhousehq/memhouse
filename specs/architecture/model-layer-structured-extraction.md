@@ -100,7 +100,7 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-The `extract-12` and `f5-1` prompt and pipeline versions enforce subject and
+The `extract-13` and `f5-1` prompt and pipeline versions enforce subject and
 source-grounding rules:
 agent peers are excluded from the subject allowlist and machine referents are
 refused, preserving the verified contract that knowledge is about people and
@@ -146,7 +146,7 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-12` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-13` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.
@@ -159,6 +159,23 @@ expiry remains governance policy. Readers render the structured valid-time
 fields when they need the date. The prompt requires
 `confidence_level` as `stated_explicitly`, `clearly_implied`, or `inferred`;
 `Extraction.cast/2` maps these labels to fixed stored numeric fractions.
+
+Adjacent pending anchors in the same Account, scope, and session may share one
+`extract-13` provider call. `ExtractionBatch` requires an explicit envelope per
+anchor and reuses `Extraction.cast/2` with that anchor's independent validation
+context. `utf8-bytes-v1` pre-call admission counts serialized instructions,
+schema, evidence windows, reserved output, and safety margin. Supported
+experiment targets are 128, 1K, 4K, and 16K; the tokenizer and all budget values
+form the admission identity stored on each completed run.
+
+Batch ownership is a temporary `processing` state on the existing per-message
+PipelineRun, not a second queue table. Every anchor persists candidates,
+governance effects, message completion, and run completion in one short
+transaction. Bounded repair may terminally isolate one malformed envelope while
+valid siblings progress. Repairable configuration and oversized states, and
+terminal source poison, are excluded from automatic reconciliation; explicit
+operator requeue is required. Stale `processing` claims return to failed after
+the configured lease so a crashed worker cannot strand them.
 
 `MemHouse.Model.Usage` is the one durable emission point. Each provider call,
 including every repair attempt and returned provider error, appends one

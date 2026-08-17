@@ -45,6 +45,23 @@ defmodule MemHouse.Model.Providers.Deterministic do
         :extraction ->
           %{"items" => extraction_items(messages, opts)}
 
+        :extraction_batch ->
+          %{
+            "anchors" =>
+              Enum.map(Keyword.get(opts, :batch_observations, []), fn observation ->
+                anchor_opts =
+                  opts
+                  |> Keyword.put(:observation, observation.observation)
+                  |> Keyword.put(:source_peer_key, observation.source_peer_key)
+                  |> Keyword.put(:source_message_ids, observation.source_message_ids)
+
+                %{
+                  "anchor_id" => observation.anchor_id,
+                  "items" => extraction_items(messages, anchor_opts)
+                }
+              end)
+          }
+
         :reasoning ->
           %{"items" => [], "relations" => []}
 

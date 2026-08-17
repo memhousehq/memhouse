@@ -125,6 +125,24 @@ env_positive_integer! = fn key, default ->
   end
 end
 
+extraction_batch_target =
+  env_positive_integer!.("MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS", "4096")
+
+unless extraction_batch_target in [128, 1_024, 4_096, 16_384] do
+  raise "MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS must be one of 128, 1024, 4096, or 16384"
+end
+
+config :memhouse, :extraction_batching,
+  target_tokens: extraction_batch_target,
+  max_anchors: env_positive_integer!.("MEMHOUSE_EXTRACTION_BATCH_MAX_ANCHORS", "32"),
+  context_limit_tokens: env_positive_integer!.("MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS", "131072"),
+  reserved_output_tokens:
+    env_positive_integer!.("MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS", "8192"),
+  safety_margin_tokens:
+    env_positive_integer!.("MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS", "2048"),
+  claim_timeout_seconds:
+    env_positive_integer!.("MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS", "300")
+
 # Rejects ambiguous switches such as auto-migrate.
 env_bool! = fn key, default ->
   value = env_get.(key, if(default, do: "true", else: "false"))
@@ -589,7 +607,7 @@ config :memhouse, :model_roles,
     provider: generation_provider,
     model: generation_model.("MEMHOUSE_MODEL_INGEST", "openai/gpt-oss-120b"),
     model_version: generation_version,
-    prompt_version: "extract-12",
+    prompt_version: "extract-13",
     pipeline_version: "f5-1",
     options: generation_options
   },

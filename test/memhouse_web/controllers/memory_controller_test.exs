@@ -263,6 +263,55 @@ defmodule MemHouseWeb.MemoryControllerTest do
              )
   end
 
+  test "POST /api/v1/operations/ingest/:id/requeue explicitly repairs a terminal anchor", %{
+    conn: conn,
+    actor: actor,
+    token: token
+  } do
+    assert {:ok, message} =
+             Memory.ingest_message(
+               ingest_attrs("repair-session", "/contract/http/repair"),
+               actor
+             )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      UPDATE pipeline_runs
+      SET status = 'terminal', last_error_class = 'structured_validation_exhausted'
+      WHERE target_id = $1 AND kind = 'extraction'
+      """,
+      [Ecto.UUID.dump!(message["id"])]
+    )
+
+    response =
+      conn
+      |> with_identity(token)
+      |> post(~p"/api/v1/operations/ingest/#{message["id"]}/requeue")
+
+    assert %{"data" => %{"run_id" => run_id, "status" => "accepted"}} =
+             json_response(response, 202)
+
+    assert %{rows: [[^run_id, "pending", nil]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT id::text, status, last_error_class
+               FROM pipeline_runs
+               WHERE target_id = $1 AND kind = 'extraction'
+               """,
+               [Ecto.UUID.dump!(message["id"])]
+             )
+
+    conflict =
+      response
+      |> recycle()
+      |> with_identity(token)
+      |> post(~p"/api/v1/operations/ingest/#{message["id"]}/requeue")
+
+    assert %{"error" => "Extraction is not repairable"} = json_response(conflict, 409)
+  end
+
   test "POST /api/v1/operations/dream enqueues an Account dream-time pass", %{
     conn: conn,
     token: token

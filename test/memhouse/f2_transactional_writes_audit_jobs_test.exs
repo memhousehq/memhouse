@@ -85,7 +85,9 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
   alias MemHouse.Memory
   alias MemHouse.Observations.Message
   alias MemHouse.Operations.PipelineRun
+  alias MemHouse.Pipeline
   alias MemHouse.Pipeline.Idempotency
+  alias MemHouse.Pipeline.Reconciler
 
   require Ash.Query
 
@@ -304,6 +306,182 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert %NaiveDateTime{} = completed_at
   end
 
+  test "one ingest worker atomically completes adjacent anchors through one provider call" do
+    assert {:ok, first} =
+             Memory.ingest_message(
+               ingest_attrs("f2-batch", "batch-session",
+                 content: "Avery owns the release checklist."
+               )
+             )
+
+    assert {:ok, second} =
+             Memory.ingest_message(
+               ingest_attrs("f2-batch", "batch-session",
+                 content: "Avery prefers concise weekly summaries."
+               )
+             )
+
+    assert %{failure: 0} = Oban.drain_queue(queue: :ingest)
+
+    account_id = account_id!("f2-batch")
+
+    assert %{rows: [[2, 2, 1]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FILTER (WHERE message.extraction_completed_at IS NOT NULL),
+                      count(*) FILTER (WHERE run.status = 'completed'),
+                      (SELECT count(*)
+                       FROM usage_events
+                       WHERE account_id = $1 AND model_role = 'ingest_extractor')
+               FROM messages AS message
+               JOIN pipeline_runs AS run ON run.target_id = message.id
+               WHERE message.id = ANY($2) AND run.kind = 'extraction'
+               """,
+               [
+                 Ecto.UUID.dump!(account_id),
+                 [Ecto.UUID.dump!(first["id"]), Ecto.UUID.dump!(second["id"])]
+               ]
+             )
+
+    assert %{rows: [[2]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT count(DISTINCT message_id)
+               FROM provenances
+               WHERE source_type = 'message' AND message_id = ANY($1)
+               """,
+               [[Ecto.UUID.dump!(first["id"]), Ecto.UUID.dump!(second["id"])]]
+             )
+
+    # The drainer updates Oban through its own connection, outside this test's
+    # sandbox transaction. Remove both account-local jobs so the cancelled
+    # sibling cannot appear in a later queue-count assertion.
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "DELETE FROM oban_jobs WHERE args->>'tenant' = $1",
+      [account_id]
+    )
+  end
+
+  test "two workers cannot claim one extraction anchor twice" do
+    assert {:ok, first} =
+             Memory.ingest_message(ingest_attrs("f2-claim-race", "claim-race-session"))
+
+    assert {:ok, second} =
+             Memory.ingest_message(ingest_attrs("f2-claim-race", "claim-race-session"))
+
+    account_id = account_id!("f2-claim-race")
+    ids = [first["id"], second["id"]]
+
+    claims =
+      1..2
+      |> Enum.map(fn _worker ->
+        Task.async(fn ->
+          DataLayer.with_account_id(
+            account_id,
+            [role: :system, pipeline?: true],
+            fn _account, actor ->
+              {:ok, runs} =
+                Pipeline.claim_extraction_runs(
+                  account_id,
+                  ids,
+                  actor
+                )
+
+              Enum.map(runs, & &1.target_id)
+            end
+          )
+        end)
+      end)
+      |> Task.await_many(5_000)
+
+    assert claims |> List.flatten() |> Enum.sort() == Enum.sort(ids)
+    assert Enum.count(claims, &(&1 != [])) == 1
+
+    assert %{rows: [[2]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT count(*)
+               FROM pipeline_runs
+               WHERE target_id = ANY($1) AND status = 'processing'
+               """,
+               [[Ecto.UUID.dump!(first["id"]), Ecto.UUID.dump!(second["id"])]]
+             )
+  end
+
+  test "reconciliation releases stale claims but excludes terminal anchors" do
+    assert {:ok, retryable} =
+             Memory.ingest_message(ingest_attrs("f2-claim-repair", "claim-repair-session"))
+
+    assert {:ok, poison} =
+             Memory.ingest_message(ingest_attrs("f2-claim-repair", "claim-repair-session"))
+
+    account_id = account_id!("f2-claim-repair")
+
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        {:ok, runs} =
+          Pipeline.claim_extraction_runs(
+            account_id,
+            [retryable["id"], poison["id"]],
+            actor
+          )
+
+        poison_run = Enum.find(runs, &(&1.target_id == poison["id"]))
+
+        {:ok, _run} =
+          Pipeline.classify_extraction_run(
+            poison_run,
+            "terminal",
+            "structured_validation_exhausted",
+            "stale-claim-test",
+            actor
+          )
+      end
+    )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      UPDATE pipeline_runs
+      SET updated_at = now() - interval '10 minutes'
+      WHERE target_id = ANY($1)
+      """,
+      [[Ecto.UUID.dump!(retryable["id"]), Ecto.UUID.dump!(poison["id"])]]
+    )
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      UPDATE messages
+      SET inserted_at = now() - interval '10 minutes'
+      WHERE id = ANY($1)
+      """,
+      [[Ecto.UUID.dump!(retryable["id"]), Ecto.UUID.dump!(poison["id"])]]
+    )
+
+    assert {:ok, %{expired_claims: 1, messages: 1}} = Reconciler.run(account_id)
+
+    assert %{rows: [["failed", "BatchClaimExpired"], ["terminal", terminal_reason]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT status, last_error_class
+               FROM pipeline_runs
+               WHERE target_id = ANY($1)
+               ORDER BY status
+               """,
+               [[Ecto.UUID.dump!(retryable["id"]), Ecto.UUID.dump!(poison["id"])]]
+             )
+
+    assert terminal_reason == "structured_validation_exhausted"
+  end
+
   test "a background job finds and finishes its run on a connection with no Account declared" do
     assert {:ok, message} =
              Memory.ingest_message(ingest_attrs("f2-undeclared", "undeclared-session"))
@@ -424,6 +602,54 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert log =~ "attempt_count=#{run.attempt_count + 1}"
     assert log =~ "error_class=RuntimeError"
     refute log =~ "secret provider detail"
+  end
+
+  test "a crash callback cannot downgrade an anchor committed earlier in the batch" do
+    assert {:ok, message} =
+             Memory.ingest_message(ingest_attrs("f2-batch-crash", "batch-crash-session"))
+
+    account_id = account_id!("f2-batch-crash")
+
+    {stale_run, actor} =
+      DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account,
+                                                                                 actor ->
+        run =
+          PipelineRun
+          |> Ash.Query.set_tenant(account_id)
+          |> Ash.Query.filter(kind == "extraction" and target_id == ^message["id"])
+          |> Ash.read_one!(actor: actor)
+
+        {:ok, [claimed]} =
+          Pipeline.claim_extraction_runs(
+            account_id,
+            [message["id"]],
+            actor
+          )
+
+        {:ok, completed} =
+          Pipeline.complete_extraction_run(claimed, "batch-crash-test", actor)
+
+        assert completed.status == "completed"
+        {run, actor}
+      end)
+
+    # This is the stale record the outer Oban job retained before the batched
+    # workflow committed the first anchor and then crashed on a later sibling.
+    clear_account_declaration!()
+
+    assert {:ok, preserved} =
+             stale_run
+             |> Ash.Changeset.new()
+             |> Ash.Changeset.set_tenant(account_id)
+             |> Ash.Changeset.set_context(%{private: %{ash_oban?: true}})
+             |> Ash.Changeset.for_action(:mark_failed, %{
+               error: %RuntimeError{message: "later sibling crashed"}
+             })
+             |> Ash.update(actor: actor)
+
+    assert preserved.status == "completed"
+    assert preserved.attempt_count == stale_run.attempt_count + 1
+    assert is_nil(preserved.last_error_class)
   end
 
   test "pipeline replay merges provenance and never duplicates knowledge or lifecycle" do

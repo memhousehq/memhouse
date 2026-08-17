@@ -109,7 +109,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     )
 
     assert {:error,
-            {:prompt_version_mismatch, %{expected: "extract-12", configured: "extract-9"}}} =
+            {:prompt_version_mismatch, %{expected: "extract-13", configured: "extract-9"}}} =
              Memory.extract_message_for_account(message["id"], account_id)
 
     assert %{rows: [[nil]]} =
@@ -128,7 +128,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -149,7 +149,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert knowledge["extracting_provider"] == "openrouter"
     assert knowledge["extracting_model"] == "openai/gpt-oss-120b"
     assert knowledge["extracting_model_version"] == "2026-07"
-    assert knowledge["prompt_version"] == "extract-12"
+    assert knowledge["prompt_version"] == "extract-13"
     assert knowledge["pipeline_version"] == "f5-1"
 
     # Two usage events, not one: the failed first attempt is metered too. Repairs cost real
@@ -163,7 +163,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
                  %Decimal{coef: 44},
                  "openrouter",
                  "2026-07",
-                 "extract-12",
+                 "extract-13",
                  "f5-1"
                ]
              ]
@@ -187,7 +187,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # Provenance is what lets an operator answer "which model asserted this, under which
     # prompt and pipeline revision?" years later. All five identity columns must be present;
     # a knowledge row whose origin cannot be reconstructed is not auditable.
-    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-12", "f5-1"]]} =
+    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-13", "f5-1"]]} =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -217,7 +217,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -245,7 +245,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -273,7 +273,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -417,7 +417,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "unavailable-model",
       model_version: "1",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -430,9 +430,9 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert %{success: 0, failure: 1} = Oban.drain_queue(queue: :ingest)
 
     # The durable side of the outage: the message row survives, extraction is still
-    # incomplete (NULL completion timestamp), the pipeline run is still pending, and at least
+    # incomplete (NULL completion timestamp), the pipeline run is failed and retryable, and at least
     # one Oban job for that run is still live — not completed, discarded, or cancelled.
-    assert %{rows: [[1, nil, "pending", 0, queued_jobs]]} =
+    assert %{rows: [[1, nil, "failed", 1, queued_jobs]]} =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -476,7 +476,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 

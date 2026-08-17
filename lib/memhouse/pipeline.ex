@@ -35,6 +35,8 @@ defmodule MemHouse.Pipeline do
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline.Idempotency
 
+  require Ash.Query
+
   # Public lane name to private Ash action. New lanes need an action, Oban trigger, and stable key.
   @enqueue_actions %{
     "extraction" => :enqueue_extraction,
@@ -405,6 +407,101 @@ defmodule MemHouse.Pipeline do
         actor
       )
     end
+  end
+
+  @doc false
+  def claim_extraction_runs(account_id, target_ids, actor) when is_list(target_ids) do
+    result =
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "extraction" and target_type == "message" and target_id in ^target_ids and
+          status in ["pending", "failed"]
+      )
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.bulk_update!(:claim_extraction_batch, %{},
+        actor: pipeline_actor(actor),
+        return_records?: true,
+        strategy: [:atomic]
+      )
+
+    {:ok, result.records || []}
+  end
+
+  @doc false
+  def classify_extraction_run(run, status, error_class, admission_identity, actor)
+      when status in ["failed", "repairable", "terminal"] do
+    run
+    |> Ash.Changeset.for_update(:classify_extraction_anchor, %{
+      status: status,
+      attempt_count: run.attempt_count + 1,
+      last_error_class: error_class,
+      processed_at: if(status == "failed", do: nil, else: Clock.utc_now()),
+      payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+    })
+    |> Ash.Changeset.set_tenant(run.account_id)
+    |> Ash.update(actor: pipeline_actor(actor))
+  end
+
+  @doc false
+  def complete_extraction_run(run, admission_identity, actor) do
+    run
+    |> Ash.Changeset.for_update(:complete_extraction_anchor, %{
+      attempt_count: run.attempt_count + 1,
+      processed_at: Clock.utc_now(),
+      payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+    })
+    |> Ash.Changeset.set_tenant(run.account_id)
+    |> Ash.update(actor: pipeline_actor(actor))
+  end
+
+  @doc "Explicitly requeues a repairable or terminal message extraction."
+  def request_extraction_requeue(%Actor{} = actor, message_id) do
+    DataLayer.with_actor(actor, fn account, scoped_actor ->
+      pipeline_actor = pipeline_actor(scoped_actor)
+
+      run =
+        PipelineRun
+        |> Ash.Query.filter(
+          kind == "extraction" and target_type == "message" and target_id == ^message_id and
+            status in ["repairable", "terminal"]
+        )
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor)
+
+      if run do
+        with {:ok, reset} <-
+               run
+               |> Ash.Changeset.for_update(:requeue_extraction_anchor, %{})
+               |> Ash.Changeset.set_tenant(account.id)
+               |> Ash.update(actor: pipeline_actor) do
+          enqueue(
+            reset.kind,
+            reset.account_id,
+            %{
+              scope_id: reset.scope_id,
+              target_type: reset.target_type,
+              target_id: reset.target_id,
+              idempotency_key: reset.idempotency_key,
+              payload: reset.payload
+            },
+            pipeline_actor
+          )
+        end
+      else
+        {:error, :not_repairable}
+      end
+    end)
+  end
+
+  @doc false
+  def extraction_replayable?(account_id, message_id, actor) do
+    PipelineRun
+    |> Ash.Query.filter(
+      kind == "extraction" and target_type == "message" and target_id == ^message_id and
+        status in ["pending", "failed", "processing"]
+    )
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.exists?(actor: pipeline_actor(actor))
   end
 
   @doc """

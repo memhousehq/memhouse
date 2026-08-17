@@ -98,6 +98,19 @@ config :memhouse, :database,
 # credentials.
 config :memhouse, :require_database_url, false
 
+# One existing extraction job may opportunistically consume adjacent message
+# jobs. The target is an experiment variable, while whole-request admission is
+# a hard provider-context boundary. `utf8-bytes-v1` is implemented in source and
+# intentionally over-counts ordinary BPE tokens rather than guessing a routed
+# provider's unavailable tokenizer.
+config :memhouse, :extraction_batching,
+  target_tokens: 4_096,
+  max_anchors: 32,
+  context_limit_tokens: 131_072,
+  reserved_output_tokens: 8_192,
+  safety_margin_tokens: 2_048,
+  claim_timeout_seconds: 300
+
 # The updater verifies release manifests with this embedded Ed25519 public key.
 # It is deliberately not a runtime secret: the matching private key exists only
 # in the protected release-publishing workflow secret.
@@ -489,7 +502,7 @@ config :memhouse, :model_roles,
     provider: "deterministic",
     model: "local-structured-fallback",
     model_version: "1",
-    prompt_version: "extract-12",
+    prompt_version: "extract-13",
     pipeline_version: "f5-1",
     options: %{}
   },

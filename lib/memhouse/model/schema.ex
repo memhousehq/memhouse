@@ -156,6 +156,20 @@ defmodule MemHouse.Model.Schema.Extraction do
   """
   @impl true
   def json_schema do
+    candidate = candidate_json_schema()
+
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "items" => %{"type" => "array", "items" => candidate, "maxItems" => 24}
+      },
+      "required" => ["items"]
+    }
+  end
+
+  @doc false
+  def candidate_json_schema do
     knowledge_properties =
       Map.new(@knowledge_fields, fn name ->
         {Atom.to_string(name), attribute_schema(name)}
@@ -177,53 +191,43 @@ defmodule MemHouse.Model.Schema.Extraction do
     property_order =
       ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids relevant_from relevant_until)
 
-    candidate =
-      %{
-        "type" => "object",
-        "description" =>
-          "Copy supporting_span, write the statement, then rate it with confidence_level.",
-        "additionalProperties" => false,
-        "properties" =>
-          knowledge_properties
-          |> Map.merge(temporal_properties)
-          |> Map.merge(%{
-            "supporting_span" => %{
-              "type" => "string",
-              "minLength" => 1,
-              "description" =>
-                "Exact source text that supports the claim; ingest validation requires it to occur in a cited message"
-            },
-            "confidence_level" => %{
-              "type" => "string",
-              "enum" => ~w(stated_explicitly clearly_implied inferred),
-              "description" =>
-                "stated_explicitly means the source states the claim; clearly_implied means the claim follows directly; inferred requires interpretation"
-            },
-            "subject_type" => %{
-              "type" => "string",
-              "enum" => @subject_types,
-              "description" => "peer identifies one person; scope identifies the current scope"
-            },
-            "subject_ref" => %{"type" => "string", "minLength" => 1},
-            "source_message_ids" => %{
-              "type" => "array",
-              "items" => %{"type" => "string", "format" => "uuid"},
-              "minItems" => 1,
-              "uniqueItems" => true
-            }
-          }),
-        "propertyOrdering" => property_order,
-        "required" =>
-          ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level)
-      }
-
     %{
       "type" => "object",
+      "description" =>
+        "Copy supporting_span, write the statement, then rate it with confidence_level.",
       "additionalProperties" => false,
-      "properties" => %{
-        "items" => %{"type" => "array", "items" => candidate, "maxItems" => 24}
-      },
-      "required" => ["items"]
+      "properties" =>
+        knowledge_properties
+        |> Map.merge(temporal_properties)
+        |> Map.merge(%{
+          "supporting_span" => %{
+            "type" => "string",
+            "minLength" => 1,
+            "description" =>
+              "Exact source text that supports the claim; ingest validation requires it to occur in a cited message"
+          },
+          "confidence_level" => %{
+            "type" => "string",
+            "enum" => ~w(stated_explicitly clearly_implied inferred),
+            "description" =>
+              "stated_explicitly means the source states the claim; clearly_implied means the claim follows directly; inferred requires interpretation"
+          },
+          "subject_type" => %{
+            "type" => "string",
+            "enum" => @subject_types,
+            "description" => "peer identifies one person; scope identifies the current scope"
+          },
+          "subject_ref" => %{"type" => "string", "minLength" => 1},
+          "source_message_ids" => %{
+            "type" => "array",
+            "items" => %{"type" => "string", "format" => "uuid"},
+            "minItems" => 1,
+            "uniqueItems" => true
+          }
+        }),
+      "propertyOrdering" => property_order,
+      "required" =>
+        ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level)
     }
   end
 
@@ -919,6 +923,154 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+end
+
+defmodule MemHouse.Model.Schema.ExtractionBatch do
+  @moduledoc """
+  Per-anchor extraction envelopes for one token-batched provider call.
+
+  The outer response must name every supplied anchor exactly once. Each
+  envelope is then validated with the ordinary extraction schema and that
+  anchor's own allowlists, evidence window, observation time, and subject
+  context. A candidate can therefore cite another supplied message only when
+  that message was also in its anchor's bounded source window.
+
+  Validation repairs the batch as a whole. When the repair budget is exhausted,
+  valid envelopes are retained and invalid or missing anchors become explicit
+  terminal results. The caller can commit or reject each anchor independently;
+  malformed output for one anchor never changes a sibling's attribution.
+  """
+
+  @behaviour MemHouse.Model.Schema
+
+  alias MemHouse.Model.Schema.Extraction
+
+  @impl true
+  def json_schema do
+    envelope = %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "anchor_id" => %{"type" => "string", "format" => "uuid"},
+        "items" => %{
+          "type" => "array",
+          "items" => Extraction.candidate_json_schema(),
+          "maxItems" => 24
+        }
+      },
+      "required" => ["anchor_id", "items"]
+    }
+
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "anchors" => %{"type" => "array", "items" => envelope}
+      },
+      "required" => ["anchors"]
+    }
+  end
+
+  @impl true
+  def cast(object, %{anchor_contexts: contexts}) when is_map(object) and is_map(contexts) do
+    with {:ok, envelopes} <- envelopes(object),
+         :ok <- exact_anchor_set(envelopes, contexts) do
+      cast_envelopes(envelopes, contexts, false)
+    end
+  end
+
+  def cast(_object, _context), do: {:error, ["batch response must be an object"]}
+
+  @impl true
+  def recover_after_repairs(object, %{anchor_contexts: contexts})
+      when is_map(object) and is_map(contexts) do
+    case envelopes(object) do
+      {:ok, envelopes} ->
+        by_anchor =
+          Map.new(envelopes, fn envelope ->
+            {Map.get(envelope, "anchor_id"), envelope}
+          end)
+
+        results =
+          Enum.map(contexts, fn {anchor_id, context} ->
+            case Map.get(by_anchor, anchor_id) do
+              %{"items" => items} -> recover_envelope(anchor_id, items, context)
+              _missing_or_malformed -> terminal(anchor_id, "missing_or_malformed_envelope")
+            end
+          end)
+
+        {:ok, results}
+
+      {:error, _errors} ->
+        {:ok, Enum.map(Map.keys(contexts), &terminal(&1, "malformed_batch_response"))}
+    end
+  end
+
+  def recover_after_repairs(_object, _context), do: :error
+
+  defp envelopes(%{"anchors" => envelopes}) when is_list(envelopes), do: {:ok, envelopes}
+  defp envelopes(_object), do: {:error, ["anchors must be an array"]}
+
+  defp exact_anchor_set(envelopes, contexts) do
+    ids = Enum.map(envelopes, &Map.get(&1, "anchor_id"))
+    expected = Map.keys(contexts)
+
+    if length(ids) == length(Enum.uniq(ids)) and Enum.sort(ids) == Enum.sort(expected) do
+      :ok
+    else
+      {:error, ["anchors must name every supplied anchor exactly once"]}
+    end
+  end
+
+  defp cast_envelopes(envelopes, contexts, recover?) do
+    {results, errors} =
+      envelopes
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {envelope, index}, {results, errors} ->
+        anchor_id = Map.get(envelope, "anchor_id")
+        context = Map.get(contexts, anchor_id)
+
+        case cast_envelope(anchor_id, Map.get(envelope, "items"), context, recover?) do
+          {:ok, result} -> {[result | results], errors}
+          {:error, envelope_errors} -> {results, errors ++ prefix(envelope_errors, index)}
+        end
+      end)
+
+    if errors == [], do: {:ok, Enum.reverse(results)}, else: {:error, errors}
+  end
+
+  defp cast_envelope(anchor_id, items, context, false)
+       when is_binary(anchor_id) and is_list(items) and is_map(context) do
+    case Extraction.cast(%{"items" => items}, context) do
+      {:ok, casted} -> {:ok, %{anchor_id: anchor_id, status: :ok, items: casted}}
+      {:error, errors} -> {:error, errors}
+    end
+  end
+
+  defp cast_envelope(_anchor_id, _items, _context, false),
+    do: {:error, ["anchor envelope is malformed"]}
+
+  defp recover_envelope(anchor_id, items, context) when is_list(items) do
+    case Extraction.cast(%{"items" => items}, context) do
+      {:ok, casted} -> %{anchor_id: anchor_id, status: :ok, items: casted}
+      {:error, _errors} -> recover_candidates(anchor_id, items, context)
+    end
+  end
+
+  defp recover_envelope(anchor_id, _items, _context),
+    do: terminal(anchor_id, "malformed_anchor_envelope")
+
+  defp recover_candidates(anchor_id, items, context) do
+    case Extraction.recover_after_repairs(%{"items" => items}, context) do
+      {:ok, casted} -> %{anchor_id: anchor_id, status: :ok, items: casted}
+      :error -> terminal(anchor_id, "structured_validation_exhausted")
+    end
+  end
+
+  defp terminal(anchor_id, reason_class),
+    do: %{anchor_id: anchor_id, status: :terminal, reason_class: reason_class, items: []}
+
+  defp prefix(errors, index), do: Enum.map(errors, &"anchor #{index}: #{&1}")
 end
 
 defmodule MemHouse.Model.Schema.Reasoning do

@@ -90,6 +90,12 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_MODEL_STREAM_POOL_COUNT` | `1` | Shared HTTP/1 shard count; raise only for a measured shard bottleneck |
 | `MEMHOUSE_MODEL_POOL_TIMEOUT_MS` | `120000` | Maximum wait (ms) to check out a model HTTP connection |
 | `MEMHOUSE_INGEST_QUEUE_LIMIT` | `10` | Concurrent extraction jobs per node |
+| `MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS` | `4096` | Adjacent-anchor target; one of `128`, `1024`, `4096`, or `16384` |
+| `MEMHOUSE_EXTRACTION_BATCH_MAX_ANCHORS` | `32` | Hard anchor cap for one extraction call |
+| `MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS` | `131072` | Whole extraction request context limit used before a call |
+| `MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS` | `8192` | Output capacity reserved during extraction admission |
+| `MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS` | `2048` | Extra whole-request admission margin |
+| `MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS` | `300` | Age after which reconciliation releases an interrupted batch claim |
 | `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
 
 !!! warning "Reasoning models can blow the context window or time out without these"

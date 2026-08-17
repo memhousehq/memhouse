@@ -69,6 +69,30 @@ defmodule MemHouseWeb.MemoryController do
   end
 
   @doc """
+  Explicitly requeues one repairable or terminal extraction anchor.
+
+  Normal reconciliation deliberately excludes those states. Only an Account
+  administrator or system actor may acknowledge the operator-action boundary.
+  """
+  def requeue_ingest(conn, %{"message_id" => message_id}) do
+    actor = conn.assigns.current_actor
+
+    if actor.role in [:account_admin, :system] do
+      case Pipeline.request_extraction_requeue(actor, message_id) do
+        {:ok, run} ->
+          conn
+          |> put_status(:accepted)
+          |> json(%{data: %{run_id: run.id, status: "accepted"}})
+
+        {:error, :not_repairable} ->
+          conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
+      end
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+    end
+  end
+
+  @doc """
   Enqueues one immediate dream-time pass for the authenticated operator's Account.
 
   Returns 202 with the durable run id. Only account administrators and internal
@@ -116,7 +140,7 @@ defmodule MemHouseWeb.MemoryController do
   @doc """
   Reports extraction status for one accepted observation.
 
-  Returns pending, failed, or completed state with the completion timestamp,
+  Returns pending, failed, repairable, terminal, or completed state with the completion timestamp,
   visible governed knowledge, the last content-safe error class, and the durable
   attempt count. A missing or unauthorized message returns 404.
   """

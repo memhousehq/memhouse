@@ -64,10 +64,12 @@ defmodule MemHouse.Pipeline.Reconciler do
   @spec run(Ecto.UUID.t()) :: {:ok, map()}
   def run(account_id) do
     stale_before = DateTime.add(Clock.utc_now(), -@stale_after_seconds, :second)
+    claim_stale_before = DateTime.add(Clock.utc_now(), -claim_timeout_seconds(), :second)
 
     counts =
       DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn
         _account, actor ->
+          expired_claims = expire_batch_claims(account_id, actor, claim_stale_before)
           replayed = replay_terminated(account_id, actor, stale_before)
           terminated = terminate_stranded(account_id, actor, stale_before)
 
@@ -83,7 +85,8 @@ defmodule MemHouse.Pipeline.Reconciler do
             |> Ash.Query.set_tenant(account_id)
             |> Ash.read!(actor: actor)
             |> Enum.count(fn message ->
-              match?({:ok, _run}, Pipeline.enqueue_message_extraction(message, actor))
+              Pipeline.extraction_replayable?(account_id, message.id, actor) and
+                match?({:ok, _run}, Pipeline.enqueue_message_extraction(message, actor))
             end)
 
           # Failed versions are retried as well as pending ones: a version that
@@ -139,6 +142,7 @@ defmodule MemHouse.Pipeline.Reconciler do
             end)
 
           %{
+            expired_claims: expired_claims,
             replayed: replayed,
             terminated: terminated,
             messages: messages,
@@ -149,6 +153,29 @@ defmodule MemHouse.Pipeline.Reconciler do
       end)
 
     {:ok, Map.put(counts, :reconciled, Enum.sum(Map.values(counts)))}
+  end
+
+  defp claim_timeout_seconds do
+    :memhouse
+    |> Application.fetch_env!(:extraction_batching)
+    |> Keyword.fetch!(:claim_timeout_seconds)
+  end
+
+  defp expire_batch_claims(account_id, actor, stale_before) do
+    result =
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "extraction" and target_type == "message" and status == "processing" and
+          updated_at <= ^stale_before
+      )
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.bulk_update!(:expire_extraction_claim, %{},
+        actor: actor,
+        return_records?: true,
+        strategy: [:atomic]
+      )
+
+    length(result.records || [])
   end
 
   defp replay_terminated(account_id, actor, stale_before) do

@@ -184,7 +184,7 @@
       {
         "operation": "structured",
         "role": "ingest_extractor",
-        "task": "extraction",
+        "task": "extraction_batch",
         "error": "provider_unavailable"
       }
     ]
