@@ -262,7 +262,32 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert result["results"] == []
   end
 
-  test "bounded Ask recall admits source evidence without mutating memory" do
+  test "bounded Ask recall does not read source messages without explicit permission" do
+    message =
+      ingest!("source-planner-denied", "/source/planner", "garden schedule is Friday", "one", 1)
+
+    result =
+      Memory.ask(%{
+        "account_key" => "source-planner-denied",
+        "scope_path" => "/source/planner",
+        "question" => "What is the garden schedule?",
+        "effort" => "low"
+      })
+
+    assert result["recall"]["used"] == true
+    assert result["recall"]["source_recall_permitted"] == false
+
+    refute Enum.any?(result["recall_evidence"], fn evidence ->
+             evidence["id"] == message["id"] or
+               evidence["evidence_type"] == "source_message"
+           end)
+
+    refute Enum.any?(result["recall"]["outcomes"], fn outcome ->
+             outcome["tool"] in ["source_exact", "source_semantic"]
+           end)
+  end
+
+  test "bounded Ask recall admits explicitly permitted source evidence without mutating memory" do
     message = ingest!("source-planner", "/source/planner", "garden schedule is Friday", "one", 1)
 
     before_count = message_count!("source-planner")
@@ -272,11 +297,13 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
         "account_key" => "source-planner",
         "scope_path" => "/source/planner",
         "question" => "What is the garden schedule?",
-        "effort" => "low"
+        "effort" => "low",
+        "include_source_recall" => true
       })
 
     assert result["recall"]["used"] == true
     assert result["recall"]["effort"] == "low"
+    assert result["recall"]["source_recall_permitted"] == true
     assert result["recall"]["tool_calls"] <= 3
 
     assert Enum.any?(result["recall_evidence"], fn evidence ->

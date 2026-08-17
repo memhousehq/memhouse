@@ -699,7 +699,9 @@ defmodule MemHouse.Memory do
   profile defaults to `"thorough"` rather than the search default, because an
   answer is worth more latency than a results list, and its base retrieval is
   narrowed to knowledge. A named effort adds only bounded read-only profile,
-  lineage, knowledge, and authorized source-search tools.
+  lineage, and knowledge tools. Source-message tools are available only when
+  the caller also passes `"include_source_recall" => true`; effort alone never
+  broadens recall from governed knowledge into immutable source text.
 
   The answer is grounded twice over: the model sees nothing but the retrieved
   statements, and every citation it returns is dropped unless it matches an id
@@ -809,23 +811,27 @@ defmodule MemHouse.Memory do
 
   defp run_recall_planner(attrs, question, effort, candidates) do
     initial = Enum.map(candidates, &Map.put(&1, "evidence_type", "knowledge"))
+    source_recall_permitted? = Map.get(attrs, "include_source_recall", false) == true
 
-    tools = %{
-      profile: fn _query, _state -> planner_identity_profile(attrs) end,
-      knowledge: fn query, _state ->
-        result =
-          attrs
-          |> Map.put("query", query)
-          |> Map.put("profile", if(minimal_recall_enabled?(), do: "minimal", else: "balanced"))
-          |> Map.put("_retrieval_target", "knowledge")
-          |> search()
+    tools =
+      %{
+        profile: fn _query, _state -> planner_identity_profile(attrs) end,
+        knowledge: fn query, _state ->
+          result =
+            attrs
+            |> Map.put("query", query)
+            |> Map.put(
+              "profile",
+              if(minimal_recall_enabled?(), do: "minimal", else: "balanced")
+            )
+            |> Map.put("_retrieval_target", "knowledge")
+            |> search()
 
-        {:ok, Enum.map(result["candidates"], &Map.put(&1, "evidence_type", "knowledge"))}
-      end,
-      source_exact: fn query, _state -> planner_source_search(attrs, query, "exact") end,
-      source_semantic: fn query, _state -> planner_source_search(attrs, query, "semantic") end,
-      lineage: fn query, state -> planner_lineage(attrs, query, state) end
-    }
+          {:ok, Enum.map(result["candidates"], &Map.put(&1, "evidence_type", "knowledge"))}
+        end,
+        lineage: fn query, state -> planner_lineage(attrs, query, state) end
+      }
+      |> maybe_put_source_recall_tools(attrs, source_recall_permitted?)
 
     result =
       RecallPlanner.run(question, effort, tools,
@@ -837,8 +843,21 @@ defmodule MemHouse.Memory do
       result.diagnostics
       |> stringify_nested()
       |> Map.put("used", true)
+      |> Map.put("source_recall_permitted", source_recall_permitted?)
 
     {result.evidence, recall}
+  end
+
+  defp maybe_put_source_recall_tools(tools, _attrs, false), do: tools
+
+  defp maybe_put_source_recall_tools(tools, attrs, true) do
+    tools
+    |> Map.put(:source_exact, fn query, _state ->
+      planner_source_search(attrs, query, "exact")
+    end)
+    |> Map.put(:source_semantic, fn query, _state ->
+      planner_source_search(attrs, query, "semantic")
+    end)
   end
 
   defp planner_identity_profile(attrs) do

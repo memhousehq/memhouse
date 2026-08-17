@@ -299,10 +299,11 @@ and PubSub/ETS invalidation. A model call does not belong on this read path.
 By default, fixed `ask` retrieves with the `thorough` profile and restricts
 retrieval to governed knowledge. A named `low`, `medium`, or `high` effort runs
 the bounded read-only planner over governed knowledge, stable-profile
-knowledge, typed lineage, and authorized source-message search. Profile and
-lineage are selection tools: answer candidates remain governed knowledge or
-bounded immutable source excerpts with resolvable ids. The answerer states what
-those retrieved statements make most probable and reports
+knowledge, and typed lineage. Exact and semantic source-message tools join that
+closed set only when the caller explicitly passes `include_source_recall: true`.
+Profile and lineage are selection tools: answer candidates remain governed
+knowledge, or bounded immutable source excerpts with resolvable ids when that
+permission is present. The answerer states what those retrieved statements make most probable and reports
 `answer_confidence`, an integer from 0 to 100, for its own certainty.
 
 A model answer below 50 also sets `abstained`. That pair — cited answer, low

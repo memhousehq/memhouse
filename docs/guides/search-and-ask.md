@@ -118,8 +118,10 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/ask \
 `question` is required. All `search` parameters apply; `profile` defaults to
 `thorough`. Add `effort: "low"`, `"medium"`, or `"high"` to use the bounded
 read-only planner. It may select governed knowledge through stable profile and
-lineage reads or recover a bounded authorized source-message excerpt; it has no
-write tool.
+lineage reads; it has no write tool. Add the JSON boolean
+`include_source_recall: true` only when this caller is allowed to recover a
+bounded authorized source-message excerpt. An effort level by itself never
+grants that broader read.
 
 The response is the search payload plus `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and
