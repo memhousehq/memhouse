@@ -454,7 +454,14 @@ defmodule MemHouse.Pipeline do
     end
   end
 
-  @doc false
+  @doc """
+  Atomically claims eligible message-extraction runs for one batch owner.
+
+  Only pending or failed runs named by `target_ids` can transition to
+  `processing`. The returned records carry `claim_id`; all later per-anchor
+  completion and classification calls fence on that exact value. A concurrent
+  worker that won first simply removes that anchor from the returned list.
+  """
   def claim_extraction_runs(account_id, target_ids, claim_id, actor)
       when is_list(target_ids) and is_binary(claim_id) do
     result =
@@ -473,7 +480,12 @@ defmodule MemHouse.Pipeline do
     {:ok, result.records || []}
   end
 
-  @doc false
+  @doc """
+  Persists a content-safe failure classification for one claimed batch anchor.
+
+  Returns `{:error, :stale_extraction_claim}` when reconciliation or another
+  owner has replaced the claim. In that case no attribute is changed.
+  """
   def classify_extraction_run(run, status, error_class, admission_identity, actor)
       when status in ["failed", "repairable", "terminal"] and
              not is_nil(run.batch_claim_id) do
@@ -491,7 +503,13 @@ defmodule MemHouse.Pipeline do
     )
   end
 
-  @doc false
+  @doc """
+  Completes one claimed batch anchor under its exact claim fence.
+
+  Returns `{:error, :stale_extraction_claim}` when the run is no longer
+  processing under the supplied claim. This expected race never clears or
+  overwrites the current owner's replacement claim.
+  """
   def complete_extraction_run(run, admission_identity, actor)
       when not is_nil(run.batch_claim_id) do
     fenced_extraction_update(
@@ -564,7 +582,12 @@ defmodule MemHouse.Pipeline do
     end)
   end
 
-  @doc false
+  @doc """
+  Reports whether a message still has extraction work that reconciliation may replay.
+
+  Pending, failed, and actively claimed runs are replayable. Terminal operator
+  outcomes are deliberately excluded until an explicit requeue resets them.
+  """
   def extraction_replayable?(account_id, message_id, actor) do
     PipelineRun
     |> Ash.Query.filter(

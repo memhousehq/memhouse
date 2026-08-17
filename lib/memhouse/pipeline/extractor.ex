@@ -105,10 +105,21 @@ defmodule MemHouse.Pipeline.Extractor do
     end
   end
 
-  @doc false
+  @doc """
+  Returns the batch response schema selected by the current extraction contract.
+
+  Admission and generation must call this through the same runtime contract so
+  a compact-extraction experiment cannot budget one schema and validate another.
+  """
   def batch_schema, do: extraction_contract().batch_schema
 
-  @doc false
+  @doc """
+  Adds the selected extraction experiment to a request admission identity.
+
+  The accepted extractor leaves `base_identity` unchanged. Experimental
+  contracts append their stable identity so persisted outcomes remain
+  distinguishable without storing prompts or observation content.
+  """
   def admission_identity(base_identity) when is_binary(base_identity) do
     case extraction_contract().experiment_identity do
       nil -> base_identity
@@ -326,7 +337,14 @@ defmodule MemHouse.Pipeline.Extractor do
     end
   end
 
-  @doc false
+  @doc """
+  Builds the provider request, schema context, and bounded options for a batch.
+
+  This is the shared preparation seam used by admission and the actual provider
+  call. It returns `{messages, context, opts}`; `opts` carries one content-bound
+  observation descriptor per anchor so the response schema can enforce exact
+  ownership and provenance.
+  """
   def batch_request(anchors) when is_list(anchors) and anchors != [] do
     contract = extraction_contract()
 

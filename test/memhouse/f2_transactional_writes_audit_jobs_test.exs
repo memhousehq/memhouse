@@ -66,6 +66,47 @@ defmodule VanishingSubjectProvider do
   def rerank(_config, _query, _documents, _opts), do: {:error, :not_implemented}
 end
 
+defmodule ReclaimingBatchProvider do
+  @moduledoc """
+  Test provider that pauses one batch after its claims commit but before effects persist.
+
+  The test process uses that gap to expire and replace one claim. Delegating the
+  response to the deterministic provider keeps the returned batch schema-valid
+  without any network or model call.
+  """
+
+  @behaviour MemHouse.Model.Provider
+
+  alias MemHouse.Model.Providers.Deterministic
+
+  @doc "Pauses the batch until the owning test has installed a replacement claim."
+  @impl true
+  def structured(config, messages, schema, opts) do
+    controller = Application.fetch_env!(:memhouse, :reclaiming_batch_test_controller)
+    anchor_ids = Enum.map(Keyword.fetch!(opts, :batch_observations), & &1.anchor_id)
+
+    send(controller, {:batch_claims_ready, self(), anchor_ids})
+
+    receive do
+      :persist_batch_results -> Deterministic.structured(config, messages, schema, opts)
+    after
+      5_000 -> {:error, :batch_reclaim_test_timeout}
+    end
+  end
+
+  @doc "Delegates unused chat calls to the offline deterministic provider."
+  @impl true
+  defdelegate chat(config, messages, opts), to: Deterministic
+
+  @doc "Delegates unused embedding calls to the offline deterministic provider."
+  @impl true
+  defdelegate embed(config, texts, opts), to: Deterministic
+
+  @doc "Delegates unused reranking calls to the offline deterministic provider."
+  @impl true
+  defdelegate rerank(config, query, documents, opts), to: Deterministic
+end
+
 defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
   @moduledoc """
   Pins the coupling between a durable write, its audit entry, its processing record,
@@ -662,14 +703,13 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
 
     prepared = Memory.prepare_message_extraction_for_account(message["id"], account_id)
 
-    assert_raise MatchError, fn ->
-      Memory.persist_message_extraction_result!(
-        stale_run,
-        prepared.message,
-        %{status: :ok, items: []},
-        "stale-admission"
-      )
-    end
+    assert {:error, :stale_extraction_claim} =
+             Memory.persist_message_extraction_result!(
+               stale_run,
+               prepared.message,
+               %{status: :ok, items: []},
+               "stale-admission"
+             )
 
     assert %{rows: [["processing", ^replacement_claim_id, nil]]} =
              Ecto.Adapters.SQL.query!(
@@ -681,6 +721,183 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
                WHERE run.id = $1
                """,
                [Ecto.UUID.dump!(replacement_run.id)]
+             )
+  end
+
+  test "a stale anchor result is isolated while an owned sibling commits and the stale anchor replays" do
+    batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    original_provider = Application.get_env(:memhouse, :model_provider)
+
+    Application.put_env(:memhouse, :extraction_batching, Keyword.put(batching, :enabled, true))
+    Application.put_env(:memhouse, :model_provider, ReclaimingBatchProvider)
+    Application.put_env(:memhouse, :reclaiming_batch_test_controller, self())
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :extraction_batching, batching)
+      Application.delete_env(:memhouse, :reclaiming_batch_test_controller)
+
+      if original_provider do
+        Application.put_env(:memhouse, :model_provider, original_provider)
+      else
+        Application.delete_env(:memhouse, :model_provider)
+      end
+    end)
+
+    assert {:ok, first} =
+             Memory.ingest_message(ingest_attrs("f2-batch-stale", "batch-stale-session"))
+
+    assert {:ok, second} =
+             Memory.ingest_message(ingest_attrs("f2-batch-stale", "batch-stale-session"))
+
+    account_id = account_id!("f2-batch-stale")
+    first_id = first["id"]
+    second_id = second["id"]
+
+    first_run =
+      DataLayer.with_account_id(
+        account_id,
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          PipelineRun
+          |> Ash.Query.filter(kind == "extraction" and target_id == ^first_id)
+          |> Ash.Query.set_tenant(account_id)
+          |> Ash.read_one!(actor: actor)
+        end
+      )
+
+    batch_task = Task.async(fn -> MemHouse.Pipeline.ExtractionBatcher.run(first_run) end)
+
+    assert_receive {:batch_claims_ready, provider, anchor_ids}, 5_000
+    assert anchor_ids == [first_id, second_id]
+
+    # Only the first anchor loses its lease. The sibling remains owned by the
+    # paused batch and must still commit after the first persistence attempt is
+    # rejected by its exact claim fence.
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "UPDATE pipeline_runs SET updated_at = now() - interval '30 minutes' WHERE target_id = $1",
+      [Ecto.UUID.dump!(first_id)]
+    )
+
+    assert {:ok, %{expired_claims: 1, messages: 0}} = Reconciler.run(account_id)
+
+    assert %{rows: [["failed", nil, "BatchClaimExpired"], ["processing", claim_id, nil]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT status, batch_claim_id::text, last_error_class
+               FROM pipeline_runs
+               WHERE target_id = ANY($1)
+               ORDER BY target_id = $2 DESC
+               """,
+               [
+                 [Ecto.UUID.dump!(first_id), Ecto.UUID.dump!(second_id)],
+                 Ecto.UUID.dump!(first_id)
+               ]
+             )
+
+    assert is_binary(claim_id)
+    replacement_claim_id = Ecto.UUID.generate()
+
+    replacement_run =
+      DataLayer.with_account_id(
+        account_id,
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          {:ok, [claimed]} =
+            Pipeline.claim_extraction_runs(
+              account_id,
+              [first_id],
+              replacement_claim_id,
+              actor
+            )
+
+          claimed
+        end
+      )
+
+    send(provider, :persist_batch_results)
+
+    assert {:ok,
+            %{
+              status: "processed",
+              anchors: %{
+                ^first_id => "stale_extraction_claim",
+                ^second_id => "completed"
+              }
+            }} = Task.await(batch_task, 5_000)
+
+    # The rejected first anchor transaction left no partial knowledge or
+    # completion stamp, and the stale worker did not clear the replacement
+    # claim. The later sibling nonetheless committed its whole effect set.
+    assert %{
+             rows: [
+               ["processing", ^replacement_claim_id, nil, 0],
+               ["completed", nil, completed_at, 1]
+             ]
+           } =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT run.status,
+                      run.batch_claim_id::text,
+                      message.extraction_completed_at,
+                      (SELECT count(*) FROM knowledge_items
+                       WHERE message.id = ANY(source_message_ids))
+               FROM pipeline_runs AS run
+               JOIN messages AS message ON message.id = run.target_id
+               WHERE run.target_id = ANY($1)
+               ORDER BY run.target_id = $2 DESC
+               """,
+               [
+                 [Ecto.UUID.dump!(first_id), Ecto.UUID.dump!(second_id)],
+                 Ecto.UUID.dump!(first_id)
+               ]
+             )
+
+    assert %NaiveDateTime{} = completed_at
+
+    # The replacement is independently durable and replayable. Expiring it
+    # records the same content-safe failure class; a fresh worker then claims
+    # and completes only this still-unfinished anchor.
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "UPDATE pipeline_runs SET updated_at = now() - interval '30 minutes' WHERE id = $1",
+      [Ecto.UUID.dump!(replacement_run.id)]
+    )
+
+    assert {:ok, %{expired_claims: 1, messages: 0}} = Reconciler.run(account_id)
+
+    assert %{rows: [["failed", nil, "BatchClaimExpired"]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT status, batch_claim_id, last_error_class FROM pipeline_runs WHERE id = $1",
+               [Ecto.UUID.dump!(replacement_run.id)]
+             )
+
+    Application.put_env(:memhouse, :model_provider, MemHouse.Model.Providers.Deterministic)
+
+    assert {:ok,
+            %{
+              status: "processed",
+              anchors: %{^first_id => "completed"}
+            }} = MemHouse.Pipeline.ExtractionBatcher.run(replacement_run)
+
+    assert %{rows: [[2, 2, 2]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FILTER (WHERE run.status = 'completed'),
+                      count(*) FILTER (WHERE message.extraction_completed_at IS NOT NULL),
+                      count(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM knowledge_items
+                        WHERE message.id = ANY(source_message_ids)
+                      ))
+               FROM pipeline_runs AS run
+               JOIN messages AS message ON message.id = run.target_id
+               WHERE run.target_id = ANY($1)
+               """,
+               [[Ecto.UUID.dump!(first_id), Ecto.UUID.dump!(second_id)]]
              )
   end
 

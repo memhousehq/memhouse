@@ -26,7 +26,15 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
   require Ash.Query
 
-  @doc "Processes the message named by an extraction PipelineRun."
+  @doc """
+  Processes the message named by an extraction `PipelineRun`.
+
+  A processed result includes an `:anchors` map whose values are
+  `"completed"`, a durable provider-result classification, or
+  `"stale_extraction_claim"`. The last value is an expected concurrency
+  outcome: that anchor is skipped without preventing still-owned siblings from
+  committing.
+  """
   def run(run) do
     started_at = System.monotonic_time(:millisecond)
     result = do_run(run)
@@ -72,8 +80,15 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     )
   end
 
-  defp aggregate_result({:ok, %{status: "processed", anchors: anchors}}),
-    do: {"ok", 1, map_size(anchors), 0, nil}
+  defp aggregate_result({:ok, %{status: "processed", anchors: anchors}}) do
+    stale = Enum.count(anchors, fn {_anchor_id, status} -> status == "stale_extraction_claim" end)
+
+    if stale == 0 do
+      {"ok", 1, map_size(anchors), 0, nil}
+    else
+      {"partial", 1, map_size(anchors), stale, "stale_extraction_claim"}
+    end
+  end
 
   defp aggregate_result({:ok, %{status: "delegated"}}),
     do: {"delegated", 0, 0, 0, nil}
@@ -143,16 +158,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
           Enum.map(results, fn result ->
             result_run = Map.fetch!(runs, result.anchor_id)
             result_anchor = Enum.find(prepared, &(&1.message["id"] == result.anchor_id))
-
-            Memory.persist_message_extraction_result!(
-              result_run,
-              result_anchor.message,
-              result,
-              result.admission_identity
-            )
-
-            status = if result.status == :ok, do: "completed", else: Atom.to_string(result.status)
-            {result.anchor_id, status}
+            {result.anchor_id, persist_anchor_result(result_run, result_anchor, result)}
           end)
           |> Map.new()
 
@@ -161,20 +167,49 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
       {:error, error} ->
         case failure_class(error) do
           {:repairable, reason_class} ->
-            mark_all(Map.values(runs), "repairable", reason_class, identity)
-            {:ok, %{status: "repairable", run_status: "persisted", anchor_count: map_size(runs)}}
+            statuses = mark_all(Map.values(runs), "repairable", reason_class, identity)
+
+            {:ok,
+             %{
+               status: "repairable",
+               run_status: "persisted",
+               anchor_count: map_size(runs),
+               anchors: statuses
+             }}
 
           {:terminal, reason_class} ->
-            mark_all(Map.values(runs), "terminal", reason_class, identity)
-            {:ok, %{status: "terminal", run_status: "persisted", anchor_count: map_size(runs)}}
+            statuses = mark_all(Map.values(runs), "terminal", reason_class, identity)
+
+            {:ok,
+             %{
+               status: "terminal",
+               run_status: "persisted",
+               anchor_count: map_size(runs),
+               anchors: statuses
+             }}
 
           {:retryable, reason_class} ->
             # Record every claimed anchor before returning the provider error.
             # AshOban's error callback may run as well; its convergent failed
             # update keeps the same replayable state.
-            mark_all(Map.values(runs), "failed", reason_class, identity)
+            _statuses = mark_all(Map.values(runs), "failed", reason_class, identity)
             {:error, error}
         end
+    end
+  end
+
+  defp persist_anchor_result(run, anchor, result) do
+    case Memory.persist_message_extraction_result!(
+           run,
+           anchor.message,
+           result,
+           result.admission_identity
+         ) do
+      {:ok, _knowledge} ->
+        if result.status == :ok, do: "completed", else: Atom.to_string(result.status)
+
+      {:error, :stale_extraction_claim} ->
+        "stale_extraction_claim"
     end
   end
 
@@ -248,12 +283,12 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
   end
 
   defp mark_all(runs, status, reason_class, admission_identity) do
-    Enum.each(runs, fn run ->
-      DataLayer.with_account_id(
-        run.account_id,
-        [role: :system, pipeline?: true],
-        fn _account, actor ->
-          {:ok, _run} =
+    Map.new(runs, fn run ->
+      outcome =
+        DataLayer.with_account_id(
+          run.account_id,
+          [role: :system, pipeline?: true],
+          fn _account, actor ->
             Pipeline.classify_extraction_run(
               run,
               status,
@@ -261,12 +296,26 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
               admission_identity,
               actor
             )
+          end
+        )
+
+      persisted_status =
+        case outcome do
+          {:ok, _run} -> status
+          {:error, :stale_extraction_claim} -> "stale_extraction_claim"
         end
-      )
+
+      {run.target_id, persisted_status}
     end)
   end
 
-  @doc false
+  @doc """
+  Classifies a batch-level provider or validation failure for durable handling.
+
+  Returns `{disposition, content_safe_reason_class}`. Repairable and terminal
+  results are persisted without retry; retryable results leave each still-owned
+  anchor failed so the ordinary durable replay path can run it again.
+  """
   def failure_class({:repairable, reason, _details}), do: {:repairable, Atom.to_string(reason)}
 
   def failure_class({:prompt_version_mismatch, _details}),

@@ -254,7 +254,13 @@ defmodule MemHouse.Memory do
     end)
   end
 
-  @doc false
+  @doc """
+  Loads one message and its bounded extraction context for a durable batch worker.
+
+  The Account id comes from the worker's `PipelineRun`, never from request input.
+  This function performs only the scoped read half of extraction so the provider
+  call can happen without holding a database transaction.
+  """
   def prepare_message_extraction_for_account(message_id, account_id) do
     DataLayer.with_account_id(
       account_id,
@@ -266,7 +272,18 @@ defmodule MemHouse.Memory do
     )
   end
 
-  @doc false
+  @doc """
+  Persists one batch anchor under its exact extraction-claim fence.
+
+  Completion or terminal classification is attempted before any other effect in
+  the same Account transaction. A stale claim therefore returns
+  `{:error, :stale_extraction_claim}` with no knowledge or message-completion
+  writes to roll back, while an owned anchor commits all of its effects together.
+
+  Other persistence failures still raise and roll back the whole anchor
+  transaction. The trailing bang reflects those ordinary write failures; a
+  lost claim is an expected concurrency outcome rather than an exception.
+  """
   def persist_message_extraction_result!(run, message, result, admission_identity) do
     DataLayer.with_account_id(
       run.account_id,
@@ -274,22 +291,27 @@ defmodule MemHouse.Memory do
       fn account, actor ->
         case result do
           %{status: :ok, items: items} ->
-            knowledge = Enum.map(items, &insert_knowledge!(account.id, actor, message, &1))
-            mark_message_extracted!(account.id, actor, message["id"])
-            {:ok, _run} = Pipeline.complete_extraction_run(run, admission_identity, actor)
-            {:ok, knowledge}
+            case Pipeline.complete_extraction_run(run, admission_identity, actor) do
+              {:ok, _run} ->
+                knowledge = Enum.map(items, &insert_knowledge!(account.id, actor, message, &1))
+                mark_message_extracted!(account.id, actor, message["id"])
+                {:ok, knowledge}
+
+              {:error, :stale_extraction_claim} = stale ->
+                stale
+            end
 
           %{status: :terminal, reason_class: reason_class} ->
-            {:ok, _run} =
-              Pipeline.classify_extraction_run(
-                run,
-                "terminal",
-                reason_class,
-                admission_identity,
-                actor
-              )
-
-            {:ok, []}
+            case Pipeline.classify_extraction_run(
+                   run,
+                   "terminal",
+                   reason_class,
+                   admission_identity,
+                   actor
+                 ) do
+              {:ok, _run} -> {:ok, []}
+              {:error, :stale_extraction_claim} = stale -> stale
+            end
         end
       end
     )
