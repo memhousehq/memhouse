@@ -99,6 +99,11 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
 
     assert :hashed_password in Registry.excluded_attributes(MemHouse.Accounts.Peer)
     assert :embedding in Registry.excluded_attributes(MemHouse.Knowledge.KnowledgeItem)
+
+    for attribute <-
+          ~w(diskann_labels embedding embedding_provider embedding_model embedding_version embedding_dimensions source_indexed_at)a do
+      assert attribute in Registry.excluded_attributes(MemHouse.Observations.Message)
+    end
   end
 
   test "audit verification rejects any changed event" do

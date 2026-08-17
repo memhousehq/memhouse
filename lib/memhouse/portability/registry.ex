@@ -79,6 +79,15 @@ defmodule MemHouse.Portability.Registry do
   #     exported instead, and the target re-derives all of it.
   @sensitive_attributes %{
     MemHouse.Accounts.Peer => [:hashed_password],
+    MemHouse.Observations.Message => [
+      :diskann_labels,
+      :embedding,
+      :embedding_provider,
+      :embedding_model,
+      :embedding_version,
+      :embedding_dimensions,
+      :source_indexed_at
+    ],
     MemHouse.Knowledge.KnowledgeItem => [
       :embedding,
       :embedding_provider,
