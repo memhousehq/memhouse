@@ -147,7 +147,13 @@ defmodule MemHouse.Pipeline.DreamTime do
     run_scope(account_id, scope_id, nil)
   end
 
-  @doc false
+  @doc """
+  Runs one durable scoped wakeup only if its activity generation is still latest.
+
+  ISO-8601 timestamps and UUID activity ids are validated before any governed
+  read or provider call. Invalid or superseded schedules return a skipped result;
+  an eligible latest generation follows the ordinary bounded dream-time path.
+  """
   def run_scheduled_scope(account_id, scope_id, activity_at, activity_id)
       when is_binary(activity_at) and is_binary(activity_id) do
     with {:ok, activity_at, 0} <- DateTime.from_iso8601(activity_at),
@@ -161,7 +167,12 @@ defmodule MemHouse.Pipeline.DreamTime do
   def run_scheduled_scope(_account_id, _scope_id, _activity_at, _activity_id),
     do: {:ok, %{status: :skipped, reason: :invalid_schedule}}
 
-  @doc false
+  @doc """
+  Returns the stable advisory-lock key shared by dream work for one scope.
+
+  Scheduled, hourly, and manual runs use this key to serialize admission and
+  watermark updates without placing source content in the lock identity.
+  """
   def scope_lock_key(scope_id), do: "dream-time:#{scope_id}"
 
   defp run_scope(account_id, scope_id, expected_activity) do

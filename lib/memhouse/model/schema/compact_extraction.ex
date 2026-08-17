@@ -40,7 +40,13 @@ defmodule MemHouse.Model.Schema.CompactExtraction do
     }
   end
 
-  @doc false
+  @doc """
+  Returns the minimal candidate JSON Schema for the compact extraction experiment.
+
+  It contains only statement, exact support, subject/source references, and
+  explicit valid-time evidence. Trusted code derives confidence, sensitivity,
+  target level, and other policy fields before invoking the ordinary validator.
+  """
   def candidate_json_schema do
     nullable_evidence = %{
       "description" =>

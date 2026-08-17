@@ -79,7 +79,13 @@ defmodule MemHouse.Model.Reasoner do
     |> Enum.filter(&Keyword.fetch!(config, &1))
   end
 
-  @doc false
+  @doc """
+  Returns whether the experimental split dream-reasoning contract is enabled.
+
+  When false, callers must use the legacy single-call reasoning path. The value
+  is read dynamically so a matched evaluation can enable and restore it without
+  changing the deployment default.
+  """
   def split_enabled? do
     :memhouse
     |> Application.fetch_env!(:dream_reasoning_operations)

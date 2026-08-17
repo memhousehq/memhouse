@@ -168,7 +168,12 @@ defmodule MemHouse.Model.Schema.Extraction do
     }
   end
 
-  @doc false
+  @doc """
+  Returns the JSON Schema for one candidate in the current extraction contract.
+
+  The schema is embedded by both single-anchor and batched structured requests;
+  validation still runs through `cast/2` before any candidate can be persisted.
+  """
   def candidate_json_schema do
     knowledge_properties =
       Map.new(@knowledge_fields, fn name ->
@@ -948,7 +953,13 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
   @impl true
   def json_schema, do: json_schema(Extraction)
 
-  @doc false
+  @doc """
+  Builds the closed batch envelope around a candidate schema module.
+
+  The supplied module must implement the extraction-schema callbacks. The
+  returned schema requires one result per anchor and rejects undeclared fields;
+  semantic and provenance validation happens after provider output is decoded.
+  """
   def json_schema(candidate_schema) when is_atom(candidate_schema) do
     envelope = %{
       "type" => "object",

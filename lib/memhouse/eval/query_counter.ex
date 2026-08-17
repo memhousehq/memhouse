@@ -35,7 +35,13 @@ defmodule MemHouse.Eval.QueryCounter do
     end
   end
 
-  @doc false
+  @doc """
+  Records one repository query telemetry event in the active experiment counters.
+
+  The callback stores counts and timing measurements only. It deliberately
+  ignores query text, parameters, and result data so evaluation artifacts stay
+  content-free.
+  """
   def handle_event(@event, measurements, _metadata, counters) do
     increment(counters, :queries, 1)
     increment(counters, :query_time, Map.get(measurements, :query_time, 0))

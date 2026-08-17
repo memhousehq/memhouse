@@ -45,7 +45,14 @@ defmodule MemHouse.Pipeline.Changes.ExecuteRun do
     end)
   end
 
-  @doc false
+  @doc """
+  Applies a workflow outcome to the outer `PipelineRun` update changeset.
+
+  Durable batch outcomes return the changeset unchanged because the batcher
+  already fenced and persisted each anchor. Ordinary workflow outcomes set the
+  corresponding status; errors are returned for Ash to handle through its
+  normal rollback and retry path.
+  """
   def apply_outcome(changeset, {:ok, %{run_status: status}})
       when status in ["delegated", "persisted"] do
     # The batching workflow owns all per-anchor durable transitions. This
