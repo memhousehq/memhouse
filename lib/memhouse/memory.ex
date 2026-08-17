@@ -856,30 +856,36 @@ defmodule MemHouse.Memory do
     initial = Enum.map(candidates, &Map.put(&1, "evidence_type", "knowledge"))
     source_recall_permitted? = Map.get(attrs, "include_source_recall", false) == true
 
+    lineage_permitted? = Map.get(attrs, "_include_lineage_recall", true) == true
+
     tools =
       %{
         profile: fn _query, _state -> planner_identity_profile(attrs) end,
-        knowledge: fn query, _state ->
-          result =
-            attrs
-            |> Map.put("query", query)
-            |> Map.put(
-              "profile",
-              if(minimal_recall_enabled?(), do: "minimal", else: "balanced")
-            )
-            |> Map.put("_retrieval_target", "knowledge")
-            |> search()
+        knowledge: %{
+          model_calls: 1,
+          run: fn query, _state ->
+            result =
+              attrs
+              |> Map.put("query", query)
+              |> Map.put(
+                "profile",
+                if(minimal_recall_enabled?(), do: "minimal", else: "balanced")
+              )
+              |> Map.put("_retrieval_target", "knowledge")
+              |> search()
 
-          {:ok, Enum.map(result["candidates"], &Map.put(&1, "evidence_type", "knowledge"))}
-        end,
-        lineage: fn query, state -> planner_lineage(attrs, query, state) end
+            {:ok, Enum.map(result["candidates"], &Map.put(&1, "evidence_type", "knowledge"))}
+          end
+        }
       }
+      |> maybe_put_lineage_tool(attrs, lineage_permitted?)
       |> maybe_put_source_recall_tools(attrs, source_recall_permitted?)
 
     result =
       RecallPlanner.run(question, effort, tools,
         initial_evidence: initial,
-        initial_tool_calls: 1
+        initial_tool_calls: 1,
+        initial_model_calls: 1
       )
 
     recall =
@@ -887,6 +893,7 @@ defmodule MemHouse.Memory do
       |> stringify_nested()
       |> Map.put("used", true)
       |> Map.put("source_recall_permitted", source_recall_permitted?)
+      |> Map.put("lineage_recall_permitted", lineage_permitted?)
 
     {result.evidence, recall}
   end
@@ -898,9 +905,16 @@ defmodule MemHouse.Memory do
     |> Map.put(:source_exact, fn query, _state ->
       planner_source_search(attrs, query, "exact")
     end)
-    |> Map.put(:source_semantic, fn query, _state ->
-      planner_source_search(attrs, query, "semantic")
-    end)
+    |> Map.put(:source_semantic, %{
+      model_calls: 1,
+      run: fn query, _state -> planner_source_search(attrs, query, "semantic") end
+    })
+  end
+
+  defp maybe_put_lineage_tool(tools, _attrs, false), do: tools
+
+  defp maybe_put_lineage_tool(tools, attrs, true) do
+    Map.put(tools, :lineage, fn query, state -> planner_lineage(attrs, query, state) end)
   end
 
   defp planner_identity_profile(attrs) do

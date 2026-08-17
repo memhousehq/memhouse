@@ -377,22 +377,28 @@ config :memhouse, :recall_planner,
   low: %{
     max_iterations: 1,
     max_tool_calls: 3,
+    max_model_calls: 1,
     max_items: 12,
     max_query_tokens: 256,
+    max_total_tokens: 2_048,
     max_elapsed_ms: 500
   },
   medium: %{
     max_iterations: 2,
     max_tool_calls: 6,
+    max_model_calls: 2,
     max_items: 24,
     max_query_tokens: 512,
+    max_total_tokens: 4_096,
     max_elapsed_ms: 1_000
   },
   high: %{
     max_iterations: 3,
     max_tool_calls: 9,
+    max_model_calls: 4,
     max_items: 40,
     max_query_tokens: 1_024,
+    max_total_tokens: 8_192,
     max_elapsed_ms: 2_000
   }
 

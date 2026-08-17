@@ -121,7 +121,9 @@ read-only planner. It may select governed knowledge through stable profile and
 lineage reads; it has no write tool. Add the JSON boolean
 `include_source_recall: true` only when this caller is allowed to recover a
 bounded authorized source-message excerpt. An effort level by itself never
-grants that broader read.
+grants that broader read. Every preset independently caps iterations, admitted
+items, retrieval/model calls, query tokens, total admitted evidence tokens, and
+elapsed time; exhaustion returns the best bounded evidence accumulated so far.
 
 The response is the search payload plus `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and

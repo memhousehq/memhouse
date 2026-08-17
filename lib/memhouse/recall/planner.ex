@@ -23,24 +23,28 @@ defmodule MemHouse.Recall.Planner do
   @doc """
   Runs one named effort preset against read-only tool functions.
 
-  Each tool is `fn query, state -> {:ok, evidence} | {:error, reason} end`.
-  Unknown tools are ignored rather than made callable. Options may seed already
-  retrieved evidence and its charged tool-call count.
+  Each tool is either `fn query, state -> result end` or a map with `:run` and
+  the maximum `:model_calls` it can spend. Unknown tools are ignored rather
+  than made callable. Options may seed already retrieved evidence and its
+  charged tool- and model-call counts.
   """
   def run(question, effort, tools, opts \\ []) when is_binary(question) and is_map(tools) do
     effort = normalize_effort(effort)
     limits = :memhouse |> Application.fetch_env!(:recall_planner) |> Keyword.fetch!(effort)
     started_at = Clock.monotonic_ms()
     initial = Keyword.get(opts, :initial_evidence, [])
+    {initial, seen, evidence_tokens, initial_exhausted} = admit_initial(initial, limits)
 
     state = %{
-      evidence: dedupe(initial),
-      seen: initial |> dedupe() |> MapSet.new(&evidence_key/1),
+      evidence: initial,
+      seen: seen,
       calls: Keyword.get(opts, :initial_tool_calls, 0),
+      model_calls: Keyword.get(opts, :initial_model_calls, 0),
       query_tokens: 0,
+      evidence_tokens: evidence_tokens,
       outcomes: [],
       seen_calls: MapSet.new(),
-      exhausted: [],
+      exhausted: initial_exhausted,
       started_at: started_at,
       limits: limits,
       playbook: classify(question),
@@ -63,8 +67,10 @@ defmodule MemHouse.Recall.Planner do
       effort: Atom.to_string(effort),
       playbook: Atom.to_string(state.playbook),
       tool_calls: state.calls,
-      model_calls: 0,
+      model_calls: state.model_calls,
       query_tokens: state.query_tokens,
+      evidence_tokens: state.evidence_tokens,
+      tokens: state.query_tokens + state.evidence_tokens,
       elapsed_ms: elapsed_ms,
       item_count: length(state.evidence),
       exhausted: state.exhausted |> Enum.reverse() |> Enum.uniq(),
@@ -78,6 +84,8 @@ defmodule MemHouse.Recall.Planner do
         tool_calls: diagnostics.tool_calls,
         model_calls: diagnostics.model_calls,
         query_tokens: diagnostics.query_tokens,
+        evidence_tokens: diagnostics.evidence_tokens,
+        tokens: diagnostics.tokens,
         item_count: diagnostics.item_count
       },
       %{
@@ -108,15 +116,15 @@ defmodule MemHouse.Recall.Planner do
       Clock.monotonic_ms() - state.started_at >= state.limits.max_elapsed_ms ->
         {:halt, exhaust(state, "elapsed")}
 
-      step.tool not in @tools or not is_function(tools[step.tool], 2) ->
+      step.tool not in @tools or is_nil(tool_entry(tools[step.tool])) ->
         {:cont, state}
 
       true ->
-        execute_allowed(step, tools[step.tool], state)
+        execute_allowed(step, tool_entry(tools[step.tool]), state)
     end
   end
 
-  defp execute_allowed(step, tool, state) do
+  defp execute_allowed(step, {tool, cost}, state) do
     call_key = {step.tool, step.query}
     tokens = estimate_tokens(step.query)
 
@@ -127,6 +135,12 @@ defmodule MemHouse.Recall.Planner do
       state.query_tokens + tokens > state.limits.max_query_tokens ->
         {:halt, exhaust(state, "query_tokens")}
 
+      state.query_tokens + state.evidence_tokens + tokens > state.limits.max_total_tokens ->
+        {:halt, exhaust(state, "tokens")}
+
+      state.model_calls + cost.model_calls > state.limits.max_model_calls ->
+        {:halt, exhaust(state, "model_calls")}
+
       true ->
         started_at = Clock.monotonic_ms()
 
@@ -135,7 +149,10 @@ defmodule MemHouse.Recall.Planner do
 
         public_state = %{
           evidence: state.evidence,
-          remaining_items: state.limits.max_items - length(state.evidence)
+          remaining_items: state.limits.max_items - length(state.evidence),
+          remaining_model_calls: state.limits.max_model_calls - state.model_calls,
+          remaining_tokens:
+            state.limits.max_total_tokens - state.query_tokens - state.evidence_tokens
         }
 
         {result, timed_out?} = call_tool(tool, step.query, public_state, remaining_ms)
@@ -144,6 +161,7 @@ defmodule MemHouse.Recall.Planner do
         state = %{
           state
           | calls: state.calls + 1,
+            model_calls: state.model_calls + cost.model_calls,
             query_tokens: state.query_tokens + tokens,
             seen_calls: MapSet.put(state.seen_calls, call_key)
         }
@@ -193,28 +211,46 @@ defmodule MemHouse.Recall.Planner do
   end
 
   defp admit(items, step, elapsed_ms, state) do
-    {evidence, seen, admitted} =
-      Enum.reduce(items, {state.evidence, state.seen, 0}, fn item, {evidence, seen, count} ->
-        key = evidence_key(item)
+    {evidence, seen, admitted, evidence_tokens, token_limited?} =
+      Enum.reduce(
+        items,
+        {state.evidence, state.seen, 0, state.evidence_tokens, false},
+        fn item, {evidence, seen, count, evidence_tokens, token_limited?} ->
+          key = evidence_key(item)
+          item_tokens = estimate_tokens(item)
 
-        cond do
-          is_nil(key) or MapSet.member?(seen, key) ->
-            {evidence, seen, count}
+          cond do
+            is_nil(key) or MapSet.member?(seen, key) ->
+              {evidence, seen, count, evidence_tokens, token_limited?}
 
-          length(evidence) >= state.limits.max_items ->
-            {evidence, seen, count}
+            length(evidence) >= state.limits.max_items ->
+              {evidence, seen, count, evidence_tokens, token_limited?}
 
-          true ->
-            {evidence ++ [item], MapSet.put(seen, key), count + 1}
+            state.query_tokens + evidence_tokens + item_tokens > state.limits.max_total_tokens ->
+              {evidence, seen, count, evidence_tokens, true}
+
+            true ->
+              {evidence ++ [item], MapSet.put(seen, key), count + 1,
+               evidence_tokens + item_tokens, token_limited?}
+          end
         end
-      end)
+      )
 
     outcome = outcome(step, "completed", nil, elapsed_ms, admitted)
-    state = %{state | evidence: evidence, seen: seen, outcomes: [outcome | state.outcomes]}
 
-    if length(evidence) >= state.limits.max_items,
-      do: {:halt, exhaust(state, "items")},
-      else: {:cont, state}
+    state = %{
+      state
+      | evidence: evidence,
+        seen: seen,
+        evidence_tokens: evidence_tokens,
+        outcomes: [outcome | state.outcomes]
+    }
+
+    cond do
+      length(evidence) >= state.limits.max_items -> {:halt, exhaust(state, "items")}
+      token_limited? -> {:halt, exhaust(state, "tokens")}
+      true -> {:cont, state}
+    end
   end
 
   defp schedule(question, playbook) do
@@ -285,16 +321,26 @@ defmodule MemHouse.Recall.Planner do
     end
   end
 
-  defp dedupe(items) do
+  defp admit_initial(items, limits) do
     items
-    |> Enum.reduce({[], MapSet.new()}, fn item, {items, seen} ->
+    |> Enum.reduce({[], MapSet.new(), 0, []}, fn item, {items, seen, tokens, exhausted} ->
       key = evidence_key(item)
+      item_tokens = estimate_tokens(item)
 
-      if is_nil(key) or MapSet.member?(seen, key),
-        do: {items, seen},
-        else: {items ++ [item], MapSet.put(seen, key)}
+      cond do
+        is_nil(key) or MapSet.member?(seen, key) ->
+          {items, seen, tokens, exhausted}
+
+        length(items) >= limits.max_items ->
+          {items, seen, tokens, ["items" | exhausted]}
+
+        tokens + item_tokens > limits.max_total_tokens ->
+          {items, seen, tokens, ["tokens" | exhausted]}
+
+        true ->
+          {items ++ [item], MapSet.put(seen, key), tokens + item_tokens, exhausted}
+      end
     end)
-    |> elem(0)
   end
 
   defp evidence_key(item) when is_map(item) do
@@ -305,7 +351,19 @@ defmodule MemHouse.Recall.Planner do
 
   defp evidence_key(_item), do: nil
 
-  defp estimate_tokens(query), do: max(div(String.length(query) + 3, 4), 1)
+  defp estimate_tokens(value) when is_binary(value),
+    do: max(div(byte_size(value) + 3, 4), 1)
+
+  defp estimate_tokens(value),
+    do: value |> Jason.encode!() |> estimate_tokens()
+
+  defp tool_entry(tool) when is_function(tool, 2), do: {tool, %{model_calls: 0}}
+
+  defp tool_entry(%{run: tool, model_calls: model_calls})
+       when is_function(tool, 2) and is_integer(model_calls) and model_calls >= 0,
+       do: {tool, %{model_calls: model_calls}}
+
+  defp tool_entry(_tool), do: nil
 
   defp query_key(query) do
     :crypto.hash(:sha256, query)

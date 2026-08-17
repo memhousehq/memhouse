@@ -383,6 +383,12 @@ become independent facts or expose rationale. When the experimental minimal
 profile is enabled, effort-based Ask uses it as the base pass unless the request
 explicitly selects another profile.
 
+Effort presets hard-cap iterations, admitted items, retrieval/model calls,
+query tokens, total admitted-evidence tokens, and elapsed time. The additive
+`recall` diagnostics report only counts, hashed query identities, tool outcome
+classes, and exhausted bounds; they never contain the question or evidence
+text.
+
 Returns the search payload merged with `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and
 `answerer_prompt_tokens`. Fixed recall cites governed knowledge. Adaptive

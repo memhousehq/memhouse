@@ -97,6 +97,8 @@ defmodule MemHouse.Recall.PlannerTest do
     assert measurements.tool_calls == 0
     assert measurements.model_calls == 0
     assert measurements.query_tokens == 0
+    assert measurements.evidence_tokens == 0
+    assert measurements.tokens == 0
     assert measurements.item_count == 0
     assert is_integer(measurements.elapsed_ms)
     assert metadata.effort == "low"
@@ -104,6 +106,64 @@ defmodule MemHouse.Recall.PlannerTest do
     assert metadata.exhausted? == true
     assert metadata.exhausted == ["iterations"]
     refute inspect({measurements, metadata}) =~ "secret"
+  end
+
+  test "reserves model calls before running provider-backed tools" do
+    original = Application.fetch_env!(:memhouse, :recall_planner)
+
+    Application.put_env(
+      :memhouse,
+      :recall_planner,
+      Keyword.update!(original, :low, &Map.put(&1, :max_model_calls, 1))
+    )
+
+    on_exit(fn -> Application.put_env(:memhouse, :recall_planner, original) end)
+    parent = self()
+
+    result =
+      Planner.run("What changed?", :low, %{
+        profile: %{
+          model_calls: 2,
+          run: fn _query, _state ->
+            send(parent, :ran)
+            {:ok, []}
+          end
+        }
+      })
+
+    assert result.diagnostics.model_calls == 0
+    assert result.diagnostics.exhausted == ["model_calls"]
+    refute_receive :ran
+  end
+
+  test "bounds initial and retrieved evidence by the total token budget" do
+    original = Application.fetch_env!(:memhouse, :recall_planner)
+
+    Application.put_env(
+      :memhouse,
+      :recall_planner,
+      Keyword.update!(original, :low, &Map.merge(&1, %{max_total_tokens: 30, max_items: 10}))
+    )
+
+    on_exit(fn -> Application.put_env(:memhouse, :recall_planner, original) end)
+
+    result =
+      Planner.run("preference", :low, %{
+        profile: fn _query, _state ->
+          {:ok,
+           [
+             %{
+               "id" => "too-large",
+               "evidence_type" => "knowledge",
+               "statement" => String.duplicate("private evidence ", 30)
+             }
+           ]}
+        end
+      })
+
+    assert result.evidence == []
+    assert "tokens" in result.diagnostics.exhausted
+    assert result.diagnostics.tokens <= 30
   end
 
   test "kills a tool at the hard whole-planner elapsed budget" do

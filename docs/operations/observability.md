@@ -82,10 +82,12 @@ and ask results show the same additive details in `/console/tools`.
 
 A bounded adaptive Ask also emits `[:memhouse, :recall, :planner]` once per
 planner run. Its measurements are elapsed milliseconds, tool/model call counts,
-query-token estimate, and admitted item count. Metadata names the effort,
-deterministic playbook, and exhausted bounds. It contains no query or evidence
-text. Use it to alert on planner exhaustion and to compare call and latency
-budgets during the [simplified-memory canary](simplified-memory-rollout.md).
+query-token estimate, admitted-evidence token estimate, their bounded total,
+and admitted item count. Provider-backed tools reserve their model-call cost
+before execution. Metadata names the effort, deterministic playbook, and
+exhausted bounds. It contains no query or evidence text. Use it to alert on
+planner exhaustion and to compare call and latency budgets during the
+[simplified-memory canary](simplified-memory-rollout.md).
 
 ## Reading a failed model call
 

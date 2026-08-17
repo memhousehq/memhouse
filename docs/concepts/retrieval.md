@@ -322,6 +322,11 @@ knowledge, or bounded immutable source excerpts with resolvable ids when that
 permission is present. The answerer states what those retrieved statements make most probable and reports
 `answer_confidence`, an integer from 0 to 100, for its own certainty.
 
+Each effort preset reserves provider-backed retrieval calls before they run and
+caps both query tokens and serialized admitted-evidence tokens. Evidence that
+would cross the preset's total token ceiling is not admitted to the answer
+context; the content-free recall diagnostics name the exhausted bound.
+
 A model answer below 50 also sets `abstained`. That pair — cited answer, low
 confidence, `abstained == true` — is the normal shape for a weakly supported
 inference. Treat it as a lead to check rather than a conclusion to act on.
