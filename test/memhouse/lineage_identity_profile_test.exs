@@ -451,6 +451,105 @@ defmodule MemHouse.LineageIdentityProfileTest do
            end)
   end
 
+  test "adaptive Ask admits lineage evidence ahead of a full base page and preserves profile" do
+    seeds =
+      Enum.map(1..12, fn index ->
+        seed_active!(
+          "planner-headroom",
+          "Orchid base fact number #{index}.",
+          "base-#{index}"
+        )
+      end)
+
+    attrs = %{
+      "account_key" => "planner-headroom",
+      "peer_key" => "avery",
+      "scope_path" => "/profile",
+      "query" => "Orchid base fact",
+      "profile" => "fast",
+      "strategies" => ["lexical"],
+      "deadline" => "disabled"
+    }
+
+    initial = Memory.search(attrs)
+    assert length(initial["candidates"]) == 12
+
+    root_id = initial["candidates"] |> hd() |> Map.fetch!("id")
+    root = Enum.find(seeds, &(&1.knowledge.id == root_id))
+    related = seed_active!("planner-headroom", "Morgan owns the approval step.", "related")
+    relation!(root, related, "supports")
+
+    handler = {__MODULE__, self(), :planner_profile}
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, _measurements, metadata, _config ->
+          send(parent, {:planner_profile_operation, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    high_result =
+      attrs
+      |> Map.drop(["query"])
+      |> Map.merge(%{
+        "question" => "Orchid base fact",
+        "effort" => "high"
+      })
+      |> Memory.ask()
+
+    medium_result =
+      attrs
+      |> Map.drop(["query"])
+      |> Map.merge(%{
+        "question" => "Orchid base fact",
+        "effort" => "medium"
+      })
+      |> Memory.ask()
+
+    base_ids = Enum.map(high_result["candidates"], & &1["id"])
+    assert Enum.map(medium_result["candidates"], & &1["id"]) == base_ids
+
+    high_recall_ids = Enum.map(high_result["recall_evidence"], & &1["id"])
+    medium_recall_ids = Enum.map(medium_result["recall_evidence"], & &1["id"])
+    high_answer_context_ids = Enum.take(high_recall_ids, 12)
+    medium_answer_context_ids = Enum.take(medium_recall_ids, 12)
+
+    refute related.knowledge.id in base_ids
+
+    assert high_recall_ids ==
+             Enum.take(base_ids, 6) ++ [related.knowledge.id] ++ Enum.drop(base_ids, 6)
+
+    assert medium_recall_ids ==
+             Enum.take(base_ids, 8) ++ [related.knowledge.id] ++ Enum.drop(base_ids, 8)
+
+    assert related.knowledge.id in high_answer_context_ids
+    assert related.knowledge.id in medium_answer_context_ids
+    refute List.last(base_ids) in high_answer_context_ids
+    refute List.last(base_ids) in medium_answer_context_ids
+
+    for result <- [high_result, medium_result] do
+      assert result["recall"]["answer_context_adaptive_items"] >= 1
+      assert result["recall"]["retrieval_profile"] == "fast"
+      assert result["recall"]["retrieval_profile_version"] == result["profile_version"]
+    end
+
+    recall_profiles =
+      drain_profile_operations([])
+      |> Enum.filter(&(&1.operation == "recall"))
+      |> Enum.map(&to_string(&1.profile))
+
+    # One event is the base pass and at least one more is a rewritten knowledge
+    # tool call. Every pass must retain the profile the caller selected.
+    assert length(recall_profiles) >= 2
+    assert Enum.uniq(recall_profiles) == ["fast"]
+  end
+
   test "profile is optional and content-safe in retrieval diagnostics" do
     seed = seed_active!("identity-search", "Avery lives in Helsinki.", "search")
 
@@ -716,4 +815,12 @@ defmodule MemHouse.LineageIdentityProfileTest do
 
   defp pipeline_actor(actor),
     do: %{actor | role: :system, pipeline?: true, scope_ids: :all, scope_roles: %{}}
+
+  defp drain_profile_operations(acc) do
+    receive do
+      {:planner_profile_operation, metadata} -> drain_profile_operations([metadata | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
 end

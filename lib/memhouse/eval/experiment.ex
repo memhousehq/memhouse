@@ -471,21 +471,17 @@ defmodule MemHouse.Eval.Experiment do
       |> Enum.flat_map(& &1["questions"])
       |> Enum.map(& &1["recall"])
 
-    valid? =
-      Enum.all?(recalls, fn recall ->
-        if components["adaptive_recall_effort"] == "fixed" do
-          recall["used"] == false and recall["effort"] == "fixed"
-        else
-          recall["used"] == true and
-            recall["effort"] == components["adaptive_recall_effort"] and
-            recall["source_recall_permitted"] == components["source_recall"] and
-            recall["lineage_recall_permitted"] == components["lineage_recall"]
-        end
-      end)
+    valid? = Enum.all?(recalls, &recall_matches_components?(&1, variant, components))
 
     unless valid? do
       raise ArgumentError,
             "execute variant #{inspect(variant["id"])} recall behavior did not match its component binding"
+    end
+
+    if components["adaptive_recall_effort"] != "fixed" and
+         not Enum.any?(recalls, &(Map.get(&1, "answer_context_adaptive_items", 0) > 0)) do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} declared adaptive recall but admitted no new tool evidence to an answer context"
     end
 
     if components["lineage_recall"] and
@@ -497,6 +493,19 @@ defmodule MemHouse.Eval.Experiment do
       raise ArgumentError,
             "execute variant #{inspect(variant["id"])} declared lineage recall but completed no lineage tool call"
     end
+  end
+
+  defp recall_matches_components?(recall, _variant, %{"adaptive_recall_effort" => "fixed"}) do
+    recall["used"] == false and recall["effort"] == "fixed"
+  end
+
+  defp recall_matches_components?(recall, variant, components) do
+    recall["used"] == true and
+      recall["effort"] == components["adaptive_recall_effort"] and
+      recall["retrieval_profile"] == variant["profile"] and
+      is_binary(recall["retrieval_profile_version"]) and
+      recall["source_recall_permitted"] == components["source_recall"] and
+      recall["lineage_recall_permitted"] == components["lineage_recall"]
   end
 
   defp assert_reasoning_operations!(report, variant, components) do

@@ -26,17 +26,22 @@ defmodule MemHouse.Recall.Planner do
   Each tool is either `fn query, state -> result end` or a map with `:run` and
   the maximum `:model_calls` it can spend. Unknown tools are ignored rather
   than made callable. Options may seed already retrieved evidence and its
-  charged tool- and model-call counts.
+  charged tool- and model-call counts. `:initial_item_limit` may admit only the
+  ranked head before tools run; the remaining initial items are still reserved
+  for deduplication and refill unused capacity after planning.
   """
   def run(question, effort, tools, opts \\ []) when is_binary(question) and is_map(tools) do
     effort = normalize_effort(effort)
     limits = :memhouse |> Application.fetch_env!(:recall_planner) |> Keyword.fetch!(effort)
     started_at = Clock.monotonic_ms()
     initial = Keyword.get(opts, :initial_evidence, [])
-    {initial, seen, evidence_tokens, initial_exhausted} = admit_initial(initial, limits)
+
+    {initial, deferred_initial, seen, evidence_tokens, initial_exhausted} =
+      admit_initial(initial, limits, Keyword.get(opts, :initial_item_limit, limits.max_items))
 
     state = %{
       evidence: initial,
+      deferred_initial: deferred_initial,
       seen: seen,
       calls: Keyword.get(opts, :initial_tool_calls, 0),
       model_calls: Keyword.get(opts, :initial_model_calls, 0),
@@ -60,6 +65,8 @@ defmodule MemHouse.Recall.Planner do
           {:halt, state} -> {:halt, state}
         end
       end)
+
+    state = refill_deferred_initial(state)
 
     elapsed_ms = Clock.monotonic_ms() - started_at
 
@@ -321,24 +328,61 @@ defmodule MemHouse.Recall.Planner do
     end
   end
 
-  defp admit_initial(items, limits) do
+  defp admit_initial(items, limits, initial_item_limit)
+       when is_integer(initial_item_limit) and initial_item_limit >= 0 do
     items
-    |> Enum.reduce({[], MapSet.new(), 0, []}, fn item, {items, seen, tokens, exhausted} ->
+    |> Enum.reduce({[], [], MapSet.new(), 0, []}, fn item,
+                                                     {items, deferred, seen, tokens, exhausted} ->
       key = evidence_key(item)
       item_tokens = estimate_tokens(item)
 
       cond do
         is_nil(key) or MapSet.member?(seen, key) ->
-          {items, seen, tokens, exhausted}
+          {items, deferred, seen, tokens, exhausted}
 
         length(items) >= limits.max_items ->
-          {items, seen, tokens, ["items" | exhausted]}
+          {items, deferred, MapSet.put(seen, key), tokens, ["items" | exhausted]}
+
+        length(items) >= initial_item_limit ->
+          {items, deferred ++ [item], MapSet.put(seen, key), tokens, exhausted}
 
         tokens + item_tokens > limits.max_total_tokens ->
-          {items, seen, tokens, ["tokens" | exhausted]}
+          {items, deferred, MapSet.put(seen, key), tokens, ["tokens" | exhausted]}
 
         true ->
-          {items ++ [item], MapSet.put(seen, key), tokens + item_tokens, exhausted}
+          {items ++ [item], deferred, MapSet.put(seen, key), tokens + item_tokens, exhausted}
+      end
+    end)
+  end
+
+  defp admit_initial(_items, _limits, initial_item_limit) do
+    raise ArgumentError,
+          "initial_item_limit must be a non-negative integer, got: #{inspect(initial_item_limit)}"
+  end
+
+  # Initial candidates outside the ranked head remain reserved in `seen` while
+  # tools execute. A rewritten knowledge query therefore cannot reclassify the
+  # same base-page item as adaptive evidence. Once planning stops, the deferred
+  # tail fills only capacity that tools did not use and remains subject to the
+  # same item and total-token ceilings.
+  defp refill_deferred_initial(state) do
+    Enum.reduce_while(state.deferred_initial, state, fn item, state ->
+      item_tokens = estimate_tokens(item)
+
+      cond do
+        length(state.evidence) >= state.limits.max_items ->
+          {:halt, exhaust(state, "items")}
+
+        state.query_tokens + state.evidence_tokens + item_tokens > state.limits.max_total_tokens ->
+          {:halt, exhaust(state, "tokens")}
+
+        true ->
+          {:cont,
+           %{
+             state
+             | evidence: state.evidence ++ [item],
+               evidence_tokens: state.evidence_tokens + item_tokens
+           }}
       end
     end)
   end

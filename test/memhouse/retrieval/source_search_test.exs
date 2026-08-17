@@ -309,8 +309,15 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert Enum.any?(result["recall_evidence"], fn evidence ->
              evidence["id"] == message["id"] and
                evidence["evidence_type"] == "source_message" and
-               evidence["candidate_type"] == "source_message"
+               evidence["candidate_type"] == "source_message" and
+               evidence["source_message_ids"] == [message["id"]]
            end)
+
+    assert result["recall"]["answer_context_adaptive_items"] == 1
+
+    assert message["id"] in (result["recall_evidence"]
+                             |> Enum.take(result["recall"]["answer_context_items"])
+                             |> Enum.map(& &1["id"]))
 
     assert message_count!("source-planner") == before_count
   end

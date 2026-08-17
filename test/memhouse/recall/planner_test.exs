@@ -61,6 +61,43 @@ defmodule MemHouse.Recall.PlannerTest do
     refute inspect(result.diagnostics) =~ "secret body"
   end
 
+  test "reserves adaptive headroom, deduplicates the full base page, and refills its tail" do
+    initial =
+      Enum.map(1..12, fn index ->
+        %{
+          "id" => "k#{index}",
+          "candidate_type" => "knowledge",
+          "statement" => "base #{index}"
+        }
+      end)
+
+    result =
+      Planner.run(
+        "What changed?",
+        :medium,
+        %{
+          profile: fn _query, _state ->
+            {:ok,
+             [
+               %{"id" => "k4", "evidence_type" => "knowledge", "statement" => "duplicate"},
+               %{"id" => "adaptive", "evidence_type" => "knowledge", "statement" => "new"}
+             ]}
+          end
+        },
+        initial_evidence: initial,
+        initial_item_limit: 6
+      )
+
+    ids = Enum.map(result.evidence, & &1["id"])
+
+    assert Enum.take(ids, 8) == ["k1", "k2", "k3", "k4", "k5", "k6", "adaptive", "k7"]
+    assert Enum.sort(ids) == Enum.sort(["adaptive" | Enum.map(1..12, &"k#{&1}")])
+    assert "adaptive" in Enum.take(ids, 12)
+    refute "k12" in Enum.take(ids, 12)
+
+    assert [%{tool: "profile", admitted_items: 1} | _rest] = result.diagnostics.outcomes
+  end
+
   test "unknown effort and non-allowlisted tools fail closed" do
     assert_raise ArgumentError, ~r/unknown recall effort/, fn ->
       Planner.run("question", "unbounded", %{})

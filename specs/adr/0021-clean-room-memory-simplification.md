@@ -222,6 +222,14 @@ schemas. It does not receive hidden candidate metadata or unrestricted database
 access. It may run only within a configured total wall-clock, tool-round,
 candidate, and token budget. The answerer remains separate and all factual
 output remains subject to deterministic citation validation and abstention.
+For medium and high effort, the answer boundary preserves two thirds and half
+of the base head respectively (eight and six under the default 12-item cap) and
+reserves the remainder for genuinely new tool evidence. The entire base page
+remains a deduplication set, and any unused headroom is refilled from its ranked
+tail after planning. Knowledge tools use the caller-selected retrieval profile
+rather than a planner-global profile. This makes adaptive evidence eligible for
+the answer without changing fixed recall or allowing a rewritten query to
+relabel base evidence as newly found.
 
 ### Consolidation and reasoning
 

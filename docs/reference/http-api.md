@@ -387,19 +387,30 @@ Effort presets hard-cap iterations, admitted items, retrieval/model calls,
 query tokens, total admitted-evidence tokens, and elapsed time. The additive
 `recall` diagnostics report only counts, hashed query identities, tool outcome
 classes, and exhausted bounds; they never contain the question or evidence
-text.
+text. They also identify the preserved retrieval profile/version and count how
+many genuinely new tool items reached the bounded answer context.
 
 Returns the search payload merged with `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and
-`answerer_prompt_tokens`. Fixed recall cites governed knowledge. Adaptive
+`answerer_prompt_tokens`. Adaptive responses additionally return
+`recall_evidence`, the exact ordered evidence offered to answer generation;
+the compatible `candidates` field remains the base search page. Fixed recall
+cites governed knowledge. Adaptive
 recall with explicit source permission may additionally cite a bounded,
 authorized immutable source-message excerpt. Every citation id must occur in
-the admitted evidence.
+the admitted evidence. A source item is typed as `source_message`, uses the
+canonical message id as its evidence id, and carries that same id in the
+single-entry `source_message_ids` provenance list; it is never presented as a
+Knowledge id.
 `abstained: true` is an ordinary outcome.
 
-The search payload keeps all returned candidates. The answerer sees only the
-first `MEMHOUSE_ANSWER_CONTEXT_LIMIT` candidates after reranking. It also sees
-each statement's validity window and an explicit reference time. `as_of` is the
+The search payload keeps all returned candidates. Fixed Ask sends its first
+`MEMHOUSE_ANSWER_CONTEXT_LIMIT` candidates after reranking. Medium and high
+adaptive Ask retain two thirds and half of the base head respectively (eight
+and six under the default cap), place genuinely new tool evidence next, and
+refill unused bounded capacity from the original ranked tail. Tool searches
+preserve the caller-selected retrieval profile. The answerer also sees each
+statement's validity window and an explicit reference time. `as_of` is the
 reference time when supplied; otherwise the request time is used.
 
 `answer_context_count` is the number of candidates sent to the answerer.

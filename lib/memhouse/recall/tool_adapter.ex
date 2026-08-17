@@ -19,23 +19,32 @@ defmodule MemHouse.Recall.ToolAdapter do
   alias MemHouse.Recall.Planner
 
   @doc """
-  Runs bounded adaptive recall through the governed read-tool allowlist.
+  Runs the governed read-only tool adapter for one adaptive Ask request.
 
   `attrs` carries the already resolved Memory request authority, `question` and
   `effort` select the planner pass, and `candidates` are the initial governed
-  knowledge evidence. Options must provide the resolved minimal-profile flag
-  and an exact-id visibility callback owned by the Memory facade.
+  knowledge evidence. `opts` must provide the selected retrieval profile and version, the answer
+  context limit, and the exact-id visible-knowledge callback owned by
+  `MemHouse.Memory`. Medium and high effort reserve bounded answer headroom for
+  genuinely new tool evidence; unused headroom is refilled from the original
+  ranked candidates after planning.
 
-  Returns `{evidence, diagnostics}`. Evidence is still subject to the planner's
-  item, token, call, iteration, and elapsed budgets; source and lineage reads
-  run only when their explicit permission gates are present.
+  Returns `{evidence, diagnostics}`. Evidence remains subject to independent
+  item, token, model-call, tool-call, iteration, and elapsed budgets. Source and
+  lineage reads run only when their explicit permission gates are present, and
+  diagnostics contain counts and profile identities only, never query or
+  evidence text.
   """
   def run(attrs, question, effort, candidates, opts)
       when is_map(attrs) and is_binary(question) and is_list(candidates) and is_list(opts) do
-    minimal_recall? = Keyword.fetch!(opts, :minimal_recall?)
     visible_knowledge = Keyword.fetch!(opts, :visible_knowledge)
+    retrieval_profile = Keyword.fetch!(opts, :retrieval_profile)
+    retrieval_profile_version = Keyword.fetch!(opts, :retrieval_profile_version)
+    answer_context_limit = Keyword.fetch!(opts, :answer_context_limit)
 
-    unless is_boolean(minimal_recall?) and is_function(visible_knowledge, 1) do
+    unless is_function(visible_knowledge, 1) and is_binary(retrieval_profile) and
+             is_binary(retrieval_profile_version) and is_integer(answer_context_limit) and
+             answer_context_limit > 0 do
       raise ArgumentError, "invalid recall tool adapter options"
     end
 
@@ -43,33 +52,45 @@ defmodule MemHouse.Recall.ToolAdapter do
     lineage_recall_permitted? = Map.get(attrs, "_include_lineage_recall", true) == true
 
     tools =
-      base_tools(attrs, minimal_recall?)
+      base_tools(attrs, retrieval_profile)
       |> maybe_put_lineage(attrs, lineage_recall_permitted?, visible_knowledge)
       |> maybe_put_source(attrs, source_recall_permitted?)
+
+    base_keys = MapSet.new(candidates, &evidence_key/1)
 
     result =
       Planner.run(question, effort, tools,
         initial_evidence: Enum.map(candidates, &mark_knowledge_evidence/1),
+        initial_item_limit: initial_item_limit(effort, answer_context_limit),
         initial_tool_calls: 1,
         initial_model_calls: 1
       )
+
+    answer_evidence = Enum.take(result.evidence, answer_context_limit)
 
     diagnostics =
       result.diagnostics
       |> stringify_nested()
       |> Map.put("used", true)
+      |> Map.put("retrieval_profile", retrieval_profile)
+      |> Map.put("retrieval_profile_version", retrieval_profile_version)
       |> Map.put("source_recall_permitted", source_recall_permitted?)
       |> Map.put("lineage_recall_permitted", lineage_recall_permitted?)
+      |> Map.put("answer_context_items", length(answer_evidence))
+      |> Map.put(
+        "answer_context_adaptive_items",
+        Enum.count(answer_evidence, &(not MapSet.member?(base_keys, evidence_key(&1))))
+      )
 
     {result.evidence, diagnostics}
   end
 
-  defp base_tools(attrs, minimal_recall?) do
+  defp base_tools(attrs, retrieval_profile) do
     %{
       profile: fn _query, _state -> identity_profile(attrs) end,
       knowledge: %{
         model_calls: 1,
-        run: fn query, _state -> knowledge_search(attrs, query, minimal_recall?) end
+        run: fn query, _state -> knowledge_search(attrs, query, retrieval_profile) end
       }
     }
   end
@@ -114,11 +135,11 @@ defmodule MemHouse.Recall.ToolAdapter do
     {:ok, evidence}
   end
 
-  defp knowledge_search(attrs, query, minimal_recall?) do
+  defp knowledge_search(attrs, query, retrieval_profile) do
     result =
       attrs
       |> Map.put("query", query)
-      |> Map.put("profile", if(minimal_recall?, do: "minimal", else: "balanced"))
+      |> Map.put("profile", retrieval_profile)
       |> Map.put("_retrieval_target", "knowledge")
       |> Memory.search()
 
@@ -191,8 +212,27 @@ defmodule MemHouse.Recall.ToolAdapter do
     |> Map.put("evidence_type", "source_message")
     |> Map.put("candidate_type", "source_message")
     |> Map.put("statement", row["excerpt"])
+    |> Map.put("source_message_ids", [row["id"]])
     |> Map.put("relevant_from", nil)
     |> Map.put("relevant_until", nil)
+  end
+
+  # Preserve a meaningful ranked base slice while reserving more exploration
+  # space for high effort than medium effort. The full initial page remains
+  # reserved for deduplication and later refill by the planner.
+  defp initial_item_limit(effort, answer_context_limit)
+       when effort in [:medium, "medium"] and answer_context_limit > 1,
+       do: min(div(answer_context_limit * 2 + 2, 3), answer_context_limit - 1)
+
+  defp initial_item_limit(effort, answer_context_limit)
+       when effort in [:high, "high"] and answer_context_limit > 1,
+       do: min(div(answer_context_limit + 1, 2), answer_context_limit - 1)
+
+  defp initial_item_limit(_effort, answer_context_limit), do: answer_context_limit
+
+  defp evidence_key(item) do
+    type = item["evidence_type"] || item["candidate_type"] || "knowledge"
+    {type, item["id"]}
   end
 
   defp stringify_nested(value) when is_map(value) do

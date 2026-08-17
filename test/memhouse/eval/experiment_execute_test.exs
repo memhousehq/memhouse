@@ -130,6 +130,8 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     assert Enum.all?(hd(experimental_report["cases"])["questions"], fn question ->
              question["recall"]["used"] == true and
                question["recall"]["effort"] == "high" and
+               question["recall"]["retrieval_profile"] == "balanced" and
+               is_binary(question["recall"]["retrieval_profile_version"]) and
                question["recall"]["source_recall_permitted"] == true and
                question["recall"]["lineage_recall_permitted"] == true
            end)
@@ -138,6 +140,10 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
              Enum.any?(question["recall"]["outcomes"], fn outcome ->
                outcome["tool"] == "lineage" and outcome["status"] == "completed"
              end)
+           end)
+
+    assert Enum.any?(hd(experimental_report["cases"])["questions"], fn question ->
+             question["recall"]["answer_context_adaptive_items"] > 0
            end)
 
     current = get_in(bundle, ["evidence", "measured", "current"])

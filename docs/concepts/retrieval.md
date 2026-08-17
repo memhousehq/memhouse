@@ -330,6 +330,15 @@ Each effort preset reserves provider-backed retrieval calls before they run and
 caps both query tokens and serialized admitted-evidence tokens. Evidence that
 would cross the preset's total token ceiling is not admitted to the answer
 context; the content-free recall diagnostics name the exhausted bound.
+Medium effort retains two thirds of the base head and high effort retains half,
+which are eight and six items under the default 12-item answer cap. Each always
+reserves at least one slot for genuinely new tool evidence before refilling
+unused space from the original ranked tail. The entire base page is reserved
+for deduplication while tools run, so a rewritten knowledge query cannot count
+a base candidate as a new discovery. Every knowledge-tool pass uses the same
+named retrieval profile as the caller's base pass. `recall_evidence` records
+the exact resulting order, while `candidates` remains the compatible base
+search payload.
 
 A model answer below 50 also sets `abstained`. That pair — cited answer, low
 confidence, `abstained == true` — is the normal shape for a weakly supported

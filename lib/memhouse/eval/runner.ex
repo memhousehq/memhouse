@@ -182,13 +182,20 @@ defmodule MemHouse.Eval.Runner do
             })
           end)
 
-        cited_refs = cited_refs(answer, ref_map, question.evidence_granularity)
-        ranked_refs = ranked_refs(answer, ref_map, question.evidence_granularity)
-        isolation = isolation_counts(answer, ref_map)
+        # Adaptive Ask answers are grounded in the planner's admitted evidence,
+        # not only the base search page that remains under `candidates` for API
+        # compatibility. Evaluate exactly that answer evidence so source
+        # citations, retrieval rank, RAG context, and isolation checks measure
+        # the behavior the answerer could actually consume.
+        evaluation_answer = Map.put(answer, "candidates", answer_evidence(answer))
+
+        cited_refs = cited_refs(evaluation_answer, ref_map, question.evidence_granularity)
+        ranked_refs = ranked_refs(evaluation_answer, ref_map, question.evidence_granularity)
+        isolation = isolation_counts(evaluation_answer, ref_map)
         retrieval_cutoffs = Keyword.get(opts, :retrieval_cutoffs, [10, 20, 50])
 
         deterministic_score =
-          Scorer.score_question(question, answer, cited_refs,
+          Scorer.score_question(question, evaluation_answer, cited_refs,
             full_context_tokens: full_context_tokens,
             retrieval: Scorer.retrieval_score(question, ranked_refs, retrieval_cutoffs)
           )
@@ -202,7 +209,7 @@ defmodule MemHouse.Eval.Runner do
               ModelJudge.score(
                 question.question,
                 Map.get(answer, "answer", ""),
-                Map.get(answer, "candidates", [])
+                Map.get(evaluation_answer, "candidates", [])
               )
             )
           else
@@ -329,6 +336,13 @@ defmodule MemHouse.Eval.Runner do
     end)
   end
 
+  defp answer_evidence(%{"recall" => %{"used" => true} = recall} = answer) do
+    evidence = Map.get(answer, "recall_evidence", [])
+    Enum.take(evidence, Map.get(recall, "answer_context_items", length(evidence)))
+  end
+
+  defp answer_evidence(answer), do: Map.get(answer, "candidates", [])
+
   # Fixtures label evidence at the granularity they were built with. LongMemEval names the
   # session that holds the answer, everything else names individual turns, so the same
   # citation is resolved through a different map depending on which vocabulary applies.
@@ -348,8 +362,9 @@ defmodule MemHouse.Eval.Runner do
     |> Enum.uniq()
   end
 
-  # Retrieval rank is based on every returned candidate, not only the candidates the answer
-  # chose to cite. This keeps retrieval coverage independent from answer generation.
+  # Retrieval rank is based on every candidate in the evaluated answer evidence, not only the
+  # candidates the answer chose to cite. For adaptive recall that is the same bounded head the
+  # answerer could consume, so planner evidence beyond the prompt limit cannot inflate recall.
   defp ranked_refs(answer, ref_map, granularity) do
     answer
     |> Map.get("candidates", [])
@@ -379,7 +394,8 @@ defmodule MemHouse.Eval.Runner do
     |> Enum.uniq()
   end
 
-  # Every returned knowledge candidate must descend from a message ingested for this case.
+  # Every evaluated knowledge or source-message candidate must name source messages ingested
+  # for this case.
   # Unexpected ids are counted but never copied into the report, because an id from another
   # scope or Account is itself data the evaluation harness is not authorized to disclose.
   defp isolation_counts(answer, ref_map) do

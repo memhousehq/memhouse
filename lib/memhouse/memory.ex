@@ -783,9 +783,10 @@ defmodule MemHouse.Memory do
 
   Returns the `search/2` map with `"answer"`, `"citations"`, `"abstained"`,
   `"answer_confidence"`, `"answer_degraded"`, `"answer_context_count"`, and
-  `"answerer_prompt_tokens"` merged in — plus
-  `"supporting_statements"` when the answer is degraded. Raises under the same
-  conditions as
+  `"answerer_prompt_tokens"` merged in. Named effort also adds `"recall"`
+  diagnostics and ordered `"recall_evidence"`; the compatible `"candidates"`
+  field remains the base search page. A degraded model call additionally
+  returns `"supporting_statements"`. Raises under the same conditions as
   `search/2`.
   """
   def ask(attrs, identity_actor \\ nil) do
@@ -818,7 +819,9 @@ defmodule MemHouse.Memory do
           {candidates, %{"used" => false, "effort" => "fixed"}}
         else
           RecallToolAdapter.run(attrs, question, effort, candidates,
-            minimal_recall?: minimal_recall_enabled?(),
+            retrieval_profile: Map.fetch!(retrieval, "profile"),
+            retrieval_profile_version: Map.fetch!(retrieval, "profile_version"),
+            answer_context_limit: answer_context_limit(),
             visible_knowledge: &recall_visible_knowledge(attrs, &1)
           )
         end
