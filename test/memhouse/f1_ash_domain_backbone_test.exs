@@ -38,9 +38,9 @@ defmodule MemHouse.F1AshDomainBackboneTest do
     MemHouse.Operations
   ]
 
-  # Every durable resource the domains may expose, sorted. This is the authoritative census of
-  # what may hold persistent state; anything storing durable data outside this list is writing
-  # behind the Ash boundary and escapes tenancy, policy, and audit.
+  # Every resource the domains expose, sorted. Persisted and generic-action resources both
+  # belong in this census so a new public operation cannot appear outside the reviewed Ash
+  # boundary.
   @resources [
     MemHouse.Accounts.Account,
     MemHouse.Accounts.ApiKey,
@@ -58,6 +58,7 @@ defmodule MemHouse.F1AshDomainBackboneTest do
     MemHouse.Governance.PeerQuery,
     MemHouse.Governance.PeerQueryDelivery,
     MemHouse.Governance.PolicyConfig,
+    MemHouse.Governance.PublicOperations,
     MemHouse.Governance.ValidationItem,
     MemHouse.Knowledge.Attribution,
     MemHouse.Knowledge.Entity,
