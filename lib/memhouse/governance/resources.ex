@@ -1043,6 +1043,75 @@ defmodule MemHouse.Governance.ErasureRequest do
   end
 end
 
+defmodule MemHouse.Governance.PublicOperations do
+  @moduledoc """
+  Typed Ash boundary for the public HTTP memory operations that are not MCP tools.
+
+  Controllers adapt JSON and HTTP statuses to these generic actions. They do not
+  decide authorization. Authenticated reads enter through the read actions and
+  retain the Account, scope, reader, lifecycle, and RLS checks of the resources
+  they call. Explicit extraction requeue is narrower: its policy requires an
+  Account administrator or internal system actor before the implementation can
+  reach the pipeline's privileged internal write actions.
+
+  This resource persists nothing and is not a second memory or operations store.
+  """
+
+  use Ash.Resource,
+    otp_app: :memhouse,
+    domain: MemHouse.Governance,
+    authorizers: [Ash.Policy.Authorizer]
+
+  actions do
+    action :source_search, :map do
+      description "Search authorized immutable source messages with bounded excerpts."
+      argument :query, :string, default: "", public?: true
+      argument :scope_path, :string, default: "/poc", public?: true
+      argument :mode, :string, default: "semantic", public?: true
+      argument :limit, :integer, public?: true
+      argument :excerpt_chars, :integer, public?: true
+      argument :peer_key, :string, public?: true
+      argument :include_cross_links, :boolean, default: false, public?: true
+      run {MemHouse.Governance.Actions.PublicRead, operation: :source_search}
+    end
+
+    action :evidence_lineage, :map do
+      description "Read bounded typed evidence lineage for one authorized target."
+      argument :target_id, :string, allow_nil?: false, public?: true
+      argument :target_type, :string, default: "knowledge", public?: true
+      argument :scope_path, :string, default: "/poc", public?: true
+      argument :peer_key, :string, public?: true
+      argument :max_depth, :integer, public?: true
+      argument :max_fan_out, :integer, public?: true
+      argument :max_nodes, :integer, public?: true
+      run {MemHouse.Governance.Actions.PublicRead, operation: :evidence_lineage}
+    end
+
+    action :stable_identity_profile, :map do
+      description "Project the caller's stable identity facts from authorized governed memory."
+      argument :scope_path, :string, default: "/poc", public?: true
+      argument :peer_key, :string, public?: true
+      run {MemHouse.Governance.Actions.PublicRead, operation: :stable_identity_profile}
+    end
+
+    action :requeue_extraction, :map do
+      description "Explicitly requeue one repairable or terminal extraction anchor."
+      argument :message_id, :uuid, allow_nil?: false, public?: true
+      run MemHouse.Governance.Actions.RequeueExtraction
+    end
+  end
+
+  policies do
+    policy action([:source_search, :evidence_lineage, :stable_identity_profile]) do
+      authorize_if actor_present()
+    end
+
+    policy action(:requeue_extraction) do
+      authorize_if {MemHouse.Policy.RoleIn, roles: [:account_admin, :system]}
+    end
+  end
+end
+
 defmodule MemHouse.Governance.McpTools do
   @moduledoc """
   The complete tool surface an external agent can reach, declared as generic Ash actions.

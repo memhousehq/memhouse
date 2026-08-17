@@ -10,6 +10,7 @@ defmodule MemHouseWeb.MemoryController do
 
   use MemHouseWeb, :controller
 
+  alias MemHouse.Governance.PublicOperations
   alias MemHouse.Memory
   alias MemHouse.Operations.Health
   alias MemHouse.Pipeline
@@ -75,20 +76,22 @@ defmodule MemHouseWeb.MemoryController do
   administrator or system actor may acknowledge the operator-action boundary.
   """
   def requeue_ingest(conn, %{"message_id" => message_id}) do
-    actor = conn.assigns.current_actor
+    case run_public_action(
+           :requeue_extraction,
+           %{message_id: message_id},
+           conn.assigns.current_actor
+         ) do
+      {:ok, %{"outcome" => "accepted", "data" => data}} ->
+        conn |> put_status(:accepted) |> json(%{data: data})
 
-    if actor.role in [:account_admin, :system] do
-      case Pipeline.request_extraction_requeue(actor, message_id) do
-        {:ok, run} ->
-          conn
-          |> put_status(:accepted)
-          |> json(%{data: %{run_id: run.id, status: "accepted"}})
+      {:ok, %{"outcome" => "not_repairable"}} ->
+        conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
 
-        {:error, :not_repairable} ->
-          conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
-      end
-    else
-      conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+      {:error, %Ash.Error.Forbidden{}} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+
+      {:error, _invalid_or_unknown} ->
+        conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
     end
   end
 
@@ -189,7 +192,9 @@ defmodule MemHouseWeb.MemoryController do
   or a hidden corpus count.
   """
   def source_search(conn, params) do
-    result = Memory.search_sources(params, conn.assigns.current_actor)
+    {:ok, %{"outcome" => "ok", "data" => result}} =
+      run_public_action(:source_search, params, conn.assigns.current_actor)
+
     json(conn, %{data: result})
   end
 
@@ -201,9 +206,12 @@ defmodule MemHouseWeb.MemoryController do
   boundary. Missing and unauthorized targets share one opaque 404.
   """
   def lineage(conn, params) do
-    case Memory.evidence_lineage(params, conn.assigns.current_actor) do
-      {:ok, result} -> json(conn, %{data: result})
-      {:error, :not_found} -> conn |> put_status(:not_found) |> json(%{error: "Not found"})
+    case run_public_action(:evidence_lineage, params, conn.assigns.current_actor) do
+      {:ok, %{"outcome" => "ok", "data" => result}} ->
+        json(conn, %{data: result})
+
+      {:ok, %{"outcome" => "not_found"}} ->
+        conn |> put_status(:not_found) |> json(%{error: "Not found"})
     end
   end
 
@@ -215,7 +223,9 @@ defmodule MemHouseWeb.MemoryController do
   rules as search; it grants no additional scope access.
   """
   def identity_profile(conn, params) do
-    result = Memory.stable_identity_profile(params, conn.assigns.current_actor)
+    {:ok, %{"outcome" => "ok", "data" => result}} =
+      run_public_action(:stable_identity_profile, params, conn.assigns.current_actor)
+
     json(conn, %{data: result})
   end
 
@@ -303,5 +313,14 @@ defmodule MemHouseWeb.MemoryController do
       |> Memory.query_knowledge(conn.assigns.current_actor)
 
     json(conn, %{data: result})
+  end
+
+  # Public controllers are protocol adapters. The action resource owns input
+  # typing and authorization; the authenticated actor is passed through
+  # unchanged so downstream Account, scope, and RLS policy remains effective.
+  defp run_public_action(action, params, actor) do
+    PublicOperations
+    |> Ash.ActionInput.for_action(action, params)
+    |> Ash.run_action(actor: actor)
   end
 end

@@ -284,8 +284,34 @@ defmodule MemHouseWeb.MemoryControllerTest do
       [Ecto.UUID.dump!(message["id"])]
     )
 
-    response =
+    member =
+      Identity.provision_agent(actor, %{
+        "key" => "requeue-member",
+        "scope_path" => "/",
+        "role" => "member"
+      })
+
+    denied =
       conn
+      |> with_identity(member.api_key)
+      |> post(~p"/api/v1/operations/ingest/#{message["id"]}/requeue")
+
+    assert %{"error" => "Forbidden"} = json_response(denied, 403)
+
+    assert %{rows: [["terminal", "structured_validation_exhausted"]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT status, last_error_class
+               FROM pipeline_runs
+               WHERE target_id = $1 AND kind = 'extraction'
+               """,
+               [Ecto.UUID.dump!(message["id"])]
+             )
+
+    response =
+      denied
+      |> recycle()
       |> with_identity(token)
       |> post(~p"/api/v1/operations/ingest/#{message["id"]}/requeue")
 
@@ -310,6 +336,14 @@ defmodule MemHouseWeb.MemoryControllerTest do
       |> post(~p"/api/v1/operations/ingest/#{message["id"]}/requeue")
 
     assert %{"error" => "Extraction is not repairable"} = json_response(conflict, 409)
+
+    invalid =
+      conflict
+      |> recycle()
+      |> with_identity(token)
+      |> post("/api/v1/operations/ingest/not-a-uuid/requeue")
+
+    assert %{"error" => "Extraction is not repairable"} = json_response(invalid, 409)
   end
 
   test "POST /api/v1/operations/dream enqueues an Account dream-time pass", %{

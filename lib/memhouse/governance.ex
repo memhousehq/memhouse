@@ -52,6 +52,7 @@ defmodule MemHouse.Governance do
     resource MemHouse.Governance.PeerAskPreference
     resource MemHouse.Governance.ErasureRequest
     resource MemHouse.Governance.McpTools
+    resource MemHouse.Governance.PublicOperations
   end
 
   # Complete machine surface: raw ingest, governed reads, the caller's frozen question, and
