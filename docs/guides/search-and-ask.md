@@ -116,7 +116,10 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/ask \
 ```
 
 `question` is required. All `search` parameters apply; `profile` defaults to
-`thorough`.
+`thorough`. Add `effort: "low"`, `"medium"`, or `"high"` to use the bounded
+read-only planner. It may select governed knowledge through stable profile and
+lineage reads or recover a bounded authorized source-message excerpt; it has no
+write tool.
 
 The response is the search payload plus `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and
@@ -143,10 +146,11 @@ Only its bounded, final-ranked head enters the answer prompt.
     plain text in `supporting_statements`, so you lose nothing but the false
     confidence.
 
-Retrieval for `ask` is restricted to knowledge items, so every citation is a
-governed statement rather than a raw message. Citation ids the model invented
-or did not retrieve are removed; if none survive, the answer becomes the empty
-abstention with `answer_confidence` 0.
+Fixed retrieval for `ask` is restricted to governed knowledge. With a named
+effort, a citation may instead name an authorized immutable source message and
+the response includes its bounded excerpt and stable source metadata. Citation
+ids the model invented or did not retrieve are removed; if none survive, the
+answer becomes the empty abstention with `answer_confidence` 0.
 
 ## Choosing a profile
 

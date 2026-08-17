@@ -266,6 +266,61 @@ defmodule MemHouse.LineageIdentityProfileTest do
     refute Enum.any?(refreshed["items"], &(&1["knowledge_id"] == occupation.knowledge.id))
   end
 
+  test "bounded Ask uses profile and lineage tools as cited governed evidence" do
+    name = seed_active!("planner-facades", "Avery's name is Avery Jordan.", "name")
+
+    profile_result =
+      Memory.ask(%{
+        "account_key" => "planner-facades",
+        "peer_key" => "avery",
+        "scope_path" => name.scope.path,
+        "question" => "Who am I?",
+        "profile" => "balanced",
+        "effort" => "low"
+      })
+
+    assert Enum.any?(profile_result["recall_evidence"], fn evidence ->
+             evidence["id"] == name.knowledge.id and
+               evidence["evidence_type"] == "knowledge" and
+               evidence["profile_category"] == "name"
+           end)
+
+    root =
+      seed_active!(
+        "planner-facades",
+        "The Orchid release uses a cobalt token.",
+        "root"
+      )
+
+    related =
+      seed_active!(
+        "planner-facades",
+        "Morgan owns the approval step.",
+        "related"
+      )
+
+    relation!(root, related, "supports")
+
+    lineage_result =
+      Memory.ask(%{
+        "account_key" => "planner-facades",
+        "peer_key" => "avery",
+        "scope_path" => root.scope.path,
+        "question" => "What token does the Orchid release use?",
+        "profile" => "balanced",
+        "effort" => "medium"
+      })
+
+    assert Enum.any?(lineage_result["recall"]["outcomes"], fn outcome ->
+             outcome["tool"] == "lineage" and outcome["status"] == "completed"
+           end)
+
+    assert Enum.any?(lineage_result["recall_evidence"], fn evidence ->
+             evidence["id"] == related.knowledge.id and
+               evidence["evidence_type"] == "knowledge"
+           end)
+  end
+
   test "profile is optional and content-safe in retrieval diagnostics" do
     seed = seed_active!("identity-search", "Avery lives in Helsinki.", "search")
 

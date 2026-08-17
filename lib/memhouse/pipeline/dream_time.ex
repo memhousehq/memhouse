@@ -14,8 +14,8 @@ defmodule MemHouse.Pipeline.DreamTime do
   prompt identity so retries do not create a second pass.
   """
 
-  alias MemHouse.DataLayer
   alias MemHouse.Clock
+  alias MemHouse.DataLayer
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Model.Reasoner
   alias MemHouse.Operations.DreamTimeWatermark

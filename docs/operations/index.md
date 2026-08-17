@@ -22,7 +22,7 @@ flowchart LR
 | Install | [Release](../getting-started/install-release.md) · [Docker](../getting-started/install-docker.md) · [Source](../getting-started/install-source.md) |
 | Configure | [Configuration reference](../reference/configuration.md) |
 | Upgrade | [Upgrades](upgrades.md) |
-| Watch it | [Health and cost](health-and-costs.md) · [Observability](observability.md) |
+| Watch it | [Health and cost](health-and-costs.md) · [Observability](observability.md) · [Simplified memory rollout](simplified-memory-rollout.md) |
 | Protect it | [Backup and restore](backup-restore.md) |
 | Move it | [Export and import](portability.md) |
 

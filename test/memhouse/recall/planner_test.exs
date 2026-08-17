@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Recall.PlannerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias MemHouse.Recall.Planner
 
@@ -73,5 +73,71 @@ defmodule MemHouse.Recall.PlannerTest do
 
     assert result.evidence == []
     assert result.diagnostics.tool_calls == 0
+  end
+
+  test "emits a content-free planner budget event" do
+    handler = "planner-budget-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :recall, :planner],
+        fn event, measurements, metadata, _config ->
+          send(parent, {:planner_event, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    Planner.run("Avery secret preference text", :low, %{})
+
+    assert_receive {:planner_event, [:memhouse, :recall, :planner], measurements, metadata}
+    assert measurements.tool_calls == 0
+    assert measurements.model_calls == 0
+    assert measurements.query_tokens == 0
+    assert measurements.item_count == 0
+    assert is_integer(measurements.elapsed_ms)
+    assert metadata.effort == "low"
+    assert metadata.playbook == "preferences"
+    assert metadata.exhausted? == true
+    assert metadata.exhausted == ["iterations"]
+    refute inspect({measurements, metadata}) =~ "secret"
+  end
+
+  test "kills a tool at the hard whole-planner elapsed budget" do
+    original = Application.fetch_env!(:memhouse, :recall_planner)
+
+    Application.put_env(
+      :memhouse,
+      :recall_planner,
+      Keyword.update!(original, :low, &Map.put(&1, :max_elapsed_ms, 20))
+    )
+
+    on_exit(fn -> Application.put_env(:memhouse, :recall_planner, original) end)
+
+    started_at = System.monotonic_time(:millisecond)
+
+    result =
+      Planner.run("slow preference", :low, %{
+        profile: fn _query, _state ->
+          Process.sleep(200)
+          {:ok, [%{"id" => "must-not-arrive", "evidence_type" => "knowledge"}]}
+        end
+      })
+
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert elapsed_ms < 150
+    assert result.evidence == []
+    assert result.diagnostics.tool_calls == 1
+    assert result.diagnostics.exhausted == ["elapsed"]
+
+    assert [%{status: "failed", reason_class: "timeout", admitted_items: 0}] =
+             Enum.map(
+               result.diagnostics.outcomes,
+               &Map.take(&1, ~w(status reason_class admitted_items)a)
+             )
   end
 end

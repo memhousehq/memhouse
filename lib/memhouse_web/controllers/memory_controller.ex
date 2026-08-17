@@ -224,7 +224,9 @@ defmodule MemHouseWeb.MemoryController do
 
     Body: `question` is required; every `search/2` parameter is also accepted. `profile`
     defaults to `"thorough"` rather than `"balanced"`, because an answer justifies more
-    latency than a bare search.
+    latency than a bare search. Optional `effort` is `low`, `medium`, or `high`; it selects
+    the bounded read-only planner over governed knowledge, stable profile, typed lineage,
+    and authorized source-message search.
 
     Returns `%{"data" => result}`: the search payload merged with `answer`, `citations`,
     `abstained`, `answer_confidence`, `answer_degraded`, `answer_context_count`, and

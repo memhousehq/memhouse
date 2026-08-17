@@ -80,6 +80,13 @@ and one deterministic failure class. The latest outcome observed on the node is
 also visible to account administrators at `/console/operations`; tool search
 and ask results show the same additive details in `/console/tools`.
 
+A bounded adaptive Ask also emits `[:memhouse, :recall, :planner]` once per
+planner run. Its measurements are elapsed milliseconds, tool/model call counts,
+query-token estimate, and admitted item count. Metadata names the effort,
+deterministic playbook, and exhausted bounds. It contains no query or evidence
+text. Use it to alert on planner exhaustion and to compare call and latency
+budgets during the [simplified-memory canary](simplified-memory-rollout.md).
+
 ## Reading a failed model call
 
 A failed model call sets `error.type` on its span and writes the same string as

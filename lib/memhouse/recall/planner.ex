@@ -8,6 +8,9 @@ defmodule MemHouse.Recall.Planner do
   playbooks are deterministic, independently named, and treat retrieved text as
   evidence rather than instructions. Stable `{type, id}` keys deduplicate all
   admitted evidence before it can be billed or supplied to answer generation.
+  Every tool runs only for the whole-planner budget that remains; a late tool is
+  killed and recorded as a content-free timeout rather than overrunning the
+  selected effort.
   """
 
   alias MemHouse.Clock
@@ -56,19 +59,38 @@ defmodule MemHouse.Recall.Planner do
 
     elapsed_ms = Clock.monotonic_ms() - started_at
 
+    diagnostics = %{
+      effort: Atom.to_string(effort),
+      playbook: Atom.to_string(state.playbook),
+      tool_calls: state.calls,
+      model_calls: 0,
+      query_tokens: state.query_tokens,
+      elapsed_ms: elapsed_ms,
+      item_count: length(state.evidence),
+      exhausted: state.exhausted |> Enum.reverse() |> Enum.uniq(),
+      outcomes: Enum.reverse(state.outcomes)
+    }
+
+    :telemetry.execute(
+      [:memhouse, :recall, :planner],
+      %{
+        elapsed_ms: diagnostics.elapsed_ms,
+        tool_calls: diagnostics.tool_calls,
+        model_calls: diagnostics.model_calls,
+        query_tokens: diagnostics.query_tokens,
+        item_count: diagnostics.item_count
+      },
+      %{
+        effort: diagnostics.effort,
+        playbook: diagnostics.playbook,
+        exhausted: diagnostics.exhausted,
+        exhausted?: diagnostics.exhausted != []
+      }
+    )
+
     %{
       evidence: state.evidence,
-      diagnostics: %{
-        effort: Atom.to_string(effort),
-        playbook: Atom.to_string(state.playbook),
-        tool_calls: state.calls,
-        model_calls: 0,
-        query_tokens: state.query_tokens,
-        elapsed_ms: elapsed_ms,
-        item_count: length(state.evidence),
-        exhausted: state.exhausted |> Enum.reverse() |> Enum.uniq(),
-        outcomes: Enum.reverse(state.outcomes)
-      }
+      diagnostics: diagnostics
     }
   end
 
@@ -108,12 +130,15 @@ defmodule MemHouse.Recall.Planner do
       true ->
         started_at = Clock.monotonic_ms()
 
+        remaining_ms =
+          max(state.limits.max_elapsed_ms - (started_at - state.started_at), 1)
+
         public_state = %{
           evidence: state.evidence,
           remaining_items: state.limits.max_items - length(state.evidence)
         }
 
-        result = tool.(step.query, public_state)
+        {result, timed_out?} = call_tool(tool, step.query, public_state, remaining_ms)
         elapsed_ms = Clock.monotonic_ms() - started_at
 
         state = %{
@@ -123,18 +148,47 @@ defmodule MemHouse.Recall.Planner do
             seen_calls: MapSet.put(state.seen_calls, call_key)
         }
 
-        case result do
-          {:ok, items} when is_list(items) ->
+        case {result, timed_out?} do
+          {{:error, :timeout}, true} ->
+            outcome = outcome(step, "failed", "timeout", elapsed_ms, 0)
+
+            state =
+              state
+              |> Map.update!(:outcomes, &[outcome | &1])
+              |> exhaust("elapsed")
+
+            {:halt, state}
+
+          {{:ok, items}, false} when is_list(items) ->
             admit(items, step, elapsed_ms, state)
 
-          {:error, reason} ->
+          {{:error, reason}, false} ->
             outcome = outcome(step, "failed", classify_error(reason), elapsed_ms, 0)
             {:cont, %{state | outcomes: [outcome | state.outcomes]}}
 
-          _invalid ->
+          {_invalid, false} ->
             outcome = outcome(step, "failed", "invalid_result", elapsed_ms, 0)
             {:cont, %{state | outcomes: [outcome | state.outcomes]}}
         end
+    end
+  end
+
+  defp call_tool(tool, query, public_state, timeout_ms) do
+    [result] =
+      Task.async_stream(
+        [:run],
+        fn :run -> tool.(query, public_state) end,
+        max_concurrency: 1,
+        ordered: true,
+        timeout: timeout_ms,
+        on_timeout: :kill_task
+      )
+      |> Enum.to_list()
+
+    case result do
+      {:ok, value} -> {value, false}
+      {:exit, :timeout} -> {{:error, :timeout}, true}
+      {:exit, _reason} -> {{:error, :tool_error}, false}
     end
   end
 

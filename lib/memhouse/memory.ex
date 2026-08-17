@@ -43,11 +43,11 @@ defmodule MemHouse.Memory do
   alias MemHouse.Pipeline.Extractor
   alias MemHouse.Pipeline.Idempotency
   alias MemHouse.Pipeline.Lock
+  alias MemHouse.Recall.Planner, as: RecallPlanner
   alias MemHouse.Retrieval.DiagnosticGrant
   alias MemHouse.Retrieval.Profile
   alias MemHouse.Retrieval.Query, as: RetrievalQuery
   alias MemHouse.Retrieval.SourceSearch
-  alias MemHouse.Recall.Planner, as: RecallPlanner
   alias MemHouse.Skills
   alias MemHouse.Topology.Scope
 
@@ -696,10 +696,12 @@ defmodule MemHouse.Memory do
   Answers a question from governed memory and cites the knowledge it used.
 
   `attrs` takes the same keys as `search/2`, plus `"question"`, which is
-  required and raises `KeyError` when absent. The retrieval profile defaults to
-  `"thorough"` rather than the search default, because an answer is worth more
-  latency than a results list, and retrieval is narrowed to knowledge so that
-  only governed statements can be cited.
+  required and raises `KeyError` when absent. Optional `"effort"` is `"low"`,
+  `"medium"`, or `"high"`; omission keeps the fixed read. The fixed retrieval
+  profile defaults to `"thorough"` rather than the search default, because an
+  answer is worth more latency than a results list, and its base retrieval is
+  narrowed to knowledge. A named effort adds only bounded read-only profile,
+  lineage, knowledge, and authorized source-search tools.
 
   The answer is grounded twice over: the model sees nothing but the retrieved
   statements, and every citation it returns is dropped unless it matches an id
@@ -811,6 +813,7 @@ defmodule MemHouse.Memory do
     initial = Enum.map(candidates, &Map.put(&1, "evidence_type", "knowledge"))
 
     tools = %{
+      profile: fn _query, _state -> planner_identity_profile(attrs) end,
       knowledge: fn query, _state ->
         result =
           attrs
@@ -822,7 +825,8 @@ defmodule MemHouse.Memory do
         {:ok, Enum.map(result["candidates"], &Map.put(&1, "evidence_type", "knowledge"))}
       end,
       source_exact: fn query, _state -> planner_source_search(attrs, query, "exact") end,
-      source_semantic: fn query, _state -> planner_source_search(attrs, query, "semantic") end
+      source_semantic: fn query, _state -> planner_source_search(attrs, query, "semantic") end,
+      lineage: fn query, state -> planner_lineage(attrs, query, state) end
     }
 
     result =
@@ -837,6 +841,89 @@ defmodule MemHouse.Memory do
       |> Map.put("used", true)
 
     {result.evidence, recall}
+  end
+
+  defp planner_identity_profile(attrs) do
+    evidence =
+      attrs
+      |> stable_identity_profile()
+      |> Map.get("items", [])
+      |> Enum.map(fn item ->
+        %{
+          "id" => item["knowledge_id"],
+          "evidence_type" => "knowledge",
+          "candidate_type" => "knowledge",
+          "statement" => item["statement"],
+          "relevant_from" => nil,
+          "relevant_until" => nil,
+          "profile_category" => item["category"],
+          "profile_conflict" => item["conflict"]
+        }
+      end)
+
+    {:ok, evidence}
+  end
+
+  defp planner_lineage(attrs, _query, state) do
+    root_id =
+      Enum.find_value(state.evidence, fn item ->
+        type = item["evidence_type"] || item["candidate_type"]
+        if type == "knowledge", do: item["id"]
+      end)
+
+    if is_binary(root_id) do
+      lineage_attrs =
+        attrs
+        |> Map.put("target_type", "knowledge")
+        |> Map.put("target_id", root_id)
+        |> Map.put("max_depth", 2)
+        |> Map.put("max_fan_out", 4)
+        |> Map.put("max_nodes", min(state.remaining_items + 1, 12))
+
+      case evidence_lineage(lineage_attrs) do
+        {:ok, lineage} ->
+          ids =
+            lineage["nodes"]
+            |> Enum.filter(&(&1["type"] == "knowledge" and &1["id"] != root_id))
+            |> Enum.map(& &1["id"])
+            |> Enum.reject(&is_nil/1)
+            |> Enum.uniq()
+            |> Enum.take(state.remaining_items)
+
+          {:ok, planner_visible_knowledge(attrs, ids)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:ok, []}
+    end
+  end
+
+  defp planner_visible_knowledge(_attrs, []), do: []
+
+  defp planner_visible_knowledge(attrs, ids) do
+    with_account(attrs, fn account, actor ->
+      {reader, internal_reader?} = reader_and_posture!(account, actor, attrs)
+      scopes = visible_scopes(account.id, reader, Map.get(attrs, "scope_path", "/poc"))
+      scope_ids = Enum.map(scopes, & &1.id)
+      scope_paths = Map.new(scopes, &{&1.id, &1.path})
+
+      scope_ids
+      |> knowledge_read_query("active", reader, internal_reader?)
+      |> Ash.Query.filter(id in ^ids)
+      |> Ash.Query.sort(id: :asc)
+      |> Ash.Query.limit(length(ids))
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read!(actor: reader)
+      |> Enum.map(fn item ->
+        item
+        |> record_to_map()
+        |> Map.put("scope_path", Map.fetch!(scope_paths, item.scope_id))
+        |> Map.put("evidence_type", "knowledge")
+        |> Map.put("candidate_type", "knowledge")
+      end)
+    end)
   end
 
   defp planner_source_search(attrs, query, mode) do

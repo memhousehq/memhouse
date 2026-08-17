@@ -11,6 +11,12 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Dream-time now gates work by a durable timestamp-and-id delta cursor, minimum
+  changes, idle/interval windows, hard delta/working-set caps, and a whole-call
+  elapsed budget. Update reasoning and multi-source synthesis have separate
+  schemas and prompt identities; update remains enabled and synthesis remains
+  off until matched evaluation approves it.
+
 - Message extraction now token-batches adjacent pending anchors from the same
   Account, scope, and session through one provider call. Each envelope keeps
   its original replay key and exact source allowlist; governed effects,
@@ -26,6 +32,24 @@ changelog entry and contract-version transition.
   remain immutable evidence of the previous `k = 60` RRF baseline. See ADR 0020.
 
 ### Added
+
+- An opt-in `minimal` semantic-plus-lexical retrieval profile and bounded
+  read-only Ask efforts (`low`, `medium`, `high`) add content-free budget
+  diagnostics and hard per-tool elapsed enforcement. The planner can read
+  governed knowledge, stable-profile knowledge, typed lineage, and authorized
+  source messages; it has no write tool. Existing profiles remain the default
+  and rollback path.
+
+- `POST /api/v1/source-search` provides Account/scope-authorized exact and
+  embedding-identity-matched recall over immutable messages with bounded
+  excerpts and stable citation ids. `POST /api/v1/lineage` projects bounded
+  typed evidence lineage, and `POST /api/v1/stable-profile` builds a live,
+  model-free stable identity projection from governed direct evidence.
+
+- `mix memhouse.eval.experiment` registers one current and one experimental
+  variant over the same dataset and emits a revision-, backend-, model-,
+  prompt-, profile-, seed-, and component-pinned comparison bundle with
+  quality, citation, isolation, cost, latency, and replay gates.
 
 - Operational retention now prunes terminal Oban jobs and expired pipeline, usage, gate-decision,
   and lifecycle rows on configurable horizons. The operations summary separates durable and

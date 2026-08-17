@@ -374,15 +374,19 @@ canonical message removes both full-text and vector hits in the same delete.
 `question` is required; every `search` field is also accepted, including
 `peer_key`, but `profile` defaults to `"thorough"`. Optional `effort` is
 `low`, `medium`, or `high`; omission keeps fixed recall. A named effort runs the
-bounded read-only recall planner over authorized knowledge and source-message
-search. When the experimental minimal profile is enabled, effort-based Ask uses
-it as the base pass unless the request explicitly selects another profile.
+bounded read-only recall planner over authorized knowledge, the stable identity
+projection, typed evidence lineage, and exact/semantic source-message search.
+Profile entries and lineage nodes only select governed knowledge; they do not
+become independent facts or expose rationale. When the experimental minimal
+profile is enabled, effort-based Ask uses it as the base pass unless the request
+explicitly selects another profile.
 
 Returns the search payload merged with `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and
-`answerer_prompt_tokens`. Retrieval is restricted to
-knowledge items, so citations are governed statements. `abstained: true` is an
-ordinary outcome.
+`answerer_prompt_tokens`. Fixed recall cites governed knowledge. Adaptive
+recall may additionally cite a bounded, authorized immutable source-message
+excerpt. Every citation id must occur in the admitted evidence.
+`abstained: true` is an ordinary outcome.
 
 The search payload keeps all returned candidates. The answerer sees only the
 first `MEMHOUSE_ANSWER_CONTEXT_LIMIT` candidates after reranking. It also sees

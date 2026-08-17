@@ -88,47 +88,51 @@ defmodule MemHouse.Lineage do
   end
 
   defp walk(state, context, budgets) do
-    cond do
-      length(state.nodes) >= budgets.max_nodes and not :queue.is_empty(state.queue) ->
-        %{state | terminations: increment(state.terminations, :total_nodes)}
-
-      true ->
-        case :queue.out(state.queue) do
-          {:empty, _queue} ->
-            state
-
-          {{:value, {record, depth}}, queue} ->
-            key = {node_type(record), record.id}
-
-            if MapSet.member?(state.seen, key) do
-              walk(%{state | queue: queue}, context, budgets)
-            else
-              seen = MapSet.put(state.seen, key)
-              {refs, terminations} = references(record, seen, context, budgets)
-              {kept, dropped} = Enum.split(refs, budgets.max_fan_out)
-
-              terminations =
-                if dropped == [],
-                  do: terminations,
-                  else: Map.update!(terminations, :fan_out, &(&1 + length(dropped)))
-
-              {next, terminations} = enqueue(kept, depth, budgets, terminations)
-              node = node(record, depth, kept)
-
-              walk(
-                %{
-                  state
-                  | queue: Enum.reduce(next, queue, &:queue.in/2),
-                    seen: seen,
-                    nodes: [node | state.nodes],
-                    terminations: merge_counts(state.terminations, terminations)
-                },
-                context,
-                budgets
-              )
-            end
-        end
+    if length(state.nodes) >= budgets.max_nodes and not :queue.is_empty(state.queue) do
+      %{state | terminations: increment(state.terminations, :total_nodes)}
+    else
+      state.queue
+      |> :queue.out()
+      |> advance(state, context, budgets)
     end
+  end
+
+  defp advance({:empty, _queue}, state, _context, _budgets), do: state
+
+  defp advance({{:value, {record, depth}}, queue}, state, context, budgets) do
+    key = {node_type(record), record.id}
+
+    if MapSet.member?(state.seen, key) do
+      walk(%{state | queue: queue}, context, budgets)
+    else
+      visit(record, depth, queue, state, context, budgets, key)
+    end
+  end
+
+  defp visit(record, depth, queue, state, context, budgets, key) do
+    seen = MapSet.put(state.seen, key)
+    {refs, terminations} = references(record, seen, context, budgets)
+    {kept, dropped} = Enum.split(refs, budgets.max_fan_out)
+
+    terminations =
+      if dropped == [],
+        do: terminations,
+        else: Map.update!(terminations, :fan_out, &(&1 + length(dropped)))
+
+    {next, terminations} = enqueue(kept, depth, budgets, terminations)
+    node = node(record, depth, kept)
+
+    walk(
+      %{
+        state
+        | queue: Enum.reduce(next, queue, &:queue.in/2),
+          seen: seen,
+          nodes: [node | state.nodes],
+          terminations: merge_counts(state.terminations, terminations)
+      },
+      context,
+      budgets
+    )
   end
 
   defp references(%KnowledgeItem{} = item, seen, context, budgets) do

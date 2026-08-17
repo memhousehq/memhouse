@@ -208,8 +208,10 @@ The profile keeps contradictory identity claims side by side. It excludes
 transient state, preferences, behavioral summaries, inferred claims, and
 sensitive traits. Each entry links to its governed knowledge id and direct
 source ids; consumers cite that knowledge rather than the projection. Search
-can include this orientation with `include_identity_profile`, but the profile
-never becomes a retrieval candidate and does not change rank.
+can include this orientation with `include_identity_profile` without changing
+rank. A bounded adaptive Ask may admit those same governed knowledge rows as
+candidates through its `profile` tool; it never cites the projection as a
+separate fact.
 
 ## Entities are internal
 
@@ -294,11 +296,14 @@ and PubSub/ETS invalidation. A model call does not belong on this read path.
 
 ## Ask answers with a confidence
 
-By default, `ask` retrieves with the `thorough` profile and restricts retrieval to knowledge
-items so that citations are governed statements, and answers over what it
-found. It does not refuse: it states what the retrieved statements make most
-probable and reports `answer_confidence`, an integer from 0 to 100, for its own
-certainty.
+By default, fixed `ask` retrieves with the `thorough` profile and restricts
+retrieval to governed knowledge. A named `low`, `medium`, or `high` effort runs
+the bounded read-only planner over governed knowledge, stable-profile
+knowledge, typed lineage, and authorized source-message search. Profile and
+lineage are selection tools: answer candidates remain governed knowledge or
+bounded immutable source excerpts with resolvable ids. The answerer states what
+those retrieved statements make most probable and reports
+`answer_confidence`, an integer from 0 to 100, for its own certainty.
 
 A model answer below 50 also sets `abstained`. That pair — cited answer, low
 confidence, `abstained == true` — is the normal shape for a weakly supported
