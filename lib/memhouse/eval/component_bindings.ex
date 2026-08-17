@@ -33,7 +33,7 @@ defmodule MemHouse.Eval.ComponentBindings do
 
   @doc "Returns the exact executable component map for `variant`."
   def resolve!(variant) when is_map(variant) do
-    profile = profile_configuration!(variant["profile"])
+    profile = variant_profile_configuration!(variant["profile"])
     strategies = effective_strategies!(variant, profile)
     effort = Map.get(variant, "recall_effort", "fixed")
     deadline = Map.get(variant, "deadline", "disabled")
@@ -177,20 +177,11 @@ defmodule MemHouse.Eval.ComponentBindings do
 
   defp semantic_strategy?(strategy), do: strategy in ["semantic", "semantic_dual_lane"]
 
-  defp profile_configuration!(name) do
-    name = profile_name!(name)
+  # Execute definitions have always required JSON string names. Keep that
+  # boundary while delegating the closed name/configuration mapping.
+  defp variant_profile_configuration!(name) when is_binary(name),
+    do: MemHouse.Retrieval.Profile.configuration!(name)
 
-    :memhouse
-    |> Application.fetch_env!(:retrieval_profiles)
-    |> Keyword.fetch!(name)
-    |> Map.new()
-  end
-
-  defp profile_name!("fast"), do: :fast
-  defp profile_name!("balanced"), do: :balanced
-  defp profile_name!("thorough"), do: :thorough
-  defp profile_name!("minimal"), do: :minimal
-
-  defp profile_name!(name),
+  defp variant_profile_configuration!(name),
     do: raise(ArgumentError, "unknown retrieval profile: #{inspect(name)}")
 end

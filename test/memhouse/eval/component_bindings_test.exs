@@ -73,6 +73,24 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
                  end
   end
 
+  test "profile bindings keep the closed JSON string boundary" do
+    assert_raise ArgumentError, ~r/unknown retrieval profile: :balanced/, fn ->
+      ComponentBindings.resolve!(%{
+        "id" => "atom-profile",
+        "profile" => :balanced,
+        "strategies" => nil
+      })
+    end
+
+    assert_raise ArgumentError, ~r/unknown retrieval profile: "balanced-ish"/, fn ->
+      ComponentBindings.resolve!(%{
+        "id" => "unknown-profile",
+        "profile" => "balanced-ish",
+        "strategies" => nil
+      })
+    end
+  end
+
   test "runtime feature switches are restored when execution raises" do
     batching = Application.fetch_env!(:memhouse, :extraction_batching)
     dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)

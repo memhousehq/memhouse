@@ -14,6 +14,7 @@ defmodule MemHouse.Eval.Experiment do
   """
 
   alias MemHouse.Clock
+  alias MemHouse.Retrieval.Profile
 
   alias MemHouse.Eval.{
     Adapter,
@@ -949,8 +950,7 @@ defmodule MemHouse.Eval.Experiment do
   end
 
   defp profile_identity(variant, report) do
-    name = profile_name!(variant["profile"])
-    config = :memhouse |> Application.fetch_env!(:retrieval_profiles) |> Keyword.fetch!(name)
+    config = Profile.configuration!(variant["profile"])
     strategies = variant["strategies"] || Enum.map(config.strategies, &Atom.to_string/1)
 
     enabled =
@@ -975,14 +975,6 @@ defmodule MemHouse.Eval.Experiment do
       "deadline" => Map.get(variant, "deadline", "disabled")
     }
   end
-
-  defp profile_name!("fast"), do: :fast
-  defp profile_name!("balanced"), do: :balanced
-  defp profile_name!("thorough"), do: :thorough
-  defp profile_name!("minimal"), do: :minimal
-
-  defp profile_name!(name),
-    do: raise(ArgumentError, "unknown retrieval profile: #{inspect(name)}")
 
   defp non_empty_string?(value), do: is_binary(value) and value != ""
 

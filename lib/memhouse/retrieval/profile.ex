@@ -57,9 +57,8 @@ defmodule MemHouse.Retrieval.Profile do
   authorization-checked like any other read.
   """
   def resolve(name, query, opts \\ []) do
-    name = normalize_name(name)
-    ensure_enabled!(name)
-    base = runtime_profile(name)
+    base = configuration!(name, true)
+    name = base.name
 
     configured =
       if Keyword.get(opts, :inherit?, true) do
@@ -118,6 +117,17 @@ defmodule MemHouse.Retrieval.Profile do
   @doc "Returns every registered strategy name, for validation and reporting."
   def strategy_names, do: Map.keys(@strategy_modules)
 
+  @doc """
+  Returns the configured settings for one closed retrieval profile name.
+
+  This function is the shared configuration-introspection seam for internal
+  reporting and evaluation code. It accepts the same atom or string names as
+  `resolve/3`, rejects every other name without creating atoms, and does not
+  enable a feature-gated profile. Request execution must still use `resolve/3`,
+  which enforces the experimental-profile gate before reading its settings.
+  """
+  def configuration!(name), do: configuration!(name, false)
+
   # Nearest scope's highest active version wins; Account-wide is fallback, not another layer.
   defp inherited_profile(name, query) do
     records =
@@ -172,7 +182,10 @@ defmodule MemHouse.Retrieval.Profile do
   end
 
   # Missing profile configuration is a deployment error, never a silent default.
-  defp runtime_profile(name) do
+  defp configuration!(name, enforce_enabled?) do
+    name = normalize_name(name)
+    if enforce_enabled?, do: ensure_enabled!(name)
+
     config = Application.fetch_env!(:memhouse, :retrieval_profiles)
     values = config |> Keyword.fetch!(name) |> Map.new()
 

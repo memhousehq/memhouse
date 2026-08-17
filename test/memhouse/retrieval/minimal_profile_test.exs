@@ -44,4 +44,19 @@ defmodule MemHouse.Retrieval.MinimalProfileTest do
     refute :entity_match in profile.strategies
     refute :relation_expand in profile.strategies
   end
+
+  test "configuration introspection centralizes closed names without bypassing the gate" do
+    query = %Query{account_id: Ash.UUID.generate(), actor: %{}, scope_ids: []}
+
+    assert Profile.configuration!("balanced") == Profile.configuration!(:balanced)
+    assert Profile.configuration!("minimal").name == :minimal
+
+    assert_raise ArgumentError, ~r/unknown retrieval profile: "minimal-ish"/, fn ->
+      Profile.configuration!("minimal-ish")
+    end
+
+    assert_raise ArgumentError, ~r/experimental minimal retrieval is disabled/, fn ->
+      Profile.resolve("minimal", query, inherit?: false)
+    end
+  end
 end
