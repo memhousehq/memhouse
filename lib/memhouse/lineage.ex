@@ -69,7 +69,9 @@ defmodule MemHouse.Lineage do
   defp traverse(root, context, budgets) do
     state = %{
       queue: :queue.from_list([{root, 0}]),
-      seen: MapSet.new(),
+      # Values are never read. A plain key map keeps the recursive state structural instead of
+      # carrying MapSet's opaque internal representation across traversal functions.
+      seen: %{},
       nodes: [],
       terminations: empty_counts()
     }
@@ -102,7 +104,7 @@ defmodule MemHouse.Lineage do
   defp advance({{:value, {record, depth}}, queue}, state, context, budgets) do
     key = {node_type(record), record.id}
 
-    if MapSet.member?(state.seen, key) do
+    if Map.has_key?(state.seen, key) do
       walk(%{state | queue: queue}, context, budgets)
     else
       visit(record, depth, queue, state, context, budgets, key)
@@ -110,7 +112,7 @@ defmodule MemHouse.Lineage do
   end
 
   defp visit(record, depth, queue, state, context, budgets, key) do
-    seen = MapSet.put(state.seen, key)
+    seen = Map.put(state.seen, key, true)
     {refs, terminations} = references(record, seen, context, budgets)
     {kept, dropped} = Enum.split(refs, budgets.max_fan_out)
 
@@ -185,7 +187,7 @@ defmodule MemHouse.Lineage do
           ref.status == "authorization_hidden" ->
             increment(acc, :authorization_hidden)
 
-          ref.status == "visible" and MapSet.member?(seen, {ref.type, ref.id}) ->
+          ref.status == "visible" and Map.has_key?(seen, {ref.type, ref.id}) ->
             increment(acc, :cycle)
 
           true ->
