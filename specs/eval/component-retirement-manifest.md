@@ -38,6 +38,10 @@ window.
   executed benchmark.
 - The source, schema, authorization, replay, and budget contract tests named in
   the comparison bundle are deterministic safety evidence.
+- `specs/eval/compact-extraction-offline-results.md` records a matched
+  deterministic schema/economics comparison. It demonstrates a smaller
+  fail-closed contract, but explicitly does not establish semantic
+  non-inferiority, live tokens, cost, or latency.
 
 Together with the deterministic safety suites, this evidence supports an
 opt-in implementation canary. It does **not** establish marginal value by
