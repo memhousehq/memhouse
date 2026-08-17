@@ -254,6 +254,18 @@ document semantics.
 
 ## Budgets and cost
 
+### Experimental minimal recall
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` | `false` | Enables the reversible semantic-plus-lexical `minimal` retrieval profile |
+
+The experimental profile executes no temporal, salience-recency, entity-match,
+relation-expansion, projection, or rerank read stage. It remains opt-in until
+matched offline evaluation meets the quality, citation, isolation, latency,
+and maintenance gates. Disabling it loses no data and immediately restores the
+existing profile choices.
+
 | Variable | Meaning |
 | --- | --- |
 | `MEMHOUSE_BUDGET_LIMITS_JSON` | Daily token counters, e.g. `{"input_tokens":1000000,"output_tokens":250000,"embedding_tokens":2000000}` |

@@ -153,6 +153,13 @@ weights and rank constant, whether the head is reranked, and the deadline.
 | `fast` | semantic, salience-recency | no | 100 ms | The only profile allowed to run live when context assembly misses its projection cache |
 | `balanced` | semantic, lexical, temporal, entity-match | no | 300 ms | Default for `search` |
 | `thorough` | all six, including one-hop relation expansion | yes | 1500 ms | Default for `ask` |
+| `minimal` | semantic and lexical only | no | 300 ms | Experimental; requires `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true` |
+
+The `minimal` profile deliberately skips temporal and salience seeds, entity
+matching, relation expansion, and reranking. It does not delete or change their
+data while experimental. Selection is explicit and observable in the ordinary
+profile fields, and disabling the feature flag restores the existing profiles
+without a migration.
 
 Profiles inherit down the scope tree, nearest-wins, so a scope can tighten or
 loosen retrieval without a global change. The profile version travels back with
@@ -257,7 +264,7 @@ and PubSub/ETS invalidation. A model call does not belong on this read path.
 
 ## Ask answers with a confidence
 
-`ask` retrieves with the `thorough` profile, restricts retrieval to knowledge
+By default, `ask` retrieves with the `thorough` profile and restricts retrieval to knowledge
 items so that citations are governed statements, and answers over what it
 found. It does not refuse: it states what the retrieved statements make most
 probable and reports `answer_confidence`, an integer from 0 to 100, for its own

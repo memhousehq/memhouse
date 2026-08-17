@@ -301,7 +301,11 @@ canonical message removes both full-text and vector hits in the same delete.
 ## `POST /api/v1/ask`
 
 `question` is required; every `search` field is also accepted, including
-`peer_key`, but `profile` defaults to `"thorough"`.
+`peer_key`, but `profile` defaults to `"thorough"`. Optional `effort` is
+`low`, `medium`, or `high`; omission keeps fixed recall. A named effort runs the
+bounded read-only recall planner over authorized knowledge and source-message
+search. When the experimental minimal profile is enabled, effort-based Ask uses
+it as the base pass unless the request explicitly selects another profile.
 
 Returns the search payload merged with `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and

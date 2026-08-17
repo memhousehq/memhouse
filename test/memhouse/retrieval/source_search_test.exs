@@ -262,6 +262,32 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert result["results"] == []
   end
 
+  test "bounded Ask recall admits source evidence without mutating memory" do
+    message = ingest!("source-planner", "/source/planner", "garden schedule is Friday", "one", 1)
+
+    before_count = message_count!("source-planner")
+
+    result =
+      Memory.ask(%{
+        "account_key" => "source-planner",
+        "scope_path" => "/source/planner",
+        "question" => "What is the garden schedule?",
+        "effort" => "low"
+      })
+
+    assert result["recall"]["used"] == true
+    assert result["recall"]["effort"] == "low"
+    assert result["recall"]["tool_calls"] <= 3
+
+    assert Enum.any?(result["recall_evidence"], fn evidence ->
+             evidence["id"] == message["id"] and
+               evidence["evidence_type"] == "source_message" and
+               evidence["candidate_type"] == "source_message"
+           end)
+
+    assert message_count!("source-planner") == before_count
+  end
+
   defp ingest!(account_key, scope_path, content, session_id, second) do
     {:ok, message} =
       Memory.ingest_message(%{
@@ -306,6 +332,19 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
         |> Ash.read_one!(actor: %Actor{actor | role: :system, pipeline?: true})
 
       not is_nil(message.source_indexed_at)
+    end)
+  end
+
+  defp message_count!(account_key) do
+    DataLayer.with_account_key(account_key, fn account, _actor ->
+      %{rows: [[count]]} =
+        Ecto.Adapters.SQL.query!(
+          MemHouse.Repo,
+          "SELECT count(*) FROM messages WHERE account_id = $1",
+          [Ecto.UUID.dump!(account.id)]
+        )
+
+      count
     end)
   end
 end

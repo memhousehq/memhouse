@@ -246,6 +246,18 @@ config :memhouse, :retrieval_profiles,
     rerank: true,
     deadline_ms: 1500
   },
+  # Experimental Honcho-informed baseline: only semantic and exact-text
+  # knowledge seeds. It runs no temporal/salience/entity/expansion/rerank stage
+  # and is disabled until an operator explicitly opts into matched evaluation.
+  minimal: %{
+    version: "minimal-exp-1",
+    strategies: [:semantic, :lexical],
+    weights: %{semantic: 1.0, lexical: 1.0},
+    rrf_k: 15,
+    rerank: false,
+    deadline_ms: 300
+  },
+  minimal_enabled: false,
   # Deployment-level allowlist. A strategy absent here never runs, whatever a
   # profile asks for; operators use it to switch off an expensive lane.
   enabled_strategies: [
@@ -324,6 +336,29 @@ config :memhouse, :retrieval_profiles,
   # peer profile slices, scope cards, then knowledge — and each section stops at
   # the first entry that does not fit, so shrinking it trims the tail.
   context_budget_chars: 8_000
+
+config :memhouse, :recall_planner,
+  low: %{
+    max_iterations: 1,
+    max_tool_calls: 3,
+    max_items: 12,
+    max_query_tokens: 256,
+    max_elapsed_ms: 500
+  },
+  medium: %{
+    max_iterations: 2,
+    max_tool_calls: 6,
+    max_items: 24,
+    max_query_tokens: 512,
+    max_elapsed_ms: 1_000
+  },
+  high: %{
+    max_iterations: 3,
+    max_tool_calls: 9,
+    max_items: 40,
+    max_query_tokens: 1_024,
+    max_elapsed_ms: 2_000
+  }
 
 # Inline peer validation. When a peer performs a read, the system may attach one
 # pending question to the response so the peer can confirm or correct a claim.

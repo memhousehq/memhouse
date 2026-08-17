@@ -4,7 +4,8 @@ defmodule MemHouse.Retrieval.Profile do
   @moduledoc """
   Resolves retrieval strategies, fusion settings, reranking, deadline, and version.
 
-  Starts with `:fast`, `:balanced`, or `:thorough` defaults, applies the nearest active scope
+  Starts with `:fast`, `:balanced`, `:thorough`, or the feature-gated
+  experimental `:minimal` default, applies the nearest active scope
   override or Account fallback, then the deployment allowlist. Disabled strategies remain visible
   in the response. Explicit strategy lists and rerank overrides are internal-only and unknown names
   raise.
@@ -56,6 +57,7 @@ defmodule MemHouse.Retrieval.Profile do
   """
   def resolve(name, query, opts \\ []) do
     name = normalize_name(name)
+    ensure_enabled!(name)
     base = runtime_profile(name)
 
     configured =
@@ -192,13 +194,14 @@ defmodule MemHouse.Retrieval.Profile do
   end
 
   # Convert only known names; unknown input raises and cannot create atoms.
-  defp normalize_name(name) when name in [:fast, :balanced, :thorough], do: name
+  defp normalize_name(name) when name in [:fast, :balanced, :thorough, :minimal], do: name
 
   defp normalize_name(name) when is_binary(name) do
     case name do
       "fast" -> :fast
       "balanced" -> :balanced
       "thorough" -> :thorough
+      "minimal" -> :minimal
       _other -> raise ArgumentError, "unknown retrieval profile: #{inspect(name)}"
     end
   end
@@ -228,4 +231,15 @@ defmodule MemHouse.Retrieval.Profile do
       {to_string(key), if(is_map(value), do: stringify_keys(value), else: value)}
     end)
   end
+
+  defp ensure_enabled!(:minimal) do
+    unless :memhouse
+           |> Application.fetch_env!(:retrieval_profiles)
+           |> Keyword.fetch!(:minimal_enabled) do
+      raise ArgumentError,
+            "experimental minimal retrieval is disabled; set MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true"
+    end
+  end
+
+  defp ensure_enabled!(_name), do: :ok
 end

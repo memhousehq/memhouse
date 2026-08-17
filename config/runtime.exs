@@ -639,6 +639,16 @@ retrieval_strategy_names = %{
 
 retrieval_profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
 
+retrieval_profiles =
+  Keyword.put(
+    retrieval_profiles,
+    :minimal_enabled,
+    env_bool.(
+      "MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL",
+      Keyword.fetch!(retrieval_profiles, :minimal_enabled)
+    )
+  )
+
 # An unknown name raises rather than being ignored. Silently dropping a
 # misspelled strategy would quietly degrade recall with no visible symptom.
 enabled_retrieval_strategies =
