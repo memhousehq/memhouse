@@ -13,7 +13,11 @@ changelog entry and contract-version transition.
 
 - Matched execute experiments now accept only a closed set of component
   bindings derived from the runner's effective profile, strategies, rerank,
-  deadline, semantic-index refresh, dream-time, and durability settings.
+  deadline, extraction batching, adaptive recall permissions, separate
+  semantic-index and RecallDocument refreshes, idle scheduling, dream-time,
+  and durability settings. They count bounded database queries and new durable
+  maintenance runs without recording SQL or content, and restore feature
+  switches after every variant.
   Unknown or dishonest labels fail validation, and fixture replays cannot
   claim component execution. The committed comparison now runs the real
   `balanced` versus `minimal` profile defaults; offline semantic runs require

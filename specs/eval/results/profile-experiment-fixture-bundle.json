@@ -5,12 +5,23 @@
       "total_tokens_delta": 0,
       "total_tokens_ratio": 1.0
     },
+    "database": {
+      "queries_delta": 0,
+      "queries_ratio": 1.0,
+      "query_time_ms_delta": 0.0
+    },
     "dream": {
       "replay_durable_effects_delta": 0
     },
     "latency": {
       "recall_p95_ratio": 1.0,
       "wall_time_ratio": 1.0
+    },
+    "maintenance": {
+      "dream_time_runs_delta": 0,
+      "extraction_runs_delta": 0,
+      "pipeline_runs_created_delta": 0,
+      "projection_refresh_runs_delta": 0
     },
     "quality": {
       "accuracy_delta": 0.0,
@@ -47,6 +58,13 @@
           "output_tokens": 20,
           "total_tokens": 120
         },
+        "database": {
+          "decode_time_ms": 0.5,
+          "idle_time_ms": 0.0,
+          "queries": 12,
+          "query_time_ms": 4.0,
+          "queue_time_ms": 0.25
+        },
         "dream": {
           "attempted": 0,
           "completed": 0,
@@ -67,6 +85,20 @@
         "latency": {
           "recall_p95_ms": 10,
           "wall_time_ms": 10
+        },
+        "maintenance": {
+          "dream_time_runs": 0,
+          "extraction_runs": 2,
+          "pipeline_runs_by_kind": {
+            "extraction": 2,
+            "projection_refresh": 2
+          },
+          "pipeline_runs_by_status": {
+            "completed": 2,
+            "pending": 2
+          },
+          "pipeline_runs_created": 4,
+          "projection_refresh_runs": 2
         },
         "quality": {
           "accuracy": 1.0,
@@ -89,6 +121,13 @@
           "output_tokens": 20,
           "total_tokens": 120
         },
+        "database": {
+          "decode_time_ms": 0.5,
+          "idle_time_ms": 0.0,
+          "queries": 12,
+          "query_time_ms": 4.0,
+          "queue_time_ms": 0.25
+        },
         "dream": {
           "attempted": 0,
           "completed": 0,
@@ -109,6 +148,20 @@
         "latency": {
           "recall_p95_ms": 10,
           "wall_time_ms": 10
+        },
+        "maintenance": {
+          "dream_time_runs": 0,
+          "extraction_runs": 2,
+          "pipeline_runs_by_kind": {
+            "extraction": 2,
+            "projection_refresh": 2
+          },
+          "pipeline_runs_by_status": {
+            "completed": 2,
+            "pending": 2
+          },
+          "pipeline_runs_created": 4,
+          "projection_refresh_runs": 2
         },
         "quality": {
           "accuracy": 1.0,
@@ -215,7 +268,7 @@
     },
     "definition": {
       "schema": "memhouse-experiment-definition-1",
-      "sha256": "a981db74b289983c6ba77e9a3a8656d17ebf1eb10362eb67978b02b3b53f2c2d"
+      "sha256": "6b28e786e3567615a784c0e9fe4e0d79c74eb9991751748c0d096e2bde734df4"
     },
     "generated_at": "2026-08-17T12:00:00Z",
     "id": "profile-experiment-fixture",

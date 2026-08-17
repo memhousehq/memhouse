@@ -75,12 +75,16 @@ variant over an identical source digest. It produces an environment-resolved man
 comparison bundle. The manifest pins the source revision and dirty/clean state, Postgres mode,
 all model/prompt/pipeline identities, allowlisted generation parameters, profile configuration,
 strategy overrides, evaluation seeds, and executable component bindings. Those bindings are a
-closed map derived from effective runner inputs; unknown or mismatched labels are rejected, and
-fixture replay cannot claim that a component ran.
+closed map derived from effective runner inputs, including batching, recall effort and permissions,
+separate index/projection refreshes, idle scheduling, and explicit dream execution. Unknown or
+mismatched labels are rejected, runtime configuration is restored after every variant, and fixture
+replay cannot claim that a component ran.
 
-Account-scoped snapshots of `KnowledgeItem` and `UsageEvent` provide stored-fact, call, token,
-duration, error, and operator-priced cost deltas. The runner also counts candidate source ids that
-do not belong to the case's ingested sources; ids themselves never enter the report. Comparison
+Account-scoped snapshots of `KnowledgeItem`, `UsageEvent`, and `PipelineRun` provide stored-fact,
+call, token, duration, error, operator-priced cost, and maintenance-work deltas. A bounded Ecto
+telemetry handler counts runner queries and timings without SQL or parameters; the snapshot queries
+are excluded. The runner also counts candidate source ids that do not belong to the case's ingested
+sources; ids themselves never enter the report. Comparison
 gates cover quality regression, recall, citation correctness, unsupported non-abstaining answers,
 source-membership isolation, cost/token and latency budgets, and dream replay effects. A fixture
 mode exercises the same comparison contract without starting MemHouse, Postgres, or any provider;

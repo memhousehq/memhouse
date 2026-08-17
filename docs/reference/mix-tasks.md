@@ -270,18 +270,25 @@ Execute definitions use the deterministic providers by default. `--live-model` i
 opt-in for configured hosted providers and may incur cost. It also performs the normal generative
 role preflight. Both modes write durable rows to their scratch Accounts.
 
-Execute definitions have a closed `components` contract. Profile, effective strategy set,
-reranking, deadline, semantic-index refresh, dream-time, and durability-audit values must exactly
-match the behavior passed to the runner. An unknown key or a mismatched value fails validation;
-the map is not free-form provenance. Fixture definitions keep it empty because fixture replay does
+Execute definitions have a closed `components` contract. Profile, effective strategies and seed
+stages, reranking, deadline, extraction batching identity and limits, adaptive recall effort, source/lineage
+permissions, separate semantic-index and RecallDocument refreshes, idle scheduling gates, explicit
+dream execution, and durability audit must exactly match runner behavior. An unknown key or a
+mismatched value fails validation; the map is not free-form provenance. Runtime feature switches
+are restored even on failure. Fixture definitions keep the map empty because fixture replay does
 not execute product components.
 
-The committed smoke definition compares the real `balanced` defaults with the real `minimal`
-dual-lane-semantic-plus-lexical profile. Offline execution synchronously refreshes each isolated
-case index and the minimal RecallDocument projection, and requires existing local Ortex model and
+The committed smoke definition compares the real `balanced` defaults with the opt-in `minimal`
+dual-lane, batched, bounded-recall, idle-scheduler, and dream-pass configuration. Offline execution
+synchronously refreshes each isolated case index and, only for minimal, its RecallDocument
+projection. It requires existing local Ortex model and
 tokenizer artifacts. Missing artifacts and hosted or
 deterministic stand-in embedders are rejected before ingestion. `--live-model` is the explicit
 provider-call opt-in and may incur cost; MemHouse never substitutes fake vectors.
+
+Each measured stage also reports content-free database query counts/timings and newly-created
+maintenance `PipelineRun` counts. Snapshot reads are outside the query interval. SQL, parameters,
+results, memory content, and Account ids never enter these measurements.
 
 Fixture definitions are different: they replay content-free stage measurements without starting
 MemHouse, Postgres, or a provider. They are test evidence, not benchmark evidence, and the bundle

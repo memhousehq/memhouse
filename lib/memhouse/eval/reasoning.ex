@@ -88,7 +88,7 @@ defmodule MemHouse.Eval.Reasoning do
           "relations" => merge_counts(total["relations"], measurement["relations"]),
           "deductions" => merge_counts(total["deductions"], measurement["deductions"]),
           "corroboration" => merge_counts(total["corroboration"], measurement["corroboration"]),
-          "reasoner" => merge_counts(total["reasoner"], measurement["reasoner"])
+          "reasoner" => merge_reasoner(total["reasoner"], measurement["reasoner"])
       }
     end)
     |> Map.put("enabled", true)
@@ -198,6 +198,13 @@ defmodule MemHouse.Eval.Reasoning do
   end
 
   defp merge_counts(left, right), do: Map.merge(left, right, fn _key, a, b -> a + b end)
+
+  defp merge_reasoner(left, right) do
+    Map.merge(left, right, fn
+      "error_classes", a, b -> merge_counts(a, b)
+      _key, a, b -> a + b
+    end)
+  end
 
   defp empty do
     %{

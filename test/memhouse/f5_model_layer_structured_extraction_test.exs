@@ -410,6 +410,10 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   end
 
   test "provider outage leaves raw ingest durable and the extraction job retryable" do
+    batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    Application.put_env(:memhouse, :extraction_batching, Keyword.put(batching, :enabled, true))
+    on_exit(fn -> Application.put_env(:memhouse, :extraction_batching, batching) end)
+
     message = seed_raw!("f5-outage", "avery", "Avery prefers weekly summaries.")
     account_id = account_id!("f5-outage")
 

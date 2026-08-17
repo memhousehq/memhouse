@@ -5,13 +5,13 @@ defmodule MemHouse.Eval.Runner do
   Runs normalized evaluation cases against the real memory API.
 
   Runs preserve dataset and model provenance, profile and deadline settings, strategy overrides,
-  limits, and deterministic ordering. Failures remain explicit rather than being silently
-  dropped from aggregate metrics.
+  adaptive-recall permissions, cache refreshes, limits, and deterministic ordering. Failures
+  remain explicit rather than being silently dropped from aggregate metrics.
   """
 
   alias MemHouse.Clock
   alias MemHouse.DataLayer
-  alias MemHouse.Eval.{Durability, ModelJudge, Reasoning, Scorer}
+  alias MemHouse.Eval.{Durability, Ingest, ModelJudge, Reasoning, Scorer}
   alias MemHouse.Memory
   alias MemHouse.Retrieval.{Indexer, RecallProjector}
   alias MemHouse.Topology.Scope
@@ -23,8 +23,9 @@ defmodule MemHouse.Eval.Runner do
 
   `dataset` is normalized by `MemHouse.Eval.Adapter`. Options set profile, scratch
   Account, run id, deadline, strategy override, split, judge, and run limits; every choice
-  is recorded in the string-keyed report. `:refresh_retrieval` synchronously builds missing
-  vectors before questions and is intended only for isolated profile experiments.
+  is recorded in the string-keyed report. `:refresh_semantic_index` and
+  `:refresh_recall_projection` synchronously rebuild their distinct caches before questions
+  and are intended only for isolated profile experiments.
 
   Non-success ingest tuples remain scored failures. Raised memory errors or invalid model
   judge results abort the run rather than producing incomplete evidence.
@@ -80,6 +81,7 @@ defmodule MemHouse.Eval.Runner do
       "profile_version" => profile_version(question_results),
       "strategies" => Keyword.get(opts, :strategies),
       "deadline" => deadline,
+      "components" => Keyword.get(opts, :components, %{}),
       "model_roles" => model_role_versions(),
       "judge" => judge_identity(opts),
       "account_key" => account_key,
@@ -132,37 +134,22 @@ defmodule MemHouse.Eval.Runner do
       case.messages
       |> take_limit(Keyword.get(opts, :limit_messages))
 
-    # Ingested strictly in list order, one at a time. Recency and belief-time both derive
-    # from the order turns were written in, so parallelising this would change what the
-    # system remembers, not just how fast the run goes.
-    ingested =
-      messages
-      |> Enum.map(fn message ->
-        attrs =
-          message
-          |> Map.take([:peer_key, :session_id, :role, :content, :occurred_at])
-          # Session ids are namespaced by scope so that two cases reusing the same
-          # benchmark session name do not land in one conversation.
-          |> Map.update!(:session_id, &"#{scope_path}:#{&1}")
-          |> Map.put(:scope_path, scope_path)
-          |> Map.put(:account_key, account_key)
-
-        result =
-          with {:ok, stored} <- Memory.ingest_message(attrs),
-               {:ok, knowledge} <- Memory.extract_message(stored["id"], account_key) do
-            {:ok, stored, knowledge}
-          end
-
-        {message, result}
-      end)
+    # Raw commits remain in fixture order. The experimental batch path may consume adjacent
+    # durable extraction runs with one provider call, but it never reorders observations or
+    # bypasses their ordinary governance writes.
+    ingested = Ingest.run(messages, account_key, scope_path, opts)
 
     reasoning =
       if Keyword.get(opts, :dream_time, false),
         do: Reasoning.run(account_key),
         else: nil
 
-    if Keyword.get(opts, :refresh_retrieval, false),
-      do: refresh_retrieval!(account_key, scope_path)
+    refresh_semantic? = Keyword.get(opts, :refresh_semantic_index, false)
+    refresh_projection? = Keyword.get(opts, :refresh_recall_projection, false)
+
+    if refresh_semantic? or refresh_projection? do
+      refresh_retrieval!(account_key, scope_path, refresh_semantic?, refresh_projection?)
+    end
 
     ref_map = build_ref_map(ingested)
 
@@ -188,7 +175,10 @@ defmodule MemHouse.Eval.Runner do
               "question" => question.question,
               "profile" => profile,
               "deadline" => deadline,
-              "strategies" => Keyword.get(opts, :strategies)
+              "strategies" => Keyword.get(opts, :strategies),
+              "effort" => Keyword.get(opts, :recall_effort, "fixed"),
+              "include_source_recall" => Keyword.get(opts, :source_recall, false),
+              "_include_lineage_recall" => Keyword.get(opts, :lineage_recall, false)
             })
           end)
 
@@ -232,6 +222,7 @@ defmodule MemHouse.Eval.Runner do
           "profile_version" => Map.get(answer, "profile_version"),
           "contributed_strategies" => Map.get(answer, "contributed_strategies", []),
           "dropped_strategies" => Map.get(answer, "dropped_strategies", []),
+          "recall" => Map.get(answer, "recall", %{}),
           "isolation_candidates_checked" => isolation.candidates_checked,
           "isolation_leaks" => isolation.leaks,
           "latency_ms" => latency_ms
@@ -278,9 +269,9 @@ defmodule MemHouse.Eval.Runner do
 
   # Matched profile experiments need semantic retrieval to measure the corpus just ingested.
   # Ordinary benchmark runs retain their existing queue-shaped behavior; the explicit option
-  # synchronously refreshes the rebuildable statement index and dual-lane recall projection for
-  # this isolated case scope.
-  defp refresh_retrieval!(account_key, scope_path) do
+  # synchronously refreshes only the explicitly selected rebuildable caches for this isolated
+  # case scope. Keeping the two switches separate makes projection maintenance measurable.
+  defp refresh_retrieval!(account_key, scope_path, semantic?, projection?) do
     DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
       scope =
         Scope
@@ -288,14 +279,32 @@ defmodule MemHouse.Eval.Runner do
         |> Ash.Query.set_tenant(account.id)
         |> Ash.read_one!(actor: actor)
 
-      with {:ok, _index} <- Indexer.refresh_scope(account.id, scope.id),
-           {:ok, _documents} <- RecallProjector.refresh_scope(account.id, scope.id) do
+      with :ok <- maybe_refresh_semantic(account.id, scope.id, semantic?),
+           :ok <- maybe_refresh_projection(account.id, scope.id, projection?) do
         :ok
       else
         {:error, error} -> raise "evaluation retrieval refresh failed: #{inspect(error)}"
       end
     end)
   end
+
+  defp maybe_refresh_semantic(account_id, scope_id, true) do
+    case Indexer.refresh_scope(account_id, scope_id) do
+      {:ok, _index} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp maybe_refresh_semantic(_account_id, _scope_id, false), do: :ok
+
+  defp maybe_refresh_projection(account_id, scope_id, true) do
+    case RecallProjector.refresh_scope(account_id, scope_id) do
+      {:ok, _documents} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp maybe_refresh_projection(_account_id, _scope_id, false), do: :ok
 
   # Citation scoring compares the benchmark's own evidence labels, but an answer cites
   # durable database ids. This builds the translation back: durable message id to the

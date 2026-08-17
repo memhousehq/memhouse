@@ -14,22 +14,22 @@ defmodule MemHouse.Eval.Experiment do
   """
 
   alias MemHouse.Clock
-  alias MemHouse.Eval.{Adapter, Measurement, Report, Runner}
+
+  alias MemHouse.Eval.{
+    Adapter,
+    ComponentBindings,
+    Measurement,
+    QueryCounter,
+    Report,
+    Runner,
+    VariantRuntime
+  }
 
   @definition_schema "memhouse-experiment-definition-1"
   @manifest_schema "memhouse-experiment-manifest-1"
   @bundle_schema "memhouse-comparison-1"
   @variant_kinds ~w(current experimental)
-  @stages ~w(ingest quality safety cost latency dream)
-  @execute_component_keys ~w(
-    retrieval_profile
-    retrieval_strategies
-    retrieval_rerank
-    retrieval_deadline
-    semantic_index_refresh
-    dream_time
-    durability_audit
-  )
+  @stages ~w(ingest quality safety cost latency dream database maintenance)
 
   @doc """
   Runs the definition at `path` and returns `{run_manifest, comparison_bundle}`.
@@ -205,91 +205,10 @@ defmodule MemHouse.Eval.Experiment do
   end
 
   defp validate_component_bindings!(variant, "execute") do
-    deadline = Map.get(variant, "deadline", "disabled")
-    dream_time = Map.get(variant, "dream_time", false)
-    durability_audit = Map.get(variant, "durability_audit", false)
-
-    unless deadline in ["enabled", "disabled"] do
-      raise ArgumentError,
-            "execute variant #{inspect(variant["id"])} deadline must be enabled or disabled"
-    end
-
-    unless is_boolean(dream_time) and is_boolean(durability_audit) do
-      raise ArgumentError,
-            "execute variant #{inspect(variant["id"])} dream_time and durability_audit must be boolean"
-    end
-
-    expected = executable_components(variant)
-    actual = variant["components"]
-
-    if actual != expected do
-      unsupported = Map.keys(actual) -- @execute_component_keys
-
-      detail =
-        if unsupported == [],
-          do: "must equal #{inspect(expected)}",
-          else: "declares unsupported component keys #{inspect(Enum.sort(unsupported))}"
-
-      raise ArgumentError,
-            "execute variant #{inspect(variant["id"])} component bindings #{detail}"
-    end
+    ComponentBindings.validate!(variant)
   end
 
-  defp executable_components(variant) do
-    profile = profile_configuration!(variant["profile"])
-    strategies = effective_strategies!(variant, profile)
-
-    %{
-      "retrieval_profile" => variant["profile"],
-      "retrieval_strategies" => strategies,
-      "retrieval_rerank" => profile.rerank,
-      "retrieval_deadline" => Map.get(variant, "deadline", "disabled"),
-      "semantic_index_refresh" => Enum.any?(strategies, &semantic_strategy?/1),
-      "dream_time" => Map.get(variant, "dream_time", false),
-      "durability_audit" => Map.get(variant, "durability_audit", false)
-    }
-  end
-
-  defp effective_strategies!(variant, profile) do
-    strategies =
-      case variant["strategies"] do
-        nil -> Enum.map(profile.strategies, &Atom.to_string/1)
-        strategies -> strategies
-      end
-
-    registered = Enum.map(MemHouse.Retrieval.Profile.strategy_names(), &Atom.to_string/1)
-
-    case strategies -- registered do
-      [] -> :ok
-      unknown -> raise ArgumentError, "unknown retrieval strategies: #{inspect(unknown)}"
-    end
-
-    enabled =
-      :memhouse
-      |> Application.fetch_env!(:retrieval_profiles)
-      |> Keyword.fetch!(:enabled_strategies)
-      |> Enum.map(&Atom.to_string/1)
-
-    case strategies -- enabled do
-      [] ->
-        strategies
-
-      disabled ->
-        raise ArgumentError,
-              "execute variant #{inspect(variant["id"])} requires deployment-disabled strategies #{inspect(disabled)}"
-    end
-  end
-
-  defp semantic_strategy?(strategy), do: strategy in ["semantic", "semantic_dual_lane"]
-
-  defp profile_configuration!(name) do
-    name = profile_name!(name)
-
-    :memhouse
-    |> Application.fetch_env!(:retrieval_profiles)
-    |> Keyword.fetch!(name)
-    |> Map.new()
-  end
+  defp executable_components(variant), do: ComponentBindings.resolve!(variant)
 
   defp validate_inferences!(claims) when is_list(claims) do
     unless Enum.all?(claims, &(is_map(&1) and non_empty_string?(Map.get(&1, "claim")))) do
@@ -405,7 +324,16 @@ defmodule MemHouse.Eval.Experiment do
         ["dream", "replay_durable_effects"],
         ["dream", "model_calls"],
         ["dream", "input_tokens"],
-        ["dream", "output_tokens"]
+        ["dream", "output_tokens"],
+        ["database", "queries"],
+        ["database", "query_time_ms"],
+        ["database", "decode_time_ms"],
+        ["database", "queue_time_ms"],
+        ["database", "idle_time_ms"],
+        ["maintenance", "pipeline_runs_created"],
+        ["maintenance", "extraction_runs"],
+        ["maintenance", "dream_time_runs"],
+        ["maintenance", "projection_refresh_runs"]
       ]
 
       unless Enum.all?(numeric_paths, &is_number(get_in(metrics, &1))) and
@@ -439,10 +367,15 @@ defmodule MemHouse.Eval.Experiment do
         before = Measurement.snapshot(account_key)
         started_at = System.monotonic_time(:millisecond)
 
-        report = run_variant(dataset, definition, variant, account_key, run_id)
+        {report, database} =
+          QueryCounter.measure(fn ->
+            run_variant(dataset, definition, variant, account_key, run_id)
+          end)
 
         wall_time_ms = System.monotonic_time(:millisecond) - started_at
-        measured = Measurement.delta(before, Measurement.snapshot(account_key), wall_time_ms)
+
+        measured =
+          Measurement.delta(before, Measurement.snapshot(account_key), wall_time_ms, database)
 
         {variant["kind"], report, stage_metrics(report, measured)}
       end)
@@ -468,12 +401,13 @@ defmodule MemHouse.Eval.Experiment do
   defp run_variant(dataset, definition, variant, account_key, run_id) do
     components = executable_components(variant)
 
-    with_minimal_profile(variant["profile"], fn ->
+    VariantRuntime.with_components(components, fn ->
       report =
         Runner.run(dataset,
           profile: variant["profile"],
           strategies: variant["strategies"],
           deadline: components["retrieval_deadline"],
+          components: components,
           judge: "deterministic",
           split: definition["dataset"]["split"],
           account_key: account_key,
@@ -481,10 +415,15 @@ defmodule MemHouse.Eval.Experiment do
           limit_cases: Map.get(variant, "limit_cases"),
           limit_messages: Map.get(variant, "limit_messages"),
           limit_questions: Map.get(variant, "limit_questions"),
+          extraction_batching: components["extraction_batching"]["enabled"],
+          recall_effort: components["adaptive_recall_effort"],
+          source_recall: components["source_recall"],
+          lineage_recall: components["lineage_recall"],
           dream_time: components["dream_time"],
           durability_audit: components["durability_audit"],
           durability_seed: Map.get(variant, "durability_seed", definition["seeds"]["durability"]),
-          refresh_retrieval: components["semantic_index_refresh"]
+          refresh_semantic_index: components["semantic_index_refresh"],
+          refresh_recall_projection: components["recall_projection_refresh"]
         )
         |> Report.validate!()
 
@@ -492,25 +431,12 @@ defmodule MemHouse.Eval.Experiment do
     end)
   end
 
-  defp with_minimal_profile("minimal", fun) do
-    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
-
-    Application.put_env(
-      :memhouse,
-      :retrieval_profiles,
-      Keyword.put(profiles, :minimal_enabled, true)
-    )
-
-    try do
-      fun.()
-    after
-      Application.put_env(:memhouse, :retrieval_profiles, profiles)
-    end
-  end
-
-  defp with_minimal_profile(_profile, fun), do: fun.()
-
   defp assert_executed_components!(report, variant, components) do
+    if report["components"] != components do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} runner component report did not match its binding"
+    end
+
     failed_cases = Enum.filter(report["cases"], &(&1["status"] == "failed"))
 
     if failed_cases != [] do
@@ -532,7 +458,33 @@ defmodule MemHouse.Eval.Experiment do
             "execute variant #{inspect(variant["id"])} could not execute declared retrieval strategies #{inspect(dropped)}"
     end
 
+    assert_recall_components!(report, variant, components)
+
     report
+  end
+
+  defp assert_recall_components!(report, variant, components) do
+    recalls =
+      report["cases"]
+      |> Enum.flat_map(& &1["questions"])
+      |> Enum.map(& &1["recall"])
+
+    valid? =
+      Enum.all?(recalls, fn recall ->
+        if components["adaptive_recall_effort"] == "fixed" do
+          recall["used"] == false and recall["effort"] == "fixed"
+        else
+          recall["used"] == true and
+            recall["effort"] == components["adaptive_recall_effort"] and
+            recall["source_recall_permitted"] == components["source_recall"] and
+            recall["lineage_recall_permitted"] == components["lineage_recall"]
+        end
+      end)
+
+    unless valid? do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} recall behavior did not match its component binding"
+    end
   end
 
   defp assert_offline_definition!(%{"mode" => "fixture"}), do: :ok
@@ -541,12 +493,16 @@ defmodule MemHouse.Eval.Experiment do
     assert_offline_variants!(variants)
   end
 
-  defp assert_offline_variants!([
-         %{"components" => %{"semantic_index_refresh" => true}} | _rest
-       ]),
-       do: assert_local_embedder!()
+  defp assert_offline_variants!([%{"components" => components} | rest]) do
+    semantic_retrieval? =
+      Enum.any?(components["retrieval_strategies"], &(&1 in ["semantic", "semantic_dual_lane"]))
 
-  defp assert_offline_variants!([_variant | rest]), do: assert_offline_variants!(rest)
+    if semantic_retrieval? or components["source_recall"] == true,
+      do: assert_local_embedder!()
+
+    assert_offline_variants!(rest)
+  end
+
   defp assert_offline_variants!([]), do: :ok
 
   defp assert_local_embedder! do
@@ -647,6 +603,21 @@ defmodule MemHouse.Eval.Experiment do
       "dream" => %{
         "replay_durable_effects_delta" =>
           delta(experimental, current, ["dream", "replay_durable_effects"])
+      },
+      "database" => %{
+        "queries_delta" => delta(experimental, current, ["database", "queries"]),
+        "queries_ratio" => ratio(experimental, current, ["database", "queries"]),
+        "query_time_ms_delta" => delta(experimental, current, ["database", "query_time_ms"])
+      },
+      "maintenance" => %{
+        "pipeline_runs_created_delta" =>
+          delta(experimental, current, ["maintenance", "pipeline_runs_created"]),
+        "extraction_runs_delta" =>
+          delta(experimental, current, ["maintenance", "extraction_runs"]),
+        "dream_time_runs_delta" =>
+          delta(experimental, current, ["maintenance", "dream_time_runs"]),
+        "projection_refresh_runs_delta" =>
+          delta(experimental, current, ["maintenance", "projection_refresh_runs"])
       }
     }
   end
@@ -861,7 +832,9 @@ defmodule MemHouse.Eval.Experiment do
         "model_calls" => get_in(reasoning, ["reasoner", "calls"]) || 0,
         "input_tokens" => get_in(reasoning, ["reasoner", "input_tokens"]) || 0,
         "output_tokens" => get_in(reasoning, ["reasoner", "output_tokens"]) || 0
-      }
+      },
+      "database" => measurement["database"],
+      "maintenance" => measurement["maintenance"]
     }
   end
 

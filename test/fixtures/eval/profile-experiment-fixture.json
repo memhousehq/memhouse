@@ -109,6 +109,21 @@
           "model_calls": 0,
           "input_tokens": 0,
           "output_tokens": 0
+        },
+        "database": {
+          "queries": 12,
+          "query_time_ms": 4.0,
+          "decode_time_ms": 0.5,
+          "queue_time_ms": 0.25,
+          "idle_time_ms": 0.0
+        },
+        "maintenance": {
+          "pipeline_runs_created": 4,
+          "extraction_runs": 2,
+          "dream_time_runs": 0,
+          "projection_refresh_runs": 2,
+          "pipeline_runs_by_kind": {"extraction": 2, "projection_refresh": 2},
+          "pipeline_runs_by_status": {"completed": 2, "pending": 2}
         }
       }
     },
@@ -152,6 +167,21 @@
           "model_calls": 0,
           "input_tokens": 0,
           "output_tokens": 0
+        },
+        "database": {
+          "queries": 12,
+          "query_time_ms": 4.0,
+          "decode_time_ms": 0.5,
+          "queue_time_ms": 0.25,
+          "idle_time_ms": 0.0
+        },
+        "maintenance": {
+          "pipeline_runs_created": 4,
+          "extraction_runs": 2,
+          "dream_time_runs": 0,
+          "projection_refresh_runs": 2,
+          "pipeline_runs_by_kind": {"extraction": 2, "projection_refresh": 2},
+          "pipeline_runs_by_status": {"completed": 2, "pending": 2}
         }
       }
     }

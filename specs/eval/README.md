@@ -140,26 +140,36 @@ mix memhouse.eval.experiment \
 ```
 
 Execute definitions use a closed component map derived from executable settings: profile,
-effective strategies, rerank, deadline, semantic-index refresh, dream-time, and durability audit.
-The map must exactly match the runner inputs and resolved profile or validation fails; unknown
-keys are unsupported rather than inert labels. Fixture definitions must keep `components` empty
-because replaying supplied metrics does not execute a component. The source revision and
-dirty/clean state, dataset digest, and explicit sampling/durability seeds prevent results from two
-different inputs or implementations being presented as one ablation.
+effective strategies and seed stages, rerank, deadline, extraction batching identity and limits, adaptive recall
+effort, source and lineage recall permissions, semantic-index refresh, RecallDocument refresh,
+idle scheduling gates, explicit dream execution, and durability audit. The map must exactly match the
+runner inputs and resolved profile or validation fails; unknown keys are unsupported rather than
+inert labels. Runtime feature switches are restored even when execution raises. Fixture
+definitions must keep `components` empty because replaying supplied metrics does not execute a
+component. The source revision and dirty/clean state, dataset digest, and explicit
+sampling/durability seeds prevent results from two different inputs or implementations being
+presented as one ablation.
 
-The committed smoke definition compares the real `balanced` default strategy set with the real
-`minimal` dual-lane-semantic-plus-lexical profile. Both variants refresh the isolated derived
-vector index; the minimal variant also rebuilds its non-authoritative RecallDocument projection.
+The committed smoke definition compares the real `balanced` default strategy set and synchronous
+fixed recall with the `minimal` dual-lane profile, durable extraction batching, low-effort bounded
+recall, explicit source/lineage permissions, idle scheduler switch, and explicit dream pass. Both
+variants refresh the isolated derived vector index; only the minimal variant rebuilds its
+non-authoritative RecallDocument projection. The two refreshes are separately executable and
+reported rather than one composite maintenance label.
 An offline run therefore requires an Ortex embedder with existing operator-supplied model and
 tokenizer artifacts; missing artifacts or a hosted/deterministic stand-in embedder are rejected
 before ingestion. `--live-model` is the explicit provider-call boundary and may incur cost. The
 harness never stores fake deterministic embeddings.
 
 The measured section stages quality, citation, abstention, unexpected-source isolation, provider
-usage, operator-priced cost, wall/recall latency, stored facts, and dream-time accounting. Gates
-cover regression, citation and unsupported-answer failures, source-membership leaks, token/cost
-and latency budgets, and replay effects. Measured evidence is structurally separate from
-inferences and unreproduced first-party claims.
+usage, operator-priced cost, wall/recall latency, stored facts, dream-time accounting, database
+query count/timing, and new `PipelineRun` work by kind and status. A telemetry handler counts only
+the bounded runner interval; the before/after snapshot queries are outside it. It never records
+SQL, parameters, results, content, or Account ids. An active-direct-only idle scheduler may
+legitimately report zero dream rows for a fixture whose governed outputs remain provisional.
+Gates cover regression, citation and unsupported-answer failures, source-membership leaks,
+token/cost and latency budgets, and replay effects. Measured evidence is structurally separate
+from inferences and unreproduced first-party claims.
 
 Execute mode uses deterministic local model roles unless the operator explicitly passes
 `--live-model`. Fixture mode starts neither the application nor a provider and is not quotable

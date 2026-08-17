@@ -4,14 +4,14 @@ defmodule MemHouse.Eval.Measurement do
   @moduledoc """
   Captures content-free Account deltas around one evaluation variant.
 
-  Snapshots contain only durable row identities and usage ledger structs. `delta/3` exports
+  Snapshots contain only durable row identities and usage ledger structs. `delta/4` exports
   counts, durations, tokens, errors, and operator-priced cost; it never exports memory text,
   prompts, answers, or unexpected cross-scope ids.
   """
 
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.KnowledgeItem
-  alias MemHouse.Operations.UsageEvent
+  alias MemHouse.Operations.{PipelineRun, UsageEvent}
 
   @doc "Returns a content-free snapshot for the evaluation Account."
   def snapshot(account_key) when is_binary(account_key) do
@@ -21,24 +21,41 @@ defmodule MemHouse.Eval.Measurement do
           KnowledgeItem
           |> read(account.id, actor)
           |> MapSet.new(& &1.id),
+        pipeline_runs: read(PipelineRun, account.id, actor, page: [limit: 10_000]),
         usages: read(UsageEvent, account.id, actor)
       }
     end)
   end
 
   @doc "Builds the measured delta between two snapshots and records total wall time."
-  def delta(before, after_snapshot, wall_time_ms)
+  def delta(before, after_snapshot, wall_time_ms, database \\ empty_database())
       when is_map(before) and is_map(after_snapshot) and is_integer(wall_time_ms) and
-             wall_time_ms >= 0 do
+             wall_time_ms >= 0 and is_map(database) do
     prior_usage_ids = MapSet.new(before.usages, & &1.id)
     usages = Enum.reject(after_snapshot.usages, &MapSet.member?(prior_usage_ids, &1.id))
     by_role = usages |> Enum.group_by(& &1.model_role) |> Map.new(&role_usage/1)
     totals = usage_totals(usages)
+    prior_run_ids = MapSet.new(before.pipeline_runs, & &1.id)
+
+    runs =
+      Enum.reject(after_snapshot.pipeline_runs, &MapSet.member?(prior_run_ids, &1.id))
+
+    run_kinds = Enum.frequencies_by(runs, & &1.kind)
+    run_statuses = Enum.frequencies_by(runs, & &1.status)
 
     %{
       "stored_facts" =>
         MapSet.difference(after_snapshot.knowledge_ids, before.knowledge_ids) |> MapSet.size(),
       "wall_time_ms" => wall_time_ms,
+      "database" => database,
+      "maintenance" => %{
+        "pipeline_runs_created" => length(runs),
+        "extraction_runs" => Map.get(run_kinds, "extraction", 0),
+        "dream_time_runs" => Map.get(run_kinds, "dream_time", 0),
+        "projection_refresh_runs" => Map.get(run_kinds, "projection_refresh", 0),
+        "pipeline_runs_by_kind" => run_kinds,
+        "pipeline_runs_by_status" => run_statuses
+      },
       "usage" => %{
         "model_calls" => totals["calls"],
         "input_tokens" => totals["input_tokens"],
@@ -54,10 +71,24 @@ defmodule MemHouse.Eval.Measurement do
     }
   end
 
-  defp read(resource, account_id, actor) do
+  defp read(resource, account_id, actor, opts \\ []) do
     resource
     |> Ash.Query.set_tenant(account_id)
-    |> Ash.read!(actor: actor)
+    |> Ash.read!(Keyword.merge([actor: actor], opts))
+    |> unwrap_page()
+  end
+
+  defp unwrap_page(%{results: results}), do: results
+  defp unwrap_page(results) when is_list(results), do: results
+
+  defp empty_database do
+    %{
+      "queries" => 0,
+      "query_time_ms" => 0.0,
+      "decode_time_ms" => 0.0,
+      "queue_time_ms" => 0.0,
+      "idle_time_ms" => 0.0
+    }
   end
 
   defp role_usage({role, usages}), do: {role, usage_totals(usages)}

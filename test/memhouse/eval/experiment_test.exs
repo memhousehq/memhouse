@@ -201,15 +201,41 @@ defmodule MemHouse.Eval.ExperimentTest do
     assert Experiment.mode!("specs/eval/experiments/memory-profile-ablation.json") == "execute"
     assert experimental["profile"] == "minimal"
     assert experimental["strategies"] == nil
+    assert experimental["recall_effort"] == "low"
 
     assert experimental["components"] == %{
+             "adaptive_recall_effort" => "low",
+             "dream_time" => true,
+             "durability_audit" => false,
+             "extraction_batching" => %{
+               "claim_timeout_seconds" => 1200,
+               "context_limit_tokens" => 131_072,
+               "enabled" => true,
+               "identity" => "utf8-bytes-v1:target=4096:context=131072:output=8192:margin=2048",
+               "max_anchors" => 32,
+               "reserved_output_tokens" => 8192,
+               "safety_margin_tokens" => 2048,
+               "target_tokens" => 4096,
+               "tokenizer" => "utf8-bytes-v1"
+             },
+             "idle_dream_scheduling" => %{
+               "enabled" => true,
+               "idle_seconds" => 0,
+               "max_delta_items" => 20,
+               "max_elapsed_ms" => 120_000,
+               "max_working_set_items" => 50,
+               "min_changes" => 1,
+               "min_interval_seconds" => 0
+             },
+             "lineage_recall" => true,
+             "recall_projection_refresh" => true,
              "retrieval_profile" => "minimal",
+             "retrieval_seeds" => ["semantic_dual_lane", "lexical"],
              "retrieval_strategies" => ["semantic_dual_lane", "lexical"],
              "retrieval_rerank" => false,
              "retrieval_deadline" => "disabled",
              "semantic_index_refresh" => true,
-             "dream_time" => false,
-             "durability_audit" => false
+             "source_recall" => true
            }
   end
 
@@ -414,6 +440,21 @@ defmodule MemHouse.Eval.ExperimentTest do
         "model_calls" => 0,
         "input_tokens" => 0,
         "output_tokens" => 0
+      },
+      "database" => %{
+        "queries" => 12,
+        "query_time_ms" => 4.0,
+        "decode_time_ms" => 0.5,
+        "queue_time_ms" => 0.25,
+        "idle_time_ms" => 0.0
+      },
+      "maintenance" => %{
+        "pipeline_runs_created" => 4,
+        "extraction_runs" => 2,
+        "dream_time_runs" => 0,
+        "projection_refresh_runs" => 2,
+        "pipeline_runs_by_kind" => %{"extraction" => 2, "projection_refresh" => 2},
+        "pipeline_runs_by_status" => %{"completed" => 2, "pending" => 2}
       }
     }
   end
