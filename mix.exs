@@ -173,7 +173,7 @@ defmodule MemHouse.MixProject do
       # the running system, so they are excluded from production builds entirely.
       {:credo, "~> 1.7.19", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4.7", only: [:dev, :test], runtime: false},
-      {:sobelow, "~> 0.14.1", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.15.0", only: [:dev, :test], runtime: false},
       # Generators for the property-based tests that cover invariants a fixed example set
       # cannot reach: cross-Account isolation, and downward role inheritance where any
       # applicable deny wins.
