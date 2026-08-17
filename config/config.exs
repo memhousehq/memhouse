@@ -111,6 +111,15 @@ config :memhouse, :extraction_batching,
   safety_margin_tokens: 2_048,
   claim_timeout_seconds: 1_200
 
+# Evaluation-only smaller model contract. It remains off until a preregistered
+# matched run demonstrates extraction non-inferiority and zero safety regressions.
+# The prompt version is also the durable experiment identity on provenance and
+# usage rows; enabling it requires the extractor role to use that exact version.
+config :memhouse, :compact_extraction,
+  enabled: false,
+  experiment_identity: "compact-explicit-v1",
+  prompt_version: "extract-compact-exp-1"
+
 # The updater verifies release manifests with this embedded Ed25519 public key.
 # It is deliberately not a runtime secret: the matching private key exists only
 # in the protected release-publishing workflow secret.

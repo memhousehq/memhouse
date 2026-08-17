@@ -160,6 +160,27 @@ fields when they need the date. The prompt requires
 `confidence_level` as `stated_explicitly`, `clearly_implied`, or `inferred`;
 `Extraction.cast/2` maps these labels to fixed stored numeric fractions.
 
+The default-off `compact-explicit-v1` experiment narrows the provider response
+to statement, exact supporting span, subject reference, source-message ids,
+and nullable exact source text for each validity boundary. Its independently
+authored `extract-compact-exp-1` prompt contains no model-authored kind,
+confidence, evidence, sensitivity, target, lifecycle, or reasoning field.
+Trusted code supplies `fact`, explicit confidence, source-derived direct or
+indirect evidence and discount, `restricted` sensitivity, and a peer or exact
+current-scope target. It resolves only supported ISO or bounded relative-time
+evidence, then delegates the completed candidate to `Extraction.cast/2`.
+Thus batch anchor/source confinement, hostile-output and relayed-agent rules,
+subject allowlists, exact spans, temporal ordering, Ash validation, provenance,
+and Gate A/B remain one shared contract rather than an experimental bypass.
+
+`MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` selects both the single and batched
+schema and changes the configured extractor prompt identity. A partially
+configured Account fails on prompt-version mismatch before provider work. The
+switch creates no second store and disabling it restores `extract-13`. It is
+not eligible to become the default until ADR 0021's matched held-out
+non-inferiority, privacy/attribution, cost/token, and human-review gates pass;
+the additive implementation includes deterministic evidence only.
+
 Adjacent pending anchors in the same Account, scope, and session may share one
 `extract-13` provider call. `ExtractionBatch` requires an explicit envelope per
 anchor and reuses `Extraction.cast/2` with that anchor's independent validation

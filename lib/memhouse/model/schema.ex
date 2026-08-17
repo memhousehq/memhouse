@@ -946,7 +946,10 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
   alias MemHouse.Model.Schema.Extraction
 
   @impl true
-  def json_schema do
+  def json_schema, do: json_schema(Extraction)
+
+  @doc false
+  def json_schema(candidate_schema) when is_atom(candidate_schema) do
     envelope = %{
       "type" => "object",
       "additionalProperties" => false,
@@ -954,7 +957,7 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
         "anchor_id" => %{"type" => "string", "format" => "uuid"},
         "items" => %{
           "type" => "array",
-          "items" => Extraction.candidate_json_schema(),
+          "items" => candidate_schema.candidate_json_schema(),
           "maxItems" => 24
         }
       },
@@ -972,18 +975,23 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
   end
 
   @impl true
-  def cast(object, %{anchor_contexts: contexts}) when is_map(object) and is_map(contexts) do
+  def cast(object, %{anchor_contexts: contexts} = context)
+      when is_map(object) and is_map(contexts) do
+    candidate_schema = Map.get(context, :candidate_schema, Extraction)
+
     with {:ok, envelopes} <- envelopes(object),
          :ok <- exact_anchor_set(envelopes, contexts) do
-      cast_envelopes(envelopes, contexts, false)
+      cast_envelopes(envelopes, contexts, candidate_schema)
     end
   end
 
   def cast(_object, _context), do: {:error, ["batch response must be an object"]}
 
   @impl true
-  def recover_after_repairs(object, %{anchor_contexts: contexts})
+  def recover_after_repairs(object, %{anchor_contexts: contexts} = context)
       when is_map(object) and is_map(contexts) do
+    candidate_schema = Map.get(context, :candidate_schema, Extraction)
+
     case envelopes(object) do
       {:ok, envelopes} ->
         by_anchor =
@@ -994,8 +1002,11 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
         results =
           Enum.map(contexts, fn {anchor_id, context} ->
             case Map.get(by_anchor, anchor_id) do
-              %{"items" => items} -> recover_envelope(anchor_id, items, context)
-              _missing_or_malformed -> terminal(anchor_id, "missing_or_malformed_envelope")
+              %{"items" => items} ->
+                recover_envelope(anchor_id, items, context, candidate_schema)
+
+              _missing_or_malformed ->
+                terminal(anchor_id, "missing_or_malformed_envelope")
             end
           end)
 
@@ -1022,7 +1033,7 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
     end
   end
 
-  defp cast_envelopes(envelopes, contexts, recover?) do
+  defp cast_envelopes(envelopes, contexts, candidate_schema) do
     {results, errors} =
       envelopes
       |> Enum.with_index()
@@ -1030,7 +1041,7 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
         anchor_id = Map.get(envelope, "anchor_id")
         context = Map.get(contexts, anchor_id)
 
-        case cast_envelope(anchor_id, Map.get(envelope, "items"), context, recover?) do
+        case cast_envelope(anchor_id, Map.get(envelope, "items"), context, candidate_schema) do
           {:ok, result} -> {[result | results], errors}
           {:error, envelope_errors} -> {results, errors ++ prefix(envelope_errors, index)}
         end
@@ -1039,29 +1050,29 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
     if errors == [], do: {:ok, Enum.reverse(results)}, else: {:error, errors}
   end
 
-  defp cast_envelope(anchor_id, items, context, false)
+  defp cast_envelope(anchor_id, items, context, candidate_schema)
        when is_binary(anchor_id) and is_list(items) and is_map(context) do
-    case Extraction.cast(%{"items" => items}, context) do
+    case candidate_schema.cast(%{"items" => items}, context) do
       {:ok, casted} -> {:ok, %{anchor_id: anchor_id, status: :ok, items: casted}}
       {:error, errors} -> {:error, errors}
     end
   end
 
-  defp cast_envelope(_anchor_id, _items, _context, false),
+  defp cast_envelope(_anchor_id, _items, _context, _candidate_schema),
     do: {:error, ["anchor envelope is malformed"]}
 
-  defp recover_envelope(anchor_id, items, context) when is_list(items) do
-    case Extraction.cast(%{"items" => items}, context) do
+  defp recover_envelope(anchor_id, items, context, candidate_schema) when is_list(items) do
+    case candidate_schema.cast(%{"items" => items}, context) do
       {:ok, casted} -> %{anchor_id: anchor_id, status: :ok, items: casted}
-      {:error, _errors} -> recover_candidates(anchor_id, items, context)
+      {:error, _errors} -> recover_candidates(anchor_id, items, context, candidate_schema)
     end
   end
 
-  defp recover_envelope(anchor_id, _items, _context),
+  defp recover_envelope(anchor_id, _items, _context, _candidate_schema),
     do: terminal(anchor_id, "malformed_anchor_envelope")
 
-  defp recover_candidates(anchor_id, items, context) do
-    case Extraction.recover_after_repairs(%{"items" => items}, context) do
+  defp recover_candidates(anchor_id, items, context, candidate_schema) do
+    case candidate_schema.recover_after_repairs(%{"items" => items}, context) do
       {:ok, casted} -> %{anchor_id: anchor_id, status: :ok, items: casted}
       :error -> terminal(anchor_id, "structured_validation_exhausted")
     end

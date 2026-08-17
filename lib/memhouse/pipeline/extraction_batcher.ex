@@ -97,7 +97,13 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
     case prepared do
       [] ->
-        mark_all([run], "repairable", "oversized", ExtractionAdmission.config()[:identity])
+        mark_all(
+          [run],
+          "repairable",
+          "oversized",
+          ExtractionAdmission.config()[:identity] |> Extractor.admission_identity()
+        )
+
         {:ok, %{status: "repairable", run_status: "persisted", anchor_count: 1}}
 
       selected ->
@@ -106,7 +112,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
   end
 
   defp claim_and_extract(run, claim_id, [anchor | siblings]) do
-    identity = ExtractionAdmission.config()[:identity]
+    identity = ExtractionAdmission.config()[:identity] |> Extractor.admission_identity()
     sibling_ids = Enum.map(siblings, & &1.message["id"])
 
     claimed_siblings =
@@ -223,10 +229,11 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
   defp drop_until_admitted(prepared) do
     {messages, _context, _opts} = Extractor.batch_request(prepared)
+    schema = Extractor.batch_schema()
 
     case ExtractionAdmission.admit(
            messages,
-           MemHouse.Model.Schema.ExtractionBatch.json_schema()
+           schema.json_schema()
          ) do
       {:ok, _admission} ->
         prepared

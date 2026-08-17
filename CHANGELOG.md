@@ -33,6 +33,13 @@ changelog entry and contract-version transition.
 
 ### Added
 
+- A default-off `compact-explicit-v1` extractor experiment limits model output
+  to atomic durable statements, exact support, subject/source references, and
+  exact valid-time evidence. Trusted code derives fail-closed policy defaults
+  and reuses the existing validator, batch attribution, provenance, and Gate
+  A/B path. `extract-13` remains the default until matched held-out evaluation
+  and human review approve `extract-compact-exp-1`.
+
 - An opt-in `minimal` semantic-plus-lexical retrieval profile and bounded
   read-only Ask efforts (`low`, `medium`, `high`) add content-free budget
   diagnostics and hard per-tool elapsed enforcement. The planner can read

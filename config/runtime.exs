@@ -156,6 +156,14 @@ env_bool! = fn key, default ->
   end
 end
 
+compact_extraction_enabled =
+  env_bool!.("MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION", false)
+
+config :memhouse, :compact_extraction,
+  enabled: compact_extraction_enabled,
+  experiment_identity: "compact-explicit-v1",
+  prompt_version: "extract-compact-exp-1"
+
 # Parent-based sampling preserves incoming decisions; ratios range from 0.0 to 1.0.
 env_sampler = fn ->
   sampler = env_get.("OTEL_TRACES_SAMPLER", "parentbased_always_on")
@@ -621,7 +629,8 @@ config :memhouse, :model_roles,
     provider: generation_provider,
     model: generation_model.("MEMHOUSE_MODEL_INGEST", "openai/gpt-oss-120b"),
     model_version: generation_version,
-    prompt_version: "extract-13",
+    prompt_version:
+      if(compact_extraction_enabled, do: "extract-compact-exp-1", else: "extract-13"),
     pipeline_version: "f5-1",
     options: generation_options
   },

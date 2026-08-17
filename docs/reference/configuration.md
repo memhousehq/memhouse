@@ -96,6 +96,7 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS` | `8192` | Output capacity reserved during extraction admission |
 | `MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS` | `2048` | Extra whole-request admission margin |
 | `MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS` | `1200` | Age after which reconciliation releases an interrupted batch claim; boot requires at least three `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS` budgets plus 60 seconds |
+| `MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` | `false` | Selects the evaluation-only `compact-explicit-v1` extraction contract and `extract-compact-exp-1` prompt identity |
 | `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
 
 !!! warning "Reasoning models can blow the context window or time out without these"
@@ -133,6 +134,29 @@ of calls in flight is this value times the projection queue limit, so raise
 connection while it resolves its model role and records usage, and an erasure
 runs the same rebuild from inside its own transaction, so keep the value well
 below `POOL_SIZE`.
+
+### Experimental compact extraction
+
+`MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION=true` replaces only the model-facing
+candidate shape. The provider returns an atomic durable statement, an exact
+supporting span, a subject reference, source-message ids, and nullable exact
+source text for each valid-time boundary. Trusted code derives `fact`, direct
+or indirect evidence, its confidence discount, `restricted` sensitivity, and
+the narrow peer or current-scope target before applying the ordinary extraction
+validator. It cannot make omitted policy fields public, Account-wide, or active.
+
+The switch also selects prompt identity `extract-compact-exp-1`. An Account
+with a persisted `ingest_extractor` role must publish a higher role-config
+version carrying that exact prompt identity before enabling the switch. A
+mismatch fails before the provider call and becomes operator-repairable; it
+never records false provenance.
+
+This is not a production default. ADR 0021 requires a preregistered matched
+held-out report showing per-field and per-category non-inferiority, zero
+privacy/attribution regressions, and lower calls, tokens, or cost, followed by
+human architecture and licensing review. No paid or live run was performed as
+part of the additive implementation. Disabling the flag immediately restores
+`extract-13` and does not migrate or rewrite stored knowledge.
 
 There are exactly five Account-level model roles: `embedder`, `reranker`,
 `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`. Only secret

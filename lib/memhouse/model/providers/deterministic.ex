@@ -45,6 +45,9 @@ defmodule MemHouse.Model.Providers.Deterministic do
         :extraction ->
           %{"items" => extraction_items(messages, opts)}
 
+        :compact_extraction ->
+          %{"items" => compact_extraction_items(messages, opts)}
+
         :extraction_batch ->
           %{
             "anchors" =>
@@ -58,6 +61,23 @@ defmodule MemHouse.Model.Providers.Deterministic do
                 %{
                   "anchor_id" => observation.anchor_id,
                   "items" => extraction_items(messages, anchor_opts)
+                }
+              end)
+          }
+
+        :compact_extraction_batch ->
+          %{
+            "anchors" =>
+              Enum.map(Keyword.get(opts, :batch_observations, []), fn observation ->
+                anchor_opts =
+                  opts
+                  |> Keyword.put(:observation, observation.observation)
+                  |> Keyword.put(:source_peer_key, observation.source_peer_key)
+                  |> Keyword.put(:source_message_ids, observation.source_message_ids)
+
+                %{
+                  "anchor_id" => observation.anchor_id,
+                  "items" => compact_extraction_items(messages, anchor_opts)
                 }
               end)
           }
@@ -127,9 +147,19 @@ defmodule MemHouse.Model.Providers.Deterministic do
   # same validation and governance as anything a real model produces. Nothing
   # here can shortcut a gate.
   defp extraction_items(messages, opts) do
+    messages
+    |> candidate_sentences(opts)
+    |> Enum.map(&full_candidate(&1, opts))
+  end
+
+  defp compact_extraction_items(messages, opts) do
+    messages
+    |> candidate_sentences(opts)
+    |> Enum.map(&compact_candidate(&1, opts))
+  end
+
+  defp candidate_sentences(messages, opts) do
     content = Keyword.get(opts, :observation) || last_user_content(messages)
-    source_peer_key = Keyword.get(opts, :source_peer_key)
-    source_message_ids = Keyword.get(opts, :source_message_ids, [])
 
     content
     # Split after sentence-ending punctuation or on line breaks.
@@ -143,21 +173,33 @@ defmodule MemHouse.Model.Providers.Deterministic do
     # At most 6 candidates per observation, keeping offline runs cheap and their
     # output small enough to assert on in tests.
     |> Enum.take(6)
-    |> Enum.map(fn statement ->
-      %{
-        "supporting_span" => statement,
-        "statement" => statement,
-        "kind" => infer_kind(statement),
-        "subject_type" => "peer",
-        "subject_ref" => source_peer_key,
-        "source_message_ids" => source_message_ids,
-        "confidence_level" => "inferred",
-        "sensitivity" => infer_sensitivity(statement),
-        "target_level" => "peer",
-        "relevant_from" => nil,
-        "relevant_until" => nil
-      }
-    end)
+  end
+
+  defp full_candidate(statement, opts) do
+    %{
+      "supporting_span" => statement,
+      "statement" => statement,
+      "kind" => infer_kind(statement),
+      "subject_type" => "peer",
+      "subject_ref" => Keyword.get(opts, :source_peer_key),
+      "source_message_ids" => Keyword.get(opts, :source_message_ids, []),
+      "confidence_level" => "inferred",
+      "sensitivity" => infer_sensitivity(statement),
+      "target_level" => "peer",
+      "relevant_from" => nil,
+      "relevant_until" => nil
+    }
+  end
+
+  defp compact_candidate(statement, opts) do
+    %{
+      "supporting_span" => statement,
+      "statement" => statement,
+      "subject_ref" => Keyword.get(opts, :source_peer_key),
+      "source_message_ids" => Keyword.get(opts, :source_message_ids, []),
+      "relevant_from_evidence" => nil,
+      "relevant_until_evidence" => nil
+    }
   end
 
   defp non_durable_conversation?(statement) do

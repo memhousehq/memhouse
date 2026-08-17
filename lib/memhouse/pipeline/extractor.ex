@@ -31,6 +31,8 @@ defmodule MemHouse.Pipeline.Extractor do
   """
 
   alias MemHouse.Model
+  alias MemHouse.Model.Schema.CompactExtraction
+  alias MemHouse.Model.Schema.CompactExtractionBatch
   alias MemHouse.Model.Schema.Extraction
   alias MemHouse.Model.Schema.ExtractionBatch
   alias MemHouse.Pipeline.ExtractionAdmission
@@ -50,7 +52,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @prompt_version "extract-13"
+  @current_prompt_version "extract-13"
 
   # Ways a model names the process instead of a person. Deployment-specific
   # identities are added per observation; these hold everywhere.
@@ -64,7 +66,55 @@ defmodule MemHouse.Pipeline.Extractor do
   @doc """
   The identity of the prompt wording currently used for extraction.
   """
-  def prompt_version, do: @prompt_version
+  def prompt_version, do: extraction_contract().prompt_version
+
+  @doc """
+  Returns the selected extraction experiment contract.
+
+  Compact extraction is an explicit, deployment-wide evaluation switch. The
+  accepted `extract-13` contract remains the default. Its configured model role
+  prompt must match the selected version, so a partial rollout fails before a
+  provider call instead of stamping misleading provenance.
+  """
+  def extraction_contract do
+    config = Application.get_env(:memhouse, :compact_extraction, [])
+    enabled = Keyword.get(config, :enabled, false)
+
+    case enabled do
+      false ->
+        %{
+          mode: :current,
+          experiment_identity: nil,
+          prompt_version: @current_prompt_version,
+          schema: Extraction,
+          batch_schema: ExtractionBatch
+        }
+
+      true ->
+        %{
+          mode: :compact,
+          experiment_identity: Keyword.fetch!(config, :experiment_identity),
+          prompt_version: Keyword.fetch!(config, :prompt_version),
+          schema: CompactExtraction,
+          batch_schema: CompactExtractionBatch
+        }
+
+      invalid ->
+        raise ArgumentError,
+              ":compact_extraction :enabled must be a boolean, got: #{inspect(invalid)}"
+    end
+  end
+
+  @doc false
+  def batch_schema, do: extraction_contract().batch_schema
+
+  @doc false
+  def admission_identity(base_identity) when is_binary(base_identity) do
+    case extraction_contract().experiment_identity do
+      nil -> base_identity
+      experiment_identity -> base_identity <> ":extractor=" <> experiment_identity
+    end
+  end
 
   @doc """
   Extracts candidate knowledge from one raw observation.
@@ -95,6 +145,7 @@ defmodule MemHouse.Pipeline.Extractor do
   content was unusable.
   """
   def extract(message, context \\ %{}) do
+    contract = extraction_contract()
     schema_context = schema_context(message, context)
 
     messages = [
@@ -192,22 +243,29 @@ defmodule MemHouse.Pipeline.Extractor do
       }
     ]
 
+    messages =
+      if contract.mode == :compact do
+        List.replace_at(messages, 0, %{role: "system", content: compact_system_prompt()})
+      else
+        messages
+      end
+
     # `observation` hands the raw text to the gateway as a call option; the
     # deterministic local provider reads it instead of re-parsing the prompt.
     # It travels no further: gateway options are not persisted, and observation
     # text must never reach usage records, telemetry, or job arguments.
     opts = [
-      task: :extraction,
+      task: if(contract.mode == :compact, do: :compact_extraction, else: :extraction),
       source_peer_key: schema_context.source_peer_key,
       observation: Map.fetch!(message, "content"),
       source_message_ids: [schema_context.message_id],
-      prompt_version: @prompt_version
+      prompt_version: contract.prompt_version
     ]
 
     case Model.generate_structured(
            :ingest_extractor,
            messages,
-           Extraction,
+           contract.schema,
            schema_context,
            opts
          ) do
@@ -234,13 +292,14 @@ defmodule MemHouse.Pipeline.Extractor do
   """
   def extract_batch(anchors) when is_list(anchors) and anchors != [] do
     {messages, context, opts} = batch_request(anchors)
+    schema = batch_schema()
 
-    case ExtractionAdmission.admit(messages, ExtractionBatch.json_schema()) do
+    case ExtractionAdmission.admit(messages, schema.json_schema()) do
       {:ok, admission} ->
         case Model.generate_structured(
                :ingest_extractor,
                messages,
-               ExtractionBatch,
+               schema,
                context,
                opts
              ) do
@@ -250,10 +309,10 @@ defmodule MemHouse.Pipeline.Extractor do
                 %{status: :ok, items: items} = result ->
                   result
                   |> Map.put(:items, Enum.map(items, &Map.merge(&1, provenance)))
-                  |> Map.put(:admission_identity, admission.identity)
+                  |> Map.put(:admission_identity, admission_identity(admission.identity))
 
                 result ->
-                  Map.put(result, :admission_identity, admission.identity)
+                  Map.put(result, :admission_identity, admission_identity(admission.identity))
               end)
 
             {:ok, results}
@@ -269,6 +328,8 @@ defmodule MemHouse.Pipeline.Extractor do
 
   @doc false
   def batch_request(anchors) when is_list(anchors) and anchors != [] do
+    contract = extraction_contract()
+
     prepared =
       Enum.map(anchors, fn %{message: message, context: context} ->
         schema_context = schema_context(message, context)
@@ -278,7 +339,14 @@ defmodule MemHouse.Pipeline.Extractor do
     anchor_contexts = Map.new(prepared, &{&1.message["id"], &1.context})
 
     messages = [
-      %{role: "system", content: batch_system_prompt()},
+      %{
+        role: "system",
+        content:
+          if(contract.mode == :compact,
+            do: compact_batch_system_prompt(),
+            else: batch_system_prompt()
+          )
+      },
       %{
         role: "user",
         content:
@@ -304,9 +372,13 @@ defmodule MemHouse.Pipeline.Extractor do
       end)
 
     opts = [
-      task: :extraction_batch,
+      task:
+        if(contract.mode == :compact,
+          do: :compact_extraction_batch,
+          else: :extraction_batch
+        ),
       batch_observations: observations,
-      prompt_version: @prompt_version
+      prompt_version: contract.prompt_version
     ]
 
     {messages, context, opts}
@@ -332,6 +404,44 @@ defmodule MemHouse.Pipeline.Extractor do
     supplied participant keys or current scope as subject_ref. Resolve relative
     dates against the anchor's observed time, but do not invent validity bounds.
     confidence_level is stated_explicitly, clearly_implied, or inferred.
+    """
+  end
+
+  defp compact_system_prompt do
+    """
+    Return only explicit durable facts from the anchored observation and its
+    supplied evidence window. Each item is one self-contained atomic statement.
+    Omit greetings, reactions, questions, guesses, conversational acts, and
+    facts that are useful only during this exchange.
+
+    For every item copy the shortest exact supporting_span, name one supplied
+    participant key or the exact current scope as subject_ref, and cite only
+    supplied source_message_ids. Replace first-person wording in the statement
+    with the person's name. Never make the relaying software a subject.
+
+    When the source explicitly names when the fact starts or stops being true,
+    copy the shortest exact date or relative-time phrase into the matching
+    evidence field. Otherwise use null. Do not infer a date, policy label,
+    classification, confidence, visibility, lifecycle state, or explanation.
+    """
+  end
+
+  defp compact_batch_system_prompt do
+    """
+    Return one envelope for every supplied anchor and copy its exact Anchor id.
+    Keep anchors separate. Within each envelope, return only explicit durable
+    facts as self-contained atomic statements.
+
+    Every item copies the shortest exact supporting_span, names one supplied
+    participant key or exact current scope as subject_ref, and cites only ids
+    from that anchor's window. Replace first-person wording with the person's
+    name. Omit questions, guesses, conversational acts, and claims about the
+    relaying software.
+
+    Copy an exact date or relative-time phrase into a validity-evidence field
+    only when the source explicitly supplies that boundary; otherwise use null.
+    Do not emit policy labels, classifications, confidence, lifecycle choices,
+    explanations, or cross-anchor facts.
     """
   end
 

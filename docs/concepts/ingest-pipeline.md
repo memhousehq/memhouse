@@ -127,6 +127,17 @@ gets bounded repair attempts. If an extraction response still mixes valid and
 invalid candidates, MemHouse keeps the valid candidates and omits the invalid
 ones. A malformed or wholly invalid response fails the job for retry.
 
+An evaluation-only compact contract can be selected with
+`MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION=true`. It asks the model only for an
+explicit atomic statement, exact support, subject/source references, and exact
+source text for nullable valid-time boundaries. MemHouse then derives `fact`,
+confidence/evidence, `restricted` sensitivity, and the narrow peer or current
+scope target and runs the same ordinary validator below. The flag changes no
+writer, queue, table, lifecycle, or Gate A/B behavior. Its prompt version
+`extract-compact-exp-1` identifies resulting provenance and usage. It remains
+off because the held-out non-inferiority/privacy gate and human ADR review are
+still required; turning it off restores `extract-13` without a data migration.
+
 Extraction also does what a naive extractor gets wrong:
 
 - **Keeps durable knowledge.** The extractor records stable facts,
