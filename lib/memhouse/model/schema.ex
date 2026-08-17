@@ -1294,6 +1294,82 @@ defmodule MemHouse.Model.Schema.Reasoning do
   end
 end
 
+defmodule MemHouse.Model.Schema.ReasoningUpdate do
+  @moduledoc """
+  Narrow update/contradiction contract over existing working-set ids.
+
+  It may classify support or contradiction edges. It cannot create a statement,
+  request deletion, or emit a derived-from edge. The shared `Reasoning` caster
+  still enforces Account, scope, lifecycle, UUID, cycle, and duplicate checks.
+  """
+
+  @behaviour MemHouse.Model.Schema
+
+  @impl true
+  def json_schema do
+    MemHouse.Model.Schema.Reasoning.json_schema()
+    |> put_in(["properties", "items", "maxItems"], 0)
+    |> put_in(
+      ["properties", "relations", "items", "properties", "kind", "enum"],
+      ~w(supports contradicts)
+    )
+  end
+
+  @impl true
+  def cast(object, context) do
+    with {:ok, result} <- MemHouse.Model.Schema.Reasoning.cast(object, context),
+         :ok <- no_items(result.items),
+         :ok <- relation_kinds(result.relations, ~w(supports contradicts), "update") do
+      {:ok, result}
+    end
+  end
+
+  defp no_items([]), do: :ok
+  defp no_items(_items), do: {:error, ["update operation cannot create deductions"]}
+
+  defp relation_kinds(relations, allowed, operation) do
+    if Enum.all?(relations, &(&1.kind in allowed)),
+      do: :ok,
+      else: {:error, ["#{operation} operation contains an invalid relation kind"]}
+  end
+end
+
+defmodule MemHouse.Model.Schema.ReasoningSynthesis do
+  @moduledoc """
+  Narrow multi-source synthesis contract.
+
+  Every candidate passes the shared two-unique-contributor validation and may
+  refer only to the authorized bounded working set. Structural relations may be
+  `derived_from` only; contradiction classification belongs to the update
+  operation.
+  """
+
+  @behaviour MemHouse.Model.Schema
+
+  @impl true
+  def json_schema do
+    MemHouse.Model.Schema.Reasoning.json_schema()
+    |> put_in(
+      ["properties", "relations", "items", "properties", "kind", "enum"],
+      ["derived_from"]
+    )
+  end
+
+  @impl true
+  def cast(object, context) do
+    with {:ok, result} <- MemHouse.Model.Schema.Reasoning.cast(object, context),
+         :ok <- relation_kinds(result.relations) do
+      {:ok, result}
+    end
+  end
+
+  defp relation_kinds(relations) do
+    if Enum.all?(relations, &(&1.kind == "derived_from")),
+      do: :ok,
+      else: {:error, ["synthesis operation contains an invalid relation kind"]}
+  end
+end
+
 defmodule MemHouse.Model.Schema.DialecticAnswer do
   @moduledoc """
   The structured shape for a grounded answer to a question.

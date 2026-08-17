@@ -291,6 +291,20 @@ only through their final timestamp-and-id cursor. All values are validated at
 boot. Decisions are emitted as content-safe `dream_gate` telemetry with no
 statement or source text.
 
+### Dream-time reasoning operations
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MEMHOUSE_DREAM_UPDATE_ENABLED` | `true` | Classify support and contradiction among bounded active inputs |
+| `MEMHOUSE_DREAM_SYNTHESIS_ENABLED` | `false` | Propose multi-source deductions; keep off until matched ablation approval |
+
+The two operations use separate schemas and independently authored prompt
+versions. Both may cite only exact ids from the bounded authorized working set.
+Update cannot create statements; synthesis requires at least two distinct
+contributors and cannot classify contradictions. They converge on the same
+governance writer transaction, so one operation failure commits no effects and
+advances no watermark. Neither contract permits model-directed deletion.
+
 ## Operational retention
 
 MemHouse removes terminal queue and operational-ledger rows on a fixed schedule. It never prunes

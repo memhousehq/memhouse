@@ -25,13 +25,58 @@ defmodule MemHouse.Model.Reasoner do
   """
 
   alias MemHouse.Model
-  alias MemHouse.Model.Schema.Reasoning
+  alias MemHouse.Model.Schema.{Reasoning, ReasoningSynthesis, ReasoningUpdate}
 
   # Names the prompt template below, and is passed to the gateway as a call
   # option. Note that the `prompt_version` actually stamped on provenance and
   # usage rows comes from the resolved `dream_reasoner` role, not from here; the
   # two are kept equal on purpose, so editing the prompt means bumping both.
   @prompt_version "reason-1"
+  @update_prompt_version "reason-update-1"
+  @synthesis_prompt_version "reason-synthesis-1"
+
+  @doc """
+  Runs the independently versioned operations enabled for dream-time.
+
+  Every enabled operation must finish before the caller enters the single
+  governed writer transaction. A failure returns immediately with no partial
+  result, so the scoped watermark cannot advance on half an operation set.
+  """
+  def reason_operations(delta_and_working_set, context, opts \\ []) do
+    operations = enabled_operations()
+
+    operations
+    |> Enum.reduce_while({:ok, %{items: [], relations: []}, []}, fn operation,
+                                                                    {:ok, combined, provenance} ->
+      case run_operation(operation, delta_and_working_set, context, opts) do
+        {:ok, result, operation_provenance} ->
+          combined = %{
+            items: combined.items ++ result.items,
+            relations: combined.relations ++ result.relations
+          }
+
+          {:cont, {:ok, combined, [operation_provenance | provenance]}}
+
+        {:error, error} ->
+          {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, combined, provenance} ->
+        {:ok, combined, %{operations: Enum.reverse(provenance)}}
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Returns enabled operations in their fixed writer order."
+  def enabled_operations do
+    config = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+
+    [:update, :synthesis]
+    |> Enum.filter(&Keyword.fetch!(config, &1))
+  end
 
   @doc """
   Runs one reasoning pass over a delta and its working set.
@@ -69,6 +114,75 @@ defmodule MemHouse.Model.Reasoner do
          ) do
       {:ok, result, provenance} ->
         {:ok, %{result | items: Enum.map(result.items, &Map.merge(&1, provenance))}, provenance}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp run_operation(:update, input, context, opts) do
+    messages = [
+      %{
+        role: "system",
+        content: """
+        Compare only the supplied active records. Return supports or
+        contradicts edges using their exact ids. Do not create statements,
+        explain hidden reasoning, choose lifecycle state, or request deletion.
+        """
+      },
+      %{role: "user", content: Jason.encode!(input)}
+    ]
+
+    generate_operation(
+      messages,
+      ReasoningUpdate,
+      context,
+      :reasoning_update,
+      @update_prompt_version,
+      opts
+    )
+  end
+
+  defp run_operation(:synthesis, input, context, opts) do
+    messages = [
+      %{
+        role: "system",
+        content: """
+        Propose only cross-source knowledge supported by at least two distinct
+        supplied active ids. Cite every contributor id exactly. A one-source
+        paraphrase is invalid. Do not classify contradictions, choose lifecycle
+        state, explain hidden reasoning, or request deletion.
+        """
+      },
+      %{role: "user", content: Jason.encode!(input)}
+    ]
+
+    generate_operation(
+      messages,
+      ReasoningSynthesis,
+      context,
+      :reasoning_synthesis,
+      @synthesis_prompt_version,
+      opts
+    )
+  end
+
+  defp generate_operation(messages, schema, context, task, prompt_version, opts) do
+    case Model.generate_structured(
+           :dream_reasoner,
+           messages,
+           schema,
+           context,
+           Keyword.merge([task: task, prompt_version: prompt_version], opts)
+         ) do
+      {:ok, result, provenance} ->
+        operation_provenance =
+          provenance
+          |> Map.put(:prompt_version, prompt_version)
+          |> Map.put(:operation, Atom.to_string(task))
+
+        items = Enum.map(result.items, &Map.merge(&1, operation_provenance))
+        {:ok, %{result | items: items}, operation_provenance}
 
       {:error, error} ->
         {:error, error}

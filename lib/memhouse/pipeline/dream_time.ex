@@ -173,7 +173,7 @@ defmodule MemHouse.Pipeline.DreamTime do
       with {:ok, working_set} <- thorough_working_set(snapshot) do
         context = reasoning_context(snapshot, working_set)
 
-        case Reasoner.reason(
+        case Reasoner.reason_operations(
                %{delta: serialise(snapshot.delta), working_set: serialise(working_set)},
                context,
                total_timeout: snapshot.limits.max_elapsed_ms

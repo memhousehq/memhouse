@@ -861,6 +861,20 @@ end
 
 config :memhouse, :dream_time_gates, dream_time_gates
 
+dream_reasoning_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+
+config :memhouse, :dream_reasoning_operations,
+  update:
+    env_bool.(
+      "MEMHOUSE_DREAM_UPDATE_ENABLED",
+      Keyword.fetch!(dream_reasoning_operations, :update)
+    ),
+  synthesis:
+    env_bool.(
+      "MEMHOUSE_DREAM_SYNTHESIS_ENABLED",
+      Keyword.fetch!(dream_reasoning_operations, :synthesis)
+    )
+
 # Legacy single-credential configuration, predating per-role settings. The
 # ReqLLM provider still consults it, and an `api_key` set here would win over a
 # role's own reference — so it stays nil by design. The reference only names

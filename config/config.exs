@@ -185,6 +185,13 @@ config :memhouse, :dream_time_gates,
   max_working_set_items: 50,
   max_elapsed_ms: 120_000
 
+# Narrow dream reasoning operations. Synthesis remains disabled until the
+# matched ablation demonstrates value; update/contradiction retains current
+# inspectability without granting the model lifecycle control.
+config :memhouse, :dream_reasoning_operations,
+  update: true,
+  synthesis: false
+
 config :ash_oban,
   # Jobs run through Ash actions with authorization on, exactly like an HTTP
   # caller. A background job must not be a privilege-escalation path.

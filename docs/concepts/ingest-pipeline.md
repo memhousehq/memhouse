@@ -211,6 +211,15 @@ timestamp and knowledge id, so same-microsecond rows resume without being lost
 or billed twice. Dream-produced deductions and deterministic consolidation
 outputs do not feed the eligible-change counter back into themselves.
 
+Reasoning behind that gate is split into two small contracts. The enabled
+update operation can record `supports` and `contradicts` edges between exact
+working-set ids; contradictions remain visible and enqueue governance review.
+The synthesis operation can propose a statement only when at least two distinct
+authorized inputs support it. It is disabled by default pending matched
+ablation. Both operations finish before the one writer transaction validates
+their ids, applies common governed effects, and advances the scoped cursor.
+Prompt rationale is validation input only and is never stored as chain-of-thought.
+
 ## What never enters audit metadata or job arguments
 
 Audit entries and Oban arguments may carry ids, states, levels, channels,
