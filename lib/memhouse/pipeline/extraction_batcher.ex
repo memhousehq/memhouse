@@ -228,8 +228,8 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
   def failure_class(:missing_structured_object),
     do: {:repairable, "missing_structured_object"}
 
-  def failure_class(%ReqLLM.Error.Invalid{}), do: {:repairable, "configuration"}
-  def failure_class(%ReqLLM.Error.Validation{}), do: {:repairable, "configuration"}
+  def failure_class(%{class: class}) when class in [:invalid, :validation],
+    do: {:repairable, "configuration"}
 
   def failure_class(%ReqLLM.Error.API.Request{status: status})
       when status in [400, 401, 403, 404, 405, 422],

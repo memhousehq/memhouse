@@ -128,6 +128,9 @@ end
 extraction_batch_target =
   env_positive_integer!.("MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS", "4096")
 
+extraction_claim_timeout_seconds =
+  env_positive_integer!.("MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS", "1200")
+
 unless extraction_batch_target in [128, 1_024, 4_096, 16_384] do
   raise "MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS must be one of 128, 1024, 4096, or 16384"
 end
@@ -140,8 +143,7 @@ config :memhouse, :extraction_batching,
     env_positive_integer!.("MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS", "8192"),
   safety_margin_tokens:
     env_positive_integer!.("MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS", "2048"),
-  claim_timeout_seconds:
-    env_positive_integer!.("MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS", "1200")
+  claim_timeout_seconds: extraction_claim_timeout_seconds
 
 # Rejects ambiguous switches such as auto-migrate.
 env_bool! = fn key, default ->
@@ -513,6 +515,18 @@ generation_options = %{
   "request_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS", "300000"),
   "pool_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000")
 }
+
+# One structured extraction may use the initial call plus two bounded repair
+# calls. The lease must outlive that whole-call budget so reconciliation cannot
+# start a duplicate billed call while the original worker is still live. The
+# extra minute covers validation and short database transactions between calls.
+minimum_extraction_claim_timeout_ms = generation_options["request_timeout"] * 3 + 60_000
+
+if extraction_claim_timeout_seconds * 1_000 < minimum_extraction_claim_timeout_ms do
+  raise "MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS must cover three " <>
+          "MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS calls plus 60 seconds; " <>
+          "minimum is #{div(minimum_extraction_claim_timeout_ms + 999, 1_000)} seconds"
+end
 
 # ReqLLM shares this Finch pool across every hosted generation role. Finch
 # chooses a shard randomly when `count` exceeds one, so capacity belongs in

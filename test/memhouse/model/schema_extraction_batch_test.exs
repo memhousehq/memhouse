@@ -109,6 +109,15 @@ defmodule MemHouse.Model.SchemaExtractionBatchTest do
 
     assert ExtractionBatcher.failure_class({:structured_validation_failed, ["shape"]}) ==
              {:terminal, "structured_validation_exhausted"}
+
+    assert ExtractionBatcher.failure_class(%ReqLLM.Error.Invalid.Parameter{parameter: :model}) ==
+             {:repairable, "configuration"}
+
+    assert ExtractionBatcher.failure_class(%ReqLLM.Error.Validation.Error{
+             tag: :model,
+             reason: "invalid",
+             context: []
+           }) == {:repairable, "configuration"}
   end
 
   defp contexts(first_id, second_id) do
