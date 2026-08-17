@@ -20,14 +20,14 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest.Provider do
   @doc "Rejects transactional generation calls, otherwise returns deterministic structured output."
   @impl true
   def structured(config, messages, schema, opts) do
-    assert_outside_transaction!(:structured)
+    assert_outside_transaction!({:structured, config.role})
     Deterministic.structured(config, messages, schema, opts)
   end
 
   @doc "Rejects transactional chat calls, otherwise returns deterministic chat output."
   @impl true
   def chat(config, messages, opts) do
-    assert_outside_transaction!(:chat)
+    assert_outside_transaction!({:chat, config.role})
     Deterministic.chat(config, messages, opts)
   end
 
@@ -192,6 +192,7 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest do
 
       assert_received {:provider_transaction_boundary, {:embed, :query}, false}
       assert_received {:provider_transaction_boundary, :rerank, false}
+      assert_received {:provider_transaction_boundary, {:structured, :dialectic_agent}, false}
     after
       cleanup_account!(account_key)
       restore_runtime_config(original)
