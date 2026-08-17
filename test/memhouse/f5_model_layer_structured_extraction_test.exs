@@ -432,7 +432,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # The durable side of the outage: the message row survives, extraction is still
     # incomplete (NULL completion timestamp), the pipeline run is failed and retryable, and at least
     # one Oban job for that run is still live — not completed, discarded, or cancelled.
-    assert %{rows: [[1, nil, "failed", 1, queued_jobs]]} =
+    assert %{rows: [[1, nil, "failed", 1, "provider_transient", queued_jobs]]} =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -440,6 +440,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
                       message.extraction_completed_at,
                       run.status,
                       run.attempt_count,
+                      run.last_error_class,
                       (SELECT count(*)
                        FROM oban_jobs AS job
                        WHERE job.args->'primary_key'->>'id' = run.id::text
@@ -447,7 +448,8 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
                FROM messages AS message
                JOIN pipeline_runs AS run ON run.target_id = message.id
                WHERE message.id = $1 AND run.kind = 'extraction'
-               GROUP BY message.extraction_completed_at, run.id, run.status, run.attempt_count
+               GROUP BY message.extraction_completed_at, run.id, run.status,
+                        run.attempt_count, run.last_error_class
                """,
                [Ecto.UUID.dump!(message["id"])]
              )

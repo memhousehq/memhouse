@@ -135,18 +135,31 @@ defmodule MemHouse.Pipeline.Changes.MarkRunFailed do
         # and database RLS; it must also work for AshOban's actorless callback.
         |> Ash.read_one!(actor: actor, authorize?: false)
 
-      if current.status in ["completed", "repairable", "terminal"] do
-        changeset
-        |> Ash.Changeset.force_change_attribute(:status, current.status)
-        |> Ash.Changeset.force_change_attribute(:last_error_class, current.last_error_class)
-        |> Ash.Changeset.force_change_attribute(:attempt_count, current.attempt_count)
-        |> Ash.Changeset.force_change_attribute(:processed_at, current.processed_at)
-        |> Ash.Changeset.force_change_attribute(:payload, current.payload)
-      else
-        log_extraction_failure(run, class)
-        changeset
+      cond do
+        current.status in ["completed", "repairable", "terminal"] ->
+          preserve_current(changeset, current)
+
+        current.status == "failed" and current.attempt_count > run.attempt_count ->
+          # The batching workflow classified the provider failure before
+          # returning it. Keep that more precise, content-safe class instead of
+          # replacing it with Reactor's outer wrapper class.
+          log_extraction_failure(run, current.last_error_class)
+          preserve_current(changeset, current)
+
+        true ->
+          log_extraction_failure(run, class)
+          changeset
       end
     end)
+  end
+
+  defp preserve_current(changeset, current) do
+    changeset
+    |> Ash.Changeset.force_change_attribute(:status, current.status)
+    |> Ash.Changeset.force_change_attribute(:last_error_class, current.last_error_class)
+    |> Ash.Changeset.force_change_attribute(:attempt_count, current.attempt_count)
+    |> Ash.Changeset.force_change_attribute(:processed_at, current.processed_at)
+    |> Ash.Changeset.force_change_attribute(:payload, current.payload)
   end
 
   defp log_extraction_failure(run, class) do
