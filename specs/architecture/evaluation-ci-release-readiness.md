@@ -69,6 +69,12 @@ guardrails; lexical and salience-recency variants are reported ablations.
 latency, RAG-triad, token efficiency, and BEAM degradation remain
 frontier-tracked as required by `AD-EVAL-3`, `NFR-1`, and `NFR-11`.
 
+Honcho-informed simplification experiments follow the matched-manifest,
+deterministic-safety, default-selection, and rollback gates in
+[ADR 0021](../adr/0021-clean-room-memory-simplification.md). A first-party
+external benchmark is research input, not evidence for changing a MemHouse
+default. Paid or live evaluation still requires explicit operator approval.
+
 The 2026-07-27 minimal `poc-0` reports remain immutable pre-retrieval evidence,
 not current `f7-1` results. `poc-0` is a historical contract tag.
 

@@ -287,6 +287,18 @@ through Phoenix PubSub so queue-mode nodes evict the same Account/scope key.
 On a miss, and only on a miss, `get_context` uses the `:fast` retrieval profile.
 It never invokes dialectic or dream reasoning on the live context path.
 
+## Proposed simplification boundary
+
+ADR 0021 defines an evidence-gated experiment toward a smaller default recall
+path. It preserves all authorization, lifecycle, provenance, erasure, and
+answer-grounding behavior described here. The current `f7-1` profiles, entity
+cache, projections, fusion, and reranker remain authoritative until matched
+evaluation, rollback rehearsal, and human review approve a new default and a
+new contract identity. Experimental adaptive recall is read-only and cannot
+write Knowledge or invoke governance.
+
+See [ADR 0021](../adr/0021-clean-room-memory-simplification.md).
+
 ## Version and evidence
 
 Message/extractor and health stay `f5-1`. Search, ask, and context advance from

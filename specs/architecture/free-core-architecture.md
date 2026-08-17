@@ -18,6 +18,8 @@ depends on are recorded in:
 - `specs/adr/0004-multi-strategy-retrieval.md`
 - `specs/adr/0005-peer-inline-validation-over-mcp.md`
 - `specs/adr/0006-entity-resolution.md`
+- `specs/adr/0021-clean-room-memory-simplification.md` (proposed experiments;
+  current accepted behavior remains in force until its gates pass)
 
 ## Scope
 

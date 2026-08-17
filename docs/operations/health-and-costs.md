@@ -120,6 +120,16 @@ yields before user-facing ingest and retrieval do.
 The ETS counters in front of the ledger are rebuildable caches. The ledger
 itself is exact within its retention horizon.
 
+## Experimental simplification profiles
+
+No Honcho-informed extraction, recall, or dream-time experiment is a shipped
+default merely because it appears in the repository. The proposed
+[clean-room memory-simplification decision](https://github.com/memhousehq/memhouse/blob/main/specs/adr/0021-clean-room-memory-simplification.md)
+requires versioned matched evaluation, content-safe operational evidence,
+rollback rehearsal, and human architecture/licensing review before a default
+changes. Until then, the profile names and queue behavior documented above are
+the operator contract.
+
 ## Trace correlation
 
 Every HTTP response carries `x-trace-id`. A caller sending a W3C `traceparent`
