@@ -367,11 +367,11 @@ The published tracker hierarchy is umbrella [#285](https://github.com/memhousehq
 **Acceptance:**
 
 - One Oban worker can claim adjacent same-Account/scope/session unstamped messages up to a token target; every anchor retains its existing deterministic per-message replay key and durable completion state, and every extracted item cites only supplied message ids.
-- Per-anchor completion is atomic; a retry skips completed anchors and processes only incomplete anchors, while a poison anchor remains isolated and siblings remain retryable.
+- Per-anchor completion is atomic; a retry skips completed anchors and processes only incomplete anchors, while a poison anchor remains isolated and siblings remain retryable. After the bounded retry budget, record a durable terminal failure state and content-safe reason, exclude that anchor from normal reconciliation replay, and expose an explicit operator repair/requeue action.
 - Concurrent workers cannot process one anchor twice into duplicate lifecycle/audit history.
 - Config supports at least 128, 1K, 4K, and 16K evaluation variants without adding a new queue table.
 
-**Gate:** crash/retry/property tests cover failures before and after every anchor commit; compare extraction quality, queue delay, calls, tokens, and cost. Do not select one global batch size unless evidence supports it.
+**Gate:** crash/retry/property tests cover failures before and after every anchor commit plus retry exhaustion, sibling progress, terminal replay exclusion, and explicit repair/requeue; compare extraction quality, queue delay, calls, tokens, and cost. Do not select one global batch size unless evidence supports it.
 
 ### Phase 2 — simple recall baseline and projection seam
 
