@@ -79,7 +79,7 @@ defmodule ReclaimingBatchProvider do
 
   alias MemHouse.Model.Providers.Deterministic
 
-  @doc "Pauses the batch until the owning test has installed a replacement claim."
+  @doc "Pauses the batch until the owning test selects a deterministic or error response."
   @impl true
   def structured(config, messages, schema, opts) do
     controller = Application.fetch_env!(:memhouse, :reclaiming_batch_test_controller)
@@ -89,6 +89,7 @@ defmodule ReclaimingBatchProvider do
 
     receive do
       :persist_batch_results -> Deterministic.structured(config, messages, schema, opts)
+      {:return_batch_result, result} -> result
     after
       5_000 -> {:error, :batch_reclaim_test_timeout}
     end
@@ -924,6 +925,199 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
              )
   end
 
+  test "a retryable batch failure reports every claimed anchor before returning the provider error" do
+    original_batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    original_provider = Application.get_env(:memhouse, :model_provider)
+
+    Application.put_env(
+      :memhouse,
+      :extraction_batching,
+      Keyword.put(original_batching, :enabled, true)
+    )
+
+    Application.put_env(:memhouse, :model_provider, ReclaimingBatchProvider)
+    Application.put_env(:memhouse, :reclaiming_batch_test_controller, self())
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :extraction_batching, original_batching)
+      Application.delete_env(:memhouse, :reclaiming_batch_test_controller)
+      restore_model_provider(original_provider)
+    end)
+
+    assert {:ok, first} =
+             Memory.ingest_message(ingest_attrs("f2-batch-retryable", "batch-retryable-session"))
+
+    assert {:ok, second} =
+             Memory.ingest_message(ingest_attrs("f2-batch-retryable", "batch-retryable-session"))
+
+    first_id = first["id"]
+    second_id = second["id"]
+    account_id = account_id!("f2-batch-retryable")
+    first_run = extraction_run!(account_id, first_id)
+    handler = attach_batch_telemetry(:retryable_batch)
+
+    batch_task = Task.async(fn -> MemHouse.Pipeline.ExtractionBatcher.run(first_run) end)
+
+    assert_receive {:batch_claims_ready, provider, [^first_id, ^second_id]}, 5_000
+    send(provider, {:return_batch_result, {:error, :provider_unavailable}})
+
+    assert {:error, :provider_unavailable} = Task.await(batch_task, 5_000)
+
+    assert_receive {^handler, measurements, metadata}, 5_000
+    assert metadata.operation == "ingest_batch"
+    assert metadata.status == "failed"
+    assert metadata.failure_class == "provider_transient"
+    assert measurements.calls == 1
+    assert measurements.anchors == 2
+    assert measurements.failures == 2
+    assert measurements.stale_claims == 0
+
+    assert %{rows: [["failed", "provider_transient"], ["failed", "provider_transient"]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT status, last_error_class
+               FROM pipeline_runs
+               WHERE target_id = ANY($1)
+               ORDER BY target_id
+               """,
+               [[Ecto.UUID.dump!(first_id), Ecto.UUID.dump!(second_id)]]
+             )
+  end
+
+  test "an oversized classified batch keeps telemetry detail out of its public result" do
+    original_batching = Application.fetch_env!(:memhouse, :extraction_batching)
+
+    Application.put_env(
+      :memhouse,
+      :extraction_batching,
+      original_batching
+      |> Keyword.put(:enabled, true)
+      |> Keyword.put(:target_tokens, 128)
+      |> Keyword.put(:context_limit_tokens, 128)
+      |> Keyword.put(:reserved_output_tokens, 64)
+      |> Keyword.put(:safety_margin_tokens, 64)
+    )
+
+    on_exit(fn -> Application.put_env(:memhouse, :extraction_batching, original_batching) end)
+
+    assert {:ok, message} =
+             Memory.ingest_message(ingest_attrs("f2-batch-oversized", "batch-oversized-session"))
+
+    account_id = account_id!("f2-batch-oversized")
+    run = extraction_run!(account_id, message["id"])
+    handler = attach_batch_telemetry(:oversized_batch)
+
+    assert {:ok, %{status: "repairable", run_status: "persisted", anchor_count: 1}} ==
+             MemHouse.Pipeline.ExtractionBatcher.run(run)
+
+    assert_receive {^handler, measurements, metadata}, 5_000
+    assert metadata.status == "repairable"
+    assert metadata.failure_class == "oversized"
+    assert measurements.anchors == 1
+    assert measurements.failures == 1
+    assert measurements.stale_claims == 0
+  end
+
+  test "stale claims remain a distinct subset of repairable and terminal batch failures" do
+    original_batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    original_provider = Application.get_env(:memhouse, :model_provider)
+
+    Application.put_env(
+      :memhouse,
+      :extraction_batching,
+      Keyword.put(original_batching, :enabled, true)
+    )
+
+    Application.put_env(:memhouse, :model_provider, ReclaimingBatchProvider)
+    Application.put_env(:memhouse, :reclaiming_batch_test_controller, self())
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :extraction_batching, original_batching)
+      Application.delete_env(:memhouse, :reclaiming_batch_test_controller)
+      restore_model_provider(original_provider)
+    end)
+
+    cases = [
+      {"repairable", "repairable", %ReqLLM.Error.Invalid.Parameter{parameter: :model},
+       "configuration", 1},
+      {"terminal", "terminal", {:structured_validation_failed, ["shape"]},
+       "structured_validation_exhausted", 1},
+      {"all-stale", "repairable", %ReqLLM.Error.Invalid.Parameter{parameter: :model},
+       "stale_extraction_claim", 2}
+    ]
+
+    for {case_name, expected_status, provider_error, expected_failure_class, stale_count} <-
+          cases do
+      account_key = "f2-batch-stale-#{case_name}"
+      session_id = "batch-stale-#{case_name}-session"
+
+      assert {:ok, first} = Memory.ingest_message(ingest_attrs(account_key, session_id))
+      assert {:ok, second} = Memory.ingest_message(ingest_attrs(account_key, session_id))
+
+      first_id = first["id"]
+      second_id = second["id"]
+      account_id = account_id!(account_key)
+      first_run = extraction_run!(account_id, first_id)
+      handler = attach_batch_telemetry({:stale_batch, case_name})
+
+      batch_task = Task.async(fn -> MemHouse.Pipeline.ExtractionBatcher.run(first_run) end)
+
+      assert_receive {:batch_claims_ready, provider, [^first_id, ^second_id]}, 5_000
+
+      stale_ids = Enum.take([first_id, second_id], stale_count)
+
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        "UPDATE pipeline_runs SET updated_at = now() - interval '30 minutes' WHERE target_id = ANY($1)",
+        [Enum.map(stale_ids, &Ecto.UUID.dump!/1)]
+      )
+
+      assert {:ok, %{expired_claims: ^stale_count}} = Reconciler.run(account_id)
+
+      replacement_claim_id = Ecto.UUID.generate()
+
+      assert ^stale_count =
+               account_id
+               |> DataLayer.with_account_id(
+                 [role: :system, pipeline?: true],
+                 fn _account, actor ->
+                   {:ok, claimed} =
+                     Pipeline.claim_extraction_runs(
+                       account_id,
+                       stale_ids,
+                       replacement_claim_id,
+                       actor
+                     )
+
+                   length(claimed)
+                 end
+               )
+
+      send(provider, {:return_batch_result, {:error, provider_error}})
+
+      expected_anchors =
+        Map.new([first_id, second_id], fn id ->
+          if id in stale_ids,
+            do: {id, "stale_extraction_claim"},
+            else: {id, expected_status}
+        end)
+
+      assert {:ok, %{status: ^expected_status, anchors: ^expected_anchors} = public_result} =
+               Task.await(batch_task, 5_000)
+
+      refute Map.has_key?(public_result, :failure_class)
+
+      assert_receive {^handler, measurements, metadata}, 5_000
+      assert metadata.status == "partial"
+      assert metadata.failure_class == expected_failure_class
+      assert measurements.calls == 1
+      assert measurements.anchors == 2
+      assert measurements.failures == 2
+      assert measurements.stale_claims == stale_count
+    end
+  end
+
   test "a background job finds and finishes its run on a connection with no Account declared" do
     assert {:ok, message} =
              Memory.ingest_message(ingest_attrs("f2-undeclared", "undeclared-session"))
@@ -1530,6 +1724,42 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
   # not disturbed by rows another test in this file created. Overrides are given as a keyword
   # list purely for readability at the call sites and are converted to the string keys the
   # ingest entry point expects.
+  defp extraction_run!(account_id, target_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        PipelineRun
+        |> Ash.Query.filter(kind == "extraction" and target_id == ^target_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read_one!(actor: actor)
+      end
+    )
+  end
+
+  defp attach_batch_telemetry(name) do
+    handler = {__MODULE__, self(), name}
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, measurements, %{operation: "ingest_batch"} = metadata, _config ->
+          send(parent, {handler, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    handler
+  end
+
+  defp restore_model_provider(nil), do: Application.delete_env(:memhouse, :model_provider)
+
+  defp restore_model_provider(provider),
+    do: Application.put_env(:memhouse, :model_provider, provider)
+
   defp ingest_attrs(account_key, session_id, overrides \\ []) do
     %{
       "account_key" => account_key,

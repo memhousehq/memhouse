@@ -223,6 +223,12 @@ Unknown metadata is discarded by the emitter. Reasoning update and synthesis
 also use the same envelope, so their accepted/rejected contribution can be
 evaluated separately.
 
+An `ingest_batch` aggregate counts every anchor covered by the provider call.
+`failures` counts anchors that did not complete under that worker, while
+`stale_claims` is the subset skipped because another owner held the durable
+claim. Mixed completed, classified, or stale outcomes report `partial`; the
+per-anchor `PipelineRun` remains the exact replay and terminal-state record.
+
 Use these aggregates to reconcile logical work and alert on rates. They are not
 a billing source: a process can exit before emitting its completion event, while
 the durable usage ledger records every provider attempt that MemHouse could

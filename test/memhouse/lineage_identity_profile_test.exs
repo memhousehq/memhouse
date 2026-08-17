@@ -8,6 +8,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
   alias MemHouse.Governance.Engine
   alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation, Provenance}
   alias MemHouse.Memory
+  alias MemHouse.Model.GroundedAnswerProvider
   alias MemHouse.Pipeline.DeductionEffects
   alias MemHouse.Topology.Scope
 
@@ -479,6 +480,20 @@ defmodule MemHouse.LineageIdentityProfileTest do
     related = seed_active!("planner-headroom", "Morgan owns the approval step.", "related")
     relation!(root, related, "supports")
 
+    original_provider = Application.get_env(:memhouse, :model_provider)
+    GroundedAnswerProvider.start!(:grounded_abstention)
+    Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
+
+    on_exit(fn ->
+      GroundedAnswerProvider.stop()
+
+      if original_provider do
+        Application.put_env(:memhouse, :model_provider, original_provider)
+      else
+        Application.delete_env(:memhouse, :model_provider)
+      end
+    end)
+
     handler = {__MODULE__, self(), :planner_profile}
     parent = self()
 
@@ -532,6 +547,12 @@ defmodule MemHouse.LineageIdentityProfileTest do
     assert related.knowledge.id in medium_answer_context_ids
     refute List.last(base_ids) in high_answer_context_ids
     refute List.last(base_ids) in medium_answer_context_ids
+
+    assert [high_prompt, medium_prompt] = GroundedAnswerProvider.prompts()
+    assert high_prompt =~ "[#{related.knowledge.id}] Morgan owns the approval step."
+    assert medium_prompt =~ "[#{related.knowledge.id}] Morgan owns the approval step."
+    refute high_prompt =~ "[#{List.last(base_ids)}]"
+    refute medium_prompt =~ "[#{List.last(base_ids)}]"
 
     for result <- [high_result, medium_result] do
       assert result["recall"]["answer_context_adaptive_items"] >= 1

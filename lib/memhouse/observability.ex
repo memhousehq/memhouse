@@ -25,6 +25,7 @@ defmodule MemHouse.Observability do
     :cache_hits,
     :cache_misses,
     :failures,
+    :stale_claims,
     :elapsed_ms
   ]
   @operation_metadata [

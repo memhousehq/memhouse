@@ -68,7 +68,7 @@ answer text.
 
 | Signal | Event or surface | Stop condition |
 | --- | --- | --- |
-| Extraction anchors, attempts, calls, tokens, admission geometry | `[:memhouse, :operation, :completed]` with `operation: "ingest_batch"`, Ingest status/PipelineRun payload, and Usage ledger | Repairable/terminal rate, retry amplification, queue delay, or token/call budget exceeds the matched geometry |
+| Extraction anchors, attempts, calls, tokens, admission geometry | `[:memhouse, :operation, :completed]` with `operation: "ingest_batch"` (including the `stale_claims` subset of failed anchors), Ingest status/PipelineRun payload, and Usage ledger | Repairable/terminal rate, retry amplification, queue delay, stale-claim rate, or token/call budget exceeds the matched geometry |
 | Recall calls, items, query tokens, elapsed time, exhaustion | `[:memhouse, :recall, :planner]` and Ask `recall` diagnostics | Any run exceeds a preregistered bound, or exhaustion rate/latency exceeds the manifest budget |
 | Retrieval latency and dropped components | `[:memhouse, :retrieval, :outcomes]`, `:component`, and `:degraded` | p95 or degraded rate exceeds the matched threshold |
 | Source-search freshness and availability | `[:memhouse, :retrieval, :source_search]` and source-search status | Sustained `stale`, `unavailable`, or `failed`, or citation targets cannot resolve |

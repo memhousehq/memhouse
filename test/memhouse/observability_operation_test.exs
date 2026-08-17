@@ -24,7 +24,13 @@ defmodule MemHouse.ObservabilityOperationTest do
     assert :ok =
              Observability.emit_operation(
                :recall,
-               %{calls: 2, candidates: 5, elapsed_ms: 12, input_tokens: -1},
+               %{
+                 calls: 2,
+                 candidates: 5,
+                 stale_claims: 1,
+                 elapsed_ms: 12,
+                 input_tokens: -1
+               },
                %{
                  run_id: "run-1",
                  version: "minimal-v1",
@@ -38,6 +44,7 @@ defmodule MemHouse.ObservabilityOperationTest do
     assert_receive {:operation, [:memhouse, :operation, :completed], measurements, metadata}
     assert measurements.calls == 2
     assert measurements.candidates == 5
+    assert measurements.stale_claims == 1
     assert measurements.elapsed_ms == 12
     assert measurements.input_tokens == 0
     assert measurements.output_tokens == 0
