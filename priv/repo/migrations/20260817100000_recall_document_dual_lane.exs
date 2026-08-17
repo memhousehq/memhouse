@@ -5,20 +5,14 @@ defmodule MemHouse.Repo.Migrations.RecallDocumentDualLane do
   Creates the Account-isolated, rebuildable recall projection for independently
   bounded direct and derived knowledge lanes.
 
-  Existing eligible knowledge is backfilled before forced RLS is installed;
-  normal application access begins only after the Account wall is in place.
+  Existing eligible knowledge is backfilled before forced RLS is installed, and
+  the table, backfill, and Account wall commit atomically. Concurrent query
+  indexes live in following one-index migrations so failed builds are retry-safe.
   """
 
   use Ecto.Migration
 
-  # This is an empty, rebuildable table at deploy time. Its DiskANN index is
-  # still concurrent so a replay or retry cannot block ordinary ingestion.
-  @disable_ddl_transaction true
-  @disable_migration_lock true
-
   def up do
-    options = diskann_options!()
-
     execute """
     CREATE TABLE recall_documents (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -114,55 +108,9 @@ defmodule MemHouse.Repo.Migrations.RecallDocumentDualLane do
         account_id = NULLIF(current_setting('memhouse.account_id', true), '')::uuid
       )
     """
-
-    execute """
-    CREATE INDEX CONCURRENTLY recall_documents_scope_lane_idx
-    ON recall_documents (account_id, scope_id, derivation_lane, source_updated_at, knowledge_item_id)
-    """
-
-    execute """
-    CREATE INDEX CONCURRENTLY recall_documents_embedding_diskann_1024_idx
-    ON recall_documents
-    USING diskann ((embedding::vector(1024)) vector_cosine_ops, diskann_labels)
-    WITH (#{options})
-    WHERE embedding IS NOT NULL AND embedding_dimensions = 1024
-    """
   end
 
   def down do
-    execute "DROP INDEX CONCURRENTLY IF EXISTS recall_documents_embedding_diskann_1024_idx"
-    execute "DROP INDEX CONCURRENTLY IF EXISTS recall_documents_scope_lane_idx"
     execute "DROP TABLE IF EXISTS recall_documents"
-  end
-
-  defp diskann_options! do
-    config = Application.fetch_env!(:memhouse, :diskann)
-    storage_layout = Keyword.fetch!(config, :storage_layout)
-    num_neighbors = integer_in!(config, :num_neighbors, 10..1000)
-    search_list_size = integer_in!(config, :search_list_size, 10..1000)
-    num_dimensions = integer_in!(config, :num_dimensions, 0..1024)
-    max_alpha = Keyword.fetch!(config, :max_alpha)
-
-    unless storage_layout in ~w(memory_optimized plain) do
-      raise "MEMHOUSE_DISKANN_STORAGE_LAYOUT must be memory_optimized or plain"
-    end
-
-    unless is_number(max_alpha) and max_alpha >= 1.0 and max_alpha <= 5.0 do
-      raise "MEMHOUSE_DISKANN_MAX_ALPHA must be between 1.0 and 5.0"
-    end
-
-    "storage_layout = #{storage_layout}, num_neighbors = #{num_neighbors}, " <>
-      "search_list_size = #{search_list_size}, max_alpha = #{max_alpha}, " <>
-      "num_dimensions = #{num_dimensions}"
-  end
-
-  defp integer_in!(config, key, range) do
-    value = Keyword.fetch!(config, key)
-
-    if is_integer(value) and value in range do
-      value
-    else
-      raise "#{key} must be between #{range.first} and #{range.last}"
-    end
   end
 end

@@ -302,19 +302,35 @@ defmodule MemHouse.Pipeline.Extractor do
   `{:error, {:repairable, :oversized, details}}` without invoking a provider.
   """
   def extract_batch(anchors) when is_list(anchors) and anchors != [] do
+    case extract_batch_with_attempts(anchors) do
+      {:ok, results, _provider_attempts} -> {:ok, results}
+      {:error, error, _provider_attempts} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Extracts a batch and includes exact provider-attempt accounting.
+
+  Returns `{:ok, results, provider_attempts}` or
+  `{:error, reason, provider_attempts}`. Deterministic context admission returns
+  zero; an admitted structured request counts each provider callback across the
+  bounded repair loop. `extract_batch/1` preserves the established two-tuple
+  public result by dropping only the accounting value.
+  """
+  def extract_batch_with_attempts(anchors) when is_list(anchors) and anchors != [] do
     {messages, context, opts} = batch_request(anchors)
     schema = batch_schema()
 
     case ExtractionAdmission.admit(messages, schema.json_schema()) do
       {:ok, admission} ->
-        case Model.generate_structured(
+        case Model.generate_structured_with_attempts(
                :ingest_extractor,
                messages,
                schema,
                context,
                opts
              ) do
-          {:ok, results, provenance} ->
+          {:ok, results, provenance, provider_attempts} ->
             results =
               Enum.map(results, fn
                 %{status: :ok, items: items} = result ->
@@ -326,14 +342,14 @@ defmodule MemHouse.Pipeline.Extractor do
                   Map.put(result, :admission_identity, admission_identity(admission.identity))
               end)
 
-            {:ok, results}
+            {:ok, results, provider_attempts}
 
-          {:error, error} ->
-            {:error, error}
+          {:error, error, provider_attempts} ->
+            {:error, error, provider_attempts}
         end
 
       {:error, details} ->
-        {:error, {:repairable, :oversized, details}}
+        {:error, {:repairable, :oversized, details}, 0}
     end
   end
 

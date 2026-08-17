@@ -217,13 +217,21 @@ that part was applied, so only the unjudged remainder kept fusion order.
 Every completed ingest batch, recall, answer, stable-profile projection, and
 dream pass emits `[:memhouse, :operation, :completed]`. This unsampled event has
 one fixed, content-safe envelope: `operation`, `run_id`, `version`, status and
-failure class metadata, plus zero-defaulted counts for calls, tokens, items,
-candidates, admission, deduplication, cache use, failures, and elapsed time.
+failure class metadata, plus zero-defaulted counts for calls, provider attempts,
+logical batch requests, tokens, items, candidates, admission, deduplication,
+cache use, failures, and elapsed time.
 Unknown metadata is discarded by the emitter. Reasoning update and synthesis
 also use the same envelope, so their accepted/rejected contribution can be
 evaluated separately.
 
-An `ingest_batch` aggregate counts every anchor covered by the provider call.
+An `ingest_batch` aggregate separates `batch_requests` from
+`provider_attempts`. A request is counted once when the worker reaches batch
+admission, including an oversized request rejected before provider work.
+`provider_attempts` counts callbacks admitted by the circuit across the initial
+structured request and at most two repairs; it is zero for oversized,
+pre-provider, and circuit-open outcomes. The shared `calls` counter mirrors
+`provider_attempts` for cross-operation dashboards. `anchors` counts durable
+anchors handled by the worker, including pre-provider classifications.
 `failures` counts anchors that did not complete under that worker, while
 `stale_claims` is the subset skipped because another owner held the durable
 claim. Mixed completed, classified, or stale outcomes report `partial`; the

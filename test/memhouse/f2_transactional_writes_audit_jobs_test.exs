@@ -108,6 +108,48 @@ defmodule ReclaimingBatchProvider do
   defdelegate rerank(config, query, documents, opts), to: Deterministic
 end
 
+defmodule RepairCountingBatchProvider do
+  @moduledoc """
+  Produces invalid batch objects until a test-selected repair outcome is reached.
+
+  The provider reports each repair-attempt number to the owning test. In
+  `:repair_success` mode the second callback delegates to the deterministic
+  provider; in `:exhaust` mode all three bounded callbacks stay invalid.
+  """
+
+  @behaviour MemHouse.Model.Provider
+
+  alias MemHouse.Model.Provider.Result
+  alias MemHouse.Model.Providers.Deterministic
+
+  @doc "Returns the configured repaired success or an intentionally invalid object."
+  @impl true
+  def structured(config, messages, schema, opts) do
+    controller = Application.fetch_env!(:memhouse, :repair_counting_batch_test_controller)
+    mode = Application.fetch_env!(:memhouse, :repair_counting_batch_test_mode)
+    repair_attempt = Keyword.get(opts, :repair_attempt, 0)
+    send(controller, {:batch_provider_attempt, repair_attempt})
+
+    if mode == :repair_success and repair_attempt > 0 do
+      Deterministic.structured(config, messages, schema, opts)
+    else
+      {:ok, %Result{value: %{}, usage: %{input_tokens: 1}, metadata: %{}}}
+    end
+  end
+
+  @doc "Delegates unused chat calls to the offline deterministic provider."
+  @impl true
+  defdelegate chat(config, messages, opts), to: Deterministic
+
+  @doc "Delegates unused embedding calls to the offline deterministic provider."
+  @impl true
+  defdelegate embed(config, texts, opts), to: Deterministic
+
+  @doc "Delegates unused reranking calls to the offline deterministic provider."
+  @impl true
+  defdelegate rerank(config, query, documents, opts), to: Deterministic
+end
+
 defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
   @moduledoc """
   Pins the coupling between a durable write, its audit entry, its processing record,
@@ -125,6 +167,7 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
   alias MemHouse.Governance.Audit
   alias MemHouse.Governance.AuditEvent
   alias MemHouse.Memory
+  alias MemHouse.Model.{Config, ProviderCircuit}
   alias MemHouse.Observations.Message
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline
@@ -413,6 +456,8 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert metadata.status == "ok"
     assert measurements.anchors == 2
     assert measurements.calls == 1
+    assert measurements.batch_requests == 1
+    assert measurements.provider_attempts == 1
     assert measurements.failures == 0
     refute inspect({measurements, metadata}) =~ "Avery owns"
 
@@ -968,6 +1013,8 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert metadata.status == "failed"
     assert metadata.failure_class == "provider_transient"
     assert measurements.calls == 1
+    assert measurements.batch_requests == 1
+    assert measurements.provider_attempts == 1
     assert measurements.anchors == 2
     assert measurements.failures == 2
     assert measurements.stale_claims == 0
@@ -1014,9 +1061,121 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     assert_receive {^handler, measurements, metadata}, 5_000
     assert metadata.status == "repairable"
     assert metadata.failure_class == "oversized"
+    assert measurements.calls == 0
+    assert measurements.batch_requests == 1
+    assert measurements.provider_attempts == 0
     assert measurements.anchors == 1
     assert measurements.failures == 1
     assert measurements.stale_claims == 0
+  end
+
+  test "an open provider circuit records one batch request and zero provider attempts" do
+    original_batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    original_circuit = Application.fetch_env!(:memhouse, :ingest_provider_circuit)
+
+    Application.put_env(
+      :memhouse,
+      :extraction_batching,
+      Keyword.put(original_batching, :enabled, true)
+    )
+
+    Application.put_env(
+      :memhouse,
+      :ingest_provider_circuit,
+      original_circuit
+      |> Keyword.put(:enabled, true)
+      |> Keyword.put(:failure_threshold, 1)
+      |> Keyword.put(:open_ms, 60_000)
+    )
+
+    ProviderCircuit.reset()
+
+    on_exit(fn ->
+      ProviderCircuit.reset()
+      Application.put_env(:memhouse, :extraction_batching, original_batching)
+      Application.put_env(:memhouse, :ingest_provider_circuit, original_circuit)
+    end)
+
+    assert {:ok, message} =
+             Memory.ingest_message(ingest_attrs("f2-batch-circuit", "batch-circuit-session"))
+
+    account_id = account_id!("f2-batch-circuit")
+
+    DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account, actor ->
+      context = %{account_id: account_id, actor: actor}
+      config = Config.resolve(:ingest_extractor, context)
+      assert {:ok, permit} = ProviderCircuit.checkout(config, context)
+      assert :ok = ProviderCircuit.complete(permit, {:error, :provider_upstream_error})
+    end)
+
+    handler = attach_batch_telemetry(:open_circuit_batch)
+    run = extraction_run!(account_id, message["id"])
+
+    assert {:error, %ProviderCircuit.OpenError{}} =
+             MemHouse.Pipeline.ExtractionBatcher.run(run)
+
+    assert_receive {^handler, measurements, metadata}, 5_000
+    assert metadata.failure_class == "provider_circuit_open"
+    assert measurements.calls == 0
+    assert measurements.batch_requests == 1
+    assert measurements.provider_attempts == 0
+  end
+
+  test "a repaired batch success records every provider callback" do
+    {original_batching, original_provider} = install_repair_counting_batch!(:repair_success)
+
+    on_exit(fn ->
+      restore_repair_counting_batch!(original_batching, original_provider)
+    end)
+
+    assert {:ok, message} =
+             Memory.ingest_message(ingest_attrs("f2-batch-repaired", "batch-repaired-session"))
+
+    account_id = account_id!("f2-batch-repaired")
+    handler = attach_batch_telemetry(:repaired_batch)
+    run = extraction_run!(account_id, message["id"])
+
+    assert {:ok, %{status: "processed"}} = MemHouse.Pipeline.ExtractionBatcher.run(run)
+    assert_receive {:batch_provider_attempt, 0}, 5_000
+    assert_receive {:batch_provider_attempt, 1}, 5_000
+    refute_receive {:batch_provider_attempt, 2}
+
+    assert_receive {^handler, measurements, metadata}, 5_000
+    assert metadata.status == "ok"
+    assert measurements.calls == 2
+    assert measurements.batch_requests == 1
+    assert measurements.provider_attempts == 2
+  end
+
+  test "batch repair exhaustion records all three provider callbacks" do
+    {original_batching, original_provider} = install_repair_counting_batch!(:exhaust)
+
+    on_exit(fn ->
+      restore_repair_counting_batch!(original_batching, original_provider)
+    end)
+
+    assert {:ok, message} =
+             Memory.ingest_message(ingest_attrs("f2-batch-exhaust", "batch-exhaust-session"))
+
+    account_id = account_id!("f2-batch-exhaust")
+    handler = attach_batch_telemetry(:exhausted_batch)
+    run = extraction_run!(account_id, message["id"])
+
+    message_id = message["id"]
+
+    assert {:ok, %{status: "processed", anchors: %{^message_id => "terminal"}}} =
+             MemHouse.Pipeline.ExtractionBatcher.run(run)
+
+    assert_receive {:batch_provider_attempt, 0}, 5_000
+    assert_receive {:batch_provider_attempt, 1}, 5_000
+    assert_receive {:batch_provider_attempt, 2}, 5_000
+
+    assert_receive {^handler, measurements, metadata}, 5_000
+    assert metadata.status == "terminal"
+    assert metadata.failure_class == "terminal"
+    assert measurements.calls == 3
+    assert measurements.batch_requests == 1
+    assert measurements.provider_attempts == 3
   end
 
   test "stale claims remain a distinct subset of repairable and terminal batch failures" do
@@ -1735,6 +1894,32 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
         |> Ash.read_one!(actor: actor)
       end
     )
+  end
+
+  defp install_repair_counting_batch!(mode) when mode in [:repair_success, :exhaust] do
+    original_batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    original_provider = Application.get_env(:memhouse, :model_provider)
+
+    Application.put_env(
+      :memhouse,
+      :extraction_batching,
+      Keyword.put(original_batching, :enabled, true)
+    )
+
+    Application.put_env(:memhouse, :model_provider, RepairCountingBatchProvider)
+    Application.put_env(:memhouse, :repair_counting_batch_test_controller, self())
+    Application.put_env(:memhouse, :repair_counting_batch_test_mode, mode)
+    ProviderCircuit.reset()
+
+    {original_batching, original_provider}
+  end
+
+  defp restore_repair_counting_batch!(original_batching, original_provider) do
+    ProviderCircuit.reset()
+    Application.put_env(:memhouse, :extraction_batching, original_batching)
+    Application.delete_env(:memhouse, :repair_counting_batch_test_controller)
+    Application.delete_env(:memhouse, :repair_counting_batch_test_mode)
+    restore_model_provider(original_provider)
   end
 
   defp attach_batch_telemetry(name) do

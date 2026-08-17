@@ -37,11 +37,12 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
   """
   def run(run) do
     started_at = System.monotonic_time(:millisecond)
-    internal_result = do_run(run)
+    {internal_result, accounting} = do_run(run)
 
     emit_aggregate(
       run,
       internal_result,
+      accounting,
       System.monotonic_time(:millisecond) - started_at
     )
 
@@ -63,21 +64,30 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
       Pipeline.claim_extraction_runs(run.account_id, [run.target_id], claim_id, actor)
     end)
     |> case do
-      {:ok, [claimed_run]} -> process_claimed(claimed_run, claim_id)
-      {:ok, []} -> {:ok, %{status: "delegated", run_status: "delegated"}}
-      {:error, error} -> {:error, error}
+      {:ok, [claimed_run]} ->
+        process_claimed(claimed_run, claim_id)
+
+      {:ok, []} ->
+        {{:ok, %{status: "delegated", run_status: "delegated"}}, empty_accounting()}
+
+      {:error, error} ->
+        {{:error, error}, empty_accounting()}
     end
   end
 
-  defp emit_aggregate(run, result, elapsed_ms) do
-    {status, calls, anchors, failures, stale_claims, failure_class} = aggregate_result(result)
+  defp emit_aggregate(run, result, accounting, elapsed_ms) do
+    {status, anchors, failures, stale_claims, failure_class} = aggregate_result(result)
 
     Observability.emit_operation(
       :ingest_batch,
       %{
         anchors: anchors,
         attempts: if(status == "delegated", do: 0, else: 1),
-        calls: calls,
+        # `calls` remains the shared provider-call field. The explicit batch
+        # counters distinguish one logical admission from its repair callbacks.
+        calls: accounting.provider_attempts,
+        batch_requests: accounting.batch_requests,
+        provider_attempts: accounting.provider_attempts,
         items: anchors,
         failures: failures,
         stale_claims: stale_claims,
@@ -98,7 +108,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     do: aggregate_anchor_statuses(anchors, nil, nil)
 
   defp aggregate_result({:ok, %{status: "delegated"}}),
-    do: {"delegated", 0, 0, 0, 0, nil}
+    do: {"delegated", 0, 0, 0, nil}
 
   defp aggregate_result(
          {:classified_batch_result, {:ok, %{status: status}}, anchors, failure_class}
@@ -112,7 +122,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
   defp aggregate_result({:error, error}) do
     {_disposition, reason_class} = failure_class(error)
-    {"failed", 1, 1, 1, 0, reason_class}
+    {"failed", 1, 1, 0, reason_class}
   end
 
   defp aggregate_anchor_statuses(anchors, all_failed_status, failure_class) do
@@ -145,7 +155,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
         true -> "mixed_anchor_outcomes"
       end
 
-    {status, 1, anchor_count, failures, stale_claims, failure_class}
+    {status, anchor_count, failures, stale_claims, failure_class}
   end
 
   defp process_claimed(run, claim_id) do
@@ -165,9 +175,12 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
             ExtractionAdmission.config()[:identity] |> Extractor.admission_identity()
           )
 
-        {:classified_batch_result,
-         {:ok, %{status: "repairable", run_status: "persisted", anchor_count: 1}}, statuses,
-         "oversized"}
+        result =
+          {:classified_batch_result,
+           {:ok, %{status: "repairable", run_status: "persisted", anchor_count: 1}}, statuses,
+           "oversized"}
+
+        {result, accounting(0)}
 
       selected ->
         claim_and_extract(run, claim_id, selected)
@@ -199,8 +212,8 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     prepared = [anchor | siblings]
     runs = Map.new([run | claimed_siblings], &{&1.target_id, &1})
 
-    case Extractor.extract_batch(prepared) do
-      {:ok, results} ->
+    case Extractor.extract_batch_with_attempts(prepared) do
+      {:ok, results, provider_attempts} ->
         statuses =
           Enum.map(results, fn result ->
             result_run = Map.fetch!(runs, result.anchor_id)
@@ -209,43 +222,53 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
           end)
           |> Map.new()
 
-        {:ok, %{status: "processed", run_status: "persisted", anchors: statuses}}
+        result = {:ok, %{status: "processed", run_status: "persisted", anchors: statuses}}
+        {result, accounting(provider_attempts)}
 
-      {:error, error} ->
-        case failure_class(error) do
-          {:repairable, reason_class} ->
-            statuses = mark_all(Map.values(runs), "repairable", reason_class, identity)
+      {:error, error, provider_attempts} ->
+        result =
+          case failure_class(error) do
+            {:repairable, reason_class} ->
+              statuses = mark_all(Map.values(runs), "repairable", reason_class, identity)
 
-            {:classified_batch_result,
-             {:ok,
-              %{
-                status: "repairable",
-                run_status: "persisted",
-                anchor_count: map_size(runs),
-                anchors: statuses
-              }}, statuses, reason_class}
+              {:classified_batch_result,
+               {:ok,
+                %{
+                  status: "repairable",
+                  run_status: "persisted",
+                  anchor_count: map_size(runs),
+                  anchors: statuses
+                }}, statuses, reason_class}
 
-          {:terminal, reason_class} ->
-            statuses = mark_all(Map.values(runs), "terminal", reason_class, identity)
+            {:terminal, reason_class} ->
+              statuses = mark_all(Map.values(runs), "terminal", reason_class, identity)
 
-            {:classified_batch_result,
-             {:ok,
-              %{
-                status: "terminal",
-                run_status: "persisted",
-                anchor_count: map_size(runs),
-                anchors: statuses
-              }}, statuses, reason_class}
+              {:classified_batch_result,
+               {:ok,
+                %{
+                  status: "terminal",
+                  run_status: "persisted",
+                  anchor_count: map_size(runs),
+                  anchors: statuses
+                }}, statuses, reason_class}
 
-          {:retryable, reason_class} ->
-            # Record every claimed anchor before returning the provider error.
-            # AshOban's error callback may run as well; its convergent failed
-            # update keeps the same replayable state.
-            statuses = mark_all(Map.values(runs), "failed", reason_class, identity)
-            {:retryable_batch_error, error, statuses}
-        end
+            {:retryable, reason_class} ->
+              # Record every claimed anchor before returning the provider error.
+              # AshOban's error callback may run as well; its convergent failed
+              # update keeps the same replayable state.
+              statuses = mark_all(Map.values(runs), "failed", reason_class, identity)
+              {:retryable_batch_error, error, statuses}
+          end
+
+        {result, accounting(provider_attempts)}
     end
   end
+
+  defp accounting(provider_attempts)
+       when is_integer(provider_attempts) and provider_attempts >= 0,
+       do: %{batch_requests: 1, provider_attempts: provider_attempts}
+
+  defp empty_accounting, do: %{batch_requests: 0, provider_attempts: 0}
 
   defp persist_anchor_result(run, anchor, result) do
     case Memory.persist_message_extraction_result!(

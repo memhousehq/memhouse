@@ -44,8 +44,10 @@ defmodule MemHouse.Retrieval do
   `query` is a `MemHouse.Retrieval.Query` struct that must already carry the
   Account id, the resolved actor, and the scope ids the actor may read;
   retrieval trusts those fields and filters by them, it does not re-derive
-  them. `profile` is `:fast`, `:balanced`, or `:thorough` (the equivalent
-  strings are accepted). `opts` may carry `:deadline?` to disable the time
+  them. `profile` is `:fast`, `:balanced`, `:thorough`, or the feature-gated
+  experimental `:minimal` profile (the equivalent strings are accepted).
+  `:minimal` raises unless `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true`. `opts` may carry
+  `:deadline?` to disable the time
   budget for evaluation runs, `:inherit?` to ignore stored profile overrides,
   `:internal?`, and `:strategies` to name strategies explicitly.
 
@@ -99,6 +101,8 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
 
   A row overrides strategies, fusion weights, rank tie-break constant, reranking, and deadline
   for `fast`, `balanced`, or `thorough` at one scope or Account-wide when `scope_id` is nil.
+  The experimental `minimal` profile is runtime-owned and deliberately cannot
+  be overridden by a stored row while its rollback path is under evaluation.
 
   Overrides inherit down the scope tree and the nearest authorized scope wins;
   an Account-wide row is the fallback. Among the `active` rows that match a

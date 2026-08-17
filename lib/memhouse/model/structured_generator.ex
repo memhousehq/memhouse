@@ -63,6 +63,23 @@ defmodule MemHouse.Model.StructuredGenerator do
   """
   def generate(role, messages, schema, context, opts \\ [])
       when is_atom(schema) and is_list(messages) and is_map(context) do
+    case generate_with_attempts(role, messages, schema, context, opts) do
+      {:ok, value, provenance, _provider_attempts} -> {:ok, value, provenance}
+      {:error, reason, _provider_attempts} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Generates one structured object and returns the exact provider-attempt count.
+
+  Success is `{:ok, value, provenance, provider_attempts}` and failure is
+  `{:error, reason, provider_attempts}`. The count is zero when admission stops
+  before the provider callback, one for an unrepaired call, and at most three
+  after the bounded repair loop. The ordinary `generate/5` API drops only this
+  accounting value and otherwise preserves the same result.
+  """
+  def generate_with_attempts(role, messages, schema, context, opts \\ [])
+      when is_atom(schema) and is_list(messages) and is_map(context) do
     # Clamped on both sides: a negative request becomes no repairs, and neither
     # the caller nor deployment configuration can exceed the built-in ceiling.
     max_repairs =
@@ -71,52 +88,66 @@ defmodule MemHouse.Model.StructuredGenerator do
       |> max(0)
       |> min(@max_repairs)
 
-    generate_attempt(role, messages, schema, context, opts, 0, max_repairs, %{})
+    state = %{attempt: 0, max_repairs: max_repairs, usage: %{}, provider_attempts: 0}
+    generate_attempt(role, messages, schema, context, opts, state)
   end
 
   # One attempt, then either success, a recursive repair, or a final error.
   #
-  defp generate_attempt(role, messages, schema, context, opts, attempt, max_repairs, usage) do
+  defp generate_attempt(role, messages, schema, context, opts, state) do
     # Rides along to the usage ledger so a repaired generation is visibly more
     # than one call rather than looking like a single cheap one.
-    call_opts = Keyword.put(opts, :repair_attempt, attempt)
+    call_opts = Keyword.put(opts, :repair_attempt, state.attempt)
 
-    case Gateway.structured_once_with_usage(
+    case Gateway.structured_once_with_usage_and_attempt(
            role,
            messages,
            schema.json_schema(),
            context,
            call_opts
          ) do
-      {:ok, object, config, attempt_usage} ->
-        usage = merge_usage(usage, attempt_usage)
+      {:ok, object, config, attempt_usage, current_attempts} ->
+        state = %{
+          state
+          | usage: merge_usage(state.usage, attempt_usage),
+            provider_attempts: state.provider_attempts + current_attempts
+        }
 
         case schema.cast(object, context) do
           {:ok, value} ->
             provenance =
               config
               |> Config.provenance()
-              |> maybe_put_usage(opts, usage)
+              |> maybe_put_usage(opts, state.usage)
 
-            {:ok, value, provenance}
+            {:ok, value, provenance, state.provider_attempts}
 
-          {:error, errors} when attempt < max_repairs ->
+          {:error, errors} when state.attempt < state.max_repairs ->
             generate_attempt(
               role,
               repair_messages(messages, object, errors),
               schema,
               context,
               opts,
-              attempt + 1,
-              max_repairs,
-              usage
+              %{state | attempt: state.attempt + 1}
             )
 
           {:error, errors} ->
-            recover_or_error(schema, object, context, config, opts, usage, errors)
+            recover_or_error(
+              schema,
+              object,
+              context,
+              config,
+              opts,
+              state.usage,
+              errors,
+              state.provider_attempts
+            )
         end
 
-      {:error, reason} when attempt < max_repairs ->
+      {:error, reason, current_attempts} when state.attempt < state.max_repairs ->
+        state = %{state | provider_attempts: state.provider_attempts + current_attempts}
+
         if retryable_incomplete_response?(reason) do
           generate_attempt(
             role,
@@ -124,16 +155,14 @@ defmodule MemHouse.Model.StructuredGenerator do
             schema,
             context,
             opts,
-            attempt + 1,
-            max_repairs,
-            usage
+            %{state | attempt: state.attempt + 1}
           )
         else
-          {:error, reason}
+          {:error, reason, state.provider_attempts}
         end
 
-      {:error, reason} ->
-        {:error, reason}
+      {:error, reason, current_attempts} ->
+        {:error, reason, state.provider_attempts + current_attempts}
     end
   end
 
@@ -141,7 +170,16 @@ defmodule MemHouse.Model.StructuredGenerator do
   defp retryable_incomplete_response?(:provider_upstream_error), do: true
   defp retryable_incomplete_response?(_reason), do: false
 
-  defp recover_or_error(schema, object, context, config, opts, usage, errors) do
+  defp recover_or_error(
+         schema,
+         object,
+         context,
+         config,
+         opts,
+         usage,
+         errors,
+         provider_attempts
+       ) do
     if function_exported?(schema, :recover_after_repairs, 2) do
       case schema.recover_after_repairs(object, context) do
         {:ok, value} ->
@@ -150,13 +188,13 @@ defmodule MemHouse.Model.StructuredGenerator do
             |> Config.provenance()
             |> maybe_put_usage(opts, usage)
 
-          {:ok, value, provenance}
+          {:ok, value, provenance, provider_attempts}
 
         :error ->
-          {:error, {:structured_validation_failed, errors}}
+          {:error, {:structured_validation_failed, errors}, provider_attempts}
       end
     else
-      {:error, {:structured_validation_failed, errors}}
+      {:error, {:structured_validation_failed, errors}, provider_attempts}
     end
   end
 

@@ -14,7 +14,9 @@ defmodule MemHouse.Observability do
   @operation_measurements [
     :anchors,
     :attempts,
+    :batch_requests,
     :calls,
+    :provider_attempts,
     :input_tokens,
     :output_tokens,
     :items,

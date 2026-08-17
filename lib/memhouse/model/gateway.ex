@@ -70,15 +70,43 @@ defmodule MemHouse.Model.Gateway do
   validation boundary and failures as `structured_once/5`.
   """
   def structured_once_with_usage(role, messages, schema, context, opts \\ []) do
+    case structured_once_with_usage_and_attempt(role, messages, schema, context, opts) do
+      {:ok, value, config, usage, _provider_attempts} -> {:ok, value, config, usage}
+      {:error, error, _provider_attempts} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Performs one structured-generation admission and reports whether a provider was invoked.
+
+  The first four success values match `structured_once_with_usage/5`, followed by
+  `provider_attempts`, which is exactly `1` after the provider callback runs. Errors
+  return `{:error, reason, provider_attempts}`. Prompt-version rejection and an open
+  provider circuit report zero; an error returned by an admitted provider reports one.
+
+  This is the accounting seam used by the bounded repair loop. Ordinary callers
+  should use `MemHouse.Model.StructuredGenerator`, which validates provider output.
+  """
+  def structured_once_with_usage_and_attempt(role, messages, schema, context, opts \\ []) do
     config = Config.resolve(role, context)
 
-    with :ok <- matching_prompt_version(config, opts) do
-      case invoke(:structured, config, context, opts, fn provider ->
-             provider.structured(config, messages, schema, opts)
-           end) do
-        {:ok, %Result{value: value, usage: usage}} -> {:ok, value, config, usage || %{}}
-        {:error, error} -> {:error, error}
-      end
+    case matching_prompt_version(config, opts) do
+      :ok ->
+        case invoke(:structured, config, context, opts, fn provider ->
+               provider.structured(config, messages, schema, opts)
+             end) do
+          {:ok, %Result{value: value, usage: usage}} ->
+            {:ok, value, config, usage || %{}, 1}
+
+          {:error, %ProviderCircuit.OpenError{} = error} ->
+            {:error, error, 0}
+
+          {:error, error} ->
+            {:error, error, 1}
+        end
+
+      {:error, error} ->
+        {:error, error, 0}
     end
   end
 

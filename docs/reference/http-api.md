@@ -205,7 +205,7 @@ All fields optional.
 | `query` | `""` | Terms match individually; `"phrase"`, `-term`, and `or` narrow. See [Retrieval and context](../concepts/retrieval.md) |
 | `scope_path` | `"/poc"` | Selects the scope **and its ancestors** |
 | `peer_key` | none | The peer the results are read for. A credential that names none reads as its own Peer when it has one, otherwise public statements only |
-| `profile` | `"balanced"` | `fast`, `balanced`, `thorough` |
+| `profile` | `"balanced"` | `fast`, `balanced`, `thorough`, or feature-gated experimental `minimal` |
 | `limit` | `12` | Candidate cap; clamped to `1` through `100` |
 | `include_cross_links` | off | Requires authorisation at both endpoints |
 | `as_of` | unset | Read memory as it stood then. This enables text-matched temporal ranking by distance from that time |
@@ -213,6 +213,11 @@ All fields optional.
 | `source_filters` | none | |
 | `deadline` | profile default | `"disabled"` removes the budget; offline only |
 | `include_identity_profile` | off | Adds the stable identity projection for the selected reader without changing ranking |
+
+`minimal` is rejected unless
+`MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true`. It uses the runtime-owned
+dual-lane experiment defaults; stored retrieval-profile rows can override only
+`fast`, `balanced`, and `thorough` while the minimal rollback path is evaluated.
 
 `peer_key` names the peer the results are read **for**. It is trusted as
 supplied, exactly as on ingest. Naming a reader borrows nothing from it: scope

@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.ObservabilityOperationTest do
+  @moduledoc """
+  Verifies that operation aggregates normalize allowlisted counters and discard content.
+  """
+
   use ExUnit.Case, async: true
 
   alias MemHouse.Observability
@@ -26,6 +30,8 @@ defmodule MemHouse.ObservabilityOperationTest do
                :recall,
                %{
                  calls: 2,
+                 batch_requests: 1,
+                 provider_attempts: 3,
                  candidates: 5,
                  stale_claims: 1,
                  elapsed_ms: 12,
@@ -43,6 +49,8 @@ defmodule MemHouse.ObservabilityOperationTest do
 
     assert_receive {:operation, [:memhouse, :operation, :completed], measurements, metadata}
     assert measurements.calls == 2
+    assert measurements.batch_requests == 1
+    assert measurements.provider_attempts == 3
     assert measurements.candidates == 5
     assert measurements.stale_claims == 1
     assert measurements.elapsed_ms == 12

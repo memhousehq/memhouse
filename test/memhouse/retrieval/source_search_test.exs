@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Retrieval.SourceSearchTest.Provider do
-  @moduledoc false
+  @moduledoc "Provides deterministic three-dimensional source-search embeddings for tests."
   @behaviour MemHouse.Model.Provider
 
   alias MemHouse.Model.Provider.Result
@@ -45,7 +45,7 @@ defmodule MemHouse.Retrieval.SourceSearchTest.Provider do
 end
 
 defmodule MemHouse.Retrieval.SourceSearchTest.FailingProvider do
-  @moduledoc false
+  @moduledoc "Fails source-search embedding while delegating capabilities unused by the test."
   @behaviour MemHouse.Model.Provider
 
   alias MemHouse.Model.Providers.Deterministic

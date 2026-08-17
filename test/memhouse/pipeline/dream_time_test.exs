@@ -4,7 +4,7 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
   use MemHouse.DataCase, async: false
 
   defmodule Provider do
-    @moduledoc false
+    @moduledoc "Reports dream operation selection before delegating to the deterministic provider."
     @behaviour MemHouse.Model.Provider
 
     alias MemHouse.Model.Providers.Deterministic

@@ -4,7 +4,7 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
   use ExUnit.Case, async: false
 
   defmodule Provider do
-    @moduledoc false
+    @moduledoc "Returns empty reasoning results while recording operation-level usage."
     @behaviour MemHouse.Model.Provider
 
     alias MemHouse.Model.Provider.Result
