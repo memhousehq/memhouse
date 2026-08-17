@@ -898,17 +898,39 @@ defmodule MemHouse.Memory do
       scope_ids = Enum.map(scopes, & &1.id)
       scope_paths = Map.new(scopes, &{&1.id, &1.path})
 
-      scope_ids
-      |> knowledge_read_query("active", reader, internal_reader?)
-      |> Ash.Query.filter(id in ^ids)
-      |> Ash.Query.sort(id: :asc)
-      |> Ash.Query.limit(length(ids))
-      |> Ash.Query.set_tenant(account.id)
-      |> Ash.read!(actor: reader)
+      items =
+        scope_ids
+        |> knowledge_read_query("active", reader, internal_reader?)
+        |> Ash.Query.filter(id in ^ids)
+        |> Ash.Query.sort(id: :asc)
+        |> Ash.Query.limit(length(ids))
+        # This callback already runs inside with_account/2's Account-scoped
+        # transaction. FOR SHARE is the weakest PostgreSQL row lock that lets
+        # other recall readers proceed together while blocking the UPDATE/DELETE
+        # work by which erasure would prune this source set before the canonical
+        # Message/DocumentVersion reads below.
+        |> Ash.Query.lock("FOR SHARE")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: reader)
+
+      :telemetry.execute(
+        [:memhouse, :memory, :visible_knowledge, :knowledge_read],
+        %{items: length(items)},
+        %{account_id: account.id}
+      )
+
+      items
       |> Enum.map(fn item ->
+        source_references = Lineage.visible_source_references(item, account, reader, scopes)
+
         item
         |> record_to_map()
         |> Map.put("scope_path", Map.fetch!(scope_paths, item.scope_id))
+        |> Map.put(
+          "source_message_ids",
+          for(%{"type" => "message", "id" => id} <- source_references, do: id)
+        )
+        |> Map.put("source_references", source_references)
       end)
     end)
   end

@@ -4,11 +4,15 @@ defmodule MemHouse.LineageIdentityProfileTest do
   use MemHouse.DataCase, async: false
 
   alias MemHouse.Accounts.Peer
+  alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Governance.Engine
+  alias MemHouse.Governance.Erasure
   alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation, Provenance}
+  alias MemHouse.Lineage
   alias MemHouse.Memory
   alias MemHouse.Model.GroundedAnswerProvider
+  alias MemHouse.Observations.{Document, DocumentVersion}
   alias MemHouse.Pipeline.DeductionEffects
   alias MemHouse.Topology.Scope
 
@@ -495,6 +499,201 @@ defmodule MemHouse.LineageIdentityProfileTest do
     assert prompt =~ "[#{name.knowledge.id}] Avery's name is Avery Jordan."
   end
 
+  test "profile Ask does not reintroduce a source erased inside the exact-read callback" do
+    name = seed_active!("planner-profile-erasure-race", "Avery's name is Avery Jordan.", "name")
+
+    assert {:ok, blake_message} =
+             Memory.ingest_message(%{
+               "account_key" => name.account.key,
+               "session_id" => "blake-source",
+               "scope_path" => name.scope.path,
+               "peer_key" => "blake",
+               "peer_name" => "Blake",
+               "content" => "Avery's name is Avery Jordan."
+             })
+
+    erasure_actor = add_message_source!(name, blake_message["id"], "blake")
+
+    before_profile =
+      Memory.stable_identity_profile(%{
+        "account_key" => name.account.key,
+        "peer_key" => "avery",
+        "scope_path" => name.scope.path
+      })
+
+    assert [before_item] = before_profile["items"]
+    assert length(before_item["lineage"]["source_references"]) == 2
+
+    original_provider = Application.get_env(:memhouse, :model_provider)
+    GroundedAnswerProvider.start!(:confident_inference)
+    Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
+
+    handler = {__MODULE__, self(), :profile_source_erasure}
+    erased? = :atomics.new(1, [])
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :memory, :visible_knowledge, :knowledge_read],
+        fn _event, _measurements, _metadata, _config ->
+          if :atomics.exchange(erased?, 1, 1) == 0 do
+            Erasure.request(erasure_actor, erasure_actor.peer_id, "proportionate")
+          end
+        end,
+        nil
+      )
+
+    on_exit(fn ->
+      :telemetry.detach(handler)
+      GroundedAnswerProvider.stop()
+
+      if original_provider do
+        Application.put_env(:memhouse, :model_provider, original_provider)
+      else
+        Application.delete_env(:memhouse, :model_provider)
+      end
+    end)
+
+    result =
+      Memory.ask(%{
+        "account_key" => name.account.key,
+        "peer_key" => "avery",
+        "scope_path" => name.scope.path,
+        "question" => "Who am I?",
+        "profile" => "balanced",
+        "strategies" => ["lexical"],
+        "deadline" => "disabled",
+        "effort" => "low"
+      })
+
+    assert :atomics.get(erased?, 1) == 1
+    assert [evidence] = result["recall_evidence"]
+    assert evidence["source_message_ids"] == [name.message_id]
+
+    assert evidence["source_references"] == [
+             %{"type" => "message", "id" => name.message_id}
+           ]
+
+    refute Jason.encode!(result) =~ blake_message["id"]
+
+    after_profile =
+      Memory.stable_identity_profile(%{
+        "account_key" => name.account.key,
+        "peer_key" => "avery",
+        "scope_path" => name.scope.path
+      })
+
+    refute after_profile["projection_digest"] == before_profile["projection_digest"]
+    assert [after_item] = after_profile["items"]
+    assert after_item["lineage"]["source_references"] == evidence["source_references"]
+  end
+
+  test "direct source projection reauthorizes cross-scope and cross-account document versions" do
+    seed = seed_active!("profile-document-source-auth", "Avery's name is Avery Jordan.", "name")
+
+    cross_scope_id =
+      create_document_version!(seed.account.key, "/private-document", "cross-scope")
+
+    cross_account_id =
+      create_document_version!("profile-document-source-foreign", "/profile", "cross-account")
+
+    DataLayer.with_account_key(seed.account.key, [role: :system, pipeline?: true], fn account,
+                                                                                      actor ->
+      Enum.each([cross_scope_id, cross_account_id], fn version_id ->
+        Provenance
+        |> Ash.Changeset.for_create(:create_from_pipeline, %{
+          knowledge_item_id: seed.knowledge.id,
+          scope_id: seed.scope.id,
+          source_type: "document",
+          document_version_id: version_id,
+          extracting_model: "test",
+          pipeline_version: "f5-1",
+          occurred_at: Clock.utc_now()
+        })
+        |> Ash.Changeset.set_tenant(account.id)
+        |> Ash.create!(actor: actor)
+      end)
+    end)
+
+    refs =
+      DataLayer.with_account_key(seed.account.key, fn account, actor ->
+        Lineage.visible_source_references(seed.knowledge, account, actor, [seed.scope])
+      end)
+
+    assert refs == [%{"type" => "message", "id" => seed.message_id}]
+    refute Jason.encode!(refs) =~ cross_scope_id
+    refute Jason.encode!(refs) =~ cross_account_id
+
+    profile =
+      Memory.stable_identity_profile(%{
+        "account_key" => seed.account.key,
+        "peer_key" => "avery",
+        "scope_path" => seed.scope.path
+      })
+
+    assert [item] = profile["items"]
+    assert item["lineage"]["source_references"] == refs
+    refute Jason.encode!(profile) =~ cross_scope_id
+    refute Jason.encode!(profile) =~ cross_account_id
+  end
+
+  test "stable profile rejects an identity fact backed only by unauthorized document provenance" do
+    seed =
+      seed_active!(
+        "profile-document-source-invalid-only",
+        "The fixture marker is blue.",
+        "setup"
+      )
+
+    unsupported =
+      create_active_knowledge!(seed,
+        statement: "Avery's name is Avery Jordan.",
+        source_message_ids: []
+      )
+
+    hidden_version_id =
+      create_document_version!(seed.account.key, "/private-document", "invalid-only")
+
+    foreign_version_id =
+      create_document_version!(
+        "profile-document-source-invalid-only-foreign",
+        "/profile",
+        "invalid-only-foreign"
+      )
+
+    DataLayer.with_account_key(seed.account.key, [role: :system, pipeline?: true], fn account,
+                                                                                      actor ->
+      Enum.each([hidden_version_id, foreign_version_id], fn version_id ->
+        Provenance
+        |> Ash.Changeset.for_create(:create_from_pipeline, %{
+          knowledge_item_id: unsupported.id,
+          scope_id: seed.scope.id,
+          source_type: "document",
+          document_version_id: version_id,
+          extracting_model: "test",
+          pipeline_version: "f5-1",
+          occurred_at: Clock.utc_now()
+        })
+        |> Ash.Changeset.set_tenant(account.id)
+        |> Ash.create!(actor: actor)
+      end)
+    end)
+
+    profile =
+      Memory.stable_identity_profile(%{
+        "account_key" => seed.account.key,
+        "peer_key" => "avery",
+        "scope_path" => seed.scope.path
+      })
+
+    assert profile["items"] == []
+    assert profile["diagnostic"]["status"] == "empty"
+    assert profile["diagnostic"]["eligible_count"] == 0
+    assert profile["diagnostic"]["excluded_by_reason"]["unsupported"] == 1
+    refute Jason.encode!(profile) =~ hidden_version_id
+    refute Jason.encode!(profile) =~ foreign_version_id
+  end
+
   test "adaptive Ask admits lineage evidence ahead of a full base page and preserves profile" do
     seeds =
       Enum.map(1..12, fn index ->
@@ -831,6 +1030,114 @@ defmodule MemHouse.LineageIdentityProfileTest do
       reason: "lineage_profile_test_activate",
       channel: "pipeline"
     )
+  end
+
+  defp add_message_source!(seed, message_id, peer_key) do
+    DataLayer.with_account_key(seed.account.key, [role: :system, pipeline?: true], fn account,
+                                                                                      actor ->
+      peer =
+        Peer
+        |> Ash.Query.filter(key == ^peer_key)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      knowledge =
+        KnowledgeItem
+        |> Ash.Query.filter(id == ^seed.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+        |> Ash.Changeset.for_update(:merge_from_pipeline, %{
+          source_message_ids: Enum.uniq([message_id | seed.knowledge.source_message_ids]),
+          confidence: seed.knowledge.confidence,
+          corroboration_count: seed.knowledge.corroboration_count + 1
+        })
+        |> Ash.Changeset.set_tenant(account.id)
+        |> Ash.update!(actor: actor)
+
+      source =
+        Provenance
+        |> Ash.Query.filter(knowledge_item_id == ^knowledge.id)
+        |> Ash.Query.limit(1)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      Provenance
+      |> Ash.Changeset.new()
+      |> Ash.Changeset.set_tenant(account.id)
+      |> Ash.Changeset.for_create(:create_from_pipeline, %{
+        knowledge_item_id: knowledge.id,
+        scope_id: knowledge.scope_id,
+        source_type: "message",
+        message_id: message_id,
+        extracting_provider: source.extracting_provider,
+        extracting_model: source.extracting_model,
+        extracting_model_version: source.extracting_model_version,
+        prompt_version: source.prompt_version,
+        embedding_provider: source.embedding_provider,
+        embedding_model: source.embedding_model,
+        embedding_version: source.embedding_version,
+        pipeline_version: source.pipeline_version,
+        occurred_at: source.occurred_at
+      })
+      |> Ash.create!(actor: actor)
+
+      %{actor | peer_id: peer.id}
+    end)
+  end
+
+  defp create_document_version!(account_key, scope_path, suffix) do
+    assert {:ok, _message} =
+             Memory.ingest_message(%{
+               "account_key" => account_key,
+               "session_id" => "document-source-#{suffix}",
+               "scope_path" => scope_path,
+               "peer_key" => "avery",
+               "peer_name" => "Avery",
+               "content" => "Create a document source fixture."
+             })
+
+    DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
+      scope =
+        Scope
+        |> Ash.Query.filter(path == ^scope_path)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      peer =
+        Peer
+        |> Ash.Query.filter(key == "avery")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      document =
+        Document
+        |> Ash.Changeset.for_create(:create, %{
+          scope_id: scope.id,
+          owner_peer_id: peer.id,
+          external_id: "profile-source-#{suffix}",
+          title: "Profile source #{suffix}",
+          source_kind: "upload",
+          status: "active"
+        })
+        |> Ash.Changeset.set_tenant(account.id)
+        |> Ash.create!(actor: actor)
+
+      DocumentVersion
+      |> Ash.Changeset.for_create(:create, %{
+        document_id: document.id,
+        scope_id: scope.id,
+        version: 1,
+        content: "Avery's name is Avery Jordan.",
+        content_hash: :crypto.hash(:sha256, suffix) |> Base.encode16(case: :lower),
+        byte_size: 30,
+        blob_ref: "local://fixture/#{suffix}",
+        media_type: "text/plain",
+        occurred_at: Clock.utc_now()
+      })
+      |> Ash.Changeset.set_tenant(account.id)
+      |> Ash.create!(actor: actor)
+      |> Map.fetch!(:id)
+    end)
   end
 
   defp relation!(source, target, kind) do

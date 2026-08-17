@@ -134,6 +134,9 @@ defmodule MemHouse.Recall.ToolAdapter do
           nil ->
             []
 
+          %{"source_references" => []} ->
+            []
+
           row ->
             [
               row
@@ -141,10 +144,6 @@ defmodule MemHouse.Recall.ToolAdapter do
               |> Map.put("candidate_type", "knowledge")
               |> Map.put("profile_category", item["category"])
               |> Map.put("profile_conflict", item["conflict"])
-              |> Map.put(
-                "source_references",
-                get_in(item, ["lineage", "source_references"]) || []
-              )
             ]
         end
       end)

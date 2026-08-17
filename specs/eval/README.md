@@ -181,6 +181,10 @@ records the enabled operations.
 Gates cover regression, citation and unsupported-answer failures, source-membership leaks,
 token/cost and latency budgets, and replay effects. Measured evidence is structurally separate
 from inferences and unreproduced first-party claims.
+Source-membership accounting normalizes both legacy message provenance and bounded typed
+`source_references`. Message identities translate into the fixture's turn/session labels for
+citation and rank scoring; a document-version identity cannot belong to the message-only runner
+case and is counted only as a content-free isolation leak.
 
 Execute mode uses deterministic local model roles unless the operator explicitly passes
 `--live-model`. Fixture mode starts neither the application nor a provider and is not quotable

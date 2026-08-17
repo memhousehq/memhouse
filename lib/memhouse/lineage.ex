@@ -24,6 +24,35 @@ defmodule MemHouse.Lineage do
   @relation_kinds ~w(contradicts derived_from supersedes supports)
 
   @doc """
+  Resolves the bounded direct sources of one knowledge row through their
+  canonical resource policies.
+
+  The knowledge row may be an earlier projection. Message ids are therefore
+  never trusted on their own, and Provenance's denormalized Account/scope fields
+  are never sufficient to publish a document-version id. Each candidate source
+  is re-read as a Message or DocumentVersion in the supplied Account and scopes;
+  missing, erased, and unauthorized sources are omitted without exposing ids.
+  The caller must hold the Account-scoped transaction that also read the
+  knowledge row.
+  """
+  def visible_source_references(%KnowledgeItem{} = item, account, actor, scopes) do
+    context = %{
+      account_id: account.id,
+      actor: actor,
+      scope_ids: Enum.map(scopes, & &1.id),
+      internal_reader?: false
+    }
+
+    item
+    |> direct_source_references(context, @default_fan_out)
+    |> Enum.filter(&(&1.status == "visible" and &1.type in ~w(message document_version)))
+    |> Enum.uniq_by(&{&1.type, &1.id})
+    |> Enum.sort_by(&{&1.type, &1.id})
+    |> Enum.take(@default_fan_out)
+    |> Enum.map(&%{"type" => &1.type, "id" => &1.id})
+  end
+
+  @doc """
   Projects lineage for one visible knowledge item, message, or document version.
 
   `attrs` accepts `target_type`, `target_id`, `max_depth`, `max_fan_out`, and
@@ -140,23 +169,7 @@ defmodule MemHouse.Lineage do
   defp references(%KnowledgeItem{} = item, seen, context, budgets) do
     read_limit = budgets.max_fan_out + 1
 
-    provenance_refs =
-      Provenance
-      |> Ash.Query.filter(scope_id in ^context.scope_ids and knowledge_item_id == ^item.id)
-      |> Ash.Query.sort(source_type: :asc, message_id: :asc, document_version_id: :asc, id: :asc)
-      |> Ash.Query.limit(read_limit)
-      |> Ash.Query.set_tenant(context.account_id)
-      |> Ash.read!(actor: context.actor)
-      |> Enum.map(&provenance_ref(&1, context))
-
-    legacy_message_refs =
-      item.source_message_ids
-      |> Enum.reject(fn id ->
-        Enum.any?(provenance_refs, &(&1.type == "message" and &1.id == id))
-      end)
-      |> Enum.sort()
-      |> Enum.take(read_limit)
-      |> Enum.map(&source_ref("message", &1, "extraction", context))
+    direct_source_refs = direct_source_references(item, context, read_limit)
 
     relation_refs =
       KnowledgeRelation
@@ -171,7 +184,7 @@ defmodule MemHouse.Lineage do
       |> Enum.map(&relation_ref(&1, context))
 
     refs =
-      (provenance_refs ++ legacy_message_refs ++ relation_refs)
+      (direct_source_refs ++ relation_refs)
       |> Enum.uniq_by(&{&1.type, &1.operation, &1.id, &1.status})
       |> Enum.sort_by(&{&1.type, &1.operation, &1.id || "", &1.status})
 
@@ -199,6 +212,28 @@ defmodule MemHouse.Lineage do
   end
 
   defp references(_source, _seen, _context, _budgets), do: {[], empty_counts()}
+
+  defp direct_source_references(item, context, read_limit) do
+    provenance_refs =
+      Provenance
+      |> Ash.Query.filter(scope_id in ^context.scope_ids and knowledge_item_id == ^item.id)
+      |> Ash.Query.sort(source_type: :asc, message_id: :asc, document_version_id: :asc, id: :asc)
+      |> Ash.Query.limit(read_limit)
+      |> Ash.Query.set_tenant(context.account_id)
+      |> Ash.read!(actor: context.actor)
+      |> Enum.map(&provenance_ref(&1, context))
+
+    legacy_message_refs =
+      item.source_message_ids
+      |> Enum.reject(fn id ->
+        Enum.any?(provenance_refs, &(&1.type == "message" and &1.id == id))
+      end)
+      |> Enum.sort()
+      |> Enum.take(read_limit)
+      |> Enum.map(&source_ref("message", &1, "extraction", context))
+
+    provenance_refs ++ legacy_message_refs
+  end
 
   defp provenance_ref(%{source_type: "message", message_id: id}, context),
     do: source_ref("message", id, "extraction", context)

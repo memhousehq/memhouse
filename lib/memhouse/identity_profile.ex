@@ -10,6 +10,7 @@ defmodule MemHouse.IdentityProfile do
   """
 
   alias MemHouse.Knowledge.{KnowledgeItem, Provenance}
+  alias MemHouse.Lineage
   alias MemHouse.Memory.Visibility
 
   require Ash.Query
@@ -70,8 +71,18 @@ defmodule MemHouse.IdentityProfile do
       end)
       |> Enum.sort_by(&{category_order(&1.category), normalize(&1.item.statement), &1.item.id})
 
-    conflict_groups = conflict_groups(ordered)
-    {selected, budget_truncated?} = fit_budget(ordered)
+    {source_backed, unsupported_sources} =
+      Enum.reduce(ordered, {[], 0}, fn row, {accepted, rejected} ->
+        case Lineage.visible_source_references(row.item, account, actor, scopes) do
+          [] -> {accepted, rejected + 1}
+          refs -> {[Map.put(row, :source_references, refs) | accepted], rejected}
+        end
+      end)
+
+    source_backed = Enum.reverse(source_backed)
+    excluded = increment_by(excluded, :unsupported, unsupported_sources)
+    conflict_groups = conflict_groups(source_backed)
+    {selected, budget_truncated?} = fit_budget(source_backed)
     selected_ids = MapSet.new(selected, & &1.item.id)
     source_truncated? = length(eligible) > length(ordered)
 
@@ -87,7 +98,7 @@ defmodule MemHouse.IdentityProfile do
           "conflict_group" => conflict,
           "lineage" => %{
             "target" => %{"type" => "knowledge", "id" => row.item.id},
-            "source_references" => direct_sources(row.item, provenance_ids)
+            "source_references" => row.source_references
           }
         }
       end)
@@ -101,7 +112,7 @@ defmodule MemHouse.IdentityProfile do
       "items" => entries,
       "diagnostic" => %{
         "status" => if(entries == [], do: "empty", else: "ready"),
-        "eligible_count" => length(eligible),
+        "eligible_count" => length(source_backed),
         "excluded_count" => Enum.sum(Map.values(excluded)),
         "excluded_by_reason" => stringify_map(excluded),
         "conflict_group_count" =>
@@ -169,6 +180,9 @@ defmodule MemHouse.IdentityProfile do
     end)
   end
 
+  defp increment_by(map, _key, 0), do: map
+  defp increment_by(map, key, amount), do: Map.update(map, key, amount, &(&1 + amount))
+
   defp provenance_ids(_account_id, _actor, _scope_ids, []), do: %{}
 
   defp provenance_ids(account_id, actor, scope_ids, knowledge_ids) do
@@ -177,30 +191,6 @@ defmodule MemHouse.IdentityProfile do
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
     |> Enum.group_by(& &1.knowledge_item_id)
-  end
-
-  defp direct_sources(item, provenance_ids) do
-    provenance_refs =
-      provenance_ids
-      |> Map.get(item.id, [])
-      |> Enum.map(fn provenance ->
-        case provenance.source_type do
-          "message" -> %{"type" => "message", "id" => provenance.message_id}
-          "document" -> %{"type" => "document_version", "id" => provenance.document_version_id}
-          _ -> %{"type" => "source", "id" => nil}
-        end
-      end)
-
-    legacy_refs =
-      item.source_message_ids
-      |> Enum.reject(fn id -> Enum.any?(provenance_refs, &(&1["id"] == id)) end)
-      |> Enum.map(&%{"type" => "message", "id" => &1})
-
-    (provenance_refs ++ legacy_refs)
-    |> Enum.reject(&is_nil(&1["id"]))
-    |> Enum.uniq_by(&{&1["type"], &1["id"]})
-    |> Enum.sort_by(&{&1["type"], &1["id"]})
-    |> Enum.take(8)
   end
 
   defp conflict_groups(rows) do
@@ -239,7 +229,14 @@ defmodule MemHouse.IdentityProfile do
   defp projection_digest(rows) do
     material =
       rows
-      |> Enum.map(&{&1.category, &1.item.id, &1.item.statement_hash, &1.item.state})
+      |> Enum.map(fn row ->
+        sources =
+          row
+          |> Map.get(:source_references, [])
+          |> Enum.map(&{&1["type"], &1["id"]})
+
+        {row.category, row.item.id, row.item.statement_hash, row.item.state, sources}
+      end)
       |> :erlang.term_to_binary()
 
     :crypto.hash(:sha256, material) |> Base.encode16(case: :lower)

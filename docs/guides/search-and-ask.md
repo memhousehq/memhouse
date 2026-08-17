@@ -168,6 +168,11 @@ typed `source_message` in `recall_evidence` and uses its immutable Message id.
 Knowledge admitted through the stable profile is re-read under the request's
 current authorization and carries its `scope_id`, `source_message_ids`, and
 bounded typed `source_references`; it is not detached profile text.
+The exact read locks those governed knowledge rows inside its Account-scoped
+transaction and rebuilds their references from current provenance. Every source
+is then reauthorized as a Message or DocumentVersion in the requested scopes;
+neither an erased message nor a mismatched provenance row can copy a source id
+back from the earlier profile projection into `recall_evidence`.
 
 ## Choosing a profile
 

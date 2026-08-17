@@ -378,7 +378,7 @@ defmodule MemHouse.Eval.Runner do
     |> Map.get("candidates", [])
     |> Enum.map(fn candidate ->
       candidate
-      |> Map.get("source_message_ids", [])
+      |> candidate_source_message_ids()
       |> Enum.map(fn id ->
         if granularity == "session",
           do: Map.get(ref_map.session_by_db_id, id),
@@ -398,27 +398,61 @@ defmodule MemHouse.Eval.Runner do
     answer
     |> Map.get("candidates", [])
     |> Enum.filter(&(Map.get(&1, "id") in cited_ids))
-    |> Enum.flat_map(&Map.get(&1, "source_message_ids", []))
+    |> Enum.flat_map(&candidate_source_message_ids/1)
     |> Enum.uniq()
   end
 
-  # Every evaluated knowledge or source-message candidate must name source messages ingested
-  # for this case.
-  # Unexpected ids are counted but never copied into the report, because an id from another
-  # scope or Account is itself data the evaluation harness is not authorized to disclose.
+  # Every evaluated knowledge or source-message candidate must trace only to sources ingested
+  # for this case. The runner ingests messages, so an authorized document-version source is a
+  # typed contamination signal rather than something that may be silently ignored.
+  # Unexpected typed identities are counted but never copied into the report, because an id from
+  # another scope or Account is itself data the evaluation harness is not authorized to disclose.
   defp isolation_counts(answer, ref_map) do
-    allowed = ref_map.message_by_db_id |> Map.keys() |> MapSet.new()
+    allowed = ref_map.message_by_db_id |> Map.keys() |> MapSet.new(&{"message", &1})
 
-    source_ids =
+    source_identities =
       answer
       |> Map.get("candidates", [])
-      |> Enum.flat_map(&Map.get(&1, "source_message_ids", []))
+      |> Enum.flat_map(&candidate_source_identities/1)
       |> Enum.uniq()
 
     %{
-      candidates_checked: length(source_ids),
-      leaks: Enum.count(source_ids, &(not MapSet.member?(allowed, &1)))
+      candidates_checked: length(source_identities),
+      leaks: Enum.count(source_identities, &(not MapSet.member?(allowed, &1)))
     }
+  end
+
+  defp candidate_source_message_ids(candidate) do
+    candidate
+    |> candidate_source_identities()
+    |> Enum.flat_map(fn
+      {"message", id} -> [id]
+      {_other_type, _id} -> []
+    end)
+  end
+
+  defp candidate_source_identities(candidate) do
+    legacy =
+      candidate
+      |> Map.get("source_message_ids", [])
+      |> Enum.flat_map(fn
+        id when is_binary(id) -> [{"message", id}]
+        _invalid -> []
+      end)
+
+    typed =
+      candidate
+      |> Map.get("source_references", [])
+      |> Enum.flat_map(fn
+        %{"type" => type, "id" => id}
+        when type in ["message", "document_version"] and is_binary(id) ->
+          [{type, id}]
+
+        _hidden_or_invalid ->
+          []
+      end)
+
+    Enum.uniq(legacy ++ typed)
   end
 
   # Evaluation runs use an internal Account adapter, so they have no calling
