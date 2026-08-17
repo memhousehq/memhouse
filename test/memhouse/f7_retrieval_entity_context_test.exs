@@ -3310,23 +3310,33 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert metadata.account_id == seeded.account.id
   end
 
-  test "reconciliation enqueues one replay-safe rebuild for a scope with no mentions" do
+  test "reconciliation reuses the ingest refresh for a scope with no mentions" do
     seeded =
       seed_active!("f7-mention-reconcile", "/f7/reconcile", "Avery owns the release checklist.")
 
     before = projection_refresh_count(seeded.account.id)
+    assert before >= 1
 
-    assert {:ok, %{scopes: 1}} = MemHouse.Pipeline.Reconciler.run(seeded.account.id)
-    assert projection_refresh_count(seeded.account.id) == before + 1
+    # Raw-message ingest now schedules the same full refresh that repairs source
+    # vectors and entity mentions. Reconciliation must reuse that recoverable
+    # work instead of adding a second provider-backed projection run.
+    assert {:ok, %{source_scopes: 0, scopes: 0}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
 
-    assert {:ok, %{scopes: 1}} = MemHouse.Pipeline.Reconciler.run(seeded.account.id)
-    assert projection_refresh_count(seeded.account.id) == before + 1
+    assert projection_refresh_count(seeded.account.id) == before
+
+    assert {:ok, %{source_scopes: 0, scopes: 0}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before
 
     assert {:ok, %{mentions: mentions}} =
              EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
 
     assert mentions > 0
-    assert {:ok, %{scopes: 0}} = MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert {:ok, %{source_scopes: 0, scopes: 0}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
   end
 
   test "mention coverage reports a partially indexed scope" do
