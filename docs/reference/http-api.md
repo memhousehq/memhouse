@@ -20,6 +20,8 @@ There is **no generated OpenAPI description** in this release — see
 | `POST /api/v1/search` | any identity | Ranked retrieval |
 | `POST /api/v1/source-search` | any identity | Governed source-message recall |
 | `POST /api/v1/ask` | any identity | Cited answer |
+| `POST /api/v1/lineage` | any identity | Bounded evidence lineage |
+| `POST /api/v1/stable-profile` | any identity | Stable identity projection |
 | `POST /api/v1/context` | any identity | Projection-backed context |
 | `POST /api/v1/readiness` | any identity | Skill-readiness gap report |
 | `GET /api/v1/knowledge` | any identity | Governed knowledge query |
@@ -210,6 +212,7 @@ All fields optional.
 | `min_score` | none | Drops candidates below this score inside each strategy, before fusion |
 | `source_filters` | none | |
 | `deadline` | profile default | `"disabled"` removes the budget; offline only |
+| `include_identity_profile` | off | Adds the stable identity projection for the selected reader without changing ranking |
 
 `peer_key` names the peer the results are read **for**. It is trusted as
 supplied, exactly as on ingest. Naming a reader borrows nothing from it: scope
@@ -267,6 +270,70 @@ not the list length, as the signal.
 
 Account, authorised-scope, lifecycle, and source filtering happen **inside**
 retrieval. A raw `strategies` override is refused for external callers.
+`identity_profile_status` is always present: `not_requested`, `ready`, `empty`,
+or `unavailable`. When the profile is requested, `identity_profile` carries the
+same response as the endpoint below. It is orientation, not an extra retrieval
+candidate, and its statements remain citable only through their knowledge ids.
+
+---
+
+## `POST /api/v1/lineage`
+
+`target_id` is required. `target_type` defaults to `knowledge` and may be
+`knowledge`, `message`, or `document_version`.
+
+| Field | Default | Bound |
+| --- | --- | --- |
+| `scope_path` | `"/poc"` | The scope and its ancestors; ordinary authorization still applies |
+| `peer_key` | the calling peer | Same reader rule as search |
+| `max_depth` | `3` | `0` through `8` |
+| `max_fan_out` | `8` | `1` through `24` per node |
+| `max_nodes` | `40` | `1` through `100` total |
+
+The response is a deterministic breadth-first projection. Every node has a
+stable `id`, `type`, integer `derivation_level`, `operation`,
+`traversal_depth`, and typed `source_references`. Raw messages and document
+versions are level zero; governed knowledge is level one or higher. A direct
+message target is returned directly, without a synthetic reasoning node.
+
+References are `visible`, `missing`, `lifecycle_hidden`, or
+`authorization_hidden`. A hidden reference has no id or content. `terminations`
+separates cycle, depth, fan-out, total-node, missing-source, lifecycle-hidden,
+and authorization-hidden stops; `truncated` is true only for a budget stop. A
+missing or unauthorized root returns the same opaque 404.
+
+Lineage is evidence, not an audit log and not explanatory prose. It reads
+provenance and typed knowledge relations. Audit records explain which governed
+operation occurred and when. Neither surface exposes prompts, model rationale,
+or chain-of-thought.
+
+---
+
+## `POST /api/v1/stable-profile`
+
+All fields are optional. `scope_path` and `peer_key` follow search's reader
+rules. The selected reader is also the profile subject; naming a peer never
+borrows that peer's scope grants.
+
+The profile is rebuilt on every read from visible active knowledge plus that
+subject's own visible provisional knowledge. It is not a table, write path, or
+model call. Eligible statements must be direct, source-backed facts in a small
+taxonomy: name, pronouns, occupation, location, language, and time zone.
+Transient state, preferences and behavioral generalizations, inferred claims,
+and sensitive-trait statements are rejected.
+
+Every item contains its `knowledge_id`, governed `statement`, category, conflict
+fields, and bounded direct source references under `lineage`. Multiple distinct
+claims in one category remain visible with the same deterministic
+`conflict_group`; the projection never chooses a winner. The response is capped
+at 16 items, four per category, 240 characters per statement, and 1,600 total
+statement characters.
+
+`projection_digest` identifies the selected canonical source set.
+`diagnostic` reports only counts, exclusion classes, status, truncation, and
+`model_calls: 0`; it contains no rejected text. Lifecycle transition, source
+erasure, or subject/scope authorization changes affect the next read
+immediately, so there is no stale-profile refresh window.
 
 ---
 

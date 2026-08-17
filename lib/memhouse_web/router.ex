@@ -64,6 +64,8 @@ defmodule MemHouseWeb.Router do
       post "/ask", MemoryController, :ask
       post "/search", MemoryController, :search
       post "/source-search", MemoryController, :source_search
+      post "/lineage", MemoryController, :lineage
+      post "/stable-profile", MemoryController, :identity_profile
       post "/context", MemoryController, :context
       post "/readiness", MemoryController, :readiness
       get "/knowledge", MemoryController, :knowledge

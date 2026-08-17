@@ -181,6 +181,36 @@ asks for.
 Raw per-request strategy overrides are internal and evaluation-only; external
 callers cannot select strategies directly.
 
+## Evidence lineage is not reasoning text
+
+`POST /api/v1/lineage` projects existing provenance and typed knowledge
+relations into a bounded graph. It can connect a deduction or consolidation
+result back to governed knowledge and immutable observations, but it does not
+store or expose the model's private rationale. Scope and lifecycle filtering
+happen before a node is returned; a visible derived statement never grants
+access to a hidden source.
+
+Traversal has depth, per-node fan-out, and total-node budgets. Stable ordering,
+cycle termination, and opaque missing or lifecycle-hidden references make the
+same request reproducible without turning hidden content into a diagnostic.
+Use lineage to inspect evidence. Use lifecycle and audit records to inspect
+governed state changes. Use answer text only as a cited explanation over those
+records.
+
+## Stable identity is a live projection
+
+`POST /api/v1/stable-profile` selects a small allowlist of stable, direct,
+source-backed facts about the chosen reader. It is rebuilt from canonical
+knowledge on every call and uses no model, so deletion, retraction,
+supersession, or a scope change cannot leave a second profile store behind.
+
+The profile keeps contradictory identity claims side by side. It excludes
+transient state, preferences, behavioral summaries, inferred claims, and
+sensitive traits. Each entry links to its governed knowledge id and direct
+source ids; consumers cite that knowledge rather than the projection. Search
+can include this orientation with `include_identity_profile`, but the profile
+never becomes a retrieval candidate and does not change rank.
+
 ## Entities are internal
 
 Dream-time entity resolution links aliases such as "Dana", "Dana R.", and

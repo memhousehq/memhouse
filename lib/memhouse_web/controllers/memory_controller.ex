@@ -194,6 +194,32 @@ defmodule MemHouseWeb.MemoryController do
   end
 
   @doc """
+  Traverses bounded, authorized evidence lineage without exposing model rationale.
+
+  Body: `target_id` is required; `target_type` defaults to `knowledge`. Optional
+  scope, reader, depth, fan-out, and total-node limits are clamped by the lineage
+  boundary. Missing and unauthorized targets share one opaque 404.
+  """
+  def lineage(conn, params) do
+    case Memory.evidence_lineage(params, conn.assigns.current_actor) do
+      {:ok, result} -> json(conn, %{data: result})
+      {:error, :not_found} -> conn |> put_status(:not_found) |> json(%{error: "Not found"})
+    end
+  end
+
+  @doc """
+  Returns the calling reader's compact stable identity profile.
+
+  The response is a live projection of governed knowledge and direct evidence,
+  not an editable profile record. `peer_key` may select the reader under the same
+  rules as search; it grants no additional scope access.
+  """
+  def identity_profile(conn, params) do
+    result = Memory.stable_identity_profile(params, conn.assigns.current_actor)
+    json(conn, %{data: result})
+  end
+
+  @doc """
   Retrieves supporting memory and answers a natural-language question over it.
 
     Body: `question` is required; every `search/2` parameter is also accepted. `profile`

@@ -25,11 +25,14 @@ defmodule MemHouse.Memory do
   alias MemHouse.Governance.Audit
   alias MemHouse.Governance.Engine
   alias MemHouse.Identity.RoleResolver
+  alias MemHouse.IdentityProfile
   alias MemHouse.Knowledge.Attribution
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Knowledge.LifecycleEvent
   alias MemHouse.Knowledge.Provenance
   alias MemHouse.Knowledge.Statement
+  alias MemHouse.Lineage
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Observability
   alias MemHouse.Observations.Message
   alias MemHouse.Observations.Session
@@ -555,7 +558,20 @@ defmodule MemHouse.Memory do
         "memhouse.retrieval.latency_ms" => retrieval.latency_ms
       })
 
-      stringify_top_level(retrieval)
+      result = stringify_top_level(retrieval)
+
+      if Map.get(filters, "include_identity_profile", false) in [true, "true", "1"] do
+        identity_profile = stable_identity_profile(filters)
+
+        result
+        |> Map.put("identity_profile", identity_profile)
+        |> Map.put(
+          "identity_profile_status",
+          get_in(identity_profile, ["diagnostic", "status"])
+        )
+      else
+        Map.put(result, "identity_profile_status", "not_requested")
+      end
     end)
   end
 
@@ -897,6 +913,75 @@ defmodule MemHouse.Memory do
       })
 
       context
+    end)
+  end
+
+  @doc """
+  Returns a bounded evidence-lineage projection for one visible target.
+
+  `attrs` requires `"target_id"` and accepts `"target_type"` (`"knowledge"`,
+  `"message"`, or `"document_version"`), `"scope_path"`, `"peer_key"`, and
+  the clamped `"max_depth"`, `"max_fan_out"`, and `"max_nodes"` budgets.
+
+  Nodes carry identifiers, types, derivation levels, operations, and typed
+  source references. They never carry model rationale or chain-of-thought.
+  Missing and unauthorized roots both return `{:error, :not_found}`.
+  """
+  def evidence_lineage(attrs, identity_actor \\ nil) do
+    Observability.with_span(:memory, "memhouse.memory.evidence_lineage", fn ->
+      attrs = attrs |> normalize_attrs() |> put_identity_actor(identity_actor)
+
+      result =
+        with_account(attrs, fn account, actor ->
+          {reader, internal_reader?} = reader_and_posture!(account, actor, attrs)
+          scopes = visible_scopes(account.id, reader, Map.get(attrs, "scope_path", "/poc"))
+          Lineage.project(account, reader, scopes, attrs, internal_reader?)
+        end)
+
+      case result do
+        {:ok, lineage} ->
+          Observability.set_attributes(:memory, %{
+            "memhouse.lineage.node_count" => lineage["node_count"],
+            "memhouse.lineage.truncated" => lineage["truncated"]
+          })
+
+          {:ok, lineage}
+
+        {:error, :not_found} = error ->
+          Observability.set_attribute(:memory, "memhouse.lineage.outcome", "not_found")
+          error
+      end
+    end)
+  end
+
+  @doc """
+  Projects a compact stable identity profile from currently visible knowledge.
+
+  This is a deterministic read, not a second memory store. It admits only a
+  small stable-fact taxonomy, keeps conflicting claims side by side, links every
+  entry to its governed knowledge and direct source ids, and calls no model.
+  Lifecycle changes and erasure take effect on the next read without a refresh
+  job because no profile content is persisted.
+  """
+  def stable_identity_profile(attrs, identity_actor \\ nil) do
+    Observability.with_span(:memory, "memhouse.memory.stable_identity_profile", fn ->
+      attrs = attrs |> normalize_attrs() |> put_identity_actor(identity_actor)
+
+      profile =
+        with_account(attrs, fn account, actor ->
+          {reader, internal_reader?} = reader_and_posture!(account, actor, attrs)
+          scopes = visible_scopes(account.id, reader, Map.get(attrs, "scope_path", "/poc"))
+          IdentityProfile.project(account, reader, scopes, reader.peer_id, internal_reader?)
+        end)
+
+      Observability.set_attributes(:memory, %{
+        "memhouse.identity_profile.status" => get_in(profile, ["diagnostic", "status"]),
+        "memhouse.identity_profile.returned_count" =>
+          get_in(profile, ["diagnostic", "returned_count"]),
+        "memhouse.identity_profile.model_calls" => 0
+      })
+
+      profile
     end)
   end
 
@@ -1710,51 +1795,8 @@ defmodule MemHouse.Memory do
   # Any explicitly requested state matches exactly, with no provisional widening.
   #
   # An internal reader (jobs, evaluation runs) reads the corpus unnarrowed.
-  defp knowledge_read_query(scope_ids, "active", _actor, true) do
-    KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state in ["active", "provisional"])
-  end
-
-  defp knowledge_read_query(scope_ids, state, _actor, true) do
-    KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state)
-  end
-
-  defp knowledge_read_query(scope_ids, "active", %{peer_id: peer_id}, false)
-       when is_binary(peer_id) do
-    KnowledgeItem
-    |> Ash.Query.filter(
-      scope_id in ^scope_ids and
-        (state == "active" or (state == "provisional" and subject_peer_id == ^peer_id))
-    )
-    |> readable_by_peer(peer_id)
-  end
-
-  defp knowledge_read_query(scope_ids, state, %{peer_id: peer_id}, false)
-       when is_binary(peer_id) do
-    KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state)
-    |> readable_by_peer(peer_id)
-  end
-
-  # A reader with no peer identifies nobody, so only public statements are theirs to read.
-  defp knowledge_read_query(scope_ids, "active", _actor, false) do
-    KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state == "active" and sensitivity == "public")
-  end
-
-  defp knowledge_read_query(scope_ids, state, _actor, false) do
-    KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state and sensitivity == "public")
-  end
-
-  defp readable_by_peer(query, peer_id) do
-    Ash.Query.filter(
-      query,
-      sensitivity in ["public", "internal"] or is_nil(subject_peer_id) or
-        subject_peer_id == ^peer_id or target_level in ["scope", "account"]
-    )
-  end
+  defp knowledge_read_query(scope_ids, state, actor, internal_reader?),
+    do: Visibility.knowledge_query(scope_ids, state, actor, internal_reader?)
 
   defp ingest_run_status(%{extraction_completed_at: completed_at}, _run)
        when not is_nil(completed_at),
