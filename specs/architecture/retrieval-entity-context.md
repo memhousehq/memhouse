@@ -30,6 +30,10 @@ with a 5% reciprocal-rank tie-break. The profile supplies weights and `rrf_k`;
 the default is 15. The `:thorough` profile optionally reranks only the fused
 head through `MemHouse.Model.Gateway`. Reranking and grounded answers hold no
 transaction; the model layer scopes its own configuration read and usage write.
+Search authorization/query construction and stored-profile resolution each use
+a short Account transaction. Semantic embedding runs after those transactions
+close, and every strategy opens its own scoped transaction only for the SQL
+read that repeats Account, scope, reader, and lifecycle enforcement.
 A hard remaining-time budget wraps strategies and reranking. Each strategy
 receives a configured timeout clamped to the remaining strategy-phase budget;
 rerank reservation may further reduce that budget. The reranker receives its

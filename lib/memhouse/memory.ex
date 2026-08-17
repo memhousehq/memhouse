@@ -513,7 +513,7 @@ defmodule MemHouse.Memory do
           do: grant.deadline?,
           else: Map.get(filters, "deadline", "enabled") != "disabled"
 
-      {retrieval, scope_count} =
+      {retrieval_query, retrieval_opts, scope_count} =
         with_account(filters, fn account, actor ->
           {reader, internal_reader?} = reader_and_posture!(account, actor, filters)
 
@@ -556,8 +556,10 @@ defmodule MemHouse.Memory do
             ]
             |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-          {MemHouse.Retrieval.retrieve(retrieval_query, profile, opts), length(scopes)}
+          {retrieval_query, opts, length(scopes)}
         end)
+
+      retrieval = MemHouse.Retrieval.retrieve(retrieval_query, profile, retrieval_opts)
 
       Observability.set_attributes(:memory, %{
         "memhouse.retrieval.profile" => retrieval.profile,

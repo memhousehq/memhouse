@@ -33,8 +33,8 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest.Provider do
 
   @doc "Rejects transactional embedding calls, otherwise returns fixed vectors of the configured width."
   @impl true
-  def embed(config, texts, _opts) do
-    assert_outside_transaction!(:embed)
+  def embed(config, texts, opts) do
+    assert_outside_transaction!({:embed, Keyword.get(opts, :input_type, :passage)})
     dimensions = config.embedding_dimensions || 3
     vectors = Enum.map(texts, fn _text -> List.duplicate(0.25, dimensions) end)
 
@@ -54,7 +54,13 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest.Provider do
   end
 
   defp assert_outside_transaction!(operation) do
-    if Repo.in_transaction?() do
+    in_transaction? = Repo.in_transaction?()
+
+    if controller = Application.get_env(:memhouse, :provider_transaction_boundary_controller) do
+      send(controller, {:provider_transaction_boundary, operation, in_transaction?})
+    end
+
+    if in_transaction? do
       raise "evaluation provider #{operation} call ran inside a database transaction"
     end
   end
@@ -152,7 +158,49 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest do
     assert runtime_config() == original
   end
 
-  defp dataset(id) do
+  test "evaluated semantic retrieval embeds and reranks outside database transactions" do
+    account_key = unique_account_key("semantic-question")
+    original = runtime_config()
+
+    try do
+      install_boundary_provider!(original, batching?: false)
+
+      report =
+        Runner.run(dataset("semantic-question-boundary", [question()]),
+          account_key: account_key,
+          run_id: "provider-question-boundary",
+          profile: "thorough",
+          strategies: ["semantic"],
+          deadline: "disabled",
+          refresh_semantic_index: true,
+          extraction_batching: false
+        )
+
+      assert report["evaluated"] == 1
+      assert report["failed"] == 0
+      assert report["questions_attempted"] == 1
+
+      assert get_in(report, [
+               "cases",
+               Access.at(0),
+               "questions",
+               Access.at(0),
+               "contributed_strategies"
+             ]) == [
+               "semantic"
+             ]
+
+      assert_received {:provider_transaction_boundary, {:embed, :query}, false}
+      assert_received {:provider_transaction_boundary, :rerank, false}
+    after
+      cleanup_account!(account_key)
+      restore_runtime_config(original)
+    end
+
+    assert runtime_config() == original
+  end
+
+  defp dataset(id, questions \\ []) do
     Adapter.normalize(
       %{
         "benchmark" => "memhouse",
@@ -166,10 +214,19 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest do
             "content" => "Avery prefers concise evaluation reports."
           }
         ],
-        "questions" => []
+        "questions" => questions
       },
       benchmark: "memhouse"
     )
+  end
+
+  defp question do
+    %{
+      "id" => "question-1",
+      "question" => "What kind of reports does Avery prefer?",
+      "answer" => "concise evaluation reports",
+      "evidence" => ["message-1"]
+    }
   end
 
   defp install_boundary_provider!(original, opts) do
@@ -184,6 +241,7 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest do
 
     Application.put_env(:memhouse, :model_provider, __MODULE__.Provider)
     Application.put_env(:memhouse, :model_roles, roles)
+    Application.put_env(:memhouse, :provider_transaction_boundary_controller, self())
 
     Application.put_env(
       :memhouse,
@@ -195,6 +253,8 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest do
   defp runtime_config do
     %{
       provider: Application.get_env(:memhouse, :model_provider),
+      boundary_controller:
+        Application.get_env(:memhouse, :provider_transaction_boundary_controller),
       roles: Application.fetch_env!(:memhouse, :model_roles),
       batching: Application.fetch_env!(:memhouse, :extraction_batching)
     }
@@ -209,6 +269,16 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest do
 
     Application.put_env(:memhouse, :model_roles, original.roles)
     Application.put_env(:memhouse, :extraction_batching, original.batching)
+
+    if original.boundary_controller do
+      Application.put_env(
+        :memhouse,
+        :provider_transaction_boundary_controller,
+        original.boundary_controller
+      )
+    else
+      Application.delete_env(:memhouse, :provider_transaction_boundary_controller)
+    end
   end
 
   defp cleanup_account!(account_key) do
