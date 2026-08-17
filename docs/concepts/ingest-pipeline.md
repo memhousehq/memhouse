@@ -57,7 +57,7 @@ sequenceDiagram
     participant GOV as Governance engine
     participant IDX as Index and projection work
 
-    J->>G: token-batched anchored request (ingest_extractor role)
+    J->>G: one anchored request, or experimental token batch (ingest_extractor role)
     G->>S: provider output
     S->>S: validate against Ash-derived schema
     alt output does not fit the schema
@@ -73,8 +73,11 @@ sequenceDiagram
 
 ### Anchors batch without becoming one replay unit
 
-An executing message job may claim adjacent unstamped messages from the same
-Account, scope, and session. It does not create a batch row. Every message keeps
+By default an executing message job processes only its own anchor, preserving
+the established one-message provider request and replay outcome. When
+`MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING=true`, it may claim adjacent
+unstamped messages from the same Account, scope, and session. It does not
+create a batch row. Every message keeps
 its original deterministic PipelineRun and job identity. The model returns one
 envelope per explicit `anchor_id`, and validation applies that anchor's own
 participant, scope, exact-span, date, and supplied-source allowlists.
@@ -247,14 +250,16 @@ timestamp and knowledge id, so same-microsecond rows resume without being lost
 or billed twice. Dream-produced deductions and deterministic consolidation
 outputs do not feed the eligible-change counter back into themselves.
 
-Activating or changing a governed direct fact also creates a content-free,
-scope-targeted `PipelineRun` and Oban job in that same transaction. Its wakeup
+When `MEMHOUSE_EXPERIMENTAL_DREAM_IDLE_SCHEDULER=true`, activating or changing
+a governed direct fact also creates a content-free, scope-targeted `PipelineRun`
+and Oban job in that same transaction. Its wakeup
 is the fact's activity time plus `MEMHOUSE_DREAM_IDLE_SECONDS`. Exact duplicate
 activity reuses the replay key; newer activity schedules a later generation.
 When an older generation wakes, it compares its timestamp-and-id cursor with
 the latest surviving direct fact under the scope lock and completes as
-superseded before retrieval or model work. The hourly Account sweep and the
-manual operations endpoint remain fallback and operator paths.
+superseded before retrieval or model work. The switch defaults off pending
+matched evidence and human review. The hourly Account sweep and the manual
+operations endpoint remain fallback and operator paths in either state.
 
 Reasoning behind that gate is split into two small contracts. The enabled
 update operation can record `supports` and `contradicts` edges between exact

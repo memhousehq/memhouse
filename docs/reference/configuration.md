@@ -90,7 +90,8 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_MODEL_STREAM_POOL_COUNT` | `1` | Shared HTTP/1 shard count; raise only for a measured shard bottleneck |
 | `MEMHOUSE_MODEL_POOL_TIMEOUT_MS` | `120000` | Maximum wait (ms) to check out a model HTTP connection |
 | `MEMHOUSE_INGEST_QUEUE_LIMIT` | `10` | Concurrent extraction jobs per node |
-| `MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS` | `4096` | Adjacent-anchor target; one of `128`, `1024`, `4096`, or `16384` |
+| `MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING` | `false` | Opt in to adjacent-anchor extraction; false preserves one provider request and replay outcome per message |
+| `MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS` | `4096` | Adjacent-anchor target when the experiment is enabled; one of `128`, `1024`, `4096`, or `16384` |
 | `MEMHOUSE_EXTRACTION_BATCH_MAX_ANCHORS` | `32` | Hard anchor cap for one extraction call |
 | `MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS` | `131072` | Whole extraction request context limit used before a call |
 | `MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS` | `8192` | Output capacity reserved during extraction admission |
@@ -310,6 +311,7 @@ Dream-time is throttled first when a limit bites.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `MEMHOUSE_EXPERIMENTAL_DREAM_IDLE_SCHEDULER` | `false` | Opt in to direct-fact-triggered durable scope wakeups; hourly and manual Account runs remain available while false |
 | `MEMHOUSE_DREAM_MIN_CHANGES` | `1` | Eligible committed knowledge changes accumulated before a pass |
 | `MEMHOUSE_DREAM_IDLE_SECONDS` | `0` | Delay from governed direct-fact activity to its durable scoped wakeup, and required inactivity before reasoning |
 | `MEMHOUSE_DREAM_MIN_INTERVAL_SECONDS` | `0` | Minimum time after the last completed scoped pass |

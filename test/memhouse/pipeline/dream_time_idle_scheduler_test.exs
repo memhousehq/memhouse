@@ -18,9 +18,42 @@ defmodule MemHouse.Pipeline.DreamTimeIdleSchedulerTest do
 
   setup do
     gates = Application.fetch_env!(:memhouse, :dream_time_gates)
-    Application.put_env(:memhouse, :dream_time_gates, Keyword.put(gates, :idle_seconds, 60))
+
+    enabled_gates =
+      gates
+      |> Keyword.put(:idle_scheduler_enabled, true)
+      |> Keyword.put(:idle_seconds, 60)
+
+    Application.put_env(:memhouse, :dream_time_gates, enabled_gates)
     on_exit(fn -> Application.put_env(:memhouse, :dream_time_gates, gates) end)
-    :ok
+    {:ok, default_gates: gates}
+  end
+
+  test "default-off scheduler creates no scoped run, job, or reasoner call", %{
+    default_gates: default_gates
+  } do
+    refute Keyword.fetch!(default_gates, :idle_scheduler_enabled)
+    Application.put_env(:memhouse, :dream_time_gates, default_gates)
+    {actor, scope} = bootstrap!("disabled")
+    _item = activate_direct!(actor, scope, "Avery keeps the established dream schedule.")
+
+    assert idle_runs(actor, scope.id) == []
+
+    assert %{rows: [[0, 0]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT
+                 (SELECT count(*)
+                  FROM oban_jobs
+                  WHERE args->>'pipeline_kind' = 'dream_time'
+                    AND args->>'tenant' = $1),
+                 (SELECT count(*)
+                  FROM usage_events
+                  WHERE account_id = $2 AND model_role = 'dream_reasoner')
+               """,
+               [actor.account_id, Ecto.UUID.dump!(actor.account_id)]
+             )
   end
 
   test "an active direct change atomically creates a delayed content-free scoped wakeup" do

@@ -28,6 +28,18 @@ defmodule MemHouse.Pipeline.ExtractionAdmission do
   @doc "Returns the supported evaluation batch targets."
   def allowed_targets, do: @allowed_targets
 
+  @doc "True only when the experimental adjacent-anchor execution path is enabled."
+  def enabled? do
+    case Keyword.fetch!(Application.fetch_env!(:memhouse, :extraction_batching), :enabled) do
+      enabled when is_boolean(enabled) ->
+        enabled
+
+      invalid ->
+        raise ArgumentError,
+              "extraction batching enabled flag must be boolean: #{inspect(invalid)}"
+    end
+  end
+
   @doc "Returns the pinned provider-independent tokenizer identity."
   def tokenizer, do: @tokenizer
 

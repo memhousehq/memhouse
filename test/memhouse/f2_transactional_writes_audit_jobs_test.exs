@@ -308,6 +308,10 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
   end
 
   test "one ingest worker atomically completes adjacent anchors through one provider call" do
+    batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    Application.put_env(:memhouse, :extraction_batching, Keyword.put(batching, :enabled, true))
+    on_exit(fn -> Application.put_env(:memhouse, :extraction_batching, batching) end)
+
     handler = {__MODULE__, self(), :ingest_batch_operation}
     parent = self()
 
@@ -387,6 +391,60 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
       "DELETE FROM oban_jobs WHERE args->>'tenant' = $1",
       [account_id]
     )
+  end
+
+  test "default extraction keeps adjacent messages on independent provider calls" do
+    refute MemHouse.Pipeline.ExtractionAdmission.enabled?()
+    handler = {__MODULE__, self(), :default_single_anchor}
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, measurements, metadata, _config ->
+          send(parent, {:operation, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    assert {:ok, first} =
+             Memory.ingest_message(
+               ingest_attrs("f2-single-default", "single-session",
+                 content: "Avery owns the release checklist."
+               )
+             )
+
+    assert {:ok, second} =
+             Memory.ingest_message(
+               ingest_attrs("f2-single-default", "single-session",
+                 content: "Avery prefers concise weekly summaries."
+               )
+             )
+
+    assert %{failure: 0} = Oban.drain_queue(queue: :ingest)
+
+    refute_receive {:operation, _measurements, %{operation: "ingest_batch"}}
+    account_id = account_id!("f2-single-default")
+
+    assert %{rows: [[2, 2]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               """
+               SELECT count(*) FILTER (WHERE run.status = 'completed'),
+                      (SELECT count(*)
+                       FROM usage_events
+                       WHERE account_id = $1 AND model_role = 'ingest_extractor')
+               FROM pipeline_runs AS run
+               WHERE run.target_id = ANY($2) AND run.kind = 'extraction'
+               """,
+               [
+                 Ecto.UUID.dump!(account_id),
+                 [Ecto.UUID.dump!(first["id"]), Ecto.UUID.dump!(second["id"])]
+               ]
+             )
   end
 
   test "two workers cannot claim one extraction anchor twice" do

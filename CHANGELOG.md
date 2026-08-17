@@ -25,19 +25,22 @@ changelog entry and contract-version transition.
   schemas and prompt identities; update remains enabled and synthesis remains
   off until matched evaluation approves it.
 
-- Governed direct-fact activity now schedules a durable per-scope dream wakeup
+- A default-off `MEMHOUSE_EXPERIMENTAL_DREAM_IDLE_SCHEDULER` switch can make
+  governed direct-fact activity schedule a durable per-scope dream wakeup
   after the configured idle window in the same `PipelineRun`/Oban transaction.
   Duplicate and restarted work reuses its replay identity, newer activity
   supersedes older wakeups before model work, and hourly/manual Account sweeps
   remain fallback and operator paths.
 
-- Message extraction now token-batches adjacent pending anchors from the same
+- A default-off `MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING` switch can make
+  message extraction token-batch adjacent pending anchors from the same
   Account, scope, and session through one provider call. Each envelope keeps
   its original replay key and exact source allowlist; governed effects,
   completion, and PipelineRun state commit per anchor. Deterministic pre-call
   admission, repairable/terminal states, stale-claim recovery, and an explicit
   operator requeue replace implicit replay of poison or oversized sources. The
-  extraction prompt identity advances to `extract-13`.
+  extraction prompt identity advances to `extract-13`. With the switch off,
+  the established one-message extraction path and outcome remain unchanged.
 
 - Retrieval now normalizes scores inside each strategy list before weighted
   fusion. A 5% reciprocal-rank term breaks ties, with `rrf_k` set per profile

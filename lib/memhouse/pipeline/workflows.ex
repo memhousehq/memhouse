@@ -33,7 +33,11 @@ defmodule MemHouse.Pipeline.Workflows.IngestExtraction do
     run fn %{pipeline_run: run}, _context ->
       case run.target_type do
         "message" ->
-          MemHouse.Pipeline.ExtractionBatcher.run(run)
+          if MemHouse.Pipeline.ExtractionAdmission.enabled?() do
+            MemHouse.Pipeline.ExtractionBatcher.run(run)
+          else
+            MemHouse.Memory.extract_message_for_account(run.target_id, run.account_id)
+          end
 
         "document_version" ->
           MemHouse.Documents.process_version_for_account(run.target_id, run.account_id)

@@ -98,12 +98,13 @@ config :memhouse, :database,
 # credentials.
 config :memhouse, :require_database_url, false
 
-# One existing extraction job may opportunistically consume adjacent message
-# jobs. The target is an experiment variable, while whole-request admission is
-# a hard provider-context boundary. `utf8-bytes-v1` is implemented in source and
+# When explicitly enabled, one extraction job may opportunistically consume
+# adjacent message jobs. The target is an experiment variable, while
+# whole-request admission is a hard provider-context boundary. `utf8-bytes-v1`
 # intentionally over-counts ordinary BPE tokens rather than guessing a routed
-# provider's unavailable tokenizer.
+# provider's unavailable tokenizer. Disabled preserves the single-anchor path.
 config :memhouse, :extraction_batching,
+  enabled: false,
   target_tokens: 4_096,
   max_anchors: 32,
   context_limit_tokens: 131_072,
@@ -196,11 +197,12 @@ config :memhouse, :retention,
   lifecycle_events_days: 3_650,
   batch_size: 10_000
 
-# Scoped dream-time admission and durable idle scheduling. Governed direct
-# changes enqueue their scope wakeup after `idle_seconds`; the same value is
-# rechecked by the gate. Defaults preserve immediate behavior while making
-# every bound explicit.
+# Scoped dream-time admission and experimental durable idle scheduling. When
+# explicitly enabled, governed direct changes enqueue their scope wakeup after
+# `idle_seconds`; the same value is rechecked by the gate. The scheduler stays
+# off by default while every admission bound remains explicit.
 config :memhouse, :dream_time_gates,
+  idle_scheduler_enabled: false,
   min_changes: 1,
   idle_seconds: 0,
   min_interval_seconds: 0,

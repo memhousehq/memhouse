@@ -324,6 +324,21 @@ defmodule MemHouse.Pipeline do
     |> Ash.create(actor: actor)
   end
 
+  @doc "True only when the experimental durable per-scope idle scheduler is enabled."
+  def idle_dream_time_enabled? do
+    case Keyword.fetch!(
+           Application.fetch_env!(:memhouse, :dream_time_gates),
+           :idle_scheduler_enabled
+         ) do
+      enabled when is_boolean(enabled) ->
+        enabled
+
+      invalid ->
+        raise ArgumentError,
+              "dream idle scheduler enabled flag must be boolean: #{inspect(invalid)}"
+    end
+  end
+
   @doc """
   Schedules a resumable Account-wide vector rebuild for one embedding identity.
 

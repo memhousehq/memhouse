@@ -26,6 +26,18 @@ env_bool = fn key, default ->
   String.downcase(env_get.(key, value)) in ~w(true 1 yes on)
 end
 
+# Experimental execution switches must reject ambiguous values at boot. A
+# misspelling must not silently enable or disable a provider-calling path.
+env_bool! = fn key, default ->
+  value = env_get.(key, if(default, do: "true", else: "false"))
+
+  case String.downcase(value) do
+    truthy when truthy in ~w(true 1 yes on) -> true
+    falsy when falsy in ~w(false 0 no off) -> false
+    _other -> raise "#{key} must be true or false, got: #{inspect(value)}"
+  end
+end
+
 # Parses comma-separated headers without logging collector credentials.
 env_headers = fn key ->
   key
@@ -136,6 +148,11 @@ unless extraction_batch_target in [128, 1_024, 4_096, 16_384] do
 end
 
 config :memhouse, :extraction_batching,
+  enabled:
+    env_bool!.(
+      "MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING",
+      false
+    ),
   target_tokens: extraction_batch_target,
   max_anchors: env_positive_integer!.("MEMHOUSE_EXTRACTION_BATCH_MAX_ANCHORS", "32"),
   context_limit_tokens: env_positive_integer!.("MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS", "131072"),
@@ -144,17 +161,6 @@ config :memhouse, :extraction_batching,
   safety_margin_tokens:
     env_positive_integer!.("MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS", "2048"),
   claim_timeout_seconds: extraction_claim_timeout_seconds
-
-# Rejects ambiguous switches such as auto-migrate.
-env_bool! = fn key, default ->
-  value = env_get.(key, if(default, do: "true", else: "false"))
-
-  case String.downcase(value) do
-    truthy when truthy in ~w(true 1 yes on) -> true
-    falsy when falsy in ~w(false 0 no off) -> false
-    _other -> raise "#{key} must be true or false, got: #{inspect(value)}"
-  end
-end
 
 compact_extraction_enabled =
   env_bool!.("MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION", false)
@@ -850,6 +856,13 @@ dream_time_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
 dream_time_gates =
   dream_time_gates
   |> Keyword.put(
+    :idle_scheduler_enabled,
+    env_bool!.(
+      "MEMHOUSE_EXPERIMENTAL_DREAM_IDLE_SCHEDULER",
+      false
+    )
+  )
+  |> Keyword.put(
     :min_changes,
     env_integer.(
       "MEMHOUSE_DREAM_MIN_CHANGES",
@@ -892,7 +905,8 @@ dream_time_gates =
     )
   )
 
-unless Keyword.fetch!(dream_time_gates, :min_changes) > 0 and
+unless is_boolean(Keyword.fetch!(dream_time_gates, :idle_scheduler_enabled)) and
+         Keyword.fetch!(dream_time_gates, :min_changes) > 0 and
          Keyword.fetch!(dream_time_gates, :idle_seconds) >= 0 and
          Keyword.fetch!(dream_time_gates, :min_interval_seconds) >= 0 and
          Keyword.fetch!(dream_time_gates, :max_delta_items) > 0 and
