@@ -71,6 +71,17 @@ Risk rationale:
 
 If AI was used, name the tool/model and summarize human verification performed:
 
+## Clean-room source inspiration
+
+Complete this section when behavior, architecture, or requirements were informed
+by an external implementation. Do not copy or transform prompts, code, schemas,
+tests, or other protected implementation details.
+
+- [ ] N/A — no external implementation informed this change
+- [ ] Independently authored from observed behavior and documented requirements
+- External source and license, or N/A:
+- Clean-room boundary and verification notes, or N/A:
+
 ## Test evidence
 
 List every check actually run. Include command, result, and any relevant output or artifact link.
