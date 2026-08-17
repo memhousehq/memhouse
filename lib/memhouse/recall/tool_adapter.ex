@@ -18,7 +18,18 @@ defmodule MemHouse.Recall.ToolAdapter do
   alias MemHouse.Memory
   alias MemHouse.Recall.Planner
 
-  @doc false
+  @doc """
+  Runs bounded adaptive recall through the governed read-tool allowlist.
+
+  `attrs` carries the already resolved Memory request authority, `question` and
+  `effort` select the planner pass, and `candidates` are the initial governed
+  knowledge evidence. Options must provide the resolved minimal-profile flag
+  and an exact-id visibility callback owned by the Memory facade.
+
+  Returns `{evidence, diagnostics}`. Evidence is still subject to the planner's
+  item, token, call, iteration, and elapsed budgets; source and lineage reads
+  run only when their explicit permission gates are present.
+  """
   def run(attrs, question, effort, candidates, opts)
       when is_map(attrs) and is_binary(question) and is_list(candidates) and is_list(opts) do
     minimal_recall? = Keyword.fetch!(opts, :minimal_recall?)

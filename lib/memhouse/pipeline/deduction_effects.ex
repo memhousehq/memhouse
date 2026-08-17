@@ -18,7 +18,15 @@ defmodule MemHouse.Pipeline.DeductionEffects do
   Creates or returns one replay-safe deduction from validated contributor ids.
   """
   def apply!(item, account_id, scope_id, actor) do
-    contributors = contributors!(account_id, scope_id, item.contributor_ids, actor)
+    contributors =
+      contributors!(
+        account_id,
+        scope_id,
+        item.contributor_ids,
+        actor,
+        synthesis_item?(item)
+      )
+
     key = key(account_id, scope_id, item, contributors)
 
     existing =
@@ -83,7 +91,13 @@ defmodule MemHouse.Pipeline.DeductionEffects do
 
   def accept!(knowledge, actor) do
     contributors =
-      contributors!(knowledge.account_id, knowledge.scope_id, knowledge.contributor_ids, actor)
+      contributors!(
+        knowledge.account_id,
+        knowledge.scope_id,
+        knowledge.contributor_ids,
+        actor,
+        synthesis_item?(knowledge)
+      )
 
     Enum.each(contributors, &relation!(knowledge, &1, "derived_from", actor))
 
@@ -131,7 +145,8 @@ defmodule MemHouse.Pipeline.DeductionEffects do
     end)
   end
 
-  defp contributors!(account_id, scope_id, ids, actor) when is_list(ids) and length(ids) >= 2 do
+  defp contributors!(account_id, scope_id, ids, actor, require_independent_sources?)
+       when is_list(ids) and length(ids) >= 2 do
     rows =
       KnowledgeItem
       |> Ash.Query.filter(
@@ -140,13 +155,38 @@ defmodule MemHouse.Pipeline.DeductionEffects do
       |> Ash.Query.set_tenant(account_id)
       |> Ash.read!(actor: actor)
 
-    if length(rows) == length(ids) and length(ids) == length(Enum.uniq(ids)),
-      do: rows,
-      else: raise(ArgumentError, "invalid deduction contributors")
+    cond do
+      length(rows) != length(ids) or length(ids) != length(Enum.uniq(ids)) ->
+        raise ArgumentError, "invalid deduction contributors"
+
+      require_independent_sources? and
+          independent_source_count(account_id, ids, actor) < 2 ->
+        raise ArgumentError, "invalid synthesis contributor sources"
+
+      true ->
+        rows
+    end
   end
 
-  defp contributors!(_account_id, _scope_id, _ids, _actor),
+  defp contributors!(_account_id, _scope_id, _ids, _actor, _require_independent_sources?),
     do: raise(ArgumentError, "invalid deduction contributors")
+
+  defp independent_source_count(account_id, ids, actor) do
+    Provenance
+    |> Ash.Query.filter(knowledge_item_id in ^ids)
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.read!(actor: actor)
+    |> Enum.map(&Provenance.source_observation/1)
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+    |> MapSet.size()
+  end
+
+  defp synthesis_item?(item) do
+    Map.get(item, :operation) == "reasoning_synthesis" or
+      Map.get(item, :operation_prompt_version) == "reason-synthesis-1" or
+      Map.get(item, :prompt_version) == "reason-synthesis-1"
+  end
 
   defp subject!(%{subject_type: "scope"}, _account_id, scope_id, _actor),
     do: %{peer_id: nil, scope_id: scope_id}

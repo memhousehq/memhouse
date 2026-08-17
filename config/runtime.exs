@@ -931,12 +931,12 @@ config :memhouse, :dream_reasoning_operations,
       Keyword.fetch!(dream_reasoning_operations, :split_enabled)
     ),
   update:
-    env_bool.(
+    env_bool!.(
       "MEMHOUSE_DREAM_UPDATE_ENABLED",
       Keyword.fetch!(dream_reasoning_operations, :update)
     ),
   synthesis:
-    env_bool.(
+    env_bool!.(
       "MEMHOUSE_DREAM_SYNTHESIS_ENABLED",
       Keyword.fetch!(dream_reasoning_operations, :synthesis)
     )

@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Memory.Visibility do
-  @moduledoc false
+  @moduledoc """
+  Owns the lifecycle and audience visibility boundary for memory reads.
+
+  Query builders and post-load checks share these rules so retrieval, lineage,
+  and exact-id reads cannot drift into different interpretations of active,
+  provisional, public, or peer-scoped knowledge. `internal_reader?` is reserved
+  for server-side Account-scoped work; it bypasses audience filtering but not
+  lifecycle filtering or the tenant and Ash authorization boundaries.
+  """
 
   alias MemHouse.Knowledge.KnowledgeItem
 
@@ -9,6 +17,11 @@ defmodule MemHouse.Memory.Visibility do
 
   @visible_states ~w(active provisional)
 
+  @doc """
+  Loads undeleted readable knowledge in the supplied scopes and active view.
+
+  The Ash tenant and actor remain mandatory even for an internal reader.
+  """
   def readable_knowledge(account_id, actor, scope_ids, internal_reader?) do
     scope_ids
     |> knowledge_query("active", actor, internal_reader?)
@@ -17,6 +30,13 @@ defmodule MemHouse.Memory.Visibility do
     |> Ash.read!(actor: actor)
   end
 
+  @doc """
+  Builds the lifecycle and audience-filtered knowledge query for a state.
+
+  The caller must still set the Account tenant and execute the query with the
+  same actor. The public `"active"` view includes only a peer's own provisional
+  items; an internal reader may inspect all provisional items in that view.
+  """
   def knowledge_query(scope_ids, "active", _actor, true) do
     KnowledgeItem
     |> Ash.Query.filter(scope_id in ^scope_ids and state in ["active", "provisional"])
@@ -54,9 +74,16 @@ defmodule MemHouse.Memory.Visibility do
     |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state and sensitivity == "public")
   end
 
+  @doc "Returns whether one loaded item is visible to the actor under the selected reader mode."
   def visible?(item, actor, internal_reader?),
     do: visibility_status(item, actor, internal_reader?) == :visible
 
+  @doc """
+  Classifies one loaded item as visible, lifecycle-hidden, or authorization-hidden.
+
+  The classification is content-free so lineage and diagnostics can report why
+  traversal stopped without exposing the hidden statement.
+  """
   def visibility_status(%{state: state}, _actor, true) when state in @visible_states,
     do: :visible
 

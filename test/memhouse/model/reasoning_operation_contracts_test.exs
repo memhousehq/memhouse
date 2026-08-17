@@ -37,6 +37,8 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
   @scope_id Ecto.UUID.generate()
   @first_id Ecto.UUID.generate()
   @second_id Ecto.UUID.generate()
+  @first_source_id Ecto.UUID.generate()
+  @second_source_id Ecto.UUID.generate()
 
   setup do
     operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
@@ -77,6 +79,56 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
                %{"items" => [], "relations" => [relation(@first_id, @second_id, "supports")]},
                context()
              )
+  end
+
+  test "synthesis requires two durable observations and keeps rejections content-free" do
+    same_source_context =
+      context(%{
+        reasoning_inputs: [
+          input(@first_id, @first_source_id),
+          input(@second_id, @first_source_id)
+        ]
+      })
+
+    assert {:error, [source_error]} =
+             ReasoningSynthesis.cast(
+               %{"items" => [deduction()], "relations" => []},
+               same_source_context
+             )
+
+    assert source_error =~ "at least two distinct durable sources"
+    refute source_error =~ @first_source_id
+    refute source_error =~ "weekly release summaries"
+
+    outside_id = Ecto.UUID.generate()
+    outside = put_in(deduction(), ["contributor_ids"], [@first_id, outside_id])
+
+    assert {:error, [authorization_error]} =
+             ReasoningSynthesis.cast(
+               %{"items" => [outside], "relations" => []},
+               context()
+             )
+
+    assert authorization_error =~ "active authorized inputs"
+    refute authorization_error =~ outside_id
+
+    foreign_account_context =
+      context(%{
+        reasoning_inputs: [
+          input(@first_id, @first_source_id),
+          input(@second_id, @second_source_id)
+          |> Map.put(:account_id, Ecto.UUID.generate())
+        ]
+      })
+
+    assert {:error, [foreign_error]} =
+             ReasoningSynthesis.cast(
+               %{"items" => [deduction()], "relations" => []},
+               foreign_account_context
+             )
+
+    assert foreign_error =~ "active authorized inputs"
+    refute foreign_error =~ @second_source_id
   end
 
   test "operation enablement is explicit and keeps synthesis off until ablation approval" do
@@ -128,26 +180,35 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
     refute inspect({measurements, metadata}) =~ "working_set"
   end
 
-  defp context do
-    %{
-      account_id: @account_id,
-      scope_id: @scope_id,
-      known_peer_keys: ["avery"],
-      source_peer_key: "avery",
-      model_provider: Provider,
-      reasoning_inheritance: %{sensitivity: "internal", target_level: "peer"},
-      reasoning_inputs: [input(@first_id), input(@second_id)]
-    }
+  defp context(overrides \\ %{}) do
+    Map.merge(
+      %{
+        account_id: @account_id,
+        scope_id: @scope_id,
+        known_peer_keys: ["avery"],
+        source_peer_key: "avery",
+        model_provider: Provider,
+        reasoning_inheritance: %{sensitivity: "internal", target_level: "peer"},
+        reasoning_inputs: [
+          input(@first_id, @first_source_id),
+          input(@second_id, @second_source_id)
+        ]
+      },
+      overrides
+    )
   end
 
-  defp input(id) do
+  defp input(id, source_id) do
     %{
       id: id,
       account_id: @account_id,
       scope_id: @scope_id,
       state: "active",
       sensitivity: "internal",
-      target_level: "peer"
+      target_level: "peer",
+      source_observations: [
+        %{source_type: "message", source_id: source_id}
+      ]
     }
   end
 

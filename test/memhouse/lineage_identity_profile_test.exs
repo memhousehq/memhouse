@@ -6,7 +6,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
   alias MemHouse.Accounts.Peer
   alias MemHouse.DataLayer
   alias MemHouse.Governance.Engine
-  alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation}
+  alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation, Provenance}
   alias MemHouse.Memory
   alias MemHouse.Pipeline.DeductionEffects
   alias MemHouse.Topology.Scope
@@ -245,6 +245,73 @@ defmodule MemHouse.LineageIdentityProfileTest do
 
     assert hd(lineage["nodes"])["operation"] == "reasoning_synthesis"
     refute Jason.encode!(lineage) =~ "reason-synthesis-1"
+  end
+
+  test "synthesis persistence rejects two knowledge rows from one durable observation" do
+    first =
+      seed_active!("lineage-synthesis-source-fence", "Avery prefers concise updates.", "first")
+
+    second =
+      create_active_knowledge!(first,
+        statement: "Avery prefers weekly updates.",
+        source_message_ids: [first.message_id]
+      )
+
+    original_provenance =
+      Provenance
+      |> Ash.Query.filter(knowledge_item_id == ^first.knowledge.id)
+      |> Ash.Query.set_tenant(first.account.id)
+      |> Ash.read_one!(actor: first.pipeline)
+
+    Provenance
+    |> Ash.Changeset.new()
+    |> Ash.Changeset.set_tenant(first.account.id)
+    |> Ash.Changeset.for_create(:create_from_pipeline, %{
+      knowledge_item_id: second.id,
+      scope_id: second.scope_id,
+      source_type: original_provenance.source_type,
+      message_id: original_provenance.message_id,
+      document_version_id: original_provenance.document_version_id,
+      extracting_provider: original_provenance.extracting_provider,
+      extracting_model: original_provenance.extracting_model,
+      extracting_model_version: original_provenance.extracting_model_version,
+      prompt_version: original_provenance.prompt_version,
+      pipeline_version: original_provenance.pipeline_version,
+      occurred_at: original_provenance.occurred_at
+    })
+    |> Ash.create!(actor: first.pipeline)
+
+    error =
+      assert_raise ArgumentError, "invalid synthesis contributor sources", fn ->
+        DeductionEffects.apply!(
+          %{
+            statement: "Avery prefers concise weekly updates.",
+            kind: "preference",
+            subject_type: "peer",
+            subject_ref: "avery",
+            confidence: 0.9,
+            sensitivity: "internal",
+            target_level: "peer",
+            contributor_ids: [first.knowledge.id, second.id],
+            expires_at: nil,
+            revalidate_after: nil,
+            relevant_from: nil,
+            relevant_until: nil,
+            provider: "deterministic",
+            model: "fixture-reasoner",
+            model_version: "1",
+            prompt_version: "reason-1",
+            operation_prompt_version: "reason-synthesis-1",
+            pipeline_version: "f5-1"
+          },
+          first.account.id,
+          first.scope.id,
+          first.pipeline
+        )
+      end
+
+    refute Exception.message(error) =~ first.message_id
+    refute Exception.message(error) =~ "concise"
   end
 
   test "stable identity profile keeps evidence and conflicts but rejects unsafe categories" do

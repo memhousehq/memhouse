@@ -268,10 +268,15 @@ operations endpoint remain fallback and operator paths in either state.
 Reasoning behind that gate is split into two small contracts. The enabled
 update operation can record `supports` and `contradicts` edges between exact
 working-set ids; contradictions remain visible and enqueue governance review.
-The synthesis operation can propose a statement only when at least two distinct
-authorized inputs support it. It is disabled by default pending matched
-ablation. Both operations finish before the one writer transaction validates
-their ids, applies common governed effects, and advances the scoped cursor.
+The synthesis operation can propose a statement only when its authorized
+contributors resolve to at least two distinct durable source observations.
+Two knowledge rows extracted from the same message or document version still
+count as one source. The model-time validator receives only content-free source
+references from the authorized working set, and the writer re-reads provenance
+and enforces the same rule before persistence. Synthesis is disabled by default
+pending matched ablation. Both operations finish before the one writer
+transaction validates their ids, applies common governed effects, and advances
+the scoped cursor.
 Prompt rationale is validation input only and is never stored as chain-of-thought.
 
 ## What never enters audit metadata or job arguments

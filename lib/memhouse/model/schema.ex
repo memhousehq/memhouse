@@ -1142,8 +1142,11 @@ defmodule MemHouse.Model.Schema.Reasoning do
   Candidates go through extraction validation and must match the pipeline's
   inherited sensitivity and target level. A non-empty relation list also
   requires `:reasoning_inputs`: active input maps with `id`, `account_id`,
-  `scope_id`, and `state`. The pipeline builds that list from authorized rows;
-  callers must not construct it from model output.
+  `scope_id`, and `state`. Inputs may also carry their content-free durable
+  `source_observations`; the synthesis contract uses those trusted references
+  to require genuinely independent sources rather than merely distinct
+  knowledge ids. The pipeline builds that list from authorized rows and their
+  provenance; callers must not construct it from model output.
 
   Returns normalized atom-keyed relations, or stable content-free rejection
   reasons. It never performs a database write.
@@ -1262,7 +1265,8 @@ defmodule MemHouse.Model.Schema.Reasoning do
       ids when is_list(ids) and length(ids) >= 2 ->
         if length(ids) == length(Enum.uniq(ids)) do
           with :ok <- all_uuids(ids, index),
-               {:ok, contributors} <- contributor_inputs(ids, inputs, context, index) do
+               {:ok, contributors} <- contributor_inputs(ids, inputs, context, index),
+               :ok <- independent_sources(contributors, context, index) do
             {:ok, ids, inheritance(contributors)}
           end
         else
@@ -1273,6 +1277,23 @@ defmodule MemHouse.Model.Schema.Reasoning do
         {:error, ["items[#{index}].contributor_ids must contain at least two unique input ids"]}
     end
   end
+
+  defp independent_sources(contributors, %{require_independent_sources?: true}, index) do
+    sources =
+      contributors
+      |> Enum.flat_map(& &1.source_observations)
+      |> MapSet.new()
+
+    if MapSet.size(sources) >= 2,
+      do: :ok,
+      else:
+        {:error,
+         [
+           "items[#{index}].contributor_ids must reference at least two distinct durable sources"
+         ]}
+  end
+
+  defp independent_sources(_contributors, _context, _index), do: :ok
 
   defp all_uuids(ids, index) do
     if Enum.all?(ids, fn id -> is_binary(id) and match?({:ok, _}, Ecto.UUID.cast(id)) end),
@@ -1358,7 +1379,8 @@ defmodule MemHouse.Model.Schema.Reasoning do
             scope_id: scope_id,
             state: state,
             sensitivity: value(input, "sensitivity"),
-            target_level: value(input, "target_level")
+            target_level: value(input, "target_level"),
+            source_observations: source_observations(input)
           })}}
       else
         _other -> {:halt, {:error, ["reasoning inputs must be active knowledge rows"]}}
@@ -1368,6 +1390,27 @@ defmodule MemHouse.Model.Schema.Reasoning do
 
   defp reasoning_inputs(_context),
     do: {:error, ["reasoning inputs must be supplied for relations"]}
+
+  defp source_observations(input) do
+    input
+    |> value("source_observations")
+    |> List.wrap()
+    |> Enum.reduce(MapSet.new(), fn
+      observation, sources when is_map(observation) ->
+        source_type = value(observation, "source_type")
+        source_id = value(observation, "source_id")
+
+        if source_type in ["message", "document"] and is_binary(source_id) and
+             match?({:ok, _}, Ecto.UUID.cast(source_id)) do
+          MapSet.put(sources, {source_type, source_id})
+        else
+          sources
+        end
+
+      _observation, sources ->
+        sources
+    end)
+  end
 
   defp validate_relation(relation, index, inputs, context) when is_map(relation) do
     with {:ok, source_id} <- uuid(relation, "source_id", index),
@@ -1501,9 +1544,10 @@ defmodule MemHouse.Model.Schema.ReasoningSynthesis do
   @moduledoc """
   Narrow multi-source synthesis contract.
 
-  Every candidate passes the shared two-unique-contributor validation and may
-  refer only to the authorized bounded working set. Structural relations may be
-  `derived_from` only; contradiction classification belongs to the update
+  Every candidate names at least two contributors from the authorized bounded
+  working set, and their trusted provenance must resolve to at least two
+  distinct durable message or document observations. Structural relations may
+  be `derived_from` only; contradiction classification belongs to the update
   operation.
   """
 
@@ -1520,6 +1564,8 @@ defmodule MemHouse.Model.Schema.ReasoningSynthesis do
 
   @impl true
   def cast(object, context) do
+    context = Map.put(context, :require_independent_sources?, true)
+
     with {:ok, result} <- MemHouse.Model.Schema.Reasoning.cast(object, context),
          :ok <- relation_kinds(result.relations) do
       {:ok, result}

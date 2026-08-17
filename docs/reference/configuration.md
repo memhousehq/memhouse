@@ -370,12 +370,17 @@ text.
 | `MEMHOUSE_DREAM_UPDATE_ENABLED` | `true` | Classify support and contradiction among bounded active inputs |
 | `MEMHOUSE_DREAM_SYNTHESIS_ENABLED` | `false` | Propose multi-source deductions; keep off until matched ablation approval |
 
+All three switches use strict boot parsing; an unrecognized boolean value stops
+startup instead of silently changing which provider-calling operations run.
+
 With the split disabled, hourly and manual dream-time continue to call the
 legacy `Reasoner.reason` contract exactly once. Enabling the split selects the
 operation set below; it does not itself enable synthesis. The two operations use separate schemas and independently authored prompt
 versions. Both may cite only exact ids from the bounded authorized working set.
-Update cannot create statements; synthesis requires at least two distinct
-contributors and cannot classify contradictions. They converge on the same
+Update cannot create statements; synthesis requires contributors backed by at
+least two distinct message or document-version observations and cannot
+classify contradictions. Two knowledge rows from one observation do not satisfy
+that rule. They converge on the same
 governance writer transaction, so one operation failure commits no effects and
 advances no watermark. Neither contract permits model-directed deletion.
 Synthesis deductions persist `reason-synthesis-1` in the existing durable

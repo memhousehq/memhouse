@@ -16,7 +16,7 @@ defmodule MemHouse.Pipeline.DreamTime do
 
   alias MemHouse.Clock
   alias MemHouse.DataLayer
-  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.{KnowledgeItem, Provenance}
   alias MemHouse.Model.Reasoner
   alias MemHouse.Observability
   alias MemHouse.Operations.DreamTimeWatermark
@@ -262,12 +262,23 @@ defmodule MemHouse.Pipeline.DreamTime do
   defp reason(snapshot) do
     if MemHouse.Operations.Budget.admit?(snapshot.account_id, snapshot.scope_id, :dream_time) do
       with {:ok, working_set} <- thorough_working_set(snapshot) do
-        context = reasoning_context(snapshot, working_set)
+        split_enabled? = Reasoner.split_enabled?()
+        synthesis_enabled? = split_enabled? and :synthesis in Reasoner.enabled_operations()
 
-        input = %{delta: serialise(snapshot.delta), working_set: serialise(working_set)}
+        source_observations =
+          if synthesis_enabled?,
+            do: source_observations(snapshot, working_set),
+            else: %{}
+
+        context = reasoning_context(snapshot, working_set, source_observations)
+
+        input = %{
+          delta: serialise(snapshot.delta),
+          working_set: serialise(working_set, source_observations)
+        }
 
         result =
-          if Reasoner.split_enabled?() do
+          if split_enabled? do
             Reasoner.reason_operations(input, context,
               total_timeout: snapshot.limits.max_elapsed_ms
             )
@@ -462,7 +473,7 @@ defmodule MemHouse.Pipeline.DreamTime do
     end)
   end
 
-  defp reasoning_context(snapshot, inputs) do
+  defp reasoning_context(snapshot, inputs, source_observations) do
     {sensitivity, target_level} =
       snapshot.delta
       |> Enum.map(&{&1.sensitivity, &1.target_level})
@@ -482,10 +493,36 @@ defmodule MemHouse.Pipeline.DreamTime do
             scope_id: &1.scope_id,
             state: &1.state,
             sensitivity: &1.sensitivity,
-            target_level: &1.target_level
+            target_level: &1.target_level,
+            source_observations: Map.get(source_observations, &1.id, [])
           }
         )
     }
+  end
+
+  defp source_observations(snapshot, inputs) do
+    input_ids = Enum.map(inputs, & &1.id)
+
+    Provenance
+    |> Ash.Query.filter(knowledge_item_id in ^input_ids)
+    |> Ash.Query.set_tenant(snapshot.account_id)
+    |> Ash.read!(actor: snapshot.actor)
+    |> Enum.reduce(%{}, fn provenance, observations ->
+      case Provenance.source_observation(provenance) do
+        nil ->
+          observations
+
+        {source_type, source_id} ->
+          source = %{source_type: Atom.to_string(source_type), source_id: source_id}
+
+          Map.update(observations, provenance.knowledge_item_id, [source], fn existing ->
+            [source | existing]
+          end)
+      end
+    end)
+    |> Map.new(fn {knowledge_id, sources} ->
+      {knowledge_id, sources |> Enum.uniq() |> Enum.sort_by(&{&1.source_type, &1.source_id})}
+    end)
   end
 
   defp watermark(account_id, scope_id, actor) do
@@ -623,6 +660,22 @@ defmodule MemHouse.Pipeline.DreamTime do
         :target_level,
         :updated_at
       ])
+    end)
+  end
+
+  defp serialise(items, source_observations) do
+    Enum.map(items, fn item ->
+      item
+      |> Map.take([
+        :id,
+        :statement,
+        :kind,
+        :confidence,
+        :sensitivity,
+        :target_level,
+        :updated_at
+      ])
+      |> Map.put(:source_observations, Map.get(source_observations, item.id, []))
     end)
   end
 

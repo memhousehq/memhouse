@@ -32,9 +32,10 @@ defmodule MemHouse.Retrieval.Profile do
   @doc """
   Resolves a profile name into the concrete settings one request will use.
 
-  `name` is `:fast`, `:balanced`, or `:thorough` (strings accepted). `query`
-  supplies the Account and the nearest-first scope list used to find a stored
-  override. Options:
+  `name` is `:fast`, `:balanced`, `:thorough`, or the feature-gated
+  experimental `:minimal` profile (strings accepted). `query` supplies the
+  Account and the nearest-first scope list used to find a stored override.
+  Options:
 
   * `:inherit?` (default true) — set false to ignore stored overrides and use
     the compiled defaults, which is what makes evaluation runs reproducible

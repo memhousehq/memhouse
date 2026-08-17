@@ -156,10 +156,12 @@ defmodule MemHouse.Model.Reasoner do
       %{
         role: "system",
         content: """
-        Propose only cross-source knowledge supported by at least two distinct
-        supplied active ids. Cite every contributor id exactly. A one-source
-        paraphrase is invalid. Do not classify contradictions, choose lifecycle
-        state, explain hidden reasoning, or request deletion.
+        Propose only cross-source knowledge whose cited active ids collectively
+        carry at least two distinct supplied source_observations. Cite every
+        contributor id exactly. Multiple knowledge ids with the same source
+        observation still count as one source and are invalid. Do not classify
+        contradictions, choose lifecycle state, explain hidden reasoning, or
+        request deletion.
         """
       },
       %{role: "user", content: Jason.encode!(input)}
