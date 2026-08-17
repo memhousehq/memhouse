@@ -2156,6 +2156,69 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end
   end
 
+  test "minimal profile rejects new stored overrides and ignores legacy rows" do
+    seeded = seed_active!("f7-minimal-runtime", "/f7/minimal-runtime", "Avery writes notes.")
+    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Keyword.put(profiles, :minimal_enabled, true)
+    )
+
+    DataLayer.with_account_key("f7-minimal-runtime", fn account, actor ->
+      admin = %{actor | role: :account_admin}
+
+      assert_raise Ash.Error.Invalid, ~r/minimal is experimental and runtime-owned/, fn ->
+        create!(
+          MemHouse.Retrieval.RetrievalProfile,
+          :create,
+          %{
+            scope_id: seeded.scope.id,
+            name: "minimal",
+            version: 1,
+            strategy_config: %{
+              "strategies" => ["temporal"],
+              "weights" => %{"temporal" => 1}
+            },
+            deadline_ms: 1,
+            active: true
+          },
+          account.id,
+          admin
+        )
+      end
+
+      # A legacy or manually inserted row cannot retune the experiment either.
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        """
+        INSERT INTO retrieval_profiles
+          (account_id, scope_id, name, version, strategy_config, deadline_ms, active)
+        VALUES ($1, $2, 'minimal', 999, $3::jsonb, 1, true)
+        """,
+        [
+          Ecto.UUID.dump!(account.id),
+          Ecto.UUID.dump!(seeded.scope.id),
+          Jason.encode!(%{"strategies" => ["temporal"], "weights" => %{"temporal" => 1}})
+        ]
+      )
+
+      query = %Query{
+        account_id: account.id,
+        actor: admin,
+        scope_ids: [seeded.scope.id],
+        text: "notes",
+        target: :knowledge
+      }
+
+      profile = Profile.resolve(:minimal, query)
+      assert profile.version == "minimal-exp-2"
+      assert profile.strategies == [:semantic_dual_lane, :lexical]
+      refute profile.deadline_ms == 1
+    end)
+  end
+
   test "one strategy cannot consume the thorough profile phase budget" do
     seeded = seed_active!("f7-strategy-timeout", "/f7/strategy-timeout", "Avery writes notes.")
     original_retrieval = Application.fetch_env!(:memhouse, :retrieval_profiles)

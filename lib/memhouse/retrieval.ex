@@ -136,6 +136,7 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
     # strategies, weights, and deadline in place, or retires it via `active`.
     create :create do
       accept [:scope_id, :name, :version, :strategy_config, :deadline_ms, :active]
+      validate MemHouse.Retrieval.ValidateStoredProfileName
       validate MemHouse.Retrieval.ValidateRrfK
     end
 
@@ -183,6 +184,30 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
     # republishing a tuning require a version bump rather than silently
     # duplicating a competing configuration for the same scope.
     identity :scope_name_version, [:scope_id, :name, :version]
+  end
+end
+
+defmodule MemHouse.Retrieval.ValidateStoredProfileName do
+  @moduledoc """
+  Keeps the experimental minimal profile out of persisted Account overrides.
+
+  Minimal settings are owned by deployment configuration so every Account in
+  an evaluation cohort runs the same reversible experiment.
+  """
+
+  use Ash.Resource.Validation
+
+  @impl true
+  def validate(changeset, _opts, _context) do
+    case Ash.Changeset.get_attribute(changeset, :name) do
+      "minimal" ->
+        {:error,
+         field: :name,
+         message: "minimal is experimental and runtime-owned; stored overrides are not allowed"}
+
+      _stored_profile ->
+        :ok
+    end
   end
 end
 

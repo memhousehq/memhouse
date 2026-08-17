@@ -5,10 +5,11 @@ defmodule MemHouse.Retrieval.Profile do
   Resolves retrieval strategies, fusion settings, reranking, deadline, and version.
 
   Starts with `:fast`, `:balanced`, `:thorough`, or the feature-gated
-  experimental `:minimal` default, applies the nearest active scope
-  override or Account fallback, then the deployment allowlist. Disabled strategies remain visible
-  in the response. Explicit strategy lists and rerank overrides are internal-only and unknown names
-  raise.
+  experimental `:minimal` default. The stable profiles apply the nearest active
+  scope override or Account fallback; `:minimal` always retains its runtime
+  settings. The deployment allowlist then applies. Disabled strategies remain
+  visible in the response. Explicit strategy lists and rerank overrides are
+  internal-only and unknown names raise.
 
   Defaults report the `f7-1` retrieval/context contract. Overrides combine authored version with a
   settings digest for reproducibility; changing the base identity is a public contract transition.
@@ -37,9 +38,10 @@ defmodule MemHouse.Retrieval.Profile do
   Account and the nearest-first scope list used to find a stored override.
   Options:
 
-  * `:inherit?` (default true) — set false to ignore stored overrides and use
-    the compiled defaults, which is what makes evaluation runs reproducible
-    across Accounts.
+  * `:inherit?` (default true) — for `fast`, `balanced`, and `thorough`, set
+    false to ignore stored overrides and use the compiled defaults, which is
+    what makes evaluation runs reproducible across Accounts. `minimal` always
+    ignores stored overrides.
   * `:strategies` — an explicit strategy list, permitted only together with
     `internal?: true`.
   * `:rerank` — forces reranking on or off, permitted only together with
@@ -61,10 +63,7 @@ defmodule MemHouse.Retrieval.Profile do
     base = configuration!(name, true)
     name = base.name
 
-    configured =
-      if Keyword.get(opts, :inherit?, true) do
-        inherited_profile(name, query)
-      end
+    configured = persisted_profile(name, query, opts)
 
     profile = merge_persisted(base, configured)
     profile = %{profile | rrf_k: positive_rrf_k!(profile.rrf_k)}
@@ -128,6 +127,15 @@ defmodule MemHouse.Retrieval.Profile do
   which enforces the experimental-profile gate before reading its settings.
   """
   def configuration!(name), do: configuration!(name, false)
+
+  # Minimal is an experiment whose settings and version must be identical
+  # across Accounts. Ignore even a legacy row created before the storage
+  # boundary was enforced, so rollback comparisons cannot be silently retuned.
+  defp persisted_profile(:minimal, _query, _opts), do: nil
+
+  defp persisted_profile(name, query, opts) do
+    if Keyword.get(opts, :inherit?, true), do: inherited_profile(name, query)
+  end
 
   # Nearest scope's highest active version wins; Account-wide is fallback, not another layer.
   defp inherited_profile(name, query) do
