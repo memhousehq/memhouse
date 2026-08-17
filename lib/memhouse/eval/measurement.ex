@@ -66,6 +66,7 @@ defmodule MemHouse.Eval.Measurement do
         "duration_ms" => totals["duration_ms"],
         "errors" => totals["errors"],
         "estimated_usd" => estimated_cost(by_role),
+        "cost_profile" => cost_profile(),
         "by_role" => by_role
       }
     }
@@ -130,6 +131,11 @@ defmodule MemHouse.Eval.Measurement do
         totals["embedding_tokens"] * rate(role_rates, :embedding) / 1_000_000
     end)
     |> Float.round(8)
+  end
+
+  defp cost_profile do
+    profile = Application.fetch_env!(:memhouse, :model_cost_profile)
+    %{"id" => profile.id, "kind" => profile.kind}
   end
 
   defp rate(rates, key) do

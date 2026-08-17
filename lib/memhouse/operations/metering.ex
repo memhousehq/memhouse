@@ -146,6 +146,7 @@ defmodule MemHouse.Operations.Metering do
           inverted?: storage.operational > storage.durable
         },
         estimated_model_cost: estimated_cost(by_role),
+        model_cost_profile: Application.fetch_env!(:memhouse, :model_cost_profile),
         ingest_economics: ingest_economics(events, by_role, ingests),
         model_calls: model_call_health(events),
         currency: "USD"
@@ -238,11 +239,12 @@ defmodule MemHouse.Operations.Metering do
     Float.round(operational / durable, 2)
   end
 
-  # Rates are operator-configured price per one million tokens, per model role
-  # and per token kind. An unconfigured role or kind is worth 0.0, so a
-  # self-hoster who sets nothing sees an honest zero instead of a fabricated
-  # number. Rounded to six decimal places because a single small call can cost
-  # a fraction of a cent and truncating further would report it as free.
+  # Rates are price per one million tokens, per model role and token kind. The
+  # shipped table is a clearly-labelled planning reference; an operator may
+  # replace the whole table with contracted rates. An unconfigured role or kind
+  # is still worth 0.0. Rounded to six decimal places because a single small
+  # call can cost a fraction of a cent and truncating further would report it as
+  # free.
   defp estimated_cost(by_role) do
     Enum.reduce(by_role, 0.0, fn {role, totals}, result ->
       result + estimated_role_cost(role, totals)

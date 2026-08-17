@@ -89,8 +89,9 @@ curl -fsS http://127.0.0.1:4000/api/v1/operations/costs \
 Returns the retained usage-event count, API request and ingest counts,
 input/output/embedding token totals overall and per model role, durable and
 operational storage bytes, estimated model cost in USD, and prior-24-hour
-model-call health. It warns when operational storage is larger than durable
-storage. Configure cleanup in
+model-call health. `model_cost_profile` names both the rate-table id and whether
+it is the shipped planning reference or an operator override. It warns when
+operational storage is larger than durable storage. Configure cleanup in
 [Operational retention](../reference/configuration.md#operational-retention). It also
 reports extractor calls, tokens, and estimated cost per ingested message. Call
 counts include failed extractor calls. An unmetered failure has unknown token
@@ -100,7 +101,9 @@ usage and cost, so it contributes only to the call ratio.
 flowchart LR
     CALL[Every model call] --> UE[(UsageEvent ledger<br/>exact in its retention horizon)]
     UE --> SUM[Account summary]
-    RATES["MEMHOUSE_MODEL_COSTS_JSON<br/>operator-supplied rates"] --> SUM
+    DEFAULT["planning-reference-v1<br/>non-zero planning rates"] --> RATES{Operator override?}
+    ENV["MEMHOUSE_MODEL_COSTS_JSON<br/>contracted rates"] --> RATES
+    RATES --> SUM
     SUM --> OUT[Estimated cost in USD]
     UE --> ETS[(ETS budget counters<br/>rebuildable)]
     ETS --> ADM{Daily limit reached?}
@@ -108,8 +111,29 @@ flowchart LR
 ```
 
 !!! info "This is not a bill"
-    The estimate uses your usage ledger and operator-supplied rates. Nothing is
-    sent elsewhere.
+    The estimate uses your usage ledger. Without an override it applies the
+    round, provider-neutral `planning-reference-v1` table so usage never looks
+    silently free; those values are not current vendor prices. Configure exact
+    contracted rates and a stable `MEMHOUSE_MODEL_COST_PROFILE` before using it
+    for reconciliation. Nothing is sent elsewhere.
+
+### Extraction provider circuit
+
+Both single-message and experimental batched extraction pass through one
+Account/provider/role-scoped circuit at the model gateway. Five consecutive
+transient failures open it for 30 seconds by default. Open-circuit work fails
+fast without a provider call or UsageEvent, while its durable input and
+PipelineRun remain available for the normal bounded job retry and visible
+repair/terminal paths. After the interval exactly one half-open call probes
+recovery. Calls admitted before the circuit opened may finish, but their stale
+results only release their permits; they cannot close or extend the open
+interval. The recovery probe waits for those permits to drain. Worker death
+releases a probe permit and reopens the bounded interval.
+
+Content-safe `[:memhouse, :model, :provider_circuit]` telemetry reports the
+resolved role/provider identity, Account id, state transition or blocked
+decision, and consecutive-failure count. It never includes observation,
+prompt, completion, source, or credential data.
 
 ### Budgets and throttling
 

@@ -107,6 +107,9 @@ defmodule MemHouse.Model.SchemaExtractionBatchTest do
     assert ExtractionBatcher.failure_class(:provider_unavailable) ==
              {:retryable, "provider_transient"}
 
+    assert ExtractionBatcher.failure_class(%MemHouse.Model.ProviderCircuit.OpenError{}) ==
+             {:retryable, "provider_circuit_open"}
+
     assert ExtractionBatcher.failure_class({:structured_validation_failed, ["shape"]}) ==
              {:terminal, "structured_validation_exhausted"}
 

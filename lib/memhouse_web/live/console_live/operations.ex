@@ -168,7 +168,7 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
 
       <.panel
         title="Recorded usage"
-        description="Counted from this installation's own ledger. The cost estimate applies operator-supplied rates; there is no hidden billing state."
+        description="Counted from this installation's own ledger. The cost estimate names its planning-reference or operator-supplied rate profile; there is no hidden billing state."
       >
         <div class="tiles">
           <.tile label="Ledger events" value={@usage.event_count} />
@@ -179,6 +179,10 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
           <.tile
             label="Estimated model cost"
             value={"#{@usage.estimated_model_cost} #{@usage.currency}"}
+          />
+          <.tile
+            label="Cost profile"
+            value={"#{@usage.model_cost_profile.id} (#{@usage.model_cost_profile.kind})"}
           />
           <.tile label="Model calls (24 h)" value={@usage.model_calls.attempts} />
           <.tile label="Model failures (24 h)" value={@usage.model_calls.errors} />

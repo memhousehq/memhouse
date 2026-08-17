@@ -36,6 +36,7 @@ defmodule MemHouse.Model.Gateway do
 
   alias MemHouse.Model.Config
   alias MemHouse.Model.Provider.Result
+  alias MemHouse.Model.ProviderCircuit
   alias MemHouse.Model.Usage
   alias MemHouse.Observability
 
@@ -193,7 +194,6 @@ defmodule MemHouse.Model.Gateway do
   defp invoke(operation, config, context, opts, call) do
     Observability.with_span(:model, "memhouse.model.#{operation}", fn ->
       provider = provider_module(config, context)
-      started_at = System.monotonic_time(:millisecond)
 
       Observability.set_attributes(:model, %{
         "memhouse.model.role" => Atom.to_string(config.role),
@@ -203,45 +203,64 @@ defmodule MemHouse.Model.Gateway do
         "gen_ai.request.model" => config.model
       })
 
-      result = safe_call(call, provider)
-      duration_ms = System.monotonic_time(:millisecond) - started_at
+      case ProviderCircuit.checkout(config, context) do
+        {:ok, permit} ->
+          invoke_permitted(operation, config, context, opts, call, provider, permit)
 
-      case result do
-        {:ok, %Result{} = provider_result} ->
-          Usage.emit(context, config, %{
-            operation: operation,
-            status: :ok,
-            duration_ms: duration_ms,
-            usage: provider_result.usage,
-            metadata:
-              provider_result.metadata
-              |> Map.put(:repair_attempt, Keyword.get(opts, :repair_attempt, 0))
-          })
-
-          set_result_attributes(provider_result, duration_ms)
-          {:ok, provider_result}
-
-        {:error, error} ->
-          Usage.emit(context, config, %{
-            operation: operation,
-            status: :error,
-            duration_ms: duration_ms,
-            usage: %{},
-            metadata: %{
-              error_class: error_class(error),
-              metering_status: :unmetered,
-              repair_attempt: Keyword.get(opts, :repair_attempt, 0)
-            }
-          })
-
+        {:error, %ProviderCircuit.OpenError{} = error} ->
           Observability.set_attributes(:model, %{
-            "memhouse.model.duration_ms" => duration_ms,
+            "memhouse.model.circuit_state" => "open",
             "error.type" => error_class(error)
           })
 
+          # No provider call occurred, so this must not append a billed-call
+          # UsageEvent or inflate calls-per-message economics.
           {:error, error}
       end
     end)
+  end
+
+  defp invoke_permitted(operation, config, context, opts, call, provider, permit) do
+    started_at = System.monotonic_time(:millisecond)
+    result = safe_call(call, provider)
+    :ok = ProviderCircuit.complete(permit, result)
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+
+    case result do
+      {:ok, %Result{} = provider_result} ->
+        Usage.emit(context, config, %{
+          operation: operation,
+          status: :ok,
+          duration_ms: duration_ms,
+          usage: provider_result.usage,
+          metadata:
+            provider_result.metadata
+            |> Map.put(:repair_attempt, Keyword.get(opts, :repair_attempt, 0))
+        })
+
+        set_result_attributes(provider_result, duration_ms)
+        {:ok, provider_result}
+
+      {:error, error} ->
+        Usage.emit(context, config, %{
+          operation: operation,
+          status: :error,
+          duration_ms: duration_ms,
+          usage: %{},
+          metadata: %{
+            error_class: error_class(error),
+            metering_status: :unmetered,
+            repair_attempt: Keyword.get(opts, :repair_attempt, 0)
+          }
+        })
+
+        Observability.set_attributes(:model, %{
+          "memhouse.model.duration_ms" => duration_ms,
+          "error.type" => error_class(error)
+        })
+
+        {:error, error}
+    end
   end
 
   defp set_result_attributes(result, duration_ms) do
@@ -293,6 +312,7 @@ defmodule MemHouse.Model.Gateway do
   def error_class(%ReqLLM.Error.API.Timeout{kind: :total}), do: "request_timeout"
 
   def error_class(%ReqLLM.Error.API.Request{}), do: "transport_error"
+  def error_class(%ProviderCircuit.OpenError{}), do: "provider_circuit_open"
   def error_class(%module{}), do: inspect(module)
   def error_class(error) when is_atom(error), do: Atom.to_string(error)
   def error_class(_error), do: "model_error"

@@ -127,7 +127,7 @@ defmodule MemHouseWeb.ConsoleLive.Dashboard do
       <.panel
         :if={@usage}
         title="Recorded usage"
-        description="Counted from this installation's own ledger. The cost figure applies operator-supplied rates; there is no hidden billing state behind it."
+        description="Counted from this installation's own ledger. The cost figure names its planning-reference or operator rate profile; there is no hidden billing state behind it."
       >
         <div class="tiles">
           <.tile label="API requests" value={@usage.api_requests} />
@@ -139,6 +139,7 @@ defmodule MemHouseWeb.ConsoleLive.Dashboard do
             label="Estimated model cost"
             value={"#{@usage.estimated_model_cost} #{@usage.currency}"}
           />
+          <.tile label="Cost profile" value={@usage.model_cost_profile.id} />
         </div>
       </.panel>
 

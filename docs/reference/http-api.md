@@ -563,7 +563,8 @@ Account-admin only; any other role gets 403.
 
 Returns retained usage-event counts, API request and ingest counts,
 input/output/embedding token totals overall and per model role, and an estimated
-cost in USD computed from operator-supplied rates. `storage` separates durable
+cost in USD. `model_cost_profile` identifies whether the estimate uses the
+shipped `planning-reference-v1` table or a named operator override. `storage` separates durable
 content bytes from operational row bytes, reports their ratio, and sets
 `inverted?` when operational storage is larger. `logical_storage_bytes` remains
 an alias for durable bytes. `operational_to_durable_ratio` is `null` when

@@ -216,6 +216,18 @@ The gateway classifies total request deadlines as `request_timeout` and other
 transport failures as `transport_error`. The classifications contain no
 provider message, prompt, or response text.
 
+The gateway also owns the node-local extraction provider circuit, so both the
+single-anchor and adjacent-batch paths share one admission seam. Its key is the
+Account plus resolved extractor role and provider. Consecutive
+transient failures open only that key; configuration and schema-content errors
+retain their pipeline classification without poisoning provider availability.
+Open calls make no provider request and append no usage row. After the bounded
+open interval, one monitored half-open permit probes recovery. Concurrent
+probes are refused, success closes, failure reopens, and caller death releases
+the permit. Calls without an Account bypass instead of sharing cross-tenant
+state. Circuit state is rebuildable; durable messages, runs, repairable and
+terminal outcomes remain authoritative and operator-visible.
+
 The ledger reports failures that have happened; it cannot report a role that
 has never been called, and a rate cannot show that schema enforcement was lost.
 `MemHouse.Model.Probe` covers both: one fixed, content-free structured call per

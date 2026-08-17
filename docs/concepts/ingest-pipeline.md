@@ -94,8 +94,12 @@ The provider call produces independent anchor outcomes. One short transaction
 commits an anchor's governed candidates, lifecycle/audit effects, completion
 stamp, and PipelineRun completion. A completed sibling is skipped after a
 crash. Structured poison becomes terminal only after bounded repair; transient
-provider/network/capacity errors remain retryable. Credential, configuration,
-and oversized failures are repairable. Normal reconciliation excludes
+provider/network/capacity errors remain retryable. The Account- and resolved
+extractor-role/provider-scoped circuit opens after a bounded sequence of those
+transient failures, preventing retries from continuing to reach a failing
+provider. An open rejection makes no billed call and does not advance its open
+window; one monitored half-open request probes recovery. Credential,
+configuration, and oversized failures are repairable. Normal reconciliation excludes
 repairable and terminal anchors until an administrator explicitly requeues
 them.
 

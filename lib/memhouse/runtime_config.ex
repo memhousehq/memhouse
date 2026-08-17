@@ -40,6 +40,8 @@ defmodule MemHouse.RuntimeConfig do
     validate_diskann!()
     validate_documents!()
     validate_models!()
+    validate_ingest_provider_circuit!()
+    validate_model_cost_profile!()
     validate_embedding_index!()
     :ok
   end
@@ -225,6 +227,30 @@ defmodule MemHouse.RuntimeConfig do
         end
       end
     end)
+  end
+
+  defp validate_ingest_provider_circuit! do
+    config = Application.fetch_env!(:memhouse, :ingest_provider_circuit)
+
+    unless is_boolean(Keyword.fetch!(config, :enabled)) do
+      raise "MEMHOUSE_INGEST_CIRCUIT_ENABLED must be true or false"
+    end
+
+    for key <- [:failure_threshold, :open_ms] do
+      unless is_integer(Keyword.fetch!(config, key)) and Keyword.fetch!(config, key) > 0 do
+        raise "ingest provider circuit #{key} must be a positive integer"
+      end
+    end
+  end
+
+  defp validate_model_cost_profile! do
+    profile = Application.fetch_env!(:memhouse, :model_cost_profile)
+
+    unless is_map(profile) and profile[:kind] in ["planning_reference", "operator_override"] and
+             is_binary(profile[:id]) and
+             Regex.match?(~r/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/, profile[:id]) do
+      raise "model cost profile must have a safe id and known kind"
+    end
   end
 
   defp validate_embedding_index! do

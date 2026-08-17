@@ -851,7 +851,8 @@ defmodule MemHouse.Eval.Experiment do
         "output_tokens" => usage["output_tokens"],
         "embedding_tokens" => usage["embedding_tokens"],
         "total_tokens" => usage["total_tokens"],
-        "estimated_usd" => usage["estimated_usd"]
+        "estimated_usd" => usage["estimated_usd"],
+        "cost_profile" => usage["cost_profile"]
       },
       "latency" => %{
         "wall_time_ms" => measurement["wall_time_ms"],

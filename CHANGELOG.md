@@ -61,6 +61,11 @@ changelog entry and contract-version transition.
   lineage reads. Synthesis deductions reuse durable `prompt_version` for their
   operation identity, which typed lineage reports as `reasoning_synthesis`.
 
+- Extraction provider calls now pass through a default-on,
+  Account/provider/role-scoped circuit with monitored half-open recovery.
+  The cost report also ships a versioned non-zero `planning-reference-v1`
+  table and exposes whether rates are that reference or an operator override.
+
 - A default-off `compact-explicit-v1` extractor experiment limits model output
   to atomic durable statements, exact support, subject/source references, and
   exact valid-time evidence. Trusted code derives fail-closed policy defaults

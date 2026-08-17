@@ -325,9 +325,26 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert summary.storage.durable_bytes == summary.logical_storage_bytes
     assert is_integer(summary.storage.operational_bytes)
     assert is_boolean(summary.storage.inverted?)
-    # Zero because a self-hoster supplies their own rates. MemHouse does not carry hidden
-    # pricing: with no configured rate, the honest estimate is 0.0, not a guess.
+    # No model tokens means zero cost under either the shipped planning profile
+    # or an operator override. The profile identity keeps that distinction
+    # visible instead of silently treating an absent table as free usage.
     assert summary.estimated_model_cost == 0.0
+    assert %{id: profile_id, kind: profile_kind} = summary.model_cost_profile
+    assert is_binary(profile_id)
+    assert profile_kind in ["planning_reference", "operator_override"]
+  end
+
+  test "the shipped cost profile is versioned and non-zero before an operator override" do
+    rates = Application.fetch_env!(:memhouse, :model_cost_per_million)
+    profile = Application.fetch_env!(:memhouse, :model_cost_profile)
+
+    assert profile == %{id: "planning-reference-v1", kind: "planning_reference"}
+    assert get_in(rates, ["ingest_extractor", :input]) > 0.0
+    assert get_in(rates, ["ingest_extractor", :output]) > 0.0
+    assert get_in(rates, ["dream_reasoner", :input]) > 0.0
+    assert get_in(rates, ["dialectic_agent", :output]) > 0.0
+    assert get_in(rates, ["embedder", :embedding]) > 0.0
+    assert get_in(rates, ["reranker", :input]) > 0.0
   end
 
   test "metering declares its own Account, so the database wall admits the ledger write" do
@@ -420,12 +437,21 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
       )
 
     original_rates = Application.get_env(:memhouse, :model_cost_per_million, %{})
+    original_profile = Application.fetch_env!(:memhouse, :model_cost_profile)
 
     Application.put_env(:memhouse, :model_cost_per_million, %{
       "ingest_extractor" => %{input: 1.0, output: 2.0}
     })
 
-    on_exit(fn -> Application.put_env(:memhouse, :model_cost_per_million, original_rates) end)
+    Application.put_env(:memhouse, :model_cost_profile, %{
+      id: "contract-test-v1",
+      kind: "operator_override"
+    })
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_cost_per_million, original_rates)
+      Application.put_env(:memhouse, :model_cost_profile, original_profile)
+    end)
 
     assert :ok = Metering.record_api(actor, %{operation: "api.ingest", status: "ok"})
 
@@ -442,12 +468,19 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
                }
              )
 
-    assert Metering.summary(actor).ingest_economics == %{
+    summary = Metering.summary(actor)
+
+    assert summary.ingest_economics == %{
              messages: 1,
              calls: 1,
              calls_per_message: 1.0,
              tokens_per_message: 1000.0,
              cost_per_message: 0.0014
+           }
+
+    assert summary.model_cost_profile == %{
+             id: "contract-test-v1",
+             kind: "operator_override"
            }
   end
 

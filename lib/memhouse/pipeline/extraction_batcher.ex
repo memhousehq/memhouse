@@ -17,6 +17,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
   alias MemHouse.DataLayer
   alias MemHouse.Memory
+  alias MemHouse.Model.ProviderFailure
   alias MemHouse.Observability
   alias MemHouse.Observations.Message
   alias MemHouse.Pipeline
@@ -274,21 +275,13 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
   def failure_class({:structured_validation_failed, _details}),
     do: {:terminal, "structured_validation_exhausted"}
 
-  def failure_class(:provider_output_truncated),
-    do: {:repairable, "provider_output_truncated"}
+  def failure_class(%MemHouse.Model.ProviderCircuit.OpenError{}),
+    do: {:retryable, "provider_circuit_open"}
 
-  def failure_class(:provider_content_filtered),
-    do: {:repairable, "provider_content_filtered"}
-
-  def failure_class(:missing_structured_object),
-    do: {:repairable, "missing_structured_object"}
-
-  def failure_class(%{class: class}) when class in [:invalid, :validation],
-    do: {:repairable, "configuration"}
-
-  def failure_class(%ReqLLM.Error.API.Request{status: status})
-      when status in [400, 401, 403, 404, 405, 422],
-      do: {:repairable, "provider_configuration"}
-
-  def failure_class(_error), do: {:retryable, "provider_transient"}
+  def failure_class(error) do
+    case ProviderFailure.extraction_disposition(error) do
+      {:repairable, _reason_class} = repairable -> repairable
+      :transient -> {:retryable, "provider_transient"}
+    end
+  end
 end

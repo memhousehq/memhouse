@@ -530,6 +530,11 @@ generation_options = %{
   "pool_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000")
 }
 
+config :memhouse, :ingest_provider_circuit,
+  enabled: env_bool!.("MEMHOUSE_INGEST_CIRCUIT_ENABLED", true),
+  failure_threshold: env_positive_integer!.("MEMHOUSE_INGEST_CIRCUIT_FAILURE_THRESHOLD", "5"),
+  open_ms: env_positive_integer!.("MEMHOUSE_INGEST_CIRCUIT_OPEN_MS", "30000")
+
 # One structured extraction may use the initial call plus two bounded repair
 # calls. The lease must outlive that whole-call budget so reconciliation cannot
 # start a duplicate billed call while the original worker is still live. The
@@ -974,18 +979,30 @@ budget_limits =
     {metric, value}
   end)
 
-# Operator-declared prices in USD per million tokens, keyed by model role and
-# then by metric, for example
+# Prices in USD per million tokens, keyed by model role and then by metric, for example
 # {"ingest_extractor":{"input":0.5,"output":1.5},"embedder":{"embedding":0.02}}.
-# There is no built-in vendor price list and no hidden billing state: an omitted
-# role or metric simply contributes zero to the reported estimate. Exact token
-# counts are recorded separately as durable usage events; this map only turns
-# them into money.
+# With no environment override, the compile-time planning-reference-v1 table
+# supplies deliberately round, provider-neutral non-zero rates. It is not a
+# vendor price claim. An operator override replaces the whole table and carries
+# its own profile id in the cost response. Exact token counts are recorded
+# separately as durable usage events; this map only turns them into money.
 cost_key_map = %{"input" => :input, "output" => :output, "embedding" => :embedding}
 
+configured_model_costs = Application.fetch_env!(:memhouse, :model_cost_per_million)
+model_costs_json = env_get.("MEMHOUSE_MODEL_COSTS_JSON", nil)
+
+model_cost_profile_id =
+  if(model_costs_json,
+    do: env_get.("MEMHOUSE_MODEL_COST_PROFILE", "operator-env"),
+    else: "planning-reference-v1"
+  )
+
+unless Regex.match?(~r/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/, model_cost_profile_id) do
+  raise "MEMHOUSE_MODEL_COST_PROFILE must be a content-free identifier of at most 64 characters"
+end
+
 model_costs =
-  "MEMHOUSE_MODEL_COSTS_JSON"
-  |> env_get.("{}")
+  (model_costs_json || Jason.encode!(configured_model_costs))
   |> Jason.decode!()
   |> Map.new(fn {role, rates} ->
     unless is_map(rates), do: raise("model cost rates for #{role} must be an object")
@@ -1009,6 +1026,16 @@ model_costs =
 
 config :memhouse, :budget_limits, budget_limits
 config :memhouse, :model_cost_per_million, model_costs
+
+config :memhouse,
+       :model_cost_profile,
+       if(model_costs_json,
+         do: %{
+           id: model_cost_profile_id,
+           kind: "operator_override"
+         },
+         else: %{id: model_cost_profile_id, kind: "planning_reference"}
+       )
 
 # Where original document bytes are stored. This is an infrastructure seam:
 # swapping the adapter changes where blobs live and nothing else. Supersession,

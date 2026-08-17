@@ -262,9 +262,12 @@ comparison with stage metrics and gate results.
 
 The stages cover ingest calls/tokens/facts, answer and retrieval quality, citations, abstention,
 unexpected source membership, total token/cost accounting, latency, and dream-time replay. Cost is
-an estimate from operator-supplied rates; a provider that returns no usage object honestly records
-zero tokens rather than a guess. Gates fail the command by default. `--report-only` writes a failed
+an estimate from the named shipped planning profile or operator override; a provider that returns
+no usage object honestly records zero tokens rather than a guess. Gates fail the command by
+default. `--report-only` writes a failed
 bundle without changing the exit status.
+Execute-mode cost stages record the profile `id` and `kind` beside
+`estimated_usd`, so two runs cannot silently compare different rate tables.
 
 Execute definitions use the deterministic providers by default. `--live-model` is the explicit
 opt-in for configured hosted providers and may incur cost. It also performs the normal generative

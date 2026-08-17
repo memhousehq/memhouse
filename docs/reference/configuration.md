@@ -303,9 +303,42 @@ immediately restores the existing profile choices.
 | Variable | Meaning |
 | --- | --- |
 | `MEMHOUSE_BUDGET_LIMITS_JSON` | Daily token counters, e.g. `{"input_tokens":1000000,"output_tokens":250000,"embedding_tokens":2000000}` |
-| `MEMHOUSE_MODEL_COSTS_JSON` | Operator rates in USD per million tokens, per role |
+| `MEMHOUSE_MODEL_COSTS_JSON` | Optional operator rates in USD per million tokens, per role; overrides the shipped `planning-reference-v1` table |
+| `MEMHOUSE_MODEL_COST_PROFILE` | Content-free identity reported with costs when rates are overridden; default `operator-env` |
+
+With no override, MemHouse uses the versioned `planning-reference-v1` rates:
+
+| Role | Input | Output | Embedding |
+| --- | ---: | ---: | ---: |
+| `ingest_extractor` | 1.00 | 3.00 | — |
+| `dream_reasoner` | 1.00 | 3.00 | — |
+| `dialectic_agent` | 1.00 | 3.00 | — |
+| `reranker` | 1.00 | 1.00 | — |
+| `embedder` | — | — | 0.10 |
+
+These are round provider-neutral planning rates, not a claim about a vendor's
+current or contracted price. Their purpose is to keep a fresh deployment from
+silently translating real token usage to zero USD. Set both cost variables to
+your exact contracted rates and a stable internal profile id before using the
+estimate for financial reconciliation.
 
 Dream-time is throttled first when a limit bites.
+
+### Extraction provider circuit
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `MEMHOUSE_INGEST_CIRCUIT_ENABLED` | `true` | Enables Account- and resolved extractor-role/provider-scoped transient-failure admission |
+| `MEMHOUSE_INGEST_CIRCUIT_FAILURE_THRESHOLD` | `5` | Consecutive transient provider failures before opening |
+| `MEMHOUSE_INGEST_CIRCUIT_OPEN_MS` | `30000` | Open interval before one half-open recovery probe |
+
+Single and batched message extraction share this circuit at the gateway. An
+open rejection makes no provider request and therefore creates no billed-call
+usage row. Durable messages and PipelineRuns remain unchanged and retryable;
+the existing repairable and terminal classifications still require explicit
+operator requeue. One half-open probe is admitted at a time. If its worker
+dies, the process monitor releases the permit and starts a fresh bounded open
+interval instead of leaving the circuit stuck.
 
 ### Dream-time scheduling gates
 

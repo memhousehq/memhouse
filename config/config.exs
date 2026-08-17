@@ -439,16 +439,36 @@ config :memhouse, :governance,
 # Malformed output is never accepted.
 config :memhouse, :model_layer, max_repairs: 2
 
+# Node-local admission around the hosted extraction role. Five consecutive
+# transient provider failures open an Account/provider/role-specific circuit;
+# after 30 seconds exactly one half-open probe may test recovery. This limits
+# billed amplification without changing durable retry or repair semantics.
+config :memhouse, :ingest_provider_circuit,
+  enabled: true,
+  failure_threshold: 5,
+  open_ms: 30_000
+
 # Token admission limits per metric, per calendar day. Empty means unlimited;
 # real values arrive at runtime. Reaching a limit refuses only the background
 # dream-time lane, never ingest or a governed read.
 config :memhouse, :budget_limits, %{}
 
-# Operator-supplied rates in USD per million tokens, keyed by model role. Empty
-# means the cost report totals zero. There is no hidden billing state and no
-# vendor price list: self-hosted cost visibility uses only what the operator
-# declares here.
-config :memhouse, :model_cost_per_million, %{}
+# Credential-free planning rates in USD per million tokens. These round,
+# provider-neutral reference values are intentionally non-zero so a fresh
+# install cannot mistake unknown spend for free usage. They are not a vendor
+# price claim; operators should replace them with contracted rates at runtime.
+config :memhouse, :model_cost_per_million, %{
+  "ingest_extractor" => %{input: 1.0, output: 3.0},
+  "dream_reasoner" => %{input: 1.0, output: 3.0},
+  "dialectic_agent" => %{input: 1.0, output: 3.0},
+  "embedder" => %{embedding: 0.1},
+  "reranker" => %{input: 1.0, output: 1.0}
+}
+
+config :memhouse, :model_cost_profile, %{
+  id: "planning-reference-v1",
+  kind: "planning_reference"
+}
 
 # Use the same Req HTTP client the rest of the app uses rather than pulling in a
 # second HTTP stack for S3 calls.
