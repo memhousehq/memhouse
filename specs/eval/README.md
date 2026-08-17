@@ -73,11 +73,17 @@ The built-in fixture is intentionally small. Custom fixtures use this shape:
       "id": "q1",
       "scope_path": "/bench/locomo",
       "question": "What does Alice prefer?",
-      "expected": "concise status updates"
+      "expected": "concise status updates",
+      "metadata": {"peer_key": "alice"}
     }
   ]
 }
 ```
+
+`questions[].metadata.peer_key` is optional. Set it when the run must evaluate
+that already-ingested Peer's governed view or stable identity profile. Without
+it, the evaluation harness retains its internal Account reader and does not
+guess an identity from message order.
 
 Run a fixture with:
 

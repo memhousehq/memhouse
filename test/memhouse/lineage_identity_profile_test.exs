@@ -452,6 +452,49 @@ defmodule MemHouse.LineageIdentityProfileTest do
            end)
   end
 
+  test "profile-only Ask preserves authorized source lineage in its grounded answer evidence" do
+    name = seed_active!("planner-profile-lineage", "Avery's name is Avery Jordan.", "name")
+    original_provider = Application.get_env(:memhouse, :model_provider)
+    GroundedAnswerProvider.start!(:confident_inference)
+    Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
+
+    on_exit(fn ->
+      GroundedAnswerProvider.stop()
+
+      if original_provider do
+        Application.put_env(:memhouse, :model_provider, original_provider)
+      else
+        Application.delete_env(:memhouse, :model_provider)
+      end
+    end)
+
+    result =
+      Memory.ask(%{
+        "account_key" => "planner-profile-lineage",
+        "peer_key" => "avery",
+        "scope_path" => name.scope.path,
+        "question" => "Who am I?",
+        "profile" => "balanced",
+        "strategies" => ["lexical"],
+        "deadline" => "disabled",
+        "effort" => "low"
+      })
+
+    assert result["candidates"] == []
+    assert [evidence] = result["recall_evidence"]
+    assert evidence["id"] == name.knowledge.id
+    assert evidence["scope_id"] == name.scope.id
+    assert evidence["source_message_ids"] == [name.message_id]
+
+    assert evidence["source_references"] == [
+             %{"type" => "message", "id" => name.message_id}
+           ]
+
+    assert result["citations"] == [name.knowledge.id]
+    assert [prompt] = GroundedAnswerProvider.prompts()
+    assert prompt =~ "[#{name.knowledge.id}] Avery's name is Avery Jordan."
+  end
+
   test "adaptive Ask admits lineage evidence ahead of a full base page and preserves profile" do
     seeds =
       Enum.map(1..12, fn index ->

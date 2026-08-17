@@ -25,7 +25,9 @@ defmodule MemHouse.Eval.Runner do
   Account, run id, deadline, strategy override, split, judge, and run limits; every choice
   is recorded in the string-keyed report. `:refresh_semantic_index` and
   `:refresh_recall_projection` synchronously rebuild their distinct caches before questions
-  and are intended only for isolated profile experiments.
+  and are intended only for isolated profile experiments. A question may set
+  `metadata.peer_key` to evaluate the governed view and stable profile for that
+  already-ingested Peer; omitting it retains the internal Account reader.
 
   Non-success ingest tuples remain scored failures. Raised memory errors or invalid model
   judge results abort the run rather than producing incomplete evidence.
@@ -169,7 +171,7 @@ defmodule MemHouse.Eval.Runner do
       |> Enum.map(fn question ->
         {latency_ms, answer} =
           timed(fn ->
-            Memory.ask(%{
+            %{
               "account_key" => account_key,
               "scope_path" => scope_path,
               "question" => question.question,
@@ -179,7 +181,9 @@ defmodule MemHouse.Eval.Runner do
               "effort" => Keyword.get(opts, :recall_effort, "fixed"),
               "include_source_recall" => Keyword.get(opts, :source_recall, false),
               "_include_lineage_recall" => Keyword.get(opts, :lineage_recall, false)
-            })
+            }
+            |> put_question_peer(question)
+            |> Memory.ask()
           end)
 
         # Adaptive Ask answers are grounded in the planner's admitted evidence,
@@ -416,6 +420,22 @@ defmodule MemHouse.Eval.Runner do
       leaks: Enum.count(source_ids, &(not MapSet.member?(allowed, &1)))
     }
   end
+
+  # Evaluation runs use an internal Account adapter, so they have no calling
+  # Peer unless the fixture names one. Keep that choice on the question: cases
+  # may contain several participants, and guessing from message order would
+  # change authorization and identity-profile behavior between datasets.
+  defp put_question_peer(attrs, %{metadata: metadata}) when is_map(metadata) do
+    case Map.get(metadata, "peer_key") || Map.get(metadata, :peer_key) do
+      peer_key when is_binary(peer_key) and peer_key != "" ->
+        Map.put(attrs, "peer_key", peer_key)
+
+      _absent ->
+        attrs
+    end
+  end
+
+  defp put_question_peer(attrs, _question), do: attrs
 
   # Per-case detail, including the scope it wrote to, so a surprising number can be traced
   # back to the actual rows that produced it. The case's metrics are the same aggregate the

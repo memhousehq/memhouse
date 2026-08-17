@@ -160,6 +160,9 @@ answer becomes the empty abstention with `answer_confidence` 0.
 each id against the governed evidence returned for the answer: ordinary
 knowledge evidence uses its Knowledge id, while an authorized source item is
 typed `source_message` in `recall_evidence` and uses its immutable Message id.
+Knowledge admitted through the stable profile is re-read under the request's
+current authorization and carries its `scope_id`, `source_message_ids`, and
+bounded typed `source_references`; it is not detached profile text.
 
 ## Choosing a profile
 

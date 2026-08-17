@@ -52,7 +52,7 @@ defmodule MemHouse.Recall.ToolAdapter do
     lineage_recall_permitted? = Map.get(attrs, "_include_lineage_recall", true) == true
 
     tools =
-      base_tools(attrs, retrieval_profile)
+      base_tools(attrs, retrieval_profile, visible_knowledge)
       |> maybe_put_lineage(attrs, lineage_recall_permitted?, visible_knowledge)
       |> maybe_put_source(attrs, source_recall_permitted?)
 
@@ -85,9 +85,9 @@ defmodule MemHouse.Recall.ToolAdapter do
     {result.evidence, diagnostics}
   end
 
-  defp base_tools(attrs, retrieval_profile) do
+  defp base_tools(attrs, retrieval_profile, visible_knowledge) do
     %{
-      profile: fn _query, _state -> identity_profile(attrs) end,
+      profile: fn _query, _state -> identity_profile(attrs, visible_knowledge) end,
       knowledge: %{
         model_calls: 1,
         run: fn query, _state -> knowledge_search(attrs, query, retrieval_profile) end
@@ -114,22 +114,39 @@ defmodule MemHouse.Recall.ToolAdapter do
     })
   end
 
-  defp identity_profile(attrs) do
-    evidence =
+  defp identity_profile(attrs, visible_knowledge) do
+    items =
       attrs
       |> Memory.stable_identity_profile()
       |> Map.get("items", [])
-      |> Enum.map(fn item ->
-        %{
-          "id" => item["knowledge_id"],
-          "evidence_type" => "knowledge",
-          "candidate_type" => "knowledge",
-          "statement" => item["statement"],
-          "relevant_from" => nil,
-          "relevant_until" => nil,
-          "profile_category" => item["category"],
-          "profile_conflict" => item["conflict"]
-        }
+
+    visible_by_id =
+      items
+      |> Enum.map(& &1["knowledge_id"])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> visible_knowledge.()
+      |> Map.new(&{&1["id"], &1})
+
+    evidence =
+      Enum.flat_map(items, fn item ->
+        case Map.get(visible_by_id, item["knowledge_id"]) do
+          nil ->
+            []
+
+          row ->
+            [
+              row
+              |> mark_knowledge_evidence()
+              |> Map.put("candidate_type", "knowledge")
+              |> Map.put("profile_category", item["category"])
+              |> Map.put("profile_conflict", item["conflict"])
+              |> Map.put(
+                "source_references",
+                get_in(item, ["lineage", "source_references"]) || []
+              )
+            ]
+        end
       end)
 
     {:ok, evidence}
