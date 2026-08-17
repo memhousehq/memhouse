@@ -275,22 +275,28 @@ config :memhouse, :retrieval_profiles,
     rerank: true,
     deadline_ms: 1500
   },
-  # Experimental Honcho-informed baseline: only semantic and exact-text
-  # knowledge seeds. It runs no temporal/salience/entity/expansion/rerank stage
-  # and is disabled until an operator explicitly opts into matched evaluation.
+  # Experimental compact baseline: independently bounded direct and derived
+  # semantic lanes plus exact-text knowledge seeds. It runs no
+  # temporal/salience/entity/expansion/rerank stage and is disabled until an
+  # operator explicitly opts into matched evaluation.
   minimal: %{
-    version: "minimal-exp-1",
-    strategies: [:semantic, :lexical],
-    weights: %{semantic: 1.0, lexical: 1.0},
+    version: "minimal-exp-2",
+    strategies: [:semantic_dual_lane, :lexical],
+    weights: %{semantic_dual_lane: 1.0, lexical: 1.0},
     rrf_k: 15,
     rerank: false,
     deadline_ms: 300
   },
   minimal_enabled: false,
+  # Per-lane semantic shortlist caps. Both are applied before deterministic
+  # interleave and the request's overall candidate budget remains final.
+  minimal_direct_top_k: 10,
+  minimal_derived_top_k: 10,
   # Deployment-level allowlist. A strategy absent here never runs, whatever a
   # profile asks for; operators use it to switch off an expensive lane.
   enabled_strategies: [
     :semantic,
+    :semantic_dual_lane,
     :lexical,
     :temporal,
     :salience_recency,

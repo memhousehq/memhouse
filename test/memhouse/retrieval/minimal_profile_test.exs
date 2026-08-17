@@ -29,9 +29,14 @@ defmodule MemHouse.Retrieval.MinimalProfileTest do
     profile = Profile.resolve("minimal", query, inherit?: false)
 
     assert profile.name == :minimal
-    assert profile.version == "minimal-exp-1"
-    assert profile.strategies == [:semantic, :lexical]
-    assert Enum.map(profile.strategy_modules, & &1.name()) == [:semantic, :lexical]
+    assert profile.version == "minimal-exp-2"
+    assert profile.strategies == [:semantic_dual_lane, :lexical]
+
+    assert Enum.map(profile.strategy_modules, & &1.name()) == [
+             :semantic_dual_lane,
+             :lexical
+           ]
+
     assert profile.rerank == false
 
     refute :temporal in profile.strategies

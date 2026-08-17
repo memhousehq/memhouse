@@ -153,13 +153,29 @@ weights and rank constant, whether the head is reranked, and the deadline.
 | `fast` | semantic, salience-recency | no | 100 ms | The only profile allowed to run live when context assembly misses its projection cache |
 | `balanced` | semantic, lexical, temporal, entity-match | no | 300 ms | Default for `search` |
 | `thorough` | all six, including one-hop relation expansion | yes | 1500 ms | Default for `ask` |
-| `minimal` | semantic and lexical only | no | 300 ms | Experimental; requires `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true` |
+| `minimal` | direct/derived semantic lanes and lexical | no | 300 ms | Experimental; requires `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true` |
 
 The `minimal` profile deliberately skips temporal and salience seeds, entity
 matching, relation expansion, and reranking. It does not delete or change their
 data while experimental. Selection is explicit and observable in the ordinary
 profile fields, and disabling the feature flag restores the existing profiles
 without a migration.
+
+Its semantic strategy embeds the query once and searches two independently
+bounded lists: directly extracted memory and derived deduction/consolidation
+memory. The lists are interleaved by lane rank, direct first on an exact tie,
+then enter ordinary fusion with lexical results. Each semantic candidate records
+its lane, operation, lane rank, and cosine distance so matched evaluation can
+measure the trade-off without inferring it from prose.
+
+The two lists read `RecallDocument`, a non-authoritative projection copied from
+governed Knowledge after embedding. It is excluded from Account archives and
+is rebuilt with the other retrieval caches. Every lookup joins canonical
+Knowledge, applies Account, scope, reader, lifecycle, deletion, expiry, and
+embedding-identity filters before ranking, and requires the projection's source
+watermark to equal the current Knowledge timestamp. A lifecycle change is
+therefore invisible immediately; refresh then removes the stale row. Hard
+erasure cascades to the projection in the same database transaction.
 
 Profiles inherit down the scope tree, nearest-wins, so a scope can tighten or
 loosen retrieval without a global change. The profile version travels back with

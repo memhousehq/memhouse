@@ -13,7 +13,8 @@ restore/import, compatibility-window, or human architecture review.
 
 The accepted implementation therefore simplifies the experimental execution
 path without deleting the current rollback path. With the `minimal` profile,
-ordinary recall executes semantic and lexical retrieval only. The additional
+ordinary recall executes independently bounded direct/derived semantic recall
+and lexical retrieval only. The additional
 stages below are not executed by that profile, but their code and rebuildable
 state remain available to the current profiles during the compatibility
 window.
@@ -47,8 +48,8 @@ deletion.
 
 | Component | Experimental replacement | Current decision | Missing retirement evidence |
 | --- | --- | --- | --- |
-| Temporal retrieval seed | Semantic + lexical recall; bounded source fallback | Retain for current profiles; bypass in `minimal` | Held-out temporal/update category ablation |
-| Salience-recency seed | Query-dependent semantic + lexical rank | Retain; bypass in `minimal` | Preference/importance category ablation |
+| Temporal retrieval seed | Direct/derived semantic + lexical recall; bounded source fallback | Retain for current profiles; bypass in `minimal` | Held-out temporal/update category ablation |
+| Salience-recency seed | Query-dependent dual-lane semantic + lexical rank | Retain; bypass in `minimal` | Preference/importance category ablation |
 | Entity-match seed and mention refresh | Stable identity profile plus direct evidence | Retain; bypass in `minimal` | Entity-heavy category quality and projection-cost evidence |
 | Relation expansion | Bounded source search and typed evidence lineage | Retain; bypass in `minimal` | Multi-hop marginal gain/loss and fan-out evidence |
 | Model reranking | Deterministic fusion over the two minimal lanes | Retain for `thorough`; bypass in `minimal` | Matched rerank quality, token, cost, and p95 ablation |

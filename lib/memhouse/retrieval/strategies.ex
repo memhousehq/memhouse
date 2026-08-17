@@ -126,6 +126,65 @@ defmodule MemHouse.Retrieval.Strategies.Semantic do
   end
 end
 
+defmodule MemHouse.Retrieval.Strategies.SemanticDualLane do
+  @moduledoc """
+  Embeds once, then searches direct and derived recall lanes independently.
+
+  This is the semantic lane used by the experimental minimal profile. It reads
+  only the rebuildable RecallDocument projection, but every candidate remains
+  subject to canonical Knowledge authorization and lifecycle checks in Store.
+  """
+  @behaviour MemHouse.Retrieval.Strategy
+
+  alias MemHouse.Model.{Config, Embedding}
+  alias MemHouse.Retrieval.{Store, StrategySupport}
+
+  @impl true
+  def name, do: :semantic_dual_lane
+  @impl true
+  def cost_class, do: :moderate
+  @impl true
+  def stage, do: :seed
+  @impl true
+  def query_dependent?, do: true
+
+  @impl true
+  def applicable?(query) do
+    query.target in [:knowledge, :all] and is_binary(query.text) and
+      String.trim(query.text) != ""
+  end
+
+  @impl true
+  def candidates(query, budget) do
+    context = %{account_id: query.account_id, actor: query.actor}
+
+    case Embedding.embed([query.text], context, input_type: :query) do
+      {:ok, %{vectors: [embedding]}} ->
+        identity = :embedder |> Config.resolve(context) |> Config.embedding_identity()
+        config = Application.fetch_env!(:memhouse, :retrieval_profiles)
+        direct_limit = min(Keyword.fetch!(config, :minimal_direct_top_k), budget.max_candidates)
+        derived_limit = min(Keyword.fetch!(config, :minimal_derived_top_k), budget.max_candidates)
+
+        query
+        |> Store.semantic_dual_lane(
+          embedding,
+          identity,
+          direct_limit,
+          derived_limit,
+          budget.max_candidates
+        )
+        |> StrategySupport.candidates(
+          name(),
+          query.min_score || 0.0,
+          query.source_filters
+        )
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+end
+
 defmodule MemHouse.Retrieval.Strategies.Lexical do
   @moduledoc """
   Word-based retrieval through PostgreSQL full-text search.

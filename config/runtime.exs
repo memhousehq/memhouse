@@ -671,6 +671,7 @@ config :memhouse, :diskann,
 # because changing them changes result quality and needs review.
 retrieval_strategy_names = %{
   "semantic" => :semantic,
+  "semantic_dual_lane" => :semantic_dual_lane,
   "lexical" => :lexical,
   "temporal" => :temporal,
   "salience_recency" => :salience_recency,

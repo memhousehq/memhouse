@@ -91,6 +91,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     # meaningless — silently wrong, not obviously wrong — under a different one.
     refute MemHouse.Accounts.ApiKey in Enum.map(Registry.resources(), &elem(&1, 1))
     assert MemHouse.Knowledge.Projection in Registry.derived_resources()
+    assert MemHouse.Retrieval.RecallDocument in Registry.derived_resources()
     assert MemHouse.Operations.PipelineRun in Registry.operational_resources()
 
     refute Enum.any?(Registry.resources(), fn {_name, resource} ->

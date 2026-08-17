@@ -48,7 +48,15 @@ changelog entry and contract-version transition.
   A/B path. `extract-13` remains the default until matched held-out evaluation
   and human review approve `extract-compact-exp-1`.
 
-- An opt-in `minimal` semantic-plus-lexical retrieval profile and bounded
+- The opt-in `minimal` profile now uses a rebuildable, archive-excluded
+  `RecallDocument` read model. One query embedding feeds independently capped
+  direct and derived semantic top-k lanes; stable interleave records lane rank
+  and cosine distance before lexical fusion. Canonical Knowledge remains the
+  only writer and is re-joined for Account, scope, reader, lifecycle, expiry,
+  deletion, and source-watermark checks before ranking. Refresh is replay-safe,
+  lifecycle changes fail closed while it is pending, and hard erasure cascades.
+
+- An opt-in `minimal` dual-lane-semantic-plus-lexical retrieval profile and bounded
   read-only Ask efforts (`low`, `medium`, `high`) add content-free budget
   diagnostics and hard per-tool elapsed enforcement. The planner can read
   governed knowledge, stable-profile knowledge, typed lineage, and authorized

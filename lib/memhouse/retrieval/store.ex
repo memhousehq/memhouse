@@ -275,6 +275,185 @@ defmodule MemHouse.Retrieval.Store do
     )
   end
 
+  @doc """
+  Runs independent semantic top-k searches for direct and derived knowledge.
+
+  The non-authoritative recall projection supplies the lane and vector, while
+  the joined canonical knowledge row supplies authorization and lifecycle.
+  A projection row is eligible only while its source watermark exactly matches
+  the current Knowledge row. Each lane is bounded before the stable
+  rank-interleave, so a dense direct neighborhood cannot crowd derived memory
+  out before fusion. One query embedding is shared by both lanes.
+
+  Returns at most `limit` rows. Every row records `recall_lane`, `operation`,
+  `provenance_ids`, `lane_rank`, and cosine `semantic_distance` for evaluation
+  and trace inspection.
+  """
+  def semantic_dual_lane(query, embedding, identity, direct_limit, derived_limit, limit)
+      when direct_limit > 0 and derived_limit > 0 and limit > 0 do
+    with_diskann_assertion_fallback(
+      fn ->
+        run_semantic_dual_lane_query(
+          query,
+          embedding,
+          identity,
+          direct_limit,
+          derived_limit,
+          limit,
+          true
+        )
+      end,
+      fn ->
+        run_semantic_dual_lane_query(
+          query,
+          embedding,
+          identity,
+          direct_limit,
+          derived_limit,
+          limit,
+          false
+        )
+      end
+    )
+  end
+
+  defp run_semantic_dual_lane_query(
+         query,
+         embedding,
+         identity,
+         direct_limit,
+         derived_limit,
+         limit,
+         indexscan?
+       ) do
+    configure_diskann_query!(max(direct_limit, derived_limit))
+
+    unless indexscan? do
+      Ecto.Adapters.SQL.query!(Repo, "SET LOCAL enable_indexscan = off", [])
+    end
+
+    semantic_dual_lane_query(query, embedding, identity, direct_limit, derived_limit, limit)
+  end
+
+  defp semantic_dual_lane_query(
+         %{target: target},
+         _embedding,
+         _identity,
+         _direct_limit,
+         _derived_limit,
+         _limit
+       )
+       when target not in [:knowledge, :all],
+       do: []
+
+  defp semantic_dual_lane_query(
+         query,
+         embedding,
+         identity,
+         direct_limit,
+         derived_limit,
+         limit
+       ) do
+    internal_reader? = query.internal_reader?
+    vector = vector_literal(embedding)
+    labels = MemHouse.Retrieval.DiskannLabels.for_scope_ids!(query.account_id, query.scope_ids)
+
+    distance =
+      if identity.dimensions == 1024,
+        do: "d.embedding::vector(1024) <=> $4::text::vector(1024)",
+        else: "d.embedding <=> $4::text::vector"
+
+    # Both lane subqueries repeat every visibility predicate before ORDER BY
+    # and LIMIT. Authorization is never a post-ranking filter.
+    sql = """
+    WITH direct_lane AS (
+      SELECT #{@knowledge_columns},
+             1.0 - (#{distance}) AS score,
+             (#{distance}) AS semantic_distance,
+             'knowledge' AS candidate_type,
+             d.derivation_lane AS recall_lane,
+             d.operation,
+             d.provenance_ids,
+             row_number() OVER (ORDER BY #{distance}, d.knowledge_item_id) AS lane_rank
+      FROM recall_documents AS d
+      JOIN knowledge_items AS k
+        ON k.id = d.knowledge_item_id AND k.account_id = d.account_id
+      JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
+      WHERE d.account_id = $1
+        AND d.scope_id = ANY($2)
+        AND d.derivation_lane = 'direct'
+        AND d.source_updated_at = k.updated_at
+        AND d.scope_id = k.scope_id
+        #{visible_knowledge("$3", internal_reader?)}
+        AND k.deleted_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > now())
+        AND d.embedding IS NOT NULL
+        AND d.embedding_provider = $5
+        AND d.embedding_model = $6
+        AND d.embedding_version = $7
+        AND d.embedding_dimensions = $8
+        AND d.diskann_labels && $9::smallint[]
+      ORDER BY #{distance}, d.knowledge_item_id
+      LIMIT $10
+    ), derived_lane AS (
+      SELECT #{@knowledge_columns},
+             1.0 - (#{distance}) AS score,
+             (#{distance}) AS semantic_distance,
+             'knowledge' AS candidate_type,
+             d.derivation_lane AS recall_lane,
+             d.operation,
+             d.provenance_ids,
+             row_number() OVER (ORDER BY #{distance}, d.knowledge_item_id) AS lane_rank
+      FROM recall_documents AS d
+      JOIN knowledge_items AS k
+        ON k.id = d.knowledge_item_id AND k.account_id = d.account_id
+      JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
+      WHERE d.account_id = $1
+        AND d.scope_id = ANY($2)
+        AND d.derivation_lane = 'derived'
+        AND d.source_updated_at = k.updated_at
+        AND d.scope_id = k.scope_id
+        #{visible_knowledge("$3", internal_reader?)}
+        AND k.deleted_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > now())
+        AND d.embedding IS NOT NULL
+        AND d.embedding_provider = $5
+        AND d.embedding_model = $6
+        AND d.embedding_version = $7
+        AND d.embedding_dimensions = $8
+        AND d.diskann_labels && $9::smallint[]
+      ORDER BY #{distance}, d.knowledge_item_id
+      LIMIT $11
+    )
+    SELECT *
+    FROM (
+      SELECT * FROM direct_lane
+      UNION ALL
+      SELECT * FROM derived_lane
+    ) AS lanes
+    ORDER BY lane_rank,
+             CASE recall_lane WHEN 'direct' THEN 0 ELSE 1 END,
+             semantic_distance,
+             id
+    LIMIT $12
+    """
+
+    all(sql, [
+      db_uuid!(query.account_id),
+      db_uuids!(query.scope_ids),
+      db_uuid(query.actor.peer_id),
+      vector,
+      identity.provider,
+      identity.model,
+      identity.version,
+      identity.dimensions,
+      labels,
+      direct_limit,
+      derived_limit,
+      limit
+    ])
+  end
+
   defp run_semantic_query(query, embedding, identity, limit, indexscan?) do
     configure_diskann_query!(limit)
 

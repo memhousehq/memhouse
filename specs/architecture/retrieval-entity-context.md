@@ -161,9 +161,39 @@ entities, and refreshes projections. The dependency-ordered job replaces the
 redundant per-write entity job. Reconciliation, erasure, import, and explicit
 maintenance retain corpus-derived full-rebuild keys. The coalesced path batches
 only statements without vectors; it does not re-embed the unchanged corpus.
-Document import already
-re-enters ordinary document ingest, which rebuilds chunk vectors and causes
-governed knowledge to enqueue the same derived-cache jobs.
+Document import already re-enters ordinary document ingest, which rebuilds
+chunk vectors and causes governed knowledge to enqueue the same derived-cache
+jobs.
+
+### RecallDocument ownership and dual semantic lanes
+
+Retrieval owns `RecallDocument`, a rebuildable and non-portable read model of
+embedded governed Knowledge. It contains only the source knowledge and scope
+ids, subject ids, statement, direct/derived lane, extraction/consolidation/
+deduction operation, opaque provenance ids, embedding identity/vector, scope
+DiskANN labels, and the source `updated_at` watermark. It is not a second
+Knowledge writer and cannot grant access.
+
+The dependency order is Knowledge indexing, RecallDocument refresh, entity
+refresh, then context projection. Refresh upserts the complete active or
+provisional embedded snapshot for one Account/scope and deletes rows whose
+source was erased, retired, moved, or lost its vector. Hard deletion also uses
+a cascading foreign key. Import omits the table and rebuilds it from restored
+Knowledge and Provenance.
+
+The existing content-free `projection_refresh` telemetry event reports recall
+documents projected and removed alongside embedding and mention coverage. It
+contains only counts and Account/scope ids.
+
+The experimental `minimal-exp-2` profile embeds a query once, searches direct
+and derived recall documents as separate top-k lists, then deterministically
+interleaves by lane rank before ordinary score-aware fusion with lexical recall.
+Both lane queries repeat Account, authorized-scope, reader visibility,
+lifecycle, soft-deletion, expiry, embedding-identity, and scope-label filters
+before distance ordering. They join canonical Knowledge and require the source
+watermark to match, so a stale projection fails closed before refresh runs.
+Returned candidates record the lane, operation, lane rank, provenance handles,
+and semantic distance for differential evaluation.
 
 Because vectors and mentions are written by that job alone and no longer ride
 the knowledge-write transaction, they are eventually consistent: a refresh that

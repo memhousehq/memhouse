@@ -50,6 +50,7 @@ defmodule MemHouse.Portability.Registry do
   # forgot to add it".
   @derived_resources [
     MemHouse.Documents.DocumentChunk,
+    MemHouse.Retrieval.RecallDocument,
     MemHouse.Knowledge.Entity,
     MemHouse.Knowledge.EntityMention,
     MemHouse.Knowledge.Projection

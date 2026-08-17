@@ -35,6 +35,7 @@ defmodule MemHouse.Retrieval do
 
   resources do
     resource MemHouse.Retrieval.RetrievalProfile
+    resource MemHouse.Retrieval.RecallDocument
   end
 
   @doc """
@@ -60,7 +61,7 @@ defmodule MemHouse.Retrieval do
 
   @doc """
   Rebuilds every derived retrieval cache for one scope: knowledge embeddings,
-  entities, entity mentions, and context projections.
+  recall documents, entities, entity mentions, and context projections.
 
   Everything it writes is reconstructible from governed statements, so this is
   the recovery path after an import, an erasure, or an index change. It is

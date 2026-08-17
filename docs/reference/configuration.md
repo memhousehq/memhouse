@@ -288,13 +288,16 @@ document semantics.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` | `false` | Enables the reversible semantic-plus-lexical `minimal` retrieval profile |
+| `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` | `false` | Enables the reversible dual-lane-semantic-plus-lexical `minimal` retrieval profile |
 
 The experimental profile executes no temporal, salience-recency, entity-match,
-relation-expansion, projection, or rerank read stage. It remains opt-in until
-matched offline evaluation meets the quality, citation, isolation, latency,
-and maintenance gates. Disabling it loses no data and immediately restores the
-existing profile choices.
+relation-expansion, context-projection, or rerank read stage. Its direct and
+derived semantic shortlists are independently capped at 10 before stable
+interleave; the ordinary per-request candidate budget is still the final cap.
+These reviewed caps are compiled profile behavior, not environment overrides.
+It remains opt-in until matched offline evaluation meets the quality, citation,
+isolation, latency, and maintenance gates. Disabling it loses no data and
+immediately restores the existing profile choices.
 
 | Variable | Meaning |
 | --- | --- |

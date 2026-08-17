@@ -21,6 +21,7 @@ defmodule MemHouse.Retrieval.Profile do
   # Only registered strategies may run; registry changes alter behavior.
   @strategy_modules %{
     semantic: MemHouse.Retrieval.Strategies.Semantic,
+    semantic_dual_lane: MemHouse.Retrieval.Strategies.SemanticDualLane,
     lexical: MemHouse.Retrieval.Strategies.Lexical,
     temporal: MemHouse.Retrieval.Strategies.Temporal,
     salience_recency: MemHouse.Retrieval.Strategies.SalienceRecency,
