@@ -921,7 +921,7 @@ dream_reasoning_operations = Application.fetch_env!(:memhouse, :dream_reasoning_
 
 config :memhouse, :dream_reasoning_operations,
   split_enabled:
-    env_bool.(
+    env_bool!.(
       "MEMHOUSE_EXPERIMENTAL_DREAM_OPERATION_SPLIT",
       Keyword.fetch!(dream_reasoning_operations, :split_enabled)
     ),
