@@ -92,6 +92,146 @@ defmodule MemHouse.Retrieval.Store do
   defp integer(value) when is_integer(value), do: value
 
   @doc """
+  Full-text search over immutable source messages in already-authorized scopes.
+
+  The caller must run this inside the authenticated Account transaction and
+  supply only scope ids authorized for that reader. Account and scope filters
+  are repeated before ranking, and the returned source body is bounded by
+  `excerpt_chars`.
+  """
+  def source_exact(authority, text, limit, excerpt_chars) do
+    sql = """
+    WITH term AS (SELECT websearch_to_tsquery('simple', $3) AS query)
+    SELECT message.id, message.session_id, message.scope_id,
+           message.peer_id, peer.key AS speaker_key,
+           peer.name AS speaker_name, message.role, message.occurred_at,
+           left(message.content, $5) AS excerpt,
+           ts_rank_cd(message.search_vector, term.query)::float8 AS score
+    FROM messages AS message
+    JOIN peers AS peer
+      ON peer.id = message.peer_id AND peer.account_id = message.account_id
+    CROSS JOIN term
+    WHERE message.account_id = $1
+      AND message.scope_id = ANY($2)
+      AND message.search_vector @@ term.query
+    ORDER BY score DESC, message.occurred_at DESC, message.id ASC
+    LIMIT $4
+    """
+
+    all(sql, source_params(authority, [text, limit, excerpt_chars]))
+  end
+
+  @doc """
+  Semantic search over immutable source messages in already-authorized scopes.
+
+  Only rows carrying the requested embedding identity and authorized DiskANN
+  labels are eligible. The caller owns embedding and transaction orchestration;
+  this boundary owns the static, parameterized SQL.
+  """
+  def source_semantic(authority, vector, identity, labels, limit, excerpt_chars) do
+    distance =
+      if identity.dimensions == 1024,
+        do: "message.embedding::vector(1024) <=> $3::text::vector(1024)",
+        else: "message.embedding <=> $3::text::vector"
+
+    sql = """
+    SELECT message.id, message.session_id, message.scope_id,
+           message.peer_id, peer.key AS speaker_key,
+           peer.name AS speaker_name, message.role, message.occurred_at,
+           left(message.content, $10) AS excerpt,
+           (1.0 - (#{distance}))::float8 AS score
+    FROM messages AS message
+    JOIN peers AS peer
+      ON peer.id = message.peer_id AND peer.account_id = message.account_id
+    WHERE message.account_id = $1
+      AND message.scope_id = ANY($2)
+      AND message.embedding IS NOT NULL
+      AND message.embedding_provider = $4
+      AND message.embedding_model = $5
+      AND message.embedding_version = $6
+      AND message.embedding_dimensions = $7
+      AND message.diskann_labels && $8::smallint[]
+    ORDER BY #{distance}, message.occurred_at DESC, message.id ASC
+    LIMIT $9
+    """
+
+    all(
+      sql,
+      source_params(authority, [
+        vector_literal(vector),
+        identity.provider,
+        identity.model,
+        identity.version,
+        identity.dimensions,
+        labels,
+        limit,
+        excerpt_chars
+      ])
+    )
+  end
+
+  @doc """
+  Classifies source-message embedding coverage without revealing corpus counts.
+
+  Returns `:empty`, `:unavailable`, `:stale`, or `:ready` for only the Account
+  and authorized scopes supplied by the caller.
+  """
+  def source_embedding_status(authority, identity) do
+    sql = """
+    SELECT CASE
+      WHEN count(*) = 0 THEN 'empty'
+      WHEN count(*) FILTER (
+        WHERE embedding IS NOT NULL
+          AND embedding_provider = $3
+          AND embedding_model = $4
+          AND embedding_version = $5
+          AND embedding_dimensions = $6
+      ) = 0 THEN 'unavailable'
+      WHEN count(*) FILTER (
+        WHERE embedding IS NOT NULL
+          AND embedding_provider = $3
+          AND embedding_model = $4
+          AND embedding_version = $5
+          AND embedding_dimensions = $6
+      ) < count(*) THEN 'stale'
+      ELSE 'ready'
+    END AS status
+    FROM messages
+    WHERE account_id = $1 AND scope_id = ANY($2)
+    """
+
+    [row] =
+      all(
+        sql,
+        source_params(authority, [
+          identity.provider,
+          identity.model,
+          identity.version,
+          identity.dimensions
+        ])
+      )
+
+    String.to_existing_atom(row["status"])
+  end
+
+  @doc """
+  Reports whether an immutable source message exists in authorized scopes.
+
+  The boolean intentionally carries no hidden corpus count.
+  """
+  def source_visible?(authority) do
+    sql = """
+    SELECT EXISTS(
+      SELECT 1 FROM messages
+      WHERE account_id = $1 AND scope_id = ANY($2)
+    ) AS present
+    """
+
+    [%{"present" => present}] = all(sql, source_params(authority, []))
+    present
+  end
+
+  @doc """
   Full-text search over governed statements and document chunks.
 
   Searches requested targets and ranks with `ts_rank_cd`, then merges and truncates to `limit`.
@@ -1619,6 +1759,10 @@ defmodule MemHouse.Retrieval.Store do
   # Build pgvector text as a bound parameter; coerce integers before `Float.to_string/1`.
   defp vector_literal(values) do
     "[" <> Enum.map_join(values, ",", &Float.to_string(&1 * 1.0)) <> "]"
+  end
+
+  defp source_params(authority, rest) do
+    [db_uuid!(authority.account_id), db_uuids!(authority.scope_ids) | rest]
   end
 
   # These settings change ranking, so a missing key must fail rather than default.

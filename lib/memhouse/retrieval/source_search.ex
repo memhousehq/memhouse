@@ -12,8 +12,8 @@ defmodule MemHouse.Retrieval.SourceSearch do
 
   alias MemHouse.DataLayer
   alias MemHouse.Model.Embedding
-  alias MemHouse.Repo
   alias MemHouse.Retrieval.DiskannLabels
+  alias MemHouse.Retrieval.Store
 
   @default_limit 12
   @max_limit 100
@@ -74,26 +74,8 @@ defmodule MemHouse.Retrieval.SourceSearch do
   defp exact(authority, text, limit, excerpt_chars) do
     {rows, status} =
       in_account(authority, fn ->
-        sql = """
-        WITH term AS (SELECT websearch_to_tsquery('simple', $3) AS query)
-        SELECT message.id, message.session_id, message.scope_id,
-               message.peer_id, peer.key AS speaker_key,
-               peer.name AS speaker_name, message.role, message.occurred_at,
-               left(message.content, $5) AS excerpt,
-               ts_rank_cd(message.search_vector, term.query)::float8 AS score
-        FROM messages AS message
-        JOIN peers AS peer
-          ON peer.id = message.peer_id AND peer.account_id = message.account_id
-        CROSS JOIN term
-        WHERE message.account_id = $1
-          AND message.scope_id = ANY($2)
-          AND message.search_vector @@ term.query
-        ORDER BY score DESC, message.occurred_at DESC, message.id ASC
-        LIMIT $4
-        """
-
-        rows = all(sql, params(authority, [text, limit, excerpt_chars]))
-        status = if visible_message?(authority), do: :ready, else: :empty
+        rows = Store.source_exact(authority, text, limit, excerpt_chars)
+        status = if Store.source_visible?(authority), do: :ready, else: :empty
         {rows, status}
       end)
 
@@ -108,22 +90,11 @@ defmodule MemHouse.Retrieval.SourceSearch do
         {rows, status} =
           in_account(authority, fn ->
             labels = DiskannLabels.for_scope_ids!(authority.account_id, authority.scope_ids)
-            sql = semantic_sql(identity.dimensions)
 
-            query_params =
-              params(authority, [
-                vector_literal(vector),
-                identity.provider,
-                identity.model,
-                identity.version,
-                identity.dimensions,
-                labels,
-                limit,
-                excerpt_chars
-              ])
+            rows =
+              Store.source_semantic(authority, vector, identity, labels, limit, excerpt_chars)
 
-            rows = all(sql, query_params)
-            {rows, semantic_status(authority, identity)}
+            {rows, Store.source_embedding_status(authority, identity)}
           end)
 
         %{
@@ -145,137 +116,8 @@ defmodule MemHouse.Retrieval.SourceSearch do
     end
   end
 
-  defp semantic_sql(1024) do
-    """
-    SELECT message.id, message.session_id, message.scope_id,
-           message.peer_id, peer.key AS speaker_key,
-           peer.name AS speaker_name, message.role, message.occurred_at,
-           left(message.content, $10) AS excerpt,
-           (1.0 - (message.embedding::vector(1024) <=> $3::text::vector(1024)))::float8 AS score
-    FROM messages AS message
-    JOIN peers AS peer
-      ON peer.id = message.peer_id AND peer.account_id = message.account_id
-    WHERE message.account_id = $1
-      AND message.scope_id = ANY($2)
-      AND message.embedding IS NOT NULL
-      AND message.embedding_provider = $4
-      AND message.embedding_model = $5
-      AND message.embedding_version = $6
-      AND message.embedding_dimensions = $7
-      AND message.diskann_labels && $8::smallint[]
-    ORDER BY message.embedding::vector(1024) <=> $3::text::vector(1024),
-             message.occurred_at DESC, message.id ASC
-    LIMIT $9
-    """
-  end
-
-  defp semantic_sql(_dimensions) do
-    """
-    SELECT message.id, message.session_id, message.scope_id,
-           message.peer_id, peer.key AS speaker_key,
-           peer.name AS speaker_name, message.role, message.occurred_at,
-           left(message.content, $10) AS excerpt,
-           (1.0 - (message.embedding <=> $3::text::vector))::float8 AS score
-    FROM messages AS message
-    JOIN peers AS peer
-      ON peer.id = message.peer_id AND peer.account_id = message.account_id
-    WHERE message.account_id = $1
-      AND message.scope_id = ANY($2)
-      AND message.embedding IS NOT NULL
-      AND message.embedding_provider = $4
-      AND message.embedding_model = $5
-      AND message.embedding_version = $6
-      AND message.embedding_dimensions = $7
-      AND message.diskann_labels && $8::smallint[]
-    ORDER BY message.embedding <=> $3::text::vector,
-             message.occurred_at DESC, message.id ASC
-    LIMIT $9
-    """
-  end
-
-  # Produces only a class, never counts. A mixed or outdated visible corpus is
-  # stale; an entirely unembedded visible corpus is unavailable.
-  defp semantic_status(authority, identity) do
-    sql = """
-    SELECT CASE
-      WHEN count(*) = 0 THEN 'empty'
-      WHEN count(*) FILTER (
-        WHERE embedding IS NOT NULL
-          AND embedding_provider = $3
-          AND embedding_model = $4
-          AND embedding_version = $5
-          AND embedding_dimensions = $6
-      ) = 0 THEN 'unavailable'
-      WHEN count(*) FILTER (
-        WHERE embedding IS NOT NULL
-          AND embedding_provider = $3
-          AND embedding_model = $4
-          AND embedding_version = $5
-          AND embedding_dimensions = $6
-      ) < count(*) THEN 'stale'
-      ELSE 'ready'
-    END AS status
-    FROM messages
-    WHERE account_id = $1 AND scope_id = ANY($2)
-    """
-
-    [row] =
-      all(sql, [
-        db_uuid!(authority.account_id),
-        db_uuids!(authority.scope_ids),
-        identity.provider,
-        identity.model,
-        identity.version,
-        identity.dimensions
-      ])
-
-    String.to_existing_atom(row["status"])
-  end
-
-  defp visible_message?(authority) do
-    sql = """
-    SELECT EXISTS(
-      SELECT 1 FROM messages
-      WHERE account_id = $1 AND scope_id = ANY($2)
-    ) AS present
-    """
-
-    [%{"present" => present}] =
-      all(sql, [db_uuid!(authority.account_id), db_uuids!(authority.scope_ids)])
-
-    present
-  end
-
   defp in_account(authority, fun) do
     DataLayer.with_actor(authority.actor, fn _account, _actor -> fun.() end)
-  end
-
-  defp params(authority, rest) do
-    [db_uuid!(authority.account_id), db_uuids!(authority.scope_ids) | rest]
-  end
-
-  defp all(sql, values) do
-    result = Ecto.Adapters.SQL.query!(Repo, sql, values)
-
-    Enum.map(result.rows, fn row ->
-      result.columns
-      |> Enum.zip(row)
-      |> Map.new()
-      |> normalize_uuids()
-    end)
-  end
-
-  defp normalize_uuids(row) do
-    Enum.reduce(~w(id session_id scope_id peer_id), row, fn key, acc ->
-      case Map.get(acc, key) do
-        <<_::128>> = value ->
-          {:ok, uuid} = Ecto.UUID.load(value)
-          Map.put(acc, key, uuid)
-
-        _other ->
-          acc
-      end
-    end)
   end
 
   defp rank(rows) do
@@ -283,11 +125,6 @@ defmodule MemHouse.Retrieval.SourceSearch do
     |> Enum.with_index(1)
     |> Enum.map(fn {row, rank} -> Map.put(row, "rank", rank) end)
   end
-
-  defp vector_literal(values), do: "[#{Enum.join(values, ",")}]"
-  defp db_uuids!(values), do: Enum.map(values, &db_uuid!/1)
-  defp db_uuid!(<<_::128>> = value), do: value
-  defp db_uuid!(value), do: Ecto.UUID.dump!(value)
 
   defp normalize_mode(mode) when mode in [:exact, "exact"], do: :exact
   defp normalize_mode(mode) when mode in [:semantic, "semantic"], do: :semantic
