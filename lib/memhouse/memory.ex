@@ -43,7 +43,7 @@ defmodule MemHouse.Memory do
   alias MemHouse.Pipeline.Extractor
   alias MemHouse.Pipeline.Idempotency
   alias MemHouse.Pipeline.Lock
-  alias MemHouse.Recall.Planner, as: RecallPlanner
+  alias MemHouse.Recall.ToolAdapter, as: RecallToolAdapter
   alias MemHouse.Retrieval.DiagnosticGrant
   alias MemHouse.Retrieval.Profile
   alias MemHouse.Retrieval.Query, as: RetrievalQuery
@@ -795,7 +795,10 @@ defmodule MemHouse.Memory do
         if effort in ["fixed", :fixed, nil] do
           {candidates, %{"used" => false, "effort" => "fixed"}}
         else
-          run_recall_planner(attrs, question, effort, candidates)
+          RecallToolAdapter.run(attrs, question, effort, candidates,
+            minimal_recall?: minimal_recall_enabled?(),
+            visible_knowledge: &recall_visible_knowledge(attrs, &1)
+          )
         end
 
       {answer, used_model?} = answer_question(attrs, question, answer_candidates)
@@ -852,131 +855,13 @@ defmodule MemHouse.Memory do
     |> Keyword.fetch!(:minimal_enabled)
   end
 
-  defp run_recall_planner(attrs, question, effort, candidates) do
-    initial = Enum.map(candidates, &Map.put(&1, "evidence_type", "knowledge"))
-    source_recall_permitted? = Map.get(attrs, "include_source_recall", false) == true
+  # The recall adapter owns planner policy and evidence shapes. This private
+  # callback stays here because exact-id knowledge reads must reuse Memory's
+  # Account, reader, scope, lifecycle, and RLS resolution rather than duplicate
+  # that security boundary in the adapter.
+  defp recall_visible_knowledge(_attrs, []), do: []
 
-    lineage_permitted? = Map.get(attrs, "_include_lineage_recall", true) == true
-
-    tools =
-      %{
-        profile: fn _query, _state -> planner_identity_profile(attrs) end,
-        knowledge: %{
-          model_calls: 1,
-          run: fn query, _state ->
-            result =
-              attrs
-              |> Map.put("query", query)
-              |> Map.put(
-                "profile",
-                if(minimal_recall_enabled?(), do: "minimal", else: "balanced")
-              )
-              |> Map.put("_retrieval_target", "knowledge")
-              |> search()
-
-            {:ok, Enum.map(result["candidates"], &Map.put(&1, "evidence_type", "knowledge"))}
-          end
-        }
-      }
-      |> maybe_put_lineage_tool(attrs, lineage_permitted?)
-      |> maybe_put_source_recall_tools(attrs, source_recall_permitted?)
-
-    result =
-      RecallPlanner.run(question, effort, tools,
-        initial_evidence: initial,
-        initial_tool_calls: 1,
-        initial_model_calls: 1
-      )
-
-    recall =
-      result.diagnostics
-      |> stringify_nested()
-      |> Map.put("used", true)
-      |> Map.put("source_recall_permitted", source_recall_permitted?)
-      |> Map.put("lineage_recall_permitted", lineage_permitted?)
-
-    {result.evidence, recall}
-  end
-
-  defp maybe_put_source_recall_tools(tools, _attrs, false), do: tools
-
-  defp maybe_put_source_recall_tools(tools, attrs, true) do
-    tools
-    |> Map.put(:source_exact, fn query, _state ->
-      planner_source_search(attrs, query, "exact")
-    end)
-    |> Map.put(:source_semantic, %{
-      model_calls: 1,
-      run: fn query, _state -> planner_source_search(attrs, query, "semantic") end
-    })
-  end
-
-  defp maybe_put_lineage_tool(tools, _attrs, false), do: tools
-
-  defp maybe_put_lineage_tool(tools, attrs, true) do
-    Map.put(tools, :lineage, fn query, state -> planner_lineage(attrs, query, state) end)
-  end
-
-  defp planner_identity_profile(attrs) do
-    evidence =
-      attrs
-      |> stable_identity_profile()
-      |> Map.get("items", [])
-      |> Enum.map(fn item ->
-        %{
-          "id" => item["knowledge_id"],
-          "evidence_type" => "knowledge",
-          "candidate_type" => "knowledge",
-          "statement" => item["statement"],
-          "relevant_from" => nil,
-          "relevant_until" => nil,
-          "profile_category" => item["category"],
-          "profile_conflict" => item["conflict"]
-        }
-      end)
-
-    {:ok, evidence}
-  end
-
-  defp planner_lineage(attrs, _query, state) do
-    root_id =
-      Enum.find_value(state.evidence, fn item ->
-        type = item["evidence_type"] || item["candidate_type"]
-        if type == "knowledge", do: item["id"]
-      end)
-
-    if is_binary(root_id) do
-      lineage_attrs =
-        attrs
-        |> Map.put("target_type", "knowledge")
-        |> Map.put("target_id", root_id)
-        |> Map.put("max_depth", 2)
-        |> Map.put("max_fan_out", 4)
-        |> Map.put("max_nodes", min(state.remaining_items + 1, 12))
-
-      case evidence_lineage(lineage_attrs) do
-        {:ok, lineage} ->
-          ids =
-            lineage["nodes"]
-            |> Enum.filter(&(&1["type"] == "knowledge" and &1["id"] != root_id))
-            |> Enum.map(& &1["id"])
-            |> Enum.reject(&is_nil/1)
-            |> Enum.uniq()
-            |> Enum.take(state.remaining_items)
-
-          {:ok, planner_visible_knowledge(attrs, ids)}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
-    else
-      {:ok, []}
-    end
-  end
-
-  defp planner_visible_knowledge(_attrs, []), do: []
-
-  defp planner_visible_knowledge(attrs, ids) do
+  defp recall_visible_knowledge(attrs, ids) do
     with_account(attrs, fn account, actor ->
       {reader, internal_reader?} = reader_and_posture!(account, actor, attrs)
       scopes = visible_scopes(account.id, reader, Map.get(attrs, "scope_path", "/poc"))
@@ -994,46 +879,9 @@ defmodule MemHouse.Memory do
         item
         |> record_to_map()
         |> Map.put("scope_path", Map.fetch!(scope_paths, item.scope_id))
-        |> Map.put("evidence_type", "knowledge")
-        |> Map.put("candidate_type", "knowledge")
       end)
     end)
   end
-
-  defp planner_source_search(attrs, query, mode) do
-    result =
-      attrs
-      |> Map.put("query", query)
-      |> Map.put("mode", mode)
-      |> search_sources()
-
-    if result["status"] == "failed" do
-      {:error, result["failure_class"] || "source_search_failed"}
-    else
-      {:ok, Enum.map(result["results"], &source_evidence/1)}
-    end
-  end
-
-  defp source_evidence(row) do
-    row
-    |> Map.put("evidence_type", "source_message")
-    |> Map.put("candidate_type", "source_message")
-    |> Map.put("statement", row["excerpt"])
-    |> Map.put("relevant_from", nil)
-    |> Map.put("relevant_until", nil)
-  end
-
-  defp stringify_nested(value) when is_map(value) do
-    Map.new(value, fn {key, nested} -> {to_string(key), stringify_nested(nested)} end)
-  end
-
-  defp stringify_nested(value) when is_list(value), do: Enum.map(value, &stringify_nested/1)
-
-  defp stringify_nested(value)
-       when is_atom(value) and not is_boolean(value) and not is_nil(value),
-       do: Atom.to_string(value)
-
-  defp stringify_nested(value), do: value
 
   @doc """
   Assembles the cached context projections for a scope, without calling a model.
