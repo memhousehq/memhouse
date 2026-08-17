@@ -42,8 +42,14 @@ defmodule MemHouse.Pipeline.Changes.ExecuteRun do
       run = changeset.data
 
       case Pipeline.execute(run) do
+        # Another batch owns or already completed this anchor. Leave every
+        # durable field untouched: this action loaded its row before the claim
+        # race and must not write that stale pending state over the owner.
+        {:ok, %{run_status: "delegated"}} ->
+          changeset
+
         {:ok, %{run_status: status}}
-        when status in ["processing", "repairable", "terminal"] ->
+        when status in ["repairable", "terminal"] ->
           changeset
           |> Ash.Changeset.force_change_attribute(:status, status)
           |> Ash.Changeset.force_change_attribute(

@@ -34,7 +34,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     end)
     |> case do
       {:ok, [claimed_run]} -> process_claimed(claimed_run, claim_id)
-      {:ok, []} -> {:ok, %{status: "delegated", run_status: "processing"}}
+      {:ok, []} -> {:ok, %{status: "delegated", run_status: "delegated"}}
       {:error, error} -> {:error, error}
     end
   end
