@@ -696,7 +696,7 @@ retrieval_profiles =
   Keyword.put(
     retrieval_profiles,
     :minimal_enabled,
-    env_bool.(
+    env_bool!.(
       "MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL",
       Keyword.fetch!(retrieval_profiles, :minimal_enabled)
     )

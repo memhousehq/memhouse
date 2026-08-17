@@ -298,7 +298,9 @@ interleave; the ordinary per-request candidate budget is still the final cap.
 These reviewed caps are compiled profile behavior, not environment overrides.
 It remains opt-in until matched offline evaluation meets the quality, citation,
 isolation, latency, and maintenance gates. Disabling it loses no data and
-immediately restores the existing profile choices.
+immediately restores the existing profile choices. The value must be an
+explicit boolean (`true`, `false`, `1`, `0`, `yes`, `no`, `on`, or `off`);
+MemHouse rejects ambiguous or misspelled values at boot.
 
 | Variable | Meaning |
 | --- | --- |

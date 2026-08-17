@@ -1594,10 +1594,12 @@ defmodule MemHouse.Model.Schema.DialecticAnswer do
   @moduledoc """
   The structured shape for a grounded answer to a question.
 
-  Requires answer text, knowledge-id citations, an explicit `abstained` status,
-  and an `answer_confidence` percentage. The status is independent of citation
-  presence: a cited answer may abstain from a conclusion while explaining what
-  the cited evidence does support.
+  Requires answer text, governed evidence-id citations, an explicit `abstained`
+  status, and an `answer_confidence` percentage. An evidence id may identify a
+  governed knowledge candidate or an authorized immutable source-message
+  candidate; the response keeps the compatible list-of-strings shape. The
+  status is independent of citation presence: a cited answer may abstain from a
+  conclusion while explaining what the cited evidence does support.
 
   `answer_confidence` is the model's own probability, 0-100, that the answer it
   gave is correct. It is reported separately from `abstained` because the two

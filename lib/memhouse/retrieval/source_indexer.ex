@@ -23,7 +23,24 @@ defmodule MemHouse.Retrieval.SourceIndexer do
 
   require Ash.Query
 
+  @doc """
+  Rebuilds every source-message embedding in an Account scope.
+
+  Returns `{:ok, %{indexed: count}}` after the replacement vectors commit, including
+  `count: 0` when the scope has no messages. Returns the embedder error unchanged and
+  preserves every previously stored vector when the provider call fails. Invalid or
+  unauthorized Account/scope identifiers raise through the Account-scoped read.
+  """
   def rebuild_scope(account_id, scope_id), do: index_scope(account_id, scope_id, false)
+
+  @doc """
+  Embeds only source messages in an Account scope that do not yet have a vector.
+
+  Returns `{:ok, %{indexed: count}}`, where zero is the replay-safe result when the
+  derived index is already current. Returns the embedder error unchanged without
+  modifying existing vectors. Invalid or unauthorized Account/scope identifiers raise
+  through the Account-scoped read.
+  """
   def refresh_scope(account_id, scope_id), do: index_scope(account_id, scope_id, true)
 
   defp index_scope(account_id, scope_id, missing_only?) do

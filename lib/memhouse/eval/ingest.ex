@@ -87,21 +87,23 @@ defmodule MemHouse.Eval.Ingest do
   defp execute_pending_runs(_account_key, []), do: :ok
 
   defp execute_pending_runs(account_key, message_ids) do
-    DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
-      runs = extraction_runs(account.id, actor, message_ids)
-
-      Enum.reduce_while(runs, :ok, fn run, :ok ->
-        case ExtractionBatcher.run(run) do
-          {:ok, %{status: status}} when status in ["processed", "delegated"] ->
-            {:cont, :ok}
-
-          {:ok, %{status: status}} ->
-            {:halt, {:error, {:extraction_batch_failed, status}}}
-
-          {:error, error} ->
-            {:halt, {:error, error}}
-        end
+    runs =
+      DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account,
+                                                                                   actor ->
+        extraction_runs(account.id, actor, message_ids)
       end)
+
+    Enum.reduce_while(runs, :ok, fn run, :ok ->
+      case ExtractionBatcher.run(run) do
+        {:ok, %{status: status}} when status in ["processed", "delegated"] ->
+          {:cont, :ok}
+
+        {:ok, %{status: status}} ->
+          {:halt, {:error, {:extraction_batch_failed, status}}}
+
+        {:error, error} ->
+          {:halt, {:error, error}}
+      end
     end)
   end
 

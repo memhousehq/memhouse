@@ -732,7 +732,7 @@ defmodule MemHouse.Memory do
   def diagnostic_search(_attrs, _actor), do: raise(Ash.Error.Forbidden, errors: [])
 
   @doc """
-  Answers a question from governed memory and cites the knowledge it used.
+  Answers a question from governed memory and cites the governed evidence it used.
 
   `attrs` takes the same keys as `search/2`, plus `"question"`, which is
   required and raises `KeyError` when absent. Optional `"effort"` is `"low"`,
@@ -748,7 +748,10 @@ defmodule MemHouse.Memory do
   statements, and every citation it returns is dropped unless it matches an id
   that was actually retrieved for this question. An answer whose citations all
   fail that check is replaced by an empty abstention, so a caller may rely on
-  every id in `"citations"` being real and retrieved.
+  every id in `"citations"` being real and retrieved. Citation values remain a
+  compatible list of strings: each is the id of either a governed knowledge
+  candidate or, when source recall was explicitly authorized, an immutable
+  source-message evidence row typed `"source_message"` in `"recall_evidence"`.
 
   The model never refuses. It answers with whatever the retrieved statements
   make most probable and states its own certainty as `"answer_confidence"`, a
@@ -1985,7 +1988,7 @@ defmodule MemHouse.Memory do
 
   # Builds the grounded question prompt and validates what comes back.
   #
-  # Every statement is prefixed with its knowledge id so the model can cite by id,
+  # Every statement is prefixed with its governed evidence id so the model can cite by id,
   # and nothing beyond the retrieved statements and their validity windows enters
   # the prompt — the model is never given free rein over the Account's memory. The
   # call goes through the model gateway rather than a provider directly, which is

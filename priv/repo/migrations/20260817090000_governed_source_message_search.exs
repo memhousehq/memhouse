@@ -1,7 +1,13 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Repo.Migrations.GovernedSourceMessageSearch do
-  @moduledoc false
+  @moduledoc """
+  Adds rebuildable lexical and semantic search fields and indexes to immutable
+  source messages.
+
+  Vector and lexical indexes are created concurrently so deploying the derived
+  retrieval cache does not block ordinary message ingestion.
+  """
 
   use Ecto.Migration
 

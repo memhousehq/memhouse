@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Repo.Migrations.DreamTimeBoundedCursor do
-  @moduledoc false
+  @moduledoc """
+  Adds the exact input-row cursor used to bound and replay a dream-time pass.
+
+  The cursor complements the timestamp watermark so equal-timestamp inputs are
+  resumed deterministically rather than skipped or processed twice.
+  """
   use Ecto.Migration
 
   def up do

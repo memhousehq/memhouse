@@ -1,7 +1,13 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Repo.Migrations.RecallDocumentDualLane do
-  @moduledoc false
+  @moduledoc """
+  Creates the Account-isolated, rebuildable recall projection for independently
+  bounded direct and derived knowledge lanes.
+
+  Existing eligible knowledge is backfilled before forced RLS is installed;
+  normal application access begins only after the Account wall is in place.
+  """
 
   use Ecto.Migration
 

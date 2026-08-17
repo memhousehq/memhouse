@@ -156,6 +156,11 @@ the response includes its bounded excerpt and stable source metadata. Citation
 ids the model invented or did not retrieve are removed; if none survive, the
 answer becomes the empty abstention with `answer_confidence` 0.
 
+`citations` remains a list of string ids for response compatibility. Resolve
+each id against the governed evidence returned for the answer: ordinary
+knowledge evidence uses its Knowledge id, while an authorized source item is
+typed `source_message` in `recall_evidence` and uses its immutable Message id.
+
 ## Choosing a profile
 
 ```mermaid

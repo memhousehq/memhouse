@@ -279,20 +279,24 @@ defmodule MemHouse.Eval.Runner do
   # synchronously refreshes only the explicitly selected rebuildable caches for this isolated
   # case scope. Keeping the two switches separate makes projection maintenance measurable.
   defp refresh_retrieval!(account_key, scope_path, semantic?, projection?) do
-    DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
-      scope =
-        Scope
-        |> Ash.Query.filter(path == ^scope_path)
-        |> Ash.Query.set_tenant(account.id)
-        |> Ash.read_one!(actor: actor)
+    {account_id, scope_id} =
+      DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account,
+                                                                                   actor ->
+        scope =
+          Scope
+          |> Ash.Query.filter(path == ^scope_path)
+          |> Ash.Query.set_tenant(account.id)
+          |> Ash.read_one!(actor: actor)
 
-      with :ok <- maybe_refresh_semantic(account.id, scope.id, semantic?),
-           :ok <- maybe_refresh_projection(account.id, scope.id, projection?) do
-        :ok
-      else
-        {:error, error} -> raise "evaluation retrieval refresh failed: #{inspect(error)}"
-      end
-    end)
+        {account.id, scope.id}
+      end)
+
+    with :ok <- maybe_refresh_semantic(account_id, scope_id, semantic?),
+         :ok <- maybe_refresh_projection(account_id, scope_id, projection?) do
+      :ok
+    else
+      {:error, error} -> raise "evaluation retrieval refresh failed: #{inspect(error)}"
+    end
   end
 
   defp maybe_refresh_semantic(account_id, scope_id, true) do
