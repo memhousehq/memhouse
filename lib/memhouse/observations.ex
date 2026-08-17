@@ -249,6 +249,10 @@ defmodule MemHouse.Observations.Message do
 
   use MemHouse.Resource, domain: MemHouse.Observations, table: "messages"
 
+  postgres do
+    migration_types diskann_labels: {:array, :smallint}
+  end
+
   multitenancy do
     strategy :attribute
     attribute :account_id
@@ -273,6 +277,22 @@ defmodule MemHouse.Observations.Message do
       require_atomic? false
     end
 
+    # Derived source-search data only. The immutable observation remains the
+    # source of truth and a failed refresh leaves its previous index intact.
+    update :index_from_pipeline do
+      accept [
+        :embedding,
+        :embedding_provider,
+        :embedding_model,
+        :embedding_version,
+        :embedding_dimensions,
+        :diskann_labels,
+        :source_indexed_at
+      ]
+
+      require_atomic? false
+    end
+
     destroy :erase do
       require_atomic? false
     end
@@ -292,6 +312,10 @@ defmodule MemHouse.Observations.Message do
     # other side — none of them can turn an observation into knowledge.
 
     policy action(:mark_extracted) do
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
+
+    policy action(:index_from_pipeline) do
       authorize_if actor_attribute_equals(:pipeline?, true)
     end
 
@@ -319,6 +343,16 @@ defmodule MemHouse.Observations.Message do
     # SHA-256 of the content, derived on create. Not public, because it is machinery: it keys
     # the extraction job and stands in for the text in the audit chain.
     attribute :content_hash, :string, allow_nil?: false
+
+    # Rebuildable source-recall index. Identity travels with every vector so a
+    # query never compares coordinates from different embedding spaces.
+    attribute :diskann_labels, {:array, :integer}, allow_nil?: false, default: []
+    attribute :embedding_provider, :string
+    attribute :embedding_model, :string
+    attribute :embedding_version, :string
+    attribute :embedding_dimensions, :integer
+    attribute :embedding, :vector, select_by_default?: false
+    attribute :source_indexed_at, :utc_datetime_usec
 
     # When the turn happened, which may be earlier than when it was submitted.
     attribute :occurred_at, :utc_datetime_usec, allow_nil?: false, public?: true

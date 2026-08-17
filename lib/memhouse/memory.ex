@@ -42,6 +42,7 @@ defmodule MemHouse.Memory do
   alias MemHouse.Retrieval.DiagnosticGrant
   alias MemHouse.Retrieval.Profile
   alias MemHouse.Retrieval.Query, as: RetrievalQuery
+  alias MemHouse.Retrieval.SourceSearch
   alias MemHouse.Skills
   alias MemHouse.Topology.Scope
 
@@ -510,6 +511,57 @@ defmodule MemHouse.Memory do
       })
 
       stringify_top_level(retrieval)
+    end)
+  end
+
+  @doc """
+  Searches immutable source messages without making them a second knowledge
+  writer.
+
+  Account and scope authorization are resolved exactly as in `search/2` before
+  either full-text ranking or query embedding runs. `"mode"` is `"exact"` or
+  `"semantic"`; `"limit"` is clamped to 1..100 and `"excerpt_chars"` to
+  80..2000. Results carry stable message, session, scope, and speaker ids plus
+  a bounded excerpt suitable for citation. The status distinguishes `ready`,
+  `stale`, `empty`, `unavailable`, and `failed` without exposing hidden counts.
+  """
+  def search_sources(filters, identity_actor \\ nil) do
+    Observability.with_span(:memory, "memhouse.memory.search_sources", fn ->
+      filters = filters |> normalize_attrs() |> put_identity_actor(identity_actor)
+      query = Map.get(filters, "query", "")
+      scope_path = Map.get(filters, "scope_path", "/poc")
+
+      authority =
+        with_account(filters, fn account, actor ->
+          {reader, _internal_reader?} = reader_and_posture!(account, actor, filters)
+
+          scopes =
+            visible_scopes(
+              account.id,
+              reader,
+              scope_path,
+              Map.get(filters, "include_cross_links", false) in [true, "true", "1"]
+            )
+
+          %{account_id: account.id, actor: reader, scope_ids: Enum.map(scopes, & &1.id)}
+        end)
+
+      result =
+        SourceSearch.search(authority, query,
+          mode: Map.get(filters, "mode", "semantic"),
+          limit: search_limit(Map.get(filters, "limit")),
+          excerpt_chars: parse_int(Map.get(filters, "excerpt_chars"), 480)
+        )
+
+      Observability.set_attributes(:memory, %{
+        "memhouse.source_search.mode" => result["mode"],
+        "memhouse.source_search.status" => result["status"],
+        "memhouse.source_search.degraded" => result["degraded"],
+        "memhouse.source_search.result_count" => length(result["results"]),
+        "memhouse.source_search.query_length" => String.length(query)
+      })
+
+      result
     end)
   end
 

@@ -332,6 +332,54 @@ defmodule MemHouseWeb.MemoryControllerTest do
     assert_trace_id(conn)
   end
 
+  test "POST /api/v1/source-search returns bounded immutable source citations", %{
+    conn: conn,
+    actor: actor,
+    token: token
+  } do
+    assert {:ok, message} =
+             Memory.ingest_message(
+               ingest_attrs("source-search-session", "/contract/http/source-search"),
+               actor
+             )
+
+    conn =
+      conn
+      |> with_identity(token)
+      |> post(~p"/api/v1/source-search", %{
+        "scope_path" => "/contract/http/source-search",
+        "query" => "concise weekly release summaries",
+        "mode" => "exact",
+        "excerpt_chars" => 80
+      })
+
+    assert %{
+             "data" => %{
+               "mode" => "exact",
+               "status" => "ready",
+               "degraded" => false,
+               "results" => [
+                 %{
+                   "id" => message_id,
+                   "session_id" => session_id,
+                   "scope_id" => scope_id,
+                   "speaker_key" => _speaker,
+                   "occurred_at" => _occurred_at,
+                   "excerpt" => excerpt,
+                   "rank" => 1
+                 }
+               ]
+             }
+           } = json_response(conn, 200)
+
+    assert message_id == message["id"]
+    assert session_id == message["session_id"]
+    assert scope_id == message["scope_id"]
+    assert String.length(excerpt) <= 80
+    refute Map.has_key?(json_response(conn, 200)["data"], "total")
+    assert_trace_id(conn)
+  end
+
   # Diagnostic options travel as a `DiagnosticGrant` struct precisely so a JSON
   # body cannot forge one. The token below is an account admin's password
   # identity — the identity that may run a diagnostic in the console — so a role

@@ -156,6 +156,20 @@ defmodule MemHouseWeb.MemoryController do
   end
 
   @doc """
+  Searches immutable source messages for grounded recovery and citation.
+
+  Body fields: `query`, `scope_path`, `mode` (`exact` or `semantic`), `limit`,
+  `excerpt_chars`, `peer_key`, and `include_cross_links`. Account and scope
+  authority come only from the authenticated actor. The response exposes
+  bounded excerpts and stable source metadata, never an unbounded transcript
+  or a hidden corpus count.
+  """
+  def source_search(conn, params) do
+    result = Memory.search_sources(params, conn.assigns.current_actor)
+    json(conn, %{data: result})
+  end
+
+  @doc """
   Retrieves supporting memory and answers a natural-language question over it.
 
     Body: `question` is required; every `search/2` parameter is also accepted. `profile`

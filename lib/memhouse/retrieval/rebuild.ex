@@ -26,12 +26,13 @@ defmodule MemHouse.Retrieval.Rebuild do
   write fails.
   """
   def scope(account_id, scope_id) do
-    with {:ok, index} <- MemHouse.Retrieval.Indexer.rebuild_scope(account_id, scope_id),
+    with {:ok, sources} <- MemHouse.Retrieval.SourceIndexer.rebuild_scope(account_id, scope_id),
+         {:ok, index} <- MemHouse.Retrieval.Indexer.rebuild_scope(account_id, scope_id),
          {:ok, entities} <-
            MemHouse.Retrieval.EntityResolver.rebuild_scope(account_id, scope_id),
          {:ok, projections} <- MemHouse.Context.Builder.refresh_scope(account_id, scope_id) do
       emit_coverage(account_id, scope_id, index)
-      {:ok, %{index: index, entities: entities, projections: projections}}
+      {:ok, %{sources: sources, index: index, entities: entities, projections: projections}}
     end
   end
 
@@ -43,12 +44,13 @@ defmodule MemHouse.Retrieval.Rebuild do
   remove sources as well as add them.
   """
   def refresh_scope(account_id, scope_id) do
-    with {:ok, index} <- MemHouse.Retrieval.Indexer.refresh_scope(account_id, scope_id),
+    with {:ok, sources} <- MemHouse.Retrieval.SourceIndexer.refresh_scope(account_id, scope_id),
+         {:ok, index} <- MemHouse.Retrieval.Indexer.refresh_scope(account_id, scope_id),
          {:ok, entities} <-
            MemHouse.Retrieval.EntityResolver.rebuild_scope(account_id, scope_id),
          {:ok, projections} <- MemHouse.Context.Builder.refresh_scope(account_id, scope_id) do
       emit_coverage(account_id, scope_id, index)
-      {:ok, %{index: index, entities: entities, projections: projections}}
+      {:ok, %{sources: sources, index: index, entities: entities, projections: projections}}
     end
   end
 

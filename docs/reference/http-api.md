@@ -18,6 +18,7 @@ There is **no generated OpenAPI description** in this release — see
 | `POST /api/v1/ingest` | any identity | Submit a raw observation |
 | `GET /api/v1/ingest/:message_id` | any identity | Read extraction status and visible results |
 | `POST /api/v1/search` | any identity | Ranked retrieval |
+| `POST /api/v1/source-search` | any identity | Governed source-message recall |
 | `POST /api/v1/ask` | any identity | Cited answer |
 | `POST /api/v1/context` | any identity | Projection-backed context |
 | `POST /api/v1/readiness` | any identity | Skill-readiness gap report |
@@ -262,6 +263,38 @@ not the list length, as the signal.
 
 Account, authorised-scope, lifecycle, and source filtering happen **inside**
 retrieval. A raw `strategies` override is refused for external callers.
+
+---
+
+## `POST /api/v1/source-search`
+
+Searches immutable source messages when governed knowledge is incomplete. It is
+a read-only recovery surface: messages remain the sole source record and only
+their full-text and vector indexes are derived and rebuildable.
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `query` | `""` | Blank queries return an empty result without a provider call |
+| `scope_path` | `"/poc"` | Selects the scope and its authorised ancestors |
+| `mode` | `"semantic"` | `semantic` or model-free `exact` full-text search |
+| `limit` | `12` | Clamped to `1` through `100` |
+| `excerpt_chars` | `480` | Clamped to `80` through `2000` |
+| `peer_key` | none | Uses the same reader and non-transferable-authority rule as search |
+| `include_cross_links` | off | Both relation endpoints must be authorised |
+
+Each result includes the stable message, session, scope, and speaker identities,
+the source timestamp and role, a bounded excerpt, a strategy-local score, and a
+deterministic rank. `status` is `ready`, `stale`, `empty`, `unavailable`, or
+`failed`; `failure_class` is content-safe. The response deliberately has no
+total corpus count. Account and scope filters run before ranking, so excerpts,
+status, timing metadata, and result order cannot describe an unauthorised scope.
+
+Semantic search compares only vectors with the configured provider, model,
+version, and dimensions. `stale` means the authorised visible corpus mixes the
+current identity with missing or older vectors. `unavailable` means visible
+messages exist but none has a current vector. Provider failure writes nothing,
+so a later rebuild can retry without losing the previous index. Erasing the
+canonical message removes both full-text and vector hits in the same delete.
 
 ---
 

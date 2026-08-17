@@ -63,6 +63,7 @@ defmodule MemHouseWeb.Router do
       get "/ingest/:message_id", MemoryController, :ingest_status
       post "/ask", MemoryController, :ask
       post "/search", MemoryController, :search
+      post "/source-search", MemoryController, :source_search
       post "/context", MemoryController, :context
       post "/readiness", MemoryController, :readiness
       get "/knowledge", MemoryController, :knowledge
