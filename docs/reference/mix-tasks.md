@@ -273,13 +273,16 @@ role preflight. Both modes write durable rows to their scratch Accounts.
 Execute definitions have a closed `components` contract. Profile, effective strategies and seed
 stages, reranking, deadline, extraction batching identity and limits, adaptive recall effort, source/lineage
 permissions, separate semantic-index and RecallDocument refreshes, idle scheduling gates, explicit
-dream execution, and durability audit must exactly match runner behavior. An unknown key or a
+dream execution, the default-off dream-operation split, and durability audit must exactly match
+runner behavior. A declared lineage tool or split reasoning operation must also complete in the
+report; permission or configuration alone is not execution evidence. An unknown key or a
 mismatched value fails validation; the map is not free-form provenance. Runtime feature switches
 are restored even on failure. Fixture definitions keep the map empty because fixture replay does
 not execute product components.
 
 The committed smoke definition compares the real `balanced` defaults with the opt-in `minimal`
-dual-lane, batched, bounded-recall, idle-scheduler, and dream-pass configuration. Offline execution
+dual-lane, batched, high-effort bounded-recall, idle-scheduler, split-update, and dream-pass
+configuration. Offline execution
 synchronously refreshes each isolated case index and, only for minimal, its RecallDocument
 projection. It requires existing local Ortex model and
 tokenizer artifacts. Missing artifacts and hosted or

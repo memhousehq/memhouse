@@ -79,6 +79,13 @@ defmodule MemHouse.Model.Reasoner do
     |> Enum.filter(&Keyword.fetch!(config, &1))
   end
 
+  @doc false
+  def split_enabled? do
+    :memhouse
+    |> Application.fetch_env!(:dream_reasoning_operations)
+    |> Keyword.fetch!(:split_enabled)
+  end
+
   @doc """
   Runs one reasoning pass over a delta and its working set.
 

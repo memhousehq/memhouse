@@ -48,8 +48,13 @@ explicit current-profile searches retain their existing behavior. Dream
 synthesis remains off unless a separate matched evaluation approves it:
 
 ```bash
+MEMHOUSE_EXPERIMENTAL_DREAM_OPERATION_SPLIT=false
 MEMHOUSE_DREAM_SYNTHESIS_ENABLED=false
 ```
+
+The first flag preserves the legacy single-call hourly/manual path. Evaluate
+the split with active governed inputs before canarying it; a configured flag or
+zero-work pass is not operation evidence.
 
 Roll out by Account/scope traffic assignment outside MemHouse. Do not mix
 current and candidate results under one experiment label, and do not tune

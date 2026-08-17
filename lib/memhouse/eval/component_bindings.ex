@@ -22,6 +22,7 @@ defmodule MemHouse.Eval.ComponentBindings do
     semantic_index_refresh
     recall_projection_refresh
     idle_dream_scheduling
+    dream_reasoning_operations
     dream_time
     durability_audit
   )
@@ -52,12 +53,18 @@ defmodule MemHouse.Eval.ComponentBindings do
     source_recall = boolean!(variant, "source_recall", false)
     lineage_recall = boolean!(variant, "lineage_recall", effort != "fixed")
     idle_dream_scheduling = boolean!(variant, "idle_dream_scheduling", false)
+    dream_reasoning_split = boolean!(variant, "dream_reasoning_split", false)
     dream_time = boolean!(variant, "dream_time", false)
     durability_audit = boolean!(variant, "durability_audit", false)
 
     if effort == "fixed" and (source_recall or lineage_recall) do
       raise ArgumentError,
             "execute variant #{inspect(variant["id"])} cannot enable source or lineage recall with fixed effort"
+    end
+
+    if dream_reasoning_split and not dream_time do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} cannot enable split dream reasoning without dream_time"
     end
 
     semantic_default = Enum.any?(strategies, &semantic_strategy?/1)
@@ -77,6 +84,7 @@ defmodule MemHouse.Eval.ComponentBindings do
       "recall_projection_refresh" =>
         boolean!(variant, "recall_projection_refresh", projection_default),
       "idle_dream_scheduling" => idle_dream_scheduling(idle_dream_scheduling),
+      "dream_reasoning_operations" => dream_reasoning_operations(dream_reasoning_split),
       "dream_time" => dream_time,
       "durability_audit" => durability_audit
     }
@@ -140,6 +148,16 @@ defmodule MemHouse.Eval.ComponentBindings do
       "max_delta_items" => configured.max_delta_items,
       "max_working_set_items" => configured.max_working_set_items,
       "max_elapsed_ms" => configured.max_elapsed_ms
+    }
+  end
+
+  defp dream_reasoning_operations(split_enabled?) do
+    configured = Application.fetch_env!(:memhouse, :dream_reasoning_operations) |> Map.new()
+
+    %{
+      "split_enabled" => split_enabled?,
+      "update" => configured.update,
+      "synthesis" => configured.synthesis
     }
   end
 

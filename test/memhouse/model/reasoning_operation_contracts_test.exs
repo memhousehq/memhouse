@@ -80,12 +80,24 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
   end
 
   test "operation enablement is explicit and keeps synthesis off until ablation approval" do
+    refute Reasoner.split_enabled?()
     assert Reasoner.enabled_operations() == [:update]
 
-    Application.put_env(:memhouse, :dream_reasoning_operations, update: true, synthesis: true)
+    Application.put_env(:memhouse, :dream_reasoning_operations,
+      split_enabled: true,
+      update: true,
+      synthesis: true
+    )
+
+    assert Reasoner.split_enabled?()
     assert Reasoner.enabled_operations() == [:update, :synthesis]
 
-    Application.put_env(:memhouse, :dream_reasoning_operations, update: false, synthesis: false)
+    Application.put_env(:memhouse, :dream_reasoning_operations,
+      split_enabled: true,
+      update: false,
+      synthesis: false
+    )
+
     assert Reasoner.enabled_operations() == []
   end
 

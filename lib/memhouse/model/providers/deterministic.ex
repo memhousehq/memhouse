@@ -85,6 +85,12 @@ defmodule MemHouse.Model.Providers.Deterministic do
         :reasoning ->
           %{"items" => [], "relations" => []}
 
+        :reasoning_update ->
+          %{"items" => [], "relations" => []}
+
+        :reasoning_synthesis ->
+          %{"items" => [], "relations" => []}
+
         :dialectic ->
           %{
             "answer" => "not known",

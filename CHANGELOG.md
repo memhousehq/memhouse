@@ -54,6 +54,13 @@ changelog entry and contract-version transition.
 
 ### Added
 
+- Dream-time keeps its legacy one-call `Reasoner.reason` path by default. The
+  independently versioned update/synthesis split is now selected only by
+  `MEMHOUSE_EXPERIMENTAL_DREAM_OPERATION_SPLIT=true`; evaluation binds and
+  restores that switch and requires actual completed split operations and
+  lineage reads. Synthesis deductions reuse durable `prompt_version` for their
+  operation identity, which typed lineage reports as `reasoning_synthesis`.
+
 - A default-off `compact-explicit-v1` extractor experiment limits model output
   to atomic durable statements, exact support, subject/source references, and
   exact valid-time evidence. Trusted code derives fail-closed policy defaults

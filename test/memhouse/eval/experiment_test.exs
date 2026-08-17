@@ -201,11 +201,16 @@ defmodule MemHouse.Eval.ExperimentTest do
     assert Experiment.mode!("specs/eval/experiments/memory-profile-ablation.json") == "execute"
     assert experimental["profile"] == "minimal"
     assert experimental["strategies"] == nil
-    assert experimental["recall_effort"] == "low"
+    assert experimental["recall_effort"] == "high"
 
     assert experimental["components"] == %{
-             "adaptive_recall_effort" => "low",
+             "adaptive_recall_effort" => "high",
              "dream_time" => true,
+             "dream_reasoning_operations" => %{
+               "split_enabled" => true,
+               "synthesis" => false,
+               "update" => true
+             },
              "durability_audit" => false,
              "extraction_batching" => %{
                "claim_timeout_seconds" => 1200,

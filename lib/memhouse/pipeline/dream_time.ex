@@ -264,11 +264,23 @@ defmodule MemHouse.Pipeline.DreamTime do
       with {:ok, working_set} <- thorough_working_set(snapshot) do
         context = reasoning_context(snapshot, working_set)
 
-        case Reasoner.reason_operations(
-               %{delta: serialise(snapshot.delta), working_set: serialise(working_set)},
-               context,
-               total_timeout: snapshot.limits.max_elapsed_ms
-             ) do
+        input = %{delta: serialise(snapshot.delta), working_set: serialise(working_set)}
+
+        result =
+          if Reasoner.split_enabled?() do
+            Reasoner.reason_operations(input, context,
+              total_timeout: snapshot.limits.max_elapsed_ms
+            )
+          else
+            # Hourly and manual dream-time retain the established one-call
+            # contract unless the split experiment is explicitly enabled.
+            Reasoner.reason(input, context,
+              total_timeout: snapshot.limits.max_elapsed_ms,
+              return_usage: true
+            )
+          end
+
+        case result do
           {:ok, result, provenance} ->
             {:ok,
              %{
@@ -351,6 +363,16 @@ defmodule MemHouse.Pipeline.DreamTime do
         output_tokens: acc.output_tokens + (Map.get(usage, :output_tokens, 0) || 0)
       }
     end)
+  end
+
+  defp operation_usage(provenance) when is_map(provenance) do
+    usage = Map.get(provenance, :usage, %{})
+
+    %{
+      calls: 1,
+      input_tokens: Map.get(usage, :input_tokens, 0) || 0,
+      output_tokens: Map.get(usage, :output_tokens, 0) || 0
+    }
   end
 
   defp affected_scopes(account_id) do

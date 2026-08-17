@@ -142,8 +142,11 @@ mix memhouse.eval.experiment \
 Execute definitions use a closed component map derived from executable settings: profile,
 effective strategies and seed stages, rerank, deadline, extraction batching identity and limits, adaptive recall
 effort, source and lineage recall permissions, semantic-index refresh, RecallDocument refresh,
-idle scheduling gates, explicit dream execution, and durability audit. The map must exactly match the
-runner inputs and resolved profile or validation fails; unknown keys are unsupported rather than
+idle scheduling gates, explicit dream execution, the default-off dream-operation split, and
+durability audit. The map must exactly match the runner inputs and resolved profile or validation
+fails. A variant that declares lineage recall or split reasoning must record an actual completed
+lineage tool or every enabled split operation; permission or configuration alone is not execution
+evidence. Unknown keys are unsupported rather than
 inert labels. Runtime feature switches are restored even when execution raises. Fixture
 definitions must keep `components` empty because replaying supplied metrics does not execute a
 component. The source revision and dirty/clean state, dataset digest, and explicit
@@ -151,7 +154,7 @@ sampling/durability seeds prevent results from two different inputs or implement
 presented as one ablation.
 
 The committed smoke definition compares the real `balanced` default strategy set and synchronous
-fixed recall with the `minimal` dual-lane profile, durable extraction batching, low-effort bounded
+fixed recall with the `minimal` dual-lane profile, durable extraction batching, high-effort bounded
 recall, explicit source/lineage permissions, idle scheduler switch, and explicit dream pass. Both
 variants refresh the isolated derived vector index; only the minimal variant rebuilds its
 non-authoritative RecallDocument projection. The two refreshes are separately executable and
@@ -166,7 +169,9 @@ usage, operator-priced cost, wall/recall latency, stored facts, dream-time accou
 query count/timing, and new `PipelineRun` work by kind and status. A telemetry handler counts only
 the bounded runner interval; the before/after snapshot queries are outside it. It never records
 SQL, parameters, results, content, or Account ids. An active-direct-only idle scheduler may
-legitimately report zero dream rows for a fixture whose governed outputs remain provisional.
+legitimately report zero wakeup rows for a fixture whose governed outputs remain provisional, but
+a split-operation execute variant fails unless its explicit dream pass has active inputs and
+records the enabled operations.
 Gates cover regression, citation and unsupported-answer failures, source-membership leaks,
 token/cost and latency budgets, and replay effects. Measured evidence is structurally separate
 from inferences and unreproduced first-party claims.

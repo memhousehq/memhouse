@@ -13,6 +13,7 @@ defmodule MemHouse.Eval.VariantRuntime do
   def with_components(components, fun) when is_map(components) and is_function(fun, 0) do
     batching = Application.fetch_env!(:memhouse, :extraction_batching)
     dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+    dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
     profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
 
     Application.put_env(
@@ -37,11 +38,22 @@ defmodule MemHouse.Eval.VariantRuntime do
       Keyword.put(profiles, :minimal_enabled, components["retrieval_profile"] == "minimal")
     )
 
+    Application.put_env(
+      :memhouse,
+      :dream_reasoning_operations,
+      Keyword.put(
+        dream_operations,
+        :split_enabled,
+        components["dream_reasoning_operations"]["split_enabled"]
+      )
+    )
+
     try do
       fun.()
     after
       Application.put_env(:memhouse, :extraction_batching, batching)
       Application.put_env(:memhouse, :dream_time_gates, dream_gates)
+      Application.put_env(:memhouse, :dream_reasoning_operations, dream_operations)
       Application.put_env(:memhouse, :retrieval_profiles, profiles)
     end
   end

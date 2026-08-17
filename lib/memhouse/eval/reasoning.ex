@@ -30,6 +30,13 @@ defmodule MemHouse.Eval.Reasoning do
 
     before = snapshot(account_id)
 
+    {measurement, operations} =
+      measure_operations(account_id, fn -> run_pass(account_id, before) end)
+
+    Map.put(measurement, "operations", operations)
+  end
+
+  defp run_pass(account_id, before) do
     case DreamTime.run(account_id) do
       {:ok, first} ->
         after_first = snapshot(account_id)
@@ -88,6 +95,7 @@ defmodule MemHouse.Eval.Reasoning do
           "relations" => merge_counts(total["relations"], measurement["relations"]),
           "deductions" => merge_counts(total["deductions"], measurement["deductions"]),
           "corroboration" => merge_counts(total["corroboration"], measurement["corroboration"]),
+          "operations" => merge_operation_counts(total["operations"], measurement["operations"]),
           "reasoner" => merge_reasoner(total["reasoner"], measurement["reasoner"])
       }
     end)
@@ -206,6 +214,58 @@ defmodule MemHouse.Eval.Reasoning do
     end)
   end
 
+  defp merge_operation_counts(left, right) do
+    Map.merge(left, right, fn _operation, a, b ->
+      Map.merge(a, b, fn _metric, x, y -> x + y end)
+    end)
+  end
+
+  defp measure_operations(account_id, fun) do
+    owner = self()
+    ref = make_ref()
+    handler = {__MODULE__, ref}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, _measurements, metadata, _config ->
+          if metadata[:account_id] == account_id and
+               metadata[:operation] in ["reasoning_update", "reasoning_synthesis"] do
+            send(owner, {ref, metadata[:operation], metadata[:status]})
+          end
+        end,
+        nil
+      )
+
+    try do
+      result = fun.()
+      {result, collect_operations(ref, %{})}
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
+  defp collect_operations(ref, counts) do
+    receive do
+      {^ref, operation, status} ->
+        metrics = %{
+          "calls" => 1,
+          "completed" => if(status == "ok", do: 1, else: 0),
+          "failed" => if(status == "ok", do: 0, else: 1)
+        }
+
+        counts =
+          Map.update(counts, operation, metrics, fn existing ->
+            Map.merge(existing, metrics, fn _metric, a, b -> a + b end)
+          end)
+
+        collect_operations(ref, counts)
+    after
+      0 -> counts
+    end
+  end
+
   defp empty do
     %{
       "enabled" => false,
@@ -222,6 +282,7 @@ defmodule MemHouse.Eval.Reasoning do
       "deductions" => %{},
       "conflict_validation_items" => 0,
       "corroboration" => %{},
+      "operations" => %{},
       "reasoner" => empty_reasoner()
     }
   end

@@ -25,6 +25,11 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     assert ComponentBindings.resolve!(variant) == %{
              "adaptive_recall_effort" => "medium",
              "dream_time" => true,
+             "dream_reasoning_operations" => %{
+               "split_enabled" => false,
+               "synthesis" => false,
+               "update" => true
+             },
              "durability_audit" => false,
              "extraction_batching" => %{
                "claim_timeout_seconds" => 1200,
@@ -94,11 +99,13 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
   test "runtime feature switches are restored when execution raises" do
     batching = Application.fetch_env!(:memhouse, :extraction_batching)
     dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+    dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
     profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
 
     components = %{
       "extraction_batching" => %{"enabled" => true},
       "idle_dream_scheduling" => %{"enabled" => true},
+      "dream_reasoning_operations" => %{"split_enabled" => true},
       "retrieval_profile" => "minimal"
     }
 
@@ -106,6 +113,7 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
       VariantRuntime.with_components(components, fn ->
         assert Application.fetch_env!(:memhouse, :extraction_batching)[:enabled]
         assert Application.fetch_env!(:memhouse, :dream_time_gates)[:idle_scheduler_enabled]
+        assert Application.fetch_env!(:memhouse, :dream_reasoning_operations)[:split_enabled]
         assert Application.fetch_env!(:memhouse, :retrieval_profiles)[:minimal_enabled]
         assert MemHouse.Pipeline.ExtractionAdmission.enabled?()
         assert MemHouse.Pipeline.idle_dream_time_enabled?()
@@ -115,6 +123,18 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
 
     assert Application.fetch_env!(:memhouse, :extraction_batching) == batching
     assert Application.fetch_env!(:memhouse, :dream_time_gates) == dream_gates
+    assert Application.fetch_env!(:memhouse, :dream_reasoning_operations) == dream_operations
     assert Application.fetch_env!(:memhouse, :retrieval_profiles) == profiles
+  end
+
+  test "split dream reasoning cannot be declared without executing dream-time" do
+    assert_raise ArgumentError, ~r/cannot enable split dream reasoning without dream_time/, fn ->
+      ComponentBindings.resolve!(%{
+        "id" => "inert-split",
+        "profile" => "balanced",
+        "strategies" => ["lexical"],
+        "dream_reasoning_split" => true
+      })
+    end
   end
 end

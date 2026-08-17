@@ -27,6 +27,7 @@
       "semantic_index_refresh": true,
       "recall_projection_refresh": false,
       "idle_dream_scheduling": false,
+      "dream_reasoning_split": false,
       "dream_time": false,
       "components": {
         "retrieval_profile": "balanced",
@@ -59,6 +60,11 @@
           "max_working_set_items": 50,
           "max_elapsed_ms": 120000
         },
+        "dream_reasoning_operations": {
+          "split_enabled": false,
+          "update": true,
+          "synthesis": false
+        },
         "dream_time": false,
         "durability_audit": false
       }
@@ -72,12 +78,13 @@
       "strategies": null,
       "deadline": "disabled",
       "extraction_batching": true,
-      "recall_effort": "low",
+      "recall_effort": "high",
       "source_recall": true,
       "lineage_recall": true,
       "semantic_index_refresh": true,
       "recall_projection_refresh": true,
       "idle_dream_scheduling": true,
+      "dream_reasoning_split": true,
       "dream_time": true,
       "components": {
         "retrieval_profile": "minimal",
@@ -96,7 +103,7 @@
           "safety_margin_tokens": 2048,
           "claim_timeout_seconds": 1200
         },
-        "adaptive_recall_effort": "low",
+        "adaptive_recall_effort": "high",
         "source_recall": true,
         "lineage_recall": true,
         "semantic_index_refresh": true,
@@ -109,6 +116,11 @@
           "max_delta_items": 20,
           "max_working_set_items": 50,
           "max_elapsed_ms": 120000
+        },
+        "dream_reasoning_operations": {
+          "split_enabled": true,
+          "update": true,
+          "synthesis": false
         },
         "dream_time": true,
         "durability_audit": false

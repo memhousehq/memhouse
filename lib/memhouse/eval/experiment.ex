@@ -460,6 +460,7 @@ defmodule MemHouse.Eval.Experiment do
     end
 
     assert_recall_components!(report, variant, components)
+    assert_reasoning_operations!(report, variant, components)
 
     report
   end
@@ -485,6 +486,37 @@ defmodule MemHouse.Eval.Experiment do
     unless valid? do
       raise ArgumentError,
             "execute variant #{inspect(variant["id"])} recall behavior did not match its component binding"
+    end
+
+    if components["lineage_recall"] and
+         not Enum.any?(recalls, fn recall ->
+           Enum.any?(recall["outcomes"] || [], fn outcome ->
+             outcome["tool"] == "lineage" and outcome["status"] == "completed"
+           end)
+         end) do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} declared lineage recall but completed no lineage tool call"
+    end
+  end
+
+  defp assert_reasoning_operations!(report, variant, components) do
+    operations = components["dream_reasoning_operations"]
+
+    if operations["split_enabled"] do
+      actual = get_in(report, ["reasoning", "operations"]) || %{}
+
+      missing =
+        ["update", "synthesis"]
+        |> Enum.filter(&operations[&1])
+        |> Enum.map(&"reasoning_#{&1}")
+        |> Enum.reject(fn operation ->
+          get_in(actual, [operation, "completed"]) |> Kernel.||(0) > 0
+        end)
+
+      if missing != [] do
+        raise ArgumentError,
+              "execute variant #{inspect(variant["id"])} declared split dream operations but completed none for #{inspect(missing)}"
+      end
     end
   end
 

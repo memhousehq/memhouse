@@ -206,6 +206,10 @@ store or expose the model's private rationale. Scope and lifecycle filtering
 happen before a node is returned; a visible derived statement never grants
 access to a hidden source.
 
+A split synthesis deduction reuses its durable prompt identity to report the
+typed operation `reasoning_synthesis`. The version string itself remains
+private provenance and is not returned in the graph.
+
 Traversal has depth, per-node fan-out, and total-node budgets. Stable ordering,
 cycle termination, and opaque missing or lifecycle-hidden references make the
 same request reproducible without turning hidden content into a diagnostic.

@@ -8,6 +8,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
   alias MemHouse.Governance.Engine
   alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation}
   alias MemHouse.Memory
+  alias MemHouse.Pipeline.DeductionEffects
   alias MemHouse.Topology.Scope
 
   require Ash.Query
@@ -182,6 +183,68 @@ defmodule MemHouse.LineageIdentityProfileTest do
                "scope_path" => alpha.scope.path,
                "target_id" => alpha.knowledge.id
              })
+  end
+
+  test "synthesis prompt identity survives persistence and drives typed lineage" do
+    first = seed_active!("lineage-synthesis", "Avery prefers concise updates.", "first")
+    second = seed_active!("lineage-synthesis", "Avery asks for short weekly summaries.", "second")
+
+    deduction =
+      DeductionEffects.apply!(
+        %{
+          statement: "Avery prefers concise weekly updates.",
+          kind: "preference",
+          subject_type: "peer",
+          subject_ref: "avery",
+          confidence: 0.9,
+          sensitivity: "internal",
+          target_level: "peer",
+          contributor_ids: [first.knowledge.id, second.knowledge.id],
+          expires_at: nil,
+          revalidate_after: nil,
+          relevant_from: nil,
+          relevant_until: nil,
+          provider: "deterministic",
+          model: "fixture-reasoner",
+          model_version: "1",
+          prompt_version: "reason-1",
+          operation_prompt_version: "reason-synthesis-1",
+          pipeline_version: "f5-1"
+        },
+        first.account.id,
+        first.scope.id,
+        first.pipeline
+      )
+
+    assert deduction.prompt_version == "reason-synthesis-1"
+
+    deduction =
+      deduction
+      |> Engine.transition!(
+        first.pipeline,
+        %{state: "active", verification: "test"},
+        reason: "lineage_synthesis_test_activate",
+        channel: "pipeline"
+      )
+
+    reloaded =
+      KnowledgeItem
+      |> Ash.Query.filter(id == ^deduction.id)
+      |> Ash.Query.set_tenant(first.account.id)
+      |> Ash.read_one!(actor: first.pipeline)
+
+    assert reloaded.prompt_version == "reason-synthesis-1"
+
+    assert {:ok, lineage} =
+             Memory.evidence_lineage(%{
+               "account_key" => "lineage-synthesis",
+               "peer_key" => "avery",
+               "scope_path" => first.scope.path,
+               "target_id" => reloaded.id
+             })
+
+    assert hd(lineage["nodes"])["operation"] == "reasoning_synthesis"
+    refute Jason.encode!(lineage) =~ "reason-synthesis-1"
   end
 
   test "stable identity profile keeps evidence and conflicts but rejects unsafe categories" do

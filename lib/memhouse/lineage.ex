@@ -297,6 +297,9 @@ defmodule MemHouse.Lineage do
   defp knowledge_level(_item, refs),
     do: if(Enum.any?(refs, &(&1.operation == "derived_from")), do: 2, else: 1)
 
+  defp knowledge_operation(%{prompt_version: "reason-synthesis-1"}, _refs),
+    do: "reasoning_synthesis"
+
   defp knowledge_operation(%{deduction_key: key}, _refs) when is_binary(key), do: "deduction"
 
   defp knowledge_operation(_item, refs) do

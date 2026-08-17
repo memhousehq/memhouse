@@ -210,10 +210,12 @@ config :memhouse, :dream_time_gates,
   max_working_set_items: 50,
   max_elapsed_ms: 120_000
 
-# Narrow dream reasoning operations. Synthesis remains disabled until the
-# matched ablation demonstrates value; update/contradiction retains current
-# inspectability without granting the model lifecycle control.
+# Narrow dream reasoning operations. The split is an experiment and stays off:
+# hourly and manual dream-time keep the existing single `Reasoner.reason/3`
+# call until matched evidence and human review approve the split. When the
+# experiment is enabled, synthesis remains independently gated.
 config :memhouse, :dream_reasoning_operations,
+  split_enabled: false,
   update: true,
   synthesis: false
 

@@ -3,7 +3,13 @@
 defmodule MemHouse.Eval.ExperimentExecuteTest do
   use MemHouse.DataCase, async: false
 
+  alias MemHouse.DataLayer
   alias MemHouse.Eval.{Experiment, Report}
+  alias MemHouse.Governance.Engine
+  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Memory
+
+  require Ash.Query
 
   setup do
     tmp_dir =
@@ -75,12 +81,14 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     definition_path = Path.join(tmp_dir, "execute-ablation.json")
     original_batching = Application.fetch_env!(:memhouse, :extraction_batching)
     original_dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+    original_dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
 
     experimental_components =
       executable_components("balanced", ["lexical"])
       |> Map.merge(%{
-        "adaptive_recall_effort" => "low",
+        "adaptive_recall_effort" => "high",
         "dream_time" => true,
+        "dream_reasoning_operations" => dream_operations_component(true),
         "extraction_batching" => batching_component(true),
         "idle_dream_scheduling" => idle_component(true),
         "lineage_recall" => true,
@@ -90,14 +98,20 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     execute_definition =
       definition(dataset_path)
       |> put_in(["variants", Access.at(1), "extraction_batching"], true)
-      |> put_in(["variants", Access.at(1), "recall_effort"], "low")
+      |> put_in(["variants", Access.at(1), "recall_effort"], "high")
       |> put_in(["variants", Access.at(1), "source_recall"], true)
       |> put_in(["variants", Access.at(1), "lineage_recall"], true)
       |> put_in(["variants", Access.at(1), "idle_dream_scheduling"], true)
       |> put_in(["variants", Access.at(1), "dream_time"], true)
+      |> put_in(["variants", Access.at(1), "dream_reasoning_split"], true)
       |> put_in(["variants", Access.at(1), "components"], experimental_components)
 
     File.write!(definition_path, Jason.encode!(execute_definition))
+
+    seed_active_dream_inputs!(
+      "eval-ablation-test-execute-ablation-experimental",
+      "/bench/memhouse/execute-ablation-experimental/smoke"
+    )
 
     {_manifest, bundle} =
       Experiment.run(definition_path,
@@ -115,9 +129,15 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
 
     assert Enum.all?(hd(experimental_report["cases"])["questions"], fn question ->
              question["recall"]["used"] == true and
-               question["recall"]["effort"] == "low" and
+               question["recall"]["effort"] == "high" and
                question["recall"]["source_recall_permitted"] == true and
                question["recall"]["lineage_recall_permitted"] == true
+           end)
+
+    assert Enum.any?(hd(experimental_report["cases"])["questions"], fn question ->
+             Enum.any?(question["recall"]["outcomes"], fn outcome ->
+               outcome["tool"] == "lineage" and outcome["status"] == "completed"
+             end)
            end)
 
     current = get_in(bundle, ["evidence", "measured", "current"])
@@ -133,8 +153,19 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     assert experimental["maintenance"]["dream_time_runs"] == 0
     assert experimental_report["reasoning"]["enabled"] == true
 
+    assert get_in(experimental_report, [
+             "reasoning",
+             "operations",
+             "reasoning_update",
+             "completed"
+           ]) >
+             0
+
     assert Application.fetch_env!(:memhouse, :extraction_batching) == original_batching
     assert Application.fetch_env!(:memhouse, :dream_time_gates) == original_dream_gates
+
+    assert Application.fetch_env!(:memhouse, :dream_reasoning_operations) ==
+             original_dream_operations
   end
 
   defp definition(dataset_path) do
@@ -199,6 +230,7 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     %{
       "adaptive_recall_effort" => "fixed",
       "dream_time" => false,
+      "dream_reasoning_operations" => dream_operations_component(false),
       "durability_audit" => false,
       "extraction_batching" => batching_component(false),
       "idle_dream_scheduling" => idle_component(false),
@@ -239,5 +271,47 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
       "min_changes" => 1,
       "min_interval_seconds" => 0
     }
+  end
+
+  defp dream_operations_component(split_enabled) do
+    %{
+      "split_enabled" => split_enabled,
+      "synthesis" => false,
+      "update" => true
+    }
+  end
+
+  defp seed_active_dream_inputs!(account_key, scope_path) do
+    Enum.each(
+      ["Alice prefers concise updates.", "Alice moved the review to Friday."],
+      fn content ->
+        assert {:ok, message} =
+                 Memory.ingest_message(%{
+                   "account_key" => account_key,
+                   "session_id" => "seed-#{System.unique_integer([:positive])}",
+                   "scope_path" => scope_path,
+                   "peer_key" => "alice",
+                   "content" => content
+                 })
+
+        assert {:ok, knowledge} = Memory.extract_message(message["id"], account_key)
+
+        DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account,
+                                                                                     actor ->
+          Enum.each(knowledge, fn item ->
+            KnowledgeItem
+            |> Ash.Query.filter(id == ^item["id"])
+            |> Ash.Query.set_tenant(account.id)
+            |> Ash.read_one!(actor: actor)
+            |> Engine.transition!(
+              actor,
+              %{state: "active", verification: "eval_test_seed"},
+              reason: "eval_test_seed",
+              channel: "pipeline"
+            )
+          end)
+        end)
+      end
+    )
   end
 end

@@ -63,7 +63,10 @@ defmodule MemHouse.Pipeline.DeductionEffects do
           extracting_provider: item.provider,
           extracting_model: item.model,
           extracting_model_version: item.model_version,
-          prompt_version: item.prompt_version,
+          # Split synthesis has an operation-specific prompt identity. Reuse
+          # the existing durable prompt_version field rather than introducing
+          # a second provenance column whose values could diverge.
+          prompt_version: operation_prompt_version(item),
           pipeline_version: item.pipeline_version
         })
         |> Ash.create!(actor: actor)
@@ -195,6 +198,10 @@ defmodule MemHouse.Pipeline.DeductionEffects do
     |> Ash.read_one!(actor: actor)
   end
 
+  defp operation_prompt_version(item) do
+    Map.get(item, :operation_prompt_version) || Map.get(item, :prompt_version)
+  end
+
   defp relation!(source, target, kind, actor) do
     existing =
       KnowledgeRelation
@@ -254,7 +261,7 @@ defmodule MemHouse.Pipeline.DeductionEffects do
         item.provider,
         item.model,
         item.model_version,
-        item.prompt_version,
+        operation_prompt_version(item),
         item.pipeline_version
       ])
 

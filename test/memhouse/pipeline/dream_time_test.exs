@@ -3,11 +3,69 @@
 defmodule MemHouse.Pipeline.DreamTimeTest do
   use MemHouse.DataCase, async: false
 
+  defmodule Provider do
+    @moduledoc false
+    @behaviour MemHouse.Model.Provider
+
+    alias MemHouse.Model.Providers.Deterministic
+
+    @impl true
+    def structured(config, messages, schema, opts) do
+      if pid = Application.get_env(:memhouse, :dream_time_test_pid) do
+        send(pid, {:dream_reasoner_task, Keyword.get(opts, :task)})
+      end
+
+      Deterministic.structured(config, messages, schema, opts)
+    end
+
+    @impl true
+    def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
+
+    @impl true
+    def embed(config, texts, opts), do: Deterministic.embed(config, texts, opts)
+
+    @impl true
+    def rerank(config, query, documents, opts),
+      do: Deterministic.rerank(config, query, documents, opts)
+  end
+
   alias MemHouse.DataLayer
+  alias MemHouse.Governance.Engine
   alias MemHouse.Identity
+  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Memory
   alias MemHouse.Pipeline.DreamTime
   alias MemHouse.Pipeline.DreamTime.Gate
   alias MemHouse.Topology.Scope
+
+  require Ash.Query
+
+  test "hourly and manual dream-time retain one legacy reasoner call by default" do
+    provider = Application.get_env(:memhouse, :model_provider)
+    operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+    Application.put_env(:memhouse, :dream_time_test_pid, self())
+
+    Application.put_env(
+      :memhouse,
+      :dream_reasoning_operations,
+      Keyword.put(operations, :split_enabled, false)
+    )
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, provider)
+      Application.delete_env(:memhouse, :dream_time_test_pid)
+      Application.put_env(:memhouse, :dream_reasoning_operations, operations)
+    end)
+
+    account_id = seed_active!("dream-time-legacy-default")
+
+    assert {:ok, %{scopes: 1}} = DreamTime.run(account_id)
+    assert_receive {:dream_reasoner_task, :reasoning}
+    refute_receive {:dream_reasoner_task, :reasoning_update}
+    refute_receive {:dream_reasoner_task, :reasoning_synthesis}
+  end
 
   test "a scope without an active-knowledge delta does not call the reasoner" do
     %{actor: actor} =
@@ -161,5 +219,33 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
              ])
 
     refute Exception.message(error) =~ "secret"
+  end
+
+  defp seed_active!(account_key) do
+    assert {:ok, message} =
+             Memory.ingest_message(%{
+               "account_key" => account_key,
+               "session_id" => "legacy-default",
+               "scope_path" => "/dream",
+               "peer_key" => "avery",
+               "content" => "Avery prefers concise weekly updates."
+             })
+
+    assert {:ok, [knowledge]} = Memory.extract_message(message["id"], account_key)
+
+    DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
+      KnowledgeItem
+      |> Ash.Query.filter(id == ^knowledge["id"])
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: actor)
+      |> Engine.transition!(
+        actor,
+        %{state: "active", verification: "test"},
+        reason: "dream_time_legacy_test_activate",
+        channel: "pipeline"
+      )
+
+      account.id
+    end)
   end
 end

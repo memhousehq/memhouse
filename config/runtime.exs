@@ -920,6 +920,11 @@ config :memhouse, :dream_time_gates, dream_time_gates
 dream_reasoning_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
 
 config :memhouse, :dream_reasoning_operations,
+  split_enabled:
+    env_bool.(
+      "MEMHOUSE_EXPERIMENTAL_DREAM_OPERATION_SPLIT",
+      Keyword.fetch!(dream_reasoning_operations, :split_enabled)
+    ),
   update:
     env_bool.(
       "MEMHOUSE_DREAM_UPDATE_ENABLED",
