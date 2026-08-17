@@ -1,0 +1,112 @@
+{
+  "backend": {
+    "engine": "postgres",
+    "mode": "external",
+    "sqlite": "unsupported"
+  },
+  "dataset": {
+    "id": "memhouse-smoke.json",
+    "sha256": "a11eb64e22a17d033f06558b05de5006df7db3f020900a3534bbfafeba741c9b",
+    "split": "fixture"
+  },
+  "definition": {
+    "schema": "memhouse-experiment-definition-1",
+    "sha256": "ec49ecf4416760a47f1e0b5545a1d7d7421db158076a1c93dbf408d1a2dd7f3e"
+  },
+  "generated_at": "2026-08-17T12:00:00Z",
+  "id": "profile-experiment-fixture",
+  "mode": "fixture",
+  "models": {
+    "dialectic_agent": {
+      "model": "fixture-dialectic-agent",
+      "parameters": {},
+      "pipeline_version": "fixture-1",
+      "prompt_version": "none",
+      "provider": "deterministic",
+      "version": "1"
+    },
+    "dream_reasoner": {
+      "model": "fixture-dream-reasoner",
+      "parameters": {},
+      "pipeline_version": "fixture-1",
+      "prompt_version": "none",
+      "provider": "deterministic",
+      "version": "1"
+    },
+    "embedder": {
+      "model": "fixture-embedder",
+      "parameters": {},
+      "pipeline_version": "fixture-1",
+      "prompt_version": "none",
+      "provider": "deterministic",
+      "version": "1"
+    },
+    "ingest_extractor": {
+      "model": "fixture-ingest-extractor",
+      "parameters": {
+        "max_tokens": 512,
+        "temperature": 0.0
+      },
+      "pipeline_version": "fixture-1",
+      "prompt_version": "extract-fixture-1",
+      "provider": "deterministic",
+      "version": "1"
+    },
+    "reranker": {
+      "model": "fixture-reranker",
+      "parameters": {},
+      "pipeline_version": "fixture-1",
+      "prompt_version": "none",
+      "provider": "deterministic",
+      "version": "1"
+    }
+  },
+  "schema": "memhouse-experiment-manifest-1",
+  "seeds": {
+    "case_sampling": "all",
+    "durability": "fixture-durability-v1"
+  },
+  "source": {
+    "repository": "memhousehq/memhouse",
+    "revision": "fixture-revision"
+  },
+  "variants": {
+    "current": {
+      "components": {
+        "adaptive_recall": "fixed",
+        "derivation_lineage": "source-message-ids",
+        "dream_triggers": "watermark",
+        "extraction_batching": "per-message",
+        "projections": "enabled",
+        "retrieval_seeds": "balanced",
+        "source_search": "knowledge-only"
+      },
+      "id": "current",
+      "profile": {
+        "name": "balanced",
+        "strategies": null,
+        "version": "fixture"
+      }
+    },
+    "experimental": {
+      "components": {
+        "adaptive_recall": "bounded",
+        "derivation_lineage": "typed",
+        "dream_triggers": "delta-idle-budget",
+        "extraction_batching": "token-budgeted",
+        "projections": "identity-only",
+        "retrieval_seeds": "minimal-hybrid",
+        "source_search": "governed-hybrid"
+      },
+      "id": "experimental",
+      "profile": {
+        "name": "balanced",
+        "strategies": [
+          "semantic",
+          "lexical"
+        ],
+        "version": "fixture"
+      }
+    }
+  }
+}

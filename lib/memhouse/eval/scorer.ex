@@ -127,9 +127,25 @@ defmodule MemHouse.Eval.Scorer do
     %{
       "overall" => aggregate(question_results),
       "retrieval" => retrieval_aggregate(question_results),
+      "isolation" => isolation_aggregate(question_results),
       "by_category" => group_aggregate(question_results, "category"),
       "by_scale" => group_aggregate(question_results, "scale"),
       "beam_degradation_curve" => beam_degradation_curve(question_results)
+    }
+  end
+
+  # The runner checks candidate source ids against the source ids ingested for that case.
+  # Only counts reach the report: an unexpected id may belong to another scope or Account and
+  # must not become a second leak through evaluation evidence.
+  defp isolation_aggregate(results) do
+    candidates = Enum.sum(Enum.map(results, &Map.get(&1, "isolation_candidates_checked", 0)))
+    leaks = Enum.sum(Enum.map(results, &Map.get(&1, "isolation_leaks", 0)))
+
+    %{
+      "candidates_checked" => candidates,
+      "leaks" => leaks,
+      "passed" => leaks == 0,
+      "method" => "source-membership-v1"
     }
   end
 

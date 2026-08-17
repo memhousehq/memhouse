@@ -69,6 +69,25 @@ guardrails; lexical and salience-recency variants are reported ablations.
 latency, RAG-triad, token efficiency, and BEAM degradation remain
 frontier-tracked as required by `AD-EVAL-3`, `NFR-1`, and `NFR-11`.
 
+Matched component work uses `MemHouse.Eval.Experiment` around the existing runner rather than a
+second benchmark implementation. A definition has exactly one current and one experimental
+variant over an identical source digest. It produces an environment-resolved manifest and a
+comparison bundle. The manifest pins the source revision and dirty/clean state, Postgres mode,
+all model/prompt/pipeline identities, allowlisted generation parameters, profile configuration,
+strategy overrides, evaluation seeds, and named component revisions.
+
+Account-scoped snapshots of `KnowledgeItem` and `UsageEvent` provide stored-fact, call, token,
+duration, error, and operator-priced cost deltas. The runner also counts candidate source ids that
+do not belong to the case's ingested sources; ids themselves never enter the report. Comparison
+gates cover quality regression, recall, citation correctness, unsupported non-abstaining answers,
+source-membership isolation, cost/token and latency budgets, and dream replay effects. A fixture
+mode exercises the same comparison contract without starting MemHouse, Postgres, or any provider;
+its results are marked fixture evidence and cannot be confused with executed measurements.
+
+The database identity is always PostgreSQL, with `external` and `pg0` deployment modes. A SQLite
+claim fails definition validation. This follows the shipped data contract: there is no weaker
+SQLite evaluation path whose green result could be mistaken for Postgres parity.
+
 Honcho-informed simplification experiments follow the matched-manifest,
 deterministic-safety, default-selection, and rollback gates in
 [ADR 0021](../adr/0021-clean-room-memory-simplification.md). A first-party

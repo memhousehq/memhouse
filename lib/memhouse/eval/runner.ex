@@ -10,15 +10,21 @@ defmodule MemHouse.Eval.Runner do
   """
 
   alias MemHouse.Clock
+  alias MemHouse.DataLayer
   alias MemHouse.Eval.{Durability, ModelJudge, Reasoning, Scorer}
   alias MemHouse.Memory
+  alias MemHouse.Retrieval.Indexer
+  alias MemHouse.Topology.Scope
+
+  require Ash.Query
 
   @doc """
   Runs every case in `dataset` and returns the complete evaluation report.
 
   `dataset` is normalized by `MemHouse.Eval.Adapter`. Options set profile, scratch
   Account, run id, deadline, strategy override, split, judge, and run limits; every choice
-  is recorded in the string-keyed report.
+  is recorded in the string-keyed report. `:refresh_retrieval` synchronously builds missing
+  vectors before questions and is intended only for isolated profile experiments.
 
   Non-success ingest tuples remain scored failures. Raised memory errors or invalid model
   judge results abort the run rather than producing incomplete evidence.
@@ -155,6 +161,9 @@ defmodule MemHouse.Eval.Runner do
         do: Reasoning.run(account_key),
         else: nil
 
+    if Keyword.get(opts, :refresh_retrieval, false),
+      do: refresh_retrieval!(account_key, scope_path)
+
     ref_map = build_ref_map(ingested)
 
     questions =
@@ -185,6 +194,7 @@ defmodule MemHouse.Eval.Runner do
 
         cited_refs = cited_refs(answer, ref_map, question.evidence_granularity)
         ranked_refs = ranked_refs(answer, ref_map, question.evidence_granularity)
+        isolation = isolation_counts(answer, ref_map)
         retrieval_cutoffs = Keyword.get(opts, :retrieval_cutoffs, [10, 20, 50])
 
         deterministic_score =
@@ -222,6 +232,8 @@ defmodule MemHouse.Eval.Runner do
           "profile_version" => Map.get(answer, "profile_version"),
           "contributed_strategies" => Map.get(answer, "contributed_strategies", []),
           "dropped_strategies" => Map.get(answer, "dropped_strategies", []),
+          "isolation_candidates_checked" => isolation.candidates_checked,
+          "isolation_leaks" => isolation.leaks,
           "latency_ms" => latency_ms
         })
       end)
@@ -262,6 +274,24 @@ defmodule MemHouse.Eval.Runner do
       status: status,
       reason: reason
     }
+  end
+
+  # Matched profile experiments need semantic retrieval to measure the corpus just ingested.
+  # Ordinary benchmark runs retain their existing queue-shaped behavior; the explicit option
+  # synchronously refreshes only the rebuildable statement index for this isolated case scope.
+  defp refresh_retrieval!(account_key, scope_path) do
+    DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
+      scope =
+        Scope
+        |> Ash.Query.filter(path == ^scope_path)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      case Indexer.refresh_scope(account.id, scope.id) do
+        {:ok, _counts} -> :ok
+        {:error, error} -> raise "evaluation retrieval refresh failed: #{inspect(error)}"
+      end
+    end)
   end
 
   # Citation scoring compares the benchmark's own evidence labels, but an answer cites
@@ -335,6 +365,24 @@ defmodule MemHouse.Eval.Runner do
     |> Enum.filter(&(Map.get(&1, "id") in cited_ids))
     |> Enum.flat_map(&Map.get(&1, "source_message_ids", []))
     |> Enum.uniq()
+  end
+
+  # Every returned knowledge candidate must descend from a message ingested for this case.
+  # Unexpected ids are counted but never copied into the report, because an id from another
+  # scope or Account is itself data the evaluation harness is not authorized to disclose.
+  defp isolation_counts(answer, ref_map) do
+    allowed = ref_map.message_by_db_id |> Map.keys() |> MapSet.new()
+
+    source_ids =
+      answer
+      |> Map.get("candidates", [])
+      |> Enum.flat_map(&Map.get(&1, "source_message_ids", []))
+      |> Enum.uniq()
+
+    %{
+      candidates_checked: length(source_ids),
+      leaks: Enum.count(source_ids, &(not MapSet.member?(allowed, &1)))
+    }
   end
 
   # Per-case detail, including the scope it wrote to, so a surprising number can be traced

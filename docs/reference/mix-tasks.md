@@ -15,6 +15,7 @@ listed where available.
 | `memhouse.governance.autoshare` | Let one Account keep and place knowledge without a human |
 | `memhouse.eval.smoke` | Developer sanity pass over the real write/read path |
 | `memhouse.eval.benchmark` | Run one benchmark fixture and score it |
+| `memhouse.eval.experiment` | Compare matched current and experimental memory profiles |
 | `memhouse.eval.release` | Run the deterministic release matrix |
 | `memhouse.eval.verify` | Validate a report's provenance |
 | `memhouse.release.check` | Fail unless the tree is releasable |
@@ -241,6 +242,56 @@ A role on the deterministic fallback fails this check too: `--no-model` is how
 an offline run is requested.
 
 Also writes real rows. Same warning applies.
+
+---
+
+## `memhouse.eval.experiment`
+
+```bash
+mix memhouse.eval.experiment \
+  --definition specs/eval/experiments/memory-profile-ablation.json \
+  --manifest-output /private/tmp/memhouse-experiment-manifest.json \
+  --output /private/tmp/memhouse-comparison.json
+```
+
+Runs the current and experimental variants over the same dataset, in order, in separate scratch
+Accounts. The first output is the environment-resolved run manifest: exact input digest, source
+revision and working-tree state, Postgres mode, model and prompt identities, safe generation
+parameters, evaluation seeds, and effective retrieval settings. The second is a machine-readable
+comparison with stage metrics and gate results.
+
+The stages cover ingest calls/tokens/facts, answer and retrieval quality, citations, abstention,
+unexpected source membership, total token/cost accounting, latency, and dream-time replay. Cost is
+an estimate from operator-supplied rates; a provider that returns no usage object honestly records
+zero tokens rather than a guess. Gates fail the command by default. `--report-only` writes a failed
+bundle without changing the exit status.
+
+Execute definitions use the deterministic providers by default. `--live-model` is the explicit
+opt-in for configured hosted providers and may incur cost. It also performs the normal generative
+role preflight. Both modes write durable rows to their scratch Accounts.
+
+The committed smoke definition uses lexical and recency strategies so it needs no embedding
+artifact. A definition that names `semantic` synchronously refreshes the isolated case index and
+requires the configured local or hosted embedder; MemHouse never substitutes fake vectors.
+
+Fixture definitions are different: they replay content-free stage measurements without starting
+MemHouse, Postgres, or a provider. They are test evidence, not benchmark evidence, and the bundle
+labels them as fixture mode. Reproduce the committed example with:
+
+```bash
+mix memhouse.eval.experiment \
+  --definition test/fixtures/eval/profile-experiment-fixture.json \
+  --manifest-output /private/tmp/profile-experiment-fixture-manifest.json \
+  --output /private/tmp/profile-experiment-fixture-bundle.json
+```
+
+MemHouse has one Postgres behavior contract in `external` and packaged `pg0` deployment modes.
+SQLite is unsupported and an experiment definition claiming it is rejected rather than presented
+as parity evidence. CI runs the same source tests in both supported database modes.
+
+The comparison keeps three categories separate: measured results, explicitly labelled inferences,
+and first-party external claims with a source and reproduction flag. An external headline can
+therefore never enter a gate as if MemHouse measured it.
 
 ---
 

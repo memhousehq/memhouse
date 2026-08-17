@@ -1,0 +1,78 @@
+{
+  "schema": "memhouse-experiment-definition-1",
+  "id": "honcho-informed-memory-profile-ablation",
+  "mode": "execute",
+  "dataset": {
+    "id": "memhouse-smoke.json",
+    "sha256": "a11eb64e22a17d033f06558b05de5006df7db3f020900a3534bbfafeba741c9b",
+    "split": "release-evaluation"
+  },
+  "seeds": {
+    "case_sampling": "all",
+    "durability": "honcho-ablation-v1"
+  },
+  "variants": [
+    {
+      "id": "current-balanced",
+      "kind": "current",
+      "benchmark": "memhouse",
+      "dataset": "../../../test/fixtures/eval/memhouse-smoke.json",
+      "profile": "balanced",
+      "strategies": ["lexical", "temporal", "salience_recency", "entity_match"],
+      "deadline": "disabled",
+      "dream_time": false,
+      "components": {
+        "extraction_batching": "per-message",
+        "source_search": "knowledge-only",
+        "adaptive_recall": "fixed",
+        "derivation_lineage": "source-message-ids",
+        "retrieval_seeds": "offline-current",
+        "projections": "enabled",
+        "dream_triggers": "watermark"
+      }
+    },
+    {
+      "id": "experimental-minimal",
+      "kind": "experimental",
+      "benchmark": "memhouse",
+      "dataset": "../../../test/fixtures/eval/memhouse-smoke.json",
+      "profile": "balanced",
+      "strategies": ["lexical", "salience_recency"],
+      "deadline": "disabled",
+      "dream_time": false,
+      "components": {
+        "extraction_batching": "token-budgeted",
+        "source_search": "governed-hybrid",
+        "adaptive_recall": "bounded",
+        "derivation_lineage": "typed",
+        "retrieval_seeds": "offline-minimal",
+        "projections": "identity-only",
+        "dream_triggers": "delta-idle-budget"
+      }
+    }
+  ],
+  "gates": {
+    "quality": {"max_accuracy_regression": 0.0, "min_recall_at_10": 1.0},
+    "safety": {
+      "min_citation_hit_rate": 1.0,
+      "max_unsupported_claims": 0,
+      "max_isolation_leaks": 0,
+      "max_dropped_strategy_runs": 0
+    },
+    "cost": {"max_total_tokens_ratio": 1.0},
+    "latency": {"max_recall_p95_ratio": 5.0, "max_wall_time_ratio": 5.0},
+    "dream": {"max_replay_durable_effects": 0}
+  },
+  "inferences": [
+    {
+      "claim": "A minimal deterministic retrieval path may preserve recall with fewer moving parts."
+    }
+  ],
+  "first_party_claims": [
+    {
+      "claim": "Honcho reports 90.4 percent on LongMemEval S.",
+      "source": "plastic-labs/honcho-benchmarks@20c497bff02ff8737268be6d91c197767dc7bac0",
+      "reproduced": false
+    }
+  ]
+}

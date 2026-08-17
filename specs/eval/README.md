@@ -125,6 +125,47 @@ Manual live-model runs add `--judge model`; the configured dream-reasoner must
 be a different provider/model family from the dialectic answer role or the run
 fails before scoring.
 
+## Matched Profile Experiments
+
+`mix memhouse.eval.experiment` is the controlled-ablation entrypoint. One definition contains one
+current and one experimental variant over the same dataset. The command emits a resolved
+`memhouse-experiment-manifest-1` artifact and a `memhouse-comparison-1` bundle rather than asking a
+maintainer to compare two unrelated runner files by hand.
+
+```bash
+mix memhouse.eval.experiment \
+  --definition specs/eval/experiments/memory-profile-ablation.json \
+  --manifest-output /private/tmp/memhouse-experiment-manifest.json \
+  --output /private/tmp/memhouse-comparison.json
+```
+
+The definition records component revisions for extraction batching, source search, adaptive
+recall, lineage, retrieval seeds, projections, and dream triggers. Implemented runtime switches
+such as retrieval strategies and dream-time execution are applied directly; later component
+implementations retain their exact revision in the same map. The source revision and dirty/clean
+state, dataset digest, and explicit sampling/durability seeds prevent results from two different
+inputs or implementations being presented as one ablation.
+
+The committed smoke definition compares only deterministic lexical/recency paths so it runs on a
+checkout with no ONNX artifact. A semantic ablation must name `semantic` explicitly; the harness
+then refreshes that case's derived vector index and fails if the configured embedder is unavailable
+or the strategy drops. It never stores fake deterministic embeddings.
+
+The measured section stages quality, citation, abstention, unexpected-source isolation, provider
+usage, operator-priced cost, wall/recall latency, stored facts, and dream-time accounting. Gates
+cover regression, citation and unsupported-answer failures, source-membership leaks, token/cost
+and latency budgets, and replay effects. Measured evidence is structurally separate from
+inferences and unreproduced first-party claims.
+
+Execute mode uses deterministic local model roles unless the operator explicitly passes
+`--live-model`. Fixture mode starts neither the application nor a provider and is not quotable
+benchmark evidence. Its committed manifest and bundle under `specs/eval/results/` are exact
+reproduction evidence for the comparison contract.
+
+Both production database modes use PostgreSQL. The resolved manifest records `external` or `pg0`;
+SQLite is deliberately rejected because the vector, full-text, RLS, and transactional queue
+contract has no SQLite implementation.
+
 ## Full Benchmark Ingestion And Scoring
 
 MemHouse also includes a full benchmark runner for fixture ingestion and

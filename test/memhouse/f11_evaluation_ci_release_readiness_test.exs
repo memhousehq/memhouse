@@ -27,6 +27,7 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
 
     for task <- [
           "memhouse.eval.benchmark",
+          "memhouse.eval.experiment",
           "memhouse.eval.release",
           "memhouse.eval.smoke",
           "memhouse.eval.verify",
