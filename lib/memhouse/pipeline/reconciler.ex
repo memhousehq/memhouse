@@ -16,16 +16,20 @@ defmodule MemHouse.Pipeline.Reconciler do
   - messages that were never stamped as extracted;
   - document versions still pending, or whose processing failed;
   - active connectors that are due (or have never run);
+  - scopes with missing or stale source-message embeddings and no recoverable
+    projection refresh; and
   - scopes with active statements but no derived entity mentions.
   """
 
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Documents.ConnectorConfig
+  alias MemHouse.Model.Config
   alias MemHouse.Observations.DocumentVersion
   alias MemHouse.Observations.Message
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline
+  alias MemHouse.Pipeline.Idempotency
   alias MemHouse.Retrieval.Store
 
   require Ash.Query
@@ -54,7 +58,7 @@ defmodule MemHouse.Pipeline.Reconciler do
   two-pass sequence makes the job end durable before recovery starts.
 
   Returns `{:ok, counts}` with `:replayed`, `:terminated`, `:messages`, `:documents`,
-  `:connectors`, `:scopes`, and
+  `:connectors`, `:source_scopes`, `:scopes`, and
   `:reconciled` (their sum). The counts report how many enqueues *succeeded*,
   not how much new work was created — a record whose run already exists is
   counted as reconciled because the upsert succeeded. A steady non-zero count
@@ -126,6 +130,35 @@ defmodule MemHouse.Pipeline.Reconciler do
               match?({:ok, _run}, Pipeline.enqueue_connector_sync(connector, actor))
             end)
 
+          identity =
+            :embedder
+            |> Config.resolve(%{account_id: account_id, actor: actor})
+            |> Config.embedding_identity()
+
+          # Message creation normally schedules the coalesced scope refresh in
+          # its own transaction. This corpus scan is the crash/upgrade safety
+          # net: it covers rows created before that hook existed, stale vectors
+          # after an embedding-identity change, and a refresh whose job ended.
+          # Existing recoverable work wins so an hourly sweep never adds a
+          # second provider call while a scope job can still converge.
+          source_scopes =
+            account_id
+            |> Store.scopes_with_stale_source_embeddings(identity, @batch_size)
+            |> Enum.count(fn row ->
+              scope_id = row["scope_id"]
+
+              not Pipeline.projection_refresh_recoverable?(account_id, scope_id, actor) and
+                match?(
+                  {:ok, _run},
+                  Pipeline.enqueue_projection_refresh(
+                    account_id,
+                    scope_id,
+                    source_refresh_watermark(row, identity),
+                    actor
+                  )
+                )
+            end)
+
           scopes =
             account_id
             |> Store.scopes_missing_mentions(@batch_size)
@@ -133,15 +166,20 @@ defmodule MemHouse.Pipeline.Reconciler do
               watermark =
                 "mentions:#{row["statement_count"]}:#{row["latest_statement_at"]}"
 
-              match?(
-                {:ok, _run},
-                Pipeline.enqueue_projection_refresh(
-                  account_id,
-                  row["scope_id"],
-                  watermark,
-                  actor
+              not Pipeline.projection_refresh_recoverable?(
+                account_id,
+                row["scope_id"],
+                actor
+              ) and
+                match?(
+                  {:ok, _run},
+                  Pipeline.enqueue_projection_refresh(
+                    account_id,
+                    row["scope_id"],
+                    watermark,
+                    actor
+                  )
                 )
-              )
             end)
 
           %{
@@ -151,6 +189,7 @@ defmodule MemHouse.Pipeline.Reconciler do
             messages: messages,
             documents: documents,
             connectors: connectors,
+            source_scopes: source_scopes,
             scopes: scopes
           }
       end)
@@ -162,6 +201,27 @@ defmodule MemHouse.Pipeline.Reconciler do
     :memhouse
     |> Application.fetch_env!(:extraction_batching)
     |> Keyword.fetch!(:claim_timeout_seconds)
+  end
+
+  # Hash the content-free corpus cursor and current vector-space identity. The
+  # digest keeps job payloads compact while making a changed corpus or embedder
+  # distinct and exact reconciliation repeats idempotent.
+  defp source_refresh_watermark(row, identity) do
+    cursor = [
+      row["scope_id"],
+      row["message_count"],
+      row["latest_message_at"],
+      row["latest_message_id"],
+      identity.provider,
+      identity.model,
+      identity.version,
+      identity.dimensions
+    ]
+
+    "sources:" <>
+      (cursor
+       |> :erlang.term_to_binary([:deterministic])
+       |> Idempotency.content_hash())
   end
 
   defp expire_batch_claims(account_id, actor, stale_before) do

@@ -16,6 +16,10 @@ defmodule MemHouse.Retrieval.SourceSearchTest.Provider do
 
   @impl true
   def embed(_config, texts, _opts) do
+    if controller = Application.get_env(:memhouse, :source_index_test_controller) do
+      send(controller, {:source_embedding_call, MemHouse.Repo.in_transaction?(), texts})
+    end
+
     vectors =
       Enum.map(texts, fn text ->
         normalized = String.downcase(text)
@@ -66,8 +70,13 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
 
   alias MemHouse.Actor
   alias MemHouse.DataLayer
+  alias MemHouse.Governance.Engine, as: GovernanceEngine
+  alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
   alias MemHouse.Observations.Message
+  alias MemHouse.Operations.PipelineRun
+  alias MemHouse.Pipeline
+  alias MemHouse.Pipeline.Reconciler
   alias MemHouse.Retrieval.SourceIndexer
   alias MemHouse.Topology.Scope
 
@@ -88,8 +97,10 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
 
     Application.put_env(:memhouse, :model_roles, roles)
     Application.put_env(:memhouse, :model_provider, __MODULE__.Provider)
+    Application.delete_env(:memhouse, :source_index_test_controller)
 
     on_exit(fn ->
+      Application.delete_env(:memhouse, :source_index_test_controller)
       Application.put_env(:memhouse, :model_roles, original_roles)
 
       if original_provider do
@@ -100,6 +111,184 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     end)
 
     :ok
+  end
+
+  test "zero-fact ingest durably schedules source indexing without an inline provider call" do
+    Application.put_env(:memhouse, :source_index_test_controller, self())
+
+    message = ingest!("source-zero-fact", "/source/zero", "Hi?", "zero", 1)
+    {account_id, scope_id} = account_and_scope!("source-zero-fact", "/source/zero")
+
+    refute_receive {:source_embedding_call, _in_transaction?, _texts}
+    assert {:ok, []} = Memory.extract_message_for_account(message["id"], account_id)
+    assert knowledge_count(account_id) == 0
+
+    assert [run] = projection_runs(account_id, scope_id)
+    assert run.payload == %{"mode" => "coalesced"}
+    refute_receive {:source_embedding_call, _in_transaction?, _texts}
+
+    assert {:ok, completed} = execute_run(run)
+    assert completed.status == "completed"
+    assert_receive {:source_embedding_call, false, ["Hi?"]}
+    assert indexed_at!(account_id, message["id"])
+  end
+
+  test "duplicate source refresh requests coalesce on the scope bucket and one job" do
+    message = ingest!("source-coalesce", "/source/coalesce", "Hello?", "one", 1)
+    {account_id, scope_id} = account_and_scope!("source-coalesce", "/source/coalesce")
+    stored = read_message!(account_id, message["id"])
+    [scheduled] = projection_runs(account_id, scope_id)
+
+    {first, second} =
+      DataLayer.with_account_id(
+        account_id,
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          {:ok, first} =
+            Pipeline.enqueue_derived_refresh(account_id, scope_id, stored.inserted_at, actor)
+
+          {:ok, second} =
+            Pipeline.enqueue_derived_refresh(account_id, scope_id, stored.inserted_at, actor)
+
+          {first, second}
+        end
+      )
+
+    assert first.id == scheduled.id
+    assert second.id == scheduled.id
+    assert projection_runs(account_id, scope_id) |> length() == 1
+    assert oban_job_count(scheduled.idempotency_key) == 1
+  end
+
+  test "failed source refresh remains replayable and later succeeds" do
+    message = ingest!("source-replay", "/source/replay", "release replay", "one", 1)
+    {account_id, scope_id} = account_and_scope!("source-replay", "/source/replay")
+    [run] = projection_runs(account_id, scope_id)
+
+    Application.put_env(:memhouse, :model_provider, __MODULE__.FailingProvider)
+    assert {:error, _workflow_error} = Pipeline.execute(run)
+    failed = mark_run_failed!(run, :fixture_unavailable)
+    assert failed.status == "failed"
+
+    assert DataLayer.with_account_id(
+             account_id,
+             [role: :system, pipeline?: true],
+             fn _account, actor ->
+               Pipeline.projection_refresh_recoverable?(account_id, scope_id, actor)
+             end
+           )
+
+    Application.put_env(:memhouse, :model_provider, __MODULE__.Provider)
+    assert {:ok, completed} = execute_run(failed)
+    assert completed.status == "completed"
+    assert indexed_at!(account_id, message["id"])
+  end
+
+  test "reconciliation repairs an embedding identity change once per scope" do
+    message = ingest!("source-identity", "/source/identity", "release identity", "one", 1)
+    {account_id, scope_id} = account_and_scope!("source-identity", "/source/identity")
+    [initial] = projection_runs(account_id, scope_id)
+    assert {:ok, %{status: "completed"}} = execute_run(initial)
+
+    roles = Application.fetch_env!(:memhouse, :model_roles)
+
+    changed_roles =
+      Keyword.update!(roles, :embedder, fn config ->
+        Map.put(config, :model_version, "2")
+      end)
+
+    Application.put_env(:memhouse, :model_roles, changed_roles)
+
+    unavailable =
+      Memory.search_sources(%{
+        "account_key" => "source-identity",
+        "scope_path" => "/source/identity",
+        "query" => "release",
+        "mode" => "semantic"
+      })
+
+    assert unavailable["status"] == "unavailable"
+    before = projection_runs(account_id, scope_id) |> length()
+
+    assert {:ok, %{source_scopes: 1}} = Reconciler.run(account_id)
+    assert projection_runs(account_id, scope_id) |> length() == before + 1
+    assert {:ok, %{source_scopes: 0}} = Reconciler.run(account_id)
+    assert projection_runs(account_id, scope_id) |> length() == before + 1
+
+    recovery =
+      account_id
+      |> projection_runs(scope_id)
+      |> Enum.find(&String.starts_with?(&1.payload["watermark"] || "", "sources:"))
+
+    assert {:ok, %{status: "completed"}} = execute_run(recovery)
+
+    ready =
+      Memory.search_sources(%{
+        "account_key" => "source-identity",
+        "scope_path" => "/source/identity",
+        "query" => "release",
+        "mode" => "semantic"
+      })
+
+    assert ready["status"] == "ready"
+    assert Enum.map(ready["results"], & &1["id"]) == [message["id"]]
+  end
+
+  test "one recoverable scope refresh suppresses both source and mention recovery jobs" do
+    message =
+      ingest!(
+        "source-shared-recovery",
+        "/source/shared",
+        "Avery owns the release checklist.",
+        "one",
+        1
+      )
+
+    {account_id, scope_id} = account_and_scope!("source-shared-recovery", "/source/shared")
+    assert {:ok, [knowledge]} = Memory.extract_message_for_account(message["id"], account_id)
+
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        item =
+          KnowledgeItem
+          |> Ash.Query.filter(id == ^knowledge["id"])
+          |> Ash.Query.set_tenant(account_id)
+          |> Ash.read_one!(actor: actor)
+
+        GovernanceEngine.transition!(
+          item,
+          actor,
+          %{state: "active", verification: "auto_verified"},
+          reason: "source_shared_recovery_fixture",
+          channel: "pipeline"
+        )
+      end
+    )
+
+    before = projection_runs(account_id, scope_id) |> length()
+    assert before >= 1
+    assert {:ok, %{source_scopes: 0, scopes: 0}} = Reconciler.run(account_id)
+    assert projection_runs(account_id, scope_id) |> length() == before
+  end
+
+  test "source refresh indexes only its Account and scope" do
+    target = ingest!("source-boundary-a", "/source/target", "release target", "one", 1)
+    sibling = ingest!("source-boundary-a", "/source/sibling", "release sibling", "two", 2)
+    other = ingest!("source-boundary-b", "/source/target", "release other", "one", 3)
+
+    {account_id, scope_id} = account_and_scope!("source-boundary-a", "/source/target")
+
+    {other_account_id, _other_scope_id} =
+      account_and_scope!("source-boundary-b", "/source/target")
+
+    [run] = projection_runs(account_id, scope_id)
+
+    assert {:ok, %{status: "completed"}} = execute_run(run)
+    assert indexed_at!(account_id, target["id"])
+    refute indexed_at!(account_id, sibling["id"])
+    refute indexed_at!(other_account_id, other["id"])
   end
 
   test "exact recall returns stable bounded citations in deterministic order" do
@@ -355,6 +544,84 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     |> Ash.Query.filter(key == "avery")
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read_one!(actor: actor)
+  end
+
+  defp projection_runs(account_id, scope_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        PipelineRun
+        |> Ash.Query.filter(kind == "projection_refresh" and target_id == ^scope_id)
+        |> Ash.Query.sort(inserted_at: :asc, id: :asc)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read!(actor: actor, page: [limit: 100])
+        |> Map.fetch!(:results)
+      end
+    )
+  end
+
+  defp execute_run(run) do
+    actor =
+      DataLayer.with_account_id(
+        run.account_id,
+        [role: :system, pipeline?: true],
+        fn _account, actor -> actor end
+      )
+
+    run
+    |> Ash.Changeset.for_update(:execute, %{})
+    |> Ash.Changeset.set_tenant(run.account_id)
+    |> Ash.update(actor: actor)
+  end
+
+  defp mark_run_failed!(run, error) do
+    actor =
+      DataLayer.with_account_id(
+        run.account_id,
+        [role: :system, pipeline?: true],
+        fn _account, actor -> actor end
+      )
+
+    run
+    |> Ash.Changeset.for_update(:mark_failed, %{error: error})
+    |> Ash.Changeset.set_tenant(run.account_id)
+    |> Ash.update!(actor: actor)
+  end
+
+  defp read_message!(account_id, message_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        Message
+        |> Ash.Query.filter(id == ^message_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read_one!(actor: actor)
+      end
+    )
+  end
+
+  defp knowledge_count(account_id) do
+    %{rows: [[count]]} =
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "SELECT count(*) FROM knowledge_items WHERE account_id = $1",
+        [Ecto.UUID.dump!(account_id)]
+      )
+
+    count
+  end
+
+  defp oban_job_count(idempotency_key) do
+    %{rows: [[count]]} =
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "SELECT count(*) FROM oban_jobs WHERE args->>'idempotency_key' = $1",
+        [idempotency_key]
+      )
+
+    count
   end
 
   defp indexed_at!(account_id, message_id) do

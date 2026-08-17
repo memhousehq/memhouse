@@ -157,21 +157,33 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
     :ok
   end
 
-  test "raw observation, content-safe audit, pipeline run, and AshOban job commit together" do
+  test "raw observation, audit, extraction, and coalesced source refresh commit together" do
     assert {:ok, message} =
              Memory.ingest_message(ingest_attrs("f2-commit", "commit-session"))
 
     account_id = account_id!("f2-commit")
 
     # One query with sub-selects, deliberately: it observes the observation row, the audit
-    # event, the processing record, and the queued job at a single point in time. Four separate
-    # queries could each pass against a half-committed state.
+    # event, and both durable run/job pairs at a single point in time. Separate queries could
+    # each pass against a half-committed state.
     #
     # The job is matched on the Account tenant and the lane name in its arguments, because the
     # test has no handle on the job id. Job arguments hold ids, a replay key, and a lane name;
     # no content and no secret may be placed there, since anyone who can read the queue table
     # can read them.
-    assert %{rows: [["message.ingested", content_hash, message_count, run_count, job_count]]} =
+    assert %{
+             rows: [
+               [
+                 "message.ingested",
+                 content_hash,
+                 message_count,
+                 extraction_run_count,
+                 extraction_job_count,
+                 refresh_run_count,
+                 refresh_job_count
+               ]
+             ]
+           } =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -182,19 +194,30 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
                        WHERE target_id = $1 AND kind = 'extraction'),
                       (SELECT count(*) FROM oban_jobs
                        WHERE args->>'tenant' = $2
-                         AND args->>'pipeline_kind' = 'extraction')
+                         AND args->>'pipeline_kind' = 'extraction'),
+                      (SELECT count(*) FROM pipeline_runs
+                       WHERE target_id = $3 AND kind = 'projection_refresh'),
+                      (SELECT count(*) FROM oban_jobs
+                       WHERE args->>'tenant' = $2
+                         AND args->>'pipeline_kind' = 'projection_refresh')
                FROM audit_events AS audit
                WHERE audit.resource_id = $1
                """,
-               [Ecto.UUID.dump!(message["id"]), account_id]
+               [
+                 Ecto.UUID.dump!(message["id"]),
+                 account_id,
+                 Ecto.UUID.dump!(message["scope_id"])
+               ]
              )
 
     # The audit event points at the content by digest. Recomputing the digest from the stored
     # message proves the reference is real without the audit row ever holding the text.
     assert content_hash == Idempotency.content_hash(message["content"])
     assert message_count == 1
-    assert run_count == 1
-    assert job_count == 1
+    assert extraction_run_count == 1
+    assert extraction_job_count == 1
+    assert refresh_run_count == 1
+    assert refresh_job_count == 1
 
     # Ingest does not schedule an Account-wide sweep. The hourly maintenance
     # scheduler owns reconciliation, so request volume cannot flood its serial queue.

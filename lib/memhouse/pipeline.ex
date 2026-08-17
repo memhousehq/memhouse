@@ -261,7 +261,11 @@ defmodule MemHouse.Pipeline do
   @doc """
   Schedules one delayed derived-cache refresh for a burst of governed writes.
 
-  Writes in the same scope and ten-second bucket reuse one durable run.
+  Governed knowledge writes and raw-message creates in the same scope and
+  ten-second bucket reuse one durable run. The refresh indexes source messages
+  before rebuilding Knowledge-derived caches, so even a message that extracts
+  zero facts gets durable semantic-index work.
+
   A 15-second delay guarantees that the bucket closes before execution, so all
   writes in it are included. The job carries only identifiers and a bucket key.
   """
@@ -593,6 +597,25 @@ defmodule MemHouse.Pipeline do
     |> Ash.Query.filter(
       kind == "extraction" and target_type == "message" and target_id == ^message_id and
         status in ["pending", "failed", "processing"]
+    )
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.exists?(actor: pipeline_actor(actor))
+  end
+
+  @doc """
+  Reports whether a scope already has durable projection-refresh work that
+  reconciliation can recover.
+
+  Pending, failed, and processing runs may still finish through their existing
+  job. Cancelled and discarded runs remain recoverable by the reconciler's
+  terminal replay pass. Completed runs are excluded: if the source corpus is
+  still stale after completion, a new corpus watermark must schedule new work.
+  """
+  def projection_refresh_recoverable?(account_id, scope_id, actor) do
+    PipelineRun
+    |> Ash.Query.filter(
+      kind == "projection_refresh" and target_type == "scope" and target_id == ^scope_id and
+        status in ["pending", "failed", "processing", "cancelled", "discarded"]
     )
     |> Ash.Query.set_tenant(account_id)
     |> Ash.exists?(actor: pipeline_actor(actor))

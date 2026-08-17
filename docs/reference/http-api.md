@@ -364,7 +364,12 @@ Semantic search compares only vectors with the configured provider, model,
 version, and dimensions. `stale` means the authorised visible corpus mixes the
 current identity with missing or older vectors. `unavailable` means visible
 messages exist but none has a current vector. Provider failure writes nothing,
-so a later rebuild can retry without losing the previous index. Erasing the
+so the same durable scope refresh can retry without losing the previous index.
+Every accepted message transaction schedules that coalesced refresh, including
+messages that extract zero facts. The Account reconciler also detects missing
+and stale-identity vectors and schedules a corpus-keyed refresh when no existing
+scope job can still recover; changing the embedder therefore converges without
+manual source-row repair. Erasing the
 canonical message removes both full-text and vector hits in the same delete.
 
 ---

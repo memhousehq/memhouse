@@ -1720,6 +1720,52 @@ defmodule MemHouse.Retrieval.Store do
   end
 
   @doc """
+  Finds Account-local scopes with missing or stale source-message vectors.
+
+  Staleness compares all four parts of the configured embedding identity with
+  `IS DISTINCT FROM`, so partially stamped legacy rows and `NULL` values are
+  gaps too. The returned corpus fields are content-free and let reconciliation
+  derive one stable scope watermark; no message body or hidden cross-Account
+  count leaves this data-layer boundary.
+  """
+  def scopes_with_stale_source_embeddings(account_id, identity, limit \\ 100) do
+    sql = """
+    SELECT scope_id,
+           count(*)::bigint AS message_count,
+           count(*) FILTER (
+             WHERE embedding IS NULL
+                OR embedding_provider IS DISTINCT FROM $2
+                OR embedding_model IS DISTINCT FROM $3
+                OR embedding_version IS DISTINCT FROM $4
+                OR embedding_dimensions IS DISTINCT FROM $5
+           )::bigint AS stale_count,
+           max(inserted_at) AS latest_message_at,
+           max(id::text) AS latest_message_id
+    FROM messages
+    WHERE account_id = $1
+    GROUP BY scope_id
+    HAVING bool_or(
+      embedding IS NULL
+      OR embedding_provider IS DISTINCT FROM $2
+      OR embedding_model IS DISTINCT FROM $3
+      OR embedding_version IS DISTINCT FROM $4
+      OR embedding_dimensions IS DISTINCT FROM $5
+    )
+    ORDER BY max(inserted_at), scope_id
+    LIMIT $6
+    """
+
+    all(sql, [
+      db_uuid!(account_id),
+      identity.provider,
+      identity.model,
+      identity.version,
+      identity.dimensions,
+      limit
+    ])
+  end
+
+  @doc """
   Finds the latest Oban job state for each idempotency key.
 
   Queries the `oban_jobs` infrastructure table by replay keys and returns the

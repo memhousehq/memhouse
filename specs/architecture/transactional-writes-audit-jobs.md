@@ -19,12 +19,17 @@ version tag for the frozen baseline, not a roadmap phase.
 1. compute a SHA-256 content hash without copying content into operational
    metadata;
 2. append an Account-local audit event;
-3. create or reuse a unique `MemHouse.Operations.PipelineRun`; and
-4. insert its AshOban trigger job.
+3. create or reuse unique `MemHouse.Operations.PipelineRun` rows; and
+4. insert their AshOban trigger jobs.
 
-All four writes use the caller's `MemHouse.Repo` transaction; any error rolls
-back all four. Message ingest is always asynchronous: HTTP and MCP acknowledge
-with the message id after commit and never run a model in the caller. The
+For a message, those runs are its per-message extraction plus a delayed,
+ten-second-bucketed scope projection refresh. The latter indexes immutable
+source messages even when extraction yields zero Knowledge, while reusing the
+same scope job that a resulting governed write would request. All writes use
+the caller's `MemHouse.Repo` transaction; any error rolls back the observation,
+audit, runs, and jobs together. Message ingest is always asynchronous: HTTP and
+MCP acknowledge with the message id after commit and never run an embedding or
+generation provider in the caller. The
 Account- and scope-authorised HTTP status read exposes pending, failed, or
 completed processing and only knowledge visible to that actor.
 
@@ -134,6 +139,14 @@ Account-scoped reconciler ignores work younger than 5 minutes. It scans at
 most 100 messages, document versions, connectors, and scopes per pass, in a
 stable oldest-first order, and re-enqueues deterministic keys. A later hourly
 slot continues with what remains.
+
+The scope scan also finds source messages with a missing vector or a vector
+whose provider, model, model version, or dimensions differ from the current
+embedder. If the scope has no pending, failed, processing, cancelled, or
+discarded projection refresh to recover, the reconciler hashes the Account-local
+corpus cursor and current identity into one stable refresh watermark. Exact
+repeats therefore reuse one run, while a changed corpus or embedding identity
+gets new recoverable work without one job per message.
 
 For a cancelled or discarded Oban job, the first sweep records the matching
 terminal run state. A missing job records `discarded`. The next sweep returns

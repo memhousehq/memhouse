@@ -244,7 +244,8 @@ defmodule MemHouse.Observations.Message do
   One immutable raw conversational turn.
 
   Creation is the external ingest write: it hashes content and atomically appends audit,
-  idempotency, and replay-safe extraction work. Only the pipeline may turn it into knowledge.
+  idempotency, replay-safe extraction work, and a coalesced source-index refresh. Only the
+  pipeline may turn it into knowledge or write the derived semantic index.
   """
 
   use MemHouse.Resource, domain: MemHouse.Observations, table: "messages"
@@ -263,7 +264,8 @@ defmodule MemHouse.Observations.Message do
 
     # Create-only for content. The two changes below run in order: hashing must happen before
     # the audit-and-enqueue hook, which uses the hash as the audit content reference and as the
-    # deterministic idempotency key of the extraction job.
+    # deterministic idempotency key of the extraction job. The same hook also schedules the
+    # scope-coalesced source index refresh; it never calls a provider in this transaction.
     create :create do
       accept [:session_id, :scope_id, :peer_id, :role, :content, :occurred_at]
 

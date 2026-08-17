@@ -7,23 +7,28 @@ extraction and governance follow.
 
 ## What commits together
 
-An ingest request writes four things in **one** database transaction:
+An ingest request writes the observation and both kinds of durable work in
+**one** database transaction:
 
 ```mermaid
 flowchart LR
     subgraph TX["one transaction — all or nothing"]
         A[Raw message row]
         B[Hash-chain audit entry]
-        C[Durable idempotency record]
-        D[Oban extraction job]
+        C[Extraction run and job]
+        D[Coalesced source-refresh run and job]
     end
     REQ[POST /api/v1/ingest] --> TX
     TX --> RESP[202 with message id and accepted status]
 ```
 
-All four commit or roll back together, preventing observations without audit
-entries and jobs without observations. Oban shares PostgreSQL, so job insertion
-participates in the transaction.
+All effects commit or roll back together, preventing observations without audit
+entries and jobs without observations. The refresh is keyed by scope and a
+ten-second creation-time bucket, so a burst of messages and any facts extracted
+from them share one delayed projection job. It indexes immutable source
+messages even when extraction produces no Knowledge. Neither provider runs in
+the ingest transaction. Oban shares PostgreSQL, so job insertion participates
+in the transaction.
 
 ## Who a turn is attributed to
 
@@ -46,7 +51,9 @@ both identities: the relaying credential as the actor, and the speaker as
 
 ## What happens after the response
 
-Extraction always runs after the response in the durable `ingest` job lane:
+Extraction and source indexing always run after the response. Source indexing
+is the first stage of the durable scope `projection_refresh`; the diagram below
+shows the extraction lane that may later coalesce into that same refresh:
 
 ```mermaid
 sequenceDiagram

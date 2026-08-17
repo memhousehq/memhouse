@@ -155,12 +155,15 @@ Account with more than 65,536 live scopes fails label allocation rather than
 sharing a label.
 
 `projection_refresh` is the replay-safe rebuild job. Ordinary governed writes
-use one key per scope and ten-second time bucket. A five-second trailing delay
-lets burst writes coalesce before the job backfills knowledge vectors, resolves
-entities, and refreshes projections. The dependency-ordered job replaces the
+and raw-message creation use one key per scope and ten-second time bucket. A
+fifteen-second trailing delay lets burst writes coalesce before the job indexes
+missing or stale-identity source messages, backfills knowledge vectors,
+resolves entities, and refreshes projections. A message that yields zero facts
+still has a durable source-index path. The dependency-ordered job replaces the
 redundant per-write entity job. Reconciliation, erasure, import, and explicit
 maintenance retain corpus-derived full-rebuild keys. The coalesced path batches
-only statements without vectors; it does not re-embed the unchanged corpus.
+only source rows missing the current four-part identity and statements without
+vectors; it does not re-embed unchanged current-identity rows.
 Document import already re-enters ordinary document ingest, which rebuilds
 chunk vectors and causes governed knowledge to enqueue the same derived-cache
 jobs.
@@ -195,18 +198,23 @@ watermark to match, so a stale projection fails closed before refresh runs.
 Returned candidates record the lane, operation, lane rank, provenance handles,
 and semantic distance for differential evaluation.
 
-Because vectors and mentions are written by that job alone and no longer ride
-the knowledge-write transaction, they are eventually consistent: a refresh that
-was cancelled or never enqueued leaves a scope holding every governed statement
-with no vectors, while lexical search keeps answering from its generated
-column. `MemHouse.Retrieval.Coverage` is the read that distinguishes the two —
+Because vectors and mentions are written by that job alone and never ride an
+observation or knowledge-write transaction, they are eventually consistent: a
+cancelled refresh leaves canonical data intact while lexical search keeps
+answering from generated columns. The Account reconciler scans bounded scope
+sets for source rows with a missing or stale four-part embedding identity and
+creates a corpus-keyed refresh only when no existing scope refresh remains
+recoverable. This also moves source vectors to a newly configured embedder;
+they cannot remain permanently unavailable after an identity change.
+`MemHouse.Retrieval.Coverage` is the read that distinguishes Knowledge cache
+coverage —
 per-scope statement, embedded, mention, and mentioned-statement counts plus the
 embedding identities in use, under the same authorization and
 provisional-subject rules as any other retrieval query. Mentions remain counts
 so the entity cache stays internal. Every completed refresh emits
 `[:memhouse, :retrieval, :projection_refresh]` with those counts and the
-resulting ratio. The Account reconciler detects an active scope with no mention
-rows and enqueues the same full refresh using a corpus-derived replay key.
+resulting ratio. The Account reconciler also detects an active scope with no
+mention rows and enqueues the same full refresh using a corpus-derived replay key.
 Request-local diagnostics classify partial coverage and distinguish no resolved
 entity from a resolved entity with no authorized statements without returning
 cache identities or content.

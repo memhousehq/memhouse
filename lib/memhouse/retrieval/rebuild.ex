@@ -50,9 +50,11 @@ defmodule MemHouse.Retrieval.Rebuild do
   @doc """
   Refreshes caches after ordinary governed writes in a scope.
 
-  Only statements without vectors enter the batched embedder call. Entity and
+  Source messages missing the current embedding identity and statements
+  without vectors enter their respective batched embedder calls. Entity and
   projection stages still refresh the scope because lifecycle changes can
-  remove sources as well as add them.
+  remove sources as well as add them. Raw-message creation schedules this same
+  operation, so a zero-fact extraction still receives source indexing.
   """
   def refresh_scope(account_id, scope_id) do
     with {:ok, sources} <- MemHouse.Retrieval.SourceIndexer.refresh_scope(account_id, scope_id),
