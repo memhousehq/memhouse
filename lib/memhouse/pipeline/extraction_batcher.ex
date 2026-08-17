@@ -62,7 +62,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
       },
       %{
         run_id: run.id,
-        version: ExtractionAdmission.config()[:identity],
+        version: ExtractionAdmission.config()[:identity] |> Extractor.admission_identity(),
         status: status,
         failure_class: failure_class,
         account_id: run.account_id,
