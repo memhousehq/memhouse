@@ -144,7 +144,28 @@ defmodule MemHouse.Pipeline.DreamTime do
 
   @doc false
   def run_scope(account_id, scope_id) do
-    with {:ok, snapshot} <- snapshot(account_id, scope_id),
+    run_scope(account_id, scope_id, nil)
+  end
+
+  @doc false
+  def run_scheduled_scope(account_id, scope_id, activity_at, activity_id)
+      when is_binary(activity_at) and is_binary(activity_id) do
+    with {:ok, activity_at, 0} <- DateTime.from_iso8601(activity_at),
+         {:ok, activity_id} <- Ecto.UUID.cast(activity_id) do
+      run_scope(account_id, scope_id, {activity_at, activity_id})
+    else
+      _error -> {:ok, %{status: :skipped, reason: :invalid_schedule}}
+    end
+  end
+
+  def run_scheduled_scope(_account_id, _scope_id, _activity_at, _activity_id),
+    do: {:ok, %{status: :skipped, reason: :invalid_schedule}}
+
+  @doc false
+  def scope_lock_key(scope_id), do: "dream-time:#{scope_id}"
+
+  defp run_scope(account_id, scope_id, expected_activity) do
+    with {:ok, snapshot} <- snapshot(account_id, scope_id, expected_activity),
          {:ok, reasoning} <- reason(snapshot) do
       apply(account_id, scope_id, snapshot, reasoning)
     end
@@ -153,73 +174,86 @@ defmodule MemHouse.Pipeline.DreamTime do
   # The read phase deliberately ends before retrieval/model work. A provider
   # call may take minutes; holding the Account connection would make a later
   # durable write fail after the billable request had already happened.
-  defp snapshot(account_id, scope_id) do
+  defp snapshot(account_id, scope_id, expected_activity) do
     DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account, actor ->
-      Lock.acquire!(account_id, lock_key(scope_id))
-      watermark = watermark(account_id, scope_id, actor)
-      delta = changed_items(account_id, scope_id, watermark, actor)
-      latest_change_at = delta |> List.last() |> then(&(&1 && &1.updated_at))
-      config = Application.fetch_env!(:memhouse, :dream_time_gates)
+      Lock.acquire!(account_id, scope_lock_key(scope_id))
 
-      case Gate.decide(
-             length(delta),
-             latest_change_at,
-             watermark.last_completed_at,
-             Clock.utc_now(),
-             config
-           ) do
-        {:skip, reason} ->
-          emit_gate(account_id, scope_id, :skip, reason, length(delta), false)
-          status = if reason == :no_delta, do: :no_delta, else: :skipped
-          {:ok, %{status: status, reason: reason}}
-
-        {:run, limits} ->
-          # Consolidation is deterministic and commits before the provider call.
-          # A provider failure can leave this useful, governed maintenance behind,
-          # but cannot advance the reasoning watermark.
-          original_boundary = delta |> Enum.take(limits.max_delta_items) |> List.last()
-          Consolidator.run_scope!(account_id, scope_id, actor)
-          delta = changed_items(account_id, scope_id, watermark, actor)
-          inputs = active_items(account_id, scope_id, actor)
-
-          selected_delta = Enum.take(delta, limits.max_delta_items)
-          boundary = List.last(selected_delta)
-
-          if boundary do
-            partial? = length(delta) > length(selected_delta)
-            emit_gate(account_id, scope_id, :run, :eligible, length(delta), partial?)
-
-            {:ok,
-             %{
-               status: :ready,
-               account_id: account_id,
-               scope_id: scope_id,
-               actor: actor,
-               watermark: watermark,
-               input_watermark: boundary.updated_at,
-               input_watermark_id: boundary.id,
-               delta: selected_delta,
-               inputs: Enum.take(inputs, limits.max_working_set_items),
-               limits: limits,
-               partial?: partial?
-             }}
-          else
-            # Deterministic consolidation consumed every eligible duplicate.
-            # Advancing to the original boundary prevents that same maintenance
-            # from being rediscovered while no model work was performed.
-            advance!(
-              account_id,
-              scope_id,
-              original_boundary.updated_at,
-              original_boundary.id,
-              actor
-            )
-
-            emit_gate(account_id, scope_id, :skip, :consolidated, length(delta), false)
-            {:ok, %{status: :no_delta, reason: :consolidated}}
-          end
+      if current_activity?(account_id, scope_id, expected_activity, actor) do
+        eligible_snapshot(account_id, scope_id, actor)
+      else
+        emit_gate(account_id, scope_id, :skip, :superseded_activity, 0, false)
+        {:ok, %{status: :skipped, reason: :superseded_activity}}
       end
     end)
+  end
+
+  defp eligible_snapshot(account_id, scope_id, actor) do
+    watermark = watermark(account_id, scope_id, actor)
+    delta = changed_items(account_id, scope_id, watermark, actor)
+    latest_change_at = delta |> List.last() |> then(&(&1 && &1.updated_at))
+    config = Application.fetch_env!(:memhouse, :dream_time_gates)
+
+    case Gate.decide(
+           length(delta),
+           latest_change_at,
+           watermark.last_completed_at,
+           Clock.utc_now(),
+           config
+         ) do
+      {:skip, reason} ->
+        emit_gate(account_id, scope_id, :skip, reason, length(delta), false)
+        status = if reason == :no_delta, do: :no_delta, else: :skipped
+        {:ok, %{status: status, reason: reason}}
+
+      {:run, limits} ->
+        prepare_ready_snapshot(account_id, scope_id, actor, watermark, delta, limits)
+    end
+  end
+
+  defp prepare_ready_snapshot(account_id, scope_id, actor, watermark, delta, limits) do
+    # Consolidation is deterministic and commits before the provider call. A
+    # provider failure can leave this useful, governed maintenance behind, but
+    # cannot advance the reasoning watermark.
+    original_boundary = delta |> Enum.take(limits.max_delta_items) |> List.last()
+    Consolidator.run_scope!(account_id, scope_id, actor)
+    delta = changed_items(account_id, scope_id, watermark, actor)
+    inputs = active_items(account_id, scope_id, actor)
+
+    selected_delta = Enum.take(delta, limits.max_delta_items)
+    boundary = List.last(selected_delta)
+
+    if boundary do
+      partial? = length(delta) > length(selected_delta)
+      emit_gate(account_id, scope_id, :run, :eligible, length(delta), partial?)
+
+      {:ok,
+       %{
+         status: :ready,
+         account_id: account_id,
+         scope_id: scope_id,
+         actor: actor,
+         watermark: watermark,
+         input_watermark: boundary.updated_at,
+         input_watermark_id: boundary.id,
+         delta: selected_delta,
+         inputs: Enum.take(inputs, limits.max_working_set_items),
+         limits: limits,
+         partial?: partial?
+       }}
+    else
+      # Deterministic consolidation consumed every eligible duplicate. Advance
+      # to the original boundary so it is not rediscovered without model work.
+      advance!(
+        account_id,
+        scope_id,
+        original_boundary.updated_at,
+        original_boundary.id,
+        actor
+      )
+
+      emit_gate(account_id, scope_id, :skip, :consolidated, length(delta), false)
+      {:ok, %{status: :no_delta, reason: :consolidated}}
+    end
   end
 
   defp reason(%{status: :no_delta}), do: {:ok, %{status: :no_delta}}
@@ -268,7 +302,7 @@ defmodule MemHouse.Pipeline.DreamTime do
          operation_usage: usage
        }) do
     DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account, actor ->
-      Lock.acquire!(account_id, lock_key(scope_id))
+      Lock.acquire!(account_id, scope_lock_key(scope_id))
       # Applying a stale response is safe because the watermark advances only
       # to the snapshot boundary. New rows remain a delta for the next pass.
       items = Enum.map(result.items, &DeductionEffects.apply!(&1, account_id, scope_id, actor))
@@ -451,13 +485,7 @@ defmodule MemHouse.Pipeline.DreamTime do
   end
 
   defp changed_items(account_id, scope_id, watermark, actor) do
-    query =
-      KnowledgeItem
-      |> Ash.Query.filter(
-        scope_id == ^scope_id and state == "active" and is_nil(deleted_at) and
-          is_nil(deduction_key) and
-          (is_nil(extracting_model) or extracting_model != "system:dream-time-consolidator")
-      )
+    query = direct_items_query(scope_id)
 
     query =
       if watermark.input_watermark_id do
@@ -474,6 +502,30 @@ defmodule MemHouse.Pipeline.DreamTime do
     |> Ash.Query.sort(updated_at: :asc, id: :asc)
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
+  end
+
+  defp current_activity?(_account_id, _scope_id, nil, _actor), do: true
+
+  defp current_activity?(account_id, scope_id, expected, actor) do
+    latest =
+      scope_id
+      |> direct_items_query()
+      |> Ash.Query.sort(updated_at: :desc, id: :desc)
+      |> Ash.Query.limit(1)
+      |> Ash.Query.select([:id, :updated_at])
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.read_one!(actor: actor)
+
+    latest && {latest.updated_at, latest.id} == expected
+  end
+
+  defp direct_items_query(scope_id) do
+    KnowledgeItem
+    |> Ash.Query.filter(
+      scope_id == ^scope_id and state == "active" and is_nil(deleted_at) and
+        is_nil(deduction_key) and
+        (is_nil(extracting_model) or extracting_model != "system:dream-time-consolidator")
+    )
   end
 
   defp active_items(account_id, scope_id, actor) do
@@ -551,8 +603,6 @@ defmodule MemHouse.Pipeline.DreamTime do
       ])
     end)
   end
-
-  defp lock_key(scope_id), do: "dream-time:#{scope_id}"
 
   defp emit_gate(account_id, scope_id, decision, reason, delta_count, partial?) do
     :telemetry.execute(

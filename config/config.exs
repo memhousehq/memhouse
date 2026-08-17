@@ -196,9 +196,10 @@ config :memhouse, :retention,
   lifecycle_events_days: 3_650,
   batch_size: 10_000
 
-# Scoped dream-time admission. Defaults preserve the pre-gate behavior while
-# making every bound explicit; production may raise the change, idle, and
-# interval thresholds without changing the writer or watermark contract.
+# Scoped dream-time admission and durable idle scheduling. Governed direct
+# changes enqueue their scope wakeup after `idle_seconds`; the same value is
+# rechecked by the gate. Defaults preserve immediate behavior while making
+# every bound explicit.
 config :memhouse, :dream_time_gates,
   min_changes: 1,
   idle_seconds: 0,

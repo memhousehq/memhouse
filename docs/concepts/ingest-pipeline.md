@@ -247,6 +247,15 @@ timestamp and knowledge id, so same-microsecond rows resume without being lost
 or billed twice. Dream-produced deductions and deterministic consolidation
 outputs do not feed the eligible-change counter back into themselves.
 
+Activating or changing a governed direct fact also creates a content-free,
+scope-targeted `PipelineRun` and Oban job in that same transaction. Its wakeup
+is the fact's activity time plus `MEMHOUSE_DREAM_IDLE_SECONDS`. Exact duplicate
+activity reuses the replay key; newer activity schedules a later generation.
+When an older generation wakes, it compares its timestamp-and-id cursor with
+the latest surviving direct fact under the scope lock and completes as
+superseded before retrieval or model work. The hourly Account sweep and the
+manual operations endpoint remain fallback and operator paths.
+
 Reasoning behind that gate is split into two small contracts. The enabled
 update operation can record `supports` and `contradicts` edges between exact
 working-set ids; contradictions remain visible and enqueue governance review.

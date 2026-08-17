@@ -90,30 +90,10 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
     run fn %{pipeline_run: run}, _context ->
       case run.kind do
         "dream_time" ->
-          # Budget refusal is a completed run, not a failure: retrying would
-          # queue the same denied work again.
-          if MemHouse.Operations.Budget.admit?(run.account_id, run.scope_id, :dream_time) do
-            case MemHouse.Pipeline.DreamTime.run(run.account_id) do
-              {:ok, reasoning} ->
-                with {:ok, sweep} <-
-                       MemHouse.Governance.Sweeper.run(run.account_id, "dream_time") do
-                  {:ok, %{reasoning: reasoning, sweep: sweep}}
-                end
-
-              {:error, %MemHouse.Pipeline.DreamTime.InvalidCandidate{} = error} ->
-                Logger.error("dream-time retrieval candidate rejected",
-                  account_id: run.account_id,
-                  pipeline_run_id: run.id,
-                  error_class: inspect(error.__struct__)
-                )
-
-                {:ok, %{status: "rejected", reason_class: "invalid_retrieval_candidate"}}
-
-              {:error, error} ->
-                {:error, error}
-            end
-          else
-            {:ok, %{status: "throttled", lane: "dream_time"}}
+          case dream_mode(run) do
+            :idle_scope -> run_idle_scope(run)
+            :account -> run_account_dream(run)
+            :invalid -> {:ok, %{status: "rejected", reason_class: "invalid_dream_target"}}
           end
 
         "entity_resolution" ->
@@ -133,6 +113,72 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
   end
 
   return :reason
+
+  defp dream_mode(%{payload: %{"mode" => "idle_scope"}} = run)
+       when run.target_type == "scope" and run.scope_id == run.target_id,
+       do: :idle_scope
+
+  defp dream_mode(run)
+       when run.target_type == "account" and run.target_id == run.account_id do
+    if run.payload["mode"] == "idle_scope", do: :invalid, else: :account
+  end
+
+  defp dream_mode(_run), do: :invalid
+
+  defp run_idle_scope(run) do
+    # The generation check runs under the same scope lock as governance
+    # scheduling and returns before retrieval or a provider call.
+    if MemHouse.Operations.Budget.admit?(run.account_id, run.scope_id, :dream_time) do
+      handle_dream_result(
+        MemHouse.Pipeline.DreamTime.run_scheduled_scope(
+          run.account_id,
+          run.scope_id,
+          run.payload["activity_at"],
+          run.payload["activity_id"]
+        ),
+        run
+      )
+    else
+      {:ok, %{status: "throttled", lane: "dream_time"}}
+    end
+  end
+
+  defp run_account_dream(run) do
+    # Budget refusal is a completed run, not a failure: retrying would queue
+    # the same denied work again.
+    if MemHouse.Operations.Budget.admit?(run.account_id, run.scope_id, :dream_time) do
+      case handle_dream_result(MemHouse.Pipeline.DreamTime.run(run.account_id), run) do
+        {:ok, reasoning} ->
+          with {:ok, sweep} <- MemHouse.Governance.Sweeper.run(run.account_id, "dream_time") do
+            {:ok, %{reasoning: reasoning, sweep: sweep}}
+          end
+
+        error ->
+          error
+      end
+    else
+      {:ok, %{status: "throttled", lane: "dream_time"}}
+    end
+  end
+
+  defp handle_dream_result(result, run) do
+    case result do
+      {:ok, reasoning} ->
+        {:ok, reasoning}
+
+      {:error, %MemHouse.Pipeline.DreamTime.InvalidCandidate{} = error} ->
+        Logger.error("dream-time retrieval candidate rejected",
+          account_id: run.account_id,
+          pipeline_run_id: run.id,
+          error_class: inspect(error.__struct__)
+        )
+
+        {:ok, %{status: "rejected", reason_class: "invalid_retrieval_candidate"}}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
 end
 
 defmodule MemHouse.Pipeline.Workflows.ValidationContinuation do

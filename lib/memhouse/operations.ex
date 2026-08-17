@@ -314,6 +314,18 @@ defmodule MemHouse.Operations.PipelineRun do
       change run_oban_trigger(:dream_time)
     end
 
+    create :enqueue_idle_dream_time do
+      accept [:scope_id, :target_type, :target_id, :idempotency_key, :payload]
+      argument :scheduled_at, :utc_datetime_usec, allow_nil?: false
+      upsert? true
+      upsert_identity :idempotency_key
+      upsert_fields [:idempotency_key]
+      change set_attribute(:kind, "dream_time")
+
+      change {MemHouse.Pipeline.Changes.RunObanTriggerAt,
+              trigger: :dream_time, argument: :scheduled_at}
+    end
+
     create :enqueue_revalidation do
       accept [:scope_id, :target_type, :target_id, :idempotency_key, :payload]
       upsert? true

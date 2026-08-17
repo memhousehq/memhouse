@@ -25,6 +25,12 @@ changelog entry and contract-version transition.
   schemas and prompt identities; update remains enabled and synthesis remains
   off until matched evaluation approves it.
 
+- Governed direct-fact activity now schedules a durable per-scope dream wakeup
+  after the configured idle window in the same `PipelineRun`/Oban transaction.
+  Duplicate and restarted work reuses its replay identity, newer activity
+  supersedes older wakeups before model work, and hourly/manual Account sweeps
+  remain fallback and operator paths.
+
 - Message extraction now token-batches adjacent pending anchors from the same
   Account, scope, and session through one provider call. Each envelope keeps
   its original replay key and exact source allowlist; governed effects,

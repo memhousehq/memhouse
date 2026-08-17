@@ -70,6 +70,18 @@ defmodule MemHouse.Pipeline.Idempotency do
   def dream_time(scope_id, watermark), do: key(:dream_time, [scope_id, watermark])
 
   @doc """
+  Key for the idle wakeup caused by one committed direct-knowledge activity.
+
+  Timestamp and id form the same total-order cursor as dream-time's input
+  watermark. An exact redelivery reuses one run, while later activity gets a
+  later wakeup whose worker can reject the superseded generation.
+  """
+  @spec idle_dream_time(Ecto.UUID.t(), DateTime.t(), Ecto.UUID.t()) :: String.t()
+  def idle_dream_time(scope_id, %DateTime{} = activity_at, activity_id) do
+    key(:idle_dream_time, [scope_id, DateTime.to_iso8601(activity_at), activity_id])
+  end
+
+  @doc """
   Key for refreshing a scope's projections up to a watermark.
 
   Projections are rebuildable caches, so re-running is harmless; the key exists

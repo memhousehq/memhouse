@@ -311,18 +311,21 @@ Dream-time is throttled first when a limit bites.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `MEMHOUSE_DREAM_MIN_CHANGES` | `1` | Eligible committed knowledge changes accumulated before a pass |
-| `MEMHOUSE_DREAM_IDLE_SECONDS` | `0` | Required inactivity after the latest eligible change |
+| `MEMHOUSE_DREAM_IDLE_SECONDS` | `0` | Delay from governed direct-fact activity to its durable scoped wakeup, and required inactivity before reasoning |
 | `MEMHOUSE_DREAM_MIN_INTERVAL_SECONDS` | `0` | Minimum time after the last completed scoped pass |
 | `MEMHOUSE_DREAM_MAX_DELTA_ITEMS` | `20` | Hard eligible-delta cap per pass; the durable cursor resumes the remainder |
 | `MEMHOUSE_DREAM_MAX_WORKING_SET_ITEMS` | `50` | Hard recalled knowledge cap supplied to the reasoner |
 | `MEMHOUSE_DREAM_MAX_ELAPSED_MS` | `120000` | Whole structured reasoning call timeout, including repairs and retries |
 
-The zero duration defaults preserve immediate existing behavior. Raising the
-thresholds reduces unchanged-scope work without adding another scheduler or
-writer. Skipped passes do not advance their watermark; partial passes advance
-only through their final timestamp-and-id cursor. All values are validated at
-boot. Decisions are emitted as content-safe `dream_gate` telemetry with no
-statement or source text.
+The zero duration defaults preserve immediate existing behavior. A direct-fact
+governance transaction durably schedules its scoped wakeup for the end of this
+idle window. Newer activity supersedes older generations, which exit before
+model work; exact duplicates and reconciler replay reuse the original
+content-free key. The hourly Account sweep remains a fallback. Skipped passes
+do not advance their watermark; partial passes advance only through their final
+timestamp-and-id cursor. All values are validated at boot. Decisions are
+emitted as content-safe `dream_gate` telemetry with no statement or source
+text.
 
 ### Dream-time reasoning operations
 

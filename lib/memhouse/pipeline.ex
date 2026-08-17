@@ -33,7 +33,7 @@ defmodule MemHouse.Pipeline do
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Operations.PipelineRun
-  alias MemHouse.Pipeline.Idempotency
+  alias MemHouse.Pipeline.{DreamTime, Idempotency, Lock}
 
   require Ash.Query
 
@@ -284,6 +284,47 @@ defmodule MemHouse.Pipeline do
   end
 
   @doc """
+  Durably schedules one scope wakeup after its latest governed activity goes idle.
+
+  The activity timestamp and id are a content-free generation cursor. Exact
+  duplicates reuse one run. Later activity creates a later wakeup; the older
+  worker checks the generation under the scope lock and exits before any model
+  work. Call this inside the governance transaction so knowledge, run, and job
+  commit together.
+  """
+  @spec enqueue_idle_dream_time(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          DateTime.t(),
+          Ecto.UUID.t(),
+          map()
+        ) :: {:ok, PipelineRun.t()} | {:error, term()}
+  def enqueue_idle_dream_time(account_id, scope_id, %DateTime{} = activity_at, activity_id, actor) do
+    Lock.acquire!(account_id, DreamTime.scope_lock_key(scope_id))
+    idle_seconds = dream_idle_seconds!()
+    scheduled_at = DateTime.add(activity_at, idle_seconds, :second)
+    actor = pipeline_actor(actor)
+
+    PipelineRun
+    |> Ash.Changeset.new()
+    |> Ash.Changeset.set_tenant(account_id)
+    |> Ash.Changeset.set_context(%{memhouse_actor: actor})
+    |> Ash.Changeset.for_create(:enqueue_idle_dream_time, %{
+      scope_id: scope_id,
+      target_type: "scope",
+      target_id: scope_id,
+      idempotency_key: Idempotency.idle_dream_time(scope_id, activity_at, activity_id),
+      payload: %{
+        "mode" => "idle_scope",
+        "activity_at" => DateTime.to_iso8601(activity_at),
+        "activity_id" => activity_id
+      },
+      scheduled_at: scheduled_at
+    })
+    |> Ash.create(actor: actor)
+  end
+
+  @doc """
   Schedules a resumable Account-wide vector rebuild for one embedding identity.
 
   One identity creates one durable run. Progress contains only phase, UUID
@@ -394,18 +435,7 @@ defmodule MemHouse.Pipeline do
            |> Ash.Changeset.set_tenant(run.account_id)
            |> Ash.Changeset.for_update(:requeue_terminated, %{})
            |> Ash.update(actor: actor) do
-      enqueue(
-        reset.kind,
-        reset.account_id,
-        %{
-          scope_id: reset.scope_id,
-          target_type: reset.target_type,
-          target_id: reset.target_id,
-          idempotency_key: reset.idempotency_key,
-          payload: reset.payload
-        },
-        actor
-      )
+      reenqueue(reset, actor)
     end
   end
 
@@ -616,5 +646,47 @@ defmodule MemHouse.Pipeline do
     actor
     |> Map.put(:role, :system)
     |> Map.put(:pipeline?, true)
+  end
+
+  defp reenqueue(
+         %PipelineRun{kind: "dream_time", payload: %{"mode" => "idle_scope"}} = run,
+         actor
+       ) do
+    with {:ok, activity_at, activity_id} <- idle_activity(run.payload) do
+      enqueue_idle_dream_time(run.account_id, run.scope_id, activity_at, activity_id, actor)
+    end
+  end
+
+  defp reenqueue(run, actor) do
+    enqueue(
+      run.kind,
+      run.account_id,
+      %{
+        scope_id: run.scope_id,
+        target_type: run.target_type,
+        target_id: run.target_id,
+        idempotency_key: run.idempotency_key,
+        payload: run.payload
+      },
+      actor
+    )
+  end
+
+  defp idle_activity(%{"activity_at" => value, "activity_id" => activity_id})
+       when is_binary(value) and is_binary(activity_id) do
+    with {:ok, activity_at, 0} <- DateTime.from_iso8601(value),
+         {:ok, activity_id} <- Ecto.UUID.cast(activity_id) do
+      {:ok, activity_at, activity_id}
+    else
+      _error -> {:error, :invalid_idle_dream_payload}
+    end
+  end
+
+  defp idle_activity(_payload), do: {:error, :invalid_idle_dream_payload}
+
+  defp dream_idle_seconds! do
+    :memhouse
+    |> Application.fetch_env!(:dream_time_gates)
+    |> Keyword.fetch!(:idle_seconds)
   end
 end

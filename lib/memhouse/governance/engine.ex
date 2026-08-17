@@ -657,6 +657,18 @@ defmodule MemHouse.Governance.Engine do
       MemHouse.Pipeline.DeductionEffects.accept!(updated, pipeline_actor(actor))
     end
 
+    if updated.state == "active" and is_nil(updated.deduction_key) and
+         updated.extracting_model != "system:dream-time-consolidator" do
+      {:ok, _dream_run} =
+        Pipeline.enqueue_idle_dream_time(
+          updated.account_id,
+          updated.scope_id,
+          updated.updated_at,
+          updated.id,
+          actor
+        )
+    end
+
     enqueue_derived_refreshes!(updated, actor)
     updated
   end

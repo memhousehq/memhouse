@@ -69,6 +69,36 @@ defmodule MemHouse.Pipeline.Changes.ExecuteRun do
   def apply_outcome(changeset, {:error, error}), do: Ash.Changeset.add_error(changeset, error)
 end
 
+defmodule MemHouse.Pipeline.Changes.RunObanTriggerAt do
+  @moduledoc """
+  Inserts an AshOban trigger at the absolute time supplied to an action.
+
+  The ordinary trigger change accepts a compile-time job option. Idle dream
+  scheduling instead derives an exact wakeup from the committed knowledge
+  change, so the timestamp is an action argument. The hook still runs inside
+  the resource action transaction: the `PipelineRun` and its Oban job either
+  both commit or both roll back.
+  """
+
+  use Ash.Resource.Change
+
+  @impl true
+  def change(changeset, opts, context) do
+    trigger = AshOban.Info.oban_trigger(changeset.resource, opts[:trigger])
+    scheduled_at = Ash.Changeset.get_argument(changeset, opts[:argument])
+
+    Ash.Changeset.after_action(changeset, fn _changeset, result ->
+      AshOban.run_trigger(result, trigger,
+        actor: context.actor,
+        tenant: changeset.tenant,
+        scheduled_at: scheduled_at
+      )
+
+      {:ok, result}
+    end)
+  end
+end
+
 defmodule MemHouse.Pipeline.Changes.MarkRunFailed do
   @moduledoc """
   Records a failed attempt on a pipeline run without leaking why it failed.
