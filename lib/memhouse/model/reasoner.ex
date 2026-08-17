@@ -26,6 +26,7 @@ defmodule MemHouse.Model.Reasoner do
 
   alias MemHouse.Model
   alias MemHouse.Model.Schema.{Reasoning, ReasoningSynthesis, ReasoningUpdate}
+  alias MemHouse.Observability
 
   # Names the prompt template below, and is passed to the gateway as a call
   # option. Note that the `prompt_version` actually stamped on provenance and
@@ -168,24 +169,82 @@ defmodule MemHouse.Model.Reasoner do
   end
 
   defp generate_operation(messages, schema, context, task, prompt_version, opts) do
+    started_at = System.monotonic_time(:millisecond)
+
     case Model.generate_structured(
            :dream_reasoner,
            messages,
            schema,
            context,
-           Keyword.merge([task: task, prompt_version: prompt_version], opts)
+           Keyword.merge(
+             [task: task, return_usage: true],
+             opts
+           )
          ) do
       {:ok, result, provenance} ->
         operation_provenance =
           provenance
-          |> Map.put(:prompt_version, prompt_version)
+          |> Map.put(:operation_prompt_version, prompt_version)
           |> Map.put(:operation, Atom.to_string(task))
 
         items = Enum.map(result.items, &Map.merge(&1, operation_provenance))
+        usage = Map.get(operation_provenance, :usage, %{})
+
+        emit_operation(
+          task,
+          prompt_version,
+          context,
+          %{
+            calls: 1,
+            input_tokens: Map.get(usage, :input_tokens, 0),
+            output_tokens: Map.get(usage, :output_tokens, 0),
+            items: length(items) + length(result.relations),
+            accepted: length(items) + length(result.relations),
+            elapsed_ms: System.monotonic_time(:millisecond) - started_at
+          },
+          "ok",
+          nil
+        )
+
         {:ok, %{result | items: items}, operation_provenance}
 
       {:error, error} ->
+        emit_operation(
+          task,
+          prompt_version,
+          context,
+          %{
+            calls: 1,
+            rejected: 1,
+            failures: 1,
+            elapsed_ms: System.monotonic_time(:millisecond) - started_at
+          },
+          "failed",
+          failure_class(error)
+        )
+
         {:error, error}
     end
   end
+
+  defp emit_operation(task, prompt_version, context, measurements, status, failure_class) do
+    Observability.emit_operation(
+      task,
+      measurements,
+      %{
+        version: prompt_version,
+        status: status,
+        failure_class: failure_class,
+        account_id: Map.get(context, :account_id),
+        scope_id: Map.get(context, :scope_id)
+      }
+    )
+  end
+
+  defp failure_class({:structured_validation_failed, _errors}),
+    do: "structured_validation_failed"
+
+  defp failure_class(%module{}), do: inspect(module)
+  defp failure_class(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp failure_class(_reason), do: "reasoning_failed"
 end

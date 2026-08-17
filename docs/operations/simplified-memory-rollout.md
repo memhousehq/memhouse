@@ -61,12 +61,12 @@ answer text.
 
 | Signal | Event or surface | Stop condition |
 | --- | --- | --- |
-| Extraction anchors, attempts, calls, tokens, admission geometry | Ingest status/PipelineRun payload and Usage ledger | Repairable/terminal rate, retry amplification, queue delay, or token/call budget exceeds the matched geometry |
+| Extraction anchors, attempts, calls, tokens, admission geometry | `[:memhouse, :operation, :completed]` with `operation: "ingest_batch"`, Ingest status/PipelineRun payload, and Usage ledger | Repairable/terminal rate, retry amplification, queue delay, or token/call budget exceeds the matched geometry |
 | Recall calls, items, query tokens, elapsed time, exhaustion | `[:memhouse, :recall, :planner]` and Ask `recall` diagnostics | Any run exceeds a preregistered bound, or exhaustion rate/latency exceeds the manifest budget |
 | Retrieval latency and dropped components | `[:memhouse, :retrieval, :outcomes]`, `:component`, and `:degraded` | p95 or degraded rate exceeds the matched threshold |
 | Source-search freshness and availability | `[:memhouse, :retrieval, :source_search]` and source-search status | Sustained `stale`, `unavailable`, or `failed`, or citation targets cannot resolve |
 | Projection/index freshness | `[:memhouse, :retrieval, :projection_refresh]` and Operations console | Coverage below the operator threshold after the rebuild allowance |
-| Dream work and skips | `[:memhouse, :pipeline, :dream_gate]` | Queue growth, repeated elapsed-budget skips, or replay durable effects |
+| Dream work and skips | `[:memhouse, :operation, :completed]` with `operation: "dream"`, operation-specific reasoning aggregates, and `[:memhouse, :pipeline, :dream_gate]` | Queue growth, repeated elapsed-budget skips, or replay durable effects |
 | Model calls, tokens, and spend | Usage ledger and `/api/v1/operations/costs` | Preregistered token or spend ceiling reached |
 | Citation and answer safety | Eval bundle, Ask abstention/degraded fields, `[:memhouse, :ask, :degraded]` | Any isolation leak or unsupported claim; citation or abstention below its gate |
 | Queue health | `/api/ready` and `/console/operations` | Sustained unavailable queue or depth beyond the declared canary budget |

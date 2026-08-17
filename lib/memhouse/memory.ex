@@ -558,18 +558,37 @@ defmodule MemHouse.Memory do
 
       result = stringify_top_level(retrieval)
 
-      if Map.get(filters, "include_identity_profile", false) in [true, "true", "1"] do
-        identity_profile = stable_identity_profile(filters)
+      result =
+        if Map.get(filters, "include_identity_profile", false) in [true, "true", "1"] do
+          identity_profile = stable_identity_profile(filters)
 
-        result
-        |> Map.put("identity_profile", identity_profile)
-        |> Map.put(
-          "identity_profile_status",
-          get_in(identity_profile, ["diagnostic", "status"])
-        )
-      else
-        Map.put(result, "identity_profile_status", "not_requested")
-      end
+          result
+          |> Map.put("identity_profile", identity_profile)
+          |> Map.put(
+            "identity_profile_status",
+            get_in(identity_profile, ["diagnostic", "status"])
+          )
+        else
+          Map.put(result, "identity_profile_status", "not_requested")
+        end
+
+      Observability.emit_operation(
+        :recall,
+        %{
+          calls: length(retrieval.retrieval_outcomes),
+          items: length(retrieval.candidates),
+          candidates: length(retrieval.candidates),
+          failures: length(retrieval.dropped_strategies),
+          elapsed_ms: retrieval.latency_ms
+        },
+        %{
+          version: retrieval.profile_version,
+          profile: retrieval.profile,
+          status: if(retrieval.degraded, do: "degraded", else: "ok")
+        }
+      )
+
+      result
     end)
   end
 
@@ -749,6 +768,7 @@ defmodule MemHouse.Memory do
   """
   def ask(attrs, identity_actor \\ nil) do
     Observability.with_span(:memory, "memhouse.memory.ask", fn ->
+      started_at = Clock.monotonic_ms()
       attrs = attrs |> normalize_attrs() |> put_identity_actor(identity_actor)
       question = Map.fetch!(attrs, "question")
       effort = Map.get(attrs, "effort", "fixed")
@@ -790,10 +810,33 @@ defmodule MemHouse.Memory do
         "memhouse.ask.answer_confidence" => Map.get(answer, "answer_confidence", 0)
       })
 
-      retrieval
-      |> Map.merge(answer)
-      |> Map.put("recall", recall)
-      |> Map.put("recall_evidence", answer_candidates)
+      result =
+        retrieval
+        |> Map.merge(answer)
+        |> Map.put("recall", recall)
+        |> Map.put("recall_evidence", answer_candidates)
+
+      Observability.emit_operation(
+        :answer,
+        %{
+          calls: if(used_model?, do: 1, else: 0),
+          input_tokens: Map.get(answer, "answerer_prompt_tokens", 0),
+          items: length(Map.get(answer, "citations", [])),
+          candidates: length(answer_candidates),
+          accepted: if(Map.get(answer, "abstained", false), do: 0, else: 1),
+          rejected: if(Map.get(answer, "abstained", false), do: 1, else: 0),
+          failures: if(is_nil(Map.get(answer, "answer_degraded")), do: 0, else: 1),
+          elapsed_ms: Clock.monotonic_ms() - started_at
+        },
+        %{
+          version: Map.get(retrieval, "profile_version", "unknown"),
+          profile: profile,
+          status: answer_operation_status(answer),
+          failure_class: Map.get(answer, "answer_degraded")
+        }
+      )
+
+      result
     end)
   end
 
@@ -1069,6 +1112,7 @@ defmodule MemHouse.Memory do
   """
   def stable_identity_profile(attrs, identity_actor \\ nil) do
     Observability.with_span(:memory, "memhouse.memory.stable_identity_profile", fn ->
+      started_at = Clock.monotonic_ms()
       attrs = attrs |> normalize_attrs() |> put_identity_actor(identity_actor)
 
       profile =
@@ -1084,6 +1128,22 @@ defmodule MemHouse.Memory do
           get_in(profile, ["diagnostic", "returned_count"]),
         "memhouse.identity_profile.model_calls" => 0
       })
+
+      Observability.emit_operation(
+        :profile_refresh,
+        %{
+          calls: 0,
+          items: get_in(profile, ["diagnostic", "returned_count"]) || 0,
+          candidates: get_in(profile, ["diagnostic", "eligible_count"]) || 0,
+          rejected: get_in(profile, ["diagnostic", "excluded_count"]) || 0,
+          elapsed_ms: Clock.monotonic_ms() - started_at
+        },
+        %{
+          version: Map.get(profile, "profile_version", "unknown"),
+          status: get_in(profile, ["diagnostic", "status"]),
+          cache_status: "live_projection"
+        }
+      )
 
       profile
     end)
@@ -2225,6 +2285,12 @@ defmodule MemHouse.Memory do
   end
 
   defp prompt_tokens(provenance), do: get_in(provenance, [:usage, :input_tokens]) || 0
+
+  defp answer_operation_status(%{"answer_degraded" => failure}) when is_binary(failure),
+    do: "failed"
+
+  defp answer_operation_status(%{"abstained" => true}), do: "abstained"
+  defp answer_operation_status(_answer), do: "ok"
 
   defp put_answer_diagnostics(answer, context_count, prompt_tokens) do
     answer

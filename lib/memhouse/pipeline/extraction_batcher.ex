@@ -17,6 +17,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
   alias MemHouse.DataLayer
   alias MemHouse.Memory
+  alias MemHouse.Observability
   alias MemHouse.Observations.Message
   alias MemHouse.Pipeline
   alias MemHouse.Pipeline.ExtractionAdmission
@@ -26,6 +27,13 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
   @doc "Processes the message named by an extraction PipelineRun."
   def run(run) do
+    started_at = System.monotonic_time(:millisecond)
+    result = do_run(run)
+    emit_aggregate(run, result, System.monotonic_time(:millisecond) - started_at)
+    result
+  end
+
+  defp do_run(run) do
     claim_id = Ecto.UUID.generate()
     actor_opts = [role: :system, pipeline?: true]
 
@@ -39,6 +47,47 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     end
   end
 
+  defp emit_aggregate(run, result, elapsed_ms) do
+    {status, calls, anchors, failures, failure_class} = aggregate_result(result)
+
+    Observability.emit_operation(
+      :ingest_batch,
+      %{
+        anchors: anchors,
+        attempts: if(status == "delegated", do: 0, else: 1),
+        calls: calls,
+        items: anchors,
+        failures: failures,
+        elapsed_ms: elapsed_ms
+      },
+      %{
+        run_id: run.id,
+        version: ExtractionAdmission.config()[:identity],
+        status: status,
+        failure_class: failure_class,
+        account_id: run.account_id,
+        scope_id: run.scope_id
+      }
+    )
+  end
+
+  defp aggregate_result({:ok, %{status: "processed", anchors: anchors}}),
+    do: {"ok", 1, map_size(anchors), 0, nil}
+
+  defp aggregate_result({:ok, %{status: "delegated"}}),
+    do: {"delegated", 0, 0, 0, nil}
+
+  defp aggregate_result({:ok, %{status: status} = result})
+       when status in ["repairable", "terminal"] do
+    anchors = Map.get(result, :anchor_count, 1)
+    {status, 1, anchors, anchors, status}
+  end
+
+  defp aggregate_result({:error, error}) do
+    {_disposition, reason_class} = failure_class(error)
+    {"failed", 1, 1, 1, reason_class}
+  end
+
   defp process_claimed(run, claim_id) do
     anchor = Memory.prepare_message_extraction_for_account(run.target_id, run.account_id)
 
@@ -49,7 +98,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     case prepared do
       [] ->
         mark_all([run], "repairable", "oversized", ExtractionAdmission.config()[:identity])
-        {:ok, %{status: "repairable", run_status: "persisted"}}
+        {:ok, %{status: "repairable", run_status: "persisted", anchor_count: 1}}
 
       selected ->
         claim_and_extract(run, claim_id, selected)
@@ -106,11 +155,11 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
         case failure_class(error) do
           {:repairable, reason_class} ->
             mark_all(Map.values(runs), "repairable", reason_class, identity)
-            {:ok, %{status: "repairable", run_status: "persisted"}}
+            {:ok, %{status: "repairable", run_status: "persisted", anchor_count: map_size(runs)}}
 
           {:terminal, reason_class} ->
             mark_all(Map.values(runs), "terminal", reason_class, identity)
-            {:ok, %{status: "terminal", run_status: "persisted"}}
+            {:ok, %{status: "terminal", run_status: "persisted", anchor_count: map_size(runs)}}
 
           {:retryable, reason_class} ->
             # Record every claimed anchor before returning the provider error.

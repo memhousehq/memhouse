@@ -46,6 +46,20 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
 
     on_exit(fn -> :telemetry.detach(handler) end)
 
+    operation_handler = {__MODULE__, self(), :operation}
+
+    :ok =
+      :telemetry.attach(
+        operation_handler,
+        [:memhouse, :operation, :completed],
+        fn _event, measurements, metadata, _config ->
+          send(test_process, {:operation, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(operation_handler) end)
+
     assert {:ok, %{scopes: 0, throttled: 0, items: 0, relations: 0}} =
              DreamTime.run(actor.account_id)
 
@@ -56,6 +70,13 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     assert metadata.reason == :no_delta
     assert metadata.account_id == actor.account_id
     refute inspect(metadata) =~ "Dream Time Empty"
+
+    assert_receive {:operation, operation_measurements, operation_metadata}
+    assert operation_metadata.operation == "dream"
+    assert operation_metadata.account_id == actor.account_id
+    assert operation_measurements.calls == 0
+    assert operation_measurements.items == 0
+    refute inspect({operation_measurements, operation_metadata}) =~ "Dream Time Empty"
   end
 
   test "change, idle, interval, and work gates are deterministic and independent" do

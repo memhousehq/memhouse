@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
+
+defmodule MemHouse.ObservabilityOperationTest do
+  use ExUnit.Case, async: true
+
+  alias MemHouse.Observability
+
+  test "emits one normalized operation aggregate and drops content-bearing keys" do
+    handler = "operation-aggregate-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn event, measurements, metadata, _config ->
+          send(parent, {:operation, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    assert :ok =
+             Observability.emit_operation(
+               :recall,
+               %{calls: 2, candidates: 5, elapsed_ms: 12, input_tokens: -1},
+               %{
+                 run_id: "run-1",
+                 version: "minimal-v1",
+                 status: "degraded",
+                 profile: "minimal",
+                 query: "must never escape",
+                 prompt: "must never escape"
+               }
+             )
+
+    assert_receive {:operation, [:memhouse, :operation, :completed], measurements, metadata}
+    assert measurements.calls == 2
+    assert measurements.candidates == 5
+    assert measurements.elapsed_ms == 12
+    assert measurements.input_tokens == 0
+    assert measurements.output_tokens == 0
+    assert metadata.operation == "recall"
+    assert metadata.run_id == "run-1"
+    assert metadata.version == "minimal-v1"
+    assert metadata.status == "degraded"
+    assert metadata.profile == "minimal"
+    refute Map.has_key?(metadata, :query)
+    refute Map.has_key?(metadata, :prompt)
+  end
+end

@@ -18,6 +18,7 @@ defmodule MemHouse.Pipeline.DreamTime do
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Model.Reasoner
+  alias MemHouse.Observability
   alias MemHouse.Operations.DreamTimeWatermark
   alias MemHouse.Pipeline.{Consolidator, DeductionEffects, Idempotency, Lock, ReasoningEffects}
   alias MemHouse.Pipeline.DreamTime.Gate
@@ -52,11 +53,27 @@ defmodule MemHouse.Pipeline.DreamTime do
   and leaves that scope watermark unchanged, so the durable job can retry.
   """
   def run(account_id) do
+    started_at = Clock.monotonic_ms()
+    result = do_run(account_id)
+    emit_aggregate(account_id, result, Clock.monotonic_ms() - started_at)
+    public_result(result)
+  end
+
+  defp do_run(account_id) do
     scopes = affected_scopes(account_id)
 
     Enum.reduce_while(
       scopes,
-      {:ok, %{scopes: 0, throttled: 0, items: 0, relations: 0}},
+      {:ok,
+       %{
+         scopes: 0,
+         throttled: 0,
+         items: 0,
+         relations: 0,
+         model_calls: 0,
+         input_tokens: 0,
+         output_tokens: 0
+       }},
       fn scope_id, {:ok, counts} ->
         case run_scope(account_id, scope_id) do
           {:ok, %{status: :no_delta}} ->
@@ -75,7 +92,10 @@ defmodule MemHouse.Pipeline.DreamTime do
                 counts
                 | scopes: counts.scopes + 1,
                   items: counts.items + result.items,
-                  relations: counts.relations + result.relations
+                  relations: counts.relations + result.relations,
+                  model_calls: counts.model_calls + Map.get(result, :model_calls, 0),
+                  input_tokens: counts.input_tokens + Map.get(result, :input_tokens, 0),
+                  output_tokens: counts.output_tokens + Map.get(result, :output_tokens, 0)
               }}}
 
           {:error, error} ->
@@ -84,6 +104,43 @@ defmodule MemHouse.Pipeline.DreamTime do
       end
     )
   end
+
+  defp emit_aggregate(account_id, result, elapsed_ms) do
+    {status, counts, failures, failure_class} =
+      case result do
+        {:ok, counts} -> {"ok", counts, 0, nil}
+        {:error, error} -> {"failed", %{}, 1, aggregate_failure_class(error)}
+      end
+
+    Observability.emit_operation(
+      :dream,
+      %{
+        calls: Map.get(counts, :model_calls, 0),
+        input_tokens: Map.get(counts, :input_tokens, 0),
+        output_tokens: Map.get(counts, :output_tokens, 0),
+        items: Map.get(counts, :items, 0),
+        accepted: Map.get(counts, :items, 0) + Map.get(counts, :relations, 0),
+        rejected: Map.get(counts, :throttled, 0),
+        failures: failures,
+        elapsed_ms: elapsed_ms
+      },
+      %{
+        account_id: account_id,
+        version: "dream-operations-v1",
+        status: status,
+        failure_class: failure_class
+      }
+    )
+  end
+
+  defp aggregate_failure_class(%module{}), do: inspect(module)
+  defp aggregate_failure_class(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp aggregate_failure_class(_reason), do: "dream_failed"
+
+  defp public_result({:ok, counts}),
+    do: {:ok, Map.take(counts, [:scopes, :throttled, :items, :relations])}
+
+  defp public_result(error), do: error
 
   @doc false
   def run_scope(account_id, scope_id) do
@@ -178,8 +235,14 @@ defmodule MemHouse.Pipeline.DreamTime do
                context,
                total_timeout: snapshot.limits.max_elapsed_ms
              ) do
-          {:ok, result, _provenance} ->
-            {:ok, %{status: :ready, result: result, input_ids: Enum.map(working_set, & &1.id)}}
+          {:ok, result, provenance} ->
+            {:ok,
+             %{
+               status: :ready,
+               result: result,
+               input_ids: Enum.map(working_set, & &1.id),
+               operation_usage: operation_usage(provenance)
+             }}
 
           {:error, error} ->
             {:error, error}
@@ -199,7 +262,11 @@ defmodule MemHouse.Pipeline.DreamTime do
   defp apply(_account_id, _scope_id, _snapshot, %{status: :throttled}),
     do: {:ok, %{status: :throttled, items: 0, relations: 0}}
 
-  defp apply(account_id, scope_id, snapshot, %{result: result, input_ids: input_ids}) do
+  defp apply(account_id, scope_id, snapshot, %{
+         result: result,
+         input_ids: input_ids,
+         operation_usage: usage
+       }) do
     DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account, actor ->
       Lock.acquire!(account_id, lock_key(scope_id))
       # Applying a stale response is safe because the watermark advances only
@@ -228,7 +295,27 @@ defmodule MemHouse.Pipeline.DreamTime do
       # output too and coalesces with any transition-triggered refresh.
       refresh!(account_id, scope_id, snapshot.input_watermark, actor)
 
-      {:ok, %{status: :completed, items: length(items), relations: relations}}
+      {:ok,
+       %{
+         status: :completed,
+         items: length(items),
+         relations: relations,
+         model_calls: usage.calls,
+         input_tokens: usage.input_tokens,
+         output_tokens: usage.output_tokens
+       }}
+    end)
+  end
+
+  defp operation_usage(%{operations: operations}) do
+    Enum.reduce(operations, %{calls: 0, input_tokens: 0, output_tokens: 0}, fn operation, acc ->
+      usage = Map.get(operation, :usage, %{})
+
+      %{
+        calls: acc.calls + 1,
+        input_tokens: acc.input_tokens + (Map.get(usage, :input_tokens, 0) || 0),
+        output_tokens: acc.output_tokens + (Map.get(usage, :output_tokens, 0) || 0)
+      }
     end)
   end
 

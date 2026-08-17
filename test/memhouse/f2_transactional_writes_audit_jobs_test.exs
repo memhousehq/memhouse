@@ -308,6 +308,21 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
   end
 
   test "one ingest worker atomically completes adjacent anchors through one provider call" do
+    handler = {__MODULE__, self(), :ingest_batch_operation}
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, measurements, metadata, _config ->
+          send(parent, {:ingest_batch_operation, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
     assert {:ok, first} =
              Memory.ingest_message(
                ingest_attrs("f2-batch", "batch-session",
@@ -323,6 +338,14 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
              )
 
     assert %{failure: 0} = Oban.drain_queue(queue: :ingest)
+
+    assert_receive {:ingest_batch_operation, measurements, metadata}
+    assert metadata.operation == "ingest_batch"
+    assert metadata.status == "ok"
+    assert measurements.anchors == 2
+    assert measurements.calls == 1
+    assert measurements.failures == 0
+    refute inspect({measurements, metadata}) =~ "Avery owns"
 
     account_id = account_id!("f2-batch")
 

@@ -351,6 +351,52 @@ defmodule MemHouse.LineageIdentityProfileTest do
     refute Map.has_key?(included["identity_profile"]["diagnostic"], "statements")
   end
 
+  test "recall, answer, and live profile emit reconciliable content-free aggregates" do
+    seed = seed_active!("operation-aggregates", "Avery lives in Helsinki.", "aggregate")
+    handler = {__MODULE__, self(), :operation_aggregate}
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, measurements, metadata, _config ->
+          send(parent, {:operation_aggregate, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    attrs = %{
+      "account_key" => "operation-aggregates",
+      "peer_key" => "avery",
+      "scope_path" => seed.scope.path,
+      "query" => "Helsinki"
+    }
+
+    Memory.search(attrs)
+    Memory.stable_identity_profile(attrs)
+    Memory.ask(Map.put(attrs, "question", "Where does Avery live?"))
+
+    aggregates =
+      Enum.map(1..4, fn _index ->
+        assert_receive {:operation_aggregate, measurements, metadata}
+        {measurements, metadata}
+      end)
+
+    operations = MapSet.new(aggregates, fn {_measurements, metadata} -> metadata.operation end)
+    assert MapSet.subset?(MapSet.new(~w(recall answer profile_refresh)), operations)
+
+    assert Enum.all?(aggregates, fn {measurements, metadata} ->
+             is_binary(metadata.run_id) and is_binary(to_string(metadata.version)) and
+               is_number(measurements.elapsed_ms)
+           end)
+
+    refute inspect(aggregates) =~ "Avery lives in Helsinki"
+    refute inspect(aggregates) =~ "Where does Avery live"
+  end
+
   test "stable profile has bounded and Account-isolated empty states" do
     for index <- 1..5 do
       seed_active!(

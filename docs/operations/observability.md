@@ -210,12 +210,26 @@ reranker's timeout — it only keeps the strategies from spending the budget fir
 `"partial_rankings"` is the mildest: the model judged only part of the head, and
 that part was applied, so only the unjudged remainder kept fusion order.
 
-## Traces are sampled; the ledger is exact
+## Operation aggregates are unsampled; traces are sampled; the ledger is exact
+
+Every completed ingest batch, recall, answer, stable-profile projection, and
+dream pass emits `[:memhouse, :operation, :completed]`. This unsampled event has
+one fixed, content-safe envelope: `operation`, `run_id`, `version`, status and
+failure class metadata, plus zero-defaulted counts for calls, tokens, items,
+candidates, admission, deduplication, cache use, failures, and elapsed time.
+Unknown metadata is discarded by the emitter. Reasoning update and synthesis
+also use the same envelope, so their accepted/rejected contribution can be
+evaluated separately.
+
+Use these aggregates to reconcile logical work and alert on rates. They are not
+a billing source: a process can exit before emitting its completion event, while
+the durable usage ledger records every provider attempt that MemHouse could
+meter.
 
 For exact token totals, request counts, and cost, read the `UsageEvent` ledger
 through
 [`/api/v1/operations/costs`](health-and-costs.md).
-Telemetry is sampled and is a diagnostic aid, not an accounting record.
+Trace export is sampled and is a diagnostic aid, not an accounting record.
 
 ## Content safety is not configurable
 

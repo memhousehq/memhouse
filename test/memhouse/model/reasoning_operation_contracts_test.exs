@@ -3,6 +3,33 @@
 defmodule MemHouse.Model.ReasoningOperationContractsTest do
   use ExUnit.Case, async: false
 
+  defmodule Provider do
+    @moduledoc false
+    @behaviour MemHouse.Model.Provider
+
+    alias MemHouse.Model.Provider.Result
+    alias MemHouse.Model.Providers.Deterministic
+
+    @impl true
+    def structured(_config, _messages, _schema, _opts) do
+      {:ok,
+       %Result{
+         value: %{"items" => [], "relations" => []},
+         usage: %{input_tokens: 7, output_tokens: 3}
+       }}
+    end
+
+    @impl true
+    def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
+
+    @impl true
+    def embed(config, texts, opts), do: Deterministic.embed(config, texts, opts)
+
+    @impl true
+    def rerank(config, query, documents, opts),
+      do: Deterministic.rerank(config, query, documents, opts)
+  end
+
   alias MemHouse.Model.Reasoner
   alias MemHouse.Model.Schema.{ReasoningSynthesis, ReasoningUpdate}
 
@@ -62,12 +89,40 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
     assert Reasoner.enabled_operations() == []
   end
 
+  test "enabled reasoning operations emit accepted counts without prompt content" do
+    handler = {__MODULE__, self(), :operation}
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, measurements, metadata, _config ->
+          send(parent, {:reasoning_operation, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    assert {:ok, _result, _provenance} =
+             Reasoner.reason_operations(%{delta: [], working_set: []}, context())
+
+    assert_receive {:reasoning_operation, measurements, metadata}
+    assert metadata.operation == "reasoning_update"
+    assert metadata.version == "reason-update-1"
+    assert metadata.status == "ok"
+    assert measurements.calls == 1
+    refute inspect({measurements, metadata}) =~ "working_set"
+  end
+
   defp context do
     %{
       account_id: @account_id,
       scope_id: @scope_id,
       known_peer_keys: ["avery"],
       source_peer_key: "avery",
+      model_provider: Provider,
       reasoning_inheritance: %{sensitivity: "internal", target_level: "peer"},
       reasoning_inputs: [input(@first_id), input(@second_id)]
     }
