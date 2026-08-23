@@ -571,6 +571,19 @@ defmodule MemHouse.Eval.Experiment do
         raise ArgumentError,
               "execute variant #{inspect(variant["id"])} declared split dream operations but completed none for #{inspect(missing)}"
       end
+
+      mismatched_versions =
+        ["update", "synthesis"]
+        |> Enum.filter(&operations[&1])
+        |> Enum.reject(fn operation ->
+          get_in(actual, ["reasoning_#{operation}", "prompt_version"]) ==
+            operations["#{operation}_prompt_version"]
+        end)
+
+      if mismatched_versions != [] do
+        raise ArgumentError,
+              "execute variant #{inspect(variant["id"])} observed unexpected split reasoning prompt versions for #{inspect(mismatched_versions)}"
+      end
     end
   end
 

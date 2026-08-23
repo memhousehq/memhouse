@@ -13,7 +13,10 @@ defmodule MemHouse.Operations.Metering do
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Operations.BudgetCounter
+  alias MemHouse.Operations.PipelineRun
   alias MemHouse.Operations.UsageEvent
+
+  require Ash.Query
 
   @token_metrics [:input_tokens, :output_tokens, :embedding_tokens]
   @model_health_window_seconds 86_400
@@ -104,8 +107,8 @@ defmodule MemHouse.Operations.Metering do
 
   The returned map holds the recorded event count, API request and ingest
   counts, input/output/embedding token totals overall and per model role,
-  durable and operational storage bytes, an estimated model cost, and the
-  currency that estimate is denominated in.
+  durable and operational storage bytes, terminal extraction-failure count, an
+  estimated model cost, and the currency that estimate is denominated in.
 
   Raises if the actor may not read the ledger.
   """
@@ -148,10 +151,18 @@ defmodule MemHouse.Operations.Metering do
         estimated_model_cost: estimated_cost(by_role),
         model_cost_profile: Application.fetch_env!(:memhouse, :model_cost_profile),
         ingest_economics: ingest_economics(events, by_role, ingests),
+        terminal_extraction_failures: terminal_extraction_failures(actor),
         model_calls: model_call_health(events),
         currency: "USD"
       }
     end)
+  end
+
+  defp terminal_extraction_failures(actor) do
+    PipelineRun
+    |> Ash.Query.filter(kind == "extraction" and status == "terminal")
+    |> Ash.Query.set_tenant(actor.account_id)
+    |> Ash.count!(actor: actor)
   end
 
   defp token_totals(events) do

@@ -27,12 +27,15 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
   alias MemHouse.Model.Usage
   alias MemHouse.Operations.Health
   alias MemHouse.Operations.Metering
+  alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline
   alias MemHouse.Portability
   alias MemHouse.Portability.AuditVerifier
   alias MemHouse.Portability.Registry
   alias MemHouse.Repo
   alias MemHouse.RuntimeConfig
+
+  require Ash.Query
 
   test "logical export is self-describing, checksum verified, and excludes secrets and caches" do
     # Unique account key per run so a leftover archive or account from an earlier run cannot
@@ -300,6 +303,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert summary.event_count == 1
     assert summary.api_requests == 1
     assert summary.ingests == 1
+    assert summary.terminal_extraction_failures == 0
     # No model was called, so no tokens. Token counts come only from real provider calls;
     # they are never estimated from request counts.
     assert summary.tokens == %{input: 0, output: 0, embedding: 0}
@@ -332,6 +336,45 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert %{id: profile_id, kind: profile_kind} = summary.model_cost_profile
     assert is_binary(profile_id)
     assert profile_kind in ["planning_reference", "operator_override"]
+  end
+
+  test "usage summary counts permanent extraction failures from durable anchors" do
+    account_key = "f10-terminal-extraction-#{System.unique_integer([:positive])}"
+
+    assert {:ok, message} =
+             Memory.ingest_message(%{
+               "account_key" => account_key,
+               "session_id" => "terminal-extraction",
+               "scope_path" => "/f10/terminal-extraction",
+               "peer_key" => "operator",
+               "content" => "Avery records a permanent extraction fixture."
+             })
+
+    {_account, actor, run} =
+      DataLayer.with_account_key(
+        account_key,
+        [role: :account_admin, pipeline?: true],
+        fn account, actor ->
+          run =
+            PipelineRun
+            |> Ash.Query.filter(
+              kind == "extraction" and target_type == "message" and
+                target_id == ^message["id"]
+            )
+            |> Ash.Query.set_tenant(account.id)
+            |> Ash.read_one!(actor: %{actor | role: :system})
+
+          {account, actor, run}
+        end
+      )
+
+    Ash.Seed.update!(
+      run,
+      %{status: "terminal", last_error_class: "structured_validation_exhausted"},
+      tenant: actor.account_id
+    )
+
+    assert Metering.summary(actor).terminal_extraction_failures == 1
   end
 
   test "the shipped cost profile is versioned and non-zero before an operator override" do

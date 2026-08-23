@@ -602,7 +602,8 @@ durable storage is zero and operational storage is nonzero.
 `ingest_economics` reports extractor calls, tokens, and estimated cost per
 ingested message over the full retained ledger. Call counts include failed
 extractor calls. An unmetered failure has unknown token usage and cost, so it
-contributes only to `calls_per_message`.
+contributes only to `calls_per_message`. `terminal_extraction_failures` counts
+the Account's current permanent terminal extraction anchors.
 
 ---
 

@@ -379,7 +379,10 @@ defmodule MemHouse.Eval.Reasoning do
 
   defp merge_operation_counts(left, right) do
     Map.merge(left, right, fn _operation, a, b ->
-      Map.merge(a, b, fn _metric, x, y -> x + y end)
+      Map.merge(a, b, fn
+        "prompt_version", version, version -> version
+        _metric, x, y -> x + y
+      end)
     end)
   end
 
@@ -413,7 +416,10 @@ defmodule MemHouse.Eval.Reasoning do
         fn _event, _measurements, metadata, _config ->
           if metadata[:account_id] == account_id and
                metadata[:operation] in ["reasoning_update", "reasoning_synthesis"] do
-            send(owner, {ref, metadata[:operation], metadata[:status]})
+            send(
+              owner,
+              {ref, metadata[:operation], metadata[:status], metadata[:version]}
+            )
           end
         end,
         nil
@@ -429,11 +435,12 @@ defmodule MemHouse.Eval.Reasoning do
 
   defp collect_operations(ref, counts) do
     receive do
-      {^ref, operation, status} ->
+      {^ref, operation, status, prompt_version} ->
         metrics = %{
           "calls" => 1,
           "completed" => if(status == "ok", do: 1, else: 0),
-          "failed" => if(status == "ok", do: 0, else: 1)
+          "failed" => if(status == "ok", do: 0, else: 1),
+          "prompt_version" => prompt_version
         }
 
         counts =

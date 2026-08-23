@@ -95,7 +95,10 @@ operational storage is larger than durable storage. Configure cleanup in
 [Operational retention](../reference/configuration.md#operational-retention). It also
 reports extractor calls, tokens, and estimated cost per ingested message. Call
 counts include failed extractor calls. An unmetered failure has unknown token
-usage and cost, so it contributes only to the call ratio.
+usage and cost, so it contributes only to the call ratio. The summary and the
+console Operations page also report the Account's current count of permanent
+terminal extraction anchors so operator repair work is visible without stored
+content.
 
 ```mermaid
 flowchart LR

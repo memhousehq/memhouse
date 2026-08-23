@@ -287,6 +287,13 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
            ]) >
              0
 
+    assert get_in(experimental_report, [
+             "reasoning",
+             "operations",
+             "reasoning_update",
+             "prompt_version"
+           ]) == "reason-update-1"
+
     assert Application.fetch_env!(:memhouse, :extraction_batching) == original_batching
     assert Application.fetch_env!(:memhouse, :dream_time_gates) == original_dream_gates
 
@@ -434,7 +441,9 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     %{
       "split_enabled" => split_enabled,
       "synthesis" => false,
-      "update" => true
+      "synthesis_prompt_version" => "reason-synthesis-1",
+      "update" => true,
+      "update_prompt_version" => "reason-update-1"
     }
   end
 

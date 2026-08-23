@@ -244,19 +244,22 @@ defmodule MemHouse.Lineage do
   end
 
   defp direct_source_references(items, context, read_limit) when is_list(items) do
-    item_ids = Enum.map(items, & &1.id)
-
-    provenance_by_knowledge =
-      Provenance
-      |> Ash.Query.filter(scope_id in ^context.scope_ids and knowledge_item_id in ^item_ids)
-      |> Ash.Query.sort(source_type: :asc, message_id: :asc, document_version_id: :asc, id: :asc)
-      |> Ash.Query.set_tenant(context.account_id)
-      |> Ash.read!(actor: context.actor)
-      |> Enum.group_by(& &1.knowledge_item_id)
-
     selected_provenance =
       Map.new(items, fn item ->
-        {item.id, provenance_by_knowledge |> Map.get(item.id, []) |> Enum.take(read_limit)}
+        rows =
+          Provenance
+          |> Ash.Query.filter(scope_id in ^context.scope_ids and knowledge_item_id == ^item.id)
+          |> Ash.Query.sort(
+            source_type: :asc,
+            message_id: :asc,
+            document_version_id: :asc,
+            id: :asc
+          )
+          |> Ash.Query.limit(read_limit)
+          |> Ash.Query.set_tenant(context.account_id)
+          |> Ash.read!(actor: context.actor)
+
+        {item.id, rows}
       end)
 
     source_records = source_records(items, selected_provenance, context)

@@ -79,6 +79,11 @@ defmodule MemHouse.Model.Reasoner do
     |> Enum.filter(&Keyword.fetch!(config, &1))
   end
 
+  @doc "Returns the independently versioned prompt identity for each split operation."
+  def operation_prompt_versions do
+    %{"update" => @update_prompt_version, "synthesis" => @synthesis_prompt_version}
+  end
+
   @doc """
   Returns whether the experimental split dream-reasoning contract is enabled.
 

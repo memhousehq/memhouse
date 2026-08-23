@@ -65,7 +65,9 @@
         "dream_reasoning_operations": {
           "split_enabled": false,
           "update": true,
-          "synthesis": false
+          "synthesis": false,
+          "update_prompt_version": "reason-update-1",
+          "synthesis_prompt_version": "reason-synthesis-1"
         },
         "dream_time": false,
         "durability_audit": false
@@ -124,7 +126,9 @@
         "dream_reasoning_operations": {
           "split_enabled": true,
           "update": true,
-          "synthesis": false
+          "synthesis": false,
+          "update_prompt_version": "reason-update-1",
+          "synthesis_prompt_version": "reason-synthesis-1"
         },
         "dream_time": true,
         "durability_audit": false

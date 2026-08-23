@@ -186,6 +186,7 @@ defmodule MemHouseWeb.ConsoleLive.Operations do
           />
           <.tile label="Model calls (24 h)" value={@usage.model_calls.attempts} />
           <.tile label="Model failures (24 h)" value={@usage.model_calls.errors} />
+          <.tile label="Permanent extraction failures" value={@usage.terminal_extraction_failures} />
           <.tile label="Model error rate (24 h)" value={percent(@usage.model_calls.error_rate)} />
           <.tile label="Unmetered failures (24 h)" value={@usage.model_calls.unmetered} />
           <.tile label="Extractor calls per message" value={@usage.ingest_economics.calls_per_message} />

@@ -230,7 +230,9 @@ defmodule MemHouse.Eval.ExperimentTest do
              "dream_reasoning_operations" => %{
                "split_enabled" => true,
                "synthesis" => false,
-               "update" => true
+               "synthesis_prompt_version" => "reason-synthesis-1",
+               "update" => true,
+               "update_prompt_version" => "reason-update-1"
              },
              "durability_audit" => false,
              "extraction_batching" => %{

@@ -163,11 +163,14 @@ defmodule MemHouse.Eval.ComponentBindings do
 
   defp dream_reasoning_operations(split_enabled?) do
     configured = Application.fetch_env!(:memhouse, :dream_reasoning_operations) |> Map.new()
+    prompt_versions = MemHouse.Model.Reasoner.operation_prompt_versions()
 
     %{
       "split_enabled" => split_enabled?,
       "update" => configured.update,
-      "synthesis" => configured.synthesis
+      "synthesis" => configured.synthesis,
+      "update_prompt_version" => prompt_versions["update"],
+      "synthesis_prompt_version" => prompt_versions["synthesis"]
     }
   end
 
