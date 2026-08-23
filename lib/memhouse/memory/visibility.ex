@@ -46,7 +46,14 @@ defmodule MemHouse.Memory.Visibility do
     knowledge_query(scope_ids, state, actor, internal_reader?, Clock.utc_now())
   end
 
-  @doc false
+  @doc """
+  Builds a lifecycle and audience-filtered knowledge query at a captured decision time.
+
+  `now` must be captured once by the caller and reused for every query and
+  loaded-item visibility check in the same projection. The caller must set the
+  Account tenant and execute the returned `Ash.Query` with the same actor.
+  Authorization failures are reported by Ash when that query is executed.
+  """
   def knowledge_query(scope_ids, "active", _actor, true, now) do
     KnowledgeItem
     |> Ash.Query.filter(
@@ -95,7 +102,13 @@ defmodule MemHouse.Memory.Visibility do
   def visible?(item, actor, internal_reader?),
     do: visibility_status(item, actor, internal_reader?) == :visible
 
-  @doc false
+  @doc """
+  Returns whether one loaded item is visible at a captured decision time.
+
+  `now` must be shared across every check in the same projection. The result is
+  a boolean; hidden lifecycle and authorization reasons are intentionally
+  collapsed. Use `visibility_status/4` when the content-free reason is needed.
+  """
   def visible?(item, actor, internal_reader?, now),
     do: visibility_status(item, actor, internal_reader?, now) == :visible
 
@@ -109,7 +122,14 @@ defmodule MemHouse.Memory.Visibility do
   def visibility_status(item, actor, internal_reader?),
     do: visibility_status(item, actor, internal_reader?, Clock.utc_now())
 
-  @doc false
+  @doc """
+  Classifies one loaded item at a captured decision time.
+
+  `now` must be shared across every check in the same projection. Returns
+  `:visible`, `:lifecycle_hidden`, or `:authorization_hidden` without returning
+  hidden content. The function performs no data access and raises no
+  authorization errors.
+  """
   def visibility_status(item, actor, internal_reader?, now) do
     if expired?(item, now) do
       :lifecycle_hidden
