@@ -1172,7 +1172,7 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
 
     assert_receive {^handler, measurements, metadata}, 5_000
     assert metadata.status == "terminal"
-    assert metadata.failure_class == "terminal"
+    assert metadata.failure_class == "structured_validation_exhausted"
     assert measurements.calls == 3
     assert measurements.batch_requests == 1
     assert measurements.provider_attempts == 3

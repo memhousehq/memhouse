@@ -112,8 +112,10 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
   defp aggregate_result(
          {:classified_batch_result, {:ok, %{status: status}}, anchors, failure_class}
-       ),
-       do: aggregate_anchor_statuses(anchors, status, failure_class)
+       ) do
+    all_failed_status = if status == "processed", do: nil, else: status
+    aggregate_anchor_statuses(anchors, all_failed_status, failure_class)
+  end
 
   defp aggregate_result({:retryable_batch_error, error, anchors}) do
     {_disposition, reason_class} = failure_class(error)
@@ -222,7 +224,11 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
           end)
           |> Map.new()
 
-        result = {:ok, %{status: "processed", run_status: "persisted", anchors: statuses}}
+        result =
+          {:classified_batch_result,
+           {:ok, %{status: "processed", run_status: "persisted", anchors: statuses}}, statuses,
+           batch_failure_class(results)}
+
         {result, accounting(provider_attempts)}
 
       {:error, error, provider_attempts} ->
@@ -269,6 +275,12 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
        do: %{batch_requests: 1, provider_attempts: provider_attempts}
 
   defp empty_accounting, do: %{batch_requests: 0, provider_attempts: 0}
+
+  defp batch_failure_class(results) do
+    if Enum.any?(results, &match?(%{status: :terminal}, &1)),
+      do: "structured_validation_exhausted",
+      else: nil
+  end
 
   defp persist_anchor_result(run, anchor, result) do
     case Memory.persist_message_extraction_result!(
