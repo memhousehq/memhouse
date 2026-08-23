@@ -51,6 +51,21 @@ defmodule MemHouse.Model.SchemaExtractionBatchTest do
     assert Enum.any?(errors, &String.contains?(&1, "ids from the supplied observation window"))
   end
 
+  test "advertises the configured anchor bound in the provider schema" do
+    Application.put_env(:memhouse, :extraction_batching,
+      target_tokens: 1_024,
+      max_anchors: 4,
+      context_limit_tokens: 16_384,
+      reserved_output_tokens: 1_024,
+      safety_margin_tokens: 512,
+      claim_timeout_seconds: 300
+    )
+
+    anchors = get_in(ExtractionBatch.json_schema(), ["properties", "anchors"])
+    assert anchors["minItems"] == 1
+    assert anchors["maxItems"] == 4
+  end
+
   test "repair exhaustion retains a valid sibling and terminally isolates poison" do
     first_id = Ecto.UUID.generate()
     second_id = Ecto.UUID.generate()

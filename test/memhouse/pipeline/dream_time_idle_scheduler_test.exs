@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Pipeline.DreamTimeIdleSchedulerTest do
+  @moduledoc """
+  Verifies idle wakeups, content-free job payloads, and stale-run supersession.
+  """
+
   use MemHouse.DataCase, async: false
 
   alias MemHouse.DataLayer

@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Model.ReasoningOperationContractsTest do
+  @moduledoc """
+  Pins independent update/synthesis contracts and their content-free operation telemetry.
+  """
+
   use ExUnit.Case, async: false
 
   defmodule Provider do
@@ -11,6 +15,7 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
     alias MemHouse.Model.Providers.Deterministic
 
     @impl true
+    @doc "Returns an empty structured reasoning result with deterministic usage."
     def structured(_config, _messages, _schema, _opts) do
       {:ok,
        %Result{
@@ -20,12 +25,15 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
     end
 
     @impl true
+    @doc "Delegates chat calls to the deterministic provider."
     def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
 
     @impl true
+    @doc "Delegates embedding calls to the deterministic provider."
     def embed(config, texts, opts), do: Deterministic.embed(config, texts, opts)
 
     @impl true
+    @doc "Delegates reranking calls to the deterministic provider."
     def rerank(config, query, documents, opts),
       do: Deterministic.rerank(config, query, documents, opts)
   end

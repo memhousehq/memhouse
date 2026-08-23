@@ -152,9 +152,8 @@ defmodule MemHouse.Model.ProviderCircuit do
 
   def handle_call({:checkout, key, now_ms}, {caller, _tag}, state) do
     entry = Map.get(state.circuits, key, closed_entry())
-    in_flight = in_flight_for_key(state, key)
 
-    case admission(entry, now_ms, in_flight) do
+    case admission(entry, now_ms, fn -> in_flight_for_key(state, key) end) do
       {:allow, mode, next_entry, transition} ->
         token = make_ref()
         permit = {:provider_circuit, token, key, mode}
@@ -233,15 +232,19 @@ defmodule MemHouse.Model.ProviderCircuit do
     end
   end
 
-  defp admission(%{state: :closed} = entry, _now_ms, _in_flight),
+  defp admission(%{state: :closed} = entry, _now_ms, _in_flight_fun),
     do: {:allow, :closed, entry, nil}
 
-  defp admission(%{state: :open, opened_at_ms: opened_at_ms} = entry, now_ms, in_flight) do
+  defp admission(
+         %{state: :open, opened_at_ms: opened_at_ms} = entry,
+         now_ms,
+         in_flight_fun
+       ) do
     # A permit issued while closed may still be inside the provider when later
     # failures open the circuit. Do not begin the designated half-open probe
     # until those older calls drain; otherwise their late completion could
     # close the circuit while the probe is still running.
-    if now_ms - opened_at_ms >= open_ms() and in_flight == 0 do
+    if now_ms - opened_at_ms >= open_ms() and in_flight_fun.() == 0 do
       next = %{entry | state: :half_open, probe_in_flight?: true}
       {:allow, :half_open, next, :half_opened}
     else
@@ -249,7 +252,7 @@ defmodule MemHouse.Model.ProviderCircuit do
     end
   end
 
-  defp admission(%{state: :half_open}, _now_ms, _in_flight), do: :deny
+  defp admission(%{state: :half_open}, _now_ms, _in_flight_fun), do: :deny
 
   defp finish(%{state: :closed}, :closed, {:ok, _provider_result}, _now_ms),
     do: {closed_entry(), nil}

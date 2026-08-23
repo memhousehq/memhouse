@@ -184,9 +184,17 @@ defmodule MemHouse.Pipeline.DeductionEffects do
 
   defp synthesis_item?(item) do
     Map.get(item, :operation) == "reasoning_synthesis" or
-      Map.get(item, :operation_prompt_version) == "reason-synthesis-1" or
-      Map.get(item, :prompt_version) == "reason-synthesis-1"
+      synthesis_prompt_version?(Map.get(item, :operation_prompt_version)) or
+      synthesis_prompt_version?(Map.get(item, :prompt_version))
   end
+
+  # The durable prompt version is the operation marker after creation. Keep the
+  # stable operation namespace across version bumps instead of teaching the
+  # acceptance path one exact version at a time.
+  defp synthesis_prompt_version?(version) when is_binary(version),
+    do: String.starts_with?(version, "reason-synthesis-")
+
+  defp synthesis_prompt_version?(_version), do: false
 
   defp subject!(%{subject_type: "scope"}, _account_id, scope_id, _actor),
     do: %{peer_id: nil, scope_id: scope_id}

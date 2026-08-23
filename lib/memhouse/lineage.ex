@@ -37,6 +37,19 @@ defmodule MemHouse.Lineage do
   knowledge row.
   """
   def visible_source_references(%KnowledgeItem{} = item, account, actor, scopes) do
+    [item]
+    |> visible_source_references(account, actor, scopes)
+    |> Map.fetch!(item.id)
+  end
+
+  @doc """
+  Resolves visible direct sources for a bounded set of knowledge rows in batches.
+
+  The returned map is keyed by knowledge id. Source resources are still read
+  through their canonical policies in the supplied Account and scopes; batching
+  changes query granularity, not per-source authorization or omission behavior.
+  """
+  def visible_source_references(items, account, actor, scopes) when is_list(items) do
     context = %{
       account_id: account.id,
       actor: actor,
@@ -45,13 +58,19 @@ defmodule MemHouse.Lineage do
       now: Clock.utc_now()
     }
 
-    item
+    items
     |> direct_source_references(context, @default_fan_out)
-    |> Enum.filter(&(&1.status == "visible" and &1.type in ~w(message document_version)))
-    |> Enum.uniq_by(&{&1.type, &1.id})
-    |> Enum.sort_by(&{&1.type, &1.id})
-    |> Enum.take(@default_fan_out)
-    |> Enum.map(&%{"type" => &1.type, "id" => &1.id})
+    |> Map.new(fn {knowledge_id, refs} ->
+      visible_refs =
+        refs
+        |> Enum.filter(&(&1.status == "visible" and &1.type in ~w(message document_version)))
+        |> Enum.uniq_by(&{&1.type, &1.id})
+        |> Enum.sort_by(&{&1.type, &1.id})
+        |> Enum.take(@default_fan_out)
+        |> Enum.map(&%{"type" => &1.type, "id" => &1.id})
+
+      {knowledge_id, visible_refs}
+    end)
   end
 
   @doc """
@@ -63,7 +82,7 @@ defmodule MemHouse.Lineage do
   """
   def project(account, actor, scopes, attrs, internal_reader?) do
     target_type = Map.get(attrs, "target_type", "knowledge")
-    target_id = Map.fetch!(attrs, "target_id")
+    target_id = Map.get(attrs, "target_id")
 
     with {:ok, target_id} <- cast_uuid(target_id),
          true <- target_type in ~w(knowledge message document_version) do
@@ -178,7 +197,7 @@ defmodule MemHouse.Lineage do
 
     direct_source_refs = direct_source_references(item, context, read_limit)
 
-    relation_refs =
+    relations =
       KnowledgeRelation
       |> Ash.Query.filter(
         scope_id in ^context.scope_ids and source_knowledge_id == ^item.id and
@@ -188,7 +207,8 @@ defmodule MemHouse.Lineage do
       |> Ash.Query.limit(read_limit)
       |> Ash.Query.set_tenant(context.account_id)
       |> Ash.read!(actor: context.actor)
-      |> Enum.map(&relation_ref(&1, context))
+
+    relation_refs = relation_refs(relations, context)
 
     refs =
       (direct_source_refs ++ relation_refs)
@@ -220,46 +240,77 @@ defmodule MemHouse.Lineage do
 
   defp references(_source, _seen, _context, _budgets), do: {[], empty_counts()}
 
-  defp direct_source_references(item, context, read_limit) do
-    provenance_refs =
-      Provenance
-      |> Ash.Query.filter(scope_id in ^context.scope_ids and knowledge_item_id == ^item.id)
-      |> Ash.Query.sort(source_type: :asc, message_id: :asc, document_version_id: :asc, id: :asc)
-      |> Ash.Query.limit(read_limit)
-      |> Ash.Query.set_tenant(context.account_id)
-      |> Ash.read!(actor: context.actor)
-      |> Enum.map(&provenance_ref(&1, context))
-
-    legacy_message_refs =
-      item.source_message_ids
-      |> Enum.reject(fn id ->
-        Enum.any?(provenance_refs, &(&1.type == "message" and &1.id == id))
-      end)
-      |> Enum.sort()
-      |> Enum.take(read_limit)
-      |> Enum.map(&source_ref("message", &1, "extraction", context))
-
-    provenance_refs ++ legacy_message_refs
+  defp direct_source_references(%KnowledgeItem{} = item, context, read_limit) do
+    item
+    |> List.wrap()
+    |> direct_source_references(context, read_limit)
+    |> Map.fetch!(item.id)
   end
 
-  defp provenance_ref(%{source_type: "message", message_id: id}, context),
-    do: source_ref("message", id, "extraction", context)
+  defp direct_source_references(items, context, read_limit) when is_list(items) do
+    item_ids = Enum.map(items, & &1.id)
 
-  defp provenance_ref(%{source_type: "document", document_version_id: id}, context),
-    do: source_ref("document_version", id, "document_extraction", context)
+    provenance_by_knowledge =
+      Provenance
+      |> Ash.Query.filter(scope_id in ^context.scope_ids and knowledge_item_id in ^item_ids)
+      |> Ash.Query.sort(source_type: :asc, message_id: :asc, document_version_id: :asc, id: :asc)
+      |> Ash.Query.set_tenant(context.account_id)
+      |> Ash.read!(actor: context.actor)
+      |> Enum.group_by(& &1.knowledge_item_id)
+
+    selected_provenance =
+      Map.new(items, fn item ->
+        {item.id, provenance_by_knowledge |> Map.get(item.id, []) |> Enum.take(read_limit)}
+      end)
+
+    source_records = source_records(items, selected_provenance, context)
+
+    Map.new(items, fn item ->
+      provenance_refs =
+        selected_provenance
+        |> Map.fetch!(item.id)
+        |> Enum.map(&provenance_ref(&1, source_records))
+
+      legacy_message_refs =
+        item.source_message_ids
+        |> Enum.reject(fn id ->
+          Enum.any?(provenance_refs, &(&1.type == "message" and &1.id == id))
+        end)
+        |> Enum.sort()
+        |> Enum.take(read_limit)
+        |> Enum.map(&source_ref("message", &1, "extraction", source_records))
+
+      {item.id, provenance_refs ++ legacy_message_refs}
+    end)
+  end
+
+  defp provenance_ref(%{source_type: "message", message_id: id}, source_records),
+    do: source_ref("message", id, "extraction", source_records)
+
+  defp provenance_ref(%{source_type: "document", document_version_id: id}, source_records),
+    do: source_ref("document_version", id, "document_extraction", source_records)
 
   defp provenance_ref(_provenance, _context),
     do: %{type: "source", id: nil, operation: "extraction", status: "missing", record: nil}
 
-  defp source_ref(type, id, operation, context) do
-    case fetch_source(type, id, context) do
+  defp source_ref(type, id, operation, source_records) do
+    case get_in(source_records, [type, id]) do
       nil -> %{type: type, id: nil, operation: operation, status: "missing", record: nil}
       record -> %{type: type, id: id, operation: operation, status: "visible", record: record}
     end
   end
 
-  defp relation_ref(relation, context) do
-    case fetch_knowledge(relation.target_knowledge_id, context) do
+  defp relation_refs(relations, context) do
+    records =
+      relations
+      |> Enum.map(& &1.target_knowledge_id)
+      |> fetch_knowledge_records(context)
+
+    Enum.map(relations, &relation_ref(&1, context, records))
+  end
+
+  defp relation_ref(relation, context, records) do
+    case Map.get(records, relation.target_knowledge_id) do
       nil ->
         %{
           type: "knowledge",
@@ -286,6 +337,25 @@ defmodule MemHouse.Lineage do
           record: if(status == :visible, do: item)
         }
     end
+  end
+
+  defp source_records(items, provenance_by_knowledge, context) do
+    provenance = provenance_by_knowledge |> Map.values() |> List.flatten()
+
+    message_ids =
+      Enum.flat_map(items, & &1.source_message_ids) ++
+        for(%{source_type: "message", message_id: id} <- provenance, is_binary(id), do: id)
+
+    document_version_ids =
+      for %{source_type: "document", document_version_id: id} <- provenance,
+          is_binary(id),
+          do: id
+
+    %{
+      "message" => fetch_source_records(Message, message_ids, context),
+      "document_version" =>
+        fetch_source_records(DocumentVersion, document_version_ids, context)
+    }
   end
 
   defp enqueue(refs, depth, budgets, terminations) do
@@ -378,6 +448,22 @@ defmodule MemHouse.Lineage do
 
   defp fetch_knowledge(_id, _context), do: nil
 
+  defp fetch_knowledge_records(ids, context) do
+    ids = Enum.filter(ids, &is_binary/1) |> Enum.uniq()
+
+    if ids == [] do
+      %{}
+    else
+      KnowledgeItem
+      |> Ash.Query.filter(
+        id in ^ids and scope_id in ^context.scope_ids and is_nil(deleted_at)
+      )
+      |> Ash.Query.set_tenant(context.account_id)
+      |> Ash.read!(actor: context.actor)
+      |> Map.new(&{&1.id, &1})
+    end
+  end
+
   defp fetch_source("message", id, context),
     do: fetch_source_record(Message, id, context)
 
@@ -395,6 +481,20 @@ defmodule MemHouse.Lineage do
   end
 
   defp fetch_source_record(_resource, _id, _context), do: nil
+
+  defp fetch_source_records(resource, ids, context) do
+    ids = Enum.filter(ids, &is_binary/1) |> Enum.uniq()
+
+    if ids == [] do
+      %{}
+    else
+      resource
+      |> Ash.Query.filter(id in ^ids and scope_id in ^context.scope_ids)
+      |> Ash.Query.set_tenant(context.account_id)
+      |> Ash.read!(actor: context.actor)
+      |> Map.new(&{&1.id, &1})
+    end
+  end
 
   defp node_type(%KnowledgeItem{}), do: "knowledge"
   defp node_type(%Message{}), do: "message"

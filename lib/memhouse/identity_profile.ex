@@ -26,7 +26,7 @@ defmodule MemHouse.IdentityProfile do
     {"occupation", ~r/\b(?:works as|occupation is|profession is|job is)\b/iu},
     {"location", ~r/\b(?:lives in|based in|home is in)\b/iu},
     {"language", ~r/\b(?:speaks|primary language is|language is)\b/iu},
-    {"timezone", ~r/\b(?:time ?zone is|uses the [A-Z]{2,5} time ?zone)\b/u}
+    {"timezone", ~r/\b(?:(?i:time ?zone is)|uses the [A-Z]{2,5} time ?zone)\b/u}
   ]
 
   @transient ~r/\b(?:today|tonight|tomorrow|yesterday|this (?:week|month|year)|currently|right now|temporarily|for now)\b/iu
@@ -71,9 +71,12 @@ defmodule MemHouse.IdentityProfile do
       end)
       |> Enum.sort_by(&{category_order(&1.category), normalize(&1.item.statement), &1.item.id})
 
+    references_by_id =
+      Lineage.visible_source_references(Enum.map(ordered, & &1.item), account, actor, scopes)
+
     {source_backed, unsupported_sources} =
       Enum.reduce(ordered, {[], 0}, fn row, {accepted, rejected} ->
-        case Lineage.visible_source_references(row.item, account, actor, scopes) do
+        case Map.fetch!(references_by_id, row.item.id) do
           [] -> {accepted, rejected + 1}
           refs -> {[Map.put(row, :source_references, refs) | accepted], rejected}
         end

@@ -64,4 +64,39 @@ defmodule MemHouse.ObservabilityOperationTest do
     refute Map.has_key?(metadata, :query)
     refute Map.has_key?(metadata, :prompt)
   end
+
+  test "normalizes untrusted operation and metadata values before emission" do
+    handler = "operation-safety-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, _measurements, metadata, _config ->
+          send(parent, {:safe_operation, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    assert :ok =
+             Observability.emit_operation("credential=do-not-emit", %{}, %{
+               version: "secret with spaces",
+               status: "message body",
+               failure_class: "api_key_value",
+               account_id: "not-a-uuid"
+             })
+
+    assert_receive {:safe_operation, metadata}
+    assert metadata.operation == "unknown"
+    assert metadata.version == "unknown"
+    assert metadata.status == "unknown"
+    assert metadata.failure_class == "unknown_failure"
+    refute Map.has_key?(metadata, :account_id)
+    refute inspect(metadata) =~ "do-not-emit"
+    refute inspect(metadata) =~ "secret with spaces"
+    refute inspect(metadata) =~ "api_key_value"
+  end
 end

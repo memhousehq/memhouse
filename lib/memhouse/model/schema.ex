@@ -20,6 +20,109 @@ defmodule MemHouse.Model.Schema do
   @optional_callbacks recover_after_repairs: 2
 end
 
+defmodule MemHouse.Model.Schema.ExtractionSupport do
+  @moduledoc """
+  Shared content-free parsing helpers for accepted and compact extraction.
+
+  Both contracts use these functions so subject, map-key, and relative-date
+  semantics cannot drift between the current and experimental paths.
+  """
+
+  @number_words ~w(one two three four five six seven eight nine ten eleven twelve)
+
+  @doc "Returns a trimmed string field or a content-free validation error."
+  def non_empty_string(item, key) do
+    case fetch(item, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, ["#{key} must not be blank"]}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _other ->
+        {:error, ["#{key} must be a string"]}
+    end
+  end
+
+  @doc "Returns whether text starts with first-person evidence wording."
+  def first_person?(text) do
+    String.match?(text, ~r/^\s*(?:I(?:['’](?:m|ve|d|ll))?\b|my\b|mine\b|me\b)/iu)
+  end
+
+  @doc "Fetches a string-named field without creating atoms from provider output."
+  def fetch(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        Enum.find_value(map, fn
+          {candidate, value} when is_atom(candidate) ->
+            if Atom.to_string(candidate) == key, do: {:found, value}
+
+          {_candidate, _value} ->
+            nil
+        end)
+        |> case do
+          {:found, value} -> value
+          nil -> nil
+        end
+    end
+  end
+
+  @doc "Resolves every supported relative-date expression found in source text."
+  def resolve_relative_dates(source, observed_on) do
+    named_dates =
+      [
+        {~r/\byesterday\b/iu, Date.add(observed_on, -1)},
+        {~r/\b(?:today|tonight)\b/iu, observed_on},
+        {~r/\btomorrow\b/iu, Date.add(observed_on, 1)}
+      ]
+      |> Enum.flat_map(fn {pattern, date} ->
+        if String.match?(source, pattern), do: [date], else: []
+      end)
+
+    amount_dates =
+      ~r/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\b/iu
+      |> Regex.scan(source)
+      |> Enum.map(&resolve_relative_amount(observed_on, &1))
+
+    named_dates ++ amount_dates
+  end
+
+  @doc "Resolves one unambiguous relative-date boundary to UTC midnight."
+  def resolve_relative_datetime(evidence, %DateTime{} = occurred_at) do
+    case evidence |> resolve_relative_dates(DateTime.to_date(occurred_at)) |> Enum.uniq() do
+      [date] -> {:ok, beginning_of_day(date)}
+      _other -> :error
+    end
+  end
+
+  def resolve_relative_datetime(_evidence, _occurred_at), do: :error
+
+  @doc "Converts a date to UTC midnight."
+  def beginning_of_day(date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+
+  defp resolve_relative_amount(observed_on, [_text, amount, unit, direction]) do
+    multiplier = if String.downcase(direction) == "ago", do: -1, else: 1
+    amount = relative_amount(amount) * multiplier
+
+    case String.downcase(unit) do
+      "day" -> Date.add(observed_on, amount)
+      "week" -> Date.add(observed_on, amount * 7)
+      "month" -> Date.shift(observed_on, month: amount)
+      "year" -> Date.shift(observed_on, year: amount)
+    end
+  end
+
+  defp relative_amount(amount) do
+    case Integer.parse(amount) do
+      {value, ""} -> value
+      :error -> Enum.find_index(@number_words, &(&1 == String.downcase(amount))) + 1
+    end
+  end
+end
+
 defmodule MemHouse.Model.Schema.Extraction do
   @moduledoc """
   The structured shape an extractor must return, and the validator that decides
@@ -78,6 +181,9 @@ defmodule MemHouse.Model.Schema.Extraction do
   @behaviour MemHouse.Model.Schema
 
   alias MemHouse.Knowledge.KnowledgeItem
+
+  import MemHouse.Model.Schema.ExtractionSupport,
+    only: [fetch: 2, first_person?: 1, non_empty_string: 2, resolve_relative_dates: 2]
   alias MemHouse.Knowledge.Statement
 
   # Generic ways a model names the process instead of a person. These are matched only in the
@@ -501,49 +607,6 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   defp date_resolved?(_date, _source, _occurred_at), do: false
 
-  defp resolve_relative_dates(source, observed_on) do
-    named_dates =
-      [
-        {~r/\byesterday\b/iu, Date.add(observed_on, -1)},
-        {~r/\b(?:today|tonight)\b/iu, observed_on},
-        {~r/\btomorrow\b/iu, Date.add(observed_on, 1)}
-      ]
-      |> Enum.flat_map(fn {pattern, date} ->
-        if String.match?(source, pattern), do: [date], else: []
-      end)
-
-    amount_dates =
-      ~r/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\b/iu
-      |> Regex.scan(source)
-      |> Enum.map(&resolve_relative_amount(observed_on, &1))
-
-    named_dates ++ amount_dates
-  end
-
-  defp resolve_relative_amount(observed_on, [_text, amount, unit, direction]) do
-    multiplier = if String.downcase(direction) == "ago", do: -1, else: 1
-    amount = relative_amount(amount) * multiplier
-
-    case String.downcase(unit) do
-      "day" -> Date.add(observed_on, amount)
-      "week" -> Date.add(observed_on, amount * 7)
-      "month" -> Date.shift(observed_on, month: amount)
-      "year" -> Date.shift(observed_on, year: amount)
-    end
-  end
-
-  defp relative_amount(amount) do
-    case Integer.parse(amount) do
-      {value, ""} ->
-        value
-
-      :error ->
-        ~w(one two three four five six seven eight nine ten eleven twelve)
-        |> Enum.find_index(&(&1 == String.downcase(amount)))
-        |> Kernel.+(1)
-    end
-  end
-
   # Final gate: build the real pipeline create changeset and ask whether it is
   # valid, without saving. This makes the resource's own attribute constraints,
   # not a copy of them, the authority on what a candidate may contain.
@@ -727,19 +790,6 @@ defmodule MemHouse.Model.Schema.Extraction do
     String.match?(statement, ~r/\A(?:Running|Exercise|Sleep|Travel|Work)\s+(?:can|is|does)\b/u)
   end
 
-  defp non_empty_string(item, key) do
-    case fetch(item, key) do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:error, ["#{key} must not be blank"]}
-          trimmed -> {:ok, trimmed}
-        end
-
-      _other ->
-        {:error, ["#{key} must be a string"]}
-    end
-  end
-
   # Subject references are checked against an allowlist supplied by the caller,
   # never trusted from the model. A peer subject must be one of the peer keys
   # the caller already knows about, and a scope subject must be exactly the
@@ -806,10 +856,6 @@ defmodule MemHouse.Model.Schema.Extraction do
     else
       _other -> :not_first_person
     end
-  end
-
-  defp first_person?(text) do
-    String.match?(text, ~r/^\s*(?:I(?:['’](?:m|ve|d|ll))?\b|my\b|mine\b|me\b)/iu)
   end
 
   # Evidence can identify an opaque Peer key, but that key is not display text.
@@ -904,26 +950,6 @@ defmodule MemHouse.Model.Schema.Extraction do
   # about which they use, and this validator must behave identically for all of
   # them. Deliberately does not call `String.to_atom/1`: input from a model must
   # never be allowed to create atoms.
-  defp fetch(map, key) do
-    case Map.fetch(map, key) do
-      {:ok, value} ->
-        value
-
-      :error ->
-        Enum.find_value(map, fn
-          {candidate, value} when is_atom(candidate) ->
-            if Atom.to_string(candidate) == key, do: {:found, value}
-
-          {_candidate, _value} ->
-            nil
-        end)
-        |> case do
-          {:found, value} -> value
-          nil -> nil
-        end
-    end
-  end
-
   defp prefix_errors(errors, index), do: Enum.map(errors, &"items[#{index}].#{&1}")
 
   defp maybe_put(map, _key, nil), do: map
@@ -949,6 +975,7 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
   @behaviour MemHouse.Model.Schema
 
   alias MemHouse.Model.Schema.Extraction
+  alias MemHouse.Pipeline.ExtractionAdmission
 
   @impl true
   def json_schema, do: json_schema(Extraction)
@@ -961,6 +988,8 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
   semantic and provenance validation happens after provider output is decoded.
   """
   def json_schema(candidate_schema) when is_atom(candidate_schema) do
+    max_anchors = ExtractionAdmission.config()[:max_anchors]
+
     envelope = %{
       "type" => "object",
       "additionalProperties" => false,
@@ -979,7 +1008,12 @@ defmodule MemHouse.Model.Schema.ExtractionBatch do
       "type" => "object",
       "additionalProperties" => false,
       "properties" => %{
-        "anchors" => %{"type" => "array", "items" => envelope}
+        "anchors" => %{
+          "type" => "array",
+          "items" => envelope,
+          "minItems" => 1,
+          "maxItems" => max_anchors
+        }
       },
       "required" => ["anchors"]
     }

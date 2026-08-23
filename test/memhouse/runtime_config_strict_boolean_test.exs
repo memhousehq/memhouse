@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.RuntimeConfigStrictBooleanTest do
+  @moduledoc """
+  Verifies ambiguous experiment booleans fail closed during runtime configuration.
+  """
+
   use ExUnit.Case, async: false
 
   @variable "MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL"

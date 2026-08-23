@@ -197,6 +197,12 @@ defmodule MemHouse.Retrieval.ValidateStoredProfileName do
 
   use Ash.Resource.Validation
 
+  @doc """
+  Accepts stored profile names other than the runtime-owned `minimal` profile.
+
+  A `minimal` value returns a validation error on `:name`; every other stored
+  name is left unchanged for the resource's remaining validations.
+  """
   @impl true
   def validate(changeset, _opts, _context) do
     case Ash.Changeset.get_attribute(changeset, :name) do

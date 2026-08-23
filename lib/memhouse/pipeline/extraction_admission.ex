@@ -58,7 +58,13 @@ defmodule MemHouse.Pipeline.ExtractionAdmission do
     |> Keyword.put(:identity, identity(configured))
   end
 
-  @doc "Selects an adjacent prefix that fits the configured batch target."
+  @doc """
+  Selects an adjacent prefix toward the configured batch target.
+
+  The first anchor is always selected so an oversized anchor can make progress;
+  later anchors are added only while the target still fits. `admit/2` remains
+  the final whole-request admission check.
+  """
   def select_prefix(anchors, cost_fn \\ &count/1)
       when is_list(anchors) and is_function(cost_fn, 1) do
     %{target_tokens: target, max_anchors: max_anchors} = Map.new(config())

@@ -146,6 +146,20 @@ defmodule MemHouse.Model.SchemaCompactExtractionTest do
     assert {:ok, [casted]} = CompactExtraction.cast(%{"items" => [candidate]}, context(source))
     assert casted.relevant_from == ~U[2026-08-18 00:00:00Z]
     assert casted.relevant_until == ~U[2026-08-19 00:00:00Z]
+
+    embedded_source = "Avery starts the migration two days from now."
+
+    embedded =
+      item(%{
+        "supporting_span" => embedded_source,
+        "statement" => "Avery performs the migration.",
+        "relevant_from_evidence" => embedded_source
+      })
+
+    assert {:ok, [embedded_casted]} =
+             CompactExtraction.cast(%{"items" => [embedded]}, context(embedded_source))
+
+    assert embedded_casted.relevant_from == ~U[2026-08-19 00:00:00Z]
   end
 
   test "rejects temporal evidence that is absent, ambiguous, or reverses the window" do
@@ -198,6 +212,23 @@ defmodule MemHouse.Model.SchemaCompactExtractionTest do
              )
 
     assert casted.subject_ref == "avery"
+
+    assert {:error, errors} =
+             CompactExtraction.cast(
+               %{
+                 "items" => [
+                   item(%{
+                     "supporting_span" => first_person,
+                     "statement" =>
+                       "Avery increased quarterly revenue by closing three enterprise contracts.",
+                     "subject_ref" => "/team"
+                   })
+                 ]
+               },
+               context(first_person)
+             )
+
+    assert Enum.any?(errors, &String.contains?(&1, "must not name the scope"))
 
     assert {:error, errors} =
              CompactExtraction.cast(

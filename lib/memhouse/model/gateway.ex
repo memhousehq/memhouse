@@ -320,6 +320,9 @@ defmodule MemHouse.Model.Gateway do
     call.(provider)
   rescue
     error -> {:error, error}
+  catch
+    :exit, reason -> {:error, {:provider_exit, reason}}
+    :throw, reason -> {:error, {:provider_throw, reason}}
   end
 
   @doc """

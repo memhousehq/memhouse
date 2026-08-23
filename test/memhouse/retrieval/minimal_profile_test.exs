@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Retrieval.MinimalProfileTest do
+  @moduledoc """
+  Pins the default-off minimal recall gate and its lexical/semantic dual-lane strategy set.
+  """
+
   use ExUnit.Case, async: false
 
   alias MemHouse.Retrieval.{Profile, Query}

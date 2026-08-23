@@ -20,9 +20,11 @@ defmodule MemHouse.Model.Schema.CompactExtraction do
 
   alias MemHouse.Model.Schema.Extraction
 
+  import MemHouse.Model.Schema.ExtractionSupport,
+    only: [beginning_of_day: 1, fetch: 2, first_person?: 1, non_empty_string: 2]
+
   @fields ~w(supporting_span statement subject_ref source_message_ids relevant_from_evidence relevant_until_evidence)
   @field_set MapSet.new(@fields)
-  @number_words ~w(one two three four five six seven eight nine ten eleven twelve)
 
   @impl true
   def json_schema do
@@ -143,13 +145,12 @@ defmodule MemHouse.Model.Schema.CompactExtraction do
          {:ok, supporting_span} <- non_empty_string(item, "supporting_span"),
          {:ok, statement} <- non_empty_string(item, "statement"),
          {:ok, subject_ref} <- non_empty_string(item, "subject_ref"),
+         {:ok, subject_type} <- subject_type(supporting_span, subject_ref, context),
          {:ok, source_message_ids} <- source_ids(item),
          {:ok, relevant_from} <-
            valid_time(item, "relevant_from_evidence", source_message_ids, context),
          {:ok, relevant_until} <-
            valid_time(item, "relevant_until_evidence", source_message_ids, context) do
-      subject_type = subject_type(supporting_span, subject_ref, context)
-
       {:ok,
        %{
          "supporting_span" => supporting_span,
@@ -232,8 +233,11 @@ defmodule MemHouse.Model.Schema.CompactExtraction do
   defp resolve_temporal_evidence(evidence, occurred_at) do
     with :error <- resolve_iso_datetime(evidence),
          :error <- resolve_iso_date(evidence),
-         :error <- resolve_named_relative(evidence, occurred_at),
-         :error <- resolve_amount_relative(evidence, occurred_at) do
+         :error <-
+           MemHouse.Model.Schema.ExtractionSupport.resolve_relative_datetime(
+             evidence,
+             occurred_at
+           ) do
       {:error, ["valid-time evidence is unsupported"]}
     end
   end
@@ -252,98 +256,24 @@ defmodule MemHouse.Model.Schema.CompactExtraction do
     end
   end
 
-  defp resolve_named_relative(evidence, %DateTime{} = occurred_at) do
-    date = DateTime.to_date(occurred_at)
-
-    case String.downcase(evidence) do
-      "yesterday" -> {:ok, beginning_of_day(Date.add(date, -1))}
-      value when value in ["today", "tonight"] -> {:ok, beginning_of_day(date)}
-      "tomorrow" -> {:ok, beginning_of_day(Date.add(date, 1))}
-      _other -> :error
-    end
-  end
-
-  defp resolve_named_relative(_evidence, _occurred_at), do: :error
-
-  defp resolve_amount_relative(evidence, %DateTime{} = occurred_at) do
-    pattern =
-      ~r/\A(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\z/iu
-
-    case Regex.run(pattern, evidence) do
-      [_text, amount, unit, direction] ->
-        signed_amount =
-          amount
-          |> parse_amount()
-          |> Kernel.*(if(String.downcase(direction) == "ago", do: -1, else: 1))
-
-        date = shift_date(DateTime.to_date(occurred_at), String.downcase(unit), signed_amount)
-        {:ok, beginning_of_day(date)}
-
-      _no_match ->
-        :error
-    end
-  end
-
-  defp resolve_amount_relative(_evidence, _occurred_at), do: :error
-
-  defp parse_amount(amount) do
-    case Integer.parse(amount) do
-      {value, ""} -> value
-      :error -> Enum.find_index(@number_words, &(&1 == String.downcase(amount))) + 1
-    end
-  end
-
-  defp shift_date(date, "day", amount), do: Date.add(date, amount)
-  defp shift_date(date, "week", amount), do: Date.add(date, amount * 7)
-  defp shift_date(date, "month", amount), do: Date.shift(date, month: amount)
-  defp shift_date(date, "year", amount), do: Date.shift(date, year: amount)
-
-  defp beginning_of_day(date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
   defp encode_datetime(nil), do: nil
   defp encode_datetime(datetime), do: DateTime.to_iso8601(datetime)
 
   defp subject_type(supporting_span, subject_ref, context) do
+    scope? = subject_ref == Map.get(context, :scope_path)
+
     cond do
-      first_person?(supporting_span) -> "peer"
-      subject_ref == Map.get(context, :scope_path) -> "scope"
-      true -> "peer"
-    end
-  end
+      first_person?(supporting_span) and scope? ->
+        {:error, ["subject_ref must not name the scope for first-person evidence"]}
 
-  defp first_person?(text) do
-    String.match?(text, ~r/^\s*(?:I(?:['’](?:m|ve|d|ll))?\b|my\b|mine\b|me\b)/iu)
-  end
+      first_person?(supporting_span) ->
+        {:ok, "peer"}
 
-  defp non_empty_string(item, key) do
-    case fetch(item, key) do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:error, ["#{key} must not be blank"]}
-          trimmed -> {:ok, trimmed}
-        end
+      scope? ->
+        {:ok, "scope"}
 
-      _other ->
-        {:error, ["#{key} must be a string"]}
-    end
-  end
-
-  defp fetch(map, key) do
-    case Map.fetch(map, key) do
-      {:ok, value} ->
-        value
-
-      :error ->
-        Enum.find_value(map, fn
-          {candidate, value} when is_atom(candidate) ->
-            if Atom.to_string(candidate) == key, do: {:found, value}
-
-          {_candidate, _value} ->
-            nil
-        end)
-        |> case do
-          {:found, value} -> value
-          nil -> nil
-        end
+      true ->
+        {:ok, "peer"}
     end
   end
 

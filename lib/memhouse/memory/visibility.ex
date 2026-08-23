@@ -28,7 +28,6 @@ defmodule MemHouse.Memory.Visibility do
 
     scope_ids
     |> knowledge_query("active", actor, internal_reader?, now)
-    |> Ash.Query.filter(is_nil(deleted_at))
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
   end
@@ -58,13 +57,13 @@ defmodule MemHouse.Memory.Visibility do
     KnowledgeItem
     |> Ash.Query.filter(
       scope_id in ^scope_ids and state in ["active", "provisional"] and
-        (is_nil(expires_at) or expires_at > ^now)
+        is_nil(deleted_at) and (is_nil(expires_at) or expires_at > ^now)
     )
   end
 
   def knowledge_query(scope_ids, state, _actor, true, _now) do
     KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state)
+    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state and is_nil(deleted_at))
   end
 
   def knowledge_query(scope_ids, "active", %{peer_id: peer_id}, false, now)
@@ -73,7 +72,7 @@ defmodule MemHouse.Memory.Visibility do
     |> Ash.Query.filter(
       scope_id in ^scope_ids and
         (state == "active" or (state == "provisional" and subject_peer_id == ^peer_id)) and
-        (is_nil(expires_at) or expires_at > ^now)
+        is_nil(deleted_at) and (is_nil(expires_at) or expires_at > ^now)
     )
     |> readable_by_peer(peer_id)
   end
@@ -81,7 +80,7 @@ defmodule MemHouse.Memory.Visibility do
   def knowledge_query(scope_ids, state, %{peer_id: peer_id}, false, _now)
       when is_binary(peer_id) do
     KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state)
+    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state and is_nil(deleted_at))
     |> readable_by_peer(peer_id)
   end
 
@@ -89,13 +88,16 @@ defmodule MemHouse.Memory.Visibility do
     KnowledgeItem
     |> Ash.Query.filter(
       scope_id in ^scope_ids and state == "active" and sensitivity == "public" and
-        (is_nil(expires_at) or expires_at > ^now)
+        is_nil(deleted_at) and (is_nil(expires_at) or expires_at > ^now)
     )
   end
 
   def knowledge_query(scope_ids, state, _actor, false, _now) do
     KnowledgeItem
-    |> Ash.Query.filter(scope_id in ^scope_ids and state == ^state and sensitivity == "public")
+    |> Ash.Query.filter(
+      scope_id in ^scope_ids and state == ^state and sensitivity == "public" and
+        is_nil(deleted_at)
+    )
   end
 
   @doc "Returns whether one loaded item is visible to the actor under the selected reader mode."

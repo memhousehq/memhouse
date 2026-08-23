@@ -175,6 +175,13 @@ defmodule MemHouse.LineageIdentityProfileTest do
              Memory.evidence_lineage(%{
                "account_key" => "lineage-alpha",
                "peer_key" => "avery",
+               "scope_path" => alpha.scope.path
+             })
+
+    assert {:error, :not_found} =
+             Memory.evidence_lineage(%{
+               "account_key" => "lineage-alpha",
+               "peer_key" => "avery",
                "scope_path" => "/other",
                "target_id" => alpha.knowledge.id
              })
@@ -345,7 +352,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
             model: "fixture-reasoner",
             model_version: "1",
             prompt_version: "reason-1",
-            operation_prompt_version: "reason-synthesis-1",
+            operation_prompt_version: "reason-synthesis-2",
             pipeline_version: "f5-1"
           },
           first.account.id,
@@ -356,12 +363,27 @@ defmodule MemHouse.LineageIdentityProfileTest do
 
     refute Exception.message(error) =~ first.message_id
     refute Exception.message(error) =~ "concise"
+
+    assert_raise ArgumentError, "invalid synthesis contributor sources", fn ->
+      DeductionEffects.accept!(
+        %{
+          deduction_key: "future-synthesis",
+          account_id: first.account.id,
+          scope_id: first.scope.id,
+          contributor_ids: [first.knowledge.id, second.id],
+          prompt_version: "reason-synthesis-2",
+          supersedes_id: nil
+        },
+        first.pipeline
+      )
+    end
   end
 
   test "stable identity profile keeps evidence and conflicts but rejects unsafe categories" do
     helsinki = seed_active!("identity-profile", "Avery lives in Helsinki.", "helsinki")
     tampere = seed_active!("identity-profile", "Avery lives in Tampere.", "tampere")
     occupation = seed_active!("identity-profile", "Avery works as an engineer.", "occupation")
+    timezone = seed_active!("identity-profile", "Time zone is UTC.", "timezone")
     _name = seed_active!("identity-profile", "Avery's name is Avery Jordan.", "name")
     _transient = seed_active!("identity-profile", "Avery currently lives in Turku.", "transient")
 
@@ -405,6 +427,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
     assert "Avery lives in Tampere." in statements
     assert "Avery works as an engineer." in statements
     assert "Avery's name is Avery Jordan." in statements
+    assert "Time zone is UTC." in statements
 
     refute Enum.any?(
              statements,
@@ -438,6 +461,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
     erase!(occupation)
     refreshed = Memory.stable_identity_profile(attrs)
     refute Enum.any?(refreshed["items"], &(&1["knowledge_id"] == occupation.knowledge.id))
+    assert Enum.any?(refreshed["items"], &(&1["knowledge_id"] == timezone.knowledge.id))
   end
 
   test "bounded Ask uses profile and lineage tools as cited governed evidence" do
@@ -497,19 +521,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
 
   test "profile-only Ask preserves authorized source lineage in its grounded answer evidence" do
     name = seed_active!("planner-profile-lineage", "Avery's name is Avery Jordan.", "name")
-    original_provider = Application.get_env(:memhouse, :model_provider)
-    GroundedAnswerProvider.start!(:confident_inference)
-    Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
-
-    on_exit(fn ->
-      GroundedAnswerProvider.stop()
-
-      if original_provider do
-        Application.put_env(:memhouse, :model_provider, original_provider)
-      else
-        Application.delete_env(:memhouse, :model_provider)
-      end
-    end)
+    with_grounded_provider!(:confident_inference)
 
     result =
       Memory.ask(%{
@@ -563,13 +575,14 @@ defmodule MemHouse.LineageIdentityProfileTest do
     assert [before_item] = before_profile["items"]
     assert length(before_item["lineage"]["source_references"]) == 2
 
-    original_provider = Application.get_env(:memhouse, :model_provider)
-    GroundedAnswerProvider.start!(:confident_inference)
-    Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
+    with_grounded_provider!(:confident_inference)
 
     handler = {__MODULE__, self(), :profile_source_erasure}
     erased? = :atomics.new(1, [])
 
+    # The handler runs synchronously inside the read transaction. This proves
+    # intra-read ordering (an erased source is absent from the final evidence),
+    # not contention between the FOR SHARE read and another connection.
     :ok =
       :telemetry.attach(
         handler,
@@ -582,16 +595,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
         nil
       )
 
-    on_exit(fn ->
-      :telemetry.detach(handler)
-      GroundedAnswerProvider.stop()
-
-      if original_provider do
-        Application.put_env(:memhouse, :model_provider, original_provider)
-      else
-        Application.delete_env(:memhouse, :model_provider)
-      end
-    end)
+    on_exit(fn -> :telemetry.detach(handler) end)
 
     result =
       Memory.ask(%{
@@ -761,19 +765,7 @@ defmodule MemHouse.LineageIdentityProfileTest do
     related = seed_active!("planner-headroom", "Morgan owns the approval step.", "related")
     relation!(root, related, "supports")
 
-    original_provider = Application.get_env(:memhouse, :model_provider)
-    GroundedAnswerProvider.start!(:grounded_abstention)
-    Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
-
-    on_exit(fn ->
-      GroundedAnswerProvider.stop()
-
-      if original_provider do
-        Application.put_env(:memhouse, :model_provider, original_provider)
-      else
-        Application.delete_env(:memhouse, :model_provider)
-      end
-    end)
+    with_grounded_provider!(:grounded_abstention)
 
     handler = {__MODULE__, self(), :planner_profile}
     parent = self()
@@ -1244,6 +1236,22 @@ defmodule MemHouse.LineageIdentityProfileTest do
 
   defp pipeline_actor(actor),
     do: %{actor | role: :system, pipeline?: true, scope_ids: :all, scope_roles: %{}}
+
+  defp with_grounded_provider!(mode) do
+    original_provider = Application.get_env(:memhouse, :model_provider)
+    GroundedAnswerProvider.start!(mode)
+    Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
+
+    on_exit(fn ->
+      GroundedAnswerProvider.stop()
+
+      if original_provider do
+        Application.put_env(:memhouse, :model_provider, original_provider)
+      else
+        Application.delete_env(:memhouse, :model_provider)
+      end
+    end)
+  end
 
   defp drain_profile_operations(acc) do
     receive do

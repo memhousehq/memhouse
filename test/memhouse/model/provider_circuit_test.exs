@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Model.ProviderCircuitTest.Provider do
+  @moduledoc "Records provider calls for circuit-breaker integration tests."
+
   @behaviour MemHouse.Model.Provider
 
+  @doc "Starts or resets the call counter."
   def start! do
     case Agent.start(fn -> 0 end, name: __MODULE__) do
       {:ok, _pid} -> :ok
@@ -10,6 +13,7 @@ defmodule MemHouse.Model.ProviderCircuitTest.Provider do
     end
   end
 
+  @doc "Stops the call counter when it is running."
   def stop do
     if pid = Process.whereis(__MODULE__) do
       try do
@@ -22,6 +26,7 @@ defmodule MemHouse.Model.ProviderCircuitTest.Provider do
     :ok
   end
 
+  @doc "Returns the number of provider callbacks observed by this test provider."
   def calls, do: Agent.get(__MODULE__, & &1)
 
   @impl true
@@ -40,12 +45,39 @@ defmodule MemHouse.Model.ProviderCircuitTest.Provider do
   def rerank(_config, _query, _documents, _opts), do: {:error, :unsupported}
 end
 
+defmodule MemHouse.Model.ProviderCircuitTest.ExitingProvider do
+  @moduledoc "Simulates a provider exit without terminating the test process."
+
+  @behaviour MemHouse.Model.Provider
+
+  @impl true
+  @doc "Exits to exercise gateway permit cleanup."
+  def structured(_config, _messages, _schema, _opts), do: exit(:provider_timeout)
+
+  @impl true
+  @doc "Returns unsupported for unused chat calls."
+  def chat(_config, _messages, _opts), do: {:error, :unsupported}
+
+  @impl true
+  @doc "Returns unsupported for unused embedding calls."
+  def embed(_config, _texts, _opts), do: {:error, :unsupported}
+
+  @impl true
+  @doc "Returns unsupported for unused reranking calls."
+  def rerank(_config, _query, _documents, _opts), do: {:error, :unsupported}
+end
+
 defmodule MemHouse.Model.ProviderCircuitTest do
+  @moduledoc """
+  Verifies provider-circuit admission, recovery, cleanup, and Account isolation.
+  """
+
   use ExUnit.Case, async: false
 
   alias MemHouse.Model.Config.Role
   alias MemHouse.Model.Gateway
   alias MemHouse.Model.ProviderCircuit
+  alias MemHouse.Model.ProviderCircuitTest.ExitingProvider
   alias MemHouse.Model.ProviderCircuitTest.Provider
   alias MemHouse.Pipeline.Extractor
 
@@ -231,19 +263,19 @@ defmodule MemHouse.Model.ProviderCircuitTest do
 
   test "caller death releases closed permits and reopens an abandoned half-open probe" do
     context = %{account_id: Ecto.UUID.generate()}
+    parent = self()
 
     closed_owner =
       spawn(fn ->
-        assert {:ok, _permit} = ProviderCircuit.checkout(@config, context, 0)
+        send(parent, {:closed_checkout, ProviderCircuit.checkout(@config, context, 0)})
       end)
 
     closed_ref = Process.monitor(closed_owner)
+    assert_receive {:closed_checkout, {:ok, _permit}}
     assert_receive {:DOWN, ^closed_ref, :process, ^closed_owner, _reason}
     assert_eventually(fn -> ProviderCircuit.status(@config, context, 0).in_flight == 0 end)
 
     open!(context, 0)
-    parent = self()
-
     probe_owner =
       spawn(fn ->
         result = ProviderCircuit.checkout(@config, context, 100)
@@ -258,6 +290,17 @@ defmodule MemHouse.Model.ProviderCircuitTest do
       status = ProviderCircuit.status(@config, context)
       status.state == :open and status.in_flight == 0 and not status.probe_in_flight?
     end)
+  end
+
+  test "gateway converts provider exits and completes the circuit permit" do
+    context = %{account_id: Ecto.UUID.generate()}
+    Application.put_env(:memhouse, :model_provider, ExitingProvider)
+    config = MemHouse.Model.role_config(:ingest_extractor, context)
+
+    assert {:error, {:provider_exit, :provider_timeout}} =
+             Gateway.structured_once(:ingest_extractor, [], %{}, context)
+
+    assert ProviderCircuit.status(config, context, 0).in_flight == 0
   end
 
   test "state is isolated by Account and permanent provider errors do not trip availability" do

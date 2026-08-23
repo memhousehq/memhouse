@@ -599,7 +599,8 @@ defmodule MemHouse.Memory do
       Observability.emit_operation(
         :recall,
         %{
-          calls: length(retrieval.retrieval_outcomes),
+          calls: retrieval_model_calls(retrieval.retrieval_outcomes),
+          components: length(retrieval.retrieval_outcomes),
           items: length(retrieval.candidates),
           candidates: length(retrieval.candidates),
           failures: length(retrieval.dropped_strategies),
@@ -853,7 +854,7 @@ defmodule MemHouse.Memory do
         :answer,
         %{
           calls: if(used_model?, do: 1, else: 0),
-          input_tokens: Map.get(answer, "answerer_prompt_tokens", 0),
+          input_tokens: Map.get(answer, "answerer_prompt_tokens") || 0,
           items: length(Map.get(answer, "citations", [])),
           candidates: length(answer_candidates),
           accepted: if(Map.get(answer, "abstained", false), do: 0, else: 1),
@@ -924,9 +925,12 @@ defmodule MemHouse.Memory do
         %{account_id: account.id}
       )
 
+      source_references_by_id =
+        Lineage.visible_source_references(items, account, reader, scopes)
+
       items
       |> Enum.map(fn item ->
-        source_references = Lineage.visible_source_references(item, account, reader, scopes)
+        source_references = Map.fetch!(source_references_by_id, item.id)
 
         item
         |> record_to_map()
@@ -2210,6 +2214,14 @@ defmodule MemHouse.Memory do
 
   defp answer_operation_status(%{"abstained" => true}), do: "abstained"
   defp answer_operation_status(_answer), do: "ok"
+
+  defp retrieval_model_calls(outcomes) do
+    Enum.count(outcomes, fn outcome ->
+      outcome.component in ["semantic", "semantic_dual_lane", "reranker"] and
+        outcome.status not in ["disabled", "not_applicable"] and
+        outcome.reason_class != "deadline_exhausted_before_start"
+    end)
+  end
 
   defp put_answer_diagnostics(answer, context_count, prompt_tokens) do
     answer

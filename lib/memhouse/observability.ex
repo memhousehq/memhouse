@@ -21,6 +21,7 @@ defmodule MemHouse.Observability do
     :output_tokens,
     :items,
     :candidates,
+    :components,
     :accepted,
     :rejected,
     :deduplicated,
@@ -40,6 +41,31 @@ defmodule MemHouse.Observability do
     :scope_id,
     :cache_status
   ]
+  @operation_names ~w(answer dream ingest_batch profile_refresh reasoning_synthesis reasoning_update recall)
+  @operation_statuses ~w(abstained completed degraded delegated empty failed ok partial ready repairable stale_extraction_claim terminal)
+  @operation_cache_statuses ~w(hit live_projection miss stale)
+  @operation_failure_classes ~w(
+    configuration
+    dream_failed
+    missing_structured_object
+    mixed_anchor_outcomes
+    model_error
+    oversized
+    prompt_version_mismatch
+    provider_circuit_open
+    provider_configuration
+    provider_content_filtered
+    provider_output_truncated
+    provider_transient
+    provider_upstream_error
+    reasoning_failed
+    request_timeout
+    stale_extraction_claim
+    structured_validation_exhausted
+    structured_validation_failed
+    transport_error
+  )
+  @identifier ~r/\A[A-Za-z0-9][A-Za-z0-9_.:\/=\-]{0,159}\z/u
 
   @doc """
   Attaches log correlation and the framework instrumentation handlers.
@@ -135,7 +161,8 @@ defmodule MemHouse.Observability do
       |> Map.put_new(:run_id, Ecto.UUID.generate())
       |> Map.put_new(:version, "unknown")
       |> Map.put_new(:status, "ok")
-      |> Map.put(:operation, to_string(operation))
+      |> normalize_operation_metadata()
+      |> Map.put(:operation, normalize_operation(operation))
 
     :telemetry.execute([:memhouse, :operation, :completed], measurements, metadata)
     :ok
@@ -237,6 +264,55 @@ defmodule MemHouse.Observability do
   end
 
   defp normalize_key(_key), do: nil
+
+  defp normalize_operation(operation) do
+    operation = to_string(operation)
+    if operation in @operation_names, do: operation, else: "unknown"
+  end
+
+  defp normalize_operation_metadata(metadata) do
+    metadata
+    |> Map.update(:run_id, Ecto.UUID.generate(), &safe_identifier(&1, Ecto.UUID.generate()))
+    |> Map.update(:version, "unknown", &safe_identifier(&1, "unknown"))
+    |> Map.update(:status, "unknown", &safe_enum(&1, @operation_statuses, "unknown"))
+    |> Map.update(:failure_class, nil, &safe_failure_class/1)
+    |> Map.update(:profile, nil, &safe_identifier(&1, "unknown"))
+    |> Map.update(:account_id, nil, &safe_uuid/1)
+    |> Map.update(:scope_id, nil, &safe_uuid/1)
+    |> Map.update(:cache_status, nil, &safe_enum(&1, @operation_cache_statuses, "unknown"))
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp safe_identifier(value, fallback) when is_atom(value),
+    do: safe_identifier(Atom.to_string(value), fallback)
+
+  defp safe_identifier(value, fallback) when is_binary(value) do
+    if String.match?(value, @identifier), do: value, else: fallback
+  end
+
+  defp safe_identifier(_value, fallback), do: fallback
+
+  defp safe_enum(value, allowed, fallback) when is_atom(value),
+    do: safe_enum(Atom.to_string(value), allowed, fallback)
+
+  defp safe_enum(value, allowed, fallback) when is_binary(value) do
+    if value in allowed, do: value, else: fallback
+  end
+
+  defp safe_enum(_value, _allowed, fallback), do: fallback
+
+  defp safe_failure_class(nil), do: nil
+
+  defp safe_failure_class(value),
+    do: safe_enum(value, @operation_failure_classes, "unknown_failure")
+
+  defp safe_uuid(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} -> uuid
+      :error -> nil
+    end
+  end
 
   defp non_negative(value) when is_integer(value) and value >= 0, do: value
   defp non_negative(value) when is_float(value) and value >= 0, do: value

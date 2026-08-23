@@ -63,6 +63,7 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
 
     assert {:ok, %{scopes: 1}} = DreamTime.run(account_id)
     assert_receive {:dream_reasoner_task, :reasoning}
+    refute_receive {:dream_reasoner_task, :reasoning}
     refute_receive {:dream_reasoner_task, :reasoning_update}
     refute_receive {:dream_reasoner_task, :reasoning_synthesis}
   end
