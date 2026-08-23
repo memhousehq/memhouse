@@ -455,7 +455,7 @@ because they are behaviour rather than infrastructure. The shipped values:
 | `fast` | semantic, salience-recency | 1.0, 0.8 | 15 | no | 100 ms |
 | `balanced` | semantic, lexical, temporal, entity-match | 1.0, 1.0, 0.7, 0.9 | 15 | no | 300 ms |
 | `thorough` | the above plus salience-recency and relation-expand | +0.8, 0.6 | 15 | yes | 1500 ms |
-| `minimal` | independently bounded direct and derived semantic lanes, lexical | 1.0, 1.0 | 15 | no | 300 ms |
+| `minimal` | independently bounded direct and derived semantic lanes, lexical | semantic dual-lane 1.0, lexical 1.0 | 15 | no | 300 ms |
 
 ### Experimental minimal recall
 
@@ -464,7 +464,9 @@ reversible `minimal` profile above. The profile executes no temporal,
 salience-recency, entity-match, relation-expansion, context-projection, or
 rerank read stage. Its direct and derived semantic shortlists are independently
 capped at 10 before stable interleave; the ordinary per-request candidate
-budget is still the final cap. These reviewed caps are compiled profile
+budget is still the final cap. Direct and derived results are one
+`semantic_dual_lane` fusion strategy and therefore share its 1.0 weight; the
+separate lexical strategy also has weight 1.0. These reviewed caps are compiled profile
 behaviour, not environment overrides. It remains opt-in until matched offline
 evaluation meets the quality, citation, isolation, latency, and maintenance
 gates. Disabling it loses no data and immediately restores the existing profile

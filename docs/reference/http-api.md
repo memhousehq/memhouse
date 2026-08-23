@@ -550,7 +550,8 @@ input policy, or source-specific poison, an Account administrator explicitly
 acknowledges the repair boundary with
 `POST /api/v1/operations/ingest/:message_id/requeue`. It returns **202** with
 the ordinary run-id response, or **409** when the anchor is not in a repairable
-or terminal state.
+or terminal state. A **503** response means the anchor was reset but its durable
+requeue could not be enqueued; operators may retry after the dependency recovers.
 
 ---
 

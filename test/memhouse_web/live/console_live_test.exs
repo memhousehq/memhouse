@@ -527,6 +527,7 @@ defmodule MemHouseWeb.ConsoleLiveTest do
       assert html =~ "Extractor tokens per message"
       assert html =~ "Extractor cost per message"
       assert html =~ "Permanent extraction failures"
+      assert html =~ ~r/Permanent extraction failures.*?>0</s
       assert html =~ "Entity resolution quality"
       assert html =~ "Singleton entity rate"
       assert html =~ "50.0%"

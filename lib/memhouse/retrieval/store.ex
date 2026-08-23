@@ -1791,6 +1791,27 @@ defmodule MemHouse.Retrieval.Store do
     Map.new(rows, fn row -> {row["idempotency_key"], row["state"]} end)
   end
 
+  @doc "Returns one Account's earliest durable Oban schedule for a replay key, or `nil`."
+  def oban_job_scheduled_at(account_id, idempotency_key)
+      when is_binary(account_id) and is_binary(idempotency_key) do
+    sql = """
+    SELECT scheduled_at
+    FROM oban_jobs
+    WHERE args->>'tenant' = $1
+      AND args->>'idempotency_key' = $2
+    ORDER BY id
+    LIMIT 1
+    """
+
+    case all(sql, [account_id, idempotency_key]) do
+      [%{"scheduled_at" => %NaiveDateTime{} = scheduled_at}] ->
+        DateTime.from_naive!(scheduled_at, "Etc/UTC")
+
+      [] ->
+        nil
+    end
+  end
+
   # Merge only halves scored by the same function, then restore the shared cap.
   defp top(rows, limit),
     do: rows |> Enum.sort_by(&(&1["score"] || 0.0), :desc) |> Enum.take(limit)

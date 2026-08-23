@@ -2,25 +2,20 @@
 
 defmodule MemHouse.TestSupport.AccountCleanup do
   @moduledoc """
-  Cleans up Accounts created by tests that deliberately run outside SQL Sandbox transactions.
+  Releases jobs created by tests that deliberately run outside SQL Sandbox transactions.
 
-  This narrow test-only seam owns the two bound writes needed when a provider-boundary test
-  must observe `Repo.in_transaction?/0 == false`. Production code must use Ash actions instead.
+  Accounts use unique keys and deliberately remain as isolated test evidence. Oban owns job
+  cancellation, so this helper does not introduce a raw destructive SQL exception.
   """
 
-  alias MemHouse.Repo
+  import Ecto.Query, only: [from: 2]
 
-  @doc "Deletes an unsandboxed test Account and its content-free Oban jobs."
+  @doc "Cancels content-free Oban jobs for an unsandboxed test Account."
   def delete!(account_id) when is_binary(account_id) do
-    Ecto.Adapters.SQL.query!(
-      Repo,
-      "DELETE FROM oban_jobs WHERE args ->> 'tenant' = $1",
-      [account_id]
+    Oban.cancel_all_jobs(
+      from job in Oban.Job,
+        where: fragment("? ->> 'tenant'", job.args) == ^account_id
     )
-
-    Ecto.Adapters.SQL.query!(Repo, "DELETE FROM accounts WHERE id = $1", [
-      Ecto.UUID.dump!(account_id)
-    ])
 
     :ok
   end

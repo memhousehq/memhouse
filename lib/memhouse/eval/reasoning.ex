@@ -50,11 +50,11 @@ defmodule MemHouse.Eval.Reasoning do
   """
   def run_scheduled(account_key, scope_path)
       when is_binary(account_key) and is_binary(scope_path) do
-    {account_id, runs} = enqueue_generations!(account_key, scope_path)
-    before = snapshot(account_id)
+    {account, actor, runs} = enqueue_generations!(account_key, scope_path)
+    before = snapshot(account.id)
 
     {measurement, operations} =
-      measure_operations(account_id, fn -> run_scheduled_pass(account_id, runs, before) end)
+      measure_operations(account.id, fn -> run_scheduled_pass(account, actor, runs, before) end)
 
     Map.put(measurement, "operations", operations)
   end
@@ -85,12 +85,12 @@ defmodule MemHouse.Eval.Reasoning do
     end
   end
 
-  defp run_scheduled_pass(account_id, [stale, latest], before) do
-    scheduled_at_ordered = scheduled_generations_ordered!([stale, latest])
-    before_stale = snapshot(account_id)
+  defp run_scheduled_pass(account, actor, [stale, latest], before) do
+    scheduled_at_ordered = scheduled_generations_ordered!(account, actor, [stale, latest])
+    before_stale = snapshot(account.id)
 
     stale_result = execute_idle!(stale)
-    after_stale = snapshot(account_id)
+    after_stale = snapshot(account.id)
     stale_calls = usage_counts(after_stale.usages, before_stale.usages)["calls"]
 
     unless stale_result.status == :skipped and stale_result.reason == :superseded_activity and
@@ -104,9 +104,9 @@ defmodule MemHouse.Eval.Reasoning do
       raise ArgumentError, "latest idle generation did not complete"
     end
 
-    after_latest = snapshot(account_id)
+    after_latest = snapshot(account.id)
     replay_result = execute_idle!(latest)
-    after_replay = snapshot(account_id)
+    after_replay = snapshot(account.id)
     replay_effects = durable_effects(after_latest, after_replay)
 
     measurement(before, after_latest, after_replay, %{
@@ -196,13 +196,13 @@ defmodule MemHouse.Eval.Reasoning do
           end
         end)
 
-      {account.id, runs}
+      {account, actor, runs}
     end)
   end
 
-  defp scheduled_generations_ordered!([stale, latest]) do
-    stale_at = scheduled_at!(stale.idempotency_key)
-    latest_at = scheduled_at!(latest.idempotency_key)
+  defp scheduled_generations_ordered!(account, actor, [stale, latest]) do
+    stale_at = scheduled_at!(account, actor, stale.idempotency_key)
+    latest_at = scheduled_at!(account, actor, latest.idempotency_key)
     idle_seconds = Application.fetch_env!(:memhouse, :dream_time_gates)[:idle_seconds]
     stale_expected = scheduled_at_for(stale, idle_seconds)
     latest_expected = scheduled_at_for(latest, idle_seconds)
@@ -215,8 +215,8 @@ defmodule MemHouse.Eval.Reasoning do
     true
   end
 
-  defp scheduled_at!(idempotency_key) do
-    case Pipeline.scheduled_at(idempotency_key) do
+  defp scheduled_at!(account, actor, idempotency_key) do
+    case Pipeline.scheduled_at(account, actor, idempotency_key) do
       {:ok, scheduled_at} -> scheduled_at
       :error -> raise ArgumentError, "idle evaluation durable job was not created"
     end
@@ -381,6 +381,7 @@ defmodule MemHouse.Eval.Reasoning do
     Map.merge(left, right, fn _operation, a, b ->
       Map.merge(a, b, fn
         "prompt_version", version, version -> version
+        "prompt_version", _left, _right -> "mixed"
         _metric, x, y -> x + y
       end)
     end)
@@ -445,7 +446,11 @@ defmodule MemHouse.Eval.Reasoning do
 
         counts =
           Map.update(counts, operation, metrics, fn existing ->
-            Map.merge(existing, metrics, fn _metric, a, b -> a + b end)
+            Map.merge(existing, metrics, fn
+              "prompt_version", version, version -> version
+              "prompt_version", _left, _right -> "mixed"
+              _metric, a, b -> a + b
+            end)
           end)
 
         collect_operations(ref, counts)

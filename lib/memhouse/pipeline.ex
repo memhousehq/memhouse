@@ -29,14 +29,13 @@ defmodule MemHouse.Pipeline do
   Enqueue uses a system-pipeline copy of the caller; it never mutates the caller's actor.
   """
 
+  alias MemHouse.Accounts.Account
   alias MemHouse.Actor
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline.{DreamTime, Idempotency, Lock}
-  alias MemHouse.Repo
-
-  import Ecto.Query, only: [from: 2]
+  alias MemHouse.Retrieval.Store
 
   require Ash.Query
 
@@ -593,16 +592,14 @@ defmodule MemHouse.Pipeline do
     end)
   end
 
-  @doc "Returns the durable Oban schedule for a pipeline replay key, or `:error` when absent."
-  def scheduled_at(idempotency_key) when is_binary(idempotency_key) do
-    query =
-      from job in Oban.Job,
-        where: fragment("? ->> 'idempotency_key'", job.args) == ^idempotency_key,
-        order_by: [asc: job.id],
-        limit: 1,
-        select: job.scheduled_at
-
-    case Repo.one(query) do
+  @doc "Returns this Account's durable Oban schedule for a replay key, or `:error` when absent."
+  def scheduled_at(
+        %Account{id: account_id},
+        %Actor{account_id: account_id},
+        idempotency_key
+      )
+      when is_binary(idempotency_key) do
+    case Store.oban_job_scheduled_at(account_id, idempotency_key) do
       nil -> :error
       scheduled_at -> {:ok, scheduled_at}
     end

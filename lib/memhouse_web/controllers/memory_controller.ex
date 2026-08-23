@@ -91,7 +91,9 @@ defmodule MemHouseWeb.MemoryController do
         conn |> put_status(:not_found) |> json(%{error: "Not found"})
 
       {:ok, %{"outcome" => "unavailable"}} ->
-        conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "Requeue is temporarily unavailable"})
 
       {:error, %Ash.Error.Forbidden{}} ->
         conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
