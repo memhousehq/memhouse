@@ -121,8 +121,12 @@ defmodule MemHouse.ObservabilityOperationTest do
     end)
 
     Observability.emit_operation(:reasoning_update, %{}, %{run_id: "other-run"})
+    Observability.emit_operation(:reasoning_update)
 
     assert_receive {:operation_run_id, "eval-run-1"}
     assert_receive {:operation_run_id, "other-run"}
+    assert_receive {:operation_run_id, generated_run_id}
+    refute generated_run_id == "eval-run-1"
+    refute generated_run_id == "other-run"
   end
 end
