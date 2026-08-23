@@ -20,6 +20,7 @@ defmodule MemHouse.Eval.ComponentBindings do
     source_recall
     lineage_recall
     semantic_index_refresh
+    source_semantic_index_refresh
     recall_projection_refresh
     idle_dream_scheduling
     dream_reasoning_operations
@@ -57,9 +58,17 @@ defmodule MemHouse.Eval.ComponentBindings do
     dream_time = boolean!(variant, "dream_time", false)
     durability_audit = boolean!(variant, "durability_audit", false)
 
+    source_semantic_index_refresh =
+      boolean!(variant, "source_semantic_index_refresh", source_recall)
+
     if effort == "fixed" and (source_recall or lineage_recall) do
       raise ArgumentError,
             "execute variant #{inspect(variant["id"])} cannot enable source or lineage recall with fixed effort"
+    end
+
+    if source_recall and not source_semantic_index_refresh do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} cannot enable source recall without source semantic index refresh"
     end
 
     if dream_reasoning_split and not dream_time do
@@ -81,6 +90,7 @@ defmodule MemHouse.Eval.ComponentBindings do
       "source_recall" => source_recall,
       "lineage_recall" => lineage_recall,
       "semantic_index_refresh" => boolean!(variant, "semantic_index_refresh", semantic_default),
+      "source_semantic_index_refresh" => source_semantic_index_refresh,
       "recall_projection_refresh" =>
         boolean!(variant, "recall_projection_refresh", projection_default),
       "idle_dream_scheduling" => idle_dream_scheduling(idle_dream_scheduling),

@@ -26,30 +26,31 @@ defmodule MemHouse.Retrieval.SourceIndexer do
   @doc """
   Rebuilds every source-message embedding in an Account scope.
 
-  Returns `{:ok, %{indexed: count}}` after the replacement vectors commit, including
-  `count: 0` when the scope has no messages. Returns the embedder error unchanged and
-  preserves every previously stored vector when the provider call fails. Invalid or
-  unauthorized Account/scope identifiers raise through the Account-scoped read.
+  Returns `{:ok, %{indexed: count, embedding_identity: identity}}` after the replacement
+  vectors commit, including `count: 0` when the scope has no messages. The four-part identity
+  is content-free and names the vector space that completed the refresh. Returns the embedder
+  error unchanged and preserves every previously stored vector when the provider call fails.
+  Invalid or unauthorized Account/scope identifiers raise through the Account-scoped read.
   """
   def rebuild_scope(account_id, scope_id), do: index_scope(account_id, scope_id, false)
 
   @doc """
   Embeds source messages that are missing a vector or use a different embedding identity.
 
-  Returns `{:ok, %{indexed: count}}`, where zero is the replay-safe result when the
-  derived index already matches the Account's current provider, model, version,
-  and dimensions. Returns the embedder error unchanged without modifying existing
-  vectors. Invalid or unauthorized Account/scope identifiers raise through the
+  Returns `{:ok, %{indexed: count, embedding_identity: identity}}`, where zero is the
+  replay-safe result when the derived index already matches the Account's current provider,
+  model, version, and dimensions. Returns the embedder error unchanged without modifying
+  existing vectors. Invalid or unauthorized Account/scope identifiers raise through the
   Account-scoped read.
   """
   def refresh_scope(account_id, scope_id), do: index_scope(account_id, scope_id, true)
 
   defp index_scope(account_id, scope_id, missing_only?) do
     label = DiskannLabels.ensure_scope!(account_id, scope_id)
-    {messages, actor} = read_messages!(account_id, scope_id, missing_only?)
+    {messages, actor, identity} = read_messages!(account_id, scope_id, missing_only?)
 
     case messages do
-      [] -> {:ok, %{indexed: 0}}
+      [] -> {:ok, %{indexed: 0, embedding_identity: identity}}
       messages -> embed_then_write(messages, account_id, scope_id, actor, label)
     end
   end
@@ -87,7 +88,7 @@ defmodule MemHouse.Retrieval.SourceIndexer do
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
 
-        {messages, actor}
+        {messages, actor, identity}
       end
     )
   end
@@ -119,7 +120,16 @@ defmodule MemHouse.Retrieval.SourceIndexer do
         end
       )
 
-      {:ok, %{indexed: length(messages)}}
+      {:ok,
+       %{
+         indexed: length(messages),
+         embedding_identity: %{
+           provider: result.provider,
+           model: result.model,
+           version: result.version,
+           dimensions: result.dimensions
+         }
+       }}
     end
   end
 end

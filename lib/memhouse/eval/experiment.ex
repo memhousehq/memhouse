@@ -421,14 +421,17 @@ defmodule MemHouse.Eval.Experiment do
           source_recall: components["source_recall"],
           lineage_recall: components["lineage_recall"],
           dream_time: components["dream_time"],
+          idle_dream_scheduling: components["idle_dream_scheduling"]["enabled"],
           durability_audit: components["durability_audit"],
           durability_seed: Map.get(variant, "durability_seed", definition["seeds"]["durability"]),
           refresh_semantic_index: components["semantic_index_refresh"],
+          refresh_source_semantic_index: components["source_semantic_index_refresh"],
           refresh_recall_projection: components["recall_projection_refresh"]
         )
-        |> Report.validate!()
 
-      assert_executed_components!(report, variant, components)
+      report
+      |> assert_executed_components!(variant, components)
+      |> Report.validate!()
     end)
   end
 
@@ -460,6 +463,8 @@ defmodule MemHouse.Eval.Experiment do
     end
 
     assert_recall_components!(report, variant, components)
+    assert_refresh_components!(report, variant, components)
+    assert_idle_scheduling!(report, variant, components)
     assert_reasoning_operations!(report, variant, components)
 
     report
@@ -492,6 +497,46 @@ defmodule MemHouse.Eval.Experiment do
          end) do
       raise ArgumentError,
             "execute variant #{inspect(variant["id"])} declared lineage recall but completed no lineage tool call"
+    end
+
+    if components["source_recall"] and
+         not Enum.any?(recalls, fn recall ->
+           Enum.any?(recall["outcomes"] || [], fn outcome ->
+             outcome["tool"] == "source_semantic" and outcome["status"] == "completed"
+           end)
+         end) do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} declared source semantic recall but completed no source_semantic tool call"
+    end
+  end
+
+  defp assert_refresh_components!(report, variant, components) do
+    if components["source_semantic_index_refresh"] do
+      refresh = get_in(report, ["refresh", "source_semantic_index"]) || %{}
+
+      unless refresh["status"] == "completed" and refresh["scopes"] > 0 and
+               is_map(refresh["embedding_identity"]) do
+        raise ArgumentError,
+              "execute variant #{inspect(variant["id"])} did not complete its source semantic index refresh"
+      end
+    end
+  end
+
+  defp assert_idle_scheduling!(report, variant, components) do
+    if components["idle_dream_scheduling"]["enabled"] do
+      scheduling = get_in(report, ["reasoning", "scheduling"]) || %{}
+
+      valid? =
+        scheduling["enabled"] == true and scheduling["generations"] >= 2 and
+          scheduling["scheduled_at_ordered"] == true and scheduling["stale_model_calls"] == 0 and
+          scheduling["stale_status"] == "superseded_activity" and
+          scheduling["latest_status"] == "completed" and
+          scheduling["replay_durable_effects"] == 0
+
+      unless valid? do
+        raise ArgumentError,
+              "execute variant #{inspect(variant["id"])} did not complete durable stale/latest/replay idle scheduling"
+      end
     end
   end
 
@@ -539,8 +584,9 @@ defmodule MemHouse.Eval.Experiment do
     semantic_retrieval? =
       Enum.any?(components["retrieval_strategies"], &(&1 in ["semantic", "semantic_dual_lane"]))
 
-    if semantic_retrieval? or components["source_recall"] == true,
-      do: assert_local_embedder!()
+    if semantic_retrieval? or components["source_recall"] == true or
+         components["source_semantic_index_refresh"] == true,
+       do: assert_local_embedder!()
 
     assert_offline_variants!(rest)
   end

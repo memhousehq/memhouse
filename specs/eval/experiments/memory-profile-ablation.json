@@ -25,6 +25,7 @@
       "source_recall": false,
       "lineage_recall": false,
       "semantic_index_refresh": true,
+      "source_semantic_index_refresh": false,
       "recall_projection_refresh": false,
       "idle_dream_scheduling": false,
       "dream_reasoning_split": false,
@@ -50,6 +51,7 @@
         "source_recall": false,
         "lineage_recall": false,
         "semantic_index_refresh": true,
+        "source_semantic_index_refresh": false,
         "recall_projection_refresh": false,
         "idle_dream_scheduling": {
           "enabled": false,
@@ -82,6 +84,7 @@
       "source_recall": true,
       "lineage_recall": true,
       "semantic_index_refresh": true,
+      "source_semantic_index_refresh": true,
       "recall_projection_refresh": true,
       "idle_dream_scheduling": true,
       "dream_reasoning_split": true,
@@ -107,6 +110,7 @@
         "source_recall": true,
         "lineage_recall": true,
         "semantic_index_refresh": true,
+        "source_semantic_index_refresh": true,
         "recall_projection_refresh": true,
         "idle_dream_scheduling": {
           "enabled": true,

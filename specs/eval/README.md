@@ -147,12 +147,15 @@ mix memhouse.eval.experiment \
 
 Execute definitions use a closed component map derived from executable settings: profile,
 effective strategies and seed stages, rerank, deadline, extraction batching identity and limits, adaptive recall
-effort, source and lineage recall permissions, semantic-index refresh, RecallDocument refresh,
-idle scheduling gates, explicit dream execution, the default-off dream-operation split, and
-durability audit. The map must exactly match the runner inputs and resolved profile or validation
-fails. A variant that declares lineage recall or split reasoning must record an actual completed
-lineage tool or every enabled split operation; permission or configuration alone is not execution
-evidence. Unknown keys are unsupported rather than
+effort, source and lineage recall permissions, Knowledge semantic-index refresh, source-message
+semantic-index refresh, RecallDocument refresh, idle scheduling gates, explicit dream execution,
+the default-off dream-operation split, and durability audit. The map must exactly match the runner
+inputs and resolved profile or validation fails. Source-message semantic refresh runs
+synchronously in each isolated case scope before questions and records only completion, counts,
+and the four-part embedding identity. A variant that declares source recall, lineage recall, or
+split reasoning must record an actual completed source-semantic tool, lineage tool, or every
+enabled split operation respectively; permission or configuration alone is not execution evidence.
+Unknown keys are unsupported rather than
 inert labels. Runtime feature switches are restored even when execution raises. Fixture
 definitions must keep `components` empty because replaying supplied metrics does not execute a
 component. The source revision and dirty/clean state, dataset digest, and explicit
@@ -162,9 +165,10 @@ presented as one ablation.
 The committed smoke definition compares the real `balanced` default strategy set and synchronous
 fixed recall with the `minimal` dual-lane profile, durable extraction batching, high-effort bounded
 recall, explicit source/lineage permissions, idle scheduler switch, and explicit dream pass. Both
-variants refresh the isolated derived vector index; only the minimal variant rebuilds its
-non-authoritative RecallDocument projection. The two refreshes are separately executable and
-reported rather than one composite maintenance label.
+variants refresh the isolated Knowledge-derived vector index; only the minimal variant refreshes
+the source-message semantic index and rebuilds its non-authoritative RecallDocument projection.
+The three refreshes are separately executable and reported rather than one composite maintenance
+label.
 An offline run therefore requires an Ortex embedder with existing operator-supplied model and
 tokenizer artifacts; missing artifacts or a hosted/deterministic stand-in embedder are rejected
 before ingestion. `--live-model` is the explicit provider-call boundary and may incur cost. The
@@ -174,10 +178,13 @@ The measured section stages quality, citation, abstention, unexpected-source iso
 usage, operator-priced cost, wall/recall latency, stored facts, dream-time accounting, database
 query count/timing, and new `PipelineRun` work by kind and status. A telemetry handler counts only
 the bounded runner interval; the before/after snapshot queries are outside it. It never records
-SQL, parameters, results, content, or Account ids. An active-direct-only idle scheduler may
-legitimately report zero wakeup rows for a fixture whose governed outputs remain provisional, but
-a split-operation execute variant fails unless its explicit dream pass has active inputs and
-records the enabled operations.
+SQL, parameters, results, content, or Account ids. An idle-enabled execute case must supply at
+least two active direct-item generations in its exact scope. The harness creates real durable
+`PipelineRun` and Oban work through `MemHouse.Pipeline`, verifies schedule and generation order,
+executes the stale and latest generations through the production workflow, and replays the latest
+generation. It fails closed unless the stale wake is superseded before model work, the latest wake
+completes, and replay has zero additional durable effect. A split-operation execute variant also
+fails unless its explicit dream pass records every enabled operation.
 Gates cover regression, citation and unsupported-answer failures, source-membership leaks,
 token/cost and latency budgets, and replay effects. Measured evidence is structurally separate
 from inferences and unreproduced first-party claims.

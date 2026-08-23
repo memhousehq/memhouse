@@ -13,7 +13,7 @@ defmodule MemHouse.Eval.Runner do
   alias MemHouse.DataLayer
   alias MemHouse.Eval.{Durability, Ingest, ModelJudge, Reasoning, Scorer}
   alias MemHouse.Memory
-  alias MemHouse.Retrieval.{Indexer, RecallProjector}
+  alias MemHouse.Retrieval.{Indexer, RecallProjector, SourceIndexer}
   alias MemHouse.Topology.Scope
 
   require Ash.Query
@@ -23,9 +23,11 @@ defmodule MemHouse.Eval.Runner do
 
   `dataset` is normalized by `MemHouse.Eval.Adapter`. Options set profile, scratch
   Account, run id, deadline, strategy override, split, judge, and run limits; every choice
-  is recorded in the string-keyed report. `:refresh_semantic_index` and
-  `:refresh_recall_projection` synchronously rebuild their distinct caches before questions
-  and are intended only for isolated profile experiments. A question may set
+  is recorded in the string-keyed report. `:refresh_semantic_index`,
+  `:refresh_source_semantic_index`, and `:refresh_recall_projection` synchronously rebuild their
+  distinct caches before questions and are intended only for isolated profile experiments.
+  `:idle_dream_scheduling` executes real generation-fenced pipeline work and therefore requires
+  two active direct generations already present in each exact case scope. A question may set
   `metadata.peer_key` to evaluate the governed view and stable profile for that
   already-ingested Peer; omitting it retains the internal Account reader.
 
@@ -48,6 +50,7 @@ defmodule MemHouse.Eval.Runner do
       |> Enum.map(&run_case(&1, dataset, scope_root, account_key, profile, deadline, opts))
 
     question_results = Enum.flat_map(cases, & &1.question_results)
+    refresh = merge_refresh(cases)
 
     accounting = accounting(available_cases, cases)
 
@@ -103,6 +106,7 @@ defmodule MemHouse.Eval.Runner do
       "messages_ingested" => cases |> Enum.map(& &1.messages_ingested) |> Enum.sum(),
       "questions_attempted" => length(question_results),
       "reasoning" => reasoning,
+      "refresh" => refresh,
       "durability" => durability,
       "metrics" => Scorer.summarize(question_results),
       "cases" => Enum.map(cases, &case_report/1)
@@ -142,16 +146,29 @@ defmodule MemHouse.Eval.Runner do
     ingested = Ingest.run(messages, account_key, scope_path, opts)
 
     reasoning =
-      if Keyword.get(opts, :dream_time, false),
-        do: Reasoning.run(account_key),
-        else: nil
+      cond do
+        not Keyword.get(opts, :dream_time, false) ->
+          nil
+
+        Keyword.get(opts, :idle_dream_scheduling, false) ->
+          Reasoning.run_scheduled(account_key, scope_path)
+
+        true ->
+          Reasoning.run(account_key)
+      end
 
     refresh_semantic? = Keyword.get(opts, :refresh_semantic_index, false)
+    refresh_source_semantic? = Keyword.get(opts, :refresh_source_semantic_index, false)
     refresh_projection? = Keyword.get(opts, :refresh_recall_projection, false)
 
-    if refresh_semantic? or refresh_projection? do
-      refresh_retrieval!(account_key, scope_path, refresh_semantic?, refresh_projection?)
-    end
+    refresh =
+      refresh_retrieval!(
+        account_key,
+        scope_path,
+        refresh_semantic?,
+        refresh_source_semantic?,
+        refresh_projection?
+      )
 
     ref_map = build_ref_map(ingested)
 
@@ -256,6 +273,7 @@ defmodule MemHouse.Eval.Runner do
           {_message, _result} -> []
         end),
       reasoning: reasoning,
+      refresh: refresh,
       status: "evaluated",
       reason: nil
     }
@@ -273,6 +291,7 @@ defmodule MemHouse.Eval.Runner do
       question_results: [],
       extractions: [],
       reasoning: nil,
+      refresh: empty_refresh(),
       status: status,
       reason: reason
     }
@@ -281,8 +300,8 @@ defmodule MemHouse.Eval.Runner do
   # Matched profile experiments need semantic retrieval to measure the corpus just ingested.
   # Ordinary benchmark runs retain their existing queue-shaped behavior; the explicit option
   # synchronously refreshes only the explicitly selected rebuildable caches for this isolated
-  # case scope. Keeping the two switches separate makes projection maintenance measurable.
-  defp refresh_retrieval!(account_key, scope_path, semantic?, projection?) do
+  # case scope. Keeping the three switches separate makes projection maintenance measurable.
+  defp refresh_retrieval!(account_key, scope_path, semantic?, source_semantic?, projection?) do
     {account_id, scope_id} =
       DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account,
                                                                                    actor ->
@@ -295,9 +314,15 @@ defmodule MemHouse.Eval.Runner do
         {account.id, scope.id}
       end)
 
-    with :ok <- maybe_refresh_semantic(account_id, scope_id, semantic?),
-         :ok <- maybe_refresh_projection(account_id, scope_id, projection?) do
-      :ok
+    with {:ok, semantic} <- maybe_refresh_semantic(account_id, scope_id, semantic?),
+         {:ok, source_semantic} <-
+           maybe_refresh_source_semantic(account_id, scope_id, source_semantic?),
+         {:ok, projection} <- maybe_refresh_projection(account_id, scope_id, projection?) do
+      %{
+        "semantic_index" => semantic,
+        "source_semantic_index" => source_semantic,
+        "recall_projection" => projection
+      }
     else
       {:error, error} -> raise "evaluation retrieval refresh failed: #{inspect(error)}"
     end
@@ -305,21 +330,80 @@ defmodule MemHouse.Eval.Runner do
 
   defp maybe_refresh_semantic(account_id, scope_id, true) do
     case Indexer.refresh_scope(account_id, scope_id) do
-      {:ok, _index} -> :ok
+      {:ok, %{indexed: count}} -> {:ok, completed_refresh(count)}
       {:error, error} -> {:error, error}
     end
   end
 
-  defp maybe_refresh_semantic(_account_id, _scope_id, false), do: :ok
+  defp maybe_refresh_semantic(_account_id, _scope_id, false), do: {:ok, skipped_refresh()}
+
+  defp maybe_refresh_source_semantic(account_id, scope_id, true) do
+    case SourceIndexer.refresh_scope(account_id, scope_id) do
+      {:ok, %{indexed: count, embedding_identity: identity}} ->
+        {:ok,
+         completed_refresh(count)
+         |> Map.put("embedding_identity", stringify_identity(identity))}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp maybe_refresh_source_semantic(_account_id, _scope_id, false),
+    do: {:ok, skipped_refresh()}
 
   defp maybe_refresh_projection(account_id, scope_id, true) do
     case RecallProjector.refresh_scope(account_id, scope_id) do
-      {:ok, _documents} -> :ok
+      {:ok, %{projected: projected}} -> {:ok, completed_refresh(projected)}
       {:error, error} -> {:error, error}
     end
   end
 
-  defp maybe_refresh_projection(_account_id, _scope_id, false), do: :ok
+  defp maybe_refresh_projection(_account_id, _scope_id, false), do: {:ok, skipped_refresh()}
+
+  defp completed_refresh(count), do: %{"status" => "completed", "indexed" => count}
+  defp skipped_refresh, do: %{"status" => "not_requested", "indexed" => 0}
+
+  defp stringify_identity(identity) do
+    Map.new(identity, fn {key, value} -> {to_string(key), value} end)
+  end
+
+  defp merge_refresh(cases) do
+    names = ["semantic_index", "source_semantic_index", "recall_projection"]
+
+    Map.new(names, fn name ->
+      completed =
+        cases
+        |> Enum.map(&get_in(&1, [:refresh, name]))
+        |> Enum.filter(&(&1["status"] == "completed"))
+
+      result = %{
+        "status" => if(completed == [], do: "not_requested", else: "completed"),
+        "scopes" => length(completed),
+        "indexed" => Enum.sum(Enum.map(completed, & &1["indexed"]))
+      }
+
+      identities =
+        completed |> Enum.map(& &1["embedding_identity"]) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+      result =
+        case identities do
+          [] -> result
+          [identity] -> Map.put(result, "embedding_identity", identity)
+          _many -> raise "evaluation refresh used multiple embedding identities"
+        end
+
+      {name, result}
+    end)
+  end
+
+  defp empty_refresh do
+    %{
+      "semantic_index" => skipped_refresh(),
+      "source_semantic_index" => skipped_refresh(),
+      "recall_projection" => skipped_refresh()
+    }
+  end
 
   # Citation scoring compares the benchmark's own evidence labels, but an answer cites
   # durable database ids. This builds the translation back: durable message id to the
@@ -484,6 +568,7 @@ defmodule MemHouse.Eval.Runner do
       "messages_ingested" => case.messages_ingested,
       "questions_attempted" => case.questions_attempted,
       "reasoning" => case[:reasoning],
+      "refresh" => case[:refresh],
       "status" => case.status,
       "reason" => case[:reason],
       "metrics" => Scorer.summarize(case.question_results)["overall"],

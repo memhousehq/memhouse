@@ -12,7 +12,12 @@ defmodule MemHouse.Eval.Reasoning do
   alias MemHouse.Governance.ValidationItem
   alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation}
   alias MemHouse.Operations.UsageEvent
+  alias MemHouse.Pipeline
   alias MemHouse.Pipeline.DreamTime
+  alias MemHouse.Repo
+  alias MemHouse.Topology.Scope
+
+  require Ash.Query
 
   @doc """
   Runs dream-time once, then replays it and returns content-safe accounting.
@@ -32,6 +37,25 @@ defmodule MemHouse.Eval.Reasoning do
 
     {measurement, operations} =
       measure_operations(account_id, fn -> run_pass(account_id, before) end)
+
+    Map.put(measurement, "operations", operations)
+  end
+
+  @doc """
+  Executes the durable stale/latest/replay idle-scheduler path for one evaluation scope.
+
+  The scope must already contain at least two active direct-item activity generations. The
+  function creates their real replay-keyed `PipelineRun` and Oban work through `Pipeline`,
+  proves the stale generation exits before model work, executes the latest generation, and
+  replays it while retaining only content-free accounting.
+  """
+  def run_scheduled(account_key, scope_path)
+      when is_binary(account_key) and is_binary(scope_path) do
+    {account_id, runs} = enqueue_generations!(account_key, scope_path)
+    before = snapshot(account_id)
+
+    {measurement, operations} =
+      measure_operations(account_id, fn -> run_scheduled_pass(account_id, runs, before) end)
 
     Map.put(measurement, "operations", operations)
   end
@@ -60,7 +84,8 @@ defmodule MemHouse.Eval.Reasoning do
               "deductions" => subtract_counts(after_first.deductions, before.deductions),
               "conflict_validation_items" => after_first.conflicts - before.conflicts,
               "corroboration" => after_first.corroboration,
-              "reasoner" => usage_counts(after_first.usages, before.usages)
+              "reasoner" => usage_counts(after_first.usages, before.usages),
+              "scheduling" => empty_scheduling()
             }
 
           {:error, error} ->
@@ -69,6 +94,149 @@ defmodule MemHouse.Eval.Reasoning do
 
       {:error, error} ->
         failed(before, error)
+    end
+  end
+
+  defp run_scheduled_pass(account_id, [stale, latest], before) do
+    scheduled_at_ordered = scheduled_generations_ordered!([stale, latest])
+    before_stale = snapshot(account_id)
+
+    stale_result = execute_idle!(stale)
+    after_stale = snapshot(account_id)
+    stale_calls = usage_counts(after_stale.usages, before_stale.usages)["calls"]
+
+    unless stale_result.status == :skipped and stale_result.reason == :superseded_activity and
+             stale_calls == 0 do
+      raise ArgumentError, "stale idle generation did not exit before model work"
+    end
+
+    latest_result = execute_idle!(latest)
+
+    unless latest_result.status == :completed do
+      raise ArgumentError, "latest idle generation did not complete"
+    end
+
+    after_latest = snapshot(account_id)
+    replay_result = execute_idle!(latest)
+    after_replay = snapshot(account_id)
+    replay_effects = durable_effects(after_latest, after_replay)
+
+    %{
+      "enabled" => true,
+      "attempted" => 1,
+      "completed" => 1,
+      "throttled" => 0,
+      "failed" => 0,
+      "replayed" => 1,
+      "replay_durable_effects" => replay_effects,
+      "knowledge_before" => before.knowledge,
+      "knowledge_after" => after_latest.knowledge,
+      "superseded" => after_latest.superseded - before.superseded,
+      "relations" => relation_counts(after_latest.relations, before.relations),
+      "deductions" => subtract_counts(after_latest.deductions, before.deductions),
+      "conflict_validation_items" => after_latest.conflicts - before.conflicts,
+      "corroboration" => after_latest.corroboration,
+      "reasoner" => usage_counts(after_latest.usages, before.usages),
+      "scheduling" => %{
+        "enabled" => true,
+        "generations" => 2,
+        "scheduled_at_ordered" => scheduled_at_ordered,
+        "stale_status" => Atom.to_string(stale_result.reason),
+        "stale_model_calls" => stale_calls,
+        "latest_status" => Atom.to_string(latest_result.status),
+        "replay_status" => Atom.to_string(replay_result.status),
+        "replay_durable_effects" => replay_effects
+      }
+    }
+  end
+
+  defp execute_idle!(run) do
+    case Pipeline.execute(run) do
+      {:ok, result} when is_map(result) -> result
+      {:error, error} -> raise "idle evaluation pipeline execution failed: #{classify(error)}"
+    end
+  end
+
+  defp enqueue_generations!(account_key, scope_path) do
+    DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
+      scope =
+        Scope
+        |> Ash.Query.filter(path == ^scope_path)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      generations =
+        KnowledgeItem
+        |> Ash.Query.filter(
+          scope_id == ^scope.id and state == "active" and is_nil(deleted_at) and
+            is_nil(deduction_key) and
+            (is_nil(extracting_model) or extracting_model != "system:dream-time-consolidator")
+        )
+        |> Ash.Query.sort(updated_at: :desc, id: :desc)
+        |> Ash.Query.limit(2)
+        |> Ash.Query.select([:id, :updated_at])
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: actor)
+        |> Enum.reverse()
+
+      if length(generations) < 2 do
+        raise ArgumentError,
+              "idle evaluation requires at least two active direct activity generations in its case scope"
+      end
+
+      runs =
+        Enum.map(generations, fn generation ->
+          case Pipeline.enqueue_idle_dream_time(
+                 account.id,
+                 scope.id,
+                 generation.updated_at,
+                 generation.id,
+                 actor
+               ) do
+            {:ok, run} -> run
+            {:error, error} -> raise "idle evaluation enqueue failed: #{classify(error)}"
+          end
+        end)
+
+      {account.id, runs}
+    end)
+  end
+
+  defp scheduled_generations_ordered!([stale, latest]) do
+    stale_at = scheduled_at!(stale.idempotency_key)
+    latest_at = scheduled_at!(latest.idempotency_key)
+    idle_seconds = Application.fetch_env!(:memhouse, :dream_time_gates)[:idle_seconds]
+    stale_expected = scheduled_at_for(stale, idle_seconds)
+    latest_expected = scheduled_at_for(latest, idle_seconds)
+
+    if stale_at != stale_expected or latest_at != latest_expected or
+         NaiveDateTime.compare(stale_at, latest_at) == :gt do
+      raise ArgumentError, "idle evaluation scheduled_at or generation ordering did not match"
+    end
+
+    true
+  end
+
+  defp scheduled_at!(idempotency_key) do
+    case Ecto.Adapters.SQL.query!(
+           Repo,
+           "SELECT scheduled_at FROM oban_jobs WHERE args->>'idempotency_key' = $1 ORDER BY id LIMIT 1",
+           [idempotency_key]
+         ) do
+      %{rows: [[scheduled_at]]} -> scheduled_at
+      %{rows: []} -> raise ArgumentError, "idle evaluation durable job was not created"
+    end
+  end
+
+  defp scheduled_at_for(run, idle_seconds) do
+    run.payload["activity_at"]
+    |> DateTime.from_iso8601()
+    |> case do
+      {:ok, activity_at, 0} ->
+        activity_at |> DateTime.add(idle_seconds, :second) |> DateTime.to_naive()
+
+      _error ->
+        raise ArgumentError, "idle evaluation generation payload was invalid"
     end
   end
 
@@ -96,7 +264,8 @@ defmodule MemHouse.Eval.Reasoning do
           "deductions" => merge_counts(total["deductions"], measurement["deductions"]),
           "corroboration" => merge_counts(total["corroboration"], measurement["corroboration"]),
           "operations" => merge_operation_counts(total["operations"], measurement["operations"]),
-          "reasoner" => merge_reasoner(total["reasoner"], measurement["reasoner"])
+          "reasoner" => merge_reasoner(total["reasoner"], measurement["reasoner"]),
+          "scheduling" => merge_scheduling(total["scheduling"], measurement["scheduling"])
       }
     end)
     |> Map.put("enabled", true)
@@ -220,6 +389,24 @@ defmodule MemHouse.Eval.Reasoning do
     end)
   end
 
+  defp merge_scheduling(left, right) do
+    %{
+      "enabled" => left["enabled"] or right["enabled"],
+      "generations" => left["generations"] + right["generations"],
+      "scheduled_at_ordered" => left["scheduled_at_ordered"] and right["scheduled_at_ordered"],
+      "stale_status" => merged_status(left["stale_status"], right["stale_status"]),
+      "stale_model_calls" => left["stale_model_calls"] + right["stale_model_calls"],
+      "latest_status" => merged_status(left["latest_status"], right["latest_status"]),
+      "replay_status" => merged_status(left["replay_status"], right["replay_status"]),
+      "replay_durable_effects" => left["replay_durable_effects"] + right["replay_durable_effects"]
+    }
+  end
+
+  defp merged_status(nil, value), do: value
+  defp merged_status(value, nil), do: value
+  defp merged_status(value, value), do: value
+  defp merged_status(_left, _right), do: "mixed"
+
   defp measure_operations(account_id, fun) do
     owner = self()
     ref = make_ref()
@@ -283,7 +470,8 @@ defmodule MemHouse.Eval.Reasoning do
       "conflict_validation_items" => 0,
       "corroboration" => %{},
       "operations" => %{},
-      "reasoner" => empty_reasoner()
+      "reasoner" => empty_reasoner(),
+      "scheduling" => empty_scheduling()
     }
   end
 
@@ -294,5 +482,17 @@ defmodule MemHouse.Eval.Reasoning do
       "output_tokens" => 0,
       "latency_ms" => 0,
       "error_classes" => %{}
+    }
+
+  defp empty_scheduling,
+    do: %{
+      "enabled" => false,
+      "generations" => 0,
+      "scheduled_at_ordered" => true,
+      "stale_status" => nil,
+      "stale_model_calls" => 0,
+      "latest_status" => nil,
+      "replay_status" => nil,
+      "replay_durable_effects" => 0
     }
 end

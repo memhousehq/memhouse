@@ -3,6 +3,41 @@
 defmodule MemHouse.Eval.ExperimentExecuteTest do
   use MemHouse.DataCase, async: false
 
+  defmodule Provider do
+    @moduledoc false
+    @behaviour MemHouse.Model.Provider
+
+    alias MemHouse.Model.Provider.Result
+    alias MemHouse.Model.Providers.Deterministic
+
+    @impl true
+    def structured(config, messages, schema, opts),
+      do: Deterministic.structured(config, messages, schema, opts)
+
+    @impl true
+    def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
+
+    @impl true
+    def embed(_config, texts, _opts) do
+      if pid = Application.get_env(:memhouse, :eval_source_refresh_test_pid) do
+        send(pid, {:eval_embedding_call, MemHouse.Repo.in_transaction?(), length(texts)})
+      end
+
+      vectors = Enum.map(texts, fn text -> [1.0, rem(byte_size(text), 7) / 7, 0.1] end)
+
+      {:ok,
+       %Result{
+         value: vectors,
+         usage: %{embedding_tokens: length(texts)},
+         metadata: %{fixture: true}
+       }}
+    end
+
+    @impl true
+    def rerank(config, query, documents, opts),
+      do: Deterministic.rerank(config, query, documents, opts)
+  end
+
   alias MemHouse.DataLayer
   alias MemHouse.Eval.{Experiment, Report}
   alias MemHouse.Governance.Engine
@@ -74,14 +109,45 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     assert bundle["gates"]["status"] == "passed", inspect(bundle["gates"], pretty: true)
   end
 
-  test "execute mode drives batching and adaptive recall through their real runtime seams", %{
-    tmp_dir: tmp_dir
-  } do
+  test "execute mode drives source refresh and a current-versus-idle ablation through production seams",
+       %{
+         tmp_dir: tmp_dir
+       } do
     dataset_path = Path.expand("test/fixtures/eval/memhouse-smoke.json")
     definition_path = Path.join(tmp_dir, "execute-ablation.json")
     original_batching = Application.fetch_env!(:memhouse, :extraction_batching)
     original_dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
     original_dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+    original_roles = Application.fetch_env!(:memhouse, :model_roles)
+    original_provider = Application.get_env(:memhouse, :model_provider)
+
+    deterministic_embedder =
+      original_roles
+      |> Keyword.fetch!(:embedder)
+      |> Map.put(:provider, "fixture")
+      |> Map.put(:model, "eval-source-fixture")
+      |> Map.put(:model_version, "1")
+      |> Map.put(:embedding_dimensions, 3)
+
+    Application.put_env(
+      :memhouse,
+      :model_roles,
+      Keyword.put(original_roles, :embedder, deterministic_embedder)
+    )
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+    Application.put_env(:memhouse, :eval_source_refresh_test_pid, self())
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_roles, original_roles)
+      Application.delete_env(:memhouse, :eval_source_refresh_test_pid)
+
+      if original_provider do
+        Application.put_env(:memhouse, :model_provider, original_provider)
+      else
+        Application.delete_env(:memhouse, :model_provider)
+      end
+    end)
 
     experimental_components =
       executable_components("balanced", ["lexical"])
@@ -92,21 +158,40 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
         "extraction_batching" => batching_component(true),
         "idle_dream_scheduling" => idle_component(true),
         "lineage_recall" => true,
-        "source_recall" => true
+        "source_recall" => true,
+        "source_semantic_index_refresh" => true
       })
+
+    current_components =
+      experimental_components
+      |> Map.put("idle_dream_scheduling", idle_component(false))
 
     execute_definition =
       definition(dataset_path)
+      |> put_in(["variants", Access.at(0), "extraction_batching"], true)
+      |> put_in(["variants", Access.at(0), "recall_effort"], "high")
+      |> put_in(["variants", Access.at(0), "source_recall"], true)
+      |> put_in(["variants", Access.at(0), "lineage_recall"], true)
+      |> put_in(["variants", Access.at(0), "source_semantic_index_refresh"], true)
+      |> put_in(["variants", Access.at(0), "dream_time"], true)
+      |> put_in(["variants", Access.at(0), "dream_reasoning_split"], true)
+      |> put_in(["variants", Access.at(0), "components"], current_components)
       |> put_in(["variants", Access.at(1), "extraction_batching"], true)
       |> put_in(["variants", Access.at(1), "recall_effort"], "high")
       |> put_in(["variants", Access.at(1), "source_recall"], true)
       |> put_in(["variants", Access.at(1), "lineage_recall"], true)
+      |> put_in(["variants", Access.at(1), "source_semantic_index_refresh"], true)
       |> put_in(["variants", Access.at(1), "idle_dream_scheduling"], true)
       |> put_in(["variants", Access.at(1), "dream_time"], true)
       |> put_in(["variants", Access.at(1), "dream_reasoning_split"], true)
       |> put_in(["variants", Access.at(1), "components"], experimental_components)
 
     File.write!(definition_path, Jason.encode!(execute_definition))
+
+    seed_active_dream_inputs!(
+      "eval-ablation-test-execute-ablation-current",
+      "/bench/memhouse/execute-ablation-current/smoke"
+    )
 
     seed_active_dream_inputs!(
       "eval-ablation-test-execute-ablation-experimental",
@@ -124,8 +209,24 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
       )
 
     experimental_report = bundle["reports"]["experimental"]
+    current_report = bundle["reports"]["current"]
+
+    assert_receive {:eval_embedding_call, false, batch_size} when batch_size > 0
 
     assert experimental_report["components"] == experimental_components
+    assert current_report["components"] == current_components
+
+    assert experimental_report["refresh"]["source_semantic_index"] == %{
+             "embedding_identity" => %{
+               "dimensions" => 3,
+               "model" => "eval-source-fixture",
+               "provider" => "fixture",
+               "version" => "1"
+             },
+             "indexed" => 4,
+             "scopes" => 1,
+             "status" => "completed"
+           }
 
     assert Enum.all?(hd(experimental_report["cases"])["questions"], fn question ->
              question["recall"]["used"] == true and
@@ -143,21 +244,37 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
            end)
 
     assert Enum.any?(hd(experimental_report["cases"])["questions"], fn question ->
+             Enum.any?(question["recall"]["outcomes"], fn outcome ->
+               outcome["tool"] == "source_semantic" and outcome["status"] == "completed"
+             end)
+           end)
+
+    assert Enum.any?(hd(experimental_report["cases"])["questions"], fn question ->
              question["recall"]["answer_context_adaptive_items"] > 0
            end)
 
     current = get_in(bundle, ["evidence", "measured", "current"])
     experimental = get_in(bundle, ["evidence", "measured", "experimental"])
 
-    assert experimental["ingest"]["model_calls"] <= current["ingest"]["model_calls"]
+    assert experimental["ingest"]["model_calls"] == current["ingest"]["model_calls"]
     assert experimental["maintenance"]["extraction_runs"] == 2
 
-    # The deterministic fixture produces governed provisional items, so the active-direct-only
-    # idle scheduler correctly creates no wakeup. The binding is nevertheless the exact runtime
-    # switch used during ingest and is restored below.
+    assert current_report["reasoning"]["scheduling"]["enabled"] == false
     assert experimental_report["components"]["idle_dream_scheduling"]["enabled"] == true
-    assert experimental["maintenance"]["dream_time_runs"] == 0
+    assert current["maintenance"]["dream_time_runs"] == 0
+    assert experimental["maintenance"]["dream_time_runs"] == 2
     assert experimental_report["reasoning"]["enabled"] == true
+
+    assert experimental_report["reasoning"]["scheduling"] == %{
+             "enabled" => true,
+             "generations" => 2,
+             "latest_status" => "completed",
+             "replay_durable_effects" => 0,
+             "replay_status" => "no_delta",
+             "scheduled_at_ordered" => true,
+             "stale_model_calls" => 0,
+             "stale_status" => "superseded_activity"
+           }
 
     assert get_in(experimental_report, [
              "reasoning",
@@ -172,6 +289,36 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
 
     assert Application.fetch_env!(:memhouse, :dream_reasoning_operations) ==
              original_dream_operations
+  end
+
+  test "an idle binding fails closed when its case has fewer than two active generations", %{
+    tmp_dir: tmp_dir
+  } do
+    dataset_path = Path.expand("test/fixtures/eval/memhouse-smoke.json")
+    definition_path = Path.join(tmp_dir, "idle-without-generations.json")
+
+    idle_components =
+      executable_components("balanced", ["lexical"])
+      |> Map.merge(%{
+        "dream_time" => true,
+        "idle_dream_scheduling" => idle_component(true)
+      })
+
+    execute_definition =
+      definition(dataset_path)
+      |> put_in(["variants", Access.at(1), "idle_dream_scheduling"], true)
+      |> put_in(["variants", Access.at(1), "dream_time"], true)
+      |> put_in(["variants", Access.at(1), "components"], idle_components)
+
+    File.write!(definition_path, Jason.encode!(execute_definition))
+
+    assert_raise ArgumentError, ~r/runtime-failed case/, fn ->
+      Experiment.run(definition_path,
+        account_key: "eval-idle-fail-closed",
+        run_id: "missing-generations",
+        source_revision: "test-source-revision"
+      )
+    end
   end
 
   defp definition(dataset_path) do
@@ -249,6 +396,7 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
       "retrieval_deadline" => "disabled",
       "semantic_index_refresh" =>
         Enum.any?(strategies, &(&1 in ["semantic", "semantic_dual_lane"])),
+      "source_semantic_index_refresh" => false,
       "source_recall" => false
     }
   end

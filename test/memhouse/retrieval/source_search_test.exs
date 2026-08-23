@@ -383,8 +383,19 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert unavailable["results"] == []
 
     {account_id, scope_id} = account_and_scope!("source-semantic", "/source/semantic")
-    assert {:ok, %{indexed: 1}} = SourceIndexer.refresh_scope(account_id, scope_id)
-    assert {:ok, %{indexed: 0}} = SourceIndexer.refresh_scope(account_id, scope_id)
+
+    assert {:ok, %{indexed: 1, embedding_identity: identity}} =
+             SourceIndexer.refresh_scope(account_id, scope_id)
+
+    assert identity == %{
+             provider: "fixture",
+             model: "source-search-fixture",
+             version: "1",
+             dimensions: 3
+           }
+
+    assert {:ok, %{indexed: 0, embedding_identity: ^identity}} =
+             SourceIndexer.refresh_scope(account_id, scope_id)
 
     ready =
       Memory.search_sources(%{

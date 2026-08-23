@@ -240,6 +240,7 @@ defmodule MemHouse.Eval.ExperimentTest do
              "retrieval_rerank" => false,
              "retrieval_deadline" => "disabled",
              "semantic_index_refresh" => true,
+             "source_semantic_index_refresh" => true,
              "source_recall" => true
            }
   end

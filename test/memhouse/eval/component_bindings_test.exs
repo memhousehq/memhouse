@@ -14,6 +14,7 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
       "extraction_batching" => true,
       "recall_effort" => "medium",
       "source_recall" => true,
+      "source_semantic_index_refresh" => true,
       "lineage_recall" => false,
       "semantic_index_refresh" => false,
       "recall_projection_refresh" => true,
@@ -59,6 +60,7 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
              "retrieval_seeds" => ["semantic_dual_lane", "lexical"],
              "retrieval_strategies" => ["semantic_dual_lane", "lexical"],
              "semantic_index_refresh" => false,
+             "source_semantic_index_refresh" => true,
              "source_recall" => true
            }
   end
@@ -76,6 +78,19 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
                  fn ->
                    ComponentBindings.resolve!(variant)
                  end
+  end
+
+  test "source recall cannot silently downgrade to an exact-only source index" do
+    assert_raise ArgumentError, ~r/cannot enable source recall without source semantic/, fn ->
+      ComponentBindings.resolve!(%{
+        "id" => "exact-only-source",
+        "profile" => "balanced",
+        "strategies" => ["lexical"],
+        "recall_effort" => "high",
+        "source_recall" => true,
+        "source_semantic_index_refresh" => false
+      })
+    end
   end
 
   test "profile bindings keep the closed JSON string boundary" do
