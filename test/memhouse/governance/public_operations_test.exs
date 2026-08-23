@@ -151,7 +151,9 @@ defmodule MemHouse.Governance.PublicOperationsTest do
         last_error_class: "structured_validation_exhausted",
         processed_at: MemHouse.Clock.utc_now(),
         payload: run.payload
-      }, tenant: context.admin.account_id)
+      },
+      tenant: context.admin.account_id
+    )
 
     assert {:error, %Ash.Error.Forbidden{}} =
              run(:requeue_extraction, %{message_id: context.message_id}, context.member)
