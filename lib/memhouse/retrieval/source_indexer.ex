@@ -113,38 +113,36 @@ defmodule MemHouse.Retrieval.SourceIndexer do
           |> Ash.Query.filter(scope_id == ^scope_id)
           |> Ash.Query.select([:id, :content, :occurred_at])
 
-        query =
-          if refresh_only? do
-            Ash.Query.filter(
-              query,
-              is_nil(embedding) or is_nil(embedding_provider) or
-                embedding_provider != ^identity.provider or is_nil(embedding_model) or
-                embedding_model != ^identity.model or is_nil(embedding_version) or
-                embedding_version != ^identity.version or is_nil(embedding_dimensions) or
-                embedding_dimensions != ^identity.dimensions
-            )
-          else
-            query
-          end
-
-        query =
-          case cursor do
-            nil ->
-              query
-
-            {occurred_at, id} ->
-              Ash.Query.filter(
-                query,
-                occurred_at > ^occurred_at or (occurred_at == ^occurred_at and id > ^id)
-              )
-          end
-
         query
+        |> maybe_filter_refresh(refresh_only?, identity)
+        |> after_cursor(cursor)
         |> Ash.Query.sort(occurred_at: :asc, id: :asc)
         |> Ash.Query.limit(@page_size)
         |> Ash.Query.set_tenant(account_id)
         |> Ash.read!(actor: actor)
       end
+    )
+  end
+
+  defp maybe_filter_refresh(query, false, _identity), do: query
+
+  defp maybe_filter_refresh(query, true, identity) do
+    Ash.Query.filter(
+      query,
+      is_nil(embedding) or is_nil(embedding_provider) or
+        embedding_provider != ^identity.provider or is_nil(embedding_model) or
+        embedding_model != ^identity.model or is_nil(embedding_version) or
+        embedding_version != ^identity.version or is_nil(embedding_dimensions) or
+        embedding_dimensions != ^identity.dimensions
+    )
+  end
+
+  defp after_cursor(query, nil), do: query
+
+  defp after_cursor(query, {occurred_at, id}) do
+    Ash.Query.filter(
+      query,
+      occurred_at > ^occurred_at or (occurred_at == ^occurred_at and id > ^id)
     )
   end
 

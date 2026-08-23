@@ -343,8 +343,9 @@ defmodule MemHouseWeb.MemoryControllerTest do
   end
 
   defp extraction_run!(actor, message_id) do
-    DataLayer.with_account_id(actor.account_id, [role: :system, pipeline?: true], fn account,
-                                                                                     pipeline_actor ->
+    actor_opts = [role: :system, pipeline?: true]
+
+    DataLayer.with_account_id(actor.account_id, actor_opts, fn account, pipeline_actor ->
       PipelineRun
       |> Ash.Query.filter(
         kind == "extraction" and target_type == "message" and target_id == ^message_id
