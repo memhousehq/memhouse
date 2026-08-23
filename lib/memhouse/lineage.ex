@@ -441,8 +441,6 @@ defmodule MemHouse.Lineage do
     |> Ash.read_one!(actor: context.actor)
   end
 
-  defp fetch_knowledge(_id, _context), do: nil
-
   defp fetch_knowledge_records(ids, context) do
     ids = Enum.filter(ids, &is_binary/1) |> Enum.uniq()
 
@@ -472,8 +470,6 @@ defmodule MemHouse.Lineage do
     |> Ash.Query.set_tenant(context.account_id)
     |> Ash.read_one!(actor: context.actor)
   end
-
-  defp fetch_source_record(_resource, _id, _context), do: nil
 
   defp fetch_source_records(resource, ids, context) do
     ids = Enum.filter(ids, &is_binary/1) |> Enum.uniq()

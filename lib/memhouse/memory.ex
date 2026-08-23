@@ -821,7 +821,7 @@ defmodule MemHouse.Memory do
       candidates = Map.fetch!(retrieval, "candidates")
 
       {answer_candidates, recall} =
-        if effort in ["fixed", :fixed, nil] do
+        if effort == "fixed" do
           {candidates, %{"used" => false, "effort" => "fixed"}}
         else
           RecallToolAdapter.run(attrs, question, effort, candidates,
