@@ -1799,7 +1799,7 @@ defmodule MemHouse.Retrieval.Store do
     FROM oban_jobs
     WHERE args->>'tenant' = $1
       AND args->>'idempotency_key' = $2
-    ORDER BY id
+    ORDER BY scheduled_at, id
     LIMIT 1
     """
 

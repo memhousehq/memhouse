@@ -66,6 +66,7 @@ defmodule MemHouse.Observability do
     transport_error
   )
   @identifier ~r/\A[A-Za-z0-9][A-Za-z0-9_.:\/=\-]{0,159}\z/u
+  @operation_run_id_key {__MODULE__, :operation_run_id}
 
   @doc """
   Attaches log correlation and the framework instrumentation handlers.
@@ -158,7 +159,7 @@ defmodule MemHouse.Observability do
       metadata
       |> Map.new(fn {key, value} -> {normalize_key(key), value} end)
       |> Map.take(@operation_metadata)
-      |> Map.put_new(:run_id, Ecto.UUID.generate())
+      |> Map.put_new(:run_id, Process.get(@operation_run_id_key) || Ecto.UUID.generate())
       |> Map.put_new(:version, "unknown")
       |> Map.put_new(:status, "ok")
       |> normalize_operation_metadata()
@@ -166,6 +167,22 @@ defmodule MemHouse.Observability do
 
     :telemetry.execute([:memhouse, :operation, :completed], measurements, metadata)
     :ok
+  end
+
+  @doc "Runs `fun` with one content-safe correlation id applied to operation telemetry."
+  def with_operation_run_id(run_id, fun)
+      when is_binary(run_id) and is_function(fun, 0) do
+    previous = Process.put(@operation_run_id_key, run_id)
+
+    try do
+      fun.()
+    after
+      if is_nil(previous) do
+        Process.delete(@operation_run_id_key)
+      else
+        Process.put(@operation_run_id_key, previous)
+      end
+    end
   end
 
   @doc """

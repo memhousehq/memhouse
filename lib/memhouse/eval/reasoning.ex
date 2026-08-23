@@ -11,6 +11,7 @@ defmodule MemHouse.Eval.Reasoning do
   alias MemHouse.DataLayer
   alias MemHouse.Governance.ValidationItem
   alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation}
+  alias MemHouse.Observability
   alias MemHouse.Operations.UsageEvent
   alias MemHouse.Pipeline
   alias MemHouse.Pipeline.{Consolidator, DreamTime}
@@ -408,6 +409,7 @@ defmodule MemHouse.Eval.Reasoning do
   defp measure_operations(account_id, fun) do
     owner = self()
     ref = make_ref()
+    run_id = Ecto.UUID.generate()
     handler = {__MODULE__, ref}
 
     :ok =
@@ -415,7 +417,7 @@ defmodule MemHouse.Eval.Reasoning do
         handler,
         [:memhouse, :operation, :completed],
         fn _event, _measurements, metadata, _config ->
-          if metadata[:account_id] == account_id and
+          if metadata[:account_id] == account_id and metadata[:run_id] == run_id and
                metadata[:operation] in ["reasoning_update", "reasoning_synthesis"] do
             send(
               owner,
@@ -427,7 +429,7 @@ defmodule MemHouse.Eval.Reasoning do
       )
 
     try do
-      result = fun.()
+      result = Observability.with_operation_run_id(run_id, fun)
       {result, collect_operations(ref, %{})}
     after
       :telemetry.detach(handler)

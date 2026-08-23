@@ -99,4 +99,30 @@ defmodule MemHouse.ObservabilityOperationTest do
     refute inspect(metadata) =~ "secret with spaces"
     refute inspect(metadata) =~ "api_key_value"
   end
+
+  test "a scoped operation run id correlates only telemetry emitted inside its execution" do
+    handler = "operation-run-id-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, _measurements, metadata, _config ->
+          send(parent, {:operation_run_id, metadata.run_id})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    Observability.with_operation_run_id("eval-run-1", fn ->
+      Observability.emit_operation(:reasoning_update)
+    end)
+
+    Observability.emit_operation(:reasoning_update, %{}, %{run_id: "other-run"})
+
+    assert_receive {:operation_run_id, "eval-run-1"}
+    assert_receive {:operation_run_id, "other-run"}
+  end
 end

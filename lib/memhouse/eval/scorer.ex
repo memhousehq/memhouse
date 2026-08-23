@@ -109,10 +109,12 @@ defmodule MemHouse.Eval.Scorer do
   merged in the run-level fields it groups on: `"category"`, `"scale"`, `"benchmark"`, and
   `"latency_ms"`.
 
-  Returns `"overall"`, `"by_category"`, `"by_scale"`, and `"beam_degradation_curve"` — the
-  last being the by-scale rollup restricted to BEAM cases, which is how accuracy loss with
-  growing corpus size is read. Questions with a missing or blank group key are collected
-  under `"uncategorized"` rather than dropped, so the group counts always sum to the total.
+  Returns `"overall"`, `"retrieval"`, `"isolation"`, `"by_category"`, `"by_scale"`, and
+  `"beam_degradation_curve"`. The isolation block contains counts, a pass flag, and its
+  method identity; the last block is the by-scale rollup restricted to BEAM cases, which is
+  how accuracy loss with growing corpus size is read. Questions with a missing or blank group
+  key are collected under `"uncategorized"` rather than dropped, so group counts sum to the
+  total.
 
   Within a group, `"abstention_accuracy"` is `nil` when no question there expected a
   refusal. That distinguishes "there was nothing to abstain from" from "every abstention
