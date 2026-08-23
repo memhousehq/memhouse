@@ -275,10 +275,11 @@ role preflight. Both modes write durable rows to their scratch Accounts.
 
 Execute definitions have a closed `components` contract. Profile, effective strategies and seed
 stages, reranking, deadline, extraction batching identity and limits, adaptive recall effort, source/lineage
-permissions, separate semantic-index and RecallDocument refreshes, idle scheduling gates, explicit
+permissions, separate Knowledge semantic-index, source semantic-index, and RecallDocument refreshes,
+idle scheduling gates, explicit
 dream execution, the default-off dream-operation split, and durability audit must exactly match
-runner behavior. A declared lineage tool or split reasoning operation must also complete in the
-report; permission or configuration alone is not execution evidence. An unknown key or a
+runner behavior. Declared source-semantic and lineage tools and split reasoning operations must
+also complete in the report; permission or configuration alone is not execution evidence. An unknown key or a
 mismatched value fails validation; the map is not free-form provenance. Runtime feature switches
 are restored even on failure. Fixture definitions keep the map empty because fixture replay does
 not execute product components.
@@ -286,8 +287,13 @@ not execute product components.
 The committed smoke definition compares the real `balanced` defaults with the opt-in `minimal`
 dual-lane, batched, high-effort bounded-recall, idle-scheduler, split-update, and dream-pass
 configuration. Offline execution
-synchronously refreshes each isolated case index and, only for minimal, its RecallDocument
-projection. It requires existing local Ortex model and
+synchronously refreshes each isolated case Knowledge index and, only for minimal, its source
+semantic index and RecallDocument projection before questions. Source refresh reports only its
+status, count, scopes, and exact four-part embedding identity. The idle-enabled variant requires
+at least two active direct generations per exact case scope, creates real replay-keyed PipelineRun
+and Oban jobs, executes stale/latest/replay through the production pipeline, and fails unless the
+stale wake is superseded before model work, the latest completes, and replay adds no durable effect.
+It requires existing local Ortex model and
 tokenizer artifacts. Missing artifacts and hosted or
 deterministic stand-in embedders are rejected before ingestion. `--live-model` is the explicit
 provider-call opt-in and may incur cost; MemHouse never substitutes fake vectors.

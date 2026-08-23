@@ -69,24 +69,13 @@ defmodule MemHouse.Eval.Reasoning do
           {:ok, replay} ->
             after_replay = snapshot(account_id)
 
-            %{
-              "enabled" => true,
+            measurement(before, after_first, after_replay, %{
               "attempted" => first.scopes + first.throttled,
               "completed" => first.scopes,
               "throttled" => first.throttled,
-              "failed" => 0,
               "replayed" => replay.scopes + replay.throttled,
-              "replay_durable_effects" => durable_effects(after_first, after_replay),
-              "knowledge_before" => before.knowledge,
-              "knowledge_after" => after_first.knowledge,
-              "superseded" => after_first.superseded - before.superseded,
-              "relations" => relation_counts(after_first.relations, before.relations),
-              "deductions" => subtract_counts(after_first.deductions, before.deductions),
-              "conflict_validation_items" => after_first.conflicts - before.conflicts,
-              "corroboration" => after_first.corroboration,
-              "reasoner" => usage_counts(after_first.usages, before.usages),
               "scheduling" => empty_scheduling()
-            }
+            })
 
           {:error, error} ->
             failed(before, error)
@@ -121,22 +110,11 @@ defmodule MemHouse.Eval.Reasoning do
     after_replay = snapshot(account_id)
     replay_effects = durable_effects(after_latest, after_replay)
 
-    %{
-      "enabled" => true,
+    measurement(before, after_latest, after_replay, %{
       "attempted" => 1,
       "completed" => 1,
       "throttled" => 0,
-      "failed" => 0,
       "replayed" => 1,
-      "replay_durable_effects" => replay_effects,
-      "knowledge_before" => before.knowledge,
-      "knowledge_after" => after_latest.knowledge,
-      "superseded" => after_latest.superseded - before.superseded,
-      "relations" => relation_counts(after_latest.relations, before.relations),
-      "deductions" => subtract_counts(after_latest.deductions, before.deductions),
-      "conflict_validation_items" => after_latest.conflicts - before.conflicts,
-      "corroboration" => after_latest.corroboration,
-      "reasoner" => usage_counts(after_latest.usages, before.usages),
       "scheduling" => %{
         "enabled" => true,
         "generations" => 2,
@@ -147,7 +125,26 @@ defmodule MemHouse.Eval.Reasoning do
         "replay_status" => Atom.to_string(replay_result.status),
         "replay_durable_effects" => replay_effects
       }
-    }
+    })
+  end
+
+  defp measurement(before, after_pass, after_replay, execution) do
+    Map.merge(
+      %{
+        "enabled" => true,
+        "failed" => 0,
+        "replay_durable_effects" => durable_effects(after_pass, after_replay),
+        "knowledge_before" => before.knowledge,
+        "knowledge_after" => after_pass.knowledge,
+        "superseded" => after_pass.superseded - before.superseded,
+        "relations" => relation_counts(after_pass.relations, before.relations),
+        "deductions" => subtract_counts(after_pass.deductions, before.deductions),
+        "conflict_validation_items" => after_pass.conflicts - before.conflicts,
+        "corroboration" => after_pass.corroboration,
+        "reasoner" => usage_counts(after_pass.usages, before.usages)
+      },
+      execution
+    )
   end
 
   defp execute_idle!(run) do
