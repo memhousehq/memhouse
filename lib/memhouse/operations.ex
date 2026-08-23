@@ -176,14 +176,14 @@ defmodule MemHouse.Operations.DreamTimeWatermark do
     defaults [:read]
 
     create :start do
-      accept [:scope_id, :input_watermark]
+      accept [:scope_id, :input_watermark, :input_watermark_id]
       upsert? true
       upsert_identity :scope
-      upsert_fields [:input_watermark, :updated_at]
+      upsert_fields [:input_watermark, :input_watermark_id, :updated_at]
     end
 
     update :advance do
-      accept [:input_watermark]
+      accept [:input_watermark, :input_watermark_id]
       require_atomic? false
     end
   end
@@ -209,6 +209,9 @@ defmodule MemHouse.Operations.DreamTimeWatermark do
     attribute :account_id, :uuid, allow_nil?: false
     attribute :scope_id, :uuid, allow_nil?: false
     attribute :input_watermark, :utc_datetime_usec, allow_nil?: false
+    # Completes the cursor when several rows share one timestamp. Without the
+    # id tie-break a bounded pass could skip same-microsecond rows forever.
+    attribute :input_watermark_id, :uuid
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end
@@ -309,6 +312,18 @@ defmodule MemHouse.Operations.PipelineRun do
       upsert_fields [:idempotency_key]
       change set_attribute(:kind, "dream_time")
       change run_oban_trigger(:dream_time)
+    end
+
+    create :enqueue_idle_dream_time do
+      accept [:scope_id, :target_type, :target_id, :idempotency_key, :payload]
+      argument :scheduled_at, :utc_datetime_usec, allow_nil?: false
+      upsert? true
+      upsert_identity :idempotency_key
+      upsert_fields [:idempotency_key]
+      change set_attribute(:kind, "dream_time")
+
+      change {MemHouse.Pipeline.Changes.RunObanTriggerAt,
+              trigger: :dream_time, argument: :scheduled_at}
     end
 
     create :enqueue_revalidation do
@@ -428,6 +443,51 @@ defmodule MemHouse.Operations.PipelineRun do
       require_atomic? false
       change MemHouse.Pipeline.Changes.DeclareAccount
       change MemHouse.Pipeline.Changes.ExecuteRun
+    end
+
+    # A running extraction job marks its own replay row before looking for
+    # siblings. Opportunistic batch claims use the same action over a filtered
+    # query, so an executing sibling and a batch owner race on one atomic status
+    # transition and exactly one wins.
+    update :claim_extraction_batch do
+      accept [:batch_claim_id]
+      change set_attribute(:status, "processing")
+      change set_attribute(:last_error_class, nil)
+    end
+
+    # Called inside the same short Account transaction that persists one
+    # anchor's governed candidates and message completion stamp.
+    update :complete_extraction_anchor do
+      accept [:attempt_count, :processed_at, :payload]
+      change set_attribute(:status, "completed")
+      change set_attribute(:last_error_class, nil)
+      change set_attribute(:batch_claim_id, nil)
+    end
+
+    update :classify_extraction_anchor do
+      accept [:status, :attempt_count, :last_error_class, :processed_at, :payload]
+      validate attribute_in(:status, ~w(failed repairable terminal))
+      change set_attribute(:batch_claim_id, nil)
+    end
+
+    update :requeue_extraction_anchor do
+      require_atomic? false
+      accept [:payload]
+
+      validate {MemHouse.Operations.Validations.CurrentStatusIn,
+                statuses: ~w(repairable terminal)}
+
+      change set_attribute(:status, "pending")
+      change set_attribute(:last_error_class, nil)
+      change set_attribute(:processed_at, nil)
+      change set_attribute(:batch_claim_id, nil)
+    end
+
+    update :expire_extraction_claim do
+      change set_attribute(:status, "failed")
+      change set_attribute(:last_error_class, "BatchClaimExpired")
+      change set_attribute(:processed_at, nil)
+      change set_attribute(:batch_claim_id, nil)
     end
 
     # Failure path invoked when the job errors. It stores only a classification
@@ -733,6 +793,10 @@ defmodule MemHouse.Operations.PipelineRun do
     # A classification such as an exception module name, never a message.
     # Error messages routinely quote the content that caused them.
     attribute :last_error_class, :string, public?: true
+
+    # Fences late workers after reconciliation expires and reclaims a batch.
+    # It is operational identity only and never leaves operator/internal APIs.
+    attribute :batch_claim_id, :uuid
 
     create_timestamp :inserted_at
     update_timestamp :updated_at

@@ -54,6 +54,18 @@ defmodule MemHouse.Model do
     as: :generate
 
   @doc """
+  Runs structured generation and includes exact provider-attempt accounting.
+
+  Returns `{:ok, value, provenance, provider_attempts}` or
+  `{:error, reason, provider_attempts}`. Use this only where operation telemetry
+  must distinguish an admitted provider callback from pre-call rejection; the
+  ordinary `generate_structured/5` result remains unchanged.
+  """
+  defdelegate generate_structured_with_attempts(role, messages, schema, context, opts \\ []),
+    to: MemHouse.Model.StructuredGenerator,
+    as: :generate_with_attempts
+
+  @doc """
   Runs one free-text chat completion for a role.
 
   Returns `{:ok, text, provenance_map}` or `{:error, reason}`. Prefer

@@ -90,7 +90,19 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_MODEL_STREAM_POOL_COUNT` | `1` | Shared HTTP/1 shard count; raise only for a measured shard bottleneck |
 | `MEMHOUSE_MODEL_POOL_TIMEOUT_MS` | `120000` | Maximum wait (ms) to check out a model HTTP connection |
 | `MEMHOUSE_INGEST_QUEUE_LIMIT` | `10` | Concurrent extraction jobs per node |
+| `MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING` | `false` | Opt in to adjacent-anchor extraction; false preserves one provider request and replay outcome per message |
+| `MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS` | `4096` | Adjacent-anchor target when the experiment is enabled; one of `128`, `1024`, `4096`, or `16384` |
+| `MEMHOUSE_EXTRACTION_BATCH_MAX_ANCHORS` | `32` | Hard anchor cap for one extraction call |
+| `MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS` | `131072` | Whole extraction request context limit used before a call |
+| `MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS` | `8192` | Output capacity reserved during extraction admission |
+| `MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS` | `2048` | Extra whole-request admission margin |
+| `MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS` | `1200` | Age after which reconciliation releases an interrupted batch claim; when batching is enabled, boot requires at least three `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS` budgets plus 60 seconds |
+| `MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` | `false` | Selects the evaluation-only `compact-explicit-v1` extraction contract and `extract-compact-exp-1` prompt identity |
 | `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
+
+`MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` uses the same strict boolean boot
+parsing as the experimental switches above: `true`, `false`, `1`, `0`, `yes`,
+`no`, `on`, and `off` are accepted; ambiguous or misspelled values stop boot.
 
 !!! warning "Reasoning models can blow the context window or time out without these"
     Reasoning models, including the default `openai/gpt-oss-120b`, can consume
@@ -127,6 +139,29 @@ of calls in flight is this value times the projection queue limit, so raise
 connection while it resolves its model role and records usage, and an erasure
 runs the same rebuild from inside its own transaction, so keep the value well
 below `POOL_SIZE`.
+
+### Experimental compact extraction
+
+`MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION=true` replaces only the model-facing
+candidate shape. The provider returns an atomic durable statement, an exact
+supporting span, a subject reference, source-message ids, and nullable exact
+source text for each valid-time boundary. Trusted code derives `fact`, direct
+or indirect evidence, its confidence discount, `restricted` sensitivity, and
+the narrow peer or current-scope target before applying the ordinary extraction
+validator. It cannot make omitted policy fields public, Account-wide, or active.
+
+The switch also selects prompt identity `extract-compact-exp-1`. An Account
+with a persisted `ingest_extractor` role must publish a higher role-config
+version carrying that exact prompt identity before enabling the switch. A
+mismatch fails before the provider call and becomes operator-repairable; it
+never records false provenance.
+
+This is not a production default. ADR 0021 requires a preregistered matched
+held-out report showing per-field and per-category non-inferiority, zero
+privacy/attribution regressions, and lower calls, tokens, or cost, followed by
+human architecture and licensing review. No paid or live run was performed as
+part of the additive implementation. Disabling the flag immediately restores
+`extract-13` and does not migrate or rewrite stored knowledge.
 
 There are exactly five Account-level model roles: `embedder`, `reranker`,
 `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`. Only secret
@@ -257,9 +292,89 @@ document semantics.
 | Variable | Meaning |
 | --- | --- |
 | `MEMHOUSE_BUDGET_LIMITS_JSON` | Daily token counters, e.g. `{"input_tokens":1000000,"output_tokens":250000,"embedding_tokens":2000000}` |
-| `MEMHOUSE_MODEL_COSTS_JSON` | Operator rates in USD per million tokens, per role |
+| `MEMHOUSE_MODEL_COSTS_JSON` | Optional operator rates in USD per million tokens, per role; overrides the shipped `planning-reference-v1` table |
+| `MEMHOUSE_MODEL_COST_PROFILE` | Content-free identity reported with costs when rates are overridden; default `operator-env` |
+
+With no override, MemHouse uses the versioned `planning-reference-v1` rates:
+
+| Role | Input | Output | Embedding |
+| --- | ---: | ---: | ---: |
+| `ingest_extractor` | 1.00 | 3.00 | — |
+| `dream_reasoner` | 1.00 | 3.00 | — |
+| `dialectic_agent` | 1.00 | 3.00 | — |
+| `reranker` | 1.00 | 1.00 | — |
+| `embedder` | — | — | 0.10 |
+
+These are round provider-neutral planning rates, not a claim about a vendor's
+current or contracted price. Their purpose is to keep a fresh deployment from
+silently translating real token usage to zero USD. Set both cost variables to
+your exact contracted rates and a stable internal profile id before using the
+estimate for financial reconciliation.
 
 Dream-time is throttled first when a limit bites.
+
+### Extraction provider circuit
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `MEMHOUSE_INGEST_CIRCUIT_ENABLED` | `true` | Enables Account- and resolved extractor-role/provider-scoped transient-failure admission |
+| `MEMHOUSE_INGEST_CIRCUIT_FAILURE_THRESHOLD` | `5` | Consecutive transient provider failures before opening |
+| `MEMHOUSE_INGEST_CIRCUIT_OPEN_MS` | `30000` | Open interval before one half-open recovery probe |
+
+Single and batched message extraction share this circuit at the gateway. An
+open rejection makes no provider request and therefore creates no billed-call
+usage row. Durable messages and PipelineRuns remain unchanged and retryable;
+the existing repairable and terminal classifications still require explicit
+operator requeue. One half-open probe is admitted at a time. If its worker
+dies, the process monitor releases the permit and starts a fresh bounded open
+interval instead of leaving the circuit stuck.
+
+### Dream-time scheduling gates
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MEMHOUSE_EXPERIMENTAL_DREAM_IDLE_SCHEDULER` | `false` | Opt in to direct-fact-triggered durable scope wakeups; hourly and manual Account runs remain available while false |
+| `MEMHOUSE_DREAM_MIN_CHANGES` | `1` | Eligible committed knowledge changes accumulated before a pass |
+| `MEMHOUSE_DREAM_IDLE_SECONDS` | `0` | Delay from governed direct-fact activity to its durable scoped wakeup, and required inactivity before reasoning |
+| `MEMHOUSE_DREAM_MIN_INTERVAL_SECONDS` | `0` | Minimum time after the last completed scoped pass |
+| `MEMHOUSE_DREAM_MAX_DELTA_ITEMS` | `20` | Hard eligible-delta cap per pass; the durable cursor resumes the remainder |
+| `MEMHOUSE_DREAM_MAX_WORKING_SET_ITEMS` | `50` | Hard recalled knowledge cap supplied to the reasoner |
+| `MEMHOUSE_DREAM_MAX_ELAPSED_MS` | `120000` | Whole structured reasoning call timeout, including repairs and retries |
+
+The zero duration defaults preserve immediate existing behavior. A direct-fact
+governance transaction durably schedules its scoped wakeup for the end of this
+idle window. Newer activity supersedes older generations, which exit before
+model work; exact duplicates and reconciler replay reuse the original
+content-free key. The hourly Account sweep remains a fallback. Skipped passes
+do not advance their watermark; partial passes advance only through their final
+timestamp-and-id cursor. All values are validated at boot. Decisions are
+emitted as content-safe `dream_gate` telemetry with no statement or source
+text.
+
+### Dream-time reasoning operations
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MEMHOUSE_EXPERIMENTAL_DREAM_OPERATION_SPLIT` | `false` | Replace the legacy single dream reasoner call with the independently versioned operation set |
+| `MEMHOUSE_DREAM_UPDATE_ENABLED` | `true` | Classify support and contradiction among bounded active inputs |
+| `MEMHOUSE_DREAM_SYNTHESIS_ENABLED` | `false` | Propose multi-source deductions; keep off until matched ablation approval |
+
+All three switches use strict boot parsing; an unrecognized boolean value stops
+startup instead of silently changing which provider-calling operations run.
+
+With the split disabled, hourly and manual dream-time continue to call the
+legacy `Reasoner.reason` contract exactly once. Enabling the split selects the
+operation set below; it does not itself enable synthesis. The two operations use separate schemas and independently authored prompt
+versions. Both may cite only exact ids from the bounded authorized working set.
+Update cannot create statements; synthesis requires contributors backed by at
+least two distinct message or document-version observations and cannot
+classify contradictions. Two knowledge rows from one observation do not satisfy
+that rule. They converge on the same
+governance writer transaction, so one operation failure commits no effects and
+advances no watermark. Neither contract permits model-directed deletion.
+Synthesis deductions persist `reason-synthesis-1` in the existing durable
+prompt-version field, and typed lineage reports `reasoning_synthesis` from that
+identity without exposing the prompt or model rationale.
 
 ## Operational retention
 
@@ -340,6 +455,22 @@ because they are behaviour rather than infrastructure. The shipped values:
 | `fast` | semantic, salience-recency | 1.0, 0.8 | 15 | no | 100 ms |
 | `balanced` | semantic, lexical, temporal, entity-match | 1.0, 1.0, 0.7, 0.9 | 15 | no | 300 ms |
 | `thorough` | the above plus salience-recency and relation-expand | +0.8, 0.6 | 15 | yes | 1500 ms |
+| `minimal` | independently bounded direct and derived semantic lanes, lexical | semantic dual-lane 1.0, lexical 1.0 | 15 | no | 300 ms |
+
+### Experimental minimal recall
+
+`MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` defaults to `false` and enables the
+reversible `minimal` profile above. The profile executes no temporal,
+salience-recency, entity-match, relation-expansion, context-projection, or
+rerank read stage. Its direct and derived semantic shortlists are independently
+capped at 10 before stable interleave; the ordinary per-request candidate
+budget is still the final cap. Direct and derived results are one
+`semantic_dual_lane` fusion strategy and therefore share its 1.0 weight; the
+separate lexical strategy also has weight 1.0. These reviewed caps are compiled profile
+behaviour, not environment overrides. It remains opt-in until matched offline
+evaluation meets the quality, citation, isolation, latency, and maintenance
+gates. Disabling it loses no data and immediately restores the existing profile
+choices.
 
 Fusion normalizes each strategy's returned scores and uses reciprocal rank as a
 5% tie-break. `enabled_strategies` is a deployment-level allowlist: a strategy

@@ -1,0 +1,355 @@
+{
+  "comparison": {
+    "cost": {
+      "estimated_usd_delta": 0.0,
+      "total_tokens_delta": 0,
+      "total_tokens_ratio": 1.0
+    },
+    "database": {
+      "queries_delta": 0,
+      "queries_ratio": 1.0,
+      "query_time_ms_delta": 0.0
+    },
+    "dream": {
+      "replay_durable_effects_delta": 0
+    },
+    "latency": {
+      "recall_p95_ratio": 1.0,
+      "wall_time_ratio": 1.0
+    },
+    "maintenance": {
+      "dream_time_runs_delta": 0,
+      "extraction_runs_delta": 0,
+      "pipeline_runs_created_delta": 0,
+      "projection_refresh_runs_delta": 0
+    },
+    "quality": {
+      "accuracy_delta": 0.0,
+      "recall_at_10_delta": 0.0
+    },
+    "safety": {
+      "abstention_accuracy_delta": 0.0,
+      "citation_hit_rate_delta": 0.0,
+      "dropped_strategy_runs_delta": 0,
+      "isolation_leaks_delta": 0,
+      "unsupported_claims_delta": 0
+    }
+  },
+  "evidence": {
+    "first_party_claims": [
+      {
+        "claim": "Honcho reports 90.4 percent on LongMemEval S.",
+        "reproduced": false,
+        "source": "plastic-labs/honcho-benchmarks@20c497bff02ff8737268be6d91c197767dc7bac0"
+      }
+    ],
+    "inferences": [
+      {
+        "claim": "A smaller retrieval set may reduce operating complexity."
+      }
+    ],
+    "measured": {
+      "current": {
+        "cost": {
+          "embedding_tokens": 0,
+          "estimated_usd": 0.0,
+          "input_tokens": 100,
+          "model_calls": 2,
+          "output_tokens": 20,
+          "total_tokens": 120
+        },
+        "database": {
+          "decode_time_ms": 0.5,
+          "idle_time_ms": 0.0,
+          "queries": 12,
+          "query_time_ms": 4.0,
+          "queue_time_ms": 0.25
+        },
+        "dream": {
+          "attempted": 0,
+          "completed": 0,
+          "failed": 0,
+          "input_tokens": 0,
+          "model_calls": 0,
+          "output_tokens": 0,
+          "replay_durable_effects": 0
+        },
+        "ingest": {
+          "input_tokens": 100,
+          "messages_attempted": 2,
+          "messages_ingested": 2,
+          "model_calls": 2,
+          "output_tokens": 20,
+          "stored_facts": 2
+        },
+        "latency": {
+          "recall_p95_ms": 10,
+          "wall_time_ms": 10
+        },
+        "maintenance": {
+          "dream_time_runs": 0,
+          "extraction_runs": 2,
+          "pipeline_runs_by_kind": {
+            "extraction": 2,
+            "projection_refresh": 2
+          },
+          "pipeline_runs_by_status": {
+            "completed": 2,
+            "pending": 2
+          },
+          "pipeline_runs_created": 4,
+          "projection_refresh_runs": 2
+        },
+        "quality": {
+          "accuracy": 1.0,
+          "recall_at_10": 1.0
+        },
+        "safety": {
+          "abstention_accuracy": 1.0,
+          "citation_hit_rate": 1.0,
+          "dropped_strategy_runs": 0,
+          "isolation_leaks": 0,
+          "unsupported_claims": 0
+        }
+      },
+      "experimental": {
+        "cost": {
+          "embedding_tokens": 0,
+          "estimated_usd": 0.0,
+          "input_tokens": 100,
+          "model_calls": 2,
+          "output_tokens": 20,
+          "total_tokens": 120
+        },
+        "database": {
+          "decode_time_ms": 0.5,
+          "idle_time_ms": 0.0,
+          "queries": 12,
+          "query_time_ms": 4.0,
+          "queue_time_ms": 0.25
+        },
+        "dream": {
+          "attempted": 0,
+          "completed": 0,
+          "failed": 0,
+          "input_tokens": 0,
+          "model_calls": 0,
+          "output_tokens": 0,
+          "replay_durable_effects": 0
+        },
+        "ingest": {
+          "input_tokens": 100,
+          "messages_attempted": 2,
+          "messages_ingested": 2,
+          "model_calls": 2,
+          "output_tokens": 20,
+          "stored_facts": 2
+        },
+        "latency": {
+          "recall_p95_ms": 10,
+          "wall_time_ms": 10
+        },
+        "maintenance": {
+          "dream_time_runs": 0,
+          "extraction_runs": 2,
+          "pipeline_runs_by_kind": {
+            "extraction": 2,
+            "projection_refresh": 2
+          },
+          "pipeline_runs_by_status": {
+            "completed": 2,
+            "pending": 2
+          },
+          "pipeline_runs_created": 4,
+          "projection_refresh_runs": 2
+        },
+        "quality": {
+          "accuracy": 1.0,
+          "recall_at_10": 1.0
+        },
+        "safety": {
+          "abstention_accuracy": 1.0,
+          "citation_hit_rate": 1.0,
+          "dropped_strategy_runs": 0,
+          "isolation_leaks": 0,
+          "unsupported_claims": 0
+        }
+      }
+    }
+  },
+  "gates": {
+    "checks": [
+      {
+        "actual": 0.0,
+        "expected": -0.05,
+        "gate": "quality.accuracy_regression",
+        "operator": ">=",
+        "status": "passed"
+      },
+      {
+        "actual": 1.0,
+        "expected": 1.0,
+        "gate": "quality.recall_at_10",
+        "operator": ">=",
+        "status": "passed"
+      },
+      {
+        "actual": 1.0,
+        "expected": 1.0,
+        "gate": "safety.citation_hit_rate",
+        "operator": ">=",
+        "status": "passed"
+      },
+      {
+        "actual": 1.0,
+        "expected": 1.0,
+        "gate": "safety.abstention_accuracy",
+        "operator": ">=",
+        "status": "passed"
+      },
+      {
+        "actual": 0,
+        "expected": 0,
+        "gate": "safety.unsupported_claims",
+        "operator": "<=",
+        "status": "passed"
+      },
+      {
+        "actual": 0,
+        "expected": 0,
+        "gate": "safety.isolation_leaks",
+        "operator": "<=",
+        "status": "passed"
+      },
+      {
+        "actual": 0,
+        "expected": 0,
+        "gate": "safety.dropped_strategy_runs",
+        "operator": "<=",
+        "status": "passed"
+      },
+      {
+        "actual": 1.0,
+        "expected": 1.2,
+        "gate": "cost.total_tokens_ratio",
+        "operator": "<=",
+        "status": "passed"
+      },
+      {
+        "actual": 1.0,
+        "expected": 2.0,
+        "gate": "latency.recall_p95_ratio",
+        "operator": "<=",
+        "status": "passed"
+      },
+      {
+        "actual": 0,
+        "expected": 0,
+        "gate": "dream.replay_durable_effects",
+        "operator": "<=",
+        "status": "passed"
+      }
+    ],
+    "failures": [],
+    "status": "passed"
+  },
+  "generated_at": "2026-08-17T12:00:00Z",
+  "reports": null,
+  "run_manifest": {
+    "backend": {
+      "engine": "postgres",
+      "mode": "external",
+      "sqlite": "unsupported"
+    },
+    "dataset": {
+      "id": "memhouse-smoke.json",
+      "sha256": "a11eb64e22a17d033f06558b05de5006df7db3f020900a3534bbfafeba741c9b",
+      "split": "fixture"
+    },
+    "definition": {
+      "schema": "memhouse-experiment-definition-1",
+      "sha256": "6b28e786e3567615a784c0e9fe4e0d79c74eb9991751748c0d096e2bde734df4"
+    },
+    "generated_at": "2026-08-17T12:00:00Z",
+    "id": "profile-experiment-fixture",
+    "mode": "fixture",
+    "models": {
+      "dialectic_agent": {
+        "model": "fixture-dialectic-agent",
+        "parameters": {},
+        "pipeline_version": "fixture-1",
+        "prompt_version": "none",
+        "provider": "deterministic",
+        "version": "1"
+      },
+      "dream_reasoner": {
+        "model": "fixture-dream-reasoner",
+        "parameters": {},
+        "pipeline_version": "fixture-1",
+        "prompt_version": "none",
+        "provider": "deterministic",
+        "version": "1"
+      },
+      "embedder": {
+        "model": "fixture-embedder",
+        "parameters": {},
+        "pipeline_version": "fixture-1",
+        "prompt_version": "none",
+        "provider": "deterministic",
+        "version": "1"
+      },
+      "ingest_extractor": {
+        "model": "fixture-ingest-extractor",
+        "parameters": {
+          "max_tokens": 512,
+          "temperature": 0.0
+        },
+        "pipeline_version": "fixture-1",
+        "prompt_version": "extract-fixture-1",
+        "provider": "deterministic",
+        "version": "1"
+      },
+      "reranker": {
+        "model": "fixture-reranker",
+        "parameters": {},
+        "pipeline_version": "fixture-1",
+        "prompt_version": "none",
+        "provider": "deterministic",
+        "version": "1"
+      }
+    },
+    "schema": "memhouse-experiment-manifest-1",
+    "seeds": {
+      "case_sampling": "all",
+      "durability": "fixture-durability-v1"
+    },
+    "source": {
+      "repository": "memhousehq/memhouse",
+      "revision": "fixture-revision"
+    },
+    "variants": {
+      "current": {
+        "components": {},
+        "id": "current",
+        "profile": {
+          "name": "balanced",
+          "strategies": null,
+          "version": "fixture"
+        }
+      },
+      "experimental": {
+        "components": {},
+        "id": "experimental",
+        "profile": {
+          "name": "balanced",
+          "strategies": [
+            "semantic",
+            "lexical"
+          ],
+          "version": "fixture"
+        }
+      }
+    }
+  },
+  "schema": "memhouse-comparison-1"
+}

@@ -35,6 +35,7 @@ defmodule MemHouse.Retrieval do
 
   resources do
     resource MemHouse.Retrieval.RetrievalProfile
+    resource MemHouse.Retrieval.RecallDocument
   end
 
   @doc """
@@ -43,8 +44,10 @@ defmodule MemHouse.Retrieval do
   `query` is a `MemHouse.Retrieval.Query` struct that must already carry the
   Account id, the resolved actor, and the scope ids the actor may read;
   retrieval trusts those fields and filters by them, it does not re-derive
-  them. `profile` is `:fast`, `:balanced`, or `:thorough` (the equivalent
-  strings are accepted). `opts` may carry `:deadline?` to disable the time
+  them. `profile` is `:fast`, `:balanced`, `:thorough`, or the feature-gated
+  experimental `:minimal` profile (the equivalent strings are accepted).
+  `:minimal` raises unless `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true`. `opts` may carry
+  `:deadline?` to disable the time
   budget for evaluation runs, `:inherit?` to ignore stored profile overrides,
   `:internal?`, and `:strategies` to name strategies explicitly.
 
@@ -60,7 +63,7 @@ defmodule MemHouse.Retrieval do
 
   @doc """
   Rebuilds every derived retrieval cache for one scope: knowledge embeddings,
-  entities, entity mentions, and context projections.
+  recall documents, entities, entity mentions, and context projections.
 
   Everything it writes is reconstructible from governed statements, so this is
   the recovery path after an import, an erasure, or an index change. It is
@@ -98,6 +101,8 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
 
   A row overrides strategies, fusion weights, rank tie-break constant, reranking, and deadline
   for `fast`, `balanced`, or `thorough` at one scope or Account-wide when `scope_id` is nil.
+  The experimental `minimal` profile is runtime-owned and deliberately cannot
+  be overridden by a stored row while its rollback path is under evaluation.
 
   Overrides inherit down the scope tree and the nearest authorized scope wins;
   an Account-wide row is the fallback. Among the `active` rows that match a
@@ -131,6 +136,7 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
     # strategies, weights, and deadline in place, or retires it via `active`.
     create :create do
       accept [:scope_id, :name, :version, :strategy_config, :deadline_ms, :active]
+      validate MemHouse.Retrieval.ValidateStoredProfileName
       validate MemHouse.Retrieval.ValidateRrfK
     end
 
@@ -178,6 +184,36 @@ defmodule MemHouse.Retrieval.RetrievalProfile do
     # republishing a tuning require a version bump rather than silently
     # duplicating a competing configuration for the same scope.
     identity :scope_name_version, [:scope_id, :name, :version]
+  end
+end
+
+defmodule MemHouse.Retrieval.ValidateStoredProfileName do
+  @moduledoc """
+  Keeps the experimental minimal profile out of persisted Account overrides.
+
+  Minimal settings are owned by deployment configuration so every Account in
+  an evaluation cohort runs the same reversible experiment.
+  """
+
+  use Ash.Resource.Validation
+
+  @doc """
+  Accepts stored profile names other than the runtime-owned `minimal` profile.
+
+  A `minimal` value returns a validation error on `:name`; every other stored
+  name is left unchanged for the resource's remaining validations.
+  """
+  @impl true
+  def validate(changeset, _opts, _context) do
+    case Ash.Changeset.get_attribute(changeset, :name) do
+      "minimal" ->
+        {:error,
+         field: :name,
+         message: "minimal is experimental and runtime-owned; stored overrides are not allowed"}
+
+      _stored_profile ->
+        :ok
+    end
   end
 end
 

@@ -100,7 +100,7 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-The `extract-12` and `f5-1` prompt and pipeline versions enforce subject and
+The `extract-13` and `f5-1` prompt and pipeline versions enforce subject and
 source-grounding rules:
 agent peers are excluded from the subject allowlist and machine referents are
 refused, preserving the verified contract that knowledge is about people and
@@ -146,7 +146,7 @@ ADR 0015 records the boundary.
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-12` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-13` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.
@@ -159,6 +159,44 @@ expiry remains governance policy. Readers render the structured valid-time
 fields when they need the date. The prompt requires
 `confidence_level` as `stated_explicitly`, `clearly_implied`, or `inferred`;
 `Extraction.cast/2` maps these labels to fixed stored numeric fractions.
+
+The default-off `compact-explicit-v1` experiment narrows the provider response
+to statement, exact supporting span, subject reference, source-message ids,
+and nullable exact source text for each validity boundary. Its independently
+authored `extract-compact-exp-1` prompt contains no model-authored kind,
+confidence, evidence, sensitivity, target, lifecycle, or reasoning field.
+Trusted code supplies `fact`, explicit confidence, source-derived direct or
+indirect evidence and discount, `restricted` sensitivity, and a peer or exact
+current-scope target. It resolves only supported ISO or bounded relative-time
+evidence, then delegates the completed candidate to `Extraction.cast/2`.
+Thus batch anchor/source confinement, hostile-output and relayed-agent rules,
+subject allowlists, exact spans, temporal ordering, Ash validation, provenance,
+and Gate A/B remain one shared contract rather than an experimental bypass.
+
+`MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` selects both the single and batched
+schema and changes the configured extractor prompt identity. A partially
+configured Account fails on prompt-version mismatch before provider work. The
+switch creates no second store and disabling it restores `extract-13`. It is
+not eligible to become the default until ADR 0021's matched held-out
+non-inferiority, privacy/attribution, cost/token, and human-review gates pass;
+the additive implementation includes deterministic evidence only.
+
+Adjacent pending anchors in the same Account, scope, and session may share one
+`extract-13` provider call. `ExtractionBatch` requires an explicit envelope per
+anchor and reuses `Extraction.cast/2` with that anchor's independent validation
+context. `utf8-bytes-v1` pre-call admission counts serialized instructions,
+schema, evidence windows, reserved output, and safety margin. Supported
+experiment targets are 128, 1K, 4K, and 16K; the tokenizer and all budget values
+form the admission identity stored on each completed run.
+
+Batch ownership is a temporary `processing` state on the existing per-message
+PipelineRun, not a second queue table. Every anchor persists candidates,
+governance effects, message completion, and run completion in one short
+transaction. Bounded repair may terminally isolate one malformed envelope while
+valid siblings progress. Repairable configuration and oversized states, and
+terminal source poison, are excluded from automatic reconciliation; explicit
+operator requeue is required. Stale `processing` claims return to failed after
+the configured lease so a crashed worker cannot strand them.
 
 `MemHouse.Model.Usage` is the one durable emission point. Each provider call,
 including every repair attempt and returned provider error, appends one
@@ -177,6 +215,18 @@ failure cannot roll back a call that already happened and was billed.
 The gateway classifies total request deadlines as `request_timeout` and other
 transport failures as `transport_error`. The classifications contain no
 provider message, prompt, or response text.
+
+The gateway also owns the node-local extraction provider circuit, so both the
+single-anchor and adjacent-batch paths share one admission seam. Its key is the
+Account plus resolved extractor role and provider. Consecutive
+transient failures open only that key; configuration and schema-content errors
+retain their pipeline classification without poisoning provider availability.
+Open calls make no provider request and append no usage row. After the bounded
+open interval, one monitored half-open permit probes recovery. Concurrent
+probes are refused, success closes, failure reopens, and caller death releases
+the permit. Calls without an Account bypass instead of sharing cross-tenant
+state. Circuit state is rebuildable; durable messages, runs, repairable and
+terminal outcomes remain authoritative and operator-visible.
 
 The ledger reports failures that have happened; it cannot report a role that
 has never been called, and a rate cannot show that schema enforcement was lost.

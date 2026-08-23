@@ -30,6 +30,10 @@ with a 5% reciprocal-rank tie-break. The profile supplies weights and `rrf_k`;
 the default is 15. The `:thorough` profile optionally reranks only the fused
 head through `MemHouse.Model.Gateway`. Reranking and grounded answers hold no
 transaction; the model layer scopes its own configuration read and usage write.
+Search authorization/query construction and stored-profile resolution each use
+a short Account transaction. Semantic embedding runs after those transactions
+close, and every strategy opens its own scoped transaction only for the SQL
+read that repeats Account, scope, reader, and lifecycle enforcement.
 A hard remaining-time budget wraps strategies and reranking. Each strategy
 receives a configured timeout clamped to the remaining strategy-phase budget;
 rerank reservation may further reduce that budget. The reranker receives its
@@ -155,28 +159,66 @@ Account with more than 65,536 live scopes fails label allocation rather than
 sharing a label.
 
 `projection_refresh` is the replay-safe rebuild job. Ordinary governed writes
-use one key per scope and ten-second time bucket. A five-second trailing delay
-lets burst writes coalesce before the job backfills knowledge vectors, resolves
-entities, and refreshes projections. The dependency-ordered job replaces the
+and raw-message creation use one key per scope and ten-second time bucket. A
+fifteen-second trailing delay lets burst writes coalesce before the job indexes
+missing or stale-identity source messages, backfills knowledge vectors,
+resolves entities, and refreshes projections. A message that yields zero facts
+still has a durable source-index path. The dependency-ordered job replaces the
 redundant per-write entity job. Reconciliation, erasure, import, and explicit
 maintenance retain corpus-derived full-rebuild keys. The coalesced path batches
-only statements without vectors; it does not re-embed the unchanged corpus.
-Document import already
-re-enters ordinary document ingest, which rebuilds chunk vectors and causes
-governed knowledge to enqueue the same derived-cache jobs.
+only source rows missing the current four-part identity and statements without
+vectors; it does not re-embed unchanged current-identity rows.
+Document import already re-enters ordinary document ingest, which rebuilds
+chunk vectors and causes governed knowledge to enqueue the same derived-cache
+jobs.
 
-Because vectors and mentions are written by that job alone and no longer ride
-the knowledge-write transaction, they are eventually consistent: a refresh that
-was cancelled or never enqueued leaves a scope holding every governed statement
-with no vectors, while lexical search keeps answering from its generated
-column. `MemHouse.Retrieval.Coverage` is the read that distinguishes the two —
+### RecallDocument ownership and dual semantic lanes
+
+Retrieval owns `RecallDocument`, a rebuildable and non-portable read model of
+embedded governed Knowledge. It contains only the source knowledge and scope
+ids, subject ids, statement, direct/derived lane, extraction/consolidation/
+deduction operation, opaque provenance ids, embedding identity/vector, scope
+DiskANN labels, and the source `updated_at` watermark. It is not a second
+Knowledge writer and cannot grant access.
+
+The dependency order is Knowledge indexing, RecallDocument refresh, entity
+refresh, then context projection. Refresh upserts the complete active or
+provisional embedded snapshot for one Account/scope and deletes rows whose
+source was erased, retired, moved, or lost its vector. Hard deletion also uses
+a cascading foreign key. Import omits the table and rebuilds it from restored
+Knowledge and Provenance.
+
+The existing content-free `projection_refresh` telemetry event reports recall
+documents projected and removed alongside embedding and mention coverage. It
+contains only counts and Account/scope ids.
+
+The experimental `minimal-exp-2` profile embeds a query once, searches direct
+and derived recall documents as separate top-k lists, then deterministically
+interleaves by lane rank before ordinary score-aware fusion with lexical recall.
+Both lane queries repeat Account, authorized-scope, reader visibility,
+lifecycle, soft-deletion, expiry, embedding-identity, and scope-label filters
+before distance ordering. They join canonical Knowledge and require the source
+watermark to match, so a stale projection fails closed before refresh runs.
+Returned candidates record the lane, operation, lane rank, provenance handles,
+and semantic distance for differential evaluation.
+
+Because vectors and mentions are written by that job alone and never ride an
+observation or knowledge-write transaction, they are eventually consistent: a
+cancelled refresh leaves canonical data intact while lexical search keeps
+answering from generated columns. The Account reconciler scans bounded scope
+sets for source rows with a missing or stale four-part embedding identity and
+creates a corpus-keyed refresh only when no existing scope refresh remains
+recoverable. This also moves source vectors to a newly configured embedder;
+they cannot remain permanently unavailable after an identity change.
+`MemHouse.Retrieval.Coverage` is the read that distinguishes Knowledge cache
+coverage —
 per-scope statement, embedded, mention, and mentioned-statement counts plus the
 embedding identities in use, under the same authorization and
 provisional-subject rules as any other retrieval query. Mentions remain counts
 so the entity cache stays internal. Every completed refresh emits
 `[:memhouse, :retrieval, :projection_refresh]` with those counts and the
-resulting ratio. The Account reconciler detects an active scope with no mention
-rows and enqueues the same full refresh using a corpus-derived replay key.
+resulting ratio. The Account reconciler also detects an active scope with no
+mention rows and enqueues the same full refresh using a corpus-derived replay key.
 Request-local diagnostics classify partial coverage and distinguish no resolved
 entity from a resolved entity with no authorized statements without returning
 cache identities or content.
@@ -286,6 +328,18 @@ salience-ranked knowledge. Clean projections are cached in ETS. Invalidation is 
 through Phoenix PubSub so queue-mode nodes evict the same Account/scope key.
 On a miss, and only on a miss, `get_context` uses the `:fast` retrieval profile.
 It never invokes dialectic or dream reasoning on the live context path.
+
+## Proposed simplification boundary
+
+ADR 0021 defines an evidence-gated experiment toward a smaller default recall
+path. It preserves all authorization, lifecycle, provenance, erasure, and
+answer-grounding behavior described here. The current `f7-1` profiles, entity
+cache, projections, fusion, and reranker remain authoritative until matched
+evaluation, rollback rehearsal, and human review approve a new default and a
+new contract identity. Experimental adaptive recall is read-only and cannot
+write Knowledge or invoke governance.
+
+See [ADR 0021](../adr/0021-clean-room-memory-simplification.md).
 
 ## Version and evidence
 

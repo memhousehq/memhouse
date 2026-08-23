@@ -29,6 +29,7 @@ settled by the blueprint specs.
 | `0018-relayed-attribution-and-peer-scoped-reads.md` | Relayed observations preserve speaker identity, and callers select the peer used for scope reads. |
 | `0019-operational-retention.md` | Terminal queue state and operational ledgers have bounded retention horizons. |
 | `0020-score-aware-retrieval-fusion.md` | Normalize scores per strategy before weighted fusion and retain rank only as a tie-break. |
+| `0021-clean-room-memory-simplification.md` | Evidence-gated simplification around one governed writer and one read-only adaptive recall seam. |
 
 Conventions for future ADRs:
 

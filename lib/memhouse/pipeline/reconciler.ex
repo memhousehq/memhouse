@@ -16,16 +16,20 @@ defmodule MemHouse.Pipeline.Reconciler do
   - messages that were never stamped as extracted;
   - document versions still pending, or whose processing failed;
   - active connectors that are due (or have never run);
+  - scopes with missing or stale source-message embeddings and no recoverable
+    projection refresh; and
   - scopes with active statements but no derived entity mentions.
   """
 
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Documents.ConnectorConfig
+  alias MemHouse.Model.Config
   alias MemHouse.Observations.DocumentVersion
   alias MemHouse.Observations.Message
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline
+  alias MemHouse.Pipeline.Idempotency
   alias MemHouse.Retrieval.Store
 
   require Ash.Query
@@ -43,16 +47,21 @@ defmodule MemHouse.Pipeline.Reconciler do
   setting row-level security reads, so the sweep cannot reach another tenant's
   rows.
 
-  Work younger than 5 minutes is left to its current job. Each source query is limited to 100
-  rows and ordered by insertion time and id. A later hourly sweep continues with what remains.
+  Ordinary work younger than 5 minutes is left to its current job. Batched
+  extraction claims use their separately configured lease (20 minutes by
+  default, enough for the bounded structured-repair loop). Each source query
+  is limited to 100 rows and ordered by insertion time and id. A later hourly
+  sweep continues with what remains.
 
   A cancelled or discarded Oban job first moves its run to the matching terminal state. A
   missing job moves its run to `discarded`. The next sweep replays that deterministic run. This
   two-pass sequence makes the job end durable before recovery starts.
 
-  Returns `{:ok, counts}` with `:replayed`, `:terminated`, `:messages`, `:documents`,
-  `:connectors`, `:scopes`, and
-  `:reconciled` (their sum). The counts report how many enqueues *succeeded*,
+  Returns `{:ok, counts}` with `:expired_claims`, `:replayed`, `:terminated`, `:messages`, `:documents`,
+  `:connectors`, `:source_scopes`, `:scopes`, and
+  `:reconciled` (the successful-enqueue sum). `:expired_claims` separately
+  reports stale batch leases recovered before enqueue reconciliation. The
+  remaining counts report how many enqueues *succeeded*,
   not how much new work was created — a record whose run already exists is
   counted as reconciled because the upsert succeeded. A steady non-zero count
   therefore means "these records keep being re-offered", which is normal while
@@ -64,10 +73,12 @@ defmodule MemHouse.Pipeline.Reconciler do
   @spec run(Ecto.UUID.t()) :: {:ok, map()}
   def run(account_id) do
     stale_before = DateTime.add(Clock.utc_now(), -@stale_after_seconds, :second)
+    claim_stale_before = DateTime.add(Clock.utc_now(), -claim_timeout_seconds(), :second)
 
     counts =
       DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn
         _account, actor ->
+          expired_claims = expire_batch_claims(account_id, actor, claim_stale_before)
           replayed = replay_terminated(account_id, actor, stale_before)
           terminated = terminate_stranded(account_id, actor, stale_before)
 
@@ -83,7 +94,8 @@ defmodule MemHouse.Pipeline.Reconciler do
             |> Ash.Query.set_tenant(account_id)
             |> Ash.read!(actor: actor)
             |> Enum.count(fn message ->
-              match?({:ok, _run}, Pipeline.enqueue_message_extraction(message, actor))
+              not Pipeline.extraction_terminal?(account_id, message.id, actor) and
+                match?({:ok, _run}, Pipeline.enqueue_message_extraction(message, actor))
             end)
 
           # Failed versions are retried as well as pending ones: a version that
@@ -120,6 +132,35 @@ defmodule MemHouse.Pipeline.Reconciler do
               match?({:ok, _run}, Pipeline.enqueue_connector_sync(connector, actor))
             end)
 
+          identity =
+            :embedder
+            |> Config.resolve(%{account_id: account_id, actor: actor})
+            |> Config.embedding_identity()
+
+          # Message creation normally schedules the coalesced scope refresh in
+          # its own transaction. This corpus scan is the crash/upgrade safety
+          # net: it covers rows created before that hook existed, stale vectors
+          # after an embedding-identity change, and a refresh whose job ended.
+          # Existing recoverable work wins so an hourly sweep never adds a
+          # second provider call while a scope job can still converge.
+          source_scopes =
+            account_id
+            |> Store.scopes_with_stale_source_embeddings(identity, @batch_size)
+            |> Enum.count(fn row ->
+              scope_id = row["scope_id"]
+
+              not Pipeline.projection_refresh_recoverable?(account_id, scope_id, actor) and
+                match?(
+                  {:ok, _run},
+                  Pipeline.enqueue_projection_refresh(
+                    account_id,
+                    scope_id,
+                    source_refresh_watermark(row, identity),
+                    actor
+                  )
+                )
+            end)
+
           scopes =
             account_id
             |> Store.scopes_missing_mentions(@batch_size)
@@ -127,28 +168,85 @@ defmodule MemHouse.Pipeline.Reconciler do
               watermark =
                 "mentions:#{row["statement_count"]}:#{row["latest_statement_at"]}"
 
-              match?(
-                {:ok, _run},
-                Pipeline.enqueue_projection_refresh(
-                  account_id,
-                  row["scope_id"],
-                  watermark,
-                  actor
+              not Pipeline.projection_refresh_recoverable?(
+                account_id,
+                row["scope_id"],
+                actor
+              ) and
+                match?(
+                  {:ok, _run},
+                  Pipeline.enqueue_projection_refresh(
+                    account_id,
+                    row["scope_id"],
+                    watermark,
+                    actor
+                  )
                 )
-              )
             end)
 
           %{
+            expired_claims: expired_claims,
             replayed: replayed,
             terminated: terminated,
             messages: messages,
             documents: documents,
             connectors: connectors,
+            source_scopes: source_scopes,
             scopes: scopes
           }
       end)
 
-    {:ok, Map.put(counts, :reconciled, Enum.sum(Map.values(counts)))}
+    reconciled =
+      counts
+      |> Map.drop([:expired_claims])
+      |> Map.values()
+      |> Enum.sum()
+
+    {:ok, Map.put(counts, :reconciled, reconciled)}
+  end
+
+  defp claim_timeout_seconds do
+    :memhouse
+    |> Application.fetch_env!(:extraction_batching)
+    |> Keyword.fetch!(:claim_timeout_seconds)
+  end
+
+  # Hash the content-free corpus cursor and current vector-space identity. The
+  # digest keeps job payloads compact while making a changed corpus or embedder
+  # distinct and exact reconciliation repeats idempotent.
+  defp source_refresh_watermark(row, identity) do
+    cursor = [
+      row["scope_id"],
+      row["message_count"],
+      row["latest_message_at"],
+      row["latest_message_id"],
+      identity.provider,
+      identity.model,
+      identity.version,
+      identity.dimensions
+    ]
+
+    "sources:" <>
+      (cursor
+       |> :erlang.term_to_binary([:deterministic])
+       |> Idempotency.content_hash())
+  end
+
+  defp expire_batch_claims(account_id, actor, stale_before) do
+    result =
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "extraction" and target_type == "message" and status == "processing" and
+          updated_at <= ^stale_before
+      )
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.bulk_update!(:expire_extraction_claim, %{},
+        actor: actor,
+        return_records?: true,
+        strategy: [:atomic]
+      )
+
+    length(result.records || [])
   end
 
   defp replay_terminated(account_id, actor, stale_before) do

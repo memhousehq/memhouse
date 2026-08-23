@@ -18,12 +18,16 @@ There is **no generated OpenAPI description** in this release — see
 | `POST /api/v1/ingest` | any identity | Submit a raw observation |
 | `GET /api/v1/ingest/:message_id` | any identity | Read extraction status and visible results |
 | `POST /api/v1/search` | any identity | Ranked retrieval |
+| `POST /api/v1/source-search` | any identity | Governed source-message recall |
 | `POST /api/v1/ask` | any identity | Cited answer |
+| `POST /api/v1/lineage` | any identity | Bounded evidence lineage |
+| `POST /api/v1/stable-profile` | any identity | Stable identity projection |
 | `POST /api/v1/context` | any identity | Projection-backed context |
 | `POST /api/v1/readiness` | any identity | Skill-readiness gap report |
 | `GET /api/v1/knowledge` | any identity | Governed knowledge query |
 | `GET /api/v1/operations/costs` | account-admin | Usage and estimated cost |
 | `POST /api/v1/operations/reconcile` | account-admin | Enqueue an Account reconciliation sweep |
+| `POST /api/v1/operations/ingest/:message_id/requeue` | account-admin | Explicitly requeue a repairable or terminal extraction anchor |
 | `POST /api/v1/operations/dream` | account-admin | Enqueue an immediate Account dream-time pass |
 | `GET /api/v1/self/knowledge` | human only | Your own record |
 | `POST /api/v1/self/knowledge/:id/contest` | human only | Dispute a statement about you |
@@ -166,9 +170,9 @@ a partially written session.
 
 ## `GET /api/v1/ingest/:message_id`
 
-Reads the extraction state of an observation the caller may access. Pending and
-failed responses carry an empty `knowledge` list. A completed response includes
-only governed knowledge visible to that caller.
+Reads the extraction state of an observation the caller may access. Every
+non-`completed` response carries an empty `knowledge` list. A completed response
+includes only governed knowledge visible to that caller.
 
 ```json
 {
@@ -183,9 +187,12 @@ only governed knowledge visible to that caller.
 }
 ```
 
-`status` is `pending`, `failed`, or `completed`. `last_error_class` is a
-content-safe exception class, never a provider message. Missing and unauthorised
-message ids both return the same opaque **404**.
+`status` is `pending`, `failed`, `repairable`, `terminal`, or `completed`.
+`repairable` requires an operator to correct configuration or approve a larger
+context/chunking policy; `terminal` identifies source-specific poison after
+bounded structured repair. `last_error_class` is a content-safe class, never a
+provider message. Missing and unauthorised message ids both return the same
+opaque **404**.
 
 ---
 
@@ -198,13 +205,19 @@ All fields optional.
 | `query` | `""` | Terms match individually; `"phrase"`, `-term`, and `or` narrow. See [Retrieval and context](../concepts/retrieval.md) |
 | `scope_path` | `"/poc"` | Selects the scope **and its ancestors** |
 | `peer_key` | none | The peer the results are read for. A credential that names none reads as its own Peer when it has one, otherwise public statements only |
-| `profile` | `"balanced"` | `fast`, `balanced`, `thorough` |
+| `profile` | `"balanced"` | `fast`, `balanced`, `thorough`, or feature-gated experimental `minimal` |
 | `limit` | `12` | Candidate cap; clamped to `1` through `100` |
 | `include_cross_links` | off | Requires authorisation at both endpoints |
 | `as_of` | unset | Read memory as it stood then. This enables text-matched temporal ranking by distance from that time |
 | `min_score` | none | Drops candidates below this score inside each strategy, before fusion |
 | `source_filters` | none | |
 | `deadline` | profile default | `"disabled"` removes the budget; offline only |
+| `include_identity_profile` | off | Adds the stable identity projection for the selected reader without changing ranking |
+
+`minimal` is rejected unless
+`MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true`. It uses the runtime-owned
+dual-lane experiment defaults; stored retrieval-profile rows can override only
+`fast`, `balanced`, and `thorough` while the minimal rollback path is evaluated.
 
 `peer_key` names the peer the results are read **for**. It is trusted as
 supplied, exactly as on ingest. Naming a reader borrows nothing from it: scope
@@ -240,7 +253,7 @@ contract version.
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.
 `reader_posture` reports `peer`, `public_only`, or `internal`, so an empty result
-can identify the authorization posture. If lexical matches exist but reader
+can identify the authorisation posture. If lexical matches exist but reader
 visibility removes them all, `retrieval_outcomes` adds the content-free
 `candidate_filter` outcome with reason class `authorization_filtered`.
 Inapplicable strategies report `not_applicable` with reason class `applicability`.
@@ -262,23 +275,156 @@ not the list length, as the signal.
 
 Account, authorised-scope, lifecycle, and source filtering happen **inside**
 retrieval. A raw `strategies` override is refused for external callers.
+`identity_profile_status` is always present: `not_requested`, `ready`, `empty`,
+or `unavailable`. When the profile is requested, `identity_profile` carries the
+same response as the endpoint below. It is orientation, not an extra retrieval
+candidate, and its statements remain citable only through their knowledge ids.
+
+---
+
+## `POST /api/v1/lineage`
+
+`target_id` is required. `target_type` defaults to `knowledge` and may be
+`knowledge`, `message`, or `document_version`.
+
+| Field | Default | Bound |
+| --- | --- | --- |
+| `scope_path` | `"/poc"` | The scope and its ancestors; ordinary authorisation still applies |
+| `peer_key` | the calling peer | Same reader rule as search |
+| `max_depth` | `3` | `0` through `8` |
+| `max_fan_out` | `8` | `1` through `24` per node |
+| `max_nodes` | `40` | `1` through `100` total |
+
+The response is a deterministic breadth-first projection. Every node has a
+stable `id`, `type`, integer `derivation_level`, `operation`,
+`traversal_depth`, and typed `source_references`. Raw messages and document
+versions are level zero; governed knowledge is level one or higher. A direct
+message target is returned directly, without a synthetic reasoning node.
+
+References are `visible`, `missing`, `lifecycle_hidden`, or
+`authorization_hidden`. A hidden reference has no id or content. `terminations`
+separates cycle, depth, fan-out, total-node, missing-source, lifecycle-hidden,
+and authorisation-hidden stops; `truncated` is true only for a budget stop. A
+missing, unauthorised, or expired knowledge root returns the same opaque 404.
+An active row is already lifecycle-hidden when `expires_at` reaches the request
+time, even if the lifecycle sweeper has not yet changed its stored state.
+
+Lineage is evidence, not an audit log and not explanatory prose. It reads
+provenance and typed knowledge relations. Audit records explain which governed
+operation occurred and when. Neither surface exposes prompts, model rationale,
+or chain-of-thought.
+
+---
+
+## `POST /api/v1/stable-profile`
+
+All fields are optional. `scope_path` and `peer_key` follow search's reader
+rules. The selected reader is also the profile subject; naming a peer never
+borrows that peer's scope grants.
+
+The profile is rebuilt on every read from unexpired visible active knowledge
+plus that subject's own unexpired visible provisional knowledge. Expiry is
+effective at the request time even before the lifecycle sweeper changes the
+stored state. The profile is not a table, write path, or model call. Eligible
+statements must be direct, source-backed facts in a small
+taxonomy: name, pronouns, occupation, location, language, and time zone.
+Transient state, preferences and behavioral generalizations, inferred claims,
+and sensitive-trait statements are rejected.
+
+Every item contains its `knowledge_id`, governed `statement`, category, conflict
+fields, and bounded direct source references under `lineage`. Multiple distinct
+claims in one category remain visible with the same deterministic
+`conflict_group`; the projection never chooses a winner. The response is capped
+at 16 items, four per category, 240 characters per statement, and 1,600 total
+statement characters.
+
+`projection_digest` identifies the selected canonical source set.
+`diagnostic` reports only counts, exclusion classes, status, truncation, and
+`model_calls: 0`; it contains no rejected text. Lifecycle transition, source
+erasure, or subject/scope authorisation changes affect the next read
+immediately, so there is no stale-profile refresh window.
+
+---
+
+## `POST /api/v1/source-search`
+
+Searches immutable source messages when governed knowledge is incomplete. It is
+a read-only recovery surface: messages remain the sole source record and only
+their full-text and vector indexes are derived and rebuildable.
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `query` | `""` | Blank queries return an empty result without a provider call |
+| `scope_path` | `"/poc"` | Selects the scope and its authorised ancestors |
+| `mode` | `"semantic"` | `semantic` or model-free `exact` full-text search |
+| `limit` | `12` | Clamped to `1` through `100` |
+| `excerpt_chars` | `480` | Clamped to `80` through `2000` |
+| `peer_key` | none | Uses the same reader and non-transferable-authority rule as search |
+| `include_cross_links` | off | Both relation endpoints must be authorised |
+
+Each result includes the stable message, session, scope, and speaker identities,
+the source timestamp and role, a bounded excerpt, a strategy-local score, and a
+deterministic rank. `status` is `ready`, `stale`, `empty`, `unavailable`, or
+`failed`; `failure_class` is content-safe. The response deliberately has no
+total corpus count. Account and scope filters run before ranking, so excerpts,
+status, timing metadata, and result order cannot describe an unauthorised scope.
+
+Semantic search compares only vectors with the configured provider, model,
+version, and dimensions. `stale` means the authorised visible corpus mixes the
+current identity with missing or older vectors. `unavailable` means visible
+messages exist but none has a current vector. Provider failure writes nothing,
+so the same durable scope refresh can retry without losing the previous index.
+Every accepted message transaction schedules that coalesced refresh, including
+messages that extract zero facts. The Account reconciler also detects missing
+and stale-identity vectors and schedules a corpus-keyed refresh when no existing
+scope job can still recover; changing the embedder therefore converges without
+manual source-row repair. Erasing the
+canonical message removes both full-text and vector hits in the same delete.
 
 ---
 
 ## `POST /api/v1/ask`
 
 `question` is required; every `search` field is also accepted, including
-`peer_key`, but `profile` defaults to `"thorough"`.
+`peer_key`, but `profile` defaults to `"thorough"`. Optional `effort` is
+`low`, `medium`, or `high`; omission keeps fixed recall. A named effort runs the
+bounded read-only recall planner over authorised knowledge, the stable identity
+projection, and typed evidence lineage. Exact and semantic source-message tools
+are included only when `include_source_recall` is the JSON boolean `true`;
+selecting an effort level alone does not broaden recall into source text.
+Profile entries and lineage nodes only select governed knowledge; they do not
+become independent facts or expose rationale. When the experimental minimal
+profile is enabled, effort-based Ask uses it as the base pass unless the request
+explicitly selects another profile.
+
+Effort presets hard-cap iterations, admitted items, retrieval/model calls,
+query tokens, total admitted-evidence tokens, and elapsed time. The additive
+`recall` diagnostics report only counts, hashed query identities, tool outcome
+classes, and exhausted bounds; they never contain the question or evidence
+text. They also identify the preserved retrieval profile/version and count how
+many genuinely new tool items reached the bounded answer context.
 
 Returns the search payload merged with `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and
-`answerer_prompt_tokens`. Retrieval is restricted to
-knowledge items, so citations are governed statements. `abstained: true` is an
-ordinary outcome.
+`answerer_prompt_tokens`. Adaptive responses additionally return
+`recall_evidence`, the exact ordered evidence offered to answer generation;
+the compatible `candidates` field remains the base search page. Fixed recall
+cites governed knowledge. Adaptive
+recall with explicit source permission may additionally cite a bounded,
+authorised immutable source-message excerpt. Every citation id must occur in
+the admitted evidence. A source item is typed as `source_message`, uses the
+canonical message id as its evidence id, and carries that same id in the
+single-entry `source_message_ids` provenance list; it is never presented as a
+Knowledge id.
+`abstained: true` is an ordinary outcome.
 
-The search payload keeps all returned candidates. The answerer sees only the
-first `MEMHOUSE_ANSWER_CONTEXT_LIMIT` candidates after reranking. It also sees
-each statement's validity window and an explicit reference time. `as_of` is the
+The search payload keeps all returned candidates. Fixed Ask sends its first
+`MEMHOUSE_ANSWER_CONTEXT_LIMIT` candidates after reranking. Medium and high
+adaptive Ask retain two thirds and half of the base head respectively (eight
+and six under the default cap), place genuinely new tool evidence next, and
+refill unused bounded capacity from the original ranked tail. Tool searches
+preserve the caller-selected retrieval profile. The answerer also sees each
+statement's validity window and an explicit reference time. `as_of` is the
 reference time when supplied; otherwise the request time is used.
 
 `answer_context_count` is the number of candidates sent to the answerer.
@@ -398,6 +544,15 @@ replay-safe run. It ignores work younger than 5 minutes and processes at most
 100 messages, document versions, connectors, and scopes per pass. The hourly
 maintenance schedule runs the same bounded sweep.
 
+Repairable and terminal extraction anchors are excluded from this automatic
+replay. After correcting credentials, provider configuration, an oversized
+input policy, or source-specific poison, an Account administrator explicitly
+acknowledges the repair boundary with
+`POST /api/v1/operations/ingest/:message_id/requeue`. It returns **202** with
+the ordinary run-id response, or **409** when the anchor is not in a repairable
+or terminal state. A **503** response means the anchor was reset but its durable
+requeue could not be enqueued; operators may retry after the dependency recovers.
+
 ---
 
 ## `POST /api/v1/operations/dream`
@@ -424,6 +579,11 @@ Covers the named scope plus its ancestors, ordered by confidence then recency,
 each row annotated with the `scope_path` it lives at. `peer_key` selects the
 reader on the [same terms as `search`](#post-apiv1search).
 
+The default `active` view excludes rows whose `expires_at` has passed. An
+explicit non-active `state` is an exact historical-state request and retains
+that state's existing contract rather than applying the active-view expiry
+filter.
+
 Read-only by design: there is deliberately no POST counterpart.
 
 ---
@@ -434,7 +594,8 @@ Account-admin only; any other role gets 403.
 
 Returns retained usage-event counts, API request and ingest counts,
 input/output/embedding token totals overall and per model role, and an estimated
-cost in USD computed from operator-supplied rates. `storage` separates durable
+cost in USD. `model_cost_profile` identifies whether the estimate uses the
+shipped `planning-reference-v1` table or a named operator override. `storage` separates durable
 content bytes from operational row bytes, reports their ratio, and sets
 `inverted?` when operational storage is larger. `logical_storage_bytes` remains
 an alias for durable bytes. `operational_to_durable_ratio` is `null` when
@@ -442,7 +603,8 @@ durable storage is zero and operational storage is nonzero.
 `ingest_economics` reports extractor calls, tokens, and estimated cost per
 ingested message over the full retained ledger. Call counts include failed
 extractor calls. An unmetered failure has unknown token usage and cost, so it
-contributes only to `calls_per_message`.
+contributes only to `calls_per_message`. `terminal_extraction_failures` counts
+the Account's current permanent terminal extraction anchors.
 
 ---
 

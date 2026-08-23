@@ -556,6 +556,22 @@ defmodule MemHouse.Knowledge.Provenance do
     attribute :occurred_at, :utc_datetime_usec, allow_nil?: false, public?: true
     create_timestamp :inserted_at
   end
+
+  @doc """
+  Returns the typed durable observation identity carried by a provenance row.
+
+  Message ids and document-version ids occupy separate namespaces. Malformed
+  or unsupported provenance returns `nil` and therefore cannot satisfy an
+  independent-source check.
+  """
+  def source_observation(%{source_type: "message", message_id: id}) when is_binary(id),
+    do: {:message, id}
+
+  def source_observation(%{source_type: "document", document_version_id: id})
+      when is_binary(id),
+      do: {:document, id}
+
+  def source_observation(_provenance), do: nil
 end
 
 defmodule MemHouse.Knowledge.KnowledgeRelation do

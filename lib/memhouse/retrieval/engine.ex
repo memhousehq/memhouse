@@ -23,8 +23,9 @@ defmodule MemHouse.Retrieval.Engine do
   `degraded_components`, counted through telemetry, and logged at warning level, because a
   result list carries no visible sign that the stage which orders it never ran.
 
-  Each strategy runs in its own Account transaction and must filter scope, lifecycle, and
-  provisional subjects before returning candidates. This module does no post-filtering.
+  Each strategy opens its own Account transaction only for its SQL read and must filter scope,
+  lifecycle, and provisional subjects before returning candidates. Provider-backed strategy
+  work and reranking run outside those transactions. This module does no post-filtering.
   """
 
   require Logger
@@ -65,7 +66,12 @@ defmodule MemHouse.Retrieval.Engine do
   def retrieve(query, profile_name, opts \\ []) do
     # Include profile resolution in the request deadline.
     started_at = MemHouse.Clock.monotonic_ms()
-    profile = Profile.resolve(profile_name, query, opts)
+
+    profile =
+      DataLayer.with_actor(query.actor, fn _account, actor ->
+        Profile.resolve(profile_name, %{query | actor: actor}, opts)
+      end)
+
     deadline? = Keyword.get(opts, :deadline?, true)
 
     concurrent? =
@@ -351,18 +357,15 @@ defmodule MemHouse.Retrieval.Engine do
   defp execute_modules(modules, query, budget, timeout, concurrent?) do
     run = fn module ->
       started_at = MemHouse.Clock.monotonic_ms()
-      # Pin the database session to the Account and validate lazily read records inside it.
-      candidates =
-        DataLayer.with_actor(query.actor, fn _account, actor ->
-          scoped_query = %{query | actor: actor}
-          candidates = module.candidates(scoped_query, budget)
 
-          MemHouse.Retrieval.Strategy.validate!(
-            module,
-            candidates,
-            min(query.max_candidates, budget.max_candidates)
-          )
-        end)
+      candidates = module.candidates(query, budget)
+
+      candidates =
+        MemHouse.Retrieval.Strategy.validate!(
+          module,
+          candidates,
+          min(query.max_candidates, budget.max_candidates)
+        )
 
       {module.name(), candidates, MemHouse.Clock.monotonic_ms() - started_at,
        finite_remaining(Budget.remaining_ms(budget))}

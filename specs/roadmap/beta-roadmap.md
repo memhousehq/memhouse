@@ -200,6 +200,13 @@ The committed fixtures are deliberately smoke-scale. Anchors: `AD-EVAL-3`,
 - [ ] Extend deterministic coverage into applied dream-time deductions and
   projection builds.
 - [ ] Extend provider-compatibility coverage beyond the current cassette set.
+- [ ] Run the ADR 0021 current-versus-simplified matched experiment on the
+  registered held-out hard-query groups with the real configured embedder;
+  fixture evidence may not select a default.
+- [ ] Rehearse external-PostgreSQL and packaged-pg0 rollback through one
+  released compatibility window before changing the default retrieval profile.
+- [ ] Retire a retrieval stage, cache, index, or job only after its marginal
+  ablation and the reviewed component-retirement manifest authorize deletion.
 
 **Acceptance for Track 3**
 

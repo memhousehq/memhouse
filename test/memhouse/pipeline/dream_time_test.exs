@@ -3,10 +3,70 @@
 defmodule MemHouse.Pipeline.DreamTimeTest do
   use MemHouse.DataCase, async: false
 
+  defmodule Provider do
+    @moduledoc "Reports dream operation selection before delegating to the deterministic provider."
+    @behaviour MemHouse.Model.Provider
+
+    alias MemHouse.Model.Providers.Deterministic
+
+    @impl true
+    def structured(config, messages, schema, opts) do
+      if pid = Application.get_env(:memhouse, :dream_time_test_pid) do
+        send(pid, {:dream_reasoner_task, Keyword.get(opts, :task)})
+      end
+
+      Deterministic.structured(config, messages, schema, opts)
+    end
+
+    @impl true
+    def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
+
+    @impl true
+    def embed(config, texts, opts), do: Deterministic.embed(config, texts, opts)
+
+    @impl true
+    def rerank(config, query, documents, opts),
+      do: Deterministic.rerank(config, query, documents, opts)
+  end
+
   alias MemHouse.DataLayer
+  alias MemHouse.Governance.Engine
   alias MemHouse.Identity
+  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Memory
   alias MemHouse.Pipeline.DreamTime
+  alias MemHouse.Pipeline.DreamTime.Gate
   alias MemHouse.Topology.Scope
+
+  require Ash.Query
+
+  test "hourly and manual dream-time retain one legacy reasoner call by default" do
+    provider = Application.get_env(:memhouse, :model_provider)
+    operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+    Application.put_env(:memhouse, :dream_time_test_pid, self())
+
+    Application.put_env(
+      :memhouse,
+      :dream_reasoning_operations,
+      Keyword.put(operations, :split_enabled, false)
+    )
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, provider)
+      Application.delete_env(:memhouse, :dream_time_test_pid)
+      Application.put_env(:memhouse, :dream_reasoning_operations, operations)
+    end)
+
+    account_id = seed_active!("dream-time-legacy-default")
+
+    assert {:ok, %{scopes: 1}} = DreamTime.run(account_id)
+    assert_receive {:dream_reasoner_task, :reasoning}
+    refute_receive {:dream_reasoner_task, :reasoning}
+    refute_receive {:dream_reasoner_task, :reasoning_update}
+    refute_receive {:dream_reasoner_task, :reasoning_synthesis}
+  end
 
   test "a scope without an active-knowledge delta does not call the reasoner" do
     %{actor: actor} =
@@ -16,21 +76,122 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
         password: "correct horse battery staple"
       })
 
-    DataLayer.with_actor(actor, fn account, current_actor ->
-      Scope
-      |> Ash.Changeset.new()
-      |> Ash.Changeset.set_tenant(account.id)
-      |> Ash.Changeset.for_create(:ensure, %{
-        key: "empty",
-        name: "Empty",
-        path: "/empty",
-        state: "active"
-      })
-      |> Ash.create!(actor: current_actor)
-    end)
+    scope =
+      DataLayer.with_actor(actor, fn account, current_actor ->
+        Scope
+        |> Ash.Changeset.new()
+        |> Ash.Changeset.set_tenant(account.id)
+        |> Ash.Changeset.for_create(:ensure, %{
+          key: "empty",
+          name: "Empty",
+          path: "/empty",
+          state: "active"
+        })
+        |> Ash.create!(actor: current_actor)
+      end)
+
+    handler = {__MODULE__, self(), :gate}
+    test_process = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :pipeline, :dream_gate],
+        fn _event, measurements, metadata, _config ->
+          send(test_process, {:dream_gate, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    operation_handler = {__MODULE__, self(), :operation}
+
+    :ok =
+      :telemetry.attach(
+        operation_handler,
+        [:memhouse, :operation, :completed],
+        fn _event, measurements, metadata, _config ->
+          send(test_process, {:operation, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(operation_handler) end)
 
     assert {:ok, %{scopes: 0, throttled: 0, items: 0, relations: 0}} =
              DreamTime.run(actor.account_id)
+
+    assert {:ok, %{status: :no_delta}} = DreamTime.run_scope(actor.account_id, scope.id)
+
+    assert_receive {:dream_gate, %{eligible_changes: 0}, metadata}
+    assert metadata.decision == :skip
+    assert metadata.reason == :no_delta
+    assert metadata.account_id == actor.account_id
+    refute inspect(metadata) =~ "Dream Time Empty"
+
+    assert_receive {:operation, operation_measurements, operation_metadata}
+    assert operation_metadata.operation == "dream"
+    assert operation_metadata.account_id == actor.account_id
+    assert operation_measurements.calls == 0
+    assert operation_measurements.items == 0
+    refute inspect({operation_measurements, operation_metadata}) =~ "Dream Time Empty"
+  end
+
+  test "change, idle, interval, and work gates are deterministic and independent" do
+    now = ~U[2026-08-17 12:00:00.000000Z]
+
+    config =
+      [
+        min_changes: 3,
+        idle_seconds: 60,
+        min_interval_seconds: 300,
+        max_delta_items: 7,
+        max_working_set_items: 11,
+        max_elapsed_ms: 9_000
+      ]
+
+    assert Gate.decide(0, nil, nil, now, config) == {:skip, :no_delta}
+
+    assert Gate.decide(2, DateTime.add(now, -600), nil, now, config) ==
+             {:skip, :change_threshold}
+
+    assert Gate.decide(3, DateTime.add(now, -59), nil, now, config) ==
+             {:skip, :idle_time}
+
+    assert Gate.decide(
+             3,
+             DateTime.add(now, -60),
+             DateTime.add(now, -299),
+             now,
+             config
+           ) == {:skip, :minimum_interval}
+
+    assert {:run, limits} =
+             Gate.decide(
+               3,
+               DateTime.add(now, -60),
+               DateTime.add(now, -300),
+               now,
+               config
+             )
+
+    assert limits.max_delta_items == 7
+    assert limits.max_working_set_items == 11
+    assert limits.max_elapsed_ms == 9_000
+  end
+
+  test "invalid dream-time work limits fail closed" do
+    assert_raise ArgumentError, ~r/max_delta_items must be positive/, fn ->
+      Gate.decide(1, ~U[2026-08-17 11:00:00Z], nil, ~U[2026-08-17 12:00:00Z],
+        min_changes: 1,
+        idle_seconds: 0,
+        min_interval_seconds: 0,
+        max_delta_items: 0,
+        max_working_set_items: 50,
+        max_elapsed_ms: 1_000
+      )
+    end
   end
 
   test "current knowledge candidate maps do not require a private record field" do
@@ -59,5 +220,33 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
              ])
 
     refute Exception.message(error) =~ "secret"
+  end
+
+  defp seed_active!(account_key) do
+    assert {:ok, message} =
+             Memory.ingest_message(%{
+               "account_key" => account_key,
+               "session_id" => "legacy-default",
+               "scope_path" => "/dream",
+               "peer_key" => "avery",
+               "content" => "Avery prefers concise weekly updates."
+             })
+
+    assert {:ok, [knowledge]} = Memory.extract_message(message["id"], account_key)
+
+    DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
+      KnowledgeItem
+      |> Ash.Query.filter(id == ^knowledge["id"])
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: actor)
+      |> Engine.transition!(
+        actor,
+        %{state: "active", verification: "test"},
+        reason: "dream_time_legacy_test_activate",
+        channel: "pipeline"
+      )
+
+      account.id
+    end)
   end
 end

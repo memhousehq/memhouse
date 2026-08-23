@@ -26,10 +26,17 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   alias MemHouse.Model.Embedding
   alias MemHouse.Model.Embedding.Ortex
   alias MemHouse.Model.ModelRoleConfig
+  alias MemHouse.Model.ProviderCircuit
   alias MemHouse.Model.Providers.Ortex, as: OrtexProvider
   alias MemHouse.Model.Reasoner
   alias MemHouse.Model.Schema.DialecticAnswer
+  alias MemHouse.Observations.Message
   alias MemHouse.Operations.Metering
+  alias MemHouse.Operations.PipelineRun
+  alias MemHouse.Pipeline
+  alias MemHouse.Pipeline.ExtractionBatcher
+
+  require Ash.Query
 
   # Recorded provider script replayed instead of any network call. Each scenario inside it
   # is an ordered list of expected calls; see the individual tests for which one they arm.
@@ -109,7 +116,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     )
 
     assert {:error,
-            {:prompt_version_mismatch, %{expected: "extract-12", configured: "extract-9"}}} =
+            {:prompt_version_mismatch, %{expected: "extract-13", configured: "extract-9"}}} =
              Memory.extract_message_for_account(message["id"], account_id)
 
     assert %{rows: [[nil]]} =
@@ -128,7 +135,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -149,7 +156,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert knowledge["extracting_provider"] == "openrouter"
     assert knowledge["extracting_model"] == "openai/gpt-oss-120b"
     assert knowledge["extracting_model_version"] == "2026-07"
-    assert knowledge["prompt_version"] == "extract-12"
+    assert knowledge["prompt_version"] == "extract-13"
     assert knowledge["pipeline_version"] == "f5-1"
 
     # Two usage events, not one: the failed first attempt is metered too. Repairs cost real
@@ -163,7 +170,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
                  %Decimal{coef: 44},
                  "openrouter",
                  "2026-07",
-                 "extract-12",
+                 "extract-13",
                  "f5-1"
                ]
              ]
@@ -187,7 +194,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # Provenance is what lets an operator answer "which model asserted this, under which
     # prompt and pipeline revision?" years later. All five identity columns must be present;
     # a knowledge row whose origin cannot be reconstructed is not auditable.
-    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-12", "f5-1"]]} =
+    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-13", "f5-1"]]} =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -217,7 +224,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -245,7 +252,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -273,7 +280,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -410,6 +417,10 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   end
 
   test "provider outage leaves raw ingest durable and the extraction job retryable" do
+    batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    Application.put_env(:memhouse, :extraction_batching, Keyword.put(batching, :enabled, true))
+    on_exit(fn -> Application.put_env(:memhouse, :extraction_batching, batching) end)
+
     message = seed_raw!("f5-outage", "avery", "Avery prefers weekly summaries.")
     account_id = account_id!("f5-outage")
 
@@ -417,7 +428,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "unavailable-model",
       model_version: "1",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -429,30 +440,21 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # would mark the message extracted and the observation would be silently lost forever.
     assert %{success: 0, failure: 1} = Oban.drain_queue(queue: :ingest)
 
-    # The durable side of the outage: the message row survives, extraction is still
-    # incomplete (NULL completion timestamp), the pipeline run is still pending, and at least
-    # one Oban job for that run is still live — not completed, discarded, or cancelled.
-    assert %{rows: [[1, nil, "pending", 0, queued_jobs]]} =
-             Ecto.Adapters.SQL.query!(
-               Repo,
-               """
-               SELECT count(*),
-                      message.extraction_completed_at,
-                      run.status,
-                      run.attempt_count,
-                      (SELECT count(*)
-                       FROM oban_jobs AS job
-                       WHERE job.args->'primary_key'->>'id' = run.id::text
-                         AND job.state NOT IN ('completed', 'discarded', 'cancelled'))
-               FROM messages AS message
-               JOIN pipeline_runs AS run ON run.target_id = message.id
-               WHERE message.id = $1 AND run.kind = 'extraction'
-               GROUP BY message.extraction_completed_at, run.id, run.status, run.attempt_count
-               """,
-               [Ecto.UUID.dump!(message["id"])]
-             )
+    # The durable side of the outage: the message survives unstamped and its
+    # failed run remains eligible for deterministic replay.
+    assert message_record!(account_id, message["id"]).extraction_completed_at == nil
+    run = extraction_run!(account_id, message["id"])
+    assert run.status == "failed"
+    assert run.attempt_count == 1
+    assert run.last_error_class == "provider_transient"
 
-    assert queued_jobs >= 1
+    assert DataLayer.with_account_id(
+             account_id,
+             [role: :system, pipeline?: true],
+             fn _account, actor ->
+               Pipeline.extraction_replayable?(account_id, message["id"], actor)
+             end
+           )
 
     # A failed call is still one metered event, tagged with status "error" and the provider
     # and model that failed. Operators diagnose outages from this ledger.
@@ -468,6 +470,75 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              )
   end
 
+  test "open provider circuit remains a durable replayable batch failure" do
+    batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    circuit = Application.fetch_env!(:memhouse, :ingest_provider_circuit)
+
+    Application.put_env(:memhouse, :extraction_batching, Keyword.put(batching, :enabled, true))
+
+    Application.put_env(:memhouse, :ingest_provider_circuit,
+      enabled: true,
+      failure_threshold: 1,
+      open_ms: 30_000
+    )
+
+    ProviderCircuit.reset()
+
+    on_exit(fn ->
+      ProviderCircuit.reset()
+      Application.put_env(:memhouse, :extraction_batching, batching)
+      Application.put_env(:memhouse, :ingest_provider_circuit, circuit)
+    end)
+
+    message = seed_raw!("f5-circuit-open", "avery", "Avery prefers weekly summaries.")
+    account_id = account_id!("f5-circuit-open")
+
+    put_role!(account_id, :ingest_extractor,
+      provider: "openrouter",
+      model: "temporarily-unavailable-model",
+      model_version: "1",
+      prompt_version: "extract-13",
+      pipeline_version: "f5-1"
+    )
+
+    role = %Model.Config.Role{
+      role: :ingest_extractor,
+      provider: "openrouter",
+      model: "temporarily-unavailable-model",
+      model_version: "1",
+      prompt_version: "extract-13",
+      pipeline_version: "f5-1",
+      config_version: 1,
+      options: %{}
+    }
+
+    context = %{account_id: account_id}
+    assert {:ok, permit} = ProviderCircuit.checkout(role, context)
+    assert :ok = ProviderCircuit.complete(permit, {:error, :provider_upstream_error})
+    assert ProviderCircuit.status(role, context).state == :open
+
+    run_id =
+      scalar!(
+        "SELECT id::text FROM pipeline_runs WHERE target_id = $1 AND kind = 'extraction'",
+        [Ecto.UUID.dump!(message["id"])]
+      )
+
+    run =
+      DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account,
+                                                                                 actor ->
+        Ash.get!(PipelineRun, run_id, actor: actor, tenant: account_id)
+      end)
+
+    # Both deliveries acquire and release a fresh fenced claim, persist the
+    # content-free failure class, and remain replayable without reaching the
+    # provider or stamping the observation complete.
+    assert {:error, %ProviderCircuit.OpenError{}} = ExtractionBatcher.run(run)
+    assert_circuit_failure!(account_id, message["id"], 1)
+    assert {:error, %ProviderCircuit.OpenError{}} = ExtractionBatcher.run(run)
+    assert_circuit_failure!(account_id, message["id"], 2)
+    assert scalar!("SELECT count(*) FROM usage_events", []) == 0
+  end
+
   test "the model layer scopes its own configuration read and usage write to the Account" do
     _message = seed_raw!("f5-self-scoping", "avery", "Avery prefers weekly summaries.")
     account_id = account_id!("f5-self-scoping")
@@ -476,7 +547,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-12",
+      prompt_version: "extract-13",
       pipeline_version: "f5-1"
     )
 
@@ -593,6 +664,41 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   defp scalar!(sql, params) do
     %{rows: [[value]]} = Ecto.Adapters.SQL.query!(Repo, sql, params)
     value
+  end
+
+  defp assert_circuit_failure!(account_id, message_id, attempt_count) do
+    assert message_record!(account_id, message_id).extraction_completed_at == nil
+    run = extraction_run!(account_id, message_id)
+    assert run.status == "failed"
+    assert run.attempt_count == attempt_count
+    assert run.last_error_class == "provider_circuit_open"
+    assert run.batch_claim_id == nil
+  end
+
+  defp message_record!(account_id, message_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        Message
+        |> Ash.Query.filter(id == ^message_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read_one!(actor: actor)
+      end
+    )
+  end
+
+  defp extraction_run!(account_id, message_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        PipelineRun
+        |> Ash.Query.filter(kind == "extraction" and target_id == ^message_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read_one!(actor: actor)
+      end
+    )
   end
 
   # Blanks both transaction-local settings the row-level-security policies read, reproducing

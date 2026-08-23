@@ -98,6 +98,29 @@ config :memhouse, :database,
 # credentials.
 config :memhouse, :require_database_url, false
 
+# When explicitly enabled, one extraction job may opportunistically consume
+# adjacent message jobs. The target is an experiment variable, while
+# whole-request admission is a hard provider-context boundary. `utf8-bytes-v1`
+# intentionally over-counts ordinary BPE tokens rather than guessing a routed
+# provider's unavailable tokenizer. Disabled preserves the single-anchor path.
+config :memhouse, :extraction_batching,
+  enabled: false,
+  target_tokens: 4_096,
+  max_anchors: 32,
+  context_limit_tokens: 131_072,
+  reserved_output_tokens: 8_192,
+  safety_margin_tokens: 2_048,
+  claim_timeout_seconds: 1_200
+
+# Evaluation-only smaller model contract. It remains off until a preregistered
+# matched run demonstrates extraction non-inferiority and zero safety regressions.
+# The prompt version is also the durable experiment identity on provenance and
+# usage rows; enabling it requires the extractor role to use that exact version.
+config :memhouse, :compact_extraction,
+  enabled: false,
+  experiment_identity: "compact-explicit-v1",
+  prompt_version: "extract-compact-exp-1"
+
 # The updater verifies release manifests with this embedded Ed25519 public key.
 # It is deliberately not a runtime secret: the matching private key exists only
 # in the protected release-publishing workflow secret.
@@ -174,6 +197,28 @@ config :memhouse, :retention,
   lifecycle_events_days: 3_650,
   batch_size: 10_000
 
+# Scoped dream-time admission and experimental durable idle scheduling. When
+# explicitly enabled, governed direct changes enqueue their scope wakeup after
+# `idle_seconds`; the same value is rechecked by the gate. The scheduler stays
+# off by default while every admission bound remains explicit.
+config :memhouse, :dream_time_gates,
+  idle_scheduler_enabled: false,
+  min_changes: 1,
+  idle_seconds: 0,
+  min_interval_seconds: 0,
+  max_delta_items: 20,
+  max_working_set_items: 50,
+  max_elapsed_ms: 120_000
+
+# Narrow dream reasoning operations. The split is an experiment and stays off:
+# hourly and manual dream-time keep the existing single `Reasoner.reason/3`
+# call until matched evidence and human review approve the split. When the
+# experiment is enabled, synthesis remains independently gated.
+config :memhouse, :dream_reasoning_operations,
+  split_enabled: false,
+  update: true,
+  synthesis: false
+
 config :ash_oban,
   # Jobs run through Ash actions with authorization on, exactly like an HTTP
   # caller. A background job must not be a privilege-escalation path.
@@ -235,10 +280,28 @@ config :memhouse, :retrieval_profiles,
     rerank: true,
     deadline_ms: 1500
   },
+  # Experimental compact baseline: independently bounded direct and derived
+  # semantic lanes plus exact-text knowledge seeds. It runs no
+  # temporal/salience/entity/expansion/rerank stage and is disabled until an
+  # operator explicitly opts into matched evaluation.
+  minimal: %{
+    version: "minimal-exp-2",
+    strategies: [:semantic_dual_lane, :lexical],
+    weights: %{semantic_dual_lane: 1.0, lexical: 1.0},
+    rrf_k: 15,
+    rerank: false,
+    deadline_ms: 300
+  },
+  minimal_enabled: false,
+  # Per-lane semantic shortlist caps. Both are applied before deterministic
+  # interleave and the request's overall candidate budget remains final.
+  minimal_direct_top_k: 10,
+  minimal_derived_top_k: 10,
   # Deployment-level allowlist. A strategy absent here never runs, whatever a
   # profile asks for; operators use it to switch off an expensive lane.
   enabled_strategies: [
     :semantic,
+    :semantic_dual_lane,
     :lexical,
     :temporal,
     :salience_recency,
@@ -314,6 +377,35 @@ config :memhouse, :retrieval_profiles,
   # the first entry that does not fit, so shrinking it trims the tail.
   context_budget_chars: 8_000
 
+config :memhouse, :recall_planner,
+  low: %{
+    max_iterations: 1,
+    max_tool_calls: 3,
+    max_model_calls: 1,
+    max_items: 12,
+    max_query_tokens: 256,
+    max_total_tokens: 2_048,
+    max_elapsed_ms: 500
+  },
+  medium: %{
+    max_iterations: 2,
+    max_tool_calls: 6,
+    max_model_calls: 2,
+    max_items: 24,
+    max_query_tokens: 512,
+    max_total_tokens: 4_096,
+    max_elapsed_ms: 1_000
+  },
+  high: %{
+    max_iterations: 3,
+    max_tool_calls: 9,
+    max_model_calls: 4,
+    max_items: 40,
+    max_query_tokens: 1_024,
+    max_total_tokens: 8_192,
+    max_elapsed_ms: 2_000
+  }
+
 # Inline peer validation. When a peer performs a read, the system may attach one
 # pending question to the response so the peer can confirm or correct a claim.
 # None of these values is load-bearing on correctness; together they trade queue
@@ -347,16 +439,36 @@ config :memhouse, :governance,
 # Malformed output is never accepted.
 config :memhouse, :model_layer, max_repairs: 2
 
+# Node-local admission around the hosted extraction role. Five consecutive
+# transient provider failures open an Account/provider/role-specific circuit;
+# after 30 seconds exactly one half-open probe may test recovery. This limits
+# billed amplification without changing durable retry or repair semantics.
+config :memhouse, :ingest_provider_circuit,
+  enabled: true,
+  failure_threshold: 5,
+  open_ms: 30_000
+
 # Token admission limits per metric, per calendar day. Empty means unlimited;
 # real values arrive at runtime. Reaching a limit refuses only the background
 # dream-time lane, never ingest or a governed read.
 config :memhouse, :budget_limits, %{}
 
-# Operator-supplied rates in USD per million tokens, keyed by model role. Empty
-# means the cost report totals zero. There is no hidden billing state and no
-# vendor price list: self-hosted cost visibility uses only what the operator
-# declares here.
-config :memhouse, :model_cost_per_million, %{}
+# Credential-free planning rates in USD per million tokens. These round,
+# provider-neutral reference values are intentionally non-zero so a fresh
+# install cannot mistake unknown spend for free usage. They are not a vendor
+# price claim; operators should replace them with contracted rates at runtime.
+config :memhouse, :model_cost_per_million, %{
+  "ingest_extractor" => %{input: 1.0, output: 3.0},
+  "dream_reasoner" => %{input: 1.0, output: 3.0},
+  "dialectic_agent" => %{input: 1.0, output: 3.0},
+  "embedder" => %{embedding: 0.1},
+  "reranker" => %{input: 1.0, output: 1.0}
+}
+
+config :memhouse, :model_cost_profile, %{
+  id: "planning-reference-v1",
+  kind: "planning_reference"
+}
 
 # Use the same Req HTTP client the rest of the app uses rather than pulling in a
 # second HTTP stack for S3 calls.
@@ -436,7 +548,7 @@ config :memhouse, :model_roles,
     provider: "deterministic",
     model: "local-structured-fallback",
     model_version: "1",
-    prompt_version: "extract-12",
+    prompt_version: "extract-13",
     pipeline_version: "f5-1",
     options: %{}
   },

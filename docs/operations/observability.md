@@ -80,6 +80,15 @@ and one deterministic failure class. The latest outcome observed on the node is
 also visible to account administrators at `/console/operations`; tool search
 and ask results show the same additive details in `/console/tools`.
 
+A bounded adaptive Ask also emits `[:memhouse, :recall, :planner]` once per
+planner run. Its measurements are elapsed milliseconds, tool/model call counts,
+query-token estimate, admitted-evidence token estimate, their bounded total,
+and admitted item count. Provider-backed tools reserve their model-call cost
+before execution. Metadata names the effort, deterministic playbook, and
+exhausted bounds. It contains no query or evidence text. Use it to alert on
+planner exhaustion and to compare call and latency budgets during the
+[simplified-memory canary](simplified-memory-rollout.md).
+
 ## Reading a failed model call
 
 A failed model call sets `error.type` on its span and writes the same string as
@@ -203,12 +212,40 @@ reranker's timeout — it only keeps the strategies from spending the budget fir
 `"partial_rankings"` is the mildest: the model judged only part of the head, and
 that part was applied, so only the unjudged remainder kept fusion order.
 
-## Traces are sampled; the ledger is exact
+## Operation aggregates are unsampled; traces are sampled; the ledger is exact
+
+Every completed ingest batch, recall, answer, stable-profile projection, and
+dream pass emits `[:memhouse, :operation, :completed]`. This unsampled event has
+one fixed, content-safe envelope: `operation`, `run_id`, `version`, status and
+failure class metadata, plus zero-defaulted counts for calls, provider attempts,
+logical batch requests, tokens, items, candidates, admission, deduplication,
+cache use, failures, and elapsed time.
+Unknown metadata is discarded by the emitter. Reasoning update and synthesis
+also use the same envelope, so their accepted/rejected contribution can be
+evaluated separately.
+
+An `ingest_batch` aggregate separates `batch_requests` from
+`provider_attempts`. A request is counted once when the worker reaches batch
+admission, including an oversized request rejected before provider work.
+`provider_attempts` counts callbacks admitted by the circuit across the initial
+structured request and at most two repairs; it is zero for oversized,
+pre-provider, and circuit-open outcomes. The shared `calls` counter mirrors
+`provider_attempts` for cross-operation dashboards. `anchors` counts durable
+anchors handled by the worker, including pre-provider classifications.
+`failures` counts anchors that did not complete under that worker, while
+`stale_claims` is the subset skipped because another owner held the durable
+claim. Mixed completed, classified, or stale outcomes report `partial`; the
+per-anchor `PipelineRun` remains the exact replay and terminal-state record.
+
+Use these aggregates to reconcile logical work and alert on rates. They are not
+a billing source: a process can exit before emitting its completion event, while
+the durable usage ledger records every provider attempt that MemHouse could
+meter.
 
 For exact token totals, request counts, and cost, read the `UsageEvent` ledger
 through
 [`/api/v1/operations/costs`](health-and-costs.md).
-Telemetry is sampled and is a diagnostic aid, not an accounting record.
+Trace export is sampled and is a diagnostic aid, not an accounting record.
 
 ## Content safety is not configurable
 

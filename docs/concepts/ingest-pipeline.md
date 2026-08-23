@@ -7,23 +7,28 @@ extraction and governance follow.
 
 ## What commits together
 
-An ingest request writes four things in **one** database transaction:
+An ingest request writes the observation and both kinds of durable work in
+**one** database transaction:
 
 ```mermaid
 flowchart LR
     subgraph TX["one transaction — all or nothing"]
         A[Raw message row]
         B[Hash-chain audit entry]
-        C[Durable idempotency record]
-        D[Oban extraction job]
+        C[Extraction run and job]
+        D[Coalesced source-refresh run and job]
     end
     REQ[POST /api/v1/ingest] --> TX
     TX --> RESP[202 with message id and accepted status]
 ```
 
-All four commit or roll back together, preventing observations without audit
-entries and jobs without observations. Oban shares PostgreSQL, so job insertion
-participates in the transaction.
+All effects commit or roll back together, preventing observations without audit
+entries and jobs without observations. The refresh is keyed by scope and a
+ten-second creation-time bucket, so a burst of messages and any facts extracted
+from them share one delayed projection job. It indexes immutable source
+messages even when extraction produces no Knowledge. Neither provider runs in
+the ingest transaction. Oban shares PostgreSQL, so job insertion participates
+in the transaction.
 
 ## Who a turn is attributed to
 
@@ -46,7 +51,9 @@ both identities: the relaying credential as the actor, and the speaker as
 
 ## What happens after the response
 
-Extraction always runs after the response in the durable `ingest` job lane:
+Extraction and source indexing always run after the response. Source indexing
+is the first stage of the durable scope `projection_refresh`; the diagram below
+shows the extraction lane that may later coalesce into that same refresh:
 
 ```mermaid
 sequenceDiagram
@@ -57,7 +64,7 @@ sequenceDiagram
     participant GOV as Governance engine
     participant IDX as Index and projection work
 
-    J->>G: extraction request (ingest_extractor role)
+    J->>G: one anchored request, or experimental token batch (ingest_extractor role)
     G->>S: provider output
     S->>S: validate against Ash-derived schema
     alt output does not fit the schema
@@ -71,6 +78,38 @@ sequenceDiagram
     J->>IDX: embed, index, mark projections dirty
 ```
 
+### Anchors batch without becoming one replay unit
+
+By default an executing message job processes only its own anchor, preserving
+the established one-message provider request and replay outcome. When
+`MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING=true`, it may claim adjacent
+unstamped messages from the same Account, scope, and session. It does not
+create a batch row. Every message keeps
+its original deterministic PipelineRun and job identity. The model returns one
+envelope per explicit `anchor_id`, and validation applies that anchor's own
+participant, scope, exact-span, date, and supplied-source allowlists.
+
+Before the provider call, `utf8-bytes-v1` counts the complete serialized
+instructions, schema, anchors, and evidence windows. MemHouse reserves output
+capacity and a safety margin against the configured context limit. This
+provider-independent tokenizer deliberately over-counts ordinary BPE input and
+is part of the experiment identity. Provider usage is post-call accounting, not
+admission. An anchor that cannot fit alone is marked `repairable` as
+`oversized`; it is never silently truncated.
+
+The provider call produces independent anchor outcomes. One short transaction
+commits an anchor's governed candidates, lifecycle/audit effects, completion
+stamp, and PipelineRun completion. A completed sibling is skipped after a
+crash. Structured poison becomes terminal only after bounded repair; transient
+provider/network/capacity errors remain retryable. The Account- and resolved
+extractor-role/provider-scoped circuit opens after a bounded sequence of those
+transient failures, preventing retries from continuing to reach a failing
+provider. An open rejection makes no billed call and does not advance its open
+window; one monitored half-open request probes recovery. Credential,
+configuration, and oversized failures are repairable. Normal reconciliation excludes
+repairable and terminal anchors until an administrator explicitly requeues
+them.
+
 ### The model call holds no database connection
 
 Extraction touches the database in two short bursts with the model call
@@ -78,8 +117,8 @@ in between, never in one long transaction:
 
 ```mermaid
 flowchart LR
-    R["read the message<br/>(short transaction)"] --> M["call the model<br/>(no transaction)"]
-    M --> W["write the knowledge<br/>(short transaction)"]
+    R["claim and read anchors<br/>(short transactions)"] --> M["one model call<br/>(no transaction)"]
+    M --> W["write one anchor at a time<br/>(short transaction each)"]
 ```
 
 Model calls may take minutes and up to two repair attempts. Keeping them outside
@@ -101,6 +140,17 @@ Candidates must match schemas derived from their Ash resources. Invalid output
 gets bounded repair attempts. If an extraction response still mixes valid and
 invalid candidates, MemHouse keeps the valid candidates and omits the invalid
 ones. A malformed or wholly invalid response fails the job for retry.
+
+An evaluation-only compact contract can be selected with
+`MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION=true`. It asks the model only for an
+explicit atomic statement, exact support, subject/source references, and exact
+source text for nullable valid-time boundaries. MemHouse then derives `fact`,
+confidence/evidence, `restricted` sensitivity, and the narrow peer or current
+scope target and runs the same ordinary validator below. The flag changes no
+writer, queue, table, lifecycle, or Gate A/B behavior. Its prompt version
+`extract-compact-exp-1` identifies resulting provenance and usage. It remains
+off because the held-out non-inferiority/privacy gate and human ADR review are
+still required; turning it off restores `extract-13` without a data migration.
 
 Extraction also does what a naive extractor gets wrong:
 
@@ -201,6 +251,40 @@ the watermark unchanged for retry. A retrieval candidate with an invalid shape
 ends that pass with a content-safe diagnostic instead of retrying the same
 deterministic error. The lane is throttled first when token budgets tighten and
 never bypasses governance.
+
+Before consolidation or a model call, a scoped gate checks four independent
+bounds: accumulated eligible changes, time since the latest change, time since
+the last completed pass, and the maximum delta/working-set/call duration for one
+pass. Skips emit only scope ids, counts, decisions, and reason classes. They do
+not advance the watermark. A bounded partial pass stores both the last processed
+timestamp and knowledge id, so same-microsecond rows resume without being lost
+or billed twice. Dream-produced deductions and deterministic consolidation
+outputs do not feed the eligible-change counter back into themselves.
+
+When `MEMHOUSE_EXPERIMENTAL_DREAM_IDLE_SCHEDULER=true`, activating or changing
+a governed direct fact also creates a content-free, scope-targeted `PipelineRun`
+and Oban job in that same transaction. Its wakeup
+is the fact's activity time plus `MEMHOUSE_DREAM_IDLE_SECONDS`. Exact duplicate
+activity reuses the replay key; newer activity schedules a later generation.
+When an older generation wakes, it compares its timestamp-and-id cursor with
+the latest surviving direct fact under the scope lock and completes as
+superseded before retrieval or model work. The switch defaults off pending
+matched evidence and human review. The hourly Account sweep and the manual
+operations endpoint remain fallback and operator paths in either state.
+
+Reasoning behind that gate is split into two small contracts. The enabled
+update operation can record `supports` and `contradicts` edges between exact
+working-set ids; contradictions remain visible and enqueue governance review.
+The synthesis operation can propose a statement only when its authorized
+contributors resolve to at least two distinct durable source observations.
+Two knowledge rows extracted from the same message or document version still
+count as one source. The model-time validator receives only content-free source
+references from the authorized working set, and the writer re-reads provenance
+and enforces the same rule before persistence. Synthesis is disabled by default
+pending matched ablation. Both operations finish before the one writer
+transaction validates their ids, applies common governed effects, and advances
+the scoped cursor.
+Prompt rationale is validation input only and is never stored as chain-of-thought.
 
 ## What never enters audit metadata or job arguments
 

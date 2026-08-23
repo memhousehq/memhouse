@@ -23,13 +23,18 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/search \
 | --- | --- | --- |
 | `query` | `""` | The search text. A full question works; `"phrase"`, `-term`, and `or` narrow it. |
 | `scope_path` | `"/poc"` | Selects this scope **and its ancestors**. |
-| `profile` | `"balanced"` | `fast`, `balanced`, or `thorough`. |
+| `profile` | `"balanced"` | `fast`, `balanced`, `thorough`, or feature-gated experimental `minimal`. |
 | `limit` | `12` | Candidate cap. Values are clamped to `1` through `100`. |
 | `include_cross_links` | off | Follow scope relations you are authorised for at both ends. |
 | `as_of` | now | Read memory as it stood at a point in time. |
 | `min_score` | none | Drop candidates below this score inside each strategy, before fusion. |
 | `source_filters` | none | Restrict by provenance kind. |
 | `deadline` | profile default | `"disabled"` removes the time budget — offline use only. |
+
+`minimal` is rejected unless
+`MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true`. Its dual-lane experiment defaults
+are runtime-owned; stored profile overrides remain limited to `fast`,
+`balanced`, and `thorough` while the rollback path is evaluated.
 
 ### Reading the response
 
@@ -116,7 +121,14 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/ask \
 ```
 
 `question` is required. All `search` parameters apply; `profile` defaults to
-`thorough`.
+`thorough`. Add `effort: "low"`, `"medium"`, or `"high"` to use the bounded
+read-only planner. It may select governed knowledge through stable profile and
+lineage reads; it has no write tool. Add the JSON boolean
+`include_source_recall: true` only when this caller is allowed to recover a
+bounded authorized source-message excerpt. An effort level by itself never
+grants that broader read. Every preset independently caps iterations, admitted
+items, retrieval/model calls, query tokens, total admitted evidence tokens, and
+elapsed time; exhaustion returns the best bounded evidence accumulated so far.
 
 The response is the search payload plus `answer`, `citations`, `abstained`,
 `answer_confidence`, `answer_degraded`, `answer_context_count`, and
@@ -143,10 +155,24 @@ Only its bounded, final-ranked head enters the answer prompt.
     plain text in `supporting_statements`, so you lose nothing but the false
     confidence.
 
-Retrieval for `ask` is restricted to knowledge items, so every citation is a
-governed statement rather than a raw message. Citation ids the model invented
-or did not retrieve are removed; if none survive, the answer becomes the empty
-abstention with `answer_confidence` 0.
+Fixed retrieval for `ask` is restricted to governed knowledge. With a named
+effort, a citation may instead name an authorized immutable source message and
+the response includes its bounded excerpt and stable source metadata. Citation
+ids the model invented or did not retrieve are removed; if none survive, the
+answer becomes the empty abstention with `answer_confidence` 0.
+
+`citations` remains a list of string ids for response compatibility. Resolve
+each id against the governed evidence returned for the answer: ordinary
+knowledge evidence uses its Knowledge id, while an authorized source item is
+typed `source_message` in `recall_evidence` and uses its immutable Message id.
+Knowledge admitted through the stable profile is re-read under the request's
+current authorization and carries its `scope_id`, `source_message_ids`, and
+bounded typed `source_references`; it is not detached profile text.
+The exact read locks those governed knowledge rows inside its Account-scoped
+transaction and rebuilds their references from current provenance. Every source
+is then reauthorized as a Message or DocumentVersion in the requested scopes;
+neither an erased message nor a mismatched provenance row can copy a source id
+back from the earlier profile projection into `recall_evidence`.
 
 ## Choosing a profile
 

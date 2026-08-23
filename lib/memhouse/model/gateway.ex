@@ -36,6 +36,7 @@ defmodule MemHouse.Model.Gateway do
 
   alias MemHouse.Model.Config
   alias MemHouse.Model.Provider.Result
+  alias MemHouse.Model.ProviderCircuit
   alias MemHouse.Model.Usage
   alias MemHouse.Observability
 
@@ -69,15 +70,43 @@ defmodule MemHouse.Model.Gateway do
   validation boundary and failures as `structured_once/5`.
   """
   def structured_once_with_usage(role, messages, schema, context, opts \\ []) do
+    case structured_once_with_usage_and_attempt(role, messages, schema, context, opts) do
+      {:ok, value, config, usage, _provider_attempts} -> {:ok, value, config, usage}
+      {:error, error, _provider_attempts} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Performs one structured-generation admission and reports whether a provider was invoked.
+
+  The first four success values match `structured_once_with_usage/5`, followed by
+  `provider_attempts`, which is exactly `1` after the provider callback runs. Errors
+  return `{:error, reason, provider_attempts}`. Prompt-version rejection and an open
+  provider circuit report zero; an error returned by an admitted provider reports one.
+
+  This is the accounting seam used by the bounded repair loop. Ordinary callers
+  should use `MemHouse.Model.StructuredGenerator`, which validates provider output.
+  """
+  def structured_once_with_usage_and_attempt(role, messages, schema, context, opts \\ []) do
     config = Config.resolve(role, context)
 
-    with :ok <- matching_prompt_version(config, opts) do
-      case invoke(:structured, config, context, opts, fn provider ->
-             provider.structured(config, messages, schema, opts)
-           end) do
-        {:ok, %Result{value: value, usage: usage}} -> {:ok, value, config, usage || %{}}
-        {:error, error} -> {:error, error}
-      end
+    case matching_prompt_version(config, opts) do
+      :ok ->
+        case invoke(:structured, config, context, opts, fn provider ->
+               provider.structured(config, messages, schema, opts)
+             end) do
+          {:ok, %Result{value: value, usage: usage}} ->
+            {:ok, value, config, usage || %{}, 1}
+
+          {:error, %ProviderCircuit.OpenError{} = error} ->
+            {:error, error, 0}
+
+          {:error, error} ->
+            {:error, error, 1}
+        end
+
+      {:error, error} ->
+        {:error, error, 0}
     end
   end
 
@@ -193,7 +222,6 @@ defmodule MemHouse.Model.Gateway do
   defp invoke(operation, config, context, opts, call) do
     Observability.with_span(:model, "memhouse.model.#{operation}", fn ->
       provider = provider_module(config, context)
-      started_at = System.monotonic_time(:millisecond)
 
       Observability.set_attributes(:model, %{
         "memhouse.model.role" => Atom.to_string(config.role),
@@ -203,45 +231,64 @@ defmodule MemHouse.Model.Gateway do
         "gen_ai.request.model" => config.model
       })
 
-      result = safe_call(call, provider)
-      duration_ms = System.monotonic_time(:millisecond) - started_at
+      case ProviderCircuit.checkout(config, context) do
+        {:ok, permit} ->
+          invoke_permitted(operation, config, context, opts, call, provider, permit)
 
-      case result do
-        {:ok, %Result{} = provider_result} ->
-          Usage.emit(context, config, %{
-            operation: operation,
-            status: :ok,
-            duration_ms: duration_ms,
-            usage: provider_result.usage,
-            metadata:
-              provider_result.metadata
-              |> Map.put(:repair_attempt, Keyword.get(opts, :repair_attempt, 0))
-          })
-
-          set_result_attributes(provider_result, duration_ms)
-          {:ok, provider_result}
-
-        {:error, error} ->
-          Usage.emit(context, config, %{
-            operation: operation,
-            status: :error,
-            duration_ms: duration_ms,
-            usage: %{},
-            metadata: %{
-              error_class: error_class(error),
-              metering_status: :unmetered,
-              repair_attempt: Keyword.get(opts, :repair_attempt, 0)
-            }
-          })
-
+        {:error, %ProviderCircuit.OpenError{} = error} ->
           Observability.set_attributes(:model, %{
-            "memhouse.model.duration_ms" => duration_ms,
+            "memhouse.model.circuit_state" => "open",
             "error.type" => error_class(error)
           })
 
+          # No provider call occurred, so this must not append a billed-call
+          # UsageEvent or inflate calls-per-message economics.
           {:error, error}
       end
     end)
+  end
+
+  defp invoke_permitted(operation, config, context, opts, call, provider, permit) do
+    started_at = System.monotonic_time(:millisecond)
+    result = safe_call(call, provider)
+    :ok = ProviderCircuit.complete(permit, result)
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+
+    case result do
+      {:ok, %Result{} = provider_result} ->
+        Usage.emit(context, config, %{
+          operation: operation,
+          status: :ok,
+          duration_ms: duration_ms,
+          usage: provider_result.usage,
+          metadata:
+            provider_result.metadata
+            |> Map.put(:repair_attempt, Keyword.get(opts, :repair_attempt, 0))
+        })
+
+        set_result_attributes(provider_result, duration_ms)
+        {:ok, provider_result}
+
+      {:error, error} ->
+        Usage.emit(context, config, %{
+          operation: operation,
+          status: :error,
+          duration_ms: duration_ms,
+          usage: %{},
+          metadata: %{
+            error_class: error_class(error),
+            metering_status: :unmetered,
+            repair_attempt: Keyword.get(opts, :repair_attempt, 0)
+          }
+        })
+
+        Observability.set_attributes(:model, %{
+          "memhouse.model.duration_ms" => duration_ms,
+          "error.type" => error_class(error)
+        })
+
+        {:error, error}
+    end
   end
 
   defp set_result_attributes(result, duration_ms) do
@@ -273,6 +320,9 @@ defmodule MemHouse.Model.Gateway do
     call.(provider)
   rescue
     error -> {:error, error}
+  catch
+    :exit, reason -> {:error, {:provider_exit, reason}}
+    :throw, reason -> {:error, {:provider_throw, reason}}
   end
 
   @doc """
@@ -293,6 +343,7 @@ defmodule MemHouse.Model.Gateway do
   def error_class(%ReqLLM.Error.API.Timeout{kind: :total}), do: "request_timeout"
 
   def error_class(%ReqLLM.Error.API.Request{}), do: "transport_error"
+  def error_class(%ProviderCircuit.OpenError{}), do: "provider_circuit_open"
   def error_class(%module{}), do: inspect(module)
   def error_class(error) when is_atom(error), do: Atom.to_string(error)
   def error_class(_error), do: "model_error"

@@ -109,10 +109,12 @@ defmodule MemHouse.Eval.Scorer do
   merged in the run-level fields it groups on: `"category"`, `"scale"`, `"benchmark"`, and
   `"latency_ms"`.
 
-  Returns `"overall"`, `"by_category"`, `"by_scale"`, and `"beam_degradation_curve"` — the
-  last being the by-scale rollup restricted to BEAM cases, which is how accuracy loss with
-  growing corpus size is read. Questions with a missing or blank group key are collected
-  under `"uncategorized"` rather than dropped, so the group counts always sum to the total.
+  Returns `"overall"`, `"retrieval"`, `"isolation"`, `"by_category"`, `"by_scale"`, and
+  `"beam_degradation_curve"`. The isolation block contains counts, a pass flag, and its
+  method identity; the last block is the by-scale rollup restricted to BEAM cases, which is
+  how accuracy loss with growing corpus size is read. Questions with a missing or blank group
+  key are collected under `"uncategorized"` rather than dropped, so group counts sum to the
+  total.
 
   Within a group, `"abstention_accuracy"` is `nil` when no question there expected a
   refusal. That distinguishes "there was nothing to abstain from" from "every abstention
@@ -127,9 +129,25 @@ defmodule MemHouse.Eval.Scorer do
     %{
       "overall" => aggregate(question_results),
       "retrieval" => retrieval_aggregate(question_results),
+      "isolation" => isolation_aggregate(question_results),
       "by_category" => group_aggregate(question_results, "category"),
       "by_scale" => group_aggregate(question_results, "scale"),
       "beam_degradation_curve" => beam_degradation_curve(question_results)
+    }
+  end
+
+  # The runner checks candidate source ids against the source ids ingested for that case.
+  # Only counts reach the report: an unexpected id may belong to another scope or Account and
+  # must not become a second leak through evaluation evidence.
+  defp isolation_aggregate(results) do
+    candidates = Enum.sum(Enum.map(results, &Map.get(&1, "isolation_candidates_checked", 0)))
+    leaks = Enum.sum(Enum.map(results, &Map.get(&1, "isolation_leaks", 0)))
+
+    %{
+      "candidates_checked" => candidates,
+      "leaks" => leaks,
+      "passed" => leaks == 0,
+      "method" => "source-membership-v1"
     }
   end
 

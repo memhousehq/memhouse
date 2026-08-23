@@ -11,6 +11,63 @@ defmodule MemHouse.Observability do
 
   require OpenTelemetry.Tracer, as: Tracer
 
+  @operation_measurements [
+    :anchors,
+    :attempts,
+    :batch_requests,
+    :calls,
+    :provider_attempts,
+    :input_tokens,
+    :output_tokens,
+    :items,
+    :candidates,
+    :components,
+    :accepted,
+    :rejected,
+    :deduplicated,
+    :cache_hits,
+    :cache_misses,
+    :failures,
+    :stale_claims,
+    :elapsed_ms
+  ]
+  @operation_metadata [
+    :run_id,
+    :version,
+    :status,
+    :failure_class,
+    :profile,
+    :account_id,
+    :scope_id,
+    :cache_status
+  ]
+  @operation_names ~w(answer dream ingest_batch profile_refresh reasoning_synthesis reasoning_update recall)
+  @operation_statuses ~w(abstained completed degraded delegated empty failed ok partial ready repairable stale_extraction_claim terminal)
+  @operation_cache_statuses ~w(hit live_projection miss stale)
+  @operation_failure_classes ~w(
+    configuration
+    dream_failed
+    missing_structured_object
+    mixed_anchor_outcomes
+    model_error
+    oversized
+    prompt_version_mismatch
+    provider_circuit_open
+    provider_configuration
+    provider_content_filtered
+    provider_output_truncated
+    provider_transient
+    provider_upstream_error
+    reasoning_failed
+    request_timeout
+    stale_extraction_claim
+    structured_validation_exhausted
+    structured_validation_failed
+    transport_error
+  )
+  @identifier ~r/\A[A-Za-z0-9][A-Za-z0-9_.:\/=\-]{0,159}\z/u
+  @operation_run_id_key {__MODULE__, :operation_run_id}
+
   @doc """
   Attaches log correlation and the framework instrumentation handlers.
 
@@ -74,6 +131,57 @@ defmodule MemHouse.Observability do
   def set_attributes(category, attributes) when is_map(attributes) do
     if span_enabled?(category) do
       Tracer.set_attributes(attributes)
+    end
+  end
+
+  @doc """
+  Emits one unsampled, content-safe aggregate for a completed logical operation.
+
+  The event name is `[:memhouse, :operation, :completed]`. Measurements are a
+  fixed set of non-negative counters and timings; omitted values become zero.
+  Metadata is reduced to identifiers, versions, short states, and failure
+  classes. Unknown keys are discarded, so a caller cannot accidentally attach
+  a query, prompt, message, answer, or credential.
+
+  This event is an operational reconciliation signal, not a billing record.
+  Exact model usage remains in the durable usage ledger.
+  """
+  def emit_operation(operation, measurements \\ %{}, metadata \\ %{})
+      when (is_atom(operation) or is_binary(operation)) and is_map(measurements) and
+             is_map(metadata) do
+    measurements =
+      Map.new(@operation_measurements, fn key ->
+        value = Map.get(measurements, key, Map.get(measurements, Atom.to_string(key), 0))
+        {key, non_negative(value)}
+      end)
+
+    metadata =
+      metadata
+      |> Map.new(fn {key, value} -> {normalize_key(key), value} end)
+      |> Map.take(@operation_metadata)
+      |> Map.put_new(:run_id, Process.get(@operation_run_id_key) || Ecto.UUID.generate())
+      |> Map.put_new(:version, "unknown")
+      |> Map.put_new(:status, "ok")
+      |> normalize_operation_metadata()
+      |> Map.put(:operation, normalize_operation(operation))
+
+    :telemetry.execute([:memhouse, :operation, :completed], measurements, metadata)
+    :ok
+  end
+
+  @doc "Runs `fun` with one content-safe correlation id applied to operation telemetry."
+  def with_operation_run_id(run_id, fun)
+      when is_binary(run_id) and is_function(fun, 0) do
+    previous = Process.put(@operation_run_id_key, run_id)
+
+    try do
+      fun.()
+    after
+      if is_nil(previous) do
+        Process.delete(@operation_run_id_key)
+      else
+        Process.put(@operation_run_id_key, previous)
+      end
     end
   end
 
@@ -165,4 +273,65 @@ defmodule MemHouse.Observability do
   defp span_config_key(:model), do: :model_spans
   defp span_config_key(:documents), do: :document_spans
   defp span_config_key(category), do: category
+
+  defp normalize_key(key) when is_atom(key), do: key
+
+  defp normalize_key(key) when is_binary(key) do
+    Enum.find(@operation_metadata, key, &(Atom.to_string(&1) == key))
+  end
+
+  defp normalize_key(_key), do: nil
+
+  defp normalize_operation(operation) do
+    operation = to_string(operation)
+    if operation in @operation_names, do: operation, else: "unknown"
+  end
+
+  defp normalize_operation_metadata(metadata) do
+    metadata
+    |> Map.update(:run_id, Ecto.UUID.generate(), &safe_identifier(&1, Ecto.UUID.generate()))
+    |> Map.update(:version, "unknown", &safe_identifier(&1, "unknown"))
+    |> Map.update(:status, "unknown", &safe_enum(&1, @operation_statuses, "unknown"))
+    |> Map.update(:failure_class, nil, &safe_failure_class/1)
+    |> Map.update(:profile, nil, &safe_identifier(&1, "unknown"))
+    |> Map.update(:account_id, nil, &safe_uuid/1)
+    |> Map.update(:scope_id, nil, &safe_uuid/1)
+    |> Map.update(:cache_status, nil, &safe_enum(&1, @operation_cache_statuses, "unknown"))
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp safe_identifier(value, fallback) when is_atom(value),
+    do: safe_identifier(Atom.to_string(value), fallback)
+
+  defp safe_identifier(value, fallback) when is_binary(value) do
+    if String.match?(value, @identifier), do: value, else: fallback
+  end
+
+  defp safe_identifier(_value, fallback), do: fallback
+
+  defp safe_enum(value, allowed, fallback) when is_atom(value),
+    do: safe_enum(Atom.to_string(value), allowed, fallback)
+
+  defp safe_enum(value, allowed, fallback) when is_binary(value) do
+    if value in allowed, do: value, else: fallback
+  end
+
+  defp safe_enum(_value, _allowed, fallback), do: fallback
+
+  defp safe_failure_class(nil), do: nil
+
+  defp safe_failure_class(value),
+    do: safe_enum(value, @operation_failure_classes, "unknown_failure")
+
+  defp safe_uuid(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} -> uuid
+      :error -> nil
+    end
+  end
+
+  defp non_negative(value) when is_integer(value) and value >= 0, do: value
+  defp non_negative(value) when is_float(value) and value >= 0, do: value
+  defp non_negative(_value), do: 0
 end

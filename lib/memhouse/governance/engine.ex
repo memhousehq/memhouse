@@ -37,6 +37,7 @@ defmodule MemHouse.Governance.Engine do
   alias MemHouse.Knowledge.KnowledgeRelation
   alias MemHouse.Knowledge.Provenance
   alias MemHouse.Pipeline
+  alias MemHouse.Pipeline.Consolidator
   alias MemHouse.Pipeline.Lock
   alias MemHouse.Topology.Scope
 
@@ -655,6 +656,20 @@ defmodule MemHouse.Governance.Engine do
 
     if updated.state == "active" and is_binary(updated.deduction_key) do
       MemHouse.Pipeline.DeductionEffects.accept!(updated, pipeline_actor(actor))
+    end
+
+    # Consolidator outputs must not recursively schedule another idle dream pass.
+    if Pipeline.idle_dream_time_enabled?() and updated.state == "active" and
+         is_nil(updated.deduction_key) and
+         updated.extracting_model != Consolidator.marker() do
+      {:ok, _dream_run} =
+        Pipeline.enqueue_idle_dream_time(
+          updated.account_id,
+          updated.scope_id,
+          updated.updated_at,
+          updated.id,
+          actor
+        )
     end
 
     enqueue_derived_refreshes!(updated, actor)

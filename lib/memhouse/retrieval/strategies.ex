@@ -9,7 +9,26 @@ defmodule MemHouse.Retrieval.StrategySupport do
   strategy must use this path.
   """
 
+  alias MemHouse.DataLayer
   alias MemHouse.Retrieval.Candidate
+
+  @doc """
+  Runs one strategy's database read in a short Account-scoped transaction.
+
+  Provider work belongs before this boundary. The refreshed actor is passed to
+  the callback so RLS, reader posture, scope, and lifecycle filtering all run
+  on the pinned Account connection.
+  """
+  def with_account_read(query, fun) when is_function(fun, 1) do
+    DataLayer.with_actor(query.actor, fn _account, actor ->
+      fun.(%{query | actor: actor})
+    end)
+  end
+
+  @doc "Returns the four-part vector-space identity carried by an embedding result."
+  def embedding_identity(result) do
+    Map.take(result, [:provider, :model, :version, :dimensions])
+  end
 
   @doc """
   Converts raw result rows into `Candidate` structs for one strategy.
@@ -76,7 +95,7 @@ defmodule MemHouse.Retrieval.Strategies.Semantic do
   """
   @behaviour MemHouse.Retrieval.Strategy
 
-  alias MemHouse.Model.{Config, Embedding}
+  alias MemHouse.Model.Embedding
   alias MemHouse.Retrieval.{Store, StrategySupport}
 
   @impl true
@@ -109,16 +128,79 @@ defmodule MemHouse.Retrieval.Strategies.Semantic do
     context = %{account_id: query.account_id, actor: query.actor}
 
     case Embedding.embed([query.text], context, input_type: :query) do
-      {:ok, %{vectors: [embedding]}} ->
-        identity = :embedder |> Config.resolve(context) |> Config.embedding_identity()
+      {:ok, %{vectors: [embedding]} = result} ->
+        identity = StrategySupport.embedding_identity(result)
 
-        query
-        |> Store.semantic(embedding, identity, budget.max_candidates)
-        |> StrategySupport.candidates(
-          name(),
-          query.min_score || 0.0,
-          query.source_filters
-        )
+        StrategySupport.with_account_read(query, fn scoped_query ->
+          scoped_query
+          |> Store.semantic(embedding, identity, budget.max_candidates)
+          |> StrategySupport.candidates(
+            name(),
+            scoped_query.min_score || 0.0,
+            scoped_query.source_filters
+          )
+        end)
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+end
+
+defmodule MemHouse.Retrieval.Strategies.SemanticDualLane do
+  @moduledoc """
+  Embeds once, then searches direct and derived recall lanes independently.
+
+  This is the semantic lane used by the experimental minimal profile. It reads
+  only the rebuildable RecallDocument projection, but every candidate remains
+  subject to canonical Knowledge authorization and lifecycle checks in Store.
+  """
+  @behaviour MemHouse.Retrieval.Strategy
+
+  alias MemHouse.Model.Embedding
+  alias MemHouse.Retrieval.{Store, StrategySupport}
+
+  @impl true
+  def name, do: :semantic_dual_lane
+  @impl true
+  def cost_class, do: :moderate
+  @impl true
+  def stage, do: :seed
+  @impl true
+  def query_dependent?, do: true
+
+  @impl true
+  def applicable?(query) do
+    query.target in [:knowledge, :all] and is_binary(query.text) and
+      String.trim(query.text) != ""
+  end
+
+  @impl true
+  def candidates(query, budget) do
+    context = %{account_id: query.account_id, actor: query.actor}
+
+    case Embedding.embed([query.text], context, input_type: :query) do
+      {:ok, %{vectors: [embedding]} = result} ->
+        identity = StrategySupport.embedding_identity(result)
+        config = Application.fetch_env!(:memhouse, :retrieval_profiles)
+        direct_limit = min(Keyword.fetch!(config, :minimal_direct_top_k), budget.max_candidates)
+        derived_limit = min(Keyword.fetch!(config, :minimal_derived_top_k), budget.max_candidates)
+
+        StrategySupport.with_account_read(query, fn scoped_query ->
+          scoped_query
+          |> Store.semantic_dual_lane(
+            embedding,
+            identity,
+            direct_limit,
+            derived_limit,
+            budget.max_candidates
+          )
+          |> StrategySupport.candidates(
+            name(),
+            scoped_query.min_score || 0.0,
+            scoped_query.source_filters
+          )
+        end)
 
       {:error, error} ->
         {:error, error}
@@ -158,9 +240,15 @@ defmodule MemHouse.Retrieval.Strategies.Lexical do
   """
   @impl true
   def candidates(query, budget) do
-    query
-    |> Store.lexical(budget.max_candidates)
-    |> StrategySupport.candidates(name(), query.min_score || 0.0, query.source_filters)
+    StrategySupport.with_account_read(query, fn scoped_query ->
+      scoped_query
+      |> Store.lexical(budget.max_candidates)
+      |> StrategySupport.candidates(
+        name(),
+        scoped_query.min_score || 0.0,
+        scoped_query.source_filters
+      )
+    end)
   end
 end
 
@@ -200,9 +288,15 @@ defmodule MemHouse.Retrieval.Strategies.Temporal do
   """
   @impl true
   def candidates(query, budget) do
-    query
-    |> Store.temporal(budget.max_candidates)
-    |> StrategySupport.candidates(name(), query.min_score || 0.0, query.source_filters)
+    StrategySupport.with_account_read(query, fn scoped_query ->
+      scoped_query
+      |> Store.temporal(budget.max_candidates)
+      |> StrategySupport.candidates(
+        name(),
+        scoped_query.min_score || 0.0,
+        scoped_query.source_filters
+      )
+    end)
   end
 end
 
@@ -246,9 +340,15 @@ defmodule MemHouse.Retrieval.Strategies.SalienceRecency do
   """
   @impl true
   def candidates(query, budget) do
-    query
-    |> Store.salience_recency(budget.max_candidates)
-    |> StrategySupport.candidates(name(), query.min_score || 0.0, query.source_filters)
+    StrategySupport.with_account_read(query, fn scoped_query ->
+      scoped_query
+      |> Store.salience_recency(budget.max_candidates)
+      |> StrategySupport.candidates(
+        name(),
+        scoped_query.min_score || 0.0,
+        scoped_query.source_filters
+      )
+    end)
   end
 end
 
@@ -285,9 +385,15 @@ defmodule MemHouse.Retrieval.Strategies.EntityMatch do
   """
   @impl true
   def candidates(query, budget) do
-    query
-    |> Store.entity_match(budget.max_candidates)
-    |> StrategySupport.candidates(name(), query.min_score || 0.0, query.source_filters)
+    StrategySupport.with_account_read(query, fn scoped_query ->
+      scoped_query
+      |> Store.entity_match(budget.max_candidates)
+      |> StrategySupport.candidates(
+        name(),
+        scoped_query.min_score || 0.0,
+        scoped_query.source_filters
+      )
+    end)
   end
 end
 
@@ -335,8 +441,14 @@ defmodule MemHouse.Retrieval.Strategies.RelationExpand do
   """
   @impl true
   def candidates(query, budget) do
-    query
-    |> Store.relation_expand(budget.max_candidates)
-    |> StrategySupport.candidates(name(), query.min_score || 0.0, query.source_filters)
+    StrategySupport.with_account_read(query, fn scoped_query ->
+      scoped_query
+      |> Store.relation_expand(budget.max_candidates)
+      |> StrategySupport.candidates(
+        name(),
+        scoped_query.min_score || 0.0,
+        scoped_query.source_filters
+      )
+    end)
   end
 end

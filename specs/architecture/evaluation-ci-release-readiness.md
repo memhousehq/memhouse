@@ -69,6 +69,46 @@ guardrails; lexical and salience-recency variants are reported ablations.
 latency, RAG-triad, token efficiency, and BEAM degradation remain
 frontier-tracked as required by `AD-EVAL-3`, `NFR-1`, and `NFR-11`.
 
+Matched component work uses `MemHouse.Eval.Experiment` around the existing runner rather than a
+second benchmark implementation. A definition has exactly one current and one experimental
+variant over an identical source digest. It produces an environment-resolved manifest and a
+comparison bundle. The manifest pins the source revision and dirty/clean state, Postgres mode,
+all model/prompt/pipeline identities, allowlisted generation parameters, profile configuration,
+strategy overrides, evaluation seeds, and executable component bindings. Those bindings are a
+closed map derived from effective runner inputs, including batching, recall effort and permissions,
+separate Knowledge, source-message semantic, and RecallDocument refreshes, idle scheduling, and
+explicit dream execution. Unknown or mismatched labels are rejected, runtime configuration is
+restored after every variant, and fixture replay cannot claim that a component ran. Declared source
+semantic recall must synchronously refresh the exact isolated scope and complete a semantic source
+tool outcome; exact-only permission is not accepted as semantic execution evidence.
+
+Account-scoped snapshots of `KnowledgeItem`, `UsageEvent`, and `PipelineRun` provide stored-fact,
+call, token, duration, error, operator-priced cost, and maintenance-work deltas. A bounded Ecto
+telemetry handler counts runner queries and timings without SQL or parameters; the snapshot queries
+are excluded. The runner also counts candidate source ids that do not belong to the case's ingested
+sources; ids themselves never enter the report. Comparison
+gates cover quality regression, recall, citation correctness, unsupported non-abstaining answers,
+source-membership isolation, cost/token and latency budgets, and dream replay effects. A fixture
+mode exercises the same comparison contract without starting MemHouse, Postgres, or any provider;
+its results are marked fixture evidence and cannot be confused with executed measurements.
+Semantic execute variants synchronously refresh their isolated indexes and record content-free
+counts plus the permitted four-part embedding identity. Idle-enabled variants require two active
+direct generations, enqueue real generation-fenced `PipelineRun`/Oban work, execute stale and
+latest generations through `MemHouse.Pipeline.execute/1`, and prove replay adds no durable effect.
+Offline mode permits semantic refresh only with existing local Ortex artifacts; it rejects hosted
+and deterministic stand-in embedders rather than making an unapproved provider call or
+manufacturing vector evidence.
+
+The database identity is always PostgreSQL, with `external` and `pg0` deployment modes. A SQLite
+claim fails definition validation. This follows the shipped data contract: there is no weaker
+SQLite evaluation path whose green result could be mistaken for Postgres parity.
+
+Honcho-informed simplification experiments follow the matched-manifest,
+deterministic-safety, default-selection, and rollback gates in
+[ADR 0021](../adr/0021-clean-room-memory-simplification.md). A first-party
+external benchmark is research input, not evidence for changing a MemHouse
+default. Paid or live evaluation still requires explicit operator approval.
+
 The 2026-07-27 minimal `poc-0` reports remain immutable pre-retrieval evidence,
 not current `f7-1` results. `poc-0` is a historical contract tag.
 

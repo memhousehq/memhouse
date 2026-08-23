@@ -71,6 +71,21 @@ defmodule MemHouse.Eval.ScorerTest do
     assert summary["retrieval"]["recall_at_k"]["2"] == 0.5
   end
 
+  test "summarizes content-free isolation checks independently from answer quality" do
+    summary =
+      Scorer.summarize([
+        %{"isolation_candidates_checked" => 3, "isolation_leaks" => 0},
+        %{"isolation_candidates_checked" => 2, "isolation_leaks" => 1}
+      ])
+
+    assert summary["isolation"] == %{
+             "candidates_checked" => 5,
+             "leaks" => 1,
+             "passed" => false,
+             "method" => "source-membership-v1"
+           }
+  end
+
   # Declining is the correct behaviour for an unanswerable question, so it has
   # to score as correct. Note the two independent routes to `abstained`: the
   # runner can set the flag explicitly, and a reply that reads as a

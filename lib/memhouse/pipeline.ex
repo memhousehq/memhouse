@@ -29,11 +29,15 @@ defmodule MemHouse.Pipeline do
   Enqueue uses a system-pipeline copy of the caller; it never mutates the caller's actor.
   """
 
+  alias MemHouse.Accounts.Account
   alias MemHouse.Actor
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Operations.PipelineRun
-  alias MemHouse.Pipeline.Idempotency
+  alias MemHouse.Pipeline.{DreamTime, Idempotency, Lock}
+  alias MemHouse.Retrieval.Store
+
+  require Ash.Query
 
   # Public lane name to private Ash action. New lanes need an action, Oban trigger, and stable key.
   @enqueue_actions %{
@@ -259,7 +263,11 @@ defmodule MemHouse.Pipeline do
   @doc """
   Schedules one delayed derived-cache refresh for a burst of governed writes.
 
-  Writes in the same scope and ten-second bucket reuse one durable run.
+  Governed knowledge writes and raw-message creates in the same scope and
+  ten-second bucket reuse one durable run. The refresh indexes source messages
+  before rebuilding Knowledge-derived caches, so even a message that extracts
+  zero facts gets durable semantic-index work.
+
   A 15-second delay guarantees that the bucket closes before execution, so all
   writes in it are included. The job carries only identifiers and a bucket key.
   """
@@ -279,6 +287,62 @@ defmodule MemHouse.Pipeline do
       },
       actor
     )
+  end
+
+  @doc """
+  Durably schedules one scope wakeup after its latest governed activity goes idle.
+
+  The activity timestamp and id are a content-free generation cursor. Exact
+  duplicates reuse one run. Later activity creates a later wakeup; the older
+  worker checks the generation under the scope lock and exits before any model
+  work. Call this inside the governance transaction so knowledge, run, and job
+  commit together.
+  """
+  @spec enqueue_idle_dream_time(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          DateTime.t(),
+          Ecto.UUID.t(),
+          map()
+        ) :: {:ok, PipelineRun.t()} | {:error, term()}
+  def enqueue_idle_dream_time(account_id, scope_id, %DateTime{} = activity_at, activity_id, actor) do
+    Lock.acquire!(account_id, DreamTime.scope_lock_key(scope_id))
+    idle_seconds = dream_idle_seconds!()
+    scheduled_at = DateTime.add(activity_at, idle_seconds, :second)
+    actor = pipeline_actor(actor)
+
+    PipelineRun
+    |> Ash.Changeset.new()
+    |> Ash.Changeset.set_tenant(account_id)
+    |> Ash.Changeset.set_context(%{memhouse_actor: actor})
+    |> Ash.Changeset.for_create(:enqueue_idle_dream_time, %{
+      scope_id: scope_id,
+      target_type: "scope",
+      target_id: scope_id,
+      idempotency_key: Idempotency.idle_dream_time(scope_id, activity_at, activity_id),
+      payload: %{
+        "mode" => "idle_scope",
+        "activity_at" => DateTime.to_iso8601(activity_at),
+        "activity_id" => activity_id
+      },
+      scheduled_at: scheduled_at
+    })
+    |> Ash.create(actor: actor)
+  end
+
+  @doc "True only when the experimental durable per-scope idle scheduler is enabled."
+  def idle_dream_time_enabled? do
+    case Keyword.fetch!(
+           Application.fetch_env!(:memhouse, :dream_time_gates),
+           :idle_scheduler_enabled
+         ) do
+      enabled when is_boolean(enabled) ->
+        enabled
+
+      invalid ->
+        raise ArgumentError,
+              "dream idle scheduler enabled flag must be boolean: #{inspect(invalid)}"
+    end
   end
 
   @doc """
@@ -392,19 +456,205 @@ defmodule MemHouse.Pipeline do
            |> Ash.Changeset.set_tenant(run.account_id)
            |> Ash.Changeset.for_update(:requeue_terminated, %{})
            |> Ash.update(actor: actor) do
-      enqueue(
-        reset.kind,
-        reset.account_id,
-        %{
-          scope_id: reset.scope_id,
-          target_type: reset.target_type,
-          target_id: reset.target_id,
-          idempotency_key: reset.idempotency_key,
-          payload: reset.payload
-        },
-        actor
-      )
+      reenqueue(reset, actor)
     end
+  end
+
+  @doc """
+  Atomically claims eligible message-extraction runs for one batch owner.
+
+  Only pending or failed runs named by `target_ids` can transition to
+  `processing`. The returned records carry `claim_id`; all later per-anchor
+  completion and classification calls fence on that exact value. A concurrent
+  worker that won first simply removes that anchor from the returned list.
+  """
+  def claim_extraction_runs(account_id, target_ids, claim_id, actor)
+      when is_list(target_ids) and is_binary(claim_id) do
+    result =
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "extraction" and target_type == "message" and target_id in ^target_ids and
+          status in ["pending", "failed"]
+      )
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.bulk_update!(:claim_extraction_batch, %{batch_claim_id: claim_id},
+        actor: pipeline_actor(actor),
+        return_records?: true,
+        strategy: [:atomic]
+      )
+
+    {:ok, result.records || []}
+  end
+
+  @doc """
+  Persists a content-safe failure classification for one claimed batch anchor.
+
+  Returns `{:error, :stale_extraction_claim}` when reconciliation or another
+  owner has replaced the claim. In that case no attribute is changed.
+  """
+  def classify_extraction_run(run, status, error_class, admission_identity, actor)
+      when status in ["failed", "repairable", "terminal"] and
+             not is_nil(run.batch_claim_id) do
+    fenced_extraction_update(
+      run,
+      :classify_extraction_anchor,
+      %{
+        status: status,
+        attempt_count: run.attempt_count + 1,
+        last_error_class: error_class,
+        processed_at: if(status == "failed", do: nil, else: Clock.utc_now()),
+        payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+      },
+      actor
+    )
+  end
+
+  @doc """
+  Completes one claimed batch anchor under its exact claim fence.
+
+  Returns `{:error, :stale_extraction_claim}` when the run is no longer
+  processing under the supplied claim. This expected race never clears or
+  overwrites the current owner's replacement claim.
+  """
+  def complete_extraction_run(run, admission_identity, actor)
+      when not is_nil(run.batch_claim_id) do
+    fenced_extraction_update(
+      run,
+      :complete_extraction_anchor,
+      %{
+        attempt_count: run.attempt_count + 1,
+        processed_at: Clock.utc_now(),
+        payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+      },
+      actor
+    )
+  end
+
+  defp fenced_extraction_update(run, action, attrs, actor) do
+    result =
+      PipelineRun
+      |> Ash.Query.filter(
+        id == ^run.id and status == "processing" and batch_claim_id == ^run.batch_claim_id
+      )
+      |> Ash.Query.set_tenant(run.account_id)
+      |> Ash.bulk_update!(action, attrs,
+        actor: pipeline_actor(actor),
+        return_records?: true,
+        strategy: [:atomic]
+      )
+
+    case result.records || [] do
+      [updated] -> {:ok, updated}
+      [] -> {:error, :stale_extraction_claim}
+    end
+  end
+
+  @doc "Explicitly requeues a repairable or terminal message extraction."
+  def request_extraction_requeue(%Actor{} = actor, message_id) do
+    DataLayer.with_actor(actor, fn account, scoped_actor ->
+      pipeline_actor = pipeline_actor(scoped_actor)
+
+      run =
+        PipelineRun
+        |> Ash.Query.filter(
+          kind == "extraction" and target_type == "message" and target_id == ^message_id
+        )
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor)
+
+      cond do
+        is_nil(run) ->
+          {:error, :not_found}
+
+        run.status in ["repairable", "terminal"] ->
+          with {:ok, reset} <-
+                 run
+                 |> Ash.Changeset.for_update(:requeue_extraction_anchor, %{})
+                 |> Ash.Changeset.set_tenant(account.id)
+                 |> Ash.update(actor: pipeline_actor) do
+            enqueue(
+              reset.kind,
+              reset.account_id,
+              %{
+                scope_id: reset.scope_id,
+                target_type: reset.target_type,
+                target_id: reset.target_id,
+                idempotency_key: reset.idempotency_key,
+                payload: reset.payload
+              },
+              pipeline_actor
+            )
+          end
+
+        true ->
+          {:error, :not_repairable}
+      end
+    end)
+  end
+
+  @doc "Returns this Account's durable Oban schedule for a replay key, or `:error` when absent."
+  def scheduled_at(
+        %Account{id: account_id},
+        %Actor{account_id: account_id},
+        idempotency_key
+      )
+      when is_binary(idempotency_key) do
+    case Store.oban_job_scheduled_at(account_id, idempotency_key) do
+      nil -> :error
+      scheduled_at -> {:ok, scheduled_at}
+    end
+  end
+
+  @doc """
+  Reports whether a message still has extraction work that reconciliation may replay.
+
+  Pending, failed, and actively claimed runs are replayable. Terminal operator
+  outcomes are deliberately excluded until an explicit requeue resets them.
+  """
+  def extraction_replayable?(account_id, message_id, actor) do
+    PipelineRun
+    |> Ash.Query.filter(
+      kind == "extraction" and target_type == "message" and target_id == ^message_id and
+        status in ["pending", "failed", "processing"]
+    )
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.exists?(actor: pipeline_actor(actor))
+  end
+
+  @doc """
+  Reports whether message extraction ended in an operator-visible terminal state.
+
+  Repairable and terminal outcomes require an explicit requeue. Missing,
+  completed, pending, failed, and processing rows do not block reconciliation
+  from idempotently offering an unstamped message again.
+  """
+  def extraction_terminal?(account_id, message_id, actor) do
+    PipelineRun
+    |> Ash.Query.filter(
+      kind == "extraction" and target_type == "message" and target_id == ^message_id and
+        status in ["repairable", "terminal"]
+    )
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.exists?(actor: pipeline_actor(actor))
+  end
+
+  @doc """
+  Reports whether a scope already has durable projection-refresh work that
+  reconciliation can recover.
+
+  Pending, failed, and processing runs may still finish through their existing
+  job. Cancelled and discarded runs remain recoverable by the reconciler's
+  terminal replay pass. Completed runs are excluded: if the source corpus is
+  still stale after completion, a new corpus watermark must schedule new work.
+  """
+  def projection_refresh_recoverable?(account_id, scope_id, actor) do
+    PipelineRun
+    |> Ash.Query.filter(
+      kind == "projection_refresh" and target_type == "scope" and target_id == ^scope_id and
+        status in ["pending", "failed", "processing", "cancelled", "discarded"]
+    )
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.exists?(actor: pipeline_actor(actor))
   end
 
   @doc """
@@ -493,5 +743,47 @@ defmodule MemHouse.Pipeline do
     actor
     |> Map.put(:role, :system)
     |> Map.put(:pipeline?, true)
+  end
+
+  defp reenqueue(
+         %PipelineRun{kind: "dream_time", payload: %{"mode" => "idle_scope"}} = run,
+         actor
+       ) do
+    with {:ok, activity_at, activity_id} <- idle_activity(run.payload) do
+      enqueue_idle_dream_time(run.account_id, run.scope_id, activity_at, activity_id, actor)
+    end
+  end
+
+  defp reenqueue(run, actor) do
+    enqueue(
+      run.kind,
+      run.account_id,
+      %{
+        scope_id: run.scope_id,
+        target_type: run.target_type,
+        target_id: run.target_id,
+        idempotency_key: run.idempotency_key,
+        payload: run.payload
+      },
+      actor
+    )
+  end
+
+  defp idle_activity(%{"activity_at" => value, "activity_id" => activity_id})
+       when is_binary(value) and is_binary(activity_id) do
+    with {:ok, activity_at, 0} <- DateTime.from_iso8601(value),
+         {:ok, activity_id} <- Ecto.UUID.cast(activity_id) do
+      {:ok, activity_at, activity_id}
+    else
+      _error -> {:error, :invalid_idle_dream_payload}
+    end
+  end
+
+  defp idle_activity(_payload), do: {:error, :invalid_idle_dream_payload}
+
+  defp dream_idle_seconds! do
+    :memhouse
+    |> Application.fetch_env!(:dream_time_gates)
+    |> Keyword.fetch!(:idle_seconds)
   end
 end

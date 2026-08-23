@@ -26,6 +26,18 @@ env_bool = fn key, default ->
   String.downcase(env_get.(key, value)) in ~w(true 1 yes on)
 end
 
+# Experimental execution switches must reject ambiguous values at boot. A
+# misspelling must not silently enable or disable a provider-calling path.
+env_bool! = fn key, default ->
+  value = env_get.(key, if(default, do: "true", else: "false"))
+
+  case String.downcase(value) do
+    truthy when truthy in ~w(true 1 yes on) -> true
+    falsy when falsy in ~w(false 0 no off) -> false
+    _other -> raise "#{key} must be true or false, got: #{inspect(value)}"
+  end
+end
+
 # Parses comma-separated headers without logging collector credentials.
 env_headers = fn key ->
   key
@@ -125,16 +137,37 @@ env_positive_integer! = fn key, default ->
   end
 end
 
-# Rejects ambiguous switches such as auto-migrate.
-env_bool! = fn key, default ->
-  value = env_get.(key, if(default, do: "true", else: "false"))
+extraction_batch_target =
+  env_positive_integer!.("MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS", "4096")
 
-  case String.downcase(value) do
-    truthy when truthy in ~w(true 1 yes on) -> true
-    falsy when falsy in ~w(false 0 no off) -> false
-    _other -> raise "#{key} must be true or false, got: #{inspect(value)}"
-  end
+extraction_claim_timeout_seconds =
+  env_positive_integer!.("MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS", "1200")
+
+extraction_batching_enabled =
+  env_bool!.("MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING", false)
+
+unless extraction_batch_target in [128, 1_024, 4_096, 16_384] do
+  raise "MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS must be one of 128, 1024, 4096, or 16384"
 end
+
+config :memhouse, :extraction_batching,
+  enabled: extraction_batching_enabled,
+  target_tokens: extraction_batch_target,
+  max_anchors: env_positive_integer!.("MEMHOUSE_EXTRACTION_BATCH_MAX_ANCHORS", "32"),
+  context_limit_tokens: env_positive_integer!.("MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS", "131072"),
+  reserved_output_tokens:
+    env_positive_integer!.("MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS", "8192"),
+  safety_margin_tokens:
+    env_positive_integer!.("MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS", "2048"),
+  claim_timeout_seconds: extraction_claim_timeout_seconds
+
+compact_extraction_enabled =
+  env_bool!.("MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION", false)
+
+config :memhouse, :compact_extraction,
+  enabled: compact_extraction_enabled,
+  experiment_identity: "compact-explicit-v1",
+  prompt_version: "extract-compact-exp-1"
 
 # Parent-based sampling preserves incoming decisions; ratios range from 0.0 to 1.0.
 env_sampler = fn ->
@@ -496,6 +529,24 @@ generation_options = %{
   "pool_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000")
 }
 
+config :memhouse, :ingest_provider_circuit,
+  enabled: env_bool!.("MEMHOUSE_INGEST_CIRCUIT_ENABLED", true),
+  failure_threshold: env_positive_integer!.("MEMHOUSE_INGEST_CIRCUIT_FAILURE_THRESHOLD", "5"),
+  open_ms: env_positive_integer!.("MEMHOUSE_INGEST_CIRCUIT_OPEN_MS", "30000")
+
+# One structured extraction may use the initial call plus two bounded repair
+# calls. The lease must outlive that whole-call budget so reconciliation cannot
+# start a duplicate billed call while the original worker is still live. The
+# extra minute covers validation and short database transactions between calls.
+minimum_extraction_claim_timeout_ms = generation_options["request_timeout"] * 3 + 60_000
+
+if extraction_batching_enabled and
+     extraction_claim_timeout_seconds * 1_000 < minimum_extraction_claim_timeout_ms do
+  raise "MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS must cover three " <>
+          "MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS calls plus 60 seconds; " <>
+          "minimum is #{div(minimum_extraction_claim_timeout_ms + 999, 1_000)} seconds"
+end
+
 # ReqLLM shares this Finch pool across every hosted generation role. Finch
 # chooses a shard randomly when `count` exceeds one, so capacity belongs in
 # `size`: one 16-connection shard handles the normal ten-worker ingest queue
@@ -589,7 +640,8 @@ config :memhouse, :model_roles,
     provider: generation_provider,
     model: generation_model.("MEMHOUSE_MODEL_INGEST", "openai/gpt-oss-120b"),
     model_version: generation_version,
-    prompt_version: "extract-12",
+    prompt_version:
+      if(compact_extraction_enabled, do: "extract-compact-exp-1", else: "extract-13"),
     pipeline_version: "f5-1",
     options: generation_options
   },
@@ -630,6 +682,7 @@ config :memhouse, :diskann,
 # because changing them changes result quality and needs review.
 retrieval_strategy_names = %{
   "semantic" => :semantic,
+  "semantic_dual_lane" => :semantic_dual_lane,
   "lexical" => :lexical,
   "temporal" => :temporal,
   "salience_recency" => :salience_recency,
@@ -638,6 +691,16 @@ retrieval_strategy_names = %{
 }
 
 retrieval_profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+retrieval_profiles =
+  Keyword.put(
+    retrieval_profiles,
+    :minimal_enabled,
+    env_bool!.(
+      "MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL",
+      Keyword.fetch!(retrieval_profiles, :minimal_enabled)
+    )
+  )
 
 # An unknown name raises rather than being ignored. Silently dropping a
 # misspelled strategy would quietly degrade recall with no visible symptom.
@@ -793,6 +856,91 @@ retrieval_profiles =
 
 config :memhouse, :retrieval_profiles, retrieval_profiles
 
+dream_time_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+
+dream_time_gates =
+  dream_time_gates
+  |> Keyword.put(
+    :idle_scheduler_enabled,
+    env_bool!.(
+      "MEMHOUSE_EXPERIMENTAL_DREAM_IDLE_SCHEDULER",
+      false
+    )
+  )
+  |> Keyword.put(
+    :min_changes,
+    env_integer.(
+      "MEMHOUSE_DREAM_MIN_CHANGES",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :min_changes))
+    )
+  )
+  |> Keyword.put(
+    :idle_seconds,
+    env_integer.(
+      "MEMHOUSE_DREAM_IDLE_SECONDS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :idle_seconds))
+    )
+  )
+  |> Keyword.put(
+    :min_interval_seconds,
+    env_integer.(
+      "MEMHOUSE_DREAM_MIN_INTERVAL_SECONDS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :min_interval_seconds))
+    )
+  )
+  |> Keyword.put(
+    :max_delta_items,
+    env_integer.(
+      "MEMHOUSE_DREAM_MAX_DELTA_ITEMS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :max_delta_items))
+    )
+  )
+  |> Keyword.put(
+    :max_working_set_items,
+    env_integer.(
+      "MEMHOUSE_DREAM_MAX_WORKING_SET_ITEMS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :max_working_set_items))
+    )
+  )
+  |> Keyword.put(
+    :max_elapsed_ms,
+    env_integer.(
+      "MEMHOUSE_DREAM_MAX_ELAPSED_MS",
+      Integer.to_string(Keyword.fetch!(dream_time_gates, :max_elapsed_ms))
+    )
+  )
+
+unless is_boolean(Keyword.fetch!(dream_time_gates, :idle_scheduler_enabled)) and
+         Keyword.fetch!(dream_time_gates, :min_changes) > 0 and
+         Keyword.fetch!(dream_time_gates, :idle_seconds) >= 0 and
+         Keyword.fetch!(dream_time_gates, :min_interval_seconds) >= 0 and
+         Keyword.fetch!(dream_time_gates, :max_delta_items) > 0 and
+         Keyword.fetch!(dream_time_gates, :max_working_set_items) > 0 and
+         Keyword.fetch!(dream_time_gates, :max_elapsed_ms) > 0 do
+  raise "dream-time gates require positive limits and non-negative durations"
+end
+
+config :memhouse, :dream_time_gates, dream_time_gates
+
+dream_reasoning_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+
+config :memhouse, :dream_reasoning_operations,
+  split_enabled:
+    env_bool!.(
+      "MEMHOUSE_EXPERIMENTAL_DREAM_OPERATION_SPLIT",
+      Keyword.fetch!(dream_reasoning_operations, :split_enabled)
+    ),
+  update:
+    env_bool!.(
+      "MEMHOUSE_DREAM_UPDATE_ENABLED",
+      Keyword.fetch!(dream_reasoning_operations, :update)
+    ),
+  synthesis:
+    env_bool!.(
+      "MEMHOUSE_DREAM_SYNTHESIS_ENABLED",
+      Keyword.fetch!(dream_reasoning_operations, :synthesis)
+    )
+
 # Legacy single-credential configuration, predating per-role settings. The
 # ReqLLM provider still consults it, and an `api_key` set here would win over a
 # role's own reference — so it stays nil by design. The reference only names
@@ -831,18 +979,30 @@ budget_limits =
     {metric, value}
   end)
 
-# Operator-declared prices in USD per million tokens, keyed by model role and
-# then by metric, for example
+# Prices in USD per million tokens, keyed by model role and then by metric, for example
 # {"ingest_extractor":{"input":0.5,"output":1.5},"embedder":{"embedding":0.02}}.
-# There is no built-in vendor price list and no hidden billing state: an omitted
-# role or metric simply contributes zero to the reported estimate. Exact token
-# counts are recorded separately as durable usage events; this map only turns
-# them into money.
+# With no environment override, the compile-time planning-reference-v1 table
+# supplies deliberately round, provider-neutral non-zero rates. It is not a
+# vendor price claim. An operator override replaces the whole table and carries
+# its own profile id in the cost response. Exact token counts are recorded
+# separately as durable usage events; this map only turns them into money.
 cost_key_map = %{"input" => :input, "output" => :output, "embedding" => :embedding}
 
+configured_model_costs = Application.fetch_env!(:memhouse, :model_cost_per_million)
+model_costs_json = env_get.("MEMHOUSE_MODEL_COSTS_JSON", nil)
+
+model_cost_profile_id =
+  if(model_costs_json,
+    do: env_get.("MEMHOUSE_MODEL_COST_PROFILE", "operator-env"),
+    else: "planning-reference-v1"
+  )
+
+unless Regex.match?(~r/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/, model_cost_profile_id) do
+  raise "MEMHOUSE_MODEL_COST_PROFILE must be a content-free identifier of at most 64 characters"
+end
+
 model_costs =
-  "MEMHOUSE_MODEL_COSTS_JSON"
-  |> env_get.("{}")
+  (model_costs_json || Jason.encode!(configured_model_costs))
   |> Jason.decode!()
   |> Map.new(fn {role, rates} ->
     unless is_map(rates), do: raise("model cost rates for #{role} must be an object")
@@ -866,6 +1026,16 @@ model_costs =
 
 config :memhouse, :budget_limits, budget_limits
 config :memhouse, :model_cost_per_million, model_costs
+
+config :memhouse,
+       :model_cost_profile,
+       if(model_costs_json,
+         do: %{
+           id: model_cost_profile_id,
+           kind: "operator_override"
+         },
+         else: %{id: model_cost_profile_id, kind: "planning_reference"}
+       )
 
 # Where original document bytes are stored. This is an infrastructure seam:
 # swapping the adapter changes where blobs live and nothing else. Supersession,

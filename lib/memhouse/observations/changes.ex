@@ -74,10 +74,12 @@ end
 
 defmodule MemHouse.Observations.Changes.AuditAndEnqueueMessage do
   @moduledoc """
-  Atomically audits a new message and schedules extraction.
+  Atomically audits a new message and schedules extraction plus source indexing.
 
-  The message, content-safe audit entry, durable idempotency row, and AshOban enqueue share one
-  transaction. Job arguments contain ids only, never message text.
+  The message, content-safe audit entry, durable idempotency rows, and AshOban enqueues share one
+  transaction. Source indexing reuses the scope-level projection refresh lane, so a burst of
+  messages creates one delayed job rather than one provider call per message. Job arguments
+  contain ids only, never message text.
   """
 
   use Ash.Resource.Change
@@ -89,8 +91,8 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueMessage do
   Registers the after-action hook that audits the message and enqueues its pipeline work.
 
   Returns the changeset. At run time the hook returns `{:ok, message}` once the audit entry, the
-  extraction run, and the reconciler run are all durable, or the first error, which aborts the
-  transaction.
+  extraction and source-refresh runs are both durable, or the first error, which aborts the
+  transaction. Neither provider is called by this hook.
   """
   @impl true
   def change(changeset, _opts, context) do
@@ -122,6 +124,13 @@ defmodule MemHouse.Observations.Changes.AuditAndEnqueueMessage do
                }
              }),
            {:ok, _run} <- Pipeline.enqueue_message_extraction(message, actor),
+           {:ok, _source_refresh} <-
+             Pipeline.enqueue_derived_refresh(
+               message.account_id,
+               message.scope_id,
+               message.inserted_at,
+               actor
+             ),
            :ok <- maybe_fail(changeset) do
         {:ok, message}
       end

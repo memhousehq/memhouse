@@ -92,8 +92,12 @@ are identified separately. Model usage continues to have one durable emission
 point in `MemHouse.Model.Usage`. Rebuildable ETS counters provide inexpensive
 daily admission checks, with dream-time throttled before user-facing ingest or
 governed reads. Account administrators can inspect exact API, ingest, token,
-role, logical-storage, and model-call-health totals plus operator-configured USD estimates at
-`GET /api/v1/operations/costs`.
+role, logical-storage, and model-call-health totals plus USD estimates at
+`GET /api/v1/operations/costs`. The response names either the shipped,
+provider-neutral `planning-reference-v1` rate profile or a content-free
+operator override identity, so an absent override does not silently report
+real token usage as free and a planning estimate cannot be mistaken for a
+contracted bill.
 
 Production logs use a JSON formatter with an explicit metadata allowlist and
 credential redaction. Queue depth and portability duration telemetry join the

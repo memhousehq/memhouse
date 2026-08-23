@@ -4,10 +4,12 @@ defmodule MemHouse.Retrieval.Profile do
   @moduledoc """
   Resolves retrieval strategies, fusion settings, reranking, deadline, and version.
 
-  Starts with `:fast`, `:balanced`, or `:thorough` defaults, applies the nearest active scope
-  override or Account fallback, then the deployment allowlist. Disabled strategies remain visible
-  in the response. Explicit strategy lists and rerank overrides are internal-only and unknown names
-  raise.
+  Starts with `:fast`, `:balanced`, `:thorough`, or the feature-gated
+  experimental `:minimal` default. The stable profiles apply the nearest active
+  scope override or Account fallback; `:minimal` always retains its runtime
+  settings. The deployment allowlist then applies. Disabled strategies remain
+  visible in the response. Explicit strategy lists and rerank overrides are
+  internal-only and unknown names raise.
 
   Defaults report the `f7-1` retrieval/context contract. Overrides combine authored version with a
   settings digest for reproducibility; changing the base identity is a public contract transition.
@@ -20,6 +22,7 @@ defmodule MemHouse.Retrieval.Profile do
   # Only registered strategies may run; registry changes alter behavior.
   @strategy_modules %{
     semantic: MemHouse.Retrieval.Strategies.Semantic,
+    semantic_dual_lane: MemHouse.Retrieval.Strategies.SemanticDualLane,
     lexical: MemHouse.Retrieval.Strategies.Lexical,
     temporal: MemHouse.Retrieval.Strategies.Temporal,
     salience_recency: MemHouse.Retrieval.Strategies.SalienceRecency,
@@ -30,13 +33,15 @@ defmodule MemHouse.Retrieval.Profile do
   @doc """
   Resolves a profile name into the concrete settings one request will use.
 
-  `name` is `:fast`, `:balanced`, or `:thorough` (strings accepted). `query`
-  supplies the Account and the nearest-first scope list used to find a stored
-  override. Options:
+  `name` is `:fast`, `:balanced`, `:thorough`, or the feature-gated
+  experimental `:minimal` profile (strings accepted). `query` supplies the
+  Account and the nearest-first scope list used to find a stored override.
+  Options:
 
-  * `:inherit?` (default true) — set false to ignore stored overrides and use
-    the compiled defaults, which is what makes evaluation runs reproducible
-    across Accounts.
+  * `:inherit?` (default true) — for `fast`, `balanced`, and `thorough`, set
+    false to ignore stored overrides and use the compiled defaults, which is
+    what makes evaluation runs reproducible across Accounts. `minimal` always
+    ignores stored overrides.
   * `:strategies` — an explicit strategy list, permitted only together with
     `internal?: true`.
   * `:rerank` — forces reranking on or off, permitted only together with
@@ -55,13 +60,10 @@ defmodule MemHouse.Retrieval.Profile do
   authorization-checked like any other read.
   """
   def resolve(name, query, opts \\ []) do
-    name = normalize_name(name)
-    base = runtime_profile(name)
+    base = configuration!(name, true)
+    name = base.name
 
-    configured =
-      if Keyword.get(opts, :inherit?, true) do
-        inherited_profile(name, query)
-      end
+    configured = persisted_profile(name, query, opts)
 
     profile = merge_persisted(base, configured)
     profile = %{profile | rrf_k: positive_rrf_k!(profile.rrf_k)}
@@ -114,6 +116,26 @@ defmodule MemHouse.Retrieval.Profile do
 
   @doc "Returns every registered strategy name, for validation and reporting."
   def strategy_names, do: Map.keys(@strategy_modules)
+
+  @doc """
+  Returns the configured settings for one closed retrieval profile name.
+
+  This function is the shared configuration-introspection seam for internal
+  reporting and evaluation code. It accepts the same atom or string names as
+  `resolve/3`, rejects every other name without creating atoms, and does not
+  enable a feature-gated profile. Request execution must still use `resolve/3`,
+  which enforces the experimental-profile gate before reading its settings.
+  """
+  def configuration!(name), do: configuration!(name, false)
+
+  # Minimal is an experiment whose settings and version must be identical
+  # across Accounts. Ignore even a legacy row created before the storage
+  # boundary was enforced, so rollback comparisons cannot be silently retuned.
+  defp persisted_profile(:minimal, _query, _opts), do: nil
+
+  defp persisted_profile(name, query, opts) do
+    if Keyword.get(opts, :inherit?, true), do: inherited_profile(name, query)
+  end
 
   # Nearest scope's highest active version wins; Account-wide is fallback, not another layer.
   defp inherited_profile(name, query) do
@@ -169,7 +191,10 @@ defmodule MemHouse.Retrieval.Profile do
   end
 
   # Missing profile configuration is a deployment error, never a silent default.
-  defp runtime_profile(name) do
+  defp configuration!(name, enforce_enabled?) do
+    name = normalize_name(name)
+    if enforce_enabled?, do: ensure_enabled!(name)
+
     config = Application.fetch_env!(:memhouse, :retrieval_profiles)
     values = config |> Keyword.fetch!(name) |> Map.new()
 
@@ -192,13 +217,14 @@ defmodule MemHouse.Retrieval.Profile do
   end
 
   # Convert only known names; unknown input raises and cannot create atoms.
-  defp normalize_name(name) when name in [:fast, :balanced, :thorough], do: name
+  defp normalize_name(name) when name in [:fast, :balanced, :thorough, :minimal], do: name
 
   defp normalize_name(name) when is_binary(name) do
     case name do
       "fast" -> :fast
       "balanced" -> :balanced
       "thorough" -> :thorough
+      "minimal" -> :minimal
       _other -> raise ArgumentError, "unknown retrieval profile: #{inspect(name)}"
     end
   end
@@ -228,4 +254,15 @@ defmodule MemHouse.Retrieval.Profile do
       {to_string(key), if(is_map(value), do: stringify_keys(value), else: value)}
     end)
   end
+
+  defp ensure_enabled!(:minimal) do
+    unless :memhouse
+           |> Application.fetch_env!(:retrieval_profiles)
+           |> Keyword.fetch!(:minimal_enabled) do
+      raise ArgumentError,
+            "experimental minimal retrieval is disabled; set MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true"
+    end
+  end
+
+  defp ensure_enabled!(_name), do: :ok
 end

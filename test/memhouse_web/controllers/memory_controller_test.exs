@@ -12,11 +12,15 @@ defmodule MemHouseWeb.MemoryControllerTest do
 
   use MemHouseWeb.ConnCase, async: false
 
+  alias MemHouse.DataLayer
   alias MemHouse.Governance.McpTools
   alias MemHouse.Identity
   alias MemHouse.Memory
   alias MemHouse.Model.GroundedAnswerProvider
+  alias MemHouse.Operations.PipelineRun
   alias MemHouse.Repo
+
+  require Ash.Query
 
   setup do
     # Remove any model credential the developer's shell or the loaded config
@@ -263,6 +267,94 @@ defmodule MemHouseWeb.MemoryControllerTest do
              )
   end
 
+  test "POST /api/v1/operations/ingest/:id/requeue explicitly repairs a terminal anchor", %{
+    conn: conn,
+    actor: actor,
+    token: token
+  } do
+    assert {:ok, message} =
+             Memory.ingest_message(
+               ingest_attrs("repair-session", "/contract/http/repair"),
+               actor
+             )
+
+    run = extraction_run!(actor, message["id"])
+
+    # Test-only fixture setup: the completed anchor has no live batch claim, so the
+    # governed production transition correctly refuses to classify it.
+    Ash.Seed.update!(
+      run,
+      %{status: "terminal", last_error_class: "structured_validation_exhausted"},
+      tenant: actor.account_id
+    )
+
+    member =
+      Identity.provision_agent(actor, %{
+        "key" => "requeue-member",
+        "scope_path" => "/",
+        "role" => "member"
+      })
+
+    denied =
+      conn
+      |> with_identity(member.api_key)
+      |> post(~p"/api/v1/operations/ingest/#{message["id"]}/requeue")
+
+    assert %{"error" => "Forbidden"} = json_response(denied, 403)
+
+    assert %{status: "terminal", last_error_class: "structured_validation_exhausted"} =
+             extraction_run!(actor, message["id"])
+
+    response =
+      denied
+      |> recycle()
+      |> with_identity(token)
+      |> post(~p"/api/v1/operations/ingest/#{message["id"]}/requeue")
+
+    assert %{"data" => %{"run_id" => run_id, "status" => "accepted"}} =
+             json_response(response, 202)
+
+    assert %{id: ^run_id, status: "pending", last_error_class: nil} =
+             extraction_run!(actor, message["id"])
+
+    conflict =
+      response
+      |> recycle()
+      |> with_identity(token)
+      |> post(~p"/api/v1/operations/ingest/#{message["id"]}/requeue")
+
+    assert %{"error" => "Extraction is not repairable"} = json_response(conflict, 409)
+
+    invalid =
+      conflict
+      |> recycle()
+      |> with_identity(token)
+      |> post("/api/v1/operations/ingest/not-a-uuid/requeue")
+
+    assert %{"error" => "Invalid request"} = json_response(invalid, 422)
+
+    missing =
+      invalid
+      |> recycle()
+      |> with_identity(token)
+      |> post("/api/v1/operations/ingest/#{Ecto.UUID.generate()}/requeue")
+
+    assert %{"error" => "Not found"} = json_response(missing, 404)
+  end
+
+  defp extraction_run!(actor, message_id) do
+    actor_opts = [role: :system, pipeline?: true]
+
+    DataLayer.with_account_id(actor.account_id, actor_opts, fn account, pipeline_actor ->
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "extraction" and target_type == "message" and target_id == ^message_id
+      )
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: pipeline_actor)
+    end)
+  end
+
   test "POST /api/v1/operations/dream enqueues an Account dream-time pass", %{
     conn: conn,
     token: token
@@ -330,6 +422,63 @@ defmodule MemHouseWeb.MemoryControllerTest do
     # are not comparable and silently degrades the ranking.
     assert statement =~ "concise weekly release summaries"
     assert_trace_id(conn)
+  end
+
+  test "POST /api/v1/source-search returns bounded immutable source citations", %{
+    conn: conn,
+    actor: actor,
+    token: token
+  } do
+    assert {:ok, message} =
+             Memory.ingest_message(
+               ingest_attrs("source-search-session", "/contract/http/source-search"),
+               actor
+             )
+
+    conn =
+      conn
+      |> with_identity(token)
+      |> post(~p"/api/v1/source-search", %{
+        "scope_path" => "/contract/http/source-search",
+        "query" => "concise weekly release summaries",
+        "mode" => "exact",
+        "excerpt_chars" => 80
+      })
+
+    assert %{
+             "data" => %{
+               "mode" => "exact",
+               "status" => "ready",
+               "degraded" => false,
+               "results" => [
+                 %{
+                   "id" => message_id,
+                   "session_id" => session_id,
+                   "scope_id" => scope_id,
+                   "speaker_key" => _speaker,
+                   "occurred_at" => _occurred_at,
+                   "excerpt" => excerpt,
+                   "rank" => 1
+                 }
+               ]
+             }
+           } = json_response(conn, 200)
+
+    assert message_id == message["id"]
+    assert session_id == message["session_id"]
+    assert scope_id == message["scope_id"]
+    assert String.length(excerpt) <= 80
+    refute Map.has_key?(json_response(conn, 200)["data"], "total")
+    assert_trace_id(conn)
+  end
+
+  test "POST /api/v1/source-search rejects invalid typed arguments", %{conn: conn, token: token} do
+    response =
+      conn
+      |> with_identity(token)
+      |> post(~p"/api/v1/source-search", %{"limit" => "many"})
+
+    assert %{"error" => "Invalid request"} = json_response(response, 422)
   end
 
   # Diagnostic options travel as a `DiagnosticGrant` struct precisely so a JSON

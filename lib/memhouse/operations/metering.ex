@@ -13,7 +13,10 @@ defmodule MemHouse.Operations.Metering do
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Operations.BudgetCounter
+  alias MemHouse.Operations.PipelineRun
   alias MemHouse.Operations.UsageEvent
+
+  require Ash.Query
 
   @token_metrics [:input_tokens, :output_tokens, :embedding_tokens]
   @model_health_window_seconds 86_400
@@ -104,8 +107,8 @@ defmodule MemHouse.Operations.Metering do
 
   The returned map holds the recorded event count, API request and ingest
   counts, input/output/embedding token totals overall and per model role,
-  durable and operational storage bytes, an estimated model cost, and the
-  currency that estimate is denominated in.
+  durable and operational storage bytes, terminal extraction-failure count, an
+  estimated model cost, and the currency that estimate is denominated in.
 
   Raises if the actor may not read the ledger.
   """
@@ -146,11 +149,20 @@ defmodule MemHouse.Operations.Metering do
           inverted?: storage.operational > storage.durable
         },
         estimated_model_cost: estimated_cost(by_role),
+        model_cost_profile: Application.fetch_env!(:memhouse, :model_cost_profile),
         ingest_economics: ingest_economics(events, by_role, ingests),
+        terminal_extraction_failures: terminal_extraction_failures(actor),
         model_calls: model_call_health(events),
         currency: "USD"
       }
     end)
+  end
+
+  defp terminal_extraction_failures(actor) do
+    PipelineRun
+    |> Ash.Query.filter(kind == "extraction" and status == "terminal")
+    |> Ash.Query.set_tenant(actor.account_id)
+    |> Ash.count!(actor: actor)
   end
 
   defp token_totals(events) do
@@ -238,11 +250,12 @@ defmodule MemHouse.Operations.Metering do
     Float.round(operational / durable, 2)
   end
 
-  # Rates are operator-configured price per one million tokens, per model role
-  # and per token kind. An unconfigured role or kind is worth 0.0, so a
-  # self-hoster who sets nothing sees an honest zero instead of a fabricated
-  # number. Rounded to six decimal places because a single small call can cost
-  # a fraction of a cent and truncating further would report it as free.
+  # Rates are price per one million tokens, per model role and token kind. The
+  # shipped table is a clearly-labelled planning reference; an operator may
+  # replace the whole table with contracted rates. An unconfigured role or kind
+  # is still worth 0.0. Rounded to six decimal places because a single small
+  # call can cost a fraction of a cent and truncating further would report it as
+  # free.
   defp estimated_cost(by_role) do
     Enum.reduce(by_role, 0.0, fn {role, totals}, result ->
       result + estimated_role_cost(role, totals)

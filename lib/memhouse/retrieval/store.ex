@@ -92,6 +92,146 @@ defmodule MemHouse.Retrieval.Store do
   defp integer(value) when is_integer(value), do: value
 
   @doc """
+  Full-text search over immutable source messages in already-authorized scopes.
+
+  The caller must run this inside the authenticated Account transaction and
+  supply only scope ids authorized for that reader. Account and scope filters
+  are repeated before ranking, and the returned source body is bounded by
+  `excerpt_chars`.
+  """
+  def source_exact(authority, text, limit, excerpt_chars) do
+    sql = """
+    WITH term AS (SELECT websearch_to_tsquery('simple', $3) AS query)
+    SELECT message.id, message.session_id, message.scope_id,
+           message.peer_id, peer.key AS speaker_key,
+           peer.name AS speaker_name, message.role, message.occurred_at,
+           left(message.content, $5) AS excerpt,
+           ts_rank_cd(message.search_vector, term.query)::float8 AS score
+    FROM messages AS message
+    JOIN peers AS peer
+      ON peer.id = message.peer_id AND peer.account_id = message.account_id
+    CROSS JOIN term
+    WHERE message.account_id = $1
+      AND message.scope_id = ANY($2)
+      AND message.search_vector @@ term.query
+    ORDER BY score DESC, message.occurred_at DESC, message.id ASC
+    LIMIT $4
+    """
+
+    all(sql, source_params(authority, [text, limit, excerpt_chars]))
+  end
+
+  @doc """
+  Semantic search over immutable source messages in already-authorized scopes.
+
+  Only rows carrying the requested embedding identity and authorized DiskANN
+  labels are eligible. The caller owns embedding and transaction orchestration;
+  this boundary owns the static, parameterized SQL.
+  """
+  def source_semantic(authority, vector, identity, labels, limit, excerpt_chars) do
+    distance =
+      if identity.dimensions == 1024,
+        do: "message.embedding::vector(1024) <=> $3::text::vector(1024)",
+        else: "message.embedding <=> $3::text::vector"
+
+    sql = """
+    SELECT message.id, message.session_id, message.scope_id,
+           message.peer_id, peer.key AS speaker_key,
+           peer.name AS speaker_name, message.role, message.occurred_at,
+           left(message.content, $10) AS excerpt,
+           (1.0 - (#{distance}))::float8 AS score
+    FROM messages AS message
+    JOIN peers AS peer
+      ON peer.id = message.peer_id AND peer.account_id = message.account_id
+    WHERE message.account_id = $1
+      AND message.scope_id = ANY($2)
+      AND message.embedding IS NOT NULL
+      AND message.embedding_provider = $4
+      AND message.embedding_model = $5
+      AND message.embedding_version = $6
+      AND message.embedding_dimensions = $7
+      AND message.diskann_labels && $8::smallint[]
+    ORDER BY #{distance}, message.occurred_at DESC, message.id ASC
+    LIMIT $9
+    """
+
+    all(
+      sql,
+      source_params(authority, [
+        vector_literal(vector),
+        identity.provider,
+        identity.model,
+        identity.version,
+        identity.dimensions,
+        labels,
+        limit,
+        excerpt_chars
+      ])
+    )
+  end
+
+  @doc """
+  Classifies source-message embedding coverage without revealing corpus counts.
+
+  Returns `:empty`, `:unavailable`, `:stale`, or `:ready` for only the Account
+  and authorized scopes supplied by the caller.
+  """
+  def source_embedding_status(authority, identity) do
+    sql = """
+    SELECT CASE
+      WHEN count(*) = 0 THEN 'empty'
+      WHEN count(*) FILTER (
+        WHERE embedding IS NOT NULL
+          AND embedding_provider = $3
+          AND embedding_model = $4
+          AND embedding_version = $5
+          AND embedding_dimensions = $6
+      ) = 0 THEN 'unavailable'
+      WHEN count(*) FILTER (
+        WHERE embedding IS NOT NULL
+          AND embedding_provider = $3
+          AND embedding_model = $4
+          AND embedding_version = $5
+          AND embedding_dimensions = $6
+      ) < count(*) THEN 'stale'
+      ELSE 'ready'
+    END AS status
+    FROM messages
+    WHERE account_id = $1 AND scope_id = ANY($2)
+    """
+
+    [row] =
+      all(
+        sql,
+        source_params(authority, [
+          identity.provider,
+          identity.model,
+          identity.version,
+          identity.dimensions
+        ])
+      )
+
+    String.to_existing_atom(row["status"])
+  end
+
+  @doc """
+  Reports whether an immutable source message exists in authorized scopes.
+
+  The boolean intentionally carries no hidden corpus count.
+  """
+  def source_visible?(authority) do
+    sql = """
+    SELECT EXISTS(
+      SELECT 1 FROM messages
+      WHERE account_id = $1 AND scope_id = ANY($2)
+    ) AS present
+    """
+
+    [%{"present" => present}] = all(sql, source_params(authority, []))
+    present
+  end
+
+  @doc """
   Full-text search over governed statements and document chunks.
 
   Searches requested targets and ranks with `ts_rank_cd`, then merges and truncates to `limit`.
@@ -273,6 +413,185 @@ defmodule MemHouse.Retrieval.Store do
       fn -> run_semantic_query(query, embedding, identity, limit, true) end,
       fn -> run_semantic_query(query, embedding, identity, limit, false) end
     )
+  end
+
+  @doc """
+  Runs independent semantic top-k searches for direct and derived knowledge.
+
+  The non-authoritative recall projection supplies the lane and vector, while
+  the joined canonical knowledge row supplies authorization and lifecycle.
+  A projection row is eligible only while its source watermark exactly matches
+  the current Knowledge row. Each lane is bounded before the stable
+  rank-interleave, so a dense direct neighborhood cannot crowd derived memory
+  out before fusion. One query embedding is shared by both lanes.
+
+  Returns at most `limit` rows. Every row records `recall_lane`, `operation`,
+  `provenance_ids`, `lane_rank`, and cosine `semantic_distance` for evaluation
+  and trace inspection.
+  """
+  def semantic_dual_lane(query, embedding, identity, direct_limit, derived_limit, limit)
+      when direct_limit > 0 and derived_limit > 0 and limit > 0 do
+    with_diskann_assertion_fallback(
+      fn ->
+        run_semantic_dual_lane_query(
+          query,
+          embedding,
+          identity,
+          direct_limit,
+          derived_limit,
+          limit,
+          true
+        )
+      end,
+      fn ->
+        run_semantic_dual_lane_query(
+          query,
+          embedding,
+          identity,
+          direct_limit,
+          derived_limit,
+          limit,
+          false
+        )
+      end
+    )
+  end
+
+  defp run_semantic_dual_lane_query(
+         query,
+         embedding,
+         identity,
+         direct_limit,
+         derived_limit,
+         limit,
+         indexscan?
+       ) do
+    configure_diskann_query!(max(direct_limit, derived_limit))
+
+    unless indexscan? do
+      Ecto.Adapters.SQL.query!(Repo, "SET LOCAL enable_indexscan = off", [])
+    end
+
+    semantic_dual_lane_query(query, embedding, identity, direct_limit, derived_limit, limit)
+  end
+
+  defp semantic_dual_lane_query(
+         %{target: target},
+         _embedding,
+         _identity,
+         _direct_limit,
+         _derived_limit,
+         _limit
+       )
+       when target not in [:knowledge, :all],
+       do: []
+
+  defp semantic_dual_lane_query(
+         query,
+         embedding,
+         identity,
+         direct_limit,
+         derived_limit,
+         limit
+       ) do
+    internal_reader? = query.internal_reader?
+    vector = vector_literal(embedding)
+    labels = MemHouse.Retrieval.DiskannLabels.for_scope_ids!(query.account_id, query.scope_ids)
+
+    distance =
+      if identity.dimensions == 1024,
+        do: "d.embedding::vector(1024) <=> $4::text::vector(1024)",
+        else: "d.embedding <=> $4::text::vector"
+
+    # Both lane subqueries repeat every visibility predicate before ORDER BY
+    # and LIMIT. Authorization is never a post-ranking filter.
+    sql = """
+    WITH direct_lane AS (
+      SELECT #{@knowledge_columns},
+             1.0 - (#{distance}) AS score,
+             (#{distance}) AS semantic_distance,
+             'knowledge' AS candidate_type,
+             d.derivation_lane AS recall_lane,
+             d.operation,
+             d.provenance_ids,
+             row_number() OVER (ORDER BY #{distance}, d.knowledge_item_id) AS lane_rank
+      FROM recall_documents AS d
+      JOIN knowledge_items AS k
+        ON k.id = d.knowledge_item_id AND k.account_id = d.account_id
+      JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
+      WHERE d.account_id = $1
+        AND d.scope_id = ANY($2)
+        AND d.derivation_lane = 'direct'
+        AND d.source_updated_at = k.updated_at
+        AND d.scope_id = k.scope_id
+        #{visible_knowledge("$3", internal_reader?)}
+        AND k.deleted_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > now())
+        AND d.embedding IS NOT NULL
+        AND d.embedding_provider = $5
+        AND d.embedding_model = $6
+        AND d.embedding_version = $7
+        AND d.embedding_dimensions = $8
+        AND d.diskann_labels && $9::smallint[]
+      ORDER BY #{distance}, d.knowledge_item_id
+      LIMIT $10
+    ), derived_lane AS (
+      SELECT #{@knowledge_columns},
+             1.0 - (#{distance}) AS score,
+             (#{distance}) AS semantic_distance,
+             'knowledge' AS candidate_type,
+             d.derivation_lane AS recall_lane,
+             d.operation,
+             d.provenance_ids,
+             row_number() OVER (ORDER BY #{distance}, d.knowledge_item_id) AS lane_rank
+      FROM recall_documents AS d
+      JOIN knowledge_items AS k
+        ON k.id = d.knowledge_item_id AND k.account_id = d.account_id
+      JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
+      WHERE d.account_id = $1
+        AND d.scope_id = ANY($2)
+        AND d.derivation_lane = 'derived'
+        AND d.source_updated_at = k.updated_at
+        AND d.scope_id = k.scope_id
+        #{visible_knowledge("$3", internal_reader?)}
+        AND k.deleted_at IS NULL
+        AND (k.expires_at IS NULL OR k.expires_at > now())
+        AND d.embedding IS NOT NULL
+        AND d.embedding_provider = $5
+        AND d.embedding_model = $6
+        AND d.embedding_version = $7
+        AND d.embedding_dimensions = $8
+        AND d.diskann_labels && $9::smallint[]
+      ORDER BY #{distance}, d.knowledge_item_id
+      LIMIT $11
+    )
+    SELECT *
+    FROM (
+      SELECT * FROM direct_lane
+      UNION ALL
+      SELECT * FROM derived_lane
+    ) AS lanes
+    ORDER BY lane_rank,
+             CASE recall_lane WHEN 'direct' THEN 0 ELSE 1 END,
+             semantic_distance,
+             id
+    LIMIT $12
+    """
+
+    all(sql, [
+      db_uuid!(query.account_id),
+      db_uuids!(query.scope_ids),
+      db_uuid(query.actor.peer_id),
+      vector,
+      identity.provider,
+      identity.model,
+      identity.version,
+      identity.dimensions,
+      labels,
+      direct_limit,
+      derived_limit,
+      limit
+    ])
   end
 
   defp run_semantic_query(query, embedding, identity, limit, indexscan?) do
@@ -1401,6 +1720,52 @@ defmodule MemHouse.Retrieval.Store do
   end
 
   @doc """
+  Finds Account-local scopes with missing or stale source-message vectors.
+
+  Staleness compares all four parts of the configured embedding identity with
+  `IS DISTINCT FROM`, so partially stamped legacy rows and `NULL` values are
+  gaps too. The returned corpus fields are content-free and let reconciliation
+  derive one stable scope watermark; no message body or hidden cross-Account
+  count leaves this data-layer boundary.
+  """
+  def scopes_with_stale_source_embeddings(account_id, identity, limit \\ 100) do
+    sql = """
+    SELECT scope_id,
+           count(*)::bigint AS message_count,
+           count(*) FILTER (
+             WHERE embedding IS NULL
+                OR embedding_provider IS DISTINCT FROM $2
+                OR embedding_model IS DISTINCT FROM $3
+                OR embedding_version IS DISTINCT FROM $4
+                OR embedding_dimensions IS DISTINCT FROM $5
+           )::bigint AS stale_count,
+           max(inserted_at) AS latest_message_at,
+           max(id::text) AS latest_message_id
+    FROM messages
+    WHERE account_id = $1
+    GROUP BY scope_id
+    HAVING bool_or(
+      embedding IS NULL
+      OR embedding_provider IS DISTINCT FROM $2
+      OR embedding_model IS DISTINCT FROM $3
+      OR embedding_version IS DISTINCT FROM $4
+      OR embedding_dimensions IS DISTINCT FROM $5
+    )
+    ORDER BY max(inserted_at), scope_id
+    LIMIT $6
+    """
+
+    all(sql, [
+      db_uuid!(account_id),
+      identity.provider,
+      identity.model,
+      identity.version,
+      identity.dimensions,
+      limit
+    ])
+  end
+
+  @doc """
   Finds the latest Oban job state for each idempotency key.
 
   Queries the `oban_jobs` infrastructure table by replay keys and returns the
@@ -1426,6 +1791,27 @@ defmodule MemHouse.Retrieval.Store do
     Map.new(rows, fn row -> {row["idempotency_key"], row["state"]} end)
   end
 
+  @doc "Returns one Account's earliest durable Oban schedule for a replay key, or `nil`."
+  def oban_job_scheduled_at(account_id, idempotency_key)
+      when is_binary(account_id) and is_binary(idempotency_key) do
+    sql = """
+    SELECT scheduled_at
+    FROM oban_jobs
+    WHERE args->>'tenant' = $1
+      AND args->>'idempotency_key' = $2
+    ORDER BY scheduled_at, id
+    LIMIT 1
+    """
+
+    case all(sql, [account_id, idempotency_key]) do
+      [%{"scheduled_at" => %NaiveDateTime{} = scheduled_at}] ->
+        DateTime.from_naive!(scheduled_at, "Etc/UTC")
+
+      [] ->
+        nil
+    end
+  end
+
   # Merge only halves scored by the same function, then restore the shared cap.
   defp top(rows, limit),
     do: rows |> Enum.sort_by(&(&1["score"] || 0.0), :desc) |> Enum.take(limit)
@@ -1440,6 +1826,10 @@ defmodule MemHouse.Retrieval.Store do
   # Build pgvector text as a bound parameter; coerce integers before `Float.to_string/1`.
   defp vector_literal(values) do
     "[" <> Enum.map_join(values, ",", &Float.to_string(&1 * 1.0)) <> "]"
+  end
+
+  defp source_params(authority, rest) do
+    [db_uuid!(authority.account_id), db_uuids!(authority.scope_ids) | rest]
   end
 
   # These settings change ranking, so a missing key must fail rather than default.
@@ -1469,8 +1859,9 @@ defmodule MemHouse.Retrieval.Store do
     normalize_uuid(value)
   end
 
-  defp normalize_db_value("source_message_ids", values) when is_list(values),
-    do: Enum.map(values, &normalize_uuid/1)
+  defp normalize_db_value(column, values) when is_binary(column) and is_list(values) do
+    if String.ends_with?(column, "_ids"), do: Enum.map(values, &normalize_uuid/1), else: values
+  end
 
   defp normalize_db_value(_column, value), do: value
 

@@ -23,8 +23,10 @@ flowchart LR
 
 ## Filtering happens before candidates leave retrieval
 
-Each strategy applies Account, scope, lifecycle, provisional-subject, and source
-filters **inside its query**. The API does not post-filter candidates.
+Each strategy applies Account, scope, lifecycle, expiry, provisional-subject,
+and source filters **inside its query**. Active knowledge whose `expires_at` is
+not later than the read time is lifecycle-hidden even before the hourly sweeper
+moves it to the `expired` state. The API does not post-filter candidates.
 
 ## A read is performed for a peer
 
@@ -153,6 +155,29 @@ weights and rank constant, whether the head is reranked, and the deadline.
 | `fast` | semantic, salience-recency | no | 100 ms | The only profile allowed to run live when context assembly misses its projection cache |
 | `balanced` | semantic, lexical, temporal, entity-match | no | 300 ms | Default for `search` |
 | `thorough` | all six, including one-hop relation expansion | yes | 1500 ms | Default for `ask` |
+| `minimal` | direct/derived semantic lanes and lexical | no | 300 ms | Experimental; requires `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL=true` |
+
+The `minimal` profile deliberately skips temporal and salience seeds, entity
+matching, relation expansion, and reranking. It does not delete or change their
+data while experimental. Selection is explicit and observable in the ordinary
+profile fields, and disabling the feature flag restores the existing profiles
+without a migration.
+
+Its semantic strategy embeds the query once and searches two independently
+bounded lists: directly extracted memory and derived deduction/consolidation
+memory. The lists are interleaved by lane rank, direct first on an exact tie,
+then enter ordinary fusion with lexical results. Each semantic candidate records
+its lane, operation, lane rank, and cosine distance so matched evaluation can
+measure the trade-off without inferring it from prose.
+
+The two lists read `RecallDocument`, a non-authoritative projection copied from
+governed Knowledge after embedding. It is excluded from Account archives and
+is rebuilt with the other retrieval caches. Every lookup joins canonical
+Knowledge, applies Account, scope, reader, lifecycle, deletion, expiry, and
+embedding-identity filters before ranking, and requires the projection's source
+watermark to equal the current Knowledge timestamp. A lifecycle change is
+therefore invisible immediately; refresh then removes the stale row. Hard
+erasure cascades to the projection in the same database transaction.
 
 Profiles inherit down the scope tree, nearest-wins, so a scope can tighten or
 loosen retrieval without a global change. The profile version travels back with
@@ -173,6 +198,45 @@ asks for.
 
 Raw per-request strategy overrides are internal and evaluation-only; external
 callers cannot select strategies directly.
+
+## Evidence lineage is not reasoning text
+
+`POST /api/v1/lineage` projects existing provenance and typed knowledge
+relations into a bounded graph. It can connect a deduction or consolidation
+result back to governed knowledge and immutable observations, but it does not
+store or expose the model's private rationale. Scope, lifecycle, and expiry
+filtering happen before a node is returned; a visible derived statement never
+grants access to a hidden source. An expired knowledge root returns the same
+opaque not-found result as any other unavailable root, and an expired relation
+endpoint is reported only as a lifecycle-hidden reference without its id or
+content.
+
+A split synthesis deduction reuses its durable prompt identity to report the
+typed operation `reasoning_synthesis`. The version string itself remains
+private provenance and is not returned in the graph.
+
+Traversal has depth, per-node fan-out, and total-node budgets. Stable ordering,
+cycle termination, and opaque missing or lifecycle-hidden references make the
+same request reproducible without turning hidden content into a diagnostic.
+Use lineage to inspect evidence. Use lifecycle and audit records to inspect
+governed state changes. Use answer text only as a cited explanation over those
+records.
+
+## Stable identity is a live projection
+
+`POST /api/v1/stable-profile` selects a small allowlist of stable, direct,
+source-backed facts about the chosen reader. It is rebuilt from canonical
+knowledge on every call and uses no model, so expiry, deletion, retraction,
+supersession, or a scope change cannot leave a second profile store behind.
+
+The profile keeps contradictory identity claims side by side. It excludes
+transient state, preferences, behavioral summaries, inferred claims, and
+sensitive traits. Each entry links to its governed knowledge id and direct
+source ids; consumers cite that knowledge rather than the projection. Search
+can include this orientation with `include_identity_profile` without changing
+rank. A bounded adaptive Ask may admit those same governed knowledge rows as
+candidates through its `profile` tool; it never cites the projection as a
+separate fact.
 
 ## Entities are internal
 
@@ -257,11 +321,29 @@ and PubSub/ETS invalidation. A model call does not belong on this read path.
 
 ## Ask answers with a confidence
 
-`ask` retrieves with the `thorough` profile, restricts retrieval to knowledge
-items so that citations are governed statements, and answers over what it
-found. It does not refuse: it states what the retrieved statements make most
-probable and reports `answer_confidence`, an integer from 0 to 100, for its own
-certainty.
+By default, fixed `ask` retrieves with the `thorough` profile and restricts
+retrieval to governed knowledge. A named `low`, `medium`, or `high` effort runs
+the bounded read-only planner over governed knowledge, stable-profile
+knowledge, and typed lineage. Exact and semantic source-message tools join that
+closed set only when the caller explicitly passes `include_source_recall: true`.
+Profile and lineage are selection tools: answer candidates remain governed
+knowledge, or bounded immutable source excerpts with resolvable ids when that
+permission is present. The answerer states what those retrieved statements make most probable and reports
+`answer_confidence`, an integer from 0 to 100, for its own certainty.
+
+Each effort preset reserves provider-backed retrieval calls before they run and
+caps both query tokens and serialized admitted-evidence tokens. Evidence that
+would cross the preset's total token ceiling is not admitted to the answer
+context; the content-free recall diagnostics name the exhausted bound.
+Medium effort retains two thirds of the base head and high effort retains half,
+which are eight and six items under the default 12-item answer cap. Each always
+reserves at least one slot for genuinely new tool evidence before refilling
+unused space from the original ranked tail. The entire base page is reserved
+for deduplication while tools run, so a rewritten knowledge query cannot count
+a base candidate as a new discovery. Every knowledge-tool pass uses the same
+named retrieval profile as the caller's base pass. `recall_evidence` records
+the exact resulting order, while `candidates` remains the compatible base
+search payload.
 
 A model answer below 50 also sets `abstained`. That pair — cited answer, low
 confidence, `abstained == true` — is the normal shape for a weakly supported

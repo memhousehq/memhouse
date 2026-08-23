@@ -2156,6 +2156,74 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end
   end
 
+  test "minimal profile rejects new stored overrides and ignores legacy rows" do
+    seeded = seed_active!("f7-minimal-runtime", "/f7/minimal-runtime", "Avery writes notes.")
+    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    Application.put_env(
+      :memhouse,
+      :retrieval_profiles,
+      Keyword.put(profiles, :minimal_enabled, true)
+    )
+
+    DataLayer.with_account_key("f7-minimal-runtime", fn account, actor ->
+      admin = %{actor | role: :account_admin}
+
+      assert_raise Ash.Error.Invalid, ~r/minimal is experimental and runtime-owned/, fn ->
+        create!(
+          MemHouse.Retrieval.RetrievalProfile,
+          :create,
+          %{
+            scope_id: seeded.scope.id,
+            name: "minimal",
+            version: 1,
+            strategy_config: %{
+              "strategies" => ["temporal"],
+              "weights" => %{"temporal" => 1}
+            },
+            deadline_ms: 1,
+            active: true
+          },
+          account.id,
+          admin
+        )
+      end
+
+      # A legacy fixture row cannot retune the experiment either. Ash.Seed is
+      # the explicit test-only data-layer seam for reproducing pre-contract
+      # rows without adding a production write action.
+      Ash.Seed.seed!(
+        MemHouse.Retrieval.RetrievalProfile,
+        %{
+          account_id: account.id,
+          scope_id: seeded.scope.id,
+          name: "minimal",
+          version: 999,
+          strategy_config: %{
+            "strategies" => ["temporal"],
+            "weights" => %{"temporal" => 1}
+          },
+          deadline_ms: 1,
+          active: true
+        },
+        tenant: account.id
+      )
+
+      query = %Query{
+        account_id: account.id,
+        actor: admin,
+        scope_ids: [seeded.scope.id],
+        text: "notes",
+        target: :knowledge
+      }
+
+      profile = Profile.resolve(:minimal, query)
+      assert profile.version == "minimal-exp-2"
+      assert profile.strategies == [:semantic_dual_lane, :lexical]
+      refute profile.deadline_ms == 1
+    end)
+  end
+
   test "one strategy cannot consume the thorough profile phase budget" do
     seeded = seed_active!("f7-strategy-timeout", "/f7/strategy-timeout", "Avery writes notes.")
     original_retrieval = Application.fetch_env!(:memhouse, :retrieval_profiles)
@@ -3310,23 +3378,33 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert metadata.account_id == seeded.account.id
   end
 
-  test "reconciliation enqueues one replay-safe rebuild for a scope with no mentions" do
+  test "reconciliation reuses the ingest refresh for a scope with no mentions" do
     seeded =
       seed_active!("f7-mention-reconcile", "/f7/reconcile", "Avery owns the release checklist.")
 
     before = projection_refresh_count(seeded.account.id)
+    assert before >= 1
 
-    assert {:ok, %{scopes: 1}} = MemHouse.Pipeline.Reconciler.run(seeded.account.id)
-    assert projection_refresh_count(seeded.account.id) == before + 1
+    # Raw-message ingest now schedules the same full refresh that repairs source
+    # vectors and entity mentions. Reconciliation must reuse that recoverable
+    # work instead of adding a second provider-backed projection run.
+    assert {:ok, %{source_scopes: 0, scopes: 0}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
 
-    assert {:ok, %{scopes: 1}} = MemHouse.Pipeline.Reconciler.run(seeded.account.id)
-    assert projection_refresh_count(seeded.account.id) == before + 1
+    assert projection_refresh_count(seeded.account.id) == before
+
+    assert {:ok, %{source_scopes: 0, scopes: 0}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before
 
     assert {:ok, %{mentions: mentions}} =
              EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
 
     assert mentions > 0
-    assert {:ok, %{scopes: 0}} = MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert {:ok, %{source_scopes: 0, scopes: 0}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
   end
 
   test "mention coverage reports a partially indexed scope" do

@@ -25,6 +25,7 @@ defmodule MemHouse.Governance do
     effects.
 
   `MemHouse.Governance.McpTools` is non-persisted and publishes the generic tool actions.
+  `MemHouse.Governance.PublicOperations` is non-persisted and publishes typed HTTP actions.
 
   ## Invariants callers must not break
 
@@ -52,6 +53,7 @@ defmodule MemHouse.Governance do
     resource MemHouse.Governance.PeerAskPreference
     resource MemHouse.Governance.ErasureRequest
     resource MemHouse.Governance.McpTools
+    resource MemHouse.Governance.PublicOperations
   end
 
   # Complete machine surface: raw ingest, governed reads, the caller's frozen question, and

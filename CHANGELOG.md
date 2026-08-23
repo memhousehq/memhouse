@@ -11,6 +11,41 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Matched execute experiments now accept only a closed set of component
+  bindings derived from the runner's effective profile, strategies, rerank,
+  deadline, extraction batching, adaptive recall permissions, separate
+  semantic-index and RecallDocument refreshes, idle scheduling, dream-time,
+  and durability settings. They count bounded database queries and new durable
+  maintenance runs without recording SQL or content, and restore feature
+  switches after every variant.
+  Unknown or dishonest labels fail validation, and fixture replays cannot
+  claim component execution. The committed comparison now runs the real
+  `balanced` versus `minimal` profile defaults; offline semantic runs require
+  existing local Ortex artifacts and never substitute fake vectors.
+
+- Dream-time now gates work by a durable timestamp-and-id delta cursor, minimum
+  changes, idle/interval windows, hard delta/working-set caps, and a whole-call
+  elapsed budget. Update reasoning and multi-source synthesis have separate
+  schemas and prompt identities; update remains enabled and synthesis remains
+  off until matched evaluation approves it.
+
+- A default-off `MEMHOUSE_EXPERIMENTAL_DREAM_IDLE_SCHEDULER` switch can make
+  governed direct-fact activity schedule a durable per-scope dream wakeup
+  after the configured idle window in the same `PipelineRun`/Oban transaction.
+  Duplicate and restarted work reuses its replay identity, newer activity
+  supersedes older wakeups before model work, and hourly/manual Account sweeps
+  remain fallback and operator paths.
+
+- A default-off `MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING` switch can make
+  message extraction token-batch adjacent pending anchors from the same
+  Account, scope, and session through one provider call. Each envelope keeps
+  its original replay key and exact source allowlist; governed effects,
+  completion, and PipelineRun state commit per anchor. Deterministic pre-call
+  admission, repairable/terminal states, stale-claim recovery, and an explicit
+  operator requeue replace implicit replay of poison or oversized sources. The
+  extraction prompt identity advances to `extract-13`. With the switch off,
+  the established one-message extraction path and outcome remain unchanged.
+
 - Retrieval now normalizes scores inside each strategy list before weighted
   fusion. A 5% reciprocal-rank term breaks ties, with `rrf_k` set per profile
   and defaulting to 15. Candidates expose `fusion_score`; `rrf_score` remains
@@ -18,6 +53,51 @@ changelog entry and contract-version transition.
   remain immutable evidence of the previous `k = 60` RRF baseline. See ADR 0020.
 
 ### Added
+
+- Dream-time keeps its legacy one-call `Reasoner.reason` path by default. The
+  independently versioned update/synthesis split is now selected only by
+  `MEMHOUSE_EXPERIMENTAL_DREAM_OPERATION_SPLIT=true`; evaluation binds and
+  restores that switch and requires actual completed split operations and
+  lineage reads. Synthesis deductions reuse durable `prompt_version` for their
+  operation identity, which typed lineage reports as `reasoning_synthesis`.
+
+- Extraction provider calls now pass through a default-on,
+  Account/provider/role-scoped circuit with monitored half-open recovery.
+  The cost report also ships a versioned non-zero `planning-reference-v1`
+  table and exposes whether rates are that reference or an operator override.
+
+- A default-off `compact-explicit-v1` extractor experiment limits model output
+  to atomic durable statements, exact support, subject/source references, and
+  exact valid-time evidence. Trusted code derives fail-closed policy defaults
+  and reuses the existing validator, batch attribution, provenance, and Gate
+  A/B path. `extract-13` remains the default until matched held-out evaluation
+  and human review approve `extract-compact-exp-1`.
+
+- The opt-in `minimal` profile now uses a rebuildable, archive-excluded
+  `RecallDocument` read model. One query embedding feeds independently capped
+  direct and derived semantic top-k lanes; stable interleave records lane rank
+  and cosine distance before lexical fusion. Canonical Knowledge remains the
+  only writer and is re-joined for Account, scope, reader, lifecycle, expiry,
+  deletion, and source-watermark checks before ranking. Refresh is replay-safe,
+  lifecycle changes fail closed while it is pending, and hard erasure cascades.
+
+- An opt-in `minimal` dual-lane-semantic-plus-lexical retrieval profile and bounded
+  read-only Ask efforts (`low`, `medium`, `high`) add content-free budget
+  diagnostics and hard per-tool elapsed enforcement. The planner can read
+  governed knowledge, stable-profile knowledge, typed lineage, and authorized
+  source messages; it has no write tool. Existing profiles remain the default
+  and rollback path.
+
+- `POST /api/v1/source-search` provides Account/scope-authorized exact and
+  embedding-identity-matched recall over immutable messages with bounded
+  excerpts and stable citation ids. `POST /api/v1/lineage` projects bounded
+  typed evidence lineage, and `POST /api/v1/stable-profile` builds a live,
+  model-free stable identity projection from governed direct evidence.
+
+- `mix memhouse.eval.experiment` registers one current and one experimental
+  variant over the same dataset and emits a revision-, backend-, model-,
+  prompt-, profile-, seed-, and component-pinned comparison bundle with
+  quality, citation, isolation, cost, latency, and replay gates.
 
 - Operational retention now prunes terminal Oban jobs and expired pipeline, usage, gate-decision,
   and lifecycle rows on configurable horizons. The operations summary separates durable and
@@ -219,7 +299,7 @@ changelog entry and contract-version transition.
 
 ### Changed
 
-- Extraction prompt `extract-12` maps first-person claims to the exact speaker
+- Extraction prompt `extract-13` maps first-person claims to the exact speaker
   peer key. For first-person claims, validation ignores the model's
   `subject_ref` and derives the subject from the cited message's stored speaker
   key. Unresolved or ambiguous cited speakers fail closed. The cited speaker

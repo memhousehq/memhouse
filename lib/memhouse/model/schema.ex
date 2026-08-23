@@ -20,6 +20,109 @@ defmodule MemHouse.Model.Schema do
   @optional_callbacks recover_after_repairs: 2
 end
 
+defmodule MemHouse.Model.Schema.ExtractionSupport do
+  @moduledoc """
+  Shared content-free parsing helpers for accepted and compact extraction.
+
+  Both contracts use these functions so subject, map-key, and relative-date
+  semantics cannot drift between the current and experimental paths.
+  """
+
+  @number_words ~w(one two three four five six seven eight nine ten eleven twelve)
+
+  @doc "Returns a trimmed string field or a content-free validation error."
+  def non_empty_string(item, key) do
+    case fetch(item, key) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> {:error, ["#{key} must not be blank"]}
+          trimmed -> {:ok, trimmed}
+        end
+
+      _other ->
+        {:error, ["#{key} must be a string"]}
+    end
+  end
+
+  @doc "Returns whether text starts with first-person evidence wording."
+  def first_person?(text) do
+    String.match?(text, ~r/^\s*(?:I(?:['’](?:m|ve|d|ll))?\b|my\b|mine\b|me\b)/iu)
+  end
+
+  @doc "Fetches a string-named field without creating atoms from provider output."
+  def fetch(map, key) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value
+
+      :error ->
+        Enum.find_value(map, fn
+          {candidate, value} when is_atom(candidate) ->
+            if Atom.to_string(candidate) == key, do: {:found, value}
+
+          {_candidate, _value} ->
+            nil
+        end)
+        |> case do
+          {:found, value} -> value
+          nil -> nil
+        end
+    end
+  end
+
+  @doc "Resolves every supported relative-date expression found in source text."
+  def resolve_relative_dates(source, observed_on) do
+    named_dates =
+      [
+        {~r/\byesterday\b/iu, Date.add(observed_on, -1)},
+        {~r/\b(?:today|tonight)\b/iu, observed_on},
+        {~r/\btomorrow\b/iu, Date.add(observed_on, 1)}
+      ]
+      |> Enum.flat_map(fn {pattern, date} ->
+        if String.match?(source, pattern), do: [date], else: []
+      end)
+
+    amount_dates =
+      ~r/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\b/iu
+      |> Regex.scan(source)
+      |> Enum.map(&resolve_relative_amount(observed_on, &1))
+
+    named_dates ++ amount_dates
+  end
+
+  @doc "Resolves one unambiguous relative-date boundary to UTC midnight."
+  def resolve_relative_datetime(evidence, %DateTime{} = occurred_at) do
+    case evidence |> resolve_relative_dates(DateTime.to_date(occurred_at)) |> Enum.uniq() do
+      [date] -> {:ok, beginning_of_day(date)}
+      _other -> :error
+    end
+  end
+
+  def resolve_relative_datetime(_evidence, _occurred_at), do: :error
+
+  @doc "Converts a date to UTC midnight."
+  def beginning_of_day(date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+
+  defp resolve_relative_amount(observed_on, [_text, amount, unit, direction]) do
+    multiplier = if String.downcase(direction) == "ago", do: -1, else: 1
+    amount = relative_amount(amount) * multiplier
+
+    case String.downcase(unit) do
+      "day" -> Date.add(observed_on, amount)
+      "week" -> Date.add(observed_on, amount * 7)
+      "month" -> Date.shift(observed_on, month: amount)
+      "year" -> Date.shift(observed_on, year: amount)
+    end
+  end
+
+  defp relative_amount(amount) do
+    case Integer.parse(amount) do
+      {value, ""} -> value
+      :error -> Enum.find_index(@number_words, &(&1 == String.downcase(amount))) + 1
+    end
+  end
+end
+
 defmodule MemHouse.Model.Schema.Extraction do
   @moduledoc """
   The structured shape an extractor must return, and the validator that decides
@@ -78,6 +181,10 @@ defmodule MemHouse.Model.Schema.Extraction do
   @behaviour MemHouse.Model.Schema
 
   alias MemHouse.Knowledge.KnowledgeItem
+
+  import MemHouse.Model.Schema.ExtractionSupport,
+    only: [fetch: 2, first_person?: 1, non_empty_string: 2, resolve_relative_dates: 2]
+
   alias MemHouse.Knowledge.Statement
 
   # Generic ways a model names the process instead of a person. These are matched only in the
@@ -156,6 +263,25 @@ defmodule MemHouse.Model.Schema.Extraction do
   """
   @impl true
   def json_schema do
+    candidate = candidate_json_schema()
+
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "items" => %{"type" => "array", "items" => candidate, "maxItems" => 24}
+      },
+      "required" => ["items"]
+    }
+  end
+
+  @doc """
+  Returns the JSON Schema for one candidate in the current extraction contract.
+
+  The schema is embedded by both single-anchor and batched structured requests;
+  validation still runs through `cast/2` before any candidate can be persisted.
+  """
+  def candidate_json_schema do
     knowledge_properties =
       Map.new(@knowledge_fields, fn name ->
         {Atom.to_string(name), attribute_schema(name)}
@@ -177,53 +303,43 @@ defmodule MemHouse.Model.Schema.Extraction do
     property_order =
       ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level source_message_ids relevant_from relevant_until)
 
-    candidate =
-      %{
-        "type" => "object",
-        "description" =>
-          "Copy supporting_span, write the statement, then rate it with confidence_level.",
-        "additionalProperties" => false,
-        "properties" =>
-          knowledge_properties
-          |> Map.merge(temporal_properties)
-          |> Map.merge(%{
-            "supporting_span" => %{
-              "type" => "string",
-              "minLength" => 1,
-              "description" =>
-                "Exact source text that supports the claim; ingest validation requires it to occur in a cited message"
-            },
-            "confidence_level" => %{
-              "type" => "string",
-              "enum" => ~w(stated_explicitly clearly_implied inferred),
-              "description" =>
-                "stated_explicitly means the source states the claim; clearly_implied means the claim follows directly; inferred requires interpretation"
-            },
-            "subject_type" => %{
-              "type" => "string",
-              "enum" => @subject_types,
-              "description" => "peer identifies one person; scope identifies the current scope"
-            },
-            "subject_ref" => %{"type" => "string", "minLength" => 1},
-            "source_message_ids" => %{
-              "type" => "array",
-              "items" => %{"type" => "string", "format" => "uuid"},
-              "minItems" => 1,
-              "uniqueItems" => true
-            }
-          }),
-        "propertyOrdering" => property_order,
-        "required" =>
-          ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level)
-      }
-
     %{
       "type" => "object",
+      "description" =>
+        "Copy supporting_span, write the statement, then rate it with confidence_level.",
       "additionalProperties" => false,
-      "properties" => %{
-        "items" => %{"type" => "array", "items" => candidate, "maxItems" => 24}
-      },
-      "required" => ["items"]
+      "properties" =>
+        knowledge_properties
+        |> Map.merge(temporal_properties)
+        |> Map.merge(%{
+          "supporting_span" => %{
+            "type" => "string",
+            "minLength" => 1,
+            "description" =>
+              "Exact source text that supports the claim; ingest validation requires it to occur in a cited message"
+          },
+          "confidence_level" => %{
+            "type" => "string",
+            "enum" => ~w(stated_explicitly clearly_implied inferred),
+            "description" =>
+              "stated_explicitly means the source states the claim; clearly_implied means the claim follows directly; inferred requires interpretation"
+          },
+          "subject_type" => %{
+            "type" => "string",
+            "enum" => @subject_types,
+            "description" => "peer identifies one person; scope identifies the current scope"
+          },
+          "subject_ref" => %{"type" => "string", "minLength" => 1},
+          "source_message_ids" => %{
+            "type" => "array",
+            "items" => %{"type" => "string", "format" => "uuid"},
+            "minItems" => 1,
+            "uniqueItems" => true
+          }
+        }),
+      "propertyOrdering" => property_order,
+      "required" =>
+        ~w(supporting_span statement confidence_level kind subject_type subject_ref sensitivity target_level)
     }
   end
 
@@ -492,49 +608,6 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   defp date_resolved?(_date, _source, _occurred_at), do: false
 
-  defp resolve_relative_dates(source, observed_on) do
-    named_dates =
-      [
-        {~r/\byesterday\b/iu, Date.add(observed_on, -1)},
-        {~r/\b(?:today|tonight)\b/iu, observed_on},
-        {~r/\btomorrow\b/iu, Date.add(observed_on, 1)}
-      ]
-      |> Enum.flat_map(fn {pattern, date} ->
-        if String.match?(source, pattern), do: [date], else: []
-      end)
-
-    amount_dates =
-      ~r/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+(ago|from\s+now)\b/iu
-      |> Regex.scan(source)
-      |> Enum.map(&resolve_relative_amount(observed_on, &1))
-
-    named_dates ++ amount_dates
-  end
-
-  defp resolve_relative_amount(observed_on, [_text, amount, unit, direction]) do
-    multiplier = if String.downcase(direction) == "ago", do: -1, else: 1
-    amount = relative_amount(amount) * multiplier
-
-    case String.downcase(unit) do
-      "day" -> Date.add(observed_on, amount)
-      "week" -> Date.add(observed_on, amount * 7)
-      "month" -> Date.shift(observed_on, month: amount)
-      "year" -> Date.shift(observed_on, year: amount)
-    end
-  end
-
-  defp relative_amount(amount) do
-    case Integer.parse(amount) do
-      {value, ""} ->
-        value
-
-      :error ->
-        ~w(one two three four five six seven eight nine ten eleven twelve)
-        |> Enum.find_index(&(&1 == String.downcase(amount)))
-        |> Kernel.+(1)
-    end
-  end
-
   # Final gate: build the real pipeline create changeset and ask whether it is
   # valid, without saving. This makes the resource's own attribute constraints,
   # not a copy of them, the authority on what a candidate may contain.
@@ -718,19 +791,6 @@ defmodule MemHouse.Model.Schema.Extraction do
     String.match?(statement, ~r/\A(?:Running|Exercise|Sleep|Travel|Work)\s+(?:can|is|does)\b/u)
   end
 
-  defp non_empty_string(item, key) do
-    case fetch(item, key) do
-      value when is_binary(value) ->
-        case String.trim(value) do
-          "" -> {:error, ["#{key} must not be blank"]}
-          trimmed -> {:ok, trimmed}
-        end
-
-      _other ->
-        {:error, ["#{key} must be a string"]}
-    end
-  end
-
   # Subject references are checked against an allowlist supplied by the caller,
   # never trusted from the model. A peer subject must be one of the peer keys
   # the caller already knows about, and a scope subject must be exactly the
@@ -797,10 +857,6 @@ defmodule MemHouse.Model.Schema.Extraction do
     else
       _other -> :not_first_person
     end
-  end
-
-  defp first_person?(text) do
-    String.match?(text, ~r/^\s*(?:I(?:['’](?:m|ve|d|ll))?\b|my\b|mine\b|me\b)/iu)
   end
 
   # Evidence can identify an opaque Peer key, but that key is not display text.
@@ -895,30 +951,183 @@ defmodule MemHouse.Model.Schema.Extraction do
   # about which they use, and this validator must behave identically for all of
   # them. Deliberately does not call `String.to_atom/1`: input from a model must
   # never be allowed to create atoms.
-  defp fetch(map, key) do
-    case Map.fetch(map, key) do
-      {:ok, value} ->
-        value
-
-      :error ->
-        Enum.find_value(map, fn
-          {candidate, value} when is_atom(candidate) ->
-            if Atom.to_string(candidate) == key, do: {:found, value}
-
-          {_candidate, _value} ->
-            nil
-        end)
-        |> case do
-          {:found, value} -> value
-          nil -> nil
-        end
-    end
-  end
-
   defp prefix_errors(errors, index), do: Enum.map(errors, &"items[#{index}].#{&1}")
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+end
+
+defmodule MemHouse.Model.Schema.ExtractionBatch do
+  @moduledoc """
+  Per-anchor extraction envelopes for one token-batched provider call.
+
+  The outer response must name every supplied anchor exactly once. Each
+  envelope is then validated with the ordinary extraction schema and that
+  anchor's own allowlists, evidence window, observation time, and subject
+  context. A candidate can therefore cite another supplied message only when
+  that message was also in its anchor's bounded source window.
+
+  Validation repairs the batch as a whole. When the repair budget is exhausted,
+  valid envelopes are retained and invalid or missing anchors become explicit
+  terminal results. The caller can commit or reject each anchor independently;
+  malformed output for one anchor never changes a sibling's attribution.
+  """
+
+  @behaviour MemHouse.Model.Schema
+
+  alias MemHouse.Model.Schema.Extraction
+  alias MemHouse.Pipeline.ExtractionAdmission
+
+  @impl true
+  def json_schema, do: json_schema(Extraction)
+
+  @doc """
+  Builds the closed batch envelope around a candidate schema module.
+
+  The supplied module must implement the extraction-schema callbacks. The
+  returned schema requires one result per anchor and rejects undeclared fields;
+  semantic and provenance validation happens after provider output is decoded.
+  """
+  def json_schema(candidate_schema) when is_atom(candidate_schema) do
+    max_anchors = ExtractionAdmission.config()[:max_anchors]
+
+    envelope = %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "anchor_id" => %{"type" => "string", "format" => "uuid"},
+        "items" => %{
+          "type" => "array",
+          "items" => candidate_schema.candidate_json_schema(),
+          "maxItems" => 24
+        }
+      },
+      "required" => ["anchor_id", "items"]
+    }
+
+    %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "properties" => %{
+        "anchors" => %{
+          "type" => "array",
+          "items" => envelope,
+          "minItems" => 1,
+          "maxItems" => max_anchors
+        }
+      },
+      "required" => ["anchors"]
+    }
+  end
+
+  @impl true
+  def cast(object, %{anchor_contexts: contexts} = context)
+      when is_map(object) and is_map(contexts) do
+    candidate_schema = Map.get(context, :candidate_schema, Extraction)
+
+    with {:ok, envelopes} <- envelopes(object),
+         :ok <- exact_anchor_set(envelopes, contexts) do
+      cast_envelopes(envelopes, contexts, candidate_schema)
+    end
+  end
+
+  def cast(_object, _context), do: {:error, ["batch response must be an object"]}
+
+  @impl true
+  def recover_after_repairs(object, %{anchor_contexts: contexts} = context)
+      when is_map(object) and is_map(contexts) do
+    candidate_schema = Map.get(context, :candidate_schema, Extraction)
+
+    case envelopes(object) do
+      {:ok, envelopes} ->
+        by_anchor =
+          Map.new(envelopes, fn envelope ->
+            {Map.get(envelope, "anchor_id"), envelope}
+          end)
+
+        results =
+          Enum.map(contexts, fn {anchor_id, context} ->
+            case Map.get(by_anchor, anchor_id) do
+              %{"items" => items} ->
+                recover_envelope(anchor_id, items, context, candidate_schema)
+
+              _missing_or_malformed ->
+                terminal(anchor_id, "missing_or_malformed_envelope")
+            end
+          end)
+
+        {:ok, results}
+
+      {:error, _errors} ->
+        {:ok, Enum.map(Map.keys(contexts), &terminal(&1, "malformed_batch_response"))}
+    end
+  end
+
+  def recover_after_repairs(_object, _context), do: :error
+
+  defp envelopes(%{"anchors" => envelopes}) when is_list(envelopes), do: {:ok, envelopes}
+  defp envelopes(_object), do: {:error, ["anchors must be an array"]}
+
+  defp exact_anchor_set(envelopes, contexts) do
+    ids = Enum.map(envelopes, &Map.get(&1, "anchor_id"))
+    expected = Map.keys(contexts)
+
+    if length(ids) == length(Enum.uniq(ids)) and Enum.sort(ids) == Enum.sort(expected) do
+      :ok
+    else
+      {:error, ["anchors must name every supplied anchor exactly once"]}
+    end
+  end
+
+  defp cast_envelopes(envelopes, contexts, candidate_schema) do
+    {results, errors} =
+      envelopes
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {envelope, index}, {results, errors} ->
+        anchor_id = Map.get(envelope, "anchor_id")
+        context = Map.get(contexts, anchor_id)
+
+        case cast_envelope(anchor_id, Map.get(envelope, "items"), context, candidate_schema) do
+          {:ok, result} -> {[result | results], errors}
+          {:error, envelope_errors} -> {results, errors ++ prefix(envelope_errors, index)}
+        end
+      end)
+
+    if errors == [], do: {:ok, Enum.reverse(results)}, else: {:error, errors}
+  end
+
+  defp cast_envelope(anchor_id, items, context, candidate_schema)
+       when is_binary(anchor_id) and is_list(items) and is_map(context) do
+    case candidate_schema.cast(%{"items" => items}, context) do
+      {:ok, casted} -> {:ok, %{anchor_id: anchor_id, status: :ok, items: casted}}
+      {:error, errors} -> {:error, errors}
+    end
+  end
+
+  defp cast_envelope(_anchor_id, _items, _context, _candidate_schema),
+    do: {:error, ["anchor envelope is malformed"]}
+
+  defp recover_envelope(anchor_id, items, context, candidate_schema) when is_list(items) do
+    case candidate_schema.cast(%{"items" => items}, context) do
+      {:ok, casted} -> %{anchor_id: anchor_id, status: :ok, items: casted}
+      {:error, _errors} -> recover_candidates(anchor_id, items, context, candidate_schema)
+    end
+  end
+
+  defp recover_envelope(anchor_id, _items, _context, _candidate_schema),
+    do: terminal(anchor_id, "malformed_anchor_envelope")
+
+  defp recover_candidates(anchor_id, items, context, candidate_schema) do
+    case candidate_schema.recover_after_repairs(%{"items" => items}, context) do
+      {:ok, casted} -> %{anchor_id: anchor_id, status: :ok, items: casted}
+      :error -> terminal(anchor_id, "structured_validation_exhausted")
+    end
+  end
+
+  defp terminal(anchor_id, reason_class),
+    do: %{anchor_id: anchor_id, status: :terminal, reason_class: reason_class, items: []}
+
+  defp prefix(errors, index), do: Enum.map(errors, &"anchor #{index}: #{&1}")
 end
 
 defmodule MemHouse.Model.Schema.Reasoning do
@@ -979,8 +1188,11 @@ defmodule MemHouse.Model.Schema.Reasoning do
   Candidates go through extraction validation and must match the pipeline's
   inherited sensitivity and target level. A non-empty relation list also
   requires `:reasoning_inputs`: active input maps with `id`, `account_id`,
-  `scope_id`, and `state`. The pipeline builds that list from authorized rows;
-  callers must not construct it from model output.
+  `scope_id`, and `state`. Inputs may also carry their content-free durable
+  `source_observations`; the synthesis contract uses those trusted references
+  to require genuinely independent sources rather than merely distinct
+  knowledge ids. The pipeline builds that list from authorized rows and their
+  provenance; callers must not construct it from model output.
 
   Returns normalized atom-keyed relations, or stable content-free rejection
   reasons. It never performs a database write.
@@ -1099,7 +1311,8 @@ defmodule MemHouse.Model.Schema.Reasoning do
       ids when is_list(ids) and length(ids) >= 2 ->
         if length(ids) == length(Enum.uniq(ids)) do
           with :ok <- all_uuids(ids, index),
-               {:ok, contributors} <- contributor_inputs(ids, inputs, context, index) do
+               {:ok, contributors} <- contributor_inputs(ids, inputs, context, index),
+               :ok <- independent_sources(contributors, context, index) do
             {:ok, ids, inheritance(contributors)}
           end
         else
@@ -1110,6 +1323,23 @@ defmodule MemHouse.Model.Schema.Reasoning do
         {:error, ["items[#{index}].contributor_ids must contain at least two unique input ids"]}
     end
   end
+
+  defp independent_sources(contributors, %{require_independent_sources?: true}, index) do
+    sources =
+      contributors
+      |> Enum.flat_map(& &1.source_observations)
+      |> MapSet.new()
+
+    if MapSet.size(sources) >= 2,
+      do: :ok,
+      else:
+        {:error,
+         [
+           "items[#{index}].contributor_ids must reference at least two distinct durable sources"
+         ]}
+  end
+
+  defp independent_sources(_contributors, _context, _index), do: :ok
 
   defp all_uuids(ids, index) do
     if Enum.all?(ids, fn id -> is_binary(id) and match?({:ok, _}, Ecto.UUID.cast(id)) end),
@@ -1195,7 +1425,8 @@ defmodule MemHouse.Model.Schema.Reasoning do
             scope_id: scope_id,
             state: state,
             sensitivity: value(input, "sensitivity"),
-            target_level: value(input, "target_level")
+            target_level: value(input, "target_level"),
+            source_observations: source_observations(input)
           })}}
       else
         _other -> {:halt, {:error, ["reasoning inputs must be active knowledge rows"]}}
@@ -1205,6 +1436,27 @@ defmodule MemHouse.Model.Schema.Reasoning do
 
   defp reasoning_inputs(_context),
     do: {:error, ["reasoning inputs must be supplied for relations"]}
+
+  defp source_observations(input) do
+    input
+    |> value("source_observations")
+    |> List.wrap()
+    |> Enum.reduce(MapSet.new(), fn
+      observation, sources when is_map(observation) ->
+        source_type = value(observation, "source_type")
+        source_id = value(observation, "source_id")
+
+        if source_type in ["message", "document"] and is_binary(source_id) and
+             match?({:ok, _}, Ecto.UUID.cast(source_id)) do
+          MapSet.put(sources, {source_type, source_id})
+        else
+          sources
+        end
+
+      _observation, sources ->
+        sources
+    end)
+  end
 
   defp validate_relation(relation, index, inputs, context) when is_map(relation) do
     with {:ok, source_id} <- uuid(relation, "source_id", index),
@@ -1294,14 +1546,95 @@ defmodule MemHouse.Model.Schema.Reasoning do
   end
 end
 
+defmodule MemHouse.Model.Schema.ReasoningUpdate do
+  @moduledoc """
+  Narrow update/contradiction contract over existing working-set ids.
+
+  It may classify support or contradiction edges. It cannot create a statement,
+  request deletion, or emit a derived-from edge. The shared `Reasoning` caster
+  still enforces Account, scope, lifecycle, UUID, cycle, and duplicate checks.
+  """
+
+  @behaviour MemHouse.Model.Schema
+
+  @impl true
+  def json_schema do
+    MemHouse.Model.Schema.Reasoning.json_schema()
+    |> put_in(["properties", "items", "maxItems"], 0)
+    |> put_in(
+      ["properties", "relations", "items", "properties", "kind", "enum"],
+      ~w(supports contradicts)
+    )
+  end
+
+  @impl true
+  def cast(object, context) do
+    with {:ok, result} <- MemHouse.Model.Schema.Reasoning.cast(object, context),
+         :ok <- no_items(result.items),
+         :ok <- relation_kinds(result.relations, ~w(supports contradicts), "update") do
+      {:ok, result}
+    end
+  end
+
+  defp no_items([]), do: :ok
+  defp no_items(_items), do: {:error, ["update operation cannot create deductions"]}
+
+  defp relation_kinds(relations, allowed, operation) do
+    if Enum.all?(relations, &(&1.kind in allowed)),
+      do: :ok,
+      else: {:error, ["#{operation} operation contains an invalid relation kind"]}
+  end
+end
+
+defmodule MemHouse.Model.Schema.ReasoningSynthesis do
+  @moduledoc """
+  Narrow multi-source synthesis contract.
+
+  Every candidate names at least two contributors from the authorized bounded
+  working set, and their trusted provenance must resolve to at least two
+  distinct durable message or document observations. Structural relations may
+  be `derived_from` only; contradiction classification belongs to the update
+  operation.
+  """
+
+  @behaviour MemHouse.Model.Schema
+
+  @impl true
+  def json_schema do
+    MemHouse.Model.Schema.Reasoning.json_schema()
+    |> put_in(
+      ["properties", "relations", "items", "properties", "kind", "enum"],
+      ["derived_from"]
+    )
+  end
+
+  @impl true
+  def cast(object, context) do
+    context = Map.put(context, :require_independent_sources?, true)
+
+    with {:ok, result} <- MemHouse.Model.Schema.Reasoning.cast(object, context),
+         :ok <- relation_kinds(result.relations) do
+      {:ok, result}
+    end
+  end
+
+  defp relation_kinds(relations) do
+    if Enum.all?(relations, &(&1.kind == "derived_from")),
+      do: :ok,
+      else: {:error, ["synthesis operation contains an invalid relation kind"]}
+  end
+end
+
 defmodule MemHouse.Model.Schema.DialecticAnswer do
   @moduledoc """
   The structured shape for a grounded answer to a question.
 
-  Requires answer text, knowledge-id citations, an explicit `abstained` status,
-  and an `answer_confidence` percentage. The status is independent of citation
-  presence: a cited answer may abstain from a conclusion while explaining what
-  the cited evidence does support.
+  Requires answer text, governed evidence-id citations, an explicit `abstained`
+  status, and an `answer_confidence` percentage. An evidence id may identify a
+  governed knowledge candidate or an authorized immutable source-message
+  candidate; the response keeps the compatible list-of-strings shape. The
+  status is independent of citation presence: a cited answer may abstain from a
+  conclusion while explaining what the cited evidence does support.
 
   `answer_confidence` is the model's own probability, 0-100, that the answer it
   gave is correct. It is reported separately from `abstained` because the two

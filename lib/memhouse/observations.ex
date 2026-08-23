@@ -244,10 +244,15 @@ defmodule MemHouse.Observations.Message do
   One immutable raw conversational turn.
 
   Creation is the external ingest write: it hashes content and atomically appends audit,
-  idempotency, and replay-safe extraction work. Only the pipeline may turn it into knowledge.
+  idempotency, replay-safe extraction work, and a coalesced source-index refresh. Only the
+  pipeline may turn it into knowledge or write the derived semantic index.
   """
 
   use MemHouse.Resource, domain: MemHouse.Observations, table: "messages"
+
+  postgres do
+    migration_types diskann_labels: {:array, :smallint}
+  end
 
   multitenancy do
     strategy :attribute
@@ -259,7 +264,8 @@ defmodule MemHouse.Observations.Message do
 
     # Create-only for content. The two changes below run in order: hashing must happen before
     # the audit-and-enqueue hook, which uses the hash as the audit content reference and as the
-    # deterministic idempotency key of the extraction job.
+    # deterministic idempotency key of the extraction job. The same hook also schedules the
+    # scope-coalesced source index refresh; it never calls a provider in this transaction.
     create :create do
       accept [:session_id, :scope_id, :peer_id, :role, :content, :occurred_at]
 
@@ -270,6 +276,22 @@ defmodule MemHouse.Observations.Message do
     # Pipeline bookkeeping only: stamps when extraction finished. It cannot touch content.
     update :mark_extracted do
       accept [:extraction_completed_at]
+      require_atomic? false
+    end
+
+    # Derived source-search data only. The immutable observation remains the
+    # source of truth and a failed refresh leaves its previous index intact.
+    update :index_from_pipeline do
+      accept [
+        :embedding,
+        :embedding_provider,
+        :embedding_model,
+        :embedding_version,
+        :embedding_dimensions,
+        :diskann_labels,
+        :source_indexed_at
+      ]
+
       require_atomic? false
     end
 
@@ -292,6 +314,10 @@ defmodule MemHouse.Observations.Message do
     # other side — none of them can turn an observation into knowledge.
 
     policy action(:mark_extracted) do
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
+
+    policy action(:index_from_pipeline) do
       authorize_if actor_attribute_equals(:pipeline?, true)
     end
 
@@ -319,6 +345,16 @@ defmodule MemHouse.Observations.Message do
     # SHA-256 of the content, derived on create. Not public, because it is machinery: it keys
     # the extraction job and stands in for the text in the audit chain.
     attribute :content_hash, :string, allow_nil?: false
+
+    # Rebuildable source-recall index. Identity travels with every vector so a
+    # query never compares coordinates from different embedding spaces.
+    attribute :diskann_labels, {:array, :integer}, allow_nil?: false, default: []
+    attribute :embedding_provider, :string
+    attribute :embedding_model, :string
+    attribute :embedding_version, :string
+    attribute :embedding_dimensions, :integer
+    attribute :embedding, :vector, select_by_default?: false
+    attribute :source_indexed_at, :utc_datetime_usec
 
     # When the turn happened, which may be earlier than when it was submitted.
     attribute :occurred_at, :utc_datetime_usec, allow_nil?: false, public?: true

@@ -41,19 +41,68 @@ defmodule MemHouse.Pipeline.Changes.ExecuteRun do
     Ash.Changeset.before_transaction(changeset, fn changeset ->
       run = changeset.data
 
-      case Pipeline.execute(run) do
-        {:ok, _result} ->
-          changeset
-          |> Ash.Changeset.force_change_attribute(:status, "completed")
-          |> Ash.Changeset.force_change_attribute(:processed_at, Clock.utc_now())
-          |> Ash.Changeset.force_change_attribute(:last_error_class, nil)
-          |> Ash.Changeset.force_change_attribute(:attempt_count, run.attempt_count + 1)
+      apply_outcome(changeset, Pipeline.execute(run))
+    end)
+  end
 
-        # The error travels no further than the changeset: the row keeps its
-        # current status and stays eligible for retry and reconciliation.
-        {:error, error} ->
-          Ash.Changeset.add_error(changeset, error)
-      end
+  @doc """
+  Applies a workflow outcome to the outer `PipelineRun` update changeset.
+
+  Durable batch outcomes return the changeset unchanged because the batcher
+  already fenced and persisted each anchor. Ordinary workflow outcomes set the
+  corresponding status; errors are returned for Ash to handle through its
+  normal rollback and retry path.
+  """
+  def apply_outcome(changeset, {:ok, %{run_status: status}})
+      when status in ["delegated", "persisted"] do
+    # The batching workflow owns all per-anchor durable transitions. This
+    # outer action loaded the row before that work and must not replay stale
+    # status after an owner completion or an operator requeue.
+    changeset
+  end
+
+  def apply_outcome(changeset, {:ok, _result}) do
+    run = changeset.data
+
+    changeset
+    |> Ash.Changeset.force_change_attribute(:status, "completed")
+    |> Ash.Changeset.force_change_attribute(:processed_at, Clock.utc_now())
+    |> Ash.Changeset.force_change_attribute(:last_error_class, nil)
+    |> Ash.Changeset.force_change_attribute(:attempt_count, run.attempt_count + 1)
+  end
+
+  # The error travels no further than the changeset: the row keeps its current
+  # status and stays eligible for retry and reconciliation.
+  def apply_outcome(changeset, {:error, error}), do: Ash.Changeset.add_error(changeset, error)
+end
+
+defmodule MemHouse.Pipeline.Changes.RunObanTriggerAt do
+  @moduledoc """
+  Inserts an AshOban trigger at the absolute time supplied to an action.
+
+  The ordinary trigger change accepts a compile-time job option. Idle dream
+  scheduling instead derives an exact wakeup from the committed knowledge
+  change, so the timestamp is an action argument. The hook still runs inside
+  the resource action transaction: the `PipelineRun` and its Oban job either
+  both commit or both roll back.
+  """
+
+  use Ash.Resource.Change
+
+  @doc "Registers the absolute-time AshOban trigger in the surrounding action transaction."
+  @impl true
+  def change(changeset, opts, context) do
+    trigger = AshOban.Info.oban_trigger(changeset.resource, opts[:trigger])
+    scheduled_at = Ash.Changeset.get_argument(changeset, opts[:argument])
+
+    Ash.Changeset.after_action(changeset, fn _changeset, result ->
+      AshOban.run_trigger(result, trigger,
+        actor: context.actor,
+        tenant: changeset.tenant,
+        scheduled_at: scheduled_at
+      )
+
+      {:ok, result}
     end)
   end
 end
@@ -72,6 +121,10 @@ defmodule MemHouse.Pipeline.Changes.MarkRunFailed do
 
   use Ash.Resource.Change
 
+  alias MemHouse.DataLayer
+  alias MemHouse.Operations.PipelineRun
+
+  require Ash.Query
   require Logger
 
   @doc """
@@ -82,30 +135,87 @@ defmodule MemHouse.Pipeline.Changes.MarkRunFailed do
   failure path must always be able to record an outcome.
   """
   @impl true
-  def change(changeset, _opts, _context) do
+  def change(changeset, _opts, context) do
     error = Ash.Changeset.get_argument(changeset, :error)
     class = error_class(error)
     run = changeset.data
 
-    if run.kind == "extraction" do
-      Logger.error("pipeline extraction failed",
-        account_id: run.account_id,
-        scope_id: run.scope_id,
-        pipeline_run_id: run.id,
-        target_type: run.target_type,
-        target_id: run.target_id,
-        message_id: if(run.target_type == "message", do: run.target_id),
-        attempt_count: run.attempt_count + 1,
-        error_class: class
+    failed_changeset =
+      changeset
+      |> Ash.Changeset.force_change_attribute(:status, "failed")
+      |> Ash.Changeset.force_change_attribute(:last_error_class, class)
+      |> Ash.Changeset.force_change_attribute(
+        :attempt_count,
+        changeset.data.attempt_count + 1
       )
-    end
 
+    if run.kind == "extraction" do
+      preserve_committed_anchor(failed_changeset, run, class, context.actor)
+    else
+      failed_changeset
+    end
+  end
+
+  # A batched extraction commits each anchor before the outer Oban action
+  # records its outcome. If the process crashes after one anchor commit, the
+  # error callback still holds the stale row loaded before the workflow. Read
+  # the current row inside the outcome transaction so that callback cannot
+  # downgrade a completed/isolated anchor back to retryable `failed`.
+  defp preserve_committed_anchor(changeset, run, class, actor) do
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      DataLayer.declare_account!(run.account_id)
+
+      current =
+        PipelineRun
+        |> Ash.Query.filter(id == ^run.id)
+        |> Ash.Query.set_tenant(run.account_id)
+        # The enclosing `mark_failed` action has already been authorized. This
+        # internal current-row read is additionally constrained by tenant, id,
+        # and database RLS; it must also work for AshOban's actorless callback.
+        |> Ash.read_one!(actor: actor, authorize?: false)
+
+      cond do
+        current.status in ["completed", "repairable", "terminal"] ->
+          preserve_current(changeset, current)
+
+        current.status == "failed" and current.attempt_count > run.attempt_count ->
+          # The batching workflow classified the provider failure before
+          # returning it. Keep that more precise, content-safe class instead of
+          # replacing it with Reactor's outer wrapper class.
+          log_extraction_failure(run, current.last_error_class)
+          preserve_current(changeset, current)
+
+        current.status == "processing" and not is_nil(current.batch_claim_id) ->
+          # A stale worker can fail after reconciliation handed the anchor to a
+          # new claim. Its outer callback must not cancel the new owner.
+          preserve_current(changeset, current)
+
+        true ->
+          log_extraction_failure(run, class)
+          changeset
+      end
+    end)
+  end
+
+  defp preserve_current(changeset, current) do
     changeset
-    |> Ash.Changeset.force_change_attribute(:status, "failed")
-    |> Ash.Changeset.force_change_attribute(:last_error_class, class)
-    |> Ash.Changeset.force_change_attribute(
-      :attempt_count,
-      changeset.data.attempt_count + 1
+    |> Ash.Changeset.force_change_attribute(:status, current.status)
+    |> Ash.Changeset.force_change_attribute(:last_error_class, current.last_error_class)
+    |> Ash.Changeset.force_change_attribute(:attempt_count, current.attempt_count)
+    |> Ash.Changeset.force_change_attribute(:processed_at, current.processed_at)
+    |> Ash.Changeset.force_change_attribute(:payload, current.payload)
+  end
+
+  defp log_extraction_failure(run, class) do
+    Logger.error("pipeline extraction failed",
+      account_id: run.account_id,
+      scope_id: run.scope_id,
+      pipeline_run_id: run.id,
+      target_type: run.target_type,
+      target_id: run.target_id,
+      message_id: if(run.target_type == "message", do: run.target_id),
+      attempt_count: run.attempt_count + 1,
+      error_class: class
     )
   end
 

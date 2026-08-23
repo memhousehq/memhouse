@@ -63,11 +63,15 @@ defmodule MemHouseWeb.Router do
       get "/ingest/:message_id", MemoryController, :ingest_status
       post "/ask", MemoryController, :ask
       post "/search", MemoryController, :search
+      post "/source-search", MemoryController, :source_search
+      post "/lineage", MemoryController, :lineage
+      post "/stable-profile", MemoryController, :identity_profile
       post "/context", MemoryController, :context
       post "/readiness", MemoryController, :readiness
       get "/knowledge", MemoryController, :knowledge
       get "/operations/costs", MemoryController, :costs
       post "/operations/reconcile", MemoryController, :reconcile
+      post "/operations/ingest/:message_id/requeue", MemoryController, :requeue_ingest
       post "/operations/dream", MemoryController, :dream
     end
   end

@@ -10,6 +10,7 @@ defmodule MemHouseWeb.MemoryController do
 
   use MemHouseWeb, :controller
 
+  alias MemHouse.Governance.PublicOperations
   alias MemHouse.Memory
   alias MemHouse.Operations.Health
   alias MemHouse.Pipeline
@@ -69,6 +70,43 @@ defmodule MemHouseWeb.MemoryController do
   end
 
   @doc """
+  Explicitly requeues one repairable or terminal extraction anchor.
+
+  Normal reconciliation deliberately excludes those states. Only an Account
+  administrator or system actor may acknowledge the operator-action boundary.
+  """
+  def requeue_ingest(conn, %{"message_id" => message_id}) do
+    case run_public_action(
+           :requeue_extraction,
+           %{message_id: message_id},
+           conn.assigns.current_actor
+         ) do
+      {:ok, %{"outcome" => "accepted", "data" => data}} ->
+        conn |> put_status(:accepted) |> json(%{data: data})
+
+      {:ok, %{"outcome" => "not_repairable"}} ->
+        conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
+
+      {:ok, %{"outcome" => "not_found"}} ->
+        conn |> put_status(:not_found) |> json(%{error: "Not found"})
+
+      {:ok, %{"outcome" => "unavailable"}} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{error: "Requeue is temporarily unavailable"})
+
+      {:error, %Ash.Error.Forbidden{}} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+
+      {:error, %Ash.Error.Invalid{}} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+
+      {:error, _invalid_or_unknown} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+    end
+  end
+
+  @doc """
   Enqueues one immediate dream-time pass for the authenticated operator's Account.
 
   Returns 202 with the durable run id. Only account administrators and internal
@@ -116,7 +154,7 @@ defmodule MemHouseWeb.MemoryController do
   @doc """
   Reports extraction status for one accepted observation.
 
-  Returns pending, failed, or completed state with the completion timestamp,
+  Returns pending, failed, repairable, terminal, or completed state with the completion timestamp,
   visible governed knowledge, the last content-safe error class, and the durable
   attempt count. A missing or unauthorized message returns 404.
   """
@@ -156,11 +194,79 @@ defmodule MemHouseWeb.MemoryController do
   end
 
   @doc """
+  Searches immutable source messages for grounded recovery and citation.
+
+  Body fields: `query`, `scope_path`, `mode` (`exact` or `semantic`), `limit`,
+  `excerpt_chars`, `peer_key`, and `include_cross_links`. Account and scope
+  authority come only from the authenticated actor. The response exposes
+  bounded excerpts and stable source metadata, never an unbounded transcript
+  or a hidden corpus count.
+  """
+  def source_search(conn, params) do
+    case run_public_action(:source_search, params, conn.assigns.current_actor) do
+      {:ok, %{"outcome" => "ok", "data" => result}} ->
+        json(conn, %{data: result})
+
+      {:error, %Ash.Error.Forbidden{}} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+
+      {:error, _invalid_or_unknown} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+    end
+  end
+
+  @doc """
+  Traverses bounded, authorized evidence lineage without exposing model rationale.
+
+  Body: `target_id` is required; `target_type` defaults to `knowledge`. Optional
+  scope, reader, depth, fan-out, and total-node limits are clamped by the lineage
+  boundary. Missing and unauthorized targets share one opaque 404.
+  """
+  def lineage(conn, params) do
+    case run_public_action(:evidence_lineage, params, conn.assigns.current_actor) do
+      {:ok, %{"outcome" => "ok", "data" => result}} ->
+        json(conn, %{data: result})
+
+      {:ok, %{"outcome" => "not_found"}} ->
+        conn |> put_status(:not_found) |> json(%{error: "Not found"})
+
+      {:error, %Ash.Error.Forbidden{}} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+
+      {:error, _invalid_or_unknown} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+    end
+  end
+
+  @doc """
+  Returns the calling reader's compact stable identity profile.
+
+  The response is a live projection of governed knowledge and direct evidence,
+  not an editable profile record. `peer_key` may select the reader under the same
+  rules as search; it grants no additional scope access.
+  """
+  def identity_profile(conn, params) do
+    case run_public_action(:stable_identity_profile, params, conn.assigns.current_actor) do
+      {:ok, %{"outcome" => "ok", "data" => result}} ->
+        json(conn, %{data: result})
+
+      {:error, %Ash.Error.Forbidden{}} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+
+      {:error, _invalid_or_unknown} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+    end
+  end
+
+  @doc """
   Retrieves supporting memory and answers a natural-language question over it.
 
     Body: `question` is required; every `search/2` parameter is also accepted. `profile`
     defaults to `"thorough"` rather than `"balanced"`, because an answer justifies more
-    latency than a bare search.
+    latency than a bare search. Optional `effort` is `low`, `medium`, or `high`; it selects
+    the bounded read-only planner over governed knowledge, stable profile, and typed
+    lineage. Source-message search is added only when `include_source_recall` is the JSON
+    boolean `true`; effort alone does not permit source-text recall.
 
     Returns `%{"data" => result}`: the search payload merged with `answer`, `citations`,
     `abstained`, `answer_confidence`, `answer_degraded`, `answer_context_count`, and
@@ -236,5 +342,14 @@ defmodule MemHouseWeb.MemoryController do
       |> Memory.query_knowledge(conn.assigns.current_actor)
 
     json(conn, %{data: result})
+  end
+
+  # Public controllers are protocol adapters. The action resource owns input
+  # typing and authorization; the authenticated actor is passed through
+  # unchanged so downstream Account, scope, and RLS policy remains effective.
+  defp run_public_action(action, params, actor) do
+    PublicOperations
+    |> Ash.ActionInput.for_action(action, params)
+    |> Ash.run_action(actor: actor)
   end
 end

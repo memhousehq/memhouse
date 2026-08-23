@@ -27,12 +27,15 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
   alias MemHouse.Model.Usage
   alias MemHouse.Operations.Health
   alias MemHouse.Operations.Metering
+  alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline
   alias MemHouse.Portability
   alias MemHouse.Portability.AuditVerifier
   alias MemHouse.Portability.Registry
   alias MemHouse.Repo
   alias MemHouse.RuntimeConfig
+
+  require Ash.Query
 
   test "logical export is self-describing, checksum verified, and excludes secrets and caches" do
     # Unique account key per run so a leftover archive or account from an earlier run cannot
@@ -91,6 +94,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     # meaningless — silently wrong, not obviously wrong — under a different one.
     refute MemHouse.Accounts.ApiKey in Enum.map(Registry.resources(), &elem(&1, 1))
     assert MemHouse.Knowledge.Projection in Registry.derived_resources()
+    assert MemHouse.Retrieval.RecallDocument in Registry.derived_resources()
     assert MemHouse.Operations.PipelineRun in Registry.operational_resources()
 
     refute Enum.any?(Registry.resources(), fn {_name, resource} ->
@@ -99,6 +103,11 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
 
     assert :hashed_password in Registry.excluded_attributes(MemHouse.Accounts.Peer)
     assert :embedding in Registry.excluded_attributes(MemHouse.Knowledge.KnowledgeItem)
+
+    for attribute <-
+          ~w(diskann_labels embedding embedding_provider embedding_model embedding_version embedding_dimensions source_indexed_at)a do
+      assert attribute in Registry.excluded_attributes(MemHouse.Observations.Message)
+    end
   end
 
   test "audit verification rejects any changed event" do
@@ -294,6 +303,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert summary.event_count == 1
     assert summary.api_requests == 1
     assert summary.ingests == 1
+    assert summary.terminal_extraction_failures == 0
     # No model was called, so no tokens. Token counts come only from real provider calls;
     # they are never estimated from request counts.
     assert summary.tokens == %{input: 0, output: 0, embedding: 0}
@@ -319,9 +329,65 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert summary.storage.durable_bytes == summary.logical_storage_bytes
     assert is_integer(summary.storage.operational_bytes)
     assert is_boolean(summary.storage.inverted?)
-    # Zero because a self-hoster supplies their own rates. MemHouse does not carry hidden
-    # pricing: with no configured rate, the honest estimate is 0.0, not a guess.
+    # No model tokens means zero cost under either the shipped planning profile
+    # or an operator override. The profile identity keeps that distinction
+    # visible instead of silently treating an absent table as free usage.
     assert summary.estimated_model_cost == 0.0
+    assert %{id: profile_id, kind: profile_kind} = summary.model_cost_profile
+    assert is_binary(profile_id)
+    assert profile_kind in ["planning_reference", "operator_override"]
+  end
+
+  test "usage summary counts permanent extraction failures from durable anchors" do
+    account_key = "f10-terminal-extraction-#{System.unique_integer([:positive])}"
+
+    assert {:ok, message} =
+             Memory.ingest_message(%{
+               "account_key" => account_key,
+               "session_id" => "terminal-extraction",
+               "scope_path" => "/f10/terminal-extraction",
+               "peer_key" => "operator",
+               "content" => "Avery records a permanent extraction fixture."
+             })
+
+    {_account, actor, run} =
+      DataLayer.with_account_key(
+        account_key,
+        [role: :account_admin, pipeline?: true],
+        fn account, actor ->
+          run =
+            PipelineRun
+            |> Ash.Query.filter(
+              kind == "extraction" and target_type == "message" and
+                target_id == ^message["id"]
+            )
+            |> Ash.Query.set_tenant(account.id)
+            |> Ash.read_one!(actor: %{actor | role: :system})
+
+          {account, actor, run}
+        end
+      )
+
+    Ash.Seed.update!(
+      run,
+      %{status: "terminal", last_error_class: "structured_validation_exhausted"},
+      tenant: actor.account_id
+    )
+
+    assert Metering.summary(actor).terminal_extraction_failures == 1
+  end
+
+  test "the shipped cost profile is versioned and non-zero before an operator override" do
+    rates = Application.fetch_env!(:memhouse, :model_cost_per_million)
+    profile = Application.fetch_env!(:memhouse, :model_cost_profile)
+
+    assert profile == %{id: "planning-reference-v1", kind: "planning_reference"}
+    assert get_in(rates, ["ingest_extractor", :input]) > 0.0
+    assert get_in(rates, ["ingest_extractor", :output]) > 0.0
+    assert get_in(rates, ["dream_reasoner", :input]) > 0.0
+    assert get_in(rates, ["dialectic_agent", :output]) > 0.0
+    assert get_in(rates, ["embedder", :embedding]) > 0.0
+    assert get_in(rates, ["reranker", :input]) > 0.0
   end
 
   test "metering declares its own Account, so the database wall admits the ledger write" do
@@ -414,12 +480,21 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
       )
 
     original_rates = Application.get_env(:memhouse, :model_cost_per_million, %{})
+    original_profile = Application.fetch_env!(:memhouse, :model_cost_profile)
 
     Application.put_env(:memhouse, :model_cost_per_million, %{
       "ingest_extractor" => %{input: 1.0, output: 2.0}
     })
 
-    on_exit(fn -> Application.put_env(:memhouse, :model_cost_per_million, original_rates) end)
+    Application.put_env(:memhouse, :model_cost_profile, %{
+      id: "contract-test-v1",
+      kind: "operator_override"
+    })
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_cost_per_million, original_rates)
+      Application.put_env(:memhouse, :model_cost_profile, original_profile)
+    end)
 
     assert :ok = Metering.record_api(actor, %{operation: "api.ingest", status: "ok"})
 
@@ -436,12 +511,19 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
                }
              )
 
-    assert Metering.summary(actor).ingest_economics == %{
+    summary = Metering.summary(actor)
+
+    assert summary.ingest_economics == %{
              messages: 1,
              calls: 1,
              calls_per_message: 1.0,
              tokens_per_message: 1000.0,
              cost_per_message: 0.0014
+           }
+
+    assert summary.model_cost_profile == %{
+             id: "contract-test-v1",
+             kind: "operator_override"
            }
   end
 

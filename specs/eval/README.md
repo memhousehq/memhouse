@@ -73,11 +73,17 @@ The built-in fixture is intentionally small. Custom fixtures use this shape:
       "id": "q1",
       "scope_path": "/bench/locomo",
       "question": "What does Alice prefer?",
-      "expected": "concise status updates"
+      "expected": "concise status updates",
+      "metadata": {"peer_key": "alice"}
     }
   ]
 }
 ```
+
+`questions[].metadata.peer_key` is optional. Set it when the run must evaluate
+that already-ingested Peer's governed view or stable identity profile. Without
+it, the evaluation harness retains its internal Account reader and does not
+guess an identity from message order.
 
 Run a fixture with:
 
@@ -124,6 +130,77 @@ list, not only answer citations.
 Manual live-model runs add `--judge model`; the configured dream-reasoner must
 be a different provider/model family from the dialectic answer role or the run
 fails before scoring.
+
+## Matched Profile Experiments
+
+`mix memhouse.eval.experiment` is the controlled-ablation entrypoint. One definition contains one
+current and one experimental variant over the same dataset. The command emits a resolved
+`memhouse-experiment-manifest-1` artifact and a `memhouse-comparison-1` bundle rather than asking a
+maintainer to compare two unrelated runner files by hand.
+
+```bash
+mix memhouse.eval.experiment \
+  --definition specs/eval/experiments/memory-profile-ablation.json \
+  --manifest-output /private/tmp/memhouse-experiment-manifest.json \
+  --output /private/tmp/memhouse-comparison.json
+```
+
+Execute definitions use a closed component map derived from executable settings: profile,
+effective strategies and seed stages, rerank, deadline, extraction batching identity and limits, adaptive recall
+effort, source and lineage recall permissions, Knowledge semantic-index refresh, source-message
+semantic-index refresh, RecallDocument refresh, idle scheduling gates, explicit dream execution,
+the default-off dream-operation split, and durability audit. The map must exactly match the runner
+inputs and resolved profile or validation fails. Source-message semantic refresh runs
+synchronously in each isolated case scope before questions and records only completion, counts,
+and the four-part embedding identity. A variant that declares source recall, lineage recall, or
+split reasoning must record an actual completed source-semantic tool, lineage tool, or every
+enabled split operation respectively; permission or configuration alone is not execution evidence.
+Unknown keys are unsupported rather than
+inert labels. Runtime feature switches are restored even when execution raises. Fixture
+definitions must keep `components` empty because replaying supplied metrics does not execute a
+component. The source revision and dirty/clean state, dataset digest, and explicit
+sampling/durability seeds prevent results from two different inputs or implementations being
+presented as one ablation.
+
+The committed smoke definition compares the real `balanced` default strategy set and synchronous
+fixed recall with the `minimal` dual-lane profile, durable extraction batching, high-effort bounded
+recall, explicit source/lineage permissions, idle scheduler switch, and explicit dream pass. Both
+variants refresh the isolated Knowledge-derived vector index; only the minimal variant refreshes
+the source-message semantic index and rebuilds its non-authoritative RecallDocument projection.
+The three refreshes are separately executable and reported rather than one composite maintenance
+label.
+An offline run therefore requires an Ortex embedder with existing operator-supplied model and
+tokenizer artifacts; missing artifacts or a hosted/deterministic stand-in embedder are rejected
+before ingestion. `--live-model` is the explicit provider-call boundary and may incur cost. The
+harness never stores fake deterministic embeddings.
+
+The measured section stages quality, citation, abstention, unexpected-source isolation, provider
+usage, operator-priced cost, wall/recall latency, stored facts, dream-time accounting, database
+query count/timing, and new `PipelineRun` work by kind and status. A telemetry handler counts only
+the bounded runner interval; the before/after snapshot queries are outside it. It never records
+SQL, parameters, results, content, or Account ids. An idle-enabled execute case must supply at
+least two active direct-item generations in its exact scope. The harness creates real durable
+`PipelineRun` and Oban work through `MemHouse.Pipeline`, verifies schedule and generation order,
+executes the stale and latest generations through the production workflow, and replays the latest
+generation. It fails closed unless the stale wake is superseded before model work, the latest wake
+completes, and replay has zero additional durable effect. A split-operation execute variant also
+fails unless its explicit dream pass records every enabled operation.
+Gates cover regression, citation and unsupported-answer failures, source-membership leaks,
+token/cost and latency budgets, and replay effects. Measured evidence is structurally separate
+from inferences and unreproduced first-party claims.
+Source-membership accounting normalizes both legacy message provenance and bounded typed
+`source_references`. Message identities translate into the fixture's turn/session labels for
+citation and rank scoring; a document-version identity cannot belong to the message-only runner
+case and is counted only as a content-free isolation leak.
+
+Execute mode uses deterministic local model roles unless the operator explicitly passes
+`--live-model`. Fixture mode starts neither the application nor a provider and is not quotable
+benchmark evidence. Its committed manifest and bundle under `specs/eval/results/` are exact
+reproduction evidence for the comparison contract.
+
+Both production database modes use PostgreSQL. The resolved manifest records `external` or `pg0`;
+SQLite is deliberately rejected because the vector, full-text, RLS, and transactional queue
+contract has no SQLite implementation.
 
 ## Full Benchmark Ingestion And Scoring
 

@@ -139,6 +139,7 @@ nav:
       - Upgrades: operations/upgrades.md
       - Health and cost: operations/health-and-costs.md
       - Observability: operations/observability.md
+      - Simplified memory rollout: operations/simplified-memory-rollout.md
       - Backup and restore: operations/backup-restore.md
       - Export and import: operations/portability.md
   - Reference:

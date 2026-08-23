@@ -39,6 +39,77 @@ defmodule MemHouse.Governance.Actions.McpIngest do
   defp stringify(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
 end
 
+defmodule MemHouse.Governance.Actions.PublicRead do
+  @moduledoc """
+  Runs one governed read behind `MemHouse.Governance.PublicOperations`.
+
+  The generic action policy establishes the authenticated public boundary. The
+  memory facade then preserves the caller actor while its ordinary Account,
+  scope, reader, lifecycle, and RLS checks select what can be returned.
+  """
+
+  use Ash.Resource.Actions.Implementation
+
+  @impl true
+  def run(input, opts, context) do
+    attrs = stringify(input.arguments)
+
+    case Keyword.fetch!(opts, :operation) do
+      :source_search ->
+        ok(MemHouse.Memory.search_sources(attrs, context.actor))
+
+      :stable_identity_profile ->
+        ok(MemHouse.Memory.stable_identity_profile(attrs, context.actor))
+
+      :evidence_lineage ->
+        case MemHouse.Memory.evidence_lineage(attrs, context.actor) do
+          {:ok, lineage} -> ok(lineage)
+          {:error, :not_found} -> {:ok, %{"outcome" => "not_found"}}
+        end
+    end
+  end
+
+  defp ok(data), do: {:ok, %{"outcome" => "ok", "data" => data}}
+  defp stringify(attrs), do: Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
+end
+
+defmodule MemHouse.Governance.Actions.RequeueExtraction do
+  @moduledoc """
+  Applies an authorized explicit extraction requeue.
+
+  The public action policy admits only Account administrators and internal
+  system actors. The pipeline keeps ownership of the privileged reset/enqueue
+  implementation and returns only a run id or the content-safe repairability
+  classification.
+  """
+
+  use Ash.Resource.Actions.Implementation
+
+  @impl true
+  def run(input, _opts, context) do
+    case MemHouse.Pipeline.request_extraction_requeue(
+           context.actor,
+           Map.fetch!(input.arguments, :message_id)
+         ) do
+      {:ok, run} ->
+        {:ok,
+         %{
+           "outcome" => "accepted",
+           "data" => %{"run_id" => run.id, "status" => "accepted"}
+         }}
+
+      {:error, :not_repairable} ->
+        {:ok, %{"outcome" => "not_repairable"}}
+
+      {:error, :not_found} ->
+        {:ok, %{"outcome" => "not_found"}}
+
+      {:error, _reason} ->
+        {:ok, %{"outcome" => "unavailable"}}
+    end
+  end
+end
+
 defmodule MemHouse.Governance.Actions.McpRead do
   @moduledoc """
   Shared read-tool implementation with optional inline validation.
