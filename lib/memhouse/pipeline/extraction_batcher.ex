@@ -308,13 +308,20 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
         end
       )
 
-    Enum.map(ids, &Memory.prepare_message_extraction_for_account(&1, account_id))
+    # The read over-selects so a future eligibility check can discard raced
+    # siblings without another query; preparation is the expensive boundary,
+    # so never cross the configured anchor cap here.
+    ids
+    |> Enum.take(max_anchors)
+    |> Enum.map(&Memory.prepare_message_extraction_for_account(&1, account_id))
   end
 
   defp fit_request(prepared) do
+    json_schema = Extractor.batch_schema().json_schema()
+
     prepared
     |> ExtractionAdmission.select_prefix(&anchor_admission_material/1)
-    |> drop_until_admitted()
+    |> drop_until_admitted(json_schema)
   end
 
   defp anchor_admission_material(anchor) do
@@ -333,21 +340,17 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     })
   end
 
-  defp drop_until_admitted([]), do: []
+  defp drop_until_admitted([], _json_schema), do: []
 
-  defp drop_until_admitted(prepared) do
+  defp drop_until_admitted(prepared, json_schema) do
     {messages, _context, _opts} = Extractor.batch_request(prepared)
-    schema = Extractor.batch_schema()
 
-    case ExtractionAdmission.admit(
-           messages,
-           schema.json_schema()
-         ) do
+    case ExtractionAdmission.admit(messages, json_schema) do
       {:ok, _admission} ->
         prepared
 
       {:error, _details} when length(prepared) > 1 ->
-        prepared |> Enum.drop(-1) |> drop_until_admitted()
+        prepared |> Enum.drop(-1) |> drop_until_admitted(json_schema)
 
       {:error, _details} ->
         []

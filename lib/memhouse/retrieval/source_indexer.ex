@@ -23,13 +23,15 @@ defmodule MemHouse.Retrieval.SourceIndexer do
 
   require Ash.Query
 
+  @page_size 100
+
   @doc """
   Rebuilds every source-message embedding in an Account scope.
 
-  Returns `{:ok, %{indexed: count, embedding_identity: identity}}` after the replacement
-  vectors commit, including `count: 0` when the scope has no messages. The four-part identity
-  is content-free and names the vector space that completed the refresh. Returns the embedder
-  error unchanged and preserves every previously stored vector when the provider call fails.
+  Returns `{:ok, %{indexed: count, embedding_identity: identity}}` after all bounded pages
+  commit, including `count: 0` when the scope has no messages. The four-part identity is
+  content-free and names the vector space that completed the refresh. Returns the embedder
+  error unchanged; pages committed before a later provider failure remain replay-safe.
   Invalid or unauthorized Account/scope identifiers raise through the Account-scoped read.
   """
   def rebuild_scope(account_id, scope_id), do: index_scope(account_id, scope_id, false)
@@ -39,23 +41,20 @@ defmodule MemHouse.Retrieval.SourceIndexer do
 
   Returns `{:ok, %{indexed: count, embedding_identity: identity}}`, where zero is the
   replay-safe result when the derived index already matches the Account's current provider,
-  model, version, and dimensions. Returns the embedder error unchanged without modifying
-  existing vectors. Invalid or unauthorized Account/scope identifiers raise through the
-  Account-scoped read.
+  model, version, and dimensions. Returns the embedder error unchanged; successfully committed
+  earlier pages remain valid and the next refresh resumes the remaining stale rows. Invalid or
+  unauthorized Account/scope identifiers raise through the Account-scoped read.
   """
   def refresh_scope(account_id, scope_id), do: index_scope(account_id, scope_id, true)
 
   defp index_scope(account_id, scope_id, missing_only?) do
     label = DiskannLabels.ensure_scope!(account_id, scope_id)
-    {messages, actor, identity} = read_messages!(account_id, scope_id, missing_only?)
+    {actor, identity} = resolve_context!(account_id)
 
-    case messages do
-      [] -> {:ok, %{indexed: 0, embedding_identity: identity}}
-      messages -> embed_then_write(messages, account_id, scope_id, actor, label)
-    end
+    index_pages(account_id, scope_id, missing_only?, actor, identity, label, nil, 0)
   end
 
-  defp read_messages!(account_id, scope_id, refresh_only?) do
+  defp resolve_context!(account_id) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
@@ -65,8 +64,54 @@ defmodule MemHouse.Retrieval.SourceIndexer do
           |> Config.resolve(%{account_id: account_id, actor: actor})
           |> Config.embedding_identity()
 
+        {actor, identity}
+      end
+    )
+  end
+
+  defp index_pages(
+         account_id,
+         scope_id,
+         refresh_only?,
+         actor,
+         identity,
+         label,
+         cursor,
+         indexed
+       ) do
+    messages = read_messages!(account_id, scope_id, refresh_only?, identity, cursor)
+
+    case messages do
+      [] ->
+        {:ok, %{indexed: indexed, embedding_identity: identity}}
+
+      messages ->
+        with {:ok, count} <- embed_then_write(messages, account_id, scope_id, actor, label) do
+          last = List.last(messages)
+
+          index_pages(
+            account_id,
+            scope_id,
+            refresh_only?,
+            actor,
+            identity,
+            label,
+            {last.occurred_at, last.id},
+            indexed + count
+          )
+        end
+    end
+  end
+
+  defp read_messages!(account_id, scope_id, refresh_only?, identity, cursor) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
         query =
-          Message |> Ash.Query.filter(scope_id == ^scope_id) |> Ash.Query.select([:id, :content])
+          Message
+          |> Ash.Query.filter(scope_id == ^scope_id)
+          |> Ash.Query.select([:id, :content, :occurred_at])
 
         query =
           if refresh_only? do
@@ -82,13 +127,23 @@ defmodule MemHouse.Retrieval.SourceIndexer do
             query
           end
 
-        messages =
-          query
-          |> Ash.Query.sort(occurred_at: :asc, id: :asc)
-          |> Ash.Query.set_tenant(account_id)
-          |> Ash.read!(actor: actor)
+        query =
+          case cursor do
+            nil ->
+              query
 
-        {messages, actor, identity}
+            {occurred_at, id} ->
+              Ash.Query.filter(
+                query,
+                occurred_at > ^occurred_at or (occurred_at == ^occurred_at and id > ^id)
+              )
+          end
+
+        query
+        |> Ash.Query.sort(occurred_at: :asc, id: :asc)
+        |> Ash.Query.limit(@page_size)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read!(actor: actor)
       end
     )
   end
@@ -96,14 +151,15 @@ defmodule MemHouse.Retrieval.SourceIndexer do
   defp embed_then_write(messages, account_id, scope_id, actor, label) do
     context = %{account_id: account_id, scope_id: scope_id, actor: actor}
 
-    with {:ok, result} <- Embedding.embed(Enum.map(messages, & &1.content), context) do
+    with {:ok, result} <- Embedding.embed(Enum.map(messages, & &1.content), context),
+         {:ok, pairs} <- pair_messages(messages, result.vectors) do
       indexed_at = Clock.utc_now()
 
       DataLayer.with_account_id(
         account_id,
         [role: :system, pipeline?: true],
         fn _account, actor ->
-          Enum.each(Enum.zip(messages, result.vectors), fn {message, vector} ->
+          Enum.each(pairs, fn {message, vector} ->
             message
             |> Ash.Changeset.for_update(:index_from_pipeline, %{
               embedding: vector,
@@ -120,16 +176,16 @@ defmodule MemHouse.Retrieval.SourceIndexer do
         end
       )
 
-      {:ok,
-       %{
-         indexed: length(messages),
-         embedding_identity: %{
-           provider: result.provider,
-           model: result.model,
-           version: result.version,
-           dimensions: result.dimensions
-         }
-       }}
+      {:ok, length(pairs)}
     end
+  end
+
+  defp pair_messages(messages, vectors) when length(messages) == length(vectors),
+    do: {:ok, Enum.zip(messages, vectors)}
+
+  defp pair_messages(messages, vectors) do
+    {:error,
+     {:embedding_cardinality_mismatch,
+      %{expected: length(messages), actual: length(vectors)}}}
   end
 end

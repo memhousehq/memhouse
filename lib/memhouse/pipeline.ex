@@ -603,6 +603,23 @@ defmodule MemHouse.Pipeline do
   end
 
   @doc """
+  Reports whether message extraction ended in an operator-visible terminal state.
+
+  Repairable and terminal outcomes require an explicit requeue. Missing,
+  completed, pending, failed, and processing rows do not block reconciliation
+  from idempotently offering an unstamped message again.
+  """
+  def extraction_terminal?(account_id, message_id, actor) do
+    PipelineRun
+    |> Ash.Query.filter(
+      kind == "extraction" and target_type == "message" and target_id == ^message_id and
+        status in ["repairable", "terminal"]
+    )
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.exists?(actor: pipeline_actor(actor))
+  end
+
+  @doc """
   Reports whether a scope already has durable projection-refresh work that
   reconciliation can recover.
 

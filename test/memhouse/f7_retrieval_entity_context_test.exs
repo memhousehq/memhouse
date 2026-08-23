@@ -2189,19 +2189,24 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         )
       end
 
-      # A legacy or manually inserted row cannot retune the experiment either.
-      Ecto.Adapters.SQL.query!(
-        Repo,
-        """
-        INSERT INTO retrieval_profiles
-          (account_id, scope_id, name, version, strategy_config, deadline_ms, active)
-        VALUES ($1, $2, 'minimal', 999, $3::jsonb, 1, true)
-        """,
-        [
-          Ecto.UUID.dump!(account.id),
-          Ecto.UUID.dump!(seeded.scope.id),
-          Jason.encode!(%{"strategies" => ["temporal"], "weights" => %{"temporal" => 1}})
-        ]
+      # A legacy fixture row cannot retune the experiment either. Ash.Seed is
+      # the explicit test-only data-layer seam for reproducing pre-contract
+      # rows without adding a production write action.
+      Ash.Seed.seed!(
+        MemHouse.Retrieval.RetrievalProfile,
+        %{
+          account_id: account.id,
+          scope_id: seeded.scope.id,
+          name: "minimal",
+          version: 999,
+          strategy_config: %{
+            "strategies" => ["temporal"],
+            "weights" => %{"temporal" => 1}
+          },
+          deadline_ms: 1,
+          active: true
+        },
+        tenant: account.id
       )
 
       query = %Query{

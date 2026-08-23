@@ -799,7 +799,7 @@ defmodule MemHouse.Memory do
       started_at = Clock.monotonic_ms()
       attrs = attrs |> normalize_attrs() |> put_identity_actor(identity_actor)
       question = Map.fetch!(attrs, "question")
-      effort = Map.get(attrs, "effort", "fixed")
+      effort = attrs |> Map.get("effort", "fixed") |> normalize_ask_effort()
       profile = Map.get(attrs, "profile") || default_ask_profile(effort)
 
       Observability.set_attributes(:memory, %{
@@ -876,6 +876,11 @@ defmodule MemHouse.Memory do
   defp default_ask_profile(effort) when effort not in ["fixed", :fixed, nil] do
     if minimal_recall_enabled?(), do: "minimal", else: "thorough"
   end
+
+  defp normalize_ask_effort(effort) when effort in ["low", :low], do: "low"
+  defp normalize_ask_effort(effort) when effort in ["medium", :medium], do: "medium"
+  defp normalize_ask_effort(effort) when effort in ["high", :high], do: "high"
+  defp normalize_ask_effort(_effort), do: "fixed"
 
   defp default_ask_profile(_effort), do: "thorough"
 

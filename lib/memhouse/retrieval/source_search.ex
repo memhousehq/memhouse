@@ -14,6 +14,7 @@ defmodule MemHouse.Retrieval.SourceSearch do
   alias MemHouse.Model.Embedding
   alias MemHouse.Retrieval.DiskannLabels
   alias MemHouse.Retrieval.Store
+  alias MemHouse.Retrieval.StrategySupport
 
   @default_limit 12
   @max_limit 100
@@ -87,6 +88,8 @@ defmodule MemHouse.Retrieval.SourceSearch do
 
     case Embedding.embed([text], context, input_type: :query) do
       {:ok, %{vectors: [vector]} = identity} ->
+        identity = StrategySupport.embedding_identity(identity)
+
         {rows, status} =
           in_account(authority, fn ->
             labels = DiskannLabels.for_scope_ids!(authority.account_id, authority.scope_ids)
@@ -129,8 +132,7 @@ defmodule MemHouse.Retrieval.SourceSearch do
   defp normalize_mode(mode) when mode in [:exact, "exact"], do: :exact
   defp normalize_mode(mode) when mode in [:semantic, "semantic"], do: :semantic
 
-  defp normalize_mode(mode),
-    do: raise(ArgumentError, "unknown source search mode: #{inspect(mode)}")
+  defp normalize_mode(_mode), do: :semantic
 
   defp clamp(value, minimum, maximum) when is_integer(value),
     do: value |> max(minimum) |> min(maximum)

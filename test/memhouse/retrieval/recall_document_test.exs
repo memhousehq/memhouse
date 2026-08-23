@@ -44,6 +44,28 @@ defmodule MemHouse.Retrieval.RecallDocumentTest do
     before = search(account.id, actor, [scope.id], 5, 5, 10)
     assert MapSet.new(Enum.map(before, & &1["id"])) == MapSet.new([direct.id, derived.id])
 
+    # The source watermark independently hides a stale projection even when
+    # lifecycle, deletion, and expiry remain readable.
+    direct =
+      direct
+      |> Ash.Changeset.for_update(:index_from_pipeline, %{
+        embedding: [1.0, 0.0, 0.0],
+        embedding_provider: @identity.provider,
+        embedding_model: @identity.model,
+        embedding_version: @identity.version,
+        embedding_dimensions: @identity.dimensions,
+        diskann_labels: direct.diskann_labels
+      })
+      |> Ash.Changeset.set_tenant(account.id)
+      |> Ash.update!(actor: pipeline)
+
+    refute direct.id in Enum.map(search(account.id, actor, [scope.id], 5, 5, 10), & &1["id"])
+
+    assert {:ok, %{projected: 2, removed: 0}} =
+             RecallProjector.refresh_scope(account.id, scope.id)
+
+    assert direct.id in Enum.map(search(account.id, actor, [scope.id], 5, 5, 10), & &1["id"])
+
     # Lifecycle is canonical. The stale projection cannot keep the retracted
     # row readable during the delay before the refresh job runs.
     Engine.transition!(direct, pipeline, %{state: "retracted"},

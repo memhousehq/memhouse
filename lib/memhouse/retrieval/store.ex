@@ -1838,8 +1838,9 @@ defmodule MemHouse.Retrieval.Store do
     normalize_uuid(value)
   end
 
-  defp normalize_db_value("source_message_ids", values) when is_list(values),
-    do: Enum.map(values, &normalize_uuid/1)
+  defp normalize_db_value(column, values) when is_binary(column) and is_list(values) do
+    if String.ends_with?(column, "_ids"), do: Enum.map(values, &normalize_uuid/1), else: values
+  end
 
   defp normalize_db_value(_column, value), do: value
 

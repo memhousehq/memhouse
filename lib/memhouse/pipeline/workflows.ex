@@ -153,8 +153,20 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
     if MemHouse.Operations.Budget.admit?(run.account_id, run.scope_id, :dream_time) do
       case handle_dream_result(MemHouse.Pipeline.DreamTime.run(run.account_id), run) do
         {:ok, reasoning} ->
-          with {:ok, sweep} <- MemHouse.Governance.Sweeper.run(run.account_id, "dream_time") do
-            {:ok, %{reasoning: reasoning, sweep: sweep}}
+          case MemHouse.Governance.Sweeper.run(run.account_id, "dream_time") do
+            {:ok, sweep} ->
+              {:ok, %{reasoning: reasoning, sweep: sweep}}
+
+            {:error, error} ->
+              # Reasoning has already committed and may have been billed. Do
+              # not retry it because independent maintenance failed.
+              Logger.error("dream-time governance sweep failed",
+                account_id: run.account_id,
+                pipeline_run_id: run.id,
+                error_class: error_class(error)
+              )
+
+              {:ok, %{reasoning: reasoning, sweep: %{status: "failed"}}}
           end
 
         error ->
@@ -164,6 +176,9 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
       {:ok, %{status: "throttled", lane: "dream_time"}}
     end
   end
+
+  defp error_class(%module{}), do: inspect(module)
+  defp error_class(_error), do: "unknown"
 
   defp handle_dream_result(result, run) do
     case result do

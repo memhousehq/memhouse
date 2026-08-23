@@ -61,6 +61,11 @@ defmodule MemHouse.Recall.PlannerTest do
     refute inspect(result.diagnostics) =~ "secret body"
   end
 
+  test "new and now independently select the updates playbook" do
+    assert Planner.run("What is new?", :low, %{}).diagnostics.playbook == "updates"
+    assert Planner.run("What should I know now?", :low, %{}).diagnostics.playbook == "updates"
+  end
+
   test "reserves adaptive headroom, deduplicates the full base page, and refills its tail" do
     initial =
       Enum.map(1..12, fn index ->

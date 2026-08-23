@@ -123,15 +123,18 @@ defmodule MemHouse.Retrieval.RecallProjector do
   @moduledoc """
   Materializes `RecallDocument` from canonical Knowledge and Provenance rows.
 
-  Ordinary refresh and disaster rebuild use the same complete scope snapshot.
-  Upsert and stale-row deletion run in one Account-scoped transaction, so
-  replay is deterministic and erasure cannot leave an orphan.
+  Ordinary refresh and disaster rebuild use the same canonical scope scan.
+  Upserts commit in bounded Account-scoped pages and stale rows are removed
+  only after every source page succeeds. Canonical lifecycle and watermark
+  checks keep a partially refreshed projection unreadable until replay converges.
   """
 
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{KnowledgeItem, Provenance}
 
   require Ash.Query
+
+  @projection_batch_size 100
 
   @doc "Rebuilds the complete non-authoritative recall projection for one scope."
   def rebuild_scope(account_id, scope_id), do: project_scope(account_id, scope_id)
@@ -140,82 +143,149 @@ defmodule MemHouse.Retrieval.RecallProjector do
   def refresh_scope(account_id, scope_id), do: project_scope(account_id, scope_id)
 
   defp project_scope(account_id, scope_id) do
+    {projected, source_ids} = upsert_source_pages(account_id, scope_id, nil, 0, [])
+    removed = remove_stale!(account_id, scope_id, source_ids)
+
+    {:ok, %{projected: projected, removed: removed}}
+  end
+
+  defp upsert_source_pages(account_id, scope_id, cursor, count, source_ids) do
+    items = upsert_source_page!(account_id, scope_id, cursor)
+
+    case items do
+      [] ->
+        {count, source_ids}
+
+      items ->
+        item_ids = Enum.map(items, & &1.id)
+
+        upsert_source_pages(
+          account_id,
+          scope_id,
+          List.last(items) |> then(&{&1.updated_at, &1.id}),
+          count + length(items),
+          Enum.reverse(item_ids, source_ids)
+        )
+    end
+  end
+
+  defp upsert_source_page!(account_id, scope_id, cursor) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        items = source_items!(account_id, scope_id, actor)
-        provenance_ids = provenance_ids!(account_id, scope_id, actor)
+        items = source_items!(account_id, scope_id, cursor, actor)
 
-        Enum.each(items, fn item ->
-          MemHouse.Retrieval.RecallDocument
-          |> Ash.Changeset.new()
-          |> Ash.Changeset.set_tenant(account_id)
-          |> Ash.Changeset.for_create(
+        if items != [] do
+          item_ids = Enum.map(items, & &1.id)
+          provenance_ids = provenance_ids!(account_id, scope_id, item_ids, actor)
+
+          attributes =
+            Enum.map(items, fn item ->
+              recall_attributes(item, Map.get(provenance_ids, item.id, []))
+            end)
+
+          Ash.bulk_create!(
+            attributes,
+            MemHouse.Retrieval.RecallDocument,
             :upsert_from_pipeline,
-            recall_attributes(item, Map.get(provenance_ids, item.id, []))
+            actor: actor,
+            tenant: account_id,
+            domain: MemHouse.Retrieval,
+            batch_size: @projection_batch_size,
+            stop_on_error?: true,
+            return_errors?: true
           )
-          |> Ash.create!(actor: actor)
-        end)
+        end
 
-        source_ids = MapSet.new(items, & &1.id)
-
-        stale =
-          MemHouse.Retrieval.RecallDocument
-          |> Ash.Query.filter(scope_id == ^scope_id)
-          |> Ash.Query.set_tenant(account_id)
-          |> Ash.read!(actor: actor)
-          |> Enum.reject(&MapSet.member?(source_ids, &1.knowledge_item_id))
-
-        Enum.each(stale, fn document ->
-          document
-          |> Ash.Changeset.for_destroy(:erase)
-          |> Ash.Changeset.set_tenant(account_id)
-          |> Ash.destroy!(actor: actor)
-        end)
-
-        {:ok, %{projected: length(items), removed: length(stale)}}
+        items
       end
     )
   end
 
-  defp source_items!(account_id, scope_id, actor) do
+  defp source_items!(account_id, scope_id, cursor, actor) do
     now = MemHouse.Clock.utc_now()
 
-    KnowledgeItem
-    |> Ash.Query.filter(
-      scope_id == ^scope_id and state in ["active", "provisional"] and is_nil(deleted_at) and
-        (is_nil(expires_at) or expires_at > ^now) and not is_nil(embedding)
-    )
-    |> Ash.Query.select([
-      :id,
-      :scope_id,
-      :subject_peer_id,
-      :subject_scope_id,
-      :statement,
-      :deduction_key,
-      :extracting_model,
-      :embedding,
-      :embedding_provider,
-      :embedding_model,
-      :embedding_version,
-      :embedding_dimensions,
-      :diskann_labels,
-      :updated_at
-    ])
-    |> Ash.Query.set_tenant(account_id)
-    |> Ash.read!(actor: actor)
+    query =
+      KnowledgeItem
+      |> Ash.Query.filter(
+        scope_id == ^scope_id and state in ["active", "provisional"] and is_nil(deleted_at) and
+          (is_nil(expires_at) or expires_at > ^now) and not is_nil(embedding)
+      )
+      |> maybe_after_cursor(cursor)
+      |> Ash.Query.select([
+        :id,
+        :scope_id,
+        :subject_peer_id,
+        :subject_scope_id,
+        :statement,
+        :deduction_key,
+        :extracting_model,
+        :embedding,
+        :embedding_provider,
+        :embedding_model,
+        :embedding_version,
+        :embedding_dimensions,
+        :diskann_labels,
+        :updated_at
+      ])
+      |> Ash.Query.sort(updated_at: :asc, id: :asc)
+      |> Ash.Query.limit(@projection_batch_size)
+      |> Ash.Query.set_tenant(account_id)
+
+    Ash.read!(query, actor: actor)
   end
 
-  defp provenance_ids!(account_id, scope_id, actor) do
+  defp maybe_after_cursor(query, nil), do: query
+
+  defp maybe_after_cursor(query, {updated_at, id}) do
+    Ash.Query.filter(
+      query,
+      updated_at > ^updated_at or (updated_at == ^updated_at and id > ^id)
+    )
+  end
+
+  defp provenance_ids!(account_id, scope_id, item_ids, actor) do
     Provenance
-    |> Ash.Query.filter(scope_id == ^scope_id)
+    |> Ash.Query.filter(scope_id == ^scope_id and knowledge_item_id in ^item_ids)
     |> Ash.Query.select([:id, :knowledge_item_id])
     |> Ash.Query.sort(id: :asc)
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
     |> Enum.group_by(& &1.knowledge_item_id, & &1.id)
   end
+
+  defp remove_stale!(account_id, scope_id, source_ids) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        query =
+          MemHouse.Retrieval.RecallDocument
+          |> Ash.Query.filter(scope_id == ^scope_id)
+          |> maybe_exclude_source_ids(source_ids)
+          |> Ash.Query.set_tenant(account_id)
+
+        removed = Ash.count!(query, actor: actor)
+
+        Ash.bulk_destroy!(query, :erase, %{},
+          actor: actor,
+          tenant: account_id,
+          domain: MemHouse.Retrieval,
+          strategy: [:atomic, :stream],
+          stop_on_error?: true,
+          return_errors?: true
+        )
+
+        removed
+      end
+    )
+  end
+
+  defp maybe_exclude_source_ids(query, []), do: query
+
+  defp maybe_exclude_source_ids(query, source_ids),
+    do: Ash.Query.filter(query, knowledge_item_id not in ^source_ids)
 
   defp recall_attributes(item, provenance_ids) do
     {lane, operation} = classification(item)

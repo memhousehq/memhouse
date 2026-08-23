@@ -30,10 +30,11 @@ defmodule MemHouse.Recall.ToolAdapter do
   ranked candidates after planning.
 
   Returns `{evidence, diagnostics}`. Evidence remains subject to independent
-  item, token, model-call, tool-call, iteration, and elapsed budgets. Source and
-  lineage reads run only when their explicit permission gates are present, and
-  diagnostics contain counts and profile identities only, never query or
-  evidence text.
+  item, token, model-call, tool-call, iteration, and elapsed budgets. Named
+  efforts add bounded profile, lineage, and knowledge tools. Lineage is enabled
+  by default and `_include_lineage_recall` can disable it; source recall remains
+  explicitly opt-in. Diagnostics contain counts and profile identities only,
+  never query or evidence text.
   """
   def run(attrs, question, effort, candidates, opts)
       when is_map(attrs) and is_binary(question) and is_list(candidates) and is_list(opts) do

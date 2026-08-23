@@ -89,6 +89,7 @@ defmodule MemHouse.Pipeline.Changes.RunObanTriggerAt do
 
   use Ash.Resource.Change
 
+  @doc "Registers the absolute-time AshOban trigger in the surrounding action transaction."
   @impl true
   def change(changeset, opts, context) do
     trigger = AshOban.Info.oban_trigger(changeset.resource, opts[:trigger])

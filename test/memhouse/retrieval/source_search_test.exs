@@ -31,6 +31,11 @@ defmodule MemHouse.Retrieval.SourceSearchTest.Provider do
         ]
       end)
 
+    vectors =
+      if Application.get_env(:memhouse, :source_index_short_vector_list, false),
+        do: Enum.drop(vectors, -1),
+        else: vectors
+
     {:ok,
      %Result{
        value: vectors,
@@ -98,9 +103,11 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     Application.put_env(:memhouse, :model_roles, roles)
     Application.put_env(:memhouse, :model_provider, __MODULE__.Provider)
     Application.delete_env(:memhouse, :source_index_test_controller)
+    Application.delete_env(:memhouse, :source_index_short_vector_list)
 
     on_exit(fn ->
       Application.delete_env(:memhouse, :source_index_test_controller)
+      Application.delete_env(:memhouse, :source_index_short_vector_list)
       Application.put_env(:memhouse, :model_roles, original_roles)
 
       if original_provider do
@@ -409,6 +416,17 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert [%{"id" => id, "rank" => 1}] = ready["results"]
     assert id == message["id"]
 
+    fallback =
+      Memory.search_sources(%{
+        "account_key" => "source-semantic",
+        "scope_path" => "/source/semantic",
+        "query" => "release",
+        "mode" => "not-a-mode"
+      })
+
+    assert fallback["mode"] == "semantic"
+    assert fallback["status"] == "ready"
+
     Application.put_env(:memhouse, :model_provider, __MODULE__.FailingProvider)
     assert {:error, :fixture_unavailable} = SourceIndexer.rebuild_scope(account_id, scope_id)
 
@@ -426,6 +444,21 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
 
     # The failed rebuild did not erase the last successful derived vector.
     assert indexed_at!(account_id, message["id"])
+  end
+
+  test "source indexing rejects a short provider vector list before writing" do
+    first = ingest!("source-cardinality", "/source/cardinality", "release one", "one", 1)
+    second = ingest!("source-cardinality", "/source/cardinality", "release two", "two", 2)
+    {account_id, scope_id} = account_and_scope!("source-cardinality", "/source/cardinality")
+
+    Application.put_env(:memhouse, :source_index_short_vector_list, true)
+
+    assert {:error,
+            {:embedding_cardinality_mismatch, %{expected: 2, actual: 1}}} =
+             SourceIndexer.rebuild_scope(account_id, scope_id)
+
+    refute indexed_at!(account_id, first["id"])
+    refute indexed_at!(account_id, second["id"])
   end
 
   test "erasing the canonical message removes exact and semantic source hits" do

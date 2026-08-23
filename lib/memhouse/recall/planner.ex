@@ -281,7 +281,7 @@ defmodule MemHouse.Recall.Planner do
     normalized = String.downcase(question)
 
     cond do
-      Regex.match?(~r/\b(latest|current|change|changed|update|new now)\b/, normalized) ->
+      Regex.match?(~r/\b(latest|current|change|changed|update|new|now)\b/, normalized) ->
         :updates
 
       Regex.match?(~r/\b(prefer|preference|favorite|favourite|likes?)\b/, normalized) ->

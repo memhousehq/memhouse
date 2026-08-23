@@ -30,9 +30,13 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   alias MemHouse.Model.Providers.Ortex, as: OrtexProvider
   alias MemHouse.Model.Reasoner
   alias MemHouse.Model.Schema.DialecticAnswer
+  alias MemHouse.Observations.Message
   alias MemHouse.Operations.Metering
   alias MemHouse.Operations.PipelineRun
+  alias MemHouse.Pipeline
   alias MemHouse.Pipeline.ExtractionBatcher
+
+  require Ash.Query
 
   # Recorded provider script replayed instead of any network call. Each scenario inside it
   # is an ordered list of expected calls; see the individual tests for which one they arm.
@@ -436,32 +440,21 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # would mark the message extracted and the observation would be silently lost forever.
     assert %{success: 0, failure: 1} = Oban.drain_queue(queue: :ingest)
 
-    # The durable side of the outage: the message row survives, extraction is still
-    # incomplete (NULL completion timestamp), the pipeline run is failed and retryable, and at least
-    # one Oban job for that run is still live — not completed, discarded, or cancelled.
-    assert %{rows: [[1, nil, "failed", 1, "provider_transient", queued_jobs]]} =
-             Ecto.Adapters.SQL.query!(
-               Repo,
-               """
-               SELECT count(*),
-                      message.extraction_completed_at,
-                      run.status,
-                      run.attempt_count,
-                      run.last_error_class,
-                      (SELECT count(*)
-                       FROM oban_jobs AS job
-                       WHERE job.args->'primary_key'->>'id' = run.id::text
-                         AND job.state NOT IN ('completed', 'discarded', 'cancelled'))
-               FROM messages AS message
-               JOIN pipeline_runs AS run ON run.target_id = message.id
-               WHERE message.id = $1 AND run.kind = 'extraction'
-               GROUP BY message.extraction_completed_at, run.id, run.status,
-                        run.attempt_count, run.last_error_class
-               """,
-               [Ecto.UUID.dump!(message["id"])]
-             )
+    # The durable side of the outage: the message survives unstamped and its
+    # failed run remains eligible for deterministic replay.
+    assert message_record!(account_id, message["id"]).extraction_completed_at == nil
+    run = extraction_run!(account_id, message["id"])
+    assert run.status == "failed"
+    assert run.attempt_count == 1
+    assert run.last_error_class == "provider_transient"
 
-    assert queued_jobs >= 1
+    assert DataLayer.with_account_id(
+             account_id,
+             [role: :system, pipeline?: true],
+             fn _account, actor ->
+               Pipeline.extraction_replayable?(account_id, message["id"], actor)
+             end
+           )
 
     # A failed call is still one metered event, tagged with status "error" and the provider
     # and model that failed. Operators diagnose outages from this ledger.
@@ -540,9 +533,9 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # content-free failure class, and remain replayable without reaching the
     # provider or stamping the observation complete.
     assert {:error, %ProviderCircuit.OpenError{}} = ExtractionBatcher.run(run)
-    assert_circuit_failure!(message["id"], 1)
+    assert_circuit_failure!(account_id, message["id"], 1)
     assert {:error, %ProviderCircuit.OpenError{}} = ExtractionBatcher.run(run)
-    assert_circuit_failure!(message["id"], 2)
+    assert_circuit_failure!(account_id, message["id"], 2)
     assert scalar!("SELECT count(*) FROM usage_events", []) == 0
   end
 
@@ -673,22 +666,39 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     value
   end
 
-  defp assert_circuit_failure!(message_id, attempt_count) do
-    assert %{rows: [[nil, "failed", ^attempt_count, "provider_circuit_open", nil]]} =
-             Ecto.Adapters.SQL.query!(
-               Repo,
-               """
-               SELECT message.extraction_completed_at,
-                      run.status,
-                      run.attempt_count,
-                      run.last_error_class,
-                      run.batch_claim_id
-               FROM messages AS message
-               JOIN pipeline_runs AS run ON run.target_id = message.id
-               WHERE message.id = $1 AND run.kind = 'extraction'
-               """,
-               [Ecto.UUID.dump!(message_id)]
-             )
+  defp assert_circuit_failure!(account_id, message_id, attempt_count) do
+    assert message_record!(account_id, message_id).extraction_completed_at == nil
+    run = extraction_run!(account_id, message_id)
+    assert run.status == "failed"
+    assert run.attempt_count == attempt_count
+    assert run.last_error_class == "provider_circuit_open"
+    assert run.batch_claim_id == nil
+  end
+
+  defp message_record!(account_id, message_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        Message
+        |> Ash.Query.filter(id == ^message_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read_one!(actor: actor)
+      end
+    )
+  end
+
+  defp extraction_run!(account_id, message_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        PipelineRun
+        |> Ash.Query.filter(kind == "extraction" and target_id == ^message_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read_one!(actor: actor)
+      end
+    )
   end
 
   # Blanks both transaction-local settings the row-level-security policies read, reproducing

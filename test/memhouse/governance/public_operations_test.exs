@@ -3,10 +3,13 @@
 defmodule MemHouse.Governance.PublicOperationsTest do
   use MemHouse.DataCase, async: false
 
+  alias MemHouse.DataLayer
   alias MemHouse.Governance.PublicOperations
   alias MemHouse.Identity
   alias MemHouse.Memory
-  alias MemHouse.Repo
+  alias MemHouse.Operations.PipelineRun
+
+  require Ash.Query
 
   setup do
     bootstrap =
@@ -59,6 +62,27 @@ defmodule MemHouse.Governance.PublicOperationsTest do
 
     assert [%{"id" => message_id}] = source["results"]
     assert message_id == context.message_id
+
+    other =
+      Identity.bootstrap_human(%{
+        email: "public-operations-other@example.test",
+        name: "Morgan",
+        password: "correct horse battery staple"
+      })
+
+    assert {:ok, %{"outcome" => "ok", "data" => cross_account}} =
+             run(
+               :source_search,
+               %{
+                 query: "lives in Helsinki",
+                 scope_path: "/contract/public-operations",
+                 mode: "exact",
+                 excerpt_chars: 80
+               },
+               other.actor
+             )
+
+    assert cross_account["results"] == []
 
     assert {:ok, %{"outcome" => "not_found"}} =
              run(
@@ -118,25 +142,24 @@ defmodule MemHouse.Governance.PublicOperationsTest do
       assert {:error, %Ash.Error.Forbidden{}} = run(action, attrs, nil)
     end
 
-    Ecto.Adapters.SQL.query!(
-      Repo,
-      """
-      UPDATE pipeline_runs
-      SET status = 'terminal', last_error_class = 'structured_validation_exhausted'
-      WHERE target_id = $1 AND kind = 'extraction'
-      """,
-      [Ecto.UUID.dump!(context.message_id)]
-    )
+    run = extraction_run!(context.admin.account_id, context.message_id)
+    pipeline = %{context.admin | role: :system, pipeline?: true}
+
+    run
+    |> Ash.Changeset.for_update(:classify_extraction_anchor, %{
+      status: "terminal",
+      attempt_count: run.attempt_count,
+      last_error_class: "structured_validation_exhausted",
+      processed_at: MemHouse.Clock.utc_now(),
+      payload: run.payload
+    })
+    |> Ash.Changeset.set_tenant(context.admin.account_id)
+    |> Ash.update!(actor: pipeline)
 
     assert {:error, %Ash.Error.Forbidden{}} =
              run(:requeue_extraction, %{message_id: context.message_id}, context.member)
 
-    assert %{rows: [["terminal"]]} =
-             Ecto.Adapters.SQL.query!(
-               Repo,
-               "SELECT status FROM pipeline_runs WHERE target_id = $1 AND kind = 'extraction'",
-               [Ecto.UUID.dump!(context.message_id)]
-             )
+    assert extraction_run!(context.admin.account_id, context.message_id).status == "terminal"
 
     assert {:ok,
             %{
@@ -151,5 +174,18 @@ defmodule MemHouse.Governance.PublicOperationsTest do
     PublicOperations
     |> Ash.ActionInput.for_action(action, attrs)
     |> Ash.run_action(actor: actor)
+  end
+
+  defp extraction_run!(account_id, message_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        PipelineRun
+        |> Ash.Query.filter(kind == "extraction" and target_id == ^message_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read_one!(actor: actor)
+      end
+    )
   end
 end

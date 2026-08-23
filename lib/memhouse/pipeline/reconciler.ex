@@ -57,9 +57,11 @@ defmodule MemHouse.Pipeline.Reconciler do
   missing job moves its run to `discarded`. The next sweep replays that deterministic run. This
   two-pass sequence makes the job end durable before recovery starts.
 
-  Returns `{:ok, counts}` with `:replayed`, `:terminated`, `:messages`, `:documents`,
+  Returns `{:ok, counts}` with `:expired_claims`, `:replayed`, `:terminated`, `:messages`, `:documents`,
   `:connectors`, `:source_scopes`, `:scopes`, and
-  `:reconciled` (their sum). The counts report how many enqueues *succeeded*,
+  `:reconciled` (the successful-enqueue sum). `:expired_claims` separately
+  reports stale batch leases recovered before enqueue reconciliation. The
+  remaining counts report how many enqueues *succeeded*,
   not how much new work was created — a record whose run already exists is
   counted as reconciled because the upsert succeeded. A steady non-zero count
   therefore means "these records keep being re-offered", which is normal while
@@ -92,7 +94,7 @@ defmodule MemHouse.Pipeline.Reconciler do
             |> Ash.Query.set_tenant(account_id)
             |> Ash.read!(actor: actor)
             |> Enum.count(fn message ->
-              Pipeline.extraction_replayable?(account_id, message.id, actor) and
+              not Pipeline.extraction_terminal?(account_id, message.id, actor) and
                 match?({:ok, _run}, Pipeline.enqueue_message_extraction(message, actor))
             end)
 
@@ -194,7 +196,13 @@ defmodule MemHouse.Pipeline.Reconciler do
           }
       end)
 
-    {:ok, Map.put(counts, :reconciled, Enum.sum(Map.values(counts)))}
+    reconciled =
+      counts
+      |> Map.drop([:expired_claims])
+      |> Map.values()
+      |> Enum.sum()
+
+    {:ok, Map.put(counts, :reconciled, reconciled)}
   end
 
   defp claim_timeout_seconds do

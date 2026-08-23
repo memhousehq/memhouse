@@ -318,8 +318,9 @@ defmodule MemHouse.Pipeline.Extractor do
   public result by dropping only the accounting value.
   """
   def extract_batch_with_attempts(anchors) when is_list(anchors) and anchors != [] do
-    {messages, context, opts} = batch_request(anchors)
-    schema = batch_schema()
+    contract = extraction_contract()
+    {messages, context, opts} = batch_request(anchors, contract)
+    schema = contract.batch_schema
 
     case ExtractionAdmission.admit(messages, schema.json_schema()) do
       {:ok, admission} ->
@@ -362,7 +363,10 @@ defmodule MemHouse.Pipeline.Extractor do
   ownership and provenance.
   """
   def batch_request(anchors) when is_list(anchors) and anchors != [] do
-    contract = extraction_contract()
+    batch_request(anchors, extraction_contract())
+  end
+
+  defp batch_request(anchors, contract) do
 
     prepared =
       Enum.map(anchors, fn %{message: message, context: context} ->
