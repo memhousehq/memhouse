@@ -208,8 +208,8 @@ defmodule MemHouse.Eval.Reasoning do
     latest_expected = scheduled_at_for(latest, idle_seconds)
 
     if stale_at != stale_expected or latest_at != latest_expected or
-         NaiveDateTime.compare(stale_at, latest_at) == :gt do
-      raise ArgumentError, "idle evaluation scheduled_at or generation ordering did not match"
+         DateTime.compare(stale_at, latest_at) == :gt do
+      raise ArgumentError, "idle evaluation durable jobs were not scheduled in generation order"
     end
 
     true
@@ -227,7 +227,7 @@ defmodule MemHouse.Eval.Reasoning do
     |> DateTime.from_iso8601()
     |> case do
       {:ok, activity_at, 0} ->
-        activity_at |> DateTime.add(idle_seconds, :second) |> DateTime.to_naive()
+        DateTime.add(activity_at, idle_seconds, :second)
 
       _error ->
         raise ArgumentError, "idle evaluation generation payload was invalid"

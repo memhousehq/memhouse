@@ -280,16 +280,13 @@ defmodule MemHouseWeb.MemoryControllerTest do
 
     run = extraction_run!(actor, message["id"])
 
-    DataLayer.with_account_id(actor.account_id, [role: :system, pipeline?: true], fn account,
-                                                                                     pipeline_actor ->
-      run
-      |> Ash.Changeset.for_update(:classify_extraction_anchor, %{
-        status: "terminal",
-        last_error_class: "structured_validation_exhausted"
-      })
-      |> Ash.Changeset.set_tenant(account.id)
-      |> Ash.update!(actor: pipeline_actor)
-    end)
+    # Test-only fixture setup: the completed anchor has no live batch claim, so the
+    # governed production transition correctly refuses to classify it.
+    Ash.Seed.update!(
+      run,
+      %{status: "terminal", last_error_class: "structured_validation_exhausted"},
+      tenant: actor.account_id
+    )
 
     member =
       Identity.provision_agent(actor, %{

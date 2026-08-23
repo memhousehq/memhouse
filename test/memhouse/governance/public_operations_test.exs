@@ -63,12 +63,10 @@ defmodule MemHouse.Governance.PublicOperationsTest do
     assert [%{"id" => message_id}] = source["results"]
     assert message_id == context.message_id
 
-    other =
-      Identity.bootstrap_human(%{
-        email: "public-operations-other@example.test",
-        name: "Morgan",
-        password: "correct horse battery staple"
-      })
+    other_actor =
+      DataLayer.with_account_key("public-operations-other", fn _account, actor -> actor end)
+
+    refute other_actor.account_id == context.admin.account_id
 
     assert {:ok, %{"outcome" => "ok", "data" => cross_account}} =
              run(
@@ -79,7 +77,7 @@ defmodule MemHouse.Governance.PublicOperationsTest do
                  mode: "exact",
                  excerpt_chars: 80
                },
-               other.actor
+               other_actor
              )
 
     assert cross_account["results"] == []
@@ -143,18 +141,17 @@ defmodule MemHouse.Governance.PublicOperationsTest do
     end
 
     run = extraction_run!(context.admin.account_id, context.message_id)
-    pipeline = %{context.admin | role: :system, pipeline?: true}
-
-    run
-    |> Ash.Changeset.for_update(:classify_extraction_anchor, %{
-      status: "terminal",
-      attempt_count: run.attempt_count,
-      last_error_class: "structured_validation_exhausted",
-      processed_at: MemHouse.Clock.utc_now(),
-      payload: run.payload
-    })
-    |> Ash.Changeset.set_tenant(context.admin.account_id)
-    |> Ash.update!(actor: pipeline)
+    # Test-only fixture setup: the completed anchor has no live batch claim, so the
+    # governed production transition correctly refuses to classify it.
+    Ash.Seed.update!(
+      run,
+      %{
+        status: "terminal",
+        attempt_count: run.attempt_count,
+        last_error_class: "structured_validation_exhausted",
+        processed_at: MemHouse.Clock.utc_now(),
+        payload: run.payload
+      }, tenant: context.admin.account_id)
 
     assert {:error, %Ash.Error.Forbidden{}} =
              run(:requeue_extraction, %{message_id: context.message_id}, context.member)

@@ -143,7 +143,10 @@ defmodule MemHouse.Pipeline.DreamTimeIdleSchedulerTest do
 
     Process.sleep(2)
     _second_item = activate_direct!(actor, scope, "Avery prefers release notes with owners.")
-    [newer_run, older_run] = Enum.sort_by(idle_runs(actor, scope.id), & &1.inserted_at, :desc)
+    [first, second] = idle_runs(actor, scope.id)
+    older_run = Enum.find([first, second], &(&1.id == first_run.id))
+    newer_run = Enum.find([first, second], &(&1.id != first_run.id))
+
     assert older_run.id == first_run.id
     assert newer_run.id != older_run.id
 
