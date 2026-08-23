@@ -301,19 +301,14 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
               id != ^message["id"]
           )
           |> Ash.Query.sort(occurred_at: :asc, inserted_at: :asc, id: :asc)
-          |> Ash.Query.limit(max_anchors * 2)
+          |> Ash.Query.limit(max_anchors)
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
           |> Enum.map(& &1.id)
         end
       )
 
-    # The read over-selects so a future eligibility check can discard raced
-    # siblings without another query; preparation is the expensive boundary,
-    # so never cross the configured anchor cap here.
-    ids
-    |> Enum.take(max_anchors)
-    |> Enum.map(&Memory.prepare_message_extraction_for_account(&1, account_id))
+    Enum.map(ids, &Memory.prepare_message_extraction_for_account(&1, account_id))
   end
 
   defp fit_request(prepared) do
