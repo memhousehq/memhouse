@@ -23,8 +23,10 @@ flowchart LR
 
 ## Filtering happens before candidates leave retrieval
 
-Each strategy applies Account, scope, lifecycle, provisional-subject, and source
-filters **inside its query**. The API does not post-filter candidates.
+Each strategy applies Account, scope, lifecycle, expiry, provisional-subject,
+and source filters **inside its query**. Active knowledge whose `expires_at` is
+not later than the read time is lifecycle-hidden even before the hourly sweeper
+moves it to the `expired` state. The API does not post-filter candidates.
 
 ## A read is performed for a peer
 
@@ -202,9 +204,12 @@ callers cannot select strategies directly.
 `POST /api/v1/lineage` projects existing provenance and typed knowledge
 relations into a bounded graph. It can connect a deduction or consolidation
 result back to governed knowledge and immutable observations, but it does not
-store or expose the model's private rationale. Scope and lifecycle filtering
-happen before a node is returned; a visible derived statement never grants
-access to a hidden source.
+store or expose the model's private rationale. Scope, lifecycle, and expiry
+filtering happen before a node is returned; a visible derived statement never
+grants access to a hidden source. An expired knowledge root returns the same
+opaque not-found result as any other unavailable root, and an expired relation
+endpoint is reported only as a lifecycle-hidden reference without its id or
+content.
 
 A split synthesis deduction reuses its durable prompt identity to report the
 typed operation `reasoning_synthesis`. The version string itself remains
@@ -221,7 +226,7 @@ records.
 
 `POST /api/v1/stable-profile` selects a small allowlist of stable, direct,
 source-backed facts about the chosen reader. It is rebuilt from canonical
-knowledge on every call and uses no model, so deletion, retraction,
+knowledge on every call and uses no model, so expiry, deletion, retraction,
 supersession, or a scope change cannot leave a second profile store behind.
 
 The profile keeps contradictory identity claims side by side. It excludes

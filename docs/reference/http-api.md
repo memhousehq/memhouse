@@ -305,7 +305,9 @@ References are `visible`, `missing`, `lifecycle_hidden`, or
 `authorization_hidden`. A hidden reference has no id or content. `terminations`
 separates cycle, depth, fan-out, total-node, missing-source, lifecycle-hidden,
 and authorization-hidden stops; `truncated` is true only for a budget stop. A
-missing or unauthorized root returns the same opaque 404.
+missing, unauthorized, or expired knowledge root returns the same opaque 404.
+An active row is already lifecycle-hidden when `expires_at` reaches the request
+time, even if the lifecycle sweeper has not yet changed its stored state.
 
 Lineage is evidence, not an audit log and not explanatory prose. It reads
 provenance and typed knowledge relations. Audit records explain which governed
@@ -320,9 +322,11 @@ All fields are optional. `scope_path` and `peer_key` follow search's reader
 rules. The selected reader is also the profile subject; naming a peer never
 borrows that peer's scope grants.
 
-The profile is rebuilt on every read from visible active knowledge plus that
-subject's own visible provisional knowledge. It is not a table, write path, or
-model call. Eligible statements must be direct, source-backed facts in a small
+The profile is rebuilt on every read from unexpired visible active knowledge
+plus that subject's own unexpired visible provisional knowledge. Expiry is
+effective at the request time even before the lifecycle sweeper changes the
+stored state. The profile is not a table, write path, or model call. Eligible
+statements must be direct, source-backed facts in a small
 taxonomy: name, pronouns, occupation, location, language, and time zone.
 Transient state, preferences and behavioral generalizations, inferred claims,
 and sensitive-trait statements are rejected.
@@ -573,6 +577,11 @@ Query parameters:
 Covers the named scope plus its ancestors, ordered by confidence then recency,
 each row annotated with the `scope_path` it lives at. `peer_key` selects the
 reader on the [same terms as `search`](#post-apiv1search).
+
+The default `active` view excludes rows whose `expires_at` has passed. An
+explicit non-active `state` is an exact historical-state request and retains
+that state's existing contract rather than applying the active-view expiry
+filter.
 
 Read-only by design: there is deliberately no POST counterpart.
 

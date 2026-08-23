@@ -190,6 +190,45 @@ defmodule MemHouse.LineageIdentityProfileTest do
              })
   end
 
+  test "expired active knowledge is absent from live profiles and lineage but remains available to an exact historical state read" do
+    root = seed_active!("lineage-expiry", "Avery works as an engineer.", "root")
+    expired = seed_active!("lineage-expiry", "Avery lives in Helsinki.", "expired")
+
+    relation!(root, expired, "supports")
+    expire_active!(expired)
+
+    attrs = %{
+      "account_key" => "lineage-expiry",
+      "peer_key" => "avery",
+      "scope_path" => root.scope.path
+    }
+
+    profile = Memory.stable_identity_profile(attrs)
+    refute Enum.any?(profile["items"], &(&1["knowledge_id"] == expired.knowledge.id))
+
+    assert {:error, :not_found} =
+             Memory.evidence_lineage(Map.put(attrs, "target_id", expired.knowledge.id))
+
+    assert {:ok, lineage} =
+             Memory.evidence_lineage(Map.put(attrs, "target_id", root.knowledge.id))
+
+    assert lineage["terminations"]["lifecycle_hidden"] == 1
+
+    assert Enum.any?(hd(lineage["nodes"])["source_references"], fn reference ->
+             reference["status"] == "lifecycle_hidden" and is_nil(reference["id"])
+           end)
+
+    refute Enum.any?(lineage["nodes"], &(&1["id"] == expired.knowledge.id))
+
+    refute Enum.any?(Memory.query_knowledge(attrs), &(&1["id"] == expired.knowledge.id))
+
+    transition!(expired, "superseded")
+
+    assert Enum.any?(Memory.query_knowledge(Map.put(attrs, "state", "superseded")), fn item ->
+             item["id"] == expired.knowledge.id
+           end)
+  end
+
   test "synthesis prompt identity survives persistence and drives typed lineage" do
     first = seed_active!("lineage-synthesis", "Avery prefers concise updates.", "first")
     second = seed_active!("lineage-synthesis", "Avery asks for short weekly summaries.", "second")
@@ -1168,6 +1207,25 @@ defmodule MemHouse.LineageIdentityProfileTest do
         actor,
         %{state: state, verification: "test"},
         reason: "lineage_profile_test_transition",
+        channel: "pipeline"
+      )
+    end)
+  end
+
+  defp expire_active!(seed) do
+    DataLayer.with_account_key(seed.account.key, [role: :system, pipeline?: true], fn _account,
+                                                                                      actor ->
+      item =
+        KnowledgeItem
+        |> Ash.Query.filter(id == ^seed.knowledge.id)
+        |> Ash.Query.set_tenant(seed.account.id)
+        |> Ash.read_one!(actor: actor)
+
+      Engine.transition!(
+        item,
+        actor,
+        %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :second)},
+        reason: "lineage_profile_test_expire_active",
         channel: "pipeline"
       )
     end)

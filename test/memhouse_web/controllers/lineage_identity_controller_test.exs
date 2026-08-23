@@ -4,7 +4,10 @@ defmodule MemHouseWeb.LineageIdentityControllerTest do
   use MemHouseWeb.ConnCase, async: false
 
   alias MemHouse.Identity
+  alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
+
+  require Ash.Query
 
   setup do
     bootstrap =
@@ -100,6 +103,58 @@ defmodule MemHouseWeb.LineageIdentityControllerTest do
 
       assert %{"error" => "Not found"} = json_response(response, 404)
     end
+  end
+
+  test "expired active knowledge is omitted from profile and opaque to lineage", %{
+    conn: conn,
+    token: token,
+    knowledge_id: knowledge_id
+  } do
+    expire_active!(token, knowledge_id)
+
+    profile =
+      conn
+      |> with_identity(token)
+      |> post(~p"/api/v1/stable-profile", %{
+        "scope_path" => "/contract/lineage-profile"
+      })
+
+    assert %{
+             "data" => %{
+               "items" => [],
+               "diagnostic" => %{"status" => "empty"}
+             }
+           } = json_response(profile, 200)
+
+    lineage =
+      profile
+      |> recycle()
+      |> with_identity(token)
+      |> post(~p"/api/v1/lineage", %{
+        "scope_path" => "/contract/lineage-profile",
+        "target_id" => knowledge_id
+      })
+
+    assert %{"error" => "Not found"} = json_response(lineage, 404)
+  end
+
+  defp expire_active!(token, knowledge_id) do
+    assert {:ok, actor} = Identity.authenticate_bearer(token)
+
+    MemHouse.DataLayer.with_actor(actor, fn account, actor ->
+      pipeline = %{actor | role: :system, pipeline?: true, scope_ids: :all, scope_roles: %{}}
+
+      KnowledgeItem
+      |> Ash.Query.filter(id == ^knowledge_id)
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: pipeline)
+      |> MemHouse.Governance.Engine.transition!(
+        pipeline,
+        %{state: "active", expires_at: DateTime.add(MemHouse.Clock.utc_now(), -1, :second)},
+        reason: "lineage_profile_http_test_expire_active",
+        channel: "pipeline"
+      )
+    end)
   end
 
   defp with_identity(conn, token),

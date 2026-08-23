@@ -9,6 +9,7 @@ defmodule MemHouse.Lineage do
   depth, fan-out, and total-node budgets that constrain the response.
   """
 
+  alias MemHouse.Clock
   alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation, Provenance}
   alias MemHouse.Memory.Visibility
   alias MemHouse.Observations.{DocumentVersion, Message}
@@ -40,7 +41,8 @@ defmodule MemHouse.Lineage do
       account_id: account.id,
       actor: actor,
       scope_ids: Enum.map(scopes, & &1.id),
-      internal_reader?: false
+      internal_reader?: false,
+      now: Clock.utc_now()
     }
 
     item
@@ -71,7 +73,8 @@ defmodule MemHouse.Lineage do
         account_id: account.id,
         actor: actor,
         scope_ids: Enum.map(scopes, & &1.id),
-        internal_reader?: internal_reader?
+        internal_reader?: internal_reader?,
+        now: Clock.utc_now()
       }
 
       case root(target_type, target_id, context) do
@@ -85,8 +88,12 @@ defmodule MemHouse.Lineage do
 
   defp root("knowledge", id, context) do
     case fetch_knowledge(id, context) do
-      nil -> nil
-      item -> if Visibility.visible?(item, context.actor, context.internal_reader?), do: item
+      nil ->
+        nil
+
+      item ->
+        if Visibility.visible?(item, context.actor, context.internal_reader?, context.now),
+          do: item
     end
   end
 
@@ -263,7 +270,13 @@ defmodule MemHouse.Lineage do
         }
 
       item ->
-        status = Visibility.visibility_status(item, context.actor, context.internal_reader?)
+        status =
+          Visibility.visibility_status(
+            item,
+            context.actor,
+            context.internal_reader?,
+            context.now
+          )
 
         %{
           type: "knowledge",
