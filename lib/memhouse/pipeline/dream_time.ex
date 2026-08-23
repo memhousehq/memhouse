@@ -590,11 +590,13 @@ defmodule MemHouse.Pipeline.DreamTime do
   end
 
   defp direct_items_query(scope_id) do
+    marker = Consolidator.marker()
+
     KnowledgeItem
     |> Ash.Query.filter(
       scope_id == ^scope_id and state == "active" and is_nil(deleted_at) and
         is_nil(deduction_key) and
-        (is_nil(extracting_model) or extracting_model != "system:dream-time-consolidator")
+        (is_nil(extracting_model) or extracting_model != ^marker)
     )
   end
 

@@ -12,6 +12,7 @@ defmodule MemHouse.Repo.Migrations.RecallDocumentDualLane do
 
   use Ecto.Migration
 
+  @doc "Creates and backfills the Account-isolated dual-lane recall projection."
   def up do
     execute """
     CREATE TABLE recall_documents (
@@ -110,6 +111,7 @@ defmodule MemHouse.Repo.Migrations.RecallDocumentDualLane do
     """
   end
 
+  @doc "Removes the dual-lane recall projection and its Account isolation policy."
   def down do
     execute "DROP TABLE IF EXISTS recall_documents"
   end

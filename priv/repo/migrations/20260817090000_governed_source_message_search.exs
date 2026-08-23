@@ -11,6 +11,7 @@ defmodule MemHouse.Repo.Migrations.GovernedSourceMessageSearch do
 
   use Ecto.Migration
 
+  @doc "Adds rebuildable source-message search columns and backfills scope labels."
   def up do
     execute "ALTER TABLE messages ADD COLUMN embedding vector"
     execute "ALTER TABLE messages ADD COLUMN embedding_provider text"
@@ -36,6 +37,7 @@ defmodule MemHouse.Repo.Migrations.GovernedSourceMessageSearch do
     """
   end
 
+  @doc "Removes the rebuildable source-message search columns."
   def down do
     execute "ALTER TABLE messages DROP COLUMN IF EXISTS search_vector"
     execute "ALTER TABLE messages DROP COLUMN IF EXISTS source_indexed_at"

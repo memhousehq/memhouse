@@ -295,8 +295,8 @@ and Oban jobs, executes stale/latest/replay through the production pipeline, and
 stale wake is superseded before model work, the latest completes, and replay adds no durable effect.
 It requires existing local Ortex model and
 tokenizer artifacts. Missing artifacts and hosted or
-deterministic stand-in embedders are rejected before ingestion. `--live-model` is the explicit
-provider-call opt-in and may incur cost; MemHouse never substitutes fake vectors.
+deterministic stand-in embedders are rejected before ingestion; MemHouse never
+substitutes fake vectors.
 
 Each measured stage also reports content-free database query counts/timings and newly-created
 maintenance `PipelineRun` counts. Snapshot reads are outside the query interval. SQL, parameters,

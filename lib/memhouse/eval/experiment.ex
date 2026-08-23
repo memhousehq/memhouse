@@ -856,7 +856,8 @@ defmodule MemHouse.Eval.Experiment do
 
   defp ratio(experimental, current, path) do
     case {get_in(experimental, path), get_in(current, path)} do
-      {0, 0} ->
+      {experimental, current}
+      when is_number(experimental) and is_number(current) and experimental == 0 and current == 0 ->
         1.0
 
       {experimental, current}

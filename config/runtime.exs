@@ -143,16 +143,15 @@ extraction_batch_target =
 extraction_claim_timeout_seconds =
   env_positive_integer!.("MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS", "1200")
 
+extraction_batching_enabled =
+  env_bool!.("MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING", false)
+
 unless extraction_batch_target in [128, 1_024, 4_096, 16_384] do
   raise "MEMHOUSE_EXTRACTION_BATCH_TARGET_TOKENS must be one of 128, 1024, 4096, or 16384"
 end
 
 config :memhouse, :extraction_batching,
-  enabled:
-    env_bool!.(
-      "MEMHOUSE_EXPERIMENTAL_EXTRACTION_BATCHING",
-      false
-    ),
+  enabled: extraction_batching_enabled,
   target_tokens: extraction_batch_target,
   max_anchors: env_positive_integer!.("MEMHOUSE_EXTRACTION_BATCH_MAX_ANCHORS", "32"),
   context_limit_tokens: env_positive_integer!.("MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS", "131072"),
@@ -541,7 +540,8 @@ config :memhouse, :ingest_provider_circuit,
 # extra minute covers validation and short database transactions between calls.
 minimum_extraction_claim_timeout_ms = generation_options["request_timeout"] * 3 + 60_000
 
-if extraction_claim_timeout_seconds * 1_000 < minimum_extraction_claim_timeout_ms do
+if extraction_batching_enabled and
+     extraction_claim_timeout_seconds * 1_000 < minimum_extraction_claim_timeout_ms do
   raise "MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS must cover three " <>
           "MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS calls plus 60 seconds; " <>
           "minimum is #{div(minimum_extraction_claim_timeout_ms + 999, 1_000)} seconds"

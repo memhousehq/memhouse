@@ -170,9 +170,9 @@ a partially written session.
 
 ## `GET /api/v1/ingest/:message_id`
 
-Reads the extraction state of an observation the caller may access. Pending and
-failed responses carry an empty `knowledge` list. A completed response includes
-only governed knowledge visible to that caller.
+Reads the extraction state of an observation the caller may access. Every
+non-`completed` response carries an empty `knowledge` list. A completed response
+includes only governed knowledge visible to that caller.
 
 ```json
 {
@@ -253,7 +253,7 @@ contract version.
 The additive `retrieval_outcomes` field reports component status, reason class,
 elapsed milliseconds, and remaining budget without query or candidate content.
 `reader_posture` reports `peer`, `public_only`, or `internal`, so an empty result
-can identify the authorization posture. If lexical matches exist but reader
+can identify the authorisation posture. If lexical matches exist but reader
 visibility removes them all, `retrieval_outcomes` adds the content-free
 `candidate_filter` outcome with reason class `authorization_filtered`.
 Inapplicable strategies report `not_applicable` with reason class `applicability`.
@@ -289,7 +289,7 @@ candidate, and its statements remain citable only through their knowledge ids.
 
 | Field | Default | Bound |
 | --- | --- | --- |
-| `scope_path` | `"/poc"` | The scope and its ancestors; ordinary authorization still applies |
+| `scope_path` | `"/poc"` | The scope and its ancestors; ordinary authorisation still applies |
 | `peer_key` | the calling peer | Same reader rule as search |
 | `max_depth` | `3` | `0` through `8` |
 | `max_fan_out` | `8` | `1` through `24` per node |
@@ -304,8 +304,8 @@ message target is returned directly, without a synthetic reasoning node.
 References are `visible`, `missing`, `lifecycle_hidden`, or
 `authorization_hidden`. A hidden reference has no id or content. `terminations`
 separates cycle, depth, fan-out, total-node, missing-source, lifecycle-hidden,
-and authorization-hidden stops; `truncated` is true only for a budget stop. A
-missing, unauthorized, or expired knowledge root returns the same opaque 404.
+and authorisation-hidden stops; `truncated` is true only for a budget stop. A
+missing, unauthorised, or expired knowledge root returns the same opaque 404.
 An active row is already lifecycle-hidden when `expires_at` reaches the request
 time, even if the lifecycle sweeper has not yet changed its stored state.
 
@@ -341,7 +341,7 @@ statement characters.
 `projection_digest` identifies the selected canonical source set.
 `diagnostic` reports only counts, exclusion classes, status, truncation, and
 `model_calls: 0`; it contains no rejected text. Lifecycle transition, source
-erasure, or subject/scope authorization changes affect the next read
+erasure, or subject/scope authorisation changes affect the next read
 immediately, so there is no stale-profile refresh window.
 
 ---
@@ -388,7 +388,7 @@ canonical message removes both full-text and vector hits in the same delete.
 `question` is required; every `search` field is also accepted, including
 `peer_key`, but `profile` defaults to `"thorough"`. Optional `effort` is
 `low`, `medium`, or `high`; omission keeps fixed recall. A named effort runs the
-bounded read-only recall planner over authorized knowledge, the stable identity
+bounded read-only recall planner over authorised knowledge, the stable identity
 projection, and typed evidence lineage. Exact and semantic source-message tools
 are included only when `include_source_recall` is the JSON boolean `true`;
 selecting an effort level alone does not broaden recall into source text.
@@ -411,7 +411,7 @@ Returns the search payload merged with `answer`, `citations`, `abstained`,
 the compatible `candidates` field remains the base search page. Fixed recall
 cites governed knowledge. Adaptive
 recall with explicit source permission may additionally cite a bounded,
-authorized immutable source-message excerpt. Every citation id must occur in
+authorised immutable source-message excerpt. Every citation id must occur in
 the admitted evidence. A source item is typed as `source_message`, uses the
 canonical message id as its evidence id, and carries that same id in the
 single-entry `source_message_ids` provenance list; it is never presented as a

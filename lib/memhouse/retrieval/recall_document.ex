@@ -131,6 +131,9 @@ defmodule MemHouse.Retrieval.RecallProjector do
 
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{KnowledgeItem, Provenance}
+  alias MemHouse.Pipeline.Consolidator
+
+  @consolidator_marker Consolidator.marker()
 
   require Ash.Query
 
@@ -311,7 +314,7 @@ defmodule MemHouse.Retrieval.RecallProjector do
 
   defp classification(%{deduction_key: key}) when is_binary(key), do: {"derived", "deduction"}
 
-  defp classification(%{extracting_model: "system:dream-time-consolidator"}),
+  defp classification(%{extracting_model: @consolidator_marker}),
     do: {"derived", "consolidation"}
 
   defp classification(_item), do: {"direct", "extraction"}

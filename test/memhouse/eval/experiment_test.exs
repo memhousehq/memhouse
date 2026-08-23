@@ -127,6 +127,27 @@ defmodule MemHouse.Eval.ExperimentTest do
     end
   end
 
+  test "two floating-point zero latencies produce a neutral ratio", %{tmp_dir: tmp_dir} do
+    definition =
+      definition()
+      |> put_in(
+        ["variants", Access.at(0), "fixture_metrics", "latency", "recall_p95_ms"],
+        0.0
+      )
+      |> put_in(
+        ["variants", Access.at(1), "fixture_metrics", "latency", "recall_p95_ms"],
+        0.0
+      )
+
+    {_run_manifest, bundle} =
+      tmp_dir
+      |> write_definition!(definition)
+      |> Experiment.run()
+
+    assert get_in(bundle, ["comparison", "latency", "recall_p95_ratio"]) == 1.0
+    assert bundle["gates"]["status"] == "passed"
+  end
+
   test "retired SQLite definitions are rejected instead of being reported as parity", %{
     tmp_dir: tmp_dir
   } do

@@ -301,6 +301,9 @@ defmodule MemHouse.Eval.Runner do
   # Ordinary benchmark runs retain their existing queue-shaped behavior; the explicit option
   # synchronously refreshes only the explicitly selected rebuildable caches for this isolated
   # case scope. Keeping the three switches separate makes projection maintenance measurable.
+  defp refresh_retrieval!(_account_key, _scope_path, false, false, false),
+    do: empty_refresh()
+
   defp refresh_retrieval!(account_key, scope_path, semantic?, source_semantic?, projection?) do
     {account_id, scope_id} =
       DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account,

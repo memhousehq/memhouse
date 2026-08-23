@@ -75,6 +75,7 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest do
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Repo
+  alias MemHouse.TestSupport.AccountCleanup
 
   require Ash.Query
 
@@ -285,15 +286,7 @@ defmodule MemHouse.Eval.ProviderTransactionBoundaryTest do
   defp cleanup_account!(account_key) do
     DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account,
                                                                                  _actor ->
-      Ecto.Adapters.SQL.query!(
-        Repo,
-        "DELETE FROM oban_jobs WHERE args ->> 'tenant' = $1",
-        [account.id]
-      )
-
-      Ecto.Adapters.SQL.query!(Repo, "DELETE FROM accounts WHERE id = $1", [
-        Ecto.UUID.dump!(account.id)
-      ])
+      AccountCleanup.delete!(account.id)
     end)
   end
 

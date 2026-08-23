@@ -79,6 +79,10 @@ defmodule MemHouse.Eval.Measurement do
     |> unwrap_page()
   end
 
+  defp unwrap_page(%{results: results}) when length(results) >= 10_000 do
+    raise "evaluation measurement exceeded its 10000-row pipeline run bound"
+  end
+
   defp unwrap_page(%{results: results}), do: results
   defp unwrap_page(results) when is_list(results), do: results
 

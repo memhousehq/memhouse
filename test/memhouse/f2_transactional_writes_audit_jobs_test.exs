@@ -1930,8 +1930,10 @@ defmodule MemHouse.F2TransactionalWritesAuditJobsTest do
       :telemetry.attach(
         handler,
         [:memhouse, :operation, :completed],
-        fn _event, measurements, %{operation: "ingest_batch"} = metadata, _config ->
-          send(parent, {handler, measurements, metadata})
+        fn _event, measurements, metadata, _config ->
+          if metadata[:operation] == "ingest_batch" do
+            send(parent, {handler, measurements, metadata})
+          end
         end,
         nil
       )

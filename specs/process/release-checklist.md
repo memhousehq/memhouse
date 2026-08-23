@@ -50,9 +50,9 @@ mix memhouse.release.check \
 - [ ] Any unavailable lane or surface is explicitly present in the release
   evidence; do not describe it as shipped.
 - [ ] A simplified-memory default or component-retirement decision links its
-  matched experiment, compatibility window, external-PostgreSQL and packaged-
-  pg0 evidence, rollback rehearsal, and human approval. A fixture-only result
-  may enable a canary but may not authorize deletion.
+  matched experiment, compatibility window, external-PostgreSQL and
+  packaged-pg0 evidence, rollback rehearsal, and human approval. A fixture-only
+  result may enable a canary but may not authorize deletion.
 
 ## Publish
 

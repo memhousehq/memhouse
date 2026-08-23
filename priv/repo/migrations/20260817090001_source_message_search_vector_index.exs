@@ -13,6 +13,7 @@ defmodule MemHouse.Repo.Migrations.SourceMessageSearchVectorIndex do
   @disable_ddl_transaction true
   @disable_migration_lock true
 
+  @doc "Creates the source-message full-text index concurrently and retry-safely."
   def up do
     execute "DROP INDEX CONCURRENTLY IF EXISTS messages_source_search_vector_idx"
 
@@ -22,6 +23,7 @@ defmodule MemHouse.Repo.Migrations.SourceMessageSearchVectorIndex do
     """
   end
 
+  @doc "Removes the source-message full-text index concurrently."
   def down do
     execute "DROP INDEX CONCURRENTLY IF EXISTS messages_source_search_vector_idx"
   end

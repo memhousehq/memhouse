@@ -87,11 +87,20 @@ defmodule MemHouseWeb.MemoryController do
       {:ok, %{"outcome" => "not_repairable"}} ->
         conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
 
+      {:ok, %{"outcome" => "not_found"}} ->
+        conn |> put_status(:not_found) |> json(%{error: "Not found"})
+
+      {:ok, %{"outcome" => "unavailable"}} ->
+        conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
+
       {:error, %Ash.Error.Forbidden{}} ->
         conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
 
+      {:error, %Ash.Error.Invalid{}} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+
       {:error, _invalid_or_unknown} ->
-        conn |> put_status(:conflict) |> json(%{error: "Extraction is not repairable"})
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
     end
   end
 
@@ -192,10 +201,16 @@ defmodule MemHouseWeb.MemoryController do
   or a hidden corpus count.
   """
   def source_search(conn, params) do
-    {:ok, %{"outcome" => "ok", "data" => result}} =
-      run_public_action(:source_search, params, conn.assigns.current_actor)
+    case run_public_action(:source_search, params, conn.assigns.current_actor) do
+      {:ok, %{"outcome" => "ok", "data" => result}} ->
+        json(conn, %{data: result})
 
-    json(conn, %{data: result})
+      {:error, %Ash.Error.Forbidden{}} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+
+      {:error, _invalid_or_unknown} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+    end
   end
 
   @doc """
@@ -212,6 +227,12 @@ defmodule MemHouseWeb.MemoryController do
 
       {:ok, %{"outcome" => "not_found"}} ->
         conn |> put_status(:not_found) |> json(%{error: "Not found"})
+
+      {:error, %Ash.Error.Forbidden{}} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+
+      {:error, _invalid_or_unknown} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
     end
   end
 
@@ -223,10 +244,16 @@ defmodule MemHouseWeb.MemoryController do
   rules as search; it grants no additional scope access.
   """
   def identity_profile(conn, params) do
-    {:ok, %{"outcome" => "ok", "data" => result}} =
-      run_public_action(:stable_identity_profile, params, conn.assigns.current_actor)
+    case run_public_action(:stable_identity_profile, params, conn.assigns.current_actor) do
+      {:ok, %{"outcome" => "ok", "data" => result}} ->
+        json(conn, %{data: result})
 
-    json(conn, %{data: result})
+      {:error, %Ash.Error.Forbidden{}} ->
+        conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+
+      {:error, _invalid_or_unknown} ->
+        conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+    end
   end
 
   @doc """

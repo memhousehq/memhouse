@@ -25,6 +25,7 @@ defmodule MemHouse.Governance do
     effects.
 
   `MemHouse.Governance.McpTools` is non-persisted and publishes the generic tool actions.
+  `MemHouse.Governance.PublicOperations` is non-persisted and publishes typed HTTP actions.
 
   ## Invariants callers must not break
 

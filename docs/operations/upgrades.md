@@ -93,8 +93,7 @@ migrations after their transactional schema/RLS migrations commit. If an index
 build is interrupted, stop the failed release process and run `bin/migrate`
 again: the unrecorded one-index migration removes its valid or invalid partial
 build before retrying. Do not remove columns, the recall table, or its RLS
-policy by hand. A release rollback still requires restoring the pre-upgrade
-database and blob snapshots together.
+policy by hand. Release rollback follows [Rollback](#rollback) unchanged.
 
 ## After the upgrade
 

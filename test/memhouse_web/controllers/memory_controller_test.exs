@@ -12,11 +12,15 @@ defmodule MemHouseWeb.MemoryControllerTest do
 
   use MemHouseWeb.ConnCase, async: false
 
+  alias MemHouse.DataLayer
   alias MemHouse.Governance.McpTools
   alias MemHouse.Identity
   alias MemHouse.Memory
   alias MemHouse.Model.GroundedAnswerProvider
+  alias MemHouse.Operations.PipelineRun
   alias MemHouse.Repo
+
+  require Ash.Query
 
   setup do
     # Remove any model credential the developer's shell or the loaded config
@@ -274,15 +278,18 @@ defmodule MemHouseWeb.MemoryControllerTest do
                actor
              )
 
-    Ecto.Adapters.SQL.query!(
-      Repo,
-      """
-      UPDATE pipeline_runs
-      SET status = 'terminal', last_error_class = 'structured_validation_exhausted'
-      WHERE target_id = $1 AND kind = 'extraction'
-      """,
-      [Ecto.UUID.dump!(message["id"])]
-    )
+    run = extraction_run!(actor, message["id"])
+
+    DataLayer.with_account_id(actor.account_id, [role: :system, pipeline?: true], fn account,
+                                                                                     pipeline_actor ->
+      run
+      |> Ash.Changeset.for_update(:classify_extraction_anchor, %{
+        status: "terminal",
+        last_error_class: "structured_validation_exhausted"
+      })
+      |> Ash.Changeset.set_tenant(account.id)
+      |> Ash.update!(actor: pipeline_actor)
+    end)
 
     member =
       Identity.provision_agent(actor, %{
@@ -298,16 +305,8 @@ defmodule MemHouseWeb.MemoryControllerTest do
 
     assert %{"error" => "Forbidden"} = json_response(denied, 403)
 
-    assert %{rows: [["terminal", "structured_validation_exhausted"]]} =
-             Ecto.Adapters.SQL.query!(
-               Repo,
-               """
-               SELECT status, last_error_class
-               FROM pipeline_runs
-               WHERE target_id = $1 AND kind = 'extraction'
-               """,
-               [Ecto.UUID.dump!(message["id"])]
-             )
+    assert %{status: "terminal", last_error_class: "structured_validation_exhausted"} =
+             extraction_run!(actor, message["id"])
 
     response =
       denied
@@ -318,16 +317,8 @@ defmodule MemHouseWeb.MemoryControllerTest do
     assert %{"data" => %{"run_id" => run_id, "status" => "accepted"}} =
              json_response(response, 202)
 
-    assert %{rows: [[^run_id, "pending", nil]]} =
-             Ecto.Adapters.SQL.query!(
-               Repo,
-               """
-               SELECT id::text, status, last_error_class
-               FROM pipeline_runs
-               WHERE target_id = $1 AND kind = 'extraction'
-               """,
-               [Ecto.UUID.dump!(message["id"])]
-             )
+    assert %{id: ^run_id, status: "pending", last_error_class: nil} =
+             extraction_run!(actor, message["id"])
 
     conflict =
       response
@@ -343,7 +334,27 @@ defmodule MemHouseWeb.MemoryControllerTest do
       |> with_identity(token)
       |> post("/api/v1/operations/ingest/not-a-uuid/requeue")
 
-    assert %{"error" => "Extraction is not repairable"} = json_response(invalid, 409)
+    assert %{"error" => "Invalid request"} = json_response(invalid, 422)
+
+    missing =
+      invalid
+      |> recycle()
+      |> with_identity(token)
+      |> post("/api/v1/operations/ingest/#{Ecto.UUID.generate()}/requeue")
+
+    assert %{"error" => "Not found"} = json_response(missing, 404)
+  end
+
+  defp extraction_run!(actor, message_id) do
+    DataLayer.with_account_id(actor.account_id, [role: :system, pipeline?: true], fn account,
+                                                                                     pipeline_actor ->
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "extraction" and target_type == "message" and target_id == ^message_id
+      )
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: pipeline_actor)
+    end)
   end
 
   test "POST /api/v1/operations/dream enqueues an Account dream-time pass", %{
@@ -461,6 +472,15 @@ defmodule MemHouseWeb.MemoryControllerTest do
     assert String.length(excerpt) <= 80
     refute Map.has_key?(json_response(conn, 200)["data"], "total")
     assert_trace_id(conn)
+  end
+
+  test "POST /api/v1/source-search rejects invalid typed arguments", %{conn: conn, token: token} do
+    response =
+      conn
+      |> with_identity(token)
+      |> post(~p"/api/v1/source-search", %{"limit" => "many"})
+
+    assert %{"error" => "Invalid request"} = json_response(response, 422)
   end
 
   # Diagnostic options travel as a `DiagnosticGrant` struct precisely so a JSON

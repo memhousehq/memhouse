@@ -13,6 +13,7 @@ defmodule MemHouse.Repo.Migrations.RecallDocumentScopeLaneIndex do
   @disable_ddl_transaction true
   @disable_migration_lock true
 
+  @doc "Creates the recall projection Account/scope/lane cursor index concurrently."
   def up do
     execute "DROP INDEX CONCURRENTLY IF EXISTS recall_documents_scope_lane_idx"
 
@@ -22,6 +23,7 @@ defmodule MemHouse.Repo.Migrations.RecallDocumentScopeLaneIndex do
     """
   end
 
+  @doc "Removes the recall projection Account/scope/lane cursor index concurrently."
   def down do
     execute "DROP INDEX CONCURRENTLY IF EXISTS recall_documents_scope_lane_idx"
   end

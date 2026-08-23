@@ -142,6 +142,29 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     assert Application.fetch_env!(:memhouse, :retrieval_profiles) == profiles
   end
 
+  test "runtime feature switches are restored when a later switch is invalid" do
+    batching = Application.fetch_env!(:memhouse, :extraction_batching)
+    dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+    dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+    profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+
+    components = %{
+      "extraction_batching" => %{"enabled" => true},
+      "idle_dream_scheduling" => %{"enabled" => "yes"},
+      "dream_reasoning_operations" => %{"split_enabled" => false},
+      "retrieval_profile" => "balanced"
+    }
+
+    assert_raise ArgumentError, ~r/must declare a boolean enabled/, fn ->
+      VariantRuntime.with_components(components, fn -> flunk("invalid switches must not run") end)
+    end
+
+    assert Application.fetch_env!(:memhouse, :extraction_batching) == batching
+    assert Application.fetch_env!(:memhouse, :dream_time_gates) == dream_gates
+    assert Application.fetch_env!(:memhouse, :dream_reasoning_operations) == dream_operations
+    assert Application.fetch_env!(:memhouse, :retrieval_profiles) == profiles
+  end
+
   test "split dream reasoning cannot be declared without executing dream-time" do
     assert_raise ArgumentError, ~r/cannot enable split dream reasoning without dream_time/, fn ->
       ComponentBindings.resolve!(%{

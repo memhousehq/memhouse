@@ -20,6 +20,10 @@ defmodule MemHouse.Pipeline.Consolidator do
   require Ash.Query
 
   @similarity_threshold 0.97
+  @consolidator_marker "system:dream-time-consolidator"
+
+  @doc "Returns the provenance marker used for dream-time consolidator outputs."
+  def marker, do: @consolidator_marker
 
   @doc """
   Consolidates every active scope in an Account.
@@ -184,10 +188,12 @@ defmodule MemHouse.Pipeline.Consolidator do
     members = group |> Enum.map(&elem(&1, 3)) |> Enum.uniq() |> Enum.sort()
     statement = "#{subject} has #{pluralize(noun)}: #{Enum.join(members, ", ")}."
 
+    marker = marker()
+
     existing =
       KnowledgeItem
       |> Ash.Query.filter(
-        scope_id == ^first.scope_id and extracting_model == "system:dream-time-consolidator" and
+        scope_id == ^first.scope_id and extracting_model == ^marker and
           state == "active"
       )
       |> Ash.Query.set_tenant(first.account_id)
@@ -251,7 +257,7 @@ defmodule MemHouse.Pipeline.Consolidator do
           |> independent_sources(actor)
           |> MapSet.size()
           |> max(1),
-        extracting_model: "system:dream-time-consolidator",
+        extracting_model: marker(),
         pipeline_version: "f5-1"
       })
       |> Ash.create!(actor: actor)
@@ -365,7 +371,7 @@ defmodule MemHouse.Pipeline.Consolidator do
     do: items |> Enum.flat_map(& &1.source_message_ids) |> Enum.uniq()
 
   defp derived_aggregate?(item),
-    do: item.extracting_model == "system:dream-time-consolidator"
+    do: item.extracting_model == marker()
 
   defp relation!(source, target, kind, actor) do
     existing =

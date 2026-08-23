@@ -13,6 +13,7 @@ defmodule MemHouse.Repo.Migrations.SourceMessageScopeTimeIndex do
   @disable_ddl_transaction true
   @disable_migration_lock true
 
+  @doc "Creates the Account/scope/time source-message index concurrently."
   def up do
     execute "DROP INDEX CONCURRENTLY IF EXISTS messages_source_scope_time_idx"
 
@@ -22,6 +23,7 @@ defmodule MemHouse.Repo.Migrations.SourceMessageScopeTimeIndex do
     """
   end
 
+  @doc "Removes the Account/scope/time source-message index concurrently."
   def down do
     execute "DROP INDEX CONCURRENTLY IF EXISTS messages_source_scope_time_idx"
   end

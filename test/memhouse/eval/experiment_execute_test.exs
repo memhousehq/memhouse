@@ -141,6 +141,9 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     on_exit(fn ->
       Application.put_env(:memhouse, :model_roles, original_roles)
       Application.delete_env(:memhouse, :eval_source_refresh_test_pid)
+      Application.put_env(:memhouse, :extraction_batching, original_batching)
+      Application.put_env(:memhouse, :dream_time_gates, original_dream_gates)
+      Application.put_env(:memhouse, :dream_reasoning_operations, original_dream_operations)
 
       if original_provider do
         Application.put_env(:memhouse, :model_provider, original_provider)

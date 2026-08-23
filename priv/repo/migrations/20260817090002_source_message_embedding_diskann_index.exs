@@ -13,6 +13,7 @@ defmodule MemHouse.Repo.Migrations.SourceMessageEmbeddingDiskannIndex do
   @disable_ddl_transaction true
   @disable_migration_lock true
 
+  @doc "Creates the 1024-dimensional source-message DiskANN index concurrently."
   def up do
     options = diskann_options!()
     execute "DROP INDEX CONCURRENTLY IF EXISTS messages_source_embedding_diskann_1024_idx"
@@ -26,6 +27,7 @@ defmodule MemHouse.Repo.Migrations.SourceMessageEmbeddingDiskannIndex do
     """
   end
 
+  @doc "Removes the source-message DiskANN index concurrently."
   def down do
     execute "DROP INDEX CONCURRENTLY IF EXISTS messages_source_embedding_diskann_1024_idx"
   end

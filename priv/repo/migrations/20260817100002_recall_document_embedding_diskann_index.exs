@@ -13,6 +13,7 @@ defmodule MemHouse.Repo.Migrations.RecallDocumentEmbeddingDiskannIndex do
   @disable_ddl_transaction true
   @disable_migration_lock true
 
+  @doc "Creates the 1024-dimensional recall projection DiskANN index concurrently."
   def up do
     options = diskann_options!()
     execute "DROP INDEX CONCURRENTLY IF EXISTS recall_documents_embedding_diskann_1024_idx"
@@ -26,6 +27,7 @@ defmodule MemHouse.Repo.Migrations.RecallDocumentEmbeddingDiskannIndex do
     """
   end
 
+  @doc "Removes the recall projection DiskANN index concurrently."
   def down do
     execute "DROP INDEX CONCURRENTLY IF EXISTS recall_documents_embedding_diskann_1024_idx"
   end

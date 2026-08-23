@@ -13,8 +13,7 @@ defmodule MemHouse.Eval.Reasoning do
   alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation}
   alias MemHouse.Operations.UsageEvent
   alias MemHouse.Pipeline
-  alias MemHouse.Pipeline.DreamTime
-  alias MemHouse.Repo
+  alias MemHouse.Pipeline.{Consolidator, DreamTime}
   alias MemHouse.Topology.Scope
 
   require Ash.Query
@@ -156,6 +155,8 @@ defmodule MemHouse.Eval.Reasoning do
 
   defp enqueue_generations!(account_key, scope_path) do
     DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
+      marker = Consolidator.marker()
+
       scope =
         Scope
         |> Ash.Query.filter(path == ^scope_path)
@@ -167,7 +168,7 @@ defmodule MemHouse.Eval.Reasoning do
         |> Ash.Query.filter(
           scope_id == ^scope.id and state == "active" and is_nil(deleted_at) and
             is_nil(deduction_key) and
-            (is_nil(extracting_model) or extracting_model != "system:dream-time-consolidator")
+            (is_nil(extracting_model) or extracting_model != ^marker)
         )
         |> Ash.Query.sort(updated_at: :desc, id: :desc)
         |> Ash.Query.limit(2)
@@ -215,13 +216,9 @@ defmodule MemHouse.Eval.Reasoning do
   end
 
   defp scheduled_at!(idempotency_key) do
-    case Ecto.Adapters.SQL.query!(
-           Repo,
-           "SELECT scheduled_at FROM oban_jobs WHERE args->>'idempotency_key' = $1 ORDER BY id LIMIT 1",
-           [idempotency_key]
-         ) do
-      %{rows: [[scheduled_at]]} -> scheduled_at
-      %{rows: []} -> raise ArgumentError, "idle evaluation durable job was not created"
+    case Pipeline.scheduled_at(idempotency_key) do
+      {:ok, scheduled_at} -> scheduled_at
+      :error -> raise ArgumentError, "idle evaluation durable job was not created"
     end
   end
 

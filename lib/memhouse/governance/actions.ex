@@ -100,6 +100,12 @@ defmodule MemHouse.Governance.Actions.RequeueExtraction do
 
       {:error, :not_repairable} ->
         {:ok, %{"outcome" => "not_repairable"}}
+
+      {:error, :not_found} ->
+        {:ok, %{"outcome" => "not_found"}}
+
+      {:error, _reason} ->
+        {:ok, %{"outcome" => "unavailable"}}
     end
   end
 end

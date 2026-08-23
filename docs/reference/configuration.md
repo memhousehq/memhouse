@@ -96,9 +96,13 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_MODEL_CONTEXT_LIMIT_TOKENS` | `131072` | Whole extraction request context limit used before a call |
 | `MEMHOUSE_EXTRACTION_RESERVED_OUTPUT_TOKENS` | `8192` | Output capacity reserved during extraction admission |
 | `MEMHOUSE_EXTRACTION_SAFETY_MARGIN_TOKENS` | `2048` | Extra whole-request admission margin |
-| `MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS` | `1200` | Age after which reconciliation releases an interrupted batch claim; boot requires at least three `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS` budgets plus 60 seconds |
+| `MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS` | `1200` | Age after which reconciliation releases an interrupted batch claim; when batching is enabled, boot requires at least three `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS` budgets plus 60 seconds |
 | `MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` | `false` | Selects the evaluation-only `compact-explicit-v1` extraction contract and `extract-compact-exp-1` prompt identity |
 | `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
+
+`MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` uses the same strict boolean boot
+parsing as the experimental switches above: `true`, `false`, `1`, `0`, `yes`,
+`no`, `on`, and `off` are accepted; ambiguous or misspelled values stop boot.
 
 !!! warning "Reasoning models can blow the context window or time out without these"
     Reasoning models, including the default `openai/gpt-oss-120b`, can consume
@@ -285,23 +289,6 @@ document semantics.
 
 ## Budgets and cost
 
-### Experimental minimal recall
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` | `false` | Enables the reversible dual-lane-semantic-plus-lexical `minimal` retrieval profile |
-
-The experimental profile executes no temporal, salience-recency, entity-match,
-relation-expansion, context-projection, or rerank read stage. Its direct and
-derived semantic shortlists are independently capped at 10 before stable
-interleave; the ordinary per-request candidate budget is still the final cap.
-These reviewed caps are compiled profile behavior, not environment overrides.
-It remains opt-in until matched offline evaluation meets the quality, citation,
-isolation, latency, and maintenance gates. Disabling it loses no data and
-immediately restores the existing profile choices. The value must be an
-explicit boolean (`true`, `false`, `1`, `0`, `yes`, `no`, `on`, or `off`);
-MemHouse rejects ambiguous or misspelled values at boot.
-
 | Variable | Meaning |
 | --- | --- |
 | `MEMHOUSE_BUDGET_LIMITS_JSON` | Daily token counters, e.g. `{"input_tokens":1000000,"output_tokens":250000,"embedding_tokens":2000000}` |
@@ -468,6 +455,20 @@ because they are behaviour rather than infrastructure. The shipped values:
 | `fast` | semantic, salience-recency | 1.0, 0.8 | 15 | no | 100 ms |
 | `balanced` | semantic, lexical, temporal, entity-match | 1.0, 1.0, 0.7, 0.9 | 15 | no | 300 ms |
 | `thorough` | the above plus salience-recency and relation-expand | +0.8, 0.6 | 15 | yes | 1500 ms |
+| `minimal` | independently bounded direct and derived semantic lanes, lexical | 1.0, 1.0 | 15 | no | 300 ms |
+
+### Experimental minimal recall
+
+`MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` defaults to `false` and enables the
+reversible `minimal` profile above. The profile executes no temporal,
+salience-recency, entity-match, relation-expansion, context-projection, or
+rerank read stage. Its direct and derived semantic shortlists are independently
+capped at 10 before stable interleave; the ordinary per-request candidate
+budget is still the final cap. These reviewed caps are compiled profile
+behaviour, not environment overrides. It remains opt-in until matched offline
+evaluation meets the quality, citation, isolation, latency, and maintenance
+gates. Disabling it loses no data and immediately restores the existing profile
+choices.
 
 Fusion normalizes each strategy's returned scores and uses reciprocal rank as a
 5% tie-break. `enabled_strategies` is a deployment-level allowlist: a strategy

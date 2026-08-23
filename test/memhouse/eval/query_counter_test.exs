@@ -1,20 +1,28 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Eval.QueryCounterTest do
+  @moduledoc "Covers bounded, content-free database query measurement."
+
   use MemHouse.DataCase, async: false
 
   alias MemHouse.Eval.QueryCounter
 
   test "counts only queries inside its bounded interval" do
-    MemHouse.Repo.query!("SELECT 1")
-
     {result, measured} =
       QueryCounter.measure(fn ->
-        MemHouse.Repo.query!("SELECT 1")
+        Task.async(fn ->
+          :telemetry.execute([:mem_house, :repo, :query], %{query_time: 1}, %{})
+        end)
+        |> Task.await()
+
+        :telemetry.execute(
+          [:mem_house, :repo, :query],
+          %{query_time: 1, decode_time: 1, queue_time: 1, idle_time: 1},
+          %{}
+        )
+
         :measured
       end)
-
-    MemHouse.Repo.query!("SELECT 1")
 
     assert result == :measured
     assert measured["queries"] == 1

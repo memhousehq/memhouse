@@ -34,6 +34,9 @@ defmodule MemHouse.Pipeline do
   alias MemHouse.DataLayer
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline.{DreamTime, Idempotency, Lock}
+  alias MemHouse.Repo
+
+  import Ecto.Query, only: [from: 2]
 
   require Ash.Query
 
@@ -555,35 +558,54 @@ defmodule MemHouse.Pipeline do
       run =
         PipelineRun
         |> Ash.Query.filter(
-          kind == "extraction" and target_type == "message" and target_id == ^message_id and
-            status in ["repairable", "terminal"]
+          kind == "extraction" and target_type == "message" and target_id == ^message_id
         )
         |> Ash.Query.set_tenant(account.id)
         |> Ash.read_one!(actor: pipeline_actor)
 
-      if run do
-        with {:ok, reset} <-
-               run
-               |> Ash.Changeset.for_update(:requeue_extraction_anchor, %{})
-               |> Ash.Changeset.set_tenant(account.id)
-               |> Ash.update(actor: pipeline_actor) do
-          enqueue(
-            reset.kind,
-            reset.account_id,
-            %{
-              scope_id: reset.scope_id,
-              target_type: reset.target_type,
-              target_id: reset.target_id,
-              idempotency_key: reset.idempotency_key,
-              payload: reset.payload
-            },
-            pipeline_actor
-          )
-        end
-      else
-        {:error, :not_repairable}
+      cond do
+        is_nil(run) ->
+          {:error, :not_found}
+
+        run.status in ["repairable", "terminal"] ->
+          with {:ok, reset} <-
+                 run
+                 |> Ash.Changeset.for_update(:requeue_extraction_anchor, %{})
+                 |> Ash.Changeset.set_tenant(account.id)
+                 |> Ash.update(actor: pipeline_actor) do
+            enqueue(
+              reset.kind,
+              reset.account_id,
+              %{
+                scope_id: reset.scope_id,
+                target_type: reset.target_type,
+                target_id: reset.target_id,
+                idempotency_key: reset.idempotency_key,
+                payload: reset.payload
+              },
+              pipeline_actor
+            )
+          end
+
+        true ->
+          {:error, :not_repairable}
       end
     end)
+  end
+
+  @doc "Returns the durable Oban schedule for a pipeline replay key, or `:error` when absent."
+  def scheduled_at(idempotency_key) when is_binary(idempotency_key) do
+    query =
+      from job in Oban.Job,
+        where: fragment("? ->> 'idempotency_key'", job.args) == ^idempotency_key,
+        order_by: [asc: job.id],
+        limit: 1,
+        select: job.scheduled_at
+
+    case Repo.one(query) do
+      nil -> :error
+      scheduled_at -> {:ok, scheduled_at}
+    end
   end
 
   @doc """

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouse.Eval.ProfileLineageTest do
+  @moduledoc "Covers profile-lineage scoring and source isolation in evaluation runs."
+
   use MemHouse.DataCase, async: false
 
   alias MemHouse.Accounts.Peer

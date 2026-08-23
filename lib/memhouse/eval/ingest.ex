@@ -66,7 +66,7 @@ defmodule MemHouse.Eval.Ingest do
     batch_result =
       case failures do
         [] -> execute_pending_runs(account_key, Enum.map(stored, & &1["id"]))
-        [error | _rest] -> {:error, error}
+        [_error | _rest] -> {:error, :batch_skipped_after_ingest_failure}
       end
 
     Enum.map(ingested, fn

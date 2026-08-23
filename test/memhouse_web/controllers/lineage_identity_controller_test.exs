@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
 defmodule MemHouseWeb.LineageIdentityControllerTest do
+  @moduledoc "Covers the HTTP lineage and stable identity projection contracts."
+
   use MemHouseWeb.ConnCase, async: false
 
   alias MemHouse.Identity
@@ -103,6 +105,26 @@ defmodule MemHouseWeb.LineageIdentityControllerTest do
 
       assert %{"error" => "Not found"} = json_response(response, 404)
     end
+  end
+
+  test "public projection routes reject invalid typed arguments", %{conn: conn, token: token} do
+    lineage =
+      conn
+      |> with_identity(token)
+      |> post(~p"/api/v1/lineage", %{
+        "target_id" => Ash.UUID.generate(),
+        "max_depth" => "deep"
+      })
+
+    assert %{"error" => "Invalid request"} = json_response(lineage, 422)
+
+    profile =
+      lineage
+      |> recycle()
+      |> with_identity(token)
+      |> post(~p"/api/v1/stable-profile", %{"scope_path" => ["invalid"]})
+
+    assert %{"error" => "Invalid request"} = json_response(profile, 422)
   end
 
   test "expired active knowledge is omitted from profile and opaque to lineage", %{

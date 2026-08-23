@@ -16,39 +16,39 @@ defmodule MemHouse.Eval.VariantRuntime do
     dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
     profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
 
-    Application.put_env(
-      :memhouse,
-      :extraction_batching,
-      Keyword.put(batching, :enabled, components["extraction_batching"]["enabled"])
-    )
-
-    Application.put_env(
-      :memhouse,
-      :dream_time_gates,
-      Keyword.put(
-        dream_gates,
-        :idle_scheduler_enabled,
-        components["idle_dream_scheduling"]["enabled"]
-      )
-    )
-
-    Application.put_env(
-      :memhouse,
-      :retrieval_profiles,
-      Keyword.put(profiles, :minimal_enabled, components["retrieval_profile"] == "minimal")
-    )
-
-    Application.put_env(
-      :memhouse,
-      :dream_reasoning_operations,
-      Keyword.put(
-        dream_operations,
-        :split_enabled,
-        components["dream_reasoning_operations"]["split_enabled"]
-      )
-    )
-
     try do
+      Application.put_env(
+        :memhouse,
+        :extraction_batching,
+        Keyword.put(batching, :enabled, switch!(components, "extraction_batching", "enabled"))
+      )
+
+      Application.put_env(
+        :memhouse,
+        :dream_time_gates,
+        Keyword.put(
+          dream_gates,
+          :idle_scheduler_enabled,
+          switch!(components, "idle_dream_scheduling", "enabled")
+        )
+      )
+
+      Application.put_env(
+        :memhouse,
+        :retrieval_profiles,
+        Keyword.put(profiles, :minimal_enabled, minimal_profile!(components))
+      )
+
+      Application.put_env(
+        :memhouse,
+        :dream_reasoning_operations,
+        Keyword.put(
+          dream_operations,
+          :split_enabled,
+          switch!(components, "dream_reasoning_operations", "split_enabled")
+        )
+      )
+
       fun.()
     after
       Application.put_env(:memhouse, :extraction_batching, batching)
@@ -57,4 +57,20 @@ defmodule MemHouse.Eval.VariantRuntime do
       Application.put_env(:memhouse, :retrieval_profiles, profiles)
     end
   end
+
+  defp switch!(components, component, key) do
+    case components[component] do
+      %{^key => value} when is_boolean(value) ->
+        value
+
+      _other ->
+        raise ArgumentError, "component #{component} must declare a boolean #{key}"
+    end
+  end
+
+  defp minimal_profile!(%{"retrieval_profile" => profile}) when is_binary(profile),
+    do: profile == "minimal"
+
+  defp minimal_profile!(_components),
+    do: raise(ArgumentError, "component retrieval_profile must declare a profile name")
 end
