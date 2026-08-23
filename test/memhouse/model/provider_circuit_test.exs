@@ -276,6 +276,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
     assert_eventually(fn -> ProviderCircuit.status(@config, context, 0).in_flight == 0 end)
 
     open!(context, 0)
+
     probe_owner =
       spawn(fn ->
         result = ProviderCircuit.checkout(@config, context, 100)

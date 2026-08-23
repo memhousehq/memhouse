@@ -184,6 +184,7 @@ defmodule MemHouse.Model.Schema.Extraction do
 
   import MemHouse.Model.Schema.ExtractionSupport,
     only: [fetch: 2, first_person?: 1, non_empty_string: 2, resolve_relative_dates: 2]
+
   alias MemHouse.Knowledge.Statement
 
   # Generic ways a model names the process instead of a person. These are matched only in the

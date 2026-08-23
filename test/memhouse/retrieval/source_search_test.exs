@@ -453,8 +453,7 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
 
     Application.put_env(:memhouse, :source_index_short_vector_list, true)
 
-    assert {:error,
-            {:embedding_cardinality_mismatch, %{expected: 2, actual: 1}}} =
+    assert {:error, {:embedding_cardinality_mismatch, %{expected: 2, actual: 1}}} =
              SourceIndexer.rebuild_scope(account_id, scope_id)
 
     refute indexed_at!(account_id, first["id"])

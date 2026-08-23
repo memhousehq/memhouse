@@ -185,7 +185,6 @@ defmodule MemHouse.Retrieval.SourceIndexer do
 
   defp pair_messages(messages, vectors) do
     {:error,
-     {:embedding_cardinality_mismatch,
-      %{expected: length(messages), actual: length(vectors)}}}
+     {:embedding_cardinality_mismatch, %{expected: length(messages), actual: length(vectors)}}}
   end
 end

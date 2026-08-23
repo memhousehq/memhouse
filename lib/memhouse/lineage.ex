@@ -353,8 +353,7 @@ defmodule MemHouse.Lineage do
 
     %{
       "message" => fetch_source_records(Message, message_ids, context),
-      "document_version" =>
-        fetch_source_records(DocumentVersion, document_version_ids, context)
+      "document_version" => fetch_source_records(DocumentVersion, document_version_ids, context)
     }
   end
 
@@ -455,9 +454,7 @@ defmodule MemHouse.Lineage do
       %{}
     else
       KnowledgeItem
-      |> Ash.Query.filter(
-        id in ^ids and scope_id in ^context.scope_ids and is_nil(deleted_at)
-      )
+      |> Ash.Query.filter(id in ^ids and scope_id in ^context.scope_ids and is_nil(deleted_at))
       |> Ash.Query.set_tenant(context.account_id)
       |> Ash.read!(actor: context.actor)
       |> Map.new(&{&1.id, &1})

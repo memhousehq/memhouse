@@ -367,7 +367,6 @@ defmodule MemHouse.Pipeline.Extractor do
   end
 
   defp batch_request(anchors, contract) do
-
     prepared =
       Enum.map(anchors, fn %{message: message, context: context} ->
         schema_context = schema_context(message, context)
