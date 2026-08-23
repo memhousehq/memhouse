@@ -356,10 +356,8 @@ defmodule MemHouse.Eval.Runner do
     do: {:ok, skipped_refresh()}
 
   defp maybe_refresh_projection(account_id, scope_id, true) do
-    case RecallProjector.refresh_scope(account_id, scope_id) do
-      {:ok, %{projected: projected}} -> {:ok, completed_refresh(projected)}
-      {:error, error} -> {:error, error}
-    end
+    {:ok, %{projected: projected}} = RecallProjector.refresh_scope(account_id, scope_id)
+    {:ok, completed_refresh(projected)}
   end
 
   defp maybe_refresh_projection(_account_id, _scope_id, false), do: {:ok, skipped_refresh()}

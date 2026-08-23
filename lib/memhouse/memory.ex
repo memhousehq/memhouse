@@ -878,12 +878,12 @@ defmodule MemHouse.Memory do
     if minimal_recall_enabled?(), do: "minimal", else: "thorough"
   end
 
+  defp default_ask_profile(_effort), do: "thorough"
+
   defp normalize_ask_effort(effort) when effort in ["low", :low], do: "low"
   defp normalize_ask_effort(effort) when effort in ["medium", :medium], do: "medium"
   defp normalize_ask_effort(effort) when effort in ["high", :high], do: "high"
   defp normalize_ask_effort(_effort), do: "fixed"
-
-  defp default_ask_profile(_effort), do: "thorough"
 
   defp minimal_recall_enabled? do
     :memhouse

@@ -25,8 +25,7 @@ defmodule MemHouse.Lineage do
   @relation_kinds ~w(contradicts derived_from supersedes supports)
 
   @doc """
-  Resolves the bounded direct sources of one knowledge row through their
-  canonical resource policies.
+  Resolves visible direct sources for one knowledge row or a bounded list of rows.
 
   The knowledge row may be an earlier projection. Message ids are therefore
   never trusted on their own, and Provenance's denormalized Account/scope fields
@@ -34,21 +33,18 @@ defmodule MemHouse.Lineage do
   is re-read as a Message or DocumentVersion in the supplied Account and scopes;
   missing, erased, and unauthorized sources are omitted without exposing ids.
   The caller must hold the Account-scoped transaction that also read the
-  knowledge row.
+  knowledge rows. A single item returns its ordered source list; a list returns
+  a map keyed by knowledge id. Sources are resolved in batches without changing
+  per-source authorization or omission behavior.
   """
+  def visible_source_references(item_or_items, account, actor, scopes)
+
   def visible_source_references(%KnowledgeItem{} = item, account, actor, scopes) do
     [item]
     |> visible_source_references(account, actor, scopes)
     |> Map.fetch!(item.id)
   end
 
-  @doc """
-  Resolves visible direct sources for a bounded set of knowledge rows in batches.
-
-  The returned map is keyed by knowledge id. Source resources are still read
-  through their canonical policies in the supplied Account and scopes; batching
-  changes query granularity, not per-source authorization or omission behavior.
-  """
   def visible_source_references(items, account, actor, scopes) when is_list(items) do
     context = %{
       account_id: account.id,
