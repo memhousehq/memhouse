@@ -181,6 +181,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert DateTime.compare(edited.replacement.relevant_from, window_start) == :eq
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "an undocumented lifecycle edge writes no state, event, audit, or derived work" do
     %{actor: actor} = bootstrap_human!("edge-guard")
 
@@ -396,27 +397,24 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
                "unexpected search visibility for #{state} and reader #{reader.peer_id}; " <>
                  "candidates=#{inspect(Enum.map(search["candidates"], & &1["id"]))} " <>
                  "outcomes=#{inspect(search["outcomes"])}"
-      end
 
-      subject_expected? =
-        Lifecycle.retrievable?(state, item.subject_peer_id, actor.peer_id, false)
+        ask =
+          Memory.ask(
+            %{
+              "account_id" => actor.account_id,
+              "scope_path" => "/governance/edge-matrix",
+              "question" => "What does the lifecycle fixture say about #{query}?",
+              "profile" => "balanced"
+            },
+            reader
+          )
 
-      ask =
-        Memory.ask(
-          %{
-            "account_id" => actor.account_id,
-            "scope_path" => "/governance/edge-matrix",
-            "question" => "What does the lifecycle fixture say about #{query}?",
-            "profile" => "balanced"
-          },
-          actor
-        )
-
-      if subject_expected? do
-        refute ask["abstained"]
-        assert item.id in ask["citations"]
-      else
-        refute item.id in ask["citations"]
+        if expected? do
+          refute ask["abstained"]
+          assert item.id in ask["citations"]
+        else
+          refute item.id in ask["citations"]
+        end
       end
     end
   end
@@ -487,6 +485,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     end
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "the expiry worker preserves a due superseded row as historical disposition" do
     %{actor: actor} = bootstrap_human!("superseded-expiry")
 
@@ -659,6 +658,11 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
 
     assert held_deferral.effect == "timer_deferred_only"
     assert knowledge_for!(actor, knowledge.id).state == "held"
+
+    assert Enum.any?(
+             Engine.history(actor, knowledge.id).lifecycle,
+             &(&1.from_state == "held" and &1.to_state == "held")
+           )
 
     # A curator approving is necessary but not sufficient. The item stays held and the response
     # says why: the subject has not agreed. A curator cannot consent on someone else's behalf.
@@ -1288,6 +1292,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert decayed.confidence < knowledge.confidence
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "an obsolete confirmation timer cannot stale a later curator approval" do
     %{actor: actor} = bootstrap_human!("settled-timer")
 
@@ -1702,7 +1707,8 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         }
       end)
 
-    assert lifecycle_records == audit_records
+    sort_key = &{&1.action, &1.from_state, &1.to_state, &1.reason}
+    assert Enum.sort_by(lifecycle_records, sort_key) == Enum.sort_by(audit_records, sort_key)
   end
 
   # Runs a parameterized query expected to return exactly one column of one row.
