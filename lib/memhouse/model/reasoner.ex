@@ -20,11 +20,11 @@ defmodule MemHouse.Model.Reasoner do
 
   - Do not treat a returned candidate as active knowledge. It has passed schema
     validation, nothing more.
-  - Do not call this on a request path. It is the slow lane by design and its
-    latency is not bounded by a caller's deadline.
+  - Do not call this on a request path. It is the slow lane by design. Dream-time
+    supplies a pass deadline, which split operations share rather than restart.
   """
 
-  alias MemHouse.Model
+  alias MemHouse.{Clock, Model}
   alias MemHouse.Model.Schema.{Reasoning, ReasoningSynthesis, ReasoningUpdate}
   alias MemHouse.Observability
 
@@ -45,21 +45,22 @@ defmodule MemHouse.Model.Reasoner do
   """
   def reason_operations(delta_and_working_set, context, opts \\ []) do
     operations = enabled_operations()
+    deadline = pass_deadline(opts)
 
     operations
     |> Enum.reduce_while({:ok, %{items: [], relations: []}, []}, fn operation,
                                                                     {:ok, combined, provenance} ->
-      case run_operation(operation, delta_and_working_set, context, opts) do
-        {:ok, result, operation_provenance} ->
-          combined = %{
-            items: combined.items ++ result.items,
-            relations: combined.relations ++ result.relations
-          }
+      with {:ok, operation_opts} <- remaining_operation_opts(opts, deadline),
+           {:ok, result, operation_provenance} <-
+             run_operation(operation, delta_and_working_set, context, operation_opts) do
+        combined = %{
+          items: combined.items ++ result.items,
+          relations: combined.relations ++ result.relations
+        }
 
-          {:cont, {:ok, combined, [operation_provenance | provenance]}}
-
-        {:error, error} ->
-          {:halt, {:error, error}}
+        {:cont, {:ok, combined, [operation_provenance | provenance]}}
+      else
+        {:error, error} -> {:halt, {:error, error}}
       end
     end)
     |> case do
@@ -68,6 +69,22 @@ defmodule MemHouse.Model.Reasoner do
 
       error ->
         error
+    end
+  end
+
+  defp pass_deadline(opts) do
+    case Keyword.get(opts, :request_timeout) do
+      timeout when is_integer(timeout) and timeout > 0 -> Clock.monotonic_ms() + timeout
+      _timeout -> nil
+    end
+  end
+
+  defp remaining_operation_opts(opts, nil), do: {:ok, opts}
+
+  defp remaining_operation_opts(opts, deadline) do
+    case deadline - Clock.monotonic_ms() do
+      remaining when remaining > 0 -> {:ok, Keyword.put(opts, :request_timeout, remaining)}
+      _exhausted -> {:error, :request_timeout}
     end
   end
 

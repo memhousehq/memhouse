@@ -291,13 +291,13 @@ defmodule MemHouse.Pipeline.DreamTime do
         result =
           if split_enabled? do
             Reasoner.reason_operations(input, context,
-              total_timeout: snapshot.limits.max_elapsed_ms
+              request_timeout: snapshot.limits.max_elapsed_ms
             )
           else
             # Hourly and manual dream-time retain the established one-call
             # contract unless the split experiment is explicitly enabled.
             Reasoner.reason(input, context,
-              total_timeout: snapshot.limits.max_elapsed_ms,
+              request_timeout: snapshot.limits.max_elapsed_ms,
               return_usage: true
             )
           end

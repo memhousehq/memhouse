@@ -16,7 +16,11 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
 
     @impl true
     @doc "Returns an empty structured reasoning result with deterministic usage."
-    def structured(_config, _messages, _schema, _opts) do
+    def structured(_config, _messages, _schema, opts) do
+      if pid = Application.get_env(:memhouse, :reasoning_operation_test_pid) do
+        send(pid, {:reasoning_provider_call, Keyword.fetch!(opts, :task), opts})
+      end
+
       {:ok,
        %Result{
          value: %{"items" => [], "relations" => []},
@@ -36,6 +40,22 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
     @doc "Delegates reranking calls to the deterministic provider."
     def rerank(config, query, documents, opts),
       do: Deterministic.rerank(config, query, documents, opts)
+  end
+
+  defmodule DeadlineClock do
+    @moduledoc "Returns deterministic monotonic readings for pass-deadline tests."
+    @behaviour MemHouse.Clock
+
+    @impl true
+    def utc_now, do: MemHouse.Clock.System.utc_now()
+
+    @impl true
+    def monotonic_ms do
+      Agent.get_and_update(
+        Application.fetch_env!(:memhouse, :reasoning_operation_test_clock),
+        fn [reading | rest] -> {reading, rest} end
+      )
+    end
   end
 
   alias MemHouse.Model.Reasoner
@@ -186,6 +206,85 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
     assert metadata.status == "ok"
     assert measurements.calls == 1
     refute inspect({measurements, metadata}) =~ "working_set"
+  end
+
+  test "elapsed pass budget stops before a second reasoning operation without losing first usage" do
+    Application.put_env(:memhouse, :dream_reasoning_operations,
+      split_enabled: true,
+      update: true,
+      synthesis: true
+    )
+
+    install_deadline_clock([100, 100, 120])
+
+    handler = {__MODULE__, self(), :deadline_operation}
+    parent = self()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:memhouse, :operation, :completed],
+        fn _event, measurements, metadata, _config ->
+          send(parent, {:deadline_operation, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    result =
+      Reasoner.reason_operations(%{delta: [], working_set: []}, context(), request_timeout: 20)
+
+    assert_receive {:reasoning_provider_call, :reasoning_update, opts}
+    assert Keyword.fetch!(opts, :request_timeout) == 20
+
+    assert_receive {:deadline_operation, %{input_tokens: 7, output_tokens: 3},
+                    %{
+                      operation: "reasoning_update",
+                      status: "ok"
+                    }}
+
+    refute_receive {:reasoning_provider_call, :reasoning_synthesis, _opts}
+    refute_receive {:deadline_operation, _measurements, %{operation: "reasoning_synthesis"}}
+    assert result == {:error, :request_timeout}
+  end
+
+  test "each reasoning operation receives only the pass time that remains" do
+    Application.put_env(:memhouse, :dream_reasoning_operations,
+      split_enabled: true,
+      update: true,
+      synthesis: true
+    )
+
+    install_deadline_clock([100, 100, 107])
+
+    assert {:ok, _result, _provenance} =
+             Reasoner.reason_operations(%{delta: [], working_set: []}, context(),
+               request_timeout: 20
+             )
+
+    assert_receive {:reasoning_provider_call, :reasoning_update, update_opts}
+    assert Keyword.fetch!(update_opts, :request_timeout) == 20
+
+    assert_receive {:reasoning_provider_call, :reasoning_synthesis, synthesis_opts}
+    assert Keyword.fetch!(synthesis_opts, :request_timeout) == 13
+  end
+
+  defp install_deadline_clock(readings) do
+    previous_clock = Application.get_env(:memhouse, :clock)
+    clock = start_supervised!({Agent, fn -> readings end})
+    Application.put_env(:memhouse, :clock, DeadlineClock)
+    Application.put_env(:memhouse, :reasoning_operation_test_clock, clock)
+    Application.put_env(:memhouse, :reasoning_operation_test_pid, self())
+
+    on_exit(fn ->
+      if previous_clock,
+        do: Application.put_env(:memhouse, :clock, previous_clock),
+        else: Application.delete_env(:memhouse, :clock)
+
+      Application.delete_env(:memhouse, :reasoning_operation_test_clock)
+      Application.delete_env(:memhouse, :reasoning_operation_test_pid)
+    end)
   end
 
   defp context(overrides \\ %{}) do
