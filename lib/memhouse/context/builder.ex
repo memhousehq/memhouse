@@ -34,6 +34,7 @@ defmodule MemHouse.Context.Builder do
   alias MemHouse.Model.Config
   alias MemHouse.Model.Gateway
   alias MemHouse.Observations.{Message, Session}
+  alias MemHouse.Pipeline.Lock
   alias MemHouse.Retrieval.Query
   alias MemHouse.Topology.Scope
 
@@ -234,95 +235,103 @@ defmodule MemHouse.Context.Builder do
 
   # Phase three commits the projection set. No provider call may be added to this callback: a
   # slow external request here would hold a pooled connection and could discard billed work.
+  @doc false
+  def serialize_projection_writes!(account_id, scope_id, fun) when is_function(fun, 0) do
+    Lock.acquire!(account_id, "projection-write:#{scope_id}")
+    fun.()
+  end
+
   defp write_projections!(account_id, scope, scope_knowledge, peer_knowledge, projections) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        entity_projections =
-          Enum.map(projections.entity_cards, &upsert_projection!(account_id, actor, &1))
+        serialize_projection_writes!(account_id, scope.id, fn ->
+          entity_projections =
+            Enum.map(projections.entity_cards, &upsert_projection!(account_id, actor, &1))
 
-        retire_stale_entity_cards!(
-          account_id,
-          actor,
-          scope.id,
-          MapSet.new(entity_projections, & &1.entity_id)
-        )
-
-        scope_projection =
-          upsert_projection!(
+          retire_stale_entity_cards!(
             account_id,
             actor,
-            %{
-              cache_key: ProjectionKey.scope(scope.id),
-              scope_id: scope.id,
-              kind: "scope_card",
-              content: projections.scope,
-              source_ids: Enum.map(scope_knowledge, & &1.id),
-              valid_until: earliest_expiry(scope_knowledge)
-            }
+            scope.id,
+            MapSet.new(entity_projections, & &1.entity_id)
           )
 
-        # Group profiles by statement subject, not source.
-        peer_projections =
-          peer_knowledge
-          |> Enum.group_by(& &1.subject_peer_id)
-          |> Enum.map(fn {peer_id, items} ->
+          scope_projection =
             upsert_projection!(
               account_id,
               actor,
               %{
-                cache_key: ProjectionKey.peer(scope.id, peer_id),
+                cache_key: ProjectionKey.scope(scope.id),
                 scope_id: scope.id,
-                peer_id: peer_id,
-                kind: "peer_profile",
-                content: Map.fetch!(projections.peers, peer_id),
-                source_ids: Enum.map(items, & &1.id),
-                valid_until: earliest_expiry(items)
+                kind: "scope_card",
+                content: projections.scope,
+                source_ids: Enum.map(scope_knowledge, & &1.id),
+                valid_until: earliest_expiry(scope_knowledge)
               }
             )
-          end)
 
-        retire_stale_peer_profiles!(
-          account_id,
-          actor,
-          scope.id,
-          MapSet.new(peer_projections, & &1.peer_id)
-        )
+          # Group profiles by statement subject, not source.
+          peer_projections =
+            peer_knowledge
+            |> Enum.group_by(& &1.subject_peer_id)
+            |> Enum.map(fn {peer_id, items} ->
+              upsert_projection!(
+                account_id,
+                actor,
+                %{
+                  cache_key: ProjectionKey.peer(scope.id, peer_id),
+                  scope_id: scope.id,
+                  peer_id: peer_id,
+                  kind: "peer_profile",
+                  content: Map.fetch!(projections.peers, peer_id),
+                  source_ids: Enum.map(items, & &1.id),
+                  valid_until: earliest_expiry(items)
+                }
+              )
+            end)
 
-        session_projections =
-          projections.sessions
-          |> Enum.map(fn session ->
-            summary = Map.fetch!(projections.session_summaries, session.id)
+          retire_stale_peer_profiles!(
+            account_id,
+            actor,
+            scope.id,
+            MapSet.new(peer_projections, & &1.peer_id)
+          )
 
-            upsert_projection!(
-              account_id,
-              actor,
-              %{
-                cache_key: ProjectionKey.session(scope.id, session.id),
-                scope_id: scope.id,
-                peer_id: session.peer_id,
-                session_id: session.id,
-                kind: "session_summary",
-                content: summary.content,
-                source_ids: summary.source_ids,
-                valid_until: summary.valid_until
-              }
-            )
-          end)
+          session_projections =
+            projections.sessions
+            |> Enum.map(fn session ->
+              summary = Map.fetch!(projections.session_summaries, session.id)
 
-        # Evict stale copies on every node.
-        Cache.invalidate_scope(account_id, scope.id)
+              upsert_projection!(
+                account_id,
+                actor,
+                %{
+                  cache_key: ProjectionKey.session(scope.id, session.id),
+                  scope_id: scope.id,
+                  peer_id: session.peer_id,
+                  session_id: session.id,
+                  kind: "session_summary",
+                  content: summary.content,
+                  source_ids: summary.source_ids,
+                  valid_until: summary.valid_until
+                }
+              )
+            end)
 
-        {:ok,
-         %{
-           scope_card: scope_projection.id,
-           entity_cards: length(entity_projections),
-           entity_card_summaries_unavailable:
-             count_unavailable_summaries(projections.entity_cards),
-           peer_profiles: length(peer_projections),
-           session_summaries: length(session_projections)
-         }}
+          # Evict stale copies on every node.
+          Cache.invalidate_scope(account_id, scope.id)
+
+          {:ok,
+           %{
+             scope_card: scope_projection.id,
+             entity_cards: length(entity_projections),
+             entity_card_summaries_unavailable:
+               count_unavailable_summaries(projections.entity_cards),
+             peer_profiles: length(peer_projections),
+             session_summaries: length(session_projections)
+           }}
+        end)
       end
     )
   end

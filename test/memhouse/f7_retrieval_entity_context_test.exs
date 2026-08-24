@@ -3682,6 +3682,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
           scope_id == ^seeded.scope.id and dirty == false and validity_version == version
         )
         |> Ash.Query.sort(kind: :asc, id: :asc)
+        |> Ash.Query.limit(1)
         |> Ash.Query.set_tenant(account.id)
         |> Ash.read_one!(actor: pipeline_actor(actor))
       end)
@@ -3735,20 +3736,74 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     assert second_completed.status == "completed"
 
-    DataLayer.with_actor(seeded.actor, fn account, actor ->
-      rebuilt =
+    rebuilt =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
         Projection
         |> Ash.Query.filter(id == ^late_projection.id)
         |> Ash.Query.set_tenant(account.id)
         |> Ash.read_one!(actor: pipeline_actor(actor))
+      end)
 
-      assert rebuilt.validity_version == rebuilt.version
+    assert rebuilt.validity_version == rebuilt.version
+
+    # The non-concurrent rolling case advances version but still cannot advance the validity
+    # marker because an old binary does not know that column. Preserve this separate branch: its
+    # replay key must differ from both earlier unsafe generations.
+    Ecto.Adapters.SQL.query!(
+      MemHouse.Repo,
+      "UPDATE projections SET version = version + 1, " <>
+        "content = jsonb_build_object('legacy', 'sequential old worker'), " <>
+        "updated_at = clock_timestamp() WHERE account_id = $1 AND id = $2",
+      [Ecto.UUID.dump!(seeded.account.id), Ecto.UUID.dump!(rebuilt.id)]
+    )
+
+    sequential =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        Projection
+        |> Ash.Query.filter(id == ^rebuilt.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+      end)
+
+    assert sequential.version == rebuilt.version + 1
+    assert sequential.validity_version == 0
+
+    context =
+      Memory.get_context(
+        %{"scope_path" => seeded.scope.path, "budget_chars" => 20_000},
+        seeded.actor
+      )
+
+    refute inspect(context) =~ "sequential old worker"
+
+    assert {:ok, %{legacy_projection_scopes: 1}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    third_generation = pending_projection_refresh!(seeded)
+    refute third_generation.idempotency_key == second_completed.idempotency_key
+
+    third_completed =
+      third_generation
+      |> Ash.Changeset.for_update(:execute, %{})
+      |> Ash.Changeset.set_tenant(seeded.account.id)
+      |> Ash.update!(actor: pipeline_actor(seeded.actor))
+
+    assert third_completed.status == "completed"
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      converged =
+        Projection
+        |> Ash.Query.filter(id == ^rebuilt.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+
+      assert converged.validity_version == converged.version
     end)
 
     assert {:ok, %{legacy_projection_scopes: 0}} =
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)
 
-    assert projection_refresh_count(seeded.account.id) == before + 2
+    assert projection_refresh_count(seeded.account.id) == before + 3
   end
 
   test "legacy projection reconciliation bounds distinct scopes rather than rows" do
@@ -3825,13 +3880,15 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     assert projection_refresh_count(seeded.account.id) == before + 2
 
-    upgrade_runs =
+    upgrade_page =
       DataLayer.with_actor(seeded.actor, fn account, actor ->
         MemHouse.Operations.PipelineRun
         |> Ash.Query.filter(kind == "projection_refresh" and status == "pending")
         |> Ash.Query.set_tenant(account.id)
-        |> Ash.read!(actor: pipeline_actor(actor))
+        |> Ash.read!(actor: pipeline_actor(actor), page: [limit: 100])
       end)
+
+    upgrade_runs = upgrade_page.results
 
     assert MapSet.new(upgrade_runs, & &1.scope_id) ==
              MapSet.new([seeded.scope.id, second_scope.id])
@@ -3859,6 +3916,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
           scope_id == ^seeded.scope.id and dirty == false and validity_version == version
         )
         |> Ash.Query.sort(kind: :asc, id: :asc)
+        |> Ash.Query.limit(1)
         |> Ash.Query.set_tenant(account.id)
         |> Ash.read_one!(actor: pipeline_actor(actor))
       end)
@@ -3875,7 +3933,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         dirty: false
       })
       |> Ash.Changeset.set_tenant(seeded.account.id)
-      |> Ash.update!(actor: pipeline_actor(seeded.actor))
+      |> Ash.update!(actor: pipeline_actor(seeded.actor), authorize?: false)
 
     # Lifecycle invalidation changes only dirty state. The database invalidates the content
     # generation at that boundary, so an old conflict update that merely clears `dirty` cannot
@@ -3883,7 +3941,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     current
     |> Ash.Changeset.for_update(:refresh_from_pipeline, %{dirty: true})
     |> Ash.Changeset.set_tenant(seeded.account.id)
-    |> Ash.update!(actor: pipeline_actor(seeded.actor))
+    |> Ash.update!(actor: pipeline_actor(seeded.actor), authorize?: false)
 
     Ecto.Adapters.SQL.query!(
       MemHouse.Repo,
@@ -4512,6 +4570,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         kind == "projection_refresh" and scope_id == ^seeded.scope.id and status == "pending"
       )
       |> Ash.Query.sort(inserted_at: :desc, id: :desc)
+      |> Ash.Query.limit(1)
       |> Ash.Query.set_tenant(account.id)
       |> Ash.read_one!(actor: pipeline_actor(actor))
     end)
