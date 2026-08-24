@@ -73,6 +73,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
 
   defp extraction_identity do
     %{
+      build_sha: Application.fetch_env!(:memhouse, :build_sha),
       prompt_version: Extractor.prompt_version(),
       pipeline_version: Extractor.pipeline_version(),
       batching_enabled: ExtractionAdmission.enabled?(),

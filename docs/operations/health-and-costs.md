@@ -144,8 +144,8 @@ request contains exactly `scope_root`, positive `request_cap`, `token_cap`, and
 `input_usd_micros_per_million` and `output_usd_micros_per_million` integers.
 The response echoes those content-safe values and returns the durable
 `requests_reserved`, `tokens_reserved`, and `usd_micros_reserved` counters. Its
-`extraction_identity` reports the prompt and pipeline versions, the batching
-switch, and the provider-independent batching admission identity. Benchmark
+`extraction_identity` reports the deployment build SHA, prompt and pipeline versions,
+the batching switch, and the provider-independent batching admission identity. Benchmark
 harnesses must compare this identity with the preregistered arm before ingest.
 
 The guard applies to `ingest_extractor` provider attempts in the exact scope or

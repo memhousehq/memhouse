@@ -97,6 +97,7 @@ config :memhouse, :database,
 # boot in external mode turns this on; dev and test rely on their own Repo
 # credentials.
 config :memhouse, :require_database_url, false
+config :memhouse, :build_sha, "development"
 
 # When explicitly enabled, one extraction job may opportunistically consume
 # adjacent message jobs. The target is an experiment variable, while
