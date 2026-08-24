@@ -20,7 +20,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
     input_usd_micros_per_million output_usd_micros_per_million
   ))
 
-  defmodule ExceededError do
+  defmodule Exceeded do
     defexception [:reason]
     @impl true
     def message(error), do: "extraction budget admission refused: #{error.reason}"
@@ -155,7 +155,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
 
     if result.num_rows == 0,
       do: {:ok, nil},
-      else: {:error, %ExceededError{reason: "request, token, USD, or wall-time cap"}}
+      else: {:error, %Exceeded{reason: "request, token, USD, or wall-time cap"}}
   end
 
   defp validate(attrs) when is_map(attrs) do

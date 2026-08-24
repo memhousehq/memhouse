@@ -289,7 +289,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
 
     assert remaining_ms > 0
 
-    assert {:error, %ExtractionBudget.ExceededError{}} =
+    assert {:error, %ExtractionBudget.Exceeded{}} =
              ExtractionBudget.reserve(
                context,
                [%{role: "user", content: "second attempt"}],
@@ -327,7 +327,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
 
     assert_receive :provider_called
 
-    assert {:error, %ExtractionBudget.ExceededError{}, 0} =
+    assert {:error, %ExtractionBudget.Exceeded{}, 0} =
              Gateway.structured_once_with_usage_and_attempt(
                :ingest_extractor,
                messages,
