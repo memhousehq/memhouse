@@ -16,6 +16,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   alias MemHouse.DataLayer
   alias MemHouse.Governance.Engine
   alias MemHouse.Governance.Erasure
+  alias MemHouse.Governance.AuditEvent
   alias MemHouse.Governance.GateDecision
   alias MemHouse.Governance.GateRule
   alias MemHouse.Governance.PeerQuery
@@ -301,18 +302,28 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     # The same state matrix is read through the product's real search and /ask
     # entry points. This is deliberately separate from the pure visibility
     # predicate test: a query that forgets the lifecycle filter must fail here.
+    other_reader =
+      Identity.provision_agent(actor, %{
+        key: "edge-matrix-reader",
+        name: "Edge matrix reader",
+        scope_path: "/",
+        role: "reader"
+      })
+
+    assert {:ok, other_actor} = Identity.authenticate_bearer(other_reader.api_key)
+
     read_paths = %{
       "active" => ["active"],
       "provisional" => [],
       "held" => ["held"],
       "needs_revalidation" => ["active", "needs_revalidation"],
-      "superseded" => ["superseded"],
-      "expired" => ["expired"],
+      "superseded" => ["active", "superseded"],
+      "expired" => ["active", "expired"],
       "rejected" => ["rejected"],
-      "contested" => ["contested"],
-      "redacted" => ["redacted"],
-      "stale" => ["stale"],
-      "retracted" => ["retracted"]
+      "contested" => ["active", "contested"],
+      "redacted" => ["active", "redacted"],
+      "stale" => ["active", "needs_revalidation", "stale"],
+      "retracted" => ["active", "retracted"]
     }
 
     read_tokens = %{
@@ -360,31 +371,46 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
 
       query = token
 
-      search =
-        Memory.search(%{
-          "account_id" => actor.account_id,
-          "scope_path" => "/governance/edge-matrix",
-          "query" => query,
-          "strategies" => ["lexical"],
-          "deadline" => "disabled"
-        })
+      search_attrs = %{
+        "account_id" => actor.account_id,
+        "scope_path" => "/governance/edge-matrix",
+        "query" => query,
+        "strategies" => ["lexical"],
+        "deadline" => "disabled"
+      }
 
-      found? = Enum.any?(search["candidates"], &(&1["id"] == item.id))
-      expected? = Lifecycle.fetch!(state).retrieval != :none
+      for reader <- [actor, other_actor] do
+        search = Memory.search(search_attrs, reader)
+        found? = Enum.any?(search["candidates"], &(&1["id"] == item.id))
 
-      assert found? == expected?,
-             "unexpected search visibility for #{state}: #{inspect(search["candidates"])}"
+        expected? =
+          Lifecycle.retrievable?(
+            state,
+            item.subject_peer_id,
+            reader.peer_id,
+            false
+          )
+
+        assert found? == expected?,
+               "unexpected search visibility for #{state} and reader #{reader.peer_id}"
+      end
+
+      subject_expected? =
+        Lifecycle.retrievable?(state, item.subject_peer_id, actor.peer_id, false)
 
       ask =
-        Memory.ask(%{
-          "account_id" => actor.account_id,
-          "scope_path" => "/governance/edge-matrix",
-          "question" => "What does the lifecycle fixture say about #{query}?",
-          "strategies" => ["lexical"],
-          "deadline" => "disabled"
-        })
+        Memory.ask(
+          %{
+            "account_id" => actor.account_id,
+            "scope_path" => "/governance/edge-matrix",
+            "question" => "What does the lifecycle fixture say about #{query}?",
+            "strategies" => ["lexical"],
+            "deadline" => "disabled"
+          },
+          actor
+        )
 
-      if expected? do
+      if subject_expected? do
         refute ask["abstained"]
         assert item.id in ask["citations"]
       else
@@ -1639,21 +1665,42 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   defp pipeline_actor(%Actor{} = actor), do: %{actor | role: :system, pipeline?: true}
 
   defp assert_lifecycle_audit_balance!(actor, knowledge_id) do
-    lifecycle_count = length(Engine.history(actor, knowledge_id).lifecycle)
+    lifecycle = Engine.history(actor, knowledge_id).lifecycle
 
-    audit_count =
-      scalar!(
-        """
-        SELECT count(*)
-        FROM audit_events
-        WHERE resource_id = $1
-          AND category = 'lifecycle'
-          AND action IN ('knowledge.created', 'knowledge.transitioned')
-        """,
-        [Ecto.UUID.dump!(knowledge_id)]
-      )
+    audits =
+      DataLayer.with_actor(actor, fn account, current_actor ->
+        AuditEvent
+        |> Ash.Query.filter(
+          resource_id == ^knowledge_id and category == "lifecycle" and
+            action in ["knowledge.created", "knowledge.transitioned"]
+        )
+        |> Ash.Query.sort(occurred_at: :asc, id: :asc)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(current_actor))
+      end)
 
-    assert lifecycle_count == audit_count
+    lifecycle_records =
+      Enum.map(lifecycle, fn event ->
+        %{
+          action:
+            if(is_nil(event.from_state), do: "knowledge.created", else: "knowledge.transitioned"),
+          from_state: event.from_state,
+          to_state: event.to_state,
+          reason: if(is_nil(event.from_state), do: nil, else: event.reason)
+        }
+      end)
+
+    audit_records =
+      Enum.map(audits, fn audit ->
+        %{
+          action: audit.action,
+          from_state: audit.metadata["from_state"],
+          to_state: audit.metadata["to_state"],
+          reason: audit.metadata["reason"]
+        }
+      end)
+
+    assert lifecycle_records == audit_records
   end
 
   # Runs a parameterized query expected to return exactly one column of one row.
