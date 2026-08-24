@@ -109,7 +109,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
                  deadline_at
           FROM extraction_budget_guards
           WHERE account_id = $1
-            AND ($2 = scope_root OR
+            AND (scope_root = '/' OR $2 = scope_root OR
                  LEFT($2, length(scope_root) + 1) = scope_root || '/')
           ORDER BY length(scope_root) DESC
           LIMIT 1
@@ -146,7 +146,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
         """
         SELECT 1 FROM extraction_budget_guards
         WHERE account_id = $1
-          AND ($2 = scope_root OR
+          AND (scope_root = '/' OR $2 = scope_root OR
                LEFT($2, length(scope_root) + 1) = scope_root || '/')
         LIMIT 1
         """,
@@ -184,7 +184,11 @@ defmodule MemHouse.Operations.ExtractionBudget do
 
   defp fetch_binary!(attrs, key) do
     value = Map.fetch!(attrs, key)
-    if is_binary(value) and String.starts_with?(value, "/"), do: value, else: raise(ArgumentError)
+
+    if is_binary(value) and String.starts_with?(value, "/") and
+         (value == "/" or not String.ends_with?(value, "/")),
+       do: value,
+       else: raise(ArgumentError)
   end
 
   defp fetch_positive!(attrs, key) do

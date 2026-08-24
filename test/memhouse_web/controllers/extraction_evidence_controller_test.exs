@@ -7,6 +7,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
   alias MemHouse.Identity
   alias MemHouse.Memory
   alias MemHouse.Model.Gateway
+  alias MemHouse.Model.ProviderCircuit
   alias MemHouse.Model.Providers.Deterministic
   alias MemHouse.Operations.ExtractionBudget
   alias MemHouse.Operations.PipelineRun
@@ -257,6 +258,8 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
         "output_usd_micros_per_million" => 250_000
       })
 
+    build_sha = Application.fetch_env!(:memhouse, :build_sha)
+
     assert %{
              "data" => %{
                "scope_root" => ^scope_root,
@@ -264,7 +267,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                "tokens_reserved" => 0,
                "usd_micros_reserved" => 0,
                "extraction_identity" => %{
-                 "build_sha" => "unknown",
+                 "build_sha" => ^build_sha,
                  "prompt_version" => "extract-13",
                  "pipeline_version" => "f5-1",
                  "batching_enabled" => false,
@@ -339,6 +342,46 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     refute_receive :provider_called
   end
 
+  test "an open provider circuit does not consume extraction budget", %{actor: actor} do
+    previous_circuit = Application.fetch_env!(:memhouse, :ingest_provider_circuit)
+
+    Application.put_env(
+      :memhouse,
+      :ingest_provider_circuit,
+      previous_circuit
+      |> Keyword.put(:enabled, true)
+      |> Keyword.put(:failure_threshold, 1)
+      |> Keyword.put(:open_ms, 60_000)
+    )
+
+    ProviderCircuit.reset()
+
+    on_exit(fn ->
+      ProviderCircuit.reset()
+      Application.put_env(:memhouse, :ingest_provider_circuit, previous_circuit)
+    end)
+
+    scope_root = "/bench/locomo/corpus-open-circuit"
+    context = %{account_id: actor.account_id, scope_path: "#{scope_root}/case-1", actor: actor}
+    config = MemHouse.Model.role_config(:ingest_extractor, context)
+
+    assert {:ok, permit} = ProviderCircuit.checkout(config, context)
+    assert :ok = ProviderCircuit.complete(permit, {:error, :provider_upstream_error})
+    assert {:ok, _budget} = ExtractionBudget.register(actor, budget_attrs(scope_root, 1))
+
+    assert {:error, %ProviderCircuit.OpenError{}, 0} =
+             Gateway.structured_once_with_usage_and_attempt(
+               :ingest_extractor,
+               [%{role: "user", content: "circuit refusal"}],
+               %{"type" => "object"},
+               context,
+               task: :extraction
+             )
+
+    assert {:ok, %{requests_reserved: 0}} =
+             ExtractionBudget.register(actor, budget_attrs(scope_root, 1))
+  end
+
   test "literal corpus scope matching and Account isolation preserve reservations", %{
     actor: actor
   } do
@@ -373,6 +416,35 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
 
     assert {:ok, %{requests_reserved: 0}} =
              ExtractionBudget.register(second_actor, budget_attrs(literal_scope, 2))
+  end
+
+  test "root budgets cover descendants and trailing-slash roots are rejected", %{actor: actor} do
+    assert {:error, :invalid} =
+             ExtractionBudget.register(actor, budget_attrs("/bench/locomo/corpus/", 1))
+
+    assert {:ok, _budget} = ExtractionBudget.register(actor, budget_attrs("/", 1))
+
+    context = %{
+      account_id: actor.account_id,
+      scope_path: "/bench/locomo/root-covered/case-1",
+      actor: actor
+    }
+
+    assert {:ok, remaining_ms} =
+             ExtractionBudget.reserve(
+               context,
+               [%{role: "user", content: "root scope"}],
+               %{"type" => "object"}
+             )
+
+    assert remaining_ms > 0
+
+    assert {:error, %ExtractionBudget.Exceeded{}} =
+             ExtractionBudget.reserve(
+               context,
+               [%{role: "user", content: "root scope exhausted"}],
+               %{"type" => "object"}
+             )
   end
 
   defp ingest_and_extract!(actor, peer_key, scope_path, session_id) do

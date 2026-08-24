@@ -208,6 +208,29 @@ defmodule MemHouse.Model.ProviderCircuitTest do
     assert {:ok, _next_probe} = ProviderCircuit.checkout(@config, context, 240)
   end
 
+  test "abandoning an unused permit is replay-safe and never records a provider failure" do
+    context = %{account_id: Ecto.UUID.generate()}
+
+    assert {:ok, closed_permit} = ProviderCircuit.checkout(@config, context, 0)
+    assert :ok = ProviderCircuit.abandon(closed_permit, 1)
+    assert :ok = ProviderCircuit.abandon(closed_permit, 2)
+
+    assert %{state: :closed, consecutive_failures: 0, in_flight: 0} =
+             ProviderCircuit.status(@config, context, 2)
+
+    open!(context, 10)
+    assert {:ok, half_open_permit} = ProviderCircuit.checkout(@config, context, 110)
+    assert :ok = ProviderCircuit.abandon(half_open_permit, 120)
+
+    assert %{state: :open, probe_in_flight?: false, retry_after_ms: 100, in_flight: 0} =
+             ProviderCircuit.status(@config, context, 120)
+
+    assert {:error, %ProviderCircuit.OpenError{}} =
+             ProviderCircuit.checkout(@config, context, 219)
+
+    assert {:ok, _next_probe} = ProviderCircuit.checkout(@config, context, 220)
+  end
+
   test "a stale success only drains and preserves the original open interval" do
     Application.put_env(:memhouse, :ingest_provider_circuit,
       enabled: true,
