@@ -284,14 +284,22 @@ defmodule MemHouse.Memory do
   transaction. The trailing bang reflects those ordinary write failures; a
   lost claim is an expected concurrency outcome rather than an exception.
   """
-  def persist_message_extraction_result!(run, message, result, admission_identity) do
+  def persist_message_extraction_result!(
+        run,
+        message,
+        result,
+        admission_identity,
+        evidence \\ %{}
+      ) do
     DataLayer.with_account_id(
       run.account_id,
       [role: :system, pipeline?: true],
       fn account, actor ->
         case result do
           %{status: :ok, items: items} ->
-            case Pipeline.complete_extraction_run(run, admission_identity, actor) do
+            evidence = Map.put(evidence, :candidate_count, length(items))
+
+            case Pipeline.complete_extraction_run(run, admission_identity, actor, evidence) do
               {:ok, _run} ->
                 knowledge = Enum.map(items, &insert_knowledge!(account.id, actor, message, &1))
                 mark_message_extracted!(account.id, actor, message["id"])
@@ -307,7 +315,8 @@ defmodule MemHouse.Memory do
                    "terminal",
                    reason_class,
                    admission_identity,
-                   actor
+                   actor,
+                   Map.put(evidence, :candidate_count, 0)
                  ) do
               {:ok, _run} -> {:ok, []}
               {:error, :stale_extraction_claim} = stale -> stale

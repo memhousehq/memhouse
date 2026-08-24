@@ -50,6 +50,50 @@ defmodule MemHouseWeb.MemoryController do
   end
 
   @doc """
+  Returns content-safe extraction evidence for one scope subtree.
+
+  Requires an Account administrator. The response contains only aggregate
+  counts, timings, statuses, and model provenance identities. A missing or
+  unauthorized root returns the same opaque 404.
+  """
+  def extraction_evidence(conn, %{"scope_root" => scope_root}) do
+    actor = conn.assigns.current_actor
+
+    if actor.role in [:account_admin, :system] do
+      case MemHouse.Operations.ExtractionEvidence.summary(actor, scope_root) do
+        {:ok, evidence} ->
+          json(conn, %{data: evidence})
+
+        {:error, :not_found} ->
+          conn |> put_status(:not_found) |> json(%{error: "Not found"})
+      end
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+    end
+  end
+
+  def extraction_evidence(conn, _params) do
+    conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+  end
+
+  @doc "Registers a durable, scope-bound hard budget for extraction provider admission."
+  def extraction_budget(conn, params) do
+    actor = conn.assigns.current_actor
+
+    if actor.role in [:account_admin, :system] do
+      case MemHouse.Operations.ExtractionBudget.register(actor, params) do
+        {:ok, budget} ->
+          json(conn, %{data: budget})
+
+        {:error, :invalid} ->
+          conn |> put_status(:unprocessable_entity) |> json(%{error: "Invalid request"})
+      end
+    else
+      conn |> put_status(:forbidden) |> json(%{error: "Forbidden"})
+    end
+  end
+
+  @doc """
   Enqueues a reconciliation sweep for the authenticated operator's Account.
 
   Returns 202 with the durable run id. Only account administrators and internal

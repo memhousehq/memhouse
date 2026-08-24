@@ -39,6 +39,7 @@ defmodule MemHouse.Model.Gateway do
   alias MemHouse.Model.ProviderCircuit
   alias MemHouse.Model.Usage
   alias MemHouse.Observability
+  alias MemHouse.Operations.ExtractionBudget
 
   @doc """
   Performs exactly one structured-generation call — no validation, no repair.
@@ -92,9 +93,24 @@ defmodule MemHouse.Model.Gateway do
 
     case matching_prompt_version(config, opts) do
       :ok ->
-        case invoke(:structured, config, context, opts, fn provider ->
-               provider.structured(config, messages, schema, opts)
-             end) do
+        invoke_structured_with_budget(config, messages, schema, context, opts)
+
+      {:error, error} ->
+        {:error, error, 0}
+    end
+  end
+
+  defp invoke_structured_with_budget(config, messages, schema, context, opts) do
+    case reserve_extraction_budget(config.role, context, messages, schema) do
+      {:ok, timeout_ms} ->
+        case invoke(
+               :structured,
+               config,
+               context,
+               opts,
+               fn provider -> provider.structured(config, messages, schema, opts) end,
+               timeout_ms
+             ) do
           {:ok, %Result{value: value, usage: usage}} ->
             {:ok, value, config, usage || %{}, 1}
 
@@ -109,6 +125,11 @@ defmodule MemHouse.Model.Gateway do
         {:error, error, 0}
     end
   end
+
+  defp reserve_extraction_budget(:ingest_extractor, context, messages, schema),
+    do: ExtractionBudget.reserve(context, messages, schema)
+
+  defp reserve_extraction_budget(_role, _context, _messages, _schema), do: {:ok, nil}
 
   defp matching_prompt_version(config, opts) do
     case Keyword.fetch(opts, :prompt_version) do
@@ -219,7 +240,7 @@ defmodule MemHouse.Model.Gateway do
   # operation name, duration, token counts, and an error class. No message,
   # prompt, completion, or credential may be added to either the span or the
   # usage record.
-  defp invoke(operation, config, context, opts, call) do
+  defp invoke(operation, config, context, opts, call, timeout_ms \\ nil) do
     Observability.with_span(:model, "memhouse.model.#{operation}", fn ->
       provider = provider_module(config, context)
 
@@ -233,7 +254,16 @@ defmodule MemHouse.Model.Gateway do
 
       case ProviderCircuit.checkout(config, context) do
         {:ok, permit} ->
-          invoke_permitted(operation, config, context, opts, call, provider, permit)
+          invoke_permitted(
+            operation,
+            config,
+            context,
+            opts,
+            call,
+            provider,
+            permit,
+            timeout_ms
+          )
 
         {:error, %ProviderCircuit.OpenError{} = error} ->
           Observability.set_attributes(:model, %{
@@ -248,9 +278,9 @@ defmodule MemHouse.Model.Gateway do
     end)
   end
 
-  defp invoke_permitted(operation, config, context, opts, call, provider, permit) do
+  defp invoke_permitted(operation, config, context, opts, call, provider, permit, timeout_ms) do
     started_at = System.monotonic_time(:millisecond)
-    result = safe_call(call, provider)
+    result = safe_call(call, provider, timeout_ms)
     :ok = ProviderCircuit.complete(permit, result)
     duration_ms = System.monotonic_time(:millisecond) - started_at
 
@@ -264,6 +294,10 @@ defmodule MemHouse.Model.Gateway do
           metadata:
             provider_result.metadata
             |> Map.put(:repair_attempt, Keyword.get(opts, :repair_attempt, 0))
+            |> Map.put(
+              :metering_status,
+              metering_status(provider_result.usage, operation, config.provider)
+            )
         })
 
         set_result_attributes(provider_result, duration_ms)
@@ -302,6 +336,21 @@ defmodule MemHouse.Model.Gateway do
     })
   end
 
+  defp metering_status(_usage, _operation, "deterministic"), do: :complete
+
+  defp metering_status(usage, operation, _provider) when is_map(usage) do
+    required =
+      if operation == :embed,
+        do: [:embedding_tokens],
+        else: [:input_tokens, :output_tokens]
+
+    if Enum.all?(required, &(is_integer(Map.get(usage, &1)) and Map.get(usage, &1) >= 0)),
+      do: :complete,
+      else: :unmetered
+  end
+
+  defp metering_status(_usage, _operation, _provider), do: :unmetered
+
   # Two provider names are handled in-engine: the offline deterministic
   # stand-in, and the local ONNX embedder. Everything else — hosted APIs,
   # OpenAI-compatible endpoints, self-hosted servers — is reached through the
@@ -316,13 +365,22 @@ defmodule MemHouse.Model.Gateway do
   # A provider that raises must not take down the caller's transaction or job.
   # Converting the exception into an error tuple keeps the failure on the same
   # path as a returned error: metered, traced, and retryable.
-  defp safe_call(call, provider) do
+  defp safe_call(call, provider, nil) do
     call.(provider)
   rescue
     error -> {:error, error}
   catch
     :exit, reason -> {:error, {:provider_exit, reason}}
     :throw, reason -> {:error, {:provider_throw, reason}}
+  end
+
+  defp safe_call(call, provider, timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0 do
+    task = Task.async(fn -> safe_call(call, provider, nil) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      nil -> {:error, %ExtractionBudget.ExceededError{reason: "wall-time cap"}}
+    end
   end
 
   @doc """

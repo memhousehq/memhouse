@@ -120,6 +120,49 @@ flowchart LR
     contracted rates and a stable `MEMHOUSE_MODEL_COST_PROFILE` before using it
     for reconciliation. Nothing is sent elsewhere.
 
+## Extraction evidence: `GET /api/v1/operations/extraction-evidence`
+
+Requires an **account-admin** credential and a `scope_root` query parameter.
+The response covers that exact scope and its descendants. Use it to audit one
+isolated benchmark corpus without mixing in other Account activity.
+
+The `data` envelope contains extraction-anchor and candidate-yield counts,
+batch and provider-attempt distributions, token and duration totals, statement
+classification distributions, and model/prompt/pipeline identities. It does
+not contain statements, source ids, prompt or completion text, credentials, or
+free-form metadata.
+
+`accounting.complete` is false when settled batch evidence does not reconcile
+to the exact usage ledger, or when a provider failure did not return token
+usage. Treat an incomplete export as a failed audit, not as zero use.
+
+## Extraction run budget: `PUT /api/v1/operations/extraction-budget`
+
+Requires an **account-admin** credential. Register the guard before ingest. The
+request contains exactly `scope_root`, positive `request_cap`, `token_cap`, and
+`usd_micros_cap` integers, a future ISO 8601 `deadline_at`, and non-negative
+`input_usd_micros_per_million` and `output_usd_micros_per_million` integers.
+The response echoes those content-safe values and returns the durable
+`requests_reserved`, `tokens_reserved`, and `usd_micros_reserved` counters. Its
+`extraction_identity` reports the prompt and pipeline versions, the batching
+switch, and the provider-independent batching admission identity. Benchmark
+harnesses must compare this identity with the preregistered arm before ingest.
+
+The guard applies to `ingest_extractor` provider attempts in the exact scope or
+its descendants. Before a provider callback starts, one request, counted input
+tokens, the configured maximum output tokens, and their ceiling-priced USD are
+reserved atomically. The callback is refused when that worst-case reservation
+would exceed a cap. Its task is killed at the remaining deadline. Missing guards
+leave normal product traffic unchanged; an exhausted matching guard stays
+terminal until an administrator registers a new corpus scope. Re-registering the
+same scope updates caps and deadline but preserves reservation counters, which is
+how a resumed benchmark remains cumulative.
+
+Scope matching is literal: `%` and `_` in a corpus id are ordinary characters,
+not SQL wildcard syntax. The Account always comes from the authenticated actor,
+and row-level security prevents another Account with the same scope text from
+reading or changing the guard.
+
 ### Extraction provider circuit
 
 Both single-message and experimental batched extraction pass through one
