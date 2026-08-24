@@ -101,28 +101,25 @@ defmodule MemHouse.Model.Gateway do
   end
 
   defp invoke_structured_with_budget(config, messages, schema, context, opts) do
-    case reserve_extraction_budget(config.role, context, messages, schema) do
-      {:ok, timeout_ms} ->
-        case invoke(
-               :structured,
-               config,
-               context,
-               opts,
-               fn provider -> provider.structured(config, messages, schema, opts) end,
-               timeout_ms
-             ) do
-          {:ok, %Result{value: value, usage: usage}} ->
-            {:ok, value, config, usage || %{}, 1}
+    case invoke_with_admission(
+           :structured,
+           config,
+           context,
+           opts,
+           fn provider -> provider.structured(config, messages, schema, opts) end,
+           fn -> reserve_extraction_budget(config.role, context, messages, schema) end
+         ) do
+      {:ok, %Result{value: value, usage: usage}} ->
+        {:ok, value, config, usage || %{}, 1}
 
-          {:error, %ProviderCircuit.OpenError{} = error} ->
-            {:error, error, 0}
+      {:error, %ProviderCircuit.OpenError{} = error} ->
+        {:error, error, 0}
 
-          {:error, error} ->
-            {:error, error, 1}
-        end
+      {:error, %ExtractionBudget.Exceeded{} = error} ->
+        {:error, error, 0}
 
       {:error, error} ->
-        {:error, error, 0}
+        {:error, error, 1}
     end
   end
 
@@ -241,6 +238,18 @@ defmodule MemHouse.Model.Gateway do
   # prompt, completion, or credential may be added to either the span or the
   # usage record.
   defp invoke(operation, config, context, opts, call, timeout_ms \\ nil) do
+    invoke_with_admission(
+      operation,
+      config,
+      context,
+      opts,
+      call,
+      fn -> {:ok, timeout_ms} end
+    )
+  end
+
+  defp invoke_with_admission(operation, config, context, opts, call, admission)
+       when is_function(admission, 0) do
     Observability.with_span(:model, "memhouse.model.#{operation}", fn ->
       provider = provider_module(config, context)
 
@@ -254,16 +263,26 @@ defmodule MemHouse.Model.Gateway do
 
       case ProviderCircuit.checkout(config, context) do
         {:ok, permit} ->
-          invoke_permitted(
-            operation,
-            config,
-            context,
-            opts,
-            call,
-            provider,
-            permit,
-            timeout_ms
-          )
+          try do
+            case admission.() do
+              {:ok, timeout_ms} ->
+                invoke_permitted(
+                  operation,
+                  config,
+                  context,
+                  opts,
+                  call,
+                  provider,
+                  permit,
+                  timeout_ms
+                )
+
+              {:error, error} ->
+                {:error, error}
+            end
+          after
+            :ok = ProviderCircuit.abandon(permit)
+          end
 
         {:error, %ProviderCircuit.OpenError{} = error} ->
           Observability.set_attributes(:model, %{
