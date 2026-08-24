@@ -248,7 +248,8 @@ error instead of booting a permanently degraded thorough profile.
 | `MEMHOUSE_RERANKER_VERSION` | `openrouter-2026-07` | Recorded provider/model revision identity |
 | `MEMHOUSE_RERANKER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API root; override only for a compatible test or proxy endpoint |
 
-This release installs 1024-dimensional vector indexes only. Boot fails when
+This release installs 1024-dimensional vector indexes over generated typed
+attributes while retaining each unconstrained source vector. Boot fails when
 `MEMHOUSE_EMBEDDING_DIMENSIONS` is another width. To support another width,
 add a reviewed index migration, re-embed all derived vectors, verify
 `GET /api/ready`, and update this configuration contract.

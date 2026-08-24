@@ -133,16 +133,19 @@ Knowledge and document chunk embeddings are real PostgreSQL `vector` values,
 not float-array stand-ins. Every vector retains provider, model, version, and
 dimensions. The retrieval migration adds:
 
-- StreamingDiskANN cosine expression indexes for the pinned 1024-dimensional
-  knowledge and chunk collections. Both collections also carry a private
-  per-Account scope label. The index uses the `smallint[]` overlap
-  filter during graph traversal for authorized scopes;
+- StreamingDiskANN cosine indexes over typed generated 1024-dimensional
+  attributes for knowledge, document chunks, source messages, and recall
+  projections. The unconstrained source vectors remain intact for non-indexed
+  dimensions. Each collection also carries private per-Account scope labels.
+  The indexes use the `smallint[]` overlap filter during graph traversal for
+  authorized scopes;
 - a generated document-chunk `tsvector` and GIN index;
 - the existing knowledge-statement GIN index as the lexical path; and
 - expansion lookup indexes for mentions and knowledge relations.
 
-The production 1024-dimensional semantic query uses the matching DiskANN
-expression. The query applies transaction-local search-list and rescore
+The production 1024-dimensional semantic query uses the matching generated
+attribute. Other widths continue to use the unconstrained vector and a sequential
+scan. The query applies transaction-local search-list and rescore
 settings. Boot rejects an embedder width without a matching installed index;
 the public readiness payload reports this content-safe configuration check.
 Supporting another width requires a reviewed index migration and a full

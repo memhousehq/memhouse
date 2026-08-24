@@ -8,10 +8,12 @@ Accepted
 
 ## Context
 
-The shipped semantic-retrieval indexes are 1024-dimensional DiskANN expression
-indexes. The runtime previously allowed another embedder width. Retrieval stayed
-correct but PostgreSQL used a sequential scan, which made a valid configuration
-create an unbounded performance failure.
+The shipped semantic-retrieval indexes are 1024-dimensional DiskANN indexes over
+typed generated columns. The unconstrained source vectors remain available for
+other dimensions, while the generated columns are populated only for rows whose
+recorded width is 1024. The runtime previously allowed another embedder width.
+Retrieval stayed correct but PostgreSQL used a sequential scan, which made a
+valid configuration create an unbounded performance failure.
 
 ## Decision
 
