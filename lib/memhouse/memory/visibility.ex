@@ -23,6 +23,9 @@ defmodule MemHouse.Memory.Visibility do
   earliest source expiry must still be later than the caller's captured decision time. Lifecycle
   reconciliation deliberately queries projections without this filter so it can repair hidden
   generations.
+
+  `query` is an Ash projection query and `now` is the caller's captured `DateTime` decision
+  boundary. Returns the query with the fail-closed predicates applied.
   """
   def projection_query(query, now) do
     Ash.Query.filter(

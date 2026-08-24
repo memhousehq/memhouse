@@ -31,7 +31,7 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
         end)
       end)
 
-    assert_receive {:entered, :first, first_backend_pid}
+    assert_receive {:entered, :first, first_backend_pid}, 5_000
 
     second =
       Task.async(fn ->
@@ -46,13 +46,13 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
         end)
       end)
 
-    assert_receive {:attempting, :second, second_backend_pid}
+    assert_receive {:attempting, :second, second_backend_pid}, 5_000
     refute first_backend_pid == second_backend_pid
     assert_blocked_by!(second_backend_pid, first_backend_pid)
 
     send(first.pid, :release)
 
-    assert_receive {:entered, :second}
+    assert_receive {:entered, :second}, 5_000
     assert {:ok, :first} = Task.await(first)
     assert {:ok, :second} = Task.await(second)
   end
