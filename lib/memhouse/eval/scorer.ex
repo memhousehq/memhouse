@@ -146,8 +146,8 @@ defmodule MemHouse.Eval.Scorer do
     %{
       "candidates_checked" => candidates,
       "leaks" => leaks,
-      "passed" => leaks == 0,
-      "method" => "source-membership-v1"
+      "passed" => candidates > 0 and leaks == 0,
+      "method" => "source-membership-v2"
     }
   end
 

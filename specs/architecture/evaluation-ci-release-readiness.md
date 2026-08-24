@@ -97,6 +97,8 @@ gates cover quality regression, recall, citation correctness, unsupported non-ab
 source-membership isolation, cost/token and latency budgets, and dream replay effects. A fixture
 mode exercises the same comparison contract without starting MemHouse, Postgres, or any provider;
 its results are marked fixture evidence and cannot be confused with executed measurements.
+Source-membership isolation passes only after at least one candidate identity was checked and no
+leaks were found; an empty candidate set is unexercised evidence and fails closed.
 Semantic execute variants synchronously refresh their isolated indexes and record content-free
 counts plus the permitted four-part embedding identity. Idle-enabled variants require two active
 direct generations, enqueue real generation-fenced `PipelineRun`/Oban work, execute stale and

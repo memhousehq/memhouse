@@ -649,7 +649,7 @@ config :memhouse, :model_roles,
     model: generation_model.("MEMHOUSE_MODEL_INGEST", "openai/gpt-oss-120b"),
     model_version: generation_version,
     prompt_version:
-      if(compact_extraction_enabled, do: "extract-compact-exp-1", else: "extract-13"),
+      if(compact_extraction_enabled, do: "extract-compact-exp-1", else: "extract-14"),
     pipeline_version: "f5-1",
     options: generation_options
   },

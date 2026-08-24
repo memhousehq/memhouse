@@ -1,0 +1,96 @@
+{
+  "scenarios": {
+    "six_months": [
+      {
+        "operation": "structured",
+        "role": "ingest_extractor",
+        "task": "extraction",
+        "value": {
+          "items": [
+            {
+              "supporting_span": "I've had Luna for about 6 months now",
+              "statement": "User has had Luna for about 6 months.",
+              "kind": "fact",
+              "subject_type": "peer",
+              "subject_ref": "user",
+              "confidence_level": "stated_explicitly",
+              "sensitivity": "personal",
+              "target_level": "peer",
+              "relevant_from": null,
+              "relevant_until": null
+            }
+          ]
+        },
+        "usage": {"input_tokens": 120, "output_tokens": 30}
+      },
+      {
+        "operation": "structured",
+        "role": "ingest_extractor",
+        "task": "extraction",
+        "value": {
+          "items": [
+            {
+              "supporting_span": "I've had Luna for about 6 months now",
+              "statement": "User obtained Luna.",
+              "kind": "event",
+              "subject_type": "peer",
+              "subject_ref": "user",
+              "confidence_level": "clearly_implied",
+              "sensitivity": "personal",
+              "target_level": "peer",
+              "relevant_from": "2023-02-15T00:00:00Z",
+              "relevant_until": null
+            }
+          ]
+        },
+        "usage": {"input_tokens": 140, "output_tokens": 34}
+      }
+    ],
+    "nine_months": [
+      {
+        "operation": "structured",
+        "role": "ingest_extractor",
+        "task": "extraction",
+        "value": {
+          "items": [
+            {
+              "supporting_span": "I've had my cat, Luna, for about 9 months now",
+              "statement": "Luna has been owned for about 9 months.",
+              "kind": "fact",
+              "subject_type": "peer",
+              "subject_ref": "user",
+              "confidence_level": "stated_explicitly",
+              "sensitivity": "personal",
+              "target_level": "peer",
+              "relevant_from": null,
+              "relevant_until": null
+            }
+          ]
+        },
+        "usage": {"input_tokens": 125, "output_tokens": 31}
+      },
+      {
+        "operation": "structured",
+        "role": "ingest_extractor",
+        "task": "extraction",
+        "value": {
+          "items": [
+            {
+              "supporting_span": "I've had my cat, Luna, for about 9 months now",
+              "statement": "User acquired Luna.",
+              "kind": "event",
+              "subject_type": "peer",
+              "subject_ref": "user",
+              "confidence_level": "clearly_implied",
+              "sensitivity": "personal",
+              "target_level": "peer",
+              "relevant_from": "2023-02-20T00:00:00Z",
+              "relevant_until": null
+            }
+          ]
+        },
+        "usage": {"input_tokens": 145, "output_tokens": 35}
+      }
+    ]
+  }
+}

@@ -52,7 +52,7 @@ defmodule MemHouse.Pipeline.Extractor do
   # The `prompt_version` actually stamped on provenance and usage rows comes
   # from the resolved `ingest_extractor` role, not from here; the two are kept
   # equal on purpose, so editing the prompt means bumping both.
-  @current_prompt_version "extract-13"
+  @current_prompt_version "extract-14"
 
   # Ways a model names the process instead of a person. Deployment-specific
   # identities are added per observation; these hold everywhere.
@@ -72,7 +72,7 @@ defmodule MemHouse.Pipeline.Extractor do
   Returns the selected extraction experiment contract.
 
   Compact extraction is an explicit, deployment-wide evaluation switch. The
-  accepted `extract-13` contract remains the default. Its configured model role
+  accepted `extract-14` contract remains the default. Its configured model role
   prompt must match the selected version, so a partial rollout fails before a
   provider call instead of stamping misleading provenance.
   """
@@ -216,6 +216,16 @@ defmodule MemHouse.Pipeline.Extractor do
         statement as the claim, not as a dated utterance or observation frame.
         Keep an ISO YYYY-MM-DD date in the statement only when the date itself
         is part of the claim.
+
+        An elapsed possession or relationship duration can imply the event that
+        started the duration. For example, "I have had X for about N months"
+        means that the speaker obtained X about N months before the observation.
+        Extract the event that started the duration. Set kind to event, resolve
+        relevant_from against the observation time, and leave relevant_until
+        null. Keep approximate wording approximate: choose a date within the
+        implied calendar period, but do not claim exact day precision in the
+        statement. Store the start event, not the elapsed duration as a timeless
+        fact.
 
         Classify a claim by what remains useful after the moment passes. Use
         fact for stable information, preference for a choice, relation for a
@@ -440,6 +450,10 @@ defmodule MemHouse.Pipeline.Extractor do
     restricted is the safe choice when evidence is ambiguous. Use only the
     supplied participant keys or current scope as subject_ref. Resolve relative
     dates against the anchor's observed time, but do not invent validity bounds.
+    An elapsed possession or relationship duration implies the event that
+    started it. Emit that dated start event, not a timeless duration fact. For
+    approximate month durations, choose a date in the implied calendar month
+    and do not claim exact day precision in the statement.
     confidence_level is stated_explicitly, clearly_implied, or inferred.
     """
   end

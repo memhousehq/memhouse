@@ -55,6 +55,15 @@ question IDs.
 mix test test/memhouse/eval/fixture_contract_test.exs
 ```
 
+`test/fixtures/eval/issue-279-acquisition-events.json` preregisters the later
+live extraction check for anchored ownership durations. It is not a result
+artifact. Each A/B/C arm uses the same 10 repeated paired batches, for 20
+anchored observations per arm: 30 pre-repair requests and 60 anchor
+presentations overall. First run each arm's requests through provider-free
+admission and record the tokenizer identity, input allowance, reserved output,
+safety margin, and context limit. Price requests, tokens, and cost separately
+per arm only after its dry run.
+
 ```bash
 mix memhouse.eval.smoke --profile balanced --account eval-poc
 ```
@@ -202,6 +211,9 @@ fails unless its explicit dream pass records every enabled operation.
 Gates cover regression, citation and unsupported-answer failures, source-membership leaks,
 token/cost and latency budgets, and replay effects. Measured evidence is structurally separate
 from inferences and unreproduced first-party claims.
+An isolation gate is exercised only when it checks at least one retrieved candidate identity.
+Zero candidates therefore fails promotion evidence even when the leak count is zero; comparison
+artifacts record both the content-free candidate count and leak count.
 Source-membership accounting normalizes both legacy message provenance and bounded typed
 `source_references`. Message identities translate into the fixture's turn/session labels for
 citation and rank scoring; a document-version identity cannot belong to the message-only runner

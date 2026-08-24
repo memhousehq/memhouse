@@ -82,7 +82,33 @@ defmodule MemHouse.Eval.ScorerTest do
              "candidates_checked" => 5,
              "leaks" => 1,
              "passed" => false,
-             "method" => "source-membership-v1"
+             "method" => "source-membership-v2"
+           }
+  end
+
+  test "does not report unexercised isolation evidence as passing" do
+    summary =
+      Scorer.summarize([
+        %{"isolation_candidates_checked" => 0, "isolation_leaks" => 0}
+      ])
+
+    assert summary["isolation"] == %{
+             "candidates_checked" => 0,
+             "leaks" => 0,
+             "passed" => false,
+             "method" => "source-membership-v2"
+           }
+
+    passing =
+      Scorer.summarize([
+        %{"isolation_candidates_checked" => 1, "isolation_leaks" => 0}
+      ])
+
+    assert passing["isolation"] == %{
+             "candidates_checked" => 1,
+             "leaks" => 0,
+             "passed" => true,
+             "method" => "source-membership-v2"
            }
   end
 

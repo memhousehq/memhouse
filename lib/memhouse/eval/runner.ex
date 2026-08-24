@@ -199,6 +199,15 @@ defmodule MemHouse.Eval.Runner do
               "strategies" => Keyword.get(opts, :strategies),
               "effort" => Keyword.get(opts, :recall_effort, "fixed"),
               "include_source_recall" => Keyword.get(opts, :source_recall, false),
+              "include_source_exact_recall" =>
+                Keyword.get(opts, :source_exact_recall, Keyword.get(opts, :source_recall, false)),
+              "include_source_semantic_recall" =>
+                Keyword.get(
+                  opts,
+                  :source_semantic_recall,
+                  Keyword.get(opts, :source_recall, false)
+                ),
+              "include_stable_profile_recall" => Keyword.get(opts, :stable_profile_recall, true),
               "_include_lineage_recall" => Keyword.get(opts, :lineage_recall, false)
             }
             |> put_question_peer(question)

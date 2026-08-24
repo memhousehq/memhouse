@@ -31,10 +31,11 @@ defmodule MemHouse.Recall.ToolAdapter do
 
   Returns `{evidence, diagnostics}`. Evidence remains subject to independent
   item, token, model-call, tool-call, iteration, and elapsed budgets. Named
-  efforts add bounded profile, lineage, and knowledge tools. Lineage is enabled
-  by default and `_include_lineage_recall` can disable it; source recall remains
-  explicitly opt-in. Diagnostics contain counts and profile identities only,
-  never query or evidence text.
+  efforts add bounded profile, lineage, and knowledge tools. Lineage and stable-profile
+  lookup are enabled by default and can be disabled independently. Exact and semantic
+  source recall are separate opt-in permissions. The legacy `include_source_recall`
+  permission enables both source tools. Diagnostics contain counts and profile identities
+  only, never query or evidence text.
   """
   def run(attrs, question, effort, candidates, opts)
       when is_map(attrs) and is_binary(question) and is_list(candidates) and is_list(opts) do
@@ -49,13 +50,29 @@ defmodule MemHouse.Recall.ToolAdapter do
       raise ArgumentError, "invalid recall tool adapter options"
     end
 
-    source_recall_permitted? = Map.get(attrs, "include_source_recall", false) == true
+    legacy_source_recall? = Map.get(attrs, "include_source_recall", false) == true
+
+    source_exact_recall_permitted? =
+      Map.get(attrs, "include_source_exact_recall", legacy_source_recall?) == true
+
+    source_semantic_recall_permitted? =
+      Map.get(attrs, "include_source_semantic_recall", legacy_source_recall?) == true
+
+    stable_profile_recall_permitted? =
+      Map.get(attrs, "include_stable_profile_recall", true) == true
+
     lineage_recall_permitted? = Map.get(attrs, "_include_lineage_recall", true) == true
 
     tools =
-      base_tools(attrs, retrieval_profile, visible_knowledge)
+      base_tools(
+        attrs,
+        retrieval_profile,
+        stable_profile_recall_permitted?,
+        visible_knowledge
+      )
       |> maybe_put_lineage(attrs, lineage_recall_permitted?, visible_knowledge)
-      |> maybe_put_source(attrs, source_recall_permitted?)
+      |> maybe_put_source_exact(attrs, source_exact_recall_permitted?)
+      |> maybe_put_source_semantic(attrs, source_semantic_recall_permitted?)
 
     base_keys = MapSet.new(candidates, &evidence_key/1)
 
@@ -75,7 +92,13 @@ defmodule MemHouse.Recall.ToolAdapter do
       |> Map.put("used", true)
       |> Map.put("retrieval_profile", retrieval_profile)
       |> Map.put("retrieval_profile_version", retrieval_profile_version)
-      |> Map.put("source_recall_permitted", source_recall_permitted?)
+      |> Map.put(
+        "source_recall_permitted",
+        source_exact_recall_permitted? or source_semantic_recall_permitted?
+      )
+      |> Map.put("source_exact_recall_permitted", source_exact_recall_permitted?)
+      |> Map.put("source_semantic_recall_permitted", source_semantic_recall_permitted?)
+      |> Map.put("stable_profile_recall_permitted", stable_profile_recall_permitted?)
       |> Map.put("lineage_recall_permitted", lineage_recall_permitted?)
       |> Map.put("answer_context_items", length(answer_evidence))
       |> Map.put(
@@ -86,14 +109,19 @@ defmodule MemHouse.Recall.ToolAdapter do
     {result.evidence, diagnostics}
   end
 
-  defp base_tools(attrs, retrieval_profile, visible_knowledge) do
-    %{
-      profile: fn _query, _state -> identity_profile(attrs, visible_knowledge) end,
+  defp base_tools(attrs, retrieval_profile, stable_profile?, visible_knowledge) do
+    tools = %{
       knowledge: %{
         model_calls: 1,
         run: fn query, _state -> knowledge_search(attrs, query, retrieval_profile) end
       }
     }
+
+    if stable_profile? do
+      Map.put(tools, :profile, fn _query, _state -> identity_profile(attrs, visible_knowledge) end)
+    else
+      tools
+    end
   end
 
   defp maybe_put_lineage(tools, _attrs, false, _visible_knowledge), do: tools
@@ -104,12 +132,16 @@ defmodule MemHouse.Recall.ToolAdapter do
     end)
   end
 
-  defp maybe_put_source(tools, _attrs, false), do: tools
+  defp maybe_put_source_exact(tools, _attrs, false), do: tools
 
-  defp maybe_put_source(tools, attrs, true) do
-    tools
-    |> Map.put(:source_exact, fn query, _state -> source_search(attrs, query, "exact") end)
-    |> Map.put(:source_semantic, %{
+  defp maybe_put_source_exact(tools, attrs, true) do
+    Map.put(tools, :source_exact, fn query, _state -> source_search(attrs, query, "exact") end)
+  end
+
+  defp maybe_put_source_semantic(tools, _attrs, false), do: tools
+
+  defp maybe_put_source_semantic(tools, attrs, true) do
+    Map.put(tools, :source_semantic, %{
       model_calls: 1,
       run: fn query, _state -> source_search(attrs, query, "semantic") end
     })

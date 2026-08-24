@@ -19,6 +19,18 @@ changelog entry and contract-version transition.
   final distributions, transition reasons, unexercised states, and balanced
   lifecycle/audit counts; historical `f11-1` and `f11-2` reports remain readable.
 
+- Isolation scoring now uses the `source-membership-v2` contract: a zero-leak
+  result passes only when at least one retrieved candidate identity was
+  checked. Matched experiment fixtures must record the content-free candidate
+  count, and promotion gates fail closed when isolation was not exercised.
+
+- Extraction prompt `extract-14` converts anchored approximate possession and
+  relationship durations into dated start events. Validation rejects a
+  duration-only fact, requires `relevant_from` in the implied calendar month,
+  and keeps `relevant_until` null. It identifies the default single and batched
+  contract; compact extraction remains `extract-compact-exp-1`. Existing
+  knowledge is not rewritten.
+
 - Matched execute experiments now accept only a closed set of component
   bindings derived from the runner's effective profile, strategies, rerank,
   deadline, extraction batching, adaptive recall permissions, separate
