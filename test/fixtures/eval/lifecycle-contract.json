@@ -1,0 +1,16 @@
+{
+  "id": "issue-277-lifecycle-contract",
+  "provider_calls": "none",
+  "executor": "mix test test/memhouse/f4_real_gate_a_b_governance_test.exs test/memhouse/f6_documents_connectors_sync_test.exs --only issue_277_lifecycle_fixture",
+  "paths": [
+    {"id": "review", "operation": "peer_and_restricted_scope_gate_deferral", "states": ["proposed", "provisional", "held"]},
+    {"id": "approval", "operation": "curator_approve", "states": ["active"]},
+    {"id": "rejection", "operation": "automatic_and_curator_reject", "states": ["rejected"]},
+    {"id": "revalidation", "operation": "lifecycle_revalidation_worker", "states": ["needs_revalidation", "stale"]},
+    {"id": "expiry", "operation": "lifecycle_expiry_worker", "states": ["expired"]},
+    {"id": "dispute", "operation": "subject_contest", "states": ["contested"]},
+    {"id": "supersession", "operation": "curator_edit_and_consolidation", "states": ["superseded"]},
+    {"id": "redaction", "operation": "subject_redact", "states": ["redacted"]},
+    {"id": "source_retraction", "operation": "document_tombstone_and_erasure", "states": ["retracted"]}
+  ]
+}

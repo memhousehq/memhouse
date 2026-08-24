@@ -24,13 +24,17 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   alias MemHouse.Governance.ValidationItem
   alias MemHouse.Identity
   alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.Lifecycle
   alias MemHouse.Memory
+  alias MemHouse.Model.GroundedAnswerProvider
   alias MemHouse.Operations.Health
   alias MemHouse.Repo
+  alias MemHouse.Retrieval.RecallProjector
   alias MemHouse.Topology.Scope
 
   require Ash.Query
 
+  @tag :issue_277_lifecycle_fixture
   test "the default matrix defers to human Gate A/B while configured matrix cells auto-accept" do
     %{actor: actor} = bootstrap_human!("matrix")
 
@@ -147,6 +151,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert %DateTime{} = second.revalidate_after
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "editing an event's wording keeps its source-grounded valid time" do
     %{actor: actor} = bootstrap_human!("edit-window")
 
@@ -173,6 +178,322 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
       })
 
     assert DateTime.compare(edited.replacement.relevant_from, window_start) == :eq
+  end
+
+  test "an undocumented lifecycle edge writes no state, event, audit, or derived work" do
+    %{actor: actor} = bootstrap_human!("edge-guard")
+
+    provisional =
+      ingest!(
+        actor,
+        "edge-guard",
+        "/governance/edge-guard",
+        "Avery prefers lifecycle changes with explicit evidence."
+      )
+
+    validation = validation_for!(actor, provisional.id)
+    %{knowledge: active} = Engine.decide(actor, validation.id, "approve", %{})
+
+    lifecycle_before = length(Engine.history(actor, active.id).lifecycle)
+
+    audit_before =
+      scalar!(
+        "SELECT count(*) FROM audit_events WHERE resource_id = $1",
+        [Ecto.UUID.dump!(active.id)]
+      )
+
+    runs_before = scalar!("SELECT count(*) FROM pipeline_runs", [])
+
+    assert_raise Ash.Error.Invalid,
+                 ~r/undocumented lifecycle transition active -> proposed/,
+                 fn ->
+                   Engine.transition!(
+                     active,
+                     actor,
+                     %{state: "proposed", verification: "invalid_test"},
+                     reason: "invalid_test",
+                     channel: "test"
+                   )
+                 end
+
+    assert knowledge_for!(actor, active.id).state == "active"
+    assert length(Engine.history(actor, active.id).lifecycle) == lifecycle_before
+
+    assert scalar!(
+             "SELECT count(*) FROM audit_events WHERE resource_id = $1",
+             [Ecto.UUID.dump!(active.id)]
+           ) == audit_before
+
+    assert scalar!("SELECT count(*) FROM pipeline_runs", []) == runs_before
+  end
+
+  @tag :issue_277_lifecycle_fixture
+  test "every documented lifecycle edge commits through the transition funnel with balanced evidence" do
+    previous_provider = Application.get_env(:memhouse, :model_provider)
+    Application.put_env(:memhouse, :model_provider, GroundedAnswerProvider)
+    GroundedAnswerProvider.start!(:confident_inference)
+
+    on_exit(fn ->
+      GroundedAnswerProvider.stop()
+
+      if previous_provider,
+        do: Application.put_env(:memhouse, :model_provider, previous_provider),
+        else: Application.delete_env(:memhouse, :model_provider)
+    end)
+
+    %{actor: actor} = bootstrap_human!("edge-matrix")
+
+    ingest!(
+      actor,
+      "edge-matrix-bootstrap",
+      "/governance/edge-matrix",
+      "The team uses lifecycle evidence."
+    )
+
+    # Build each source through documented edges from `proposed`; the create action itself
+    # accepts only `proposed`, so this table cannot smuggle an otherwise unreachable source
+    # state into the database. The final hop is the edge under test. Because every production
+    # gate, worker, subject action, document action, and erasure path calls Engine.transition!/4,
+    # this exercises the same persisted state/event/audit/refresh transaction they all share.
+    source_paths = %{
+      "proposed" => [],
+      "active" => ["active"],
+      "provisional" => ["provisional"],
+      "held" => ["held"],
+      "needs_revalidation" => ["active", "needs_revalidation"],
+      "contested" => ["active", "contested"],
+      "stale" => ["active", "needs_revalidation", "stale"],
+      "superseded" => ["active", "superseded"],
+      "expired" => ["active", "expired"],
+      "rejected" => ["rejected"],
+      "redacted" => ["active", "redacted"],
+      "retracted" => ["active", "retracted"]
+    }
+
+    for from_state <- Lifecycle.states(), to_state <- Lifecycle.fetch!(from_state).exits do
+      path = Map.fetch!(source_paths, from_state)
+      item = create_proposed!(actor, "#{from_state}-#{to_state}")
+
+      source =
+        Enum.reduce(path, item, fn state, current ->
+          Engine.transition!(
+            current,
+            pipeline_actor(actor),
+            %{state: state, verification: "lifecycle_matrix_source"},
+            reason: "lifecycle_matrix_source_#{state}",
+            channel: "test"
+          )
+        end)
+
+      updated =
+        Engine.transition!(
+          source,
+          pipeline_actor(actor),
+          %{state: to_state, verification: "lifecycle_matrix_edge"},
+          reason: "lifecycle_matrix_#{from_state}_#{to_state}",
+          channel: "test"
+        )
+
+      assert updated.state == to_state
+      assert_lifecycle_audit_balance!(actor, updated.id)
+    end
+
+    # The same state matrix is read through the product's real search and /ask
+    # entry points. This is deliberately separate from the pure visibility
+    # predicate test: a query that forgets the lifecycle filter must fail here.
+    read_paths = %{
+      "active" => ["active"],
+      "provisional" => [],
+      "held" => ["held"],
+      "needs_revalidation" => ["active", "needs_revalidation"],
+      "superseded" => ["superseded"],
+      "expired" => ["expired"],
+      "rejected" => ["rejected"],
+      "contested" => ["contested"],
+      "redacted" => ["redacted"],
+      "stale" => ["stale"],
+      "retracted" => ["retracted"]
+    }
+
+    read_tokens = %{
+      "proposed" => "amber",
+      "active" => "cobalt",
+      "provisional" => "dahlia",
+      "held" => "elmwood",
+      "needs_revalidation" => "fern",
+      "superseded" => "garnet",
+      "expired" => "harbor",
+      "rejected" => "indigo",
+      "contested" => "juniper",
+      "redacted" => "kestrel",
+      "stale" => "lavender",
+      "retracted" => "marigold"
+    }
+
+    for state <- Lifecycle.states() do
+      token = Map.fetch!(read_tokens, state)
+
+      item =
+        if state == "proposed" do
+          create_proposed!(actor, token)
+        else
+          ingest!(
+            actor,
+            "read-path-#{state}",
+            "/governance/edge-matrix",
+            "Avery records #{token} lifecycle evidence."
+          )
+        end
+
+      item =
+        Enum.reduce(Map.get(read_paths, state, []), item, fn next_state, current ->
+          Engine.transition!(
+            current,
+            pipeline_actor(actor),
+            %{state: next_state, verification: "lifecycle_read_path"},
+            reason: "lifecycle_read_path_#{next_state}",
+            channel: "test"
+          )
+        end)
+
+      assert {:ok, _projection} = RecallProjector.refresh_scope(actor.account_id, item.scope_id)
+
+      query = token
+
+      search =
+        Memory.search(%{
+          "account_id" => actor.account_id,
+          "scope_path" => "/governance/edge-matrix",
+          "query" => query,
+          "strategies" => ["lexical"],
+          "deadline" => "disabled"
+        })
+
+      found? = Enum.any?(search["candidates"], &(&1["id"] == item.id))
+      expected? = Lifecycle.fetch!(state).retrieval != :none
+
+      assert found? == expected?,
+             "unexpected search visibility for #{state}: #{inspect(search["candidates"])}"
+
+      ask =
+        Memory.ask(%{
+          "account_id" => actor.account_id,
+          "scope_path" => "/governance/edge-matrix",
+          "question" => "What does the lifecycle fixture say about #{query}?",
+          "strategies" => ["lexical"],
+          "deadline" => "disabled"
+        })
+
+      if expected? do
+        refute ask["abstained"]
+        assert item.id in ask["citations"]
+      else
+        refute item.id in ask["citations"]
+      end
+    end
+  end
+
+  @tag :issue_277_lifecycle_fixture
+  test "the lifecycle fixture exercises subject dispute, resolution, redaction, and expiry" do
+    %{actor: actor} = bootstrap_human!("lifecycle-fixture")
+
+    contested =
+      ingest!(
+        actor,
+        "lifecycle-contest",
+        "/governance/lifecycle-fixture",
+        "Avery prefers lifecycle evidence in every report."
+      )
+
+    gate_validation = validation_for!(actor, contested.id)
+    %{knowledge: active} = Engine.decide(actor, gate_validation.id, "approve", %{})
+    assert Engine.contest(actor, active.id, "contest").state == "contested"
+
+    contest_validation =
+      DataLayer.with_actor(actor, fn account, current_actor ->
+        ValidationItem
+        |> Ash.Query.filter(knowledge_id == ^active.id and kind == "contest")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: current_actor)
+      end)
+
+    assert %{knowledge: resolved} = Engine.decide(actor, contest_validation.id, "approve", %{})
+    assert resolved.state == "active"
+
+    redaction =
+      ingest!(
+        actor,
+        "lifecycle-redact",
+        "/governance/lifecycle-fixture",
+        "Avery withdraws this personal lifecycle example."
+      )
+
+    redaction_validation = validation_for!(actor, redaction.id)
+    %{knowledge: redaction_active} = Engine.decide(actor, redaction_validation.id, "approve", %{})
+    assert Engine.contest(actor, redaction_active.id, "redact").state == "redacted"
+
+    expiring =
+      ingest!(
+        actor,
+        "lifecycle-expiry",
+        "/governance/lifecycle-fixture",
+        "Avery's temporary release duty ends today."
+      )
+
+    expiry_validation = validation_for!(actor, expiring.id)
+    %{knowledge: expiry_active} = Engine.decide(actor, expiry_validation.id, "approve", %{})
+
+    Engine.transition!(
+      expiry_active,
+      pipeline_actor(actor),
+      %{expires_at: DateTime.add(Clock.utc_now(), -1, :second)},
+      reason: "lifecycle_fixture_due",
+      channel: "test"
+    )
+
+    assert {:ok, %{expiry: 1}} = Sweeper.run(actor.account_id, "expiry")
+    assert knowledge_for!(actor, expiry_active.id).state == "expired"
+
+    for knowledge_id <- [active.id, redaction_active.id, expiry_active.id] do
+      assert_lifecycle_audit_balance!(actor, knowledge_id)
+    end
+  end
+
+  test "the expiry worker preserves a due superseded row as historical disposition" do
+    %{actor: actor} = bootstrap_human!("superseded-expiry")
+
+    proposed =
+      ingest!(
+        actor,
+        "superseded-expiry",
+        "/governance/superseded-expiry",
+        "Avery owns the original release checklist."
+      )
+
+    validation = validation_for!(actor, proposed.id)
+    %{knowledge: active} = Engine.decide(actor, validation.id, "approve", %{})
+
+    due =
+      Engine.transition!(
+        active,
+        pipeline_actor(actor),
+        %{expires_at: DateTime.add(Clock.utc_now(), -1, :second)},
+        reason: "lifecycle_worker_selector_fixture",
+        channel: "test"
+      )
+
+    superseded =
+      Engine.transition!(
+        due,
+        pipeline_actor(actor),
+        %{state: "superseded", verification: "fixture_replaced"},
+        reason: "lifecycle_worker_selector_fixture",
+        channel: "test"
+      )
+
+    assert {:ok, %{expiry: 0}} = Sweeper.run(actor.account_id, "expiry")
+    assert knowledge_for!(actor, superseded.id).state == "superseded"
+    assert_lifecycle_audit_balance!(actor, superseded.id)
   end
 
   test "curator Gate A actions are human-only and scope-held proposals never surface" do
@@ -206,6 +527,24 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     # scope. Held means pending, not published.
     root = scope_by_path!(actor, "/")
     promotion = Engine.request_promotion(actor, knowledge.id, root.id)
+
+    consent_query =
+      DataLayer.with_actor(actor, fn account, current_actor ->
+        PeerQuery
+        |> Ash.Query.filter(
+          knowledge_id == ^knowledge.id and kind == "consent_upward" and state == "pending"
+        )
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: current_actor)
+      end)
+
+    # A consent answer without transcript delivery is timer evidence only. The
+    # row is already held, so this also pins the governed held -> held self-edge.
+    assert {:ok, held_deferral} =
+             PeerQueue.resolve(actor, consent_query.id, "confirm", knowledge.statement)
+
+    assert held_deferral.effect == "timer_deferred_only"
+    assert knowledge_for!(actor, knowledge.id).state == "held"
     assert promotion.knowledge.state == "held"
 
     # And a held item must not appear in an ordinary read of the destination scope. If it did,
@@ -417,6 +756,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert consent.decided_by_peer_id == nil
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "restricted knowledge is held even when the Account consents automatically" do
     %{actor: actor} = bootstrap_human!("auto-consent-restricted")
 
@@ -451,6 +791,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
              "active"
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "unattended mode withholds restricted knowledge without human review" do
     previous = Application.get_env(:memhouse, :governance, [])
     Application.put_env(:memhouse, :governance, Keyword.put(previous, :unattended, true))
@@ -811,6 +1152,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert clamped.max_per_day == 2
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "revalidation and pending aging decay, escalate, and auto-reject through dream-time" do
     %{actor: actor} = bootstrap_human!("sweep")
 
@@ -894,6 +1236,45 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert decayed.confidence < knowledge.confidence
   end
 
+  test "an obsolete confirmation timer cannot stale a later curator approval" do
+    %{actor: actor} = bootstrap_human!("settled-timer")
+
+    knowledge =
+      ingest!(
+        actor,
+        "settled-timer-session",
+        "/governance/settled-timer",
+        "Avery prefers signed deployment summaries."
+      )
+
+    assert knowledge.state == "provisional"
+    validation = validation_for!(actor, knowledge.id)
+
+    query =
+      DataLayer.with_actor(actor, fn account, current_actor ->
+        PeerQuery
+        |> Ash.Query.filter(knowledge_id == ^knowledge.id and kind == "confirm")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: current_actor)
+      end)
+
+    query
+    |> Ash.Changeset.for_update(:update_delivery_state, %{state: "pending"})
+    |> Ash.Changeset.force_change_attribute(
+      :deadline_at,
+      DateTime.add(Clock.utc_now(), -1, :second)
+    )
+    |> Ash.Changeset.set_tenant(actor.account_id)
+    |> Ash.update!(actor: pipeline_actor(actor))
+
+    assert %{knowledge: approved} = Engine.decide(actor, validation.id, "approve")
+    assert approved.state == "active"
+
+    assert {:ok, %{decayed: 1}} = Sweeper.run(actor.account_id, "dream_time")
+    assert knowledge_for!(actor, knowledge.id).state == "active"
+  end
+
+  @tag :issue_277_lifecycle_fixture
   test "proportionate erasure removes subject content and peer delivery text while audit survives" do
     %{actor: actor, peer: peer} = bootstrap_human!("erase")
 
@@ -1091,6 +1472,36 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     Engine.evaluate_proposal(knowledge, pipeline)
   end
 
+  defp create_proposed!(actor, suffix) do
+    scope_path = "/governance/edge-matrix"
+
+    scope =
+      DataLayer.with_actor(actor, fn account, current_actor ->
+        Scope
+        |> Ash.Query.filter(path == ^scope_path)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: %{pipeline_actor(current_actor) | scope_ids: :all})
+      end)
+
+    KnowledgeItem
+    |> Ash.Changeset.new()
+    |> Ash.Changeset.set_tenant(actor.account_id)
+    |> Ash.Changeset.for_create(:create_from_pipeline, %{
+      scope_id: scope.id,
+      subject_peer_id: actor.peer_id,
+      statement: "Lifecycle matrix edge #{suffix} is exercised.",
+      kind: "fact",
+      confidence: 1.0,
+      evidence_level: "direct",
+      sensitivity: "internal",
+      state: "proposed",
+      target_level: "peer",
+      extracting_model: "test:lifecycle-matrix",
+      pipeline_version: "f4-1"
+    })
+    |> Ash.create!(actor: pipeline_actor(actor))
+  end
+
   # Same as propose_direct!/4, but the subject is the scope itself (subject_peer_id: nil,
   # subject_scope_id set) rather than the ingesting peer — the shape real structured extraction
   # produces for a subject_type: "scope" candidate (MemHouse.Memory.resolve_subject!/4). A
@@ -1202,6 +1613,24 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   # code must never construct this: an actor that can write knowledge and see every lifecycle
   # state is precisely what the gates in this file exist to keep out of a request path.
   defp pipeline_actor(%Actor{} = actor), do: %{actor | role: :system, pipeline?: true}
+
+  defp assert_lifecycle_audit_balance!(actor, knowledge_id) do
+    lifecycle_count = length(Engine.history(actor, knowledge_id).lifecycle)
+
+    audit_count =
+      scalar!(
+        """
+        SELECT count(*)
+        FROM audit_events
+        WHERE resource_id = $1
+          AND category = 'lifecycle'
+          AND action IN ('knowledge.created', 'knowledge.transitioned')
+        """,
+        [Ecto.UUID.dump!(knowledge_id)]
+      )
+
+    assert lifecycle_count == audit_count
+  end
 
   # Runs a parameterized query expected to return exactly one column of one row.
   defp scalar!(sql, params) do

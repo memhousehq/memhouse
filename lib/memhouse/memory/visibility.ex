@@ -12,11 +12,9 @@ defmodule MemHouse.Memory.Visibility do
   """
 
   alias MemHouse.Clock
-  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.{KnowledgeItem, Lifecycle}
 
   require Ash.Query
-
-  @visible_states ~w(active provisional)
 
   @doc """
   Loads undeleted, unexpired readable knowledge in the supplied scopes and active view.
@@ -54,9 +52,11 @@ defmodule MemHouse.Memory.Visibility do
   Authorization failures are reported by Ash when that query is executed.
   """
   def knowledge_query(scope_ids, "active", _actor, true, now) do
+    states = Lifecycle.retrievable_states()
+
     KnowledgeItem
     |> Ash.Query.filter(
-      scope_id in ^scope_ids and state in ["active", "provisional"] and
+      scope_id in ^scope_ids and state in ^states and
         is_nil(deleted_at) and (is_nil(expires_at) or expires_at > ^now)
     )
   end
@@ -68,10 +68,13 @@ defmodule MemHouse.Memory.Visibility do
 
   def knowledge_query(scope_ids, "active", %{peer_id: peer_id}, false, now)
       when is_binary(peer_id) do
+    shared_states = Lifecycle.shared_projection_states()
+    subject_states = Lifecycle.retrievable_states() -- shared_states
+
     KnowledgeItem
     |> Ash.Query.filter(
       scope_id in ^scope_ids and
-        (state == "active" or (state == "provisional" and subject_peer_id == ^peer_id)) and
+        (state in ^shared_states or (state in ^subject_states and subject_peer_id == ^peer_id)) and
         is_nil(deleted_at) and (is_nil(expires_at) or expires_at > ^now)
     )
     |> readable_by_peer(peer_id)
@@ -85,9 +88,11 @@ defmodule MemHouse.Memory.Visibility do
   end
 
   def knowledge_query(scope_ids, "active", _actor, false, now) do
+    states = Lifecycle.shared_projection_states()
+
     KnowledgeItem
     |> Ash.Query.filter(
-      scope_id in ^scope_ids and state == "active" and sensitivity == "public" and
+      scope_id in ^scope_ids and state in ^states and sensitivity == "public" and
         is_nil(deleted_at) and (is_nil(expires_at) or expires_at > ^now)
     )
   end
@@ -140,21 +145,23 @@ defmodule MemHouse.Memory.Visibility do
     end
   end
 
-  defp do_visibility_status(%{state: state}, _actor, true) when state in @visible_states,
-    do: :visible
+  defp do_visibility_status(item, actor, true) do
+    if Lifecycle.retrievable?(item.state, item.subject_peer_id, actor.peer_id, true),
+      do: :visible,
+      else: :lifecycle_hidden
+  end
 
-  defp do_visibility_status(_item, _actor, true), do: :lifecycle_hidden
-
-  defp do_visibility_status(%{state: state}, %{peer_id: nil}, false) when state != "active",
-    do: :lifecycle_hidden
-
-  defp do_visibility_status(%{sensitivity: "public"}, %{peer_id: nil}, false), do: :visible
-  defp do_visibility_status(_item, %{peer_id: nil}, false), do: :authorization_hidden
+  defp do_visibility_status(item, %{peer_id: nil}, false) do
+    if Lifecycle.retrievable?(item.state, item.subject_peer_id, nil, false) do
+      if item.sensitivity == "public", do: :visible, else: :authorization_hidden
+    else
+      :lifecycle_hidden
+    end
+  end
 
   defp do_visibility_status(item, %{peer_id: peer_id}, false) when is_binary(peer_id) do
     lifecycle_visible? =
-      item.state == "active" or
-        (item.state == "provisional" and item.subject_peer_id == peer_id)
+      Lifecycle.retrievable?(item.state, item.subject_peer_id, peer_id, false)
 
     content_visible? =
       item.sensitivity in ["public", "internal"] or is_nil(item.subject_peer_id) or

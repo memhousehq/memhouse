@@ -174,7 +174,9 @@ account admins. Retrieval applies the same rule.
 
 **Only curators and account admins see every state.** Members and readers see
 `active`, `needs_revalidation`, `expired`, and `superseded`, but not
-`proposed`, `held`, `rejected`, `contested`, or `redacted`.
+`proposed`, `held`, `rejected`, `contested`, `redacted`, `stale`, or
+`retracted`. Another subject's `provisional` statement stays hidden even from
+a curator or account administrator.
 
 **You always see statements about yourself**, regardless of state or scope, so
 you can contest, redact, or erase them.
@@ -218,7 +220,9 @@ contained scopes come with it.
 
 **What these labels mean** expands a legend for every lifecycle state and
 sensitivity level you can be shown. Each badge carries a shape as well as a
-colour, so the states remain distinguishable without relying on colour.
+colour, so the states remain distinguishable without relying on colour. A
+lifecycle badge links to the complete state contract, including its entry,
+exits, queue dependency, visibility, retrieval, and readiness behavior.
 
 Sort by **Confidence** or **Recorded** from the column headers, and set 25, 50,
 or 100 rows per page beneath the list. Statement text longer than the column

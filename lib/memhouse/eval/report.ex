@@ -56,6 +56,7 @@ defmodule MemHouse.Eval.Report do
     |> require_judge(report)
     |> require_metrics(report)
     |> require_accounting(report)
+    |> require_lifecycle(report)
     |> require_reasoning(report)
     |> require_durability(report)
     |> Enum.reverse()
@@ -68,7 +69,7 @@ defmodule MemHouse.Eval.Report do
   def validate(_report), do: {:error, ["report must be an object"]}
 
   # f11-1 is immutable historical evidence from the Cartulary name. Current
-  # f11-2 reports use the MemHouse field without rewriting stored reports.
+  # f11-2 and later reports use the MemHouse field without rewriting stored reports.
   defp version_key(%{"report_schema" => "f11-1"}), do: "cartulary_version"
   defp version_key(_report), do: "memhouse_version"
 
@@ -150,12 +151,12 @@ defmodule MemHouse.Eval.Report do
   end
 
   # f11-1 is retained as a read-only compatibility format for committed evidence. New
-  # reports use f11-2, whose accounting block is checked below. Historical JSON is never
+  # reports use f11-2 or later, whose accounting block is checked below. Historical JSON is never
   # rewritten merely to make the validator stricter.
   defp require_schema(errors, report) do
-    if Map.get(report, "report_schema") in ["f11-1", "f11-2"],
+    if Map.get(report, "report_schema") in ["f11-1", "f11-2", "f11-3"],
       do: errors,
-      else: ["report_schema must equal f11-1 or f11-2" | errors]
+      else: ["report_schema must equal f11-1, f11-2, or f11-3" | errors]
   end
 
   # Semantic version syntax with an optional pre-release suffix and no build metadata. The
@@ -334,9 +335,9 @@ defmodule MemHouse.Eval.Report do
 
   defp require_accounting(
          errors,
-         %{"report_schema" => "f11-2", "accounting" => accounting} = report
+         %{"report_schema" => schema, "accounting" => accounting} = report
        )
-       when is_map(accounting) do
+       when schema in ["f11-2", "f11-3"] and is_map(accounting) do
     statuses = ~w(evaluated skipped failed cancelled)
 
     with true <- Enum.all?(statuses, &non_negative_integer?(Map.get(accounting, &1))),
@@ -357,13 +358,110 @@ defmodule MemHouse.Eval.Report do
     end
   end
 
-  defp require_accounting(errors, %{"report_schema" => "f11-2"}),
-    do: ["f11-2 reports require accounting" | errors]
+  defp require_accounting(errors, %{"report_schema" => schema}) when schema in ["f11-2", "f11-3"],
+    do: ["#{schema} reports require accounting" | errors]
 
   # Keep validation total for pre-f11 reports that can still be decoded for inspection. They
   # will receive the normal schema/provenance errors rather than crashing the compatibility
   # reader while it reports why they are not quotable evidence.
   defp require_accounting(errors, _report), do: errors
+
+  defp require_lifecycle(errors, %{"report_schema" => "f11-1"}), do: errors
+  defp require_lifecycle(errors, %{"report_schema" => "f11-2"}), do: errors
+
+  defp require_lifecycle(errors, %{"report_schema" => "f11-3", "lifecycle" => lifecycle})
+       when is_map(lifecycle) do
+    states = MemHouse.Knowledge.Lifecycle.states()
+    final_states = Map.get(lifecycle, "final_states")
+    absent_final = Map.get(lifecycle, "absent_final_states")
+    exercised = Map.get(lifecycle, "exercised_states")
+    unexercised = Map.get(lifecycle, "unexercised_states")
+    unexercised_reasons = Map.get(lifecycle, "unexercised_reasons")
+    transitions = Map.get(lifecycle, "transitions")
+    audit_transitions = Map.get(lifecycle, "audit_transitions")
+    events = Map.get(lifecycle, "lifecycle_events")
+    audits = Map.get(lifecycle, "lifecycle_audit_events")
+
+    transition_states =
+      if is_list(transitions) do
+        transitions
+        |> Enum.flat_map(&[&1["from_state"], &1["to_state"]])
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+      else
+        []
+      end
+
+    valid? =
+      Map.get(lifecycle, "visibility") == "internal_account_scope_all_states" and
+        valid_final_state_distribution?(states, final_states, absent_final) and
+        valid_exercise_distribution?(
+          states,
+          exercised,
+          unexercised,
+          unexercised_reasons,
+          transition_states
+        ) and
+        valid_transition_evidence?(transitions, audit_transitions, events, audits)
+
+    if valid?,
+      do: errors,
+      else: ["lifecycle must balance all states, transition counts, and audit events" | errors]
+  end
+
+  defp require_lifecycle(errors, %{"report_schema" => "f11-3"}),
+    do: ["f11-3 reports require lifecycle evidence" | errors]
+
+  defp require_lifecycle(errors, _report), do: errors
+
+  defp valid_final_state_distribution?(states, final_states, absent_final) do
+    is_map(final_states) and Enum.sort(Map.keys(final_states)) == Enum.sort(states) and
+      Enum.all?(final_states, fn {_state, count} -> non_negative_integer?(count) end) and
+      is_list(absent_final) and
+      Enum.sort(absent_final) ==
+        states |> Enum.filter(&(Map.get(final_states, &1) == 0)) |> Enum.sort()
+  end
+
+  defp valid_exercise_distribution?(
+         states,
+         exercised,
+         unexercised,
+         unexercised_reasons,
+         transition_states
+       ) do
+    is_list(exercised) and Enum.sort(exercised) == Enum.sort(transition_states) and
+      is_list(unexercised) and Enum.sort(unexercised) == Enum.sort(states -- exercised) and
+      is_map(unexercised_reasons) and
+      Enum.sort(Map.keys(unexercised_reasons)) == Enum.sort(unexercised) and
+      Enum.all?(unexercised_reasons, fn {_state, reason} ->
+        is_binary(reason) and reason != ""
+      end)
+  end
+
+  defp valid_transition_evidence?(transitions, audit_transitions, events, audits) do
+    is_list(transitions) and Enum.all?(transitions, &valid_transition_count?/1) and
+      audit_transitions == transitions and non_negative_integer?(events) and events == audits and
+      events == Enum.sum(Enum.map(transitions, & &1["count"]))
+  end
+
+  defp valid_transition_count?(%{
+         "from_state" => from_state,
+         "to_state" => to_state,
+         "reason" => reason,
+         "count" => count
+       }) do
+    valid_edge? =
+      if is_nil(from_state) do
+        to_state == "proposed"
+      else
+        MemHouse.Knowledge.Lifecycle.allowed_transition?(from_state, to_state)
+      end
+
+    valid_edge? and is_binary(reason) and reason != "" and
+      is_integer(count) and count > 0
+  end
+
+  defp valid_transition_count?(_transition), do: false
 
   # Dream-time is optional for the ordinary release matrix. When an evaluation
   # claims to have run it, this block makes its terminal accounting and replay

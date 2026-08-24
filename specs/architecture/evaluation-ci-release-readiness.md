@@ -44,6 +44,12 @@ application version, date, dataset id/hash/split, profile and exact version,
 strategy override, deadline setting, five model-role identities, judge method,
 limits, and per-question evidence.
 
+Current runner reports use `f11-3`. They retain `f11-2` one-time case
+accounting and add ADR 0022 lifecycle evidence: every final state including
+zeroes, each transition/reason count, unexercised states, and equal
+lifecycle-event and lifecycle-audit totals. Historical `f11-1` and `f11-2`
+reports remain readable and are not rewritten.
+
 An opt-in dream-time evaluation runs the Account reasoning pass after ingest,
 then replays it. Its report contains only durable counts: terminal pass states,
 knowledge before and after, relation kinds, conflict reviews, supersession,

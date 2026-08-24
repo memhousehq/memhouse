@@ -24,12 +24,26 @@ profile version tag rather than a phase name. Current public claims must use
 the `f11-1` report schema and exact `f7-1` profile evidence; never relabel the
 historical files.
 
-New runner output uses report schema `f11-2`. It adds top-level accounting counts
+Report schema `f11-2` added top-level accounting counts
 and an `accounting` block with
 available, sampled, attempted, evaluated, skipped, failed, and cancelled counts
 plus one private-content-free item id/status record per sampled case. The counts
 must balance (attempted means evaluated, failed, or cancelled); `f11-1` remains readable as a historical compatibility format and
 the committed reports are not rewritten.
+
+New runner output uses report schema `f11-3`. It adds a content-safe `lifecycle`
+block while retaining the `f11-2` accounting contract. It reads all
+case scopes with the internal Account actor, so authorization-hidden states are
+included. `final_states` contains all public states, including zeroes, while
+`absent_final_states` describes the end-of-run snapshot and `exercised_states`
+is derived from transition history;
+`transitions` counts each `from_state`, `to_state`, and stable reason, and
+`audit_transitions` must be exactly the same distribution;
+`unexercised_states` identifies states transition history never reached and
+`unexercised_reasons` records the contract fixture each such state requires. The validator
+requires the transition total, lifecycle-event total, and matching lifecycle
+audit total to balance. This is evidence of what the fixture exercised, not a
+claim that an ordinary workload must use every state.
 
 The baseline contract also freezes the four tiny input fixtures independently
 of volatile database UUIDs and latency values.

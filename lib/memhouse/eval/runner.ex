@@ -11,7 +11,7 @@ defmodule MemHouse.Eval.Runner do
 
   alias MemHouse.Clock
   alias MemHouse.DataLayer
-  alias MemHouse.Eval.{Durability, Ingest, ModelJudge, Reasoning, Scorer}
+  alias MemHouse.Eval.{Durability, Ingest, LifecycleEvidence, ModelJudge, Reasoning, Scorer}
   alias MemHouse.Memory
   alias MemHouse.Retrieval.{Indexer, RecallProjector, SourceIndexer}
   alias MemHouse.Topology.Scope
@@ -53,6 +53,7 @@ defmodule MemHouse.Eval.Runner do
     refresh = merge_refresh(cases)
 
     accounting = accounting(available_cases, cases)
+    lifecycle = LifecycleEvidence.snapshot(account_key, Enum.map(cases, & &1.scope_path))
 
     reasoning =
       if Keyword.get(opts, :dream_time, false),
@@ -72,7 +73,7 @@ defmodule MemHouse.Eval.Runner do
         else: nil
 
     %{
-      "report_schema" => "f11-2",
+      "report_schema" => "f11-3",
       "memhouse_version" => memhouse_version(),
       "generated_at" => Clock.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
       "benchmark" => benchmark,
@@ -108,6 +109,7 @@ defmodule MemHouse.Eval.Runner do
       "reasoning" => reasoning,
       "refresh" => refresh,
       "durability" => durability,
+      "lifecycle" => lifecycle,
       "metrics" => Scorer.summarize(question_results),
       "cases" => Enum.map(cases, &case_report/1)
     }

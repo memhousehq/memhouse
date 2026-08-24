@@ -14,25 +14,13 @@ defmodule MemHouseWeb.ConsoleComponents do
   use MemHouseWeb, :html
 
   alias MemHouse.Actor
+  alias MemHouse.Knowledge.Lifecycle
   alias MemHouseWeb.Console.Access
 
   # One sentence per enum value, phrased for a reader deciding what to do next.
   # A value missing here renders its label with no tooltip, which is why the
   # lifecycle list must be kept in step with `Access.all_states/0`.
   @meanings %{
-    {"state", "proposed"} => "Extracted and waiting for its first gate decision.",
-    {"state", "active"} => "Accepted. The system currently believes it.",
-    {"state", "provisional"} => "Held for its subject alone until they confirm or contest it.",
-    {"state", "held"} => "Waiting at a wider scope for a second human decision.",
-    {"state", "needs_revalidation"} =>
-      "Still believed, but past the date it should be rechecked.",
-    {"state", "superseded"} => "Replaced by a later statement, and kept as evidence.",
-    {"state", "expired"} => "Past the date it was said to stop being true.",
-    {"state", "rejected"} => "Refused at a gate, and kept as evidence.",
-    {"state", "contested"} => "Disputed by its subject and queued for a curator.",
-    {"state", "redacted"} => "Withdrawn by its subject.",
-    {"state", "stale"} => "Long unconfirmed and no longer relied on.",
-    {"state", "retracted"} => "Withdrawn by the source it came from.",
     {"sensitivity", "public"} => "May travel anywhere the scope tree allows.",
     {"sensitivity", "internal"} => "Ordinary Account knowledge; no personal care required.",
     {"sensitivity", "personal"} => "About a person. Widening it needs that person's consent.",
@@ -186,11 +174,25 @@ defmodule MemHouseWeb.ConsoleComponents do
 
   def badge(assigns) do
     ~H"""
-    <span class={["badge", "#{@family}-#{@value}"]} title={enum_meaning(@family, @value)}>
-      <span :if={enum_glyph(@family, @value)} class="badge-glyph" aria-hidden="true">
-        {enum_glyph(@family, @value)}
+    <span
+      class={["badge", "#{@family}-#{@value}"]}
+      title={enum_meaning(@family, @value)}
+    >
+      <a
+        :if={@family == "state"}
+        href="https://memhousehq.github.io/memhouse/concepts/memory-model/#lifecycle-state-contract"
+      >
+        <span :if={enum_glyph(@family, @value)} class="badge-glyph" aria-hidden="true">
+          {enum_glyph(@family, @value)}
+        </span>
+        {enum_label(@family, @value)}
+      </a>
+      <span :if={@family != "state"}>
+        <span :if={enum_glyph(@family, @value)} class="badge-glyph" aria-hidden="true">
+          {enum_glyph(@family, @value)}
+        </span>
+        {enum_label(@family, @value)}
       </span>
-      {enum_label(@family, @value)}
     </span>
     """
   end
@@ -595,6 +597,7 @@ defmodule MemHouseWeb.ConsoleComponents do
   defp enum_glyph("sensitivity", "restricted"), do: "●"
   defp enum_glyph(_family, _value), do: nil
 
+  defp enum_meaning("state", value), do: Lifecycle.meaning(value)
   defp enum_meaning(family, value), do: Map.get(@meanings, {family, value})
 
   # Coarsest unit that still leaves a non-zero count. Months are 30 days and

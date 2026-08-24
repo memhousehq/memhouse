@@ -8,6 +8,7 @@ defmodule MemHouseWeb.Console.AccessTest do
   use ExUnit.Case, async: true
 
   alias MemHouse.Actor
+  alias MemHouse.Knowledge.Lifecycle
   alias MemHouseWeb.Console.Access
 
   @account_id "11111111-1111-1111-1111-111111111111"
@@ -69,6 +70,29 @@ defmodule MemHouseWeb.Console.AccessTest do
   end
 
   describe "visible_knowledge?/2 — the governance-state rule" do
+    test "every state has an exact subject, member, curator, and admin verdict" do
+      member_states = ~w(active needs_revalidation superseded expired)
+      governor_states = Lifecycle.states() -- ["provisional"]
+
+      for state <- Lifecycle.states() do
+        own = item(state: state, subject_peer_id: @me)
+        another = item(state: state, subject_peer_id: @someone_else)
+
+        assert Access.visible_knowledge?(actor(role: :member), own)
+        assert Access.visible_knowledge?(actor(role: :curator), own)
+        assert Access.visible_knowledge?(actor(role: :account_admin), own)
+
+        assert Access.visible_knowledge?(actor(role: :member), another) ==
+                 state in member_states
+
+        assert Access.visible_knowledge?(actor(role: :curator), another) ==
+                 state in governor_states
+
+        assert Access.visible_knowledge?(actor(role: :account_admin), another) ==
+                 state in governor_states
+      end
+    end
+
     test "a member sees an active statement about anyone" do
       assert Access.visible_knowledge?(
                actor(role: :member),

@@ -11,6 +11,7 @@ defmodule MemHouseWeb.Console.Access do
   """
 
   alias MemHouse.Actor
+  alias MemHouse.Knowledge.Lifecycle
 
   # Lifecycle states a member or reader may see for knowledge that is not about
   # them. These are the states that represent something the system currently
@@ -18,15 +19,12 @@ defmodule MemHouseWeb.Console.Access do
   # absent: `proposed`, `held`, `provisional`, `rejected`, `contested`,
   # `redacted`, `stale`, and `retracted` — those are either undecided proposals
   # that have not passed a gate, or content withdrawn on purpose.
-  @settled_states ~w(active needs_revalidation expired superseded)
+  @settled_states Lifecycle.settled_states()
 
   # Every state the knowledge lifecycle defines. Kept in step with the
   # `transition` action's validation list on the knowledge resource; a state
   # added there and not here would be invisible to curators in the console.
-  @all_states ~w(
-    proposed active provisional held needs_revalidation superseded
-    expired rejected contested redacted stale retracted
-  )
+  @all_states Lifecycle.states()
 
   # Roles whose holders govern the lifecycle rather than merely reading it.
   @governing_roles [:account_admin, :curator]
@@ -70,11 +68,9 @@ defmodule MemHouseWeb.Console.Access do
   """
   def visible_knowledge?(%Actor{} = actor, item) do
     own_subject? = not is_nil(actor.peer_id) and item.subject_peer_id == actor.peer_id
+    governor? = actor.role in @governing_roles
 
-    provisional_ok? = item.state != "provisional" or own_subject?
-    state_ok? = item.state in visible_states(actor) or own_subject?
-
-    provisional_ok? and state_ok?
+    Lifecycle.console_visible?(item.state, own_subject?, governor?)
   end
 
   @doc """

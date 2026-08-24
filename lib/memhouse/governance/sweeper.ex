@@ -212,23 +212,31 @@ defmodule MemHouse.Governance.Sweeper do
     now = Clock.utc_now()
 
     PeerQuery
-    |> Ash.Query.filter(deadline_at <= ^now and state in ["pending", "delivered"])
+    |> Ash.Query.filter(
+      deadline_at <= ^now and state in ["pending", "delivered"] and
+        kind in ["confirm", "revalidate"]
+    )
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
     |> Enum.map(fn query ->
       knowledge = knowledge!(account_id, actor, query.knowledge_id)
 
-      Engine.transition!(
-        knowledge,
-        actor,
-        %{
-          state: "stale",
-          verification: "revalidation_missed",
-          confidence: max(0.0, knowledge.confidence - 0.15)
-        },
-        reason: "f4_revalidation_confidence_decay",
-        channel: "dream_time"
-      )
+      # A curator or verified peer may have settled the knowledge while the
+      # question was still open. Expire that obsolete timer, but do not rewrite
+      # the newer lifecycle decision.
+      if knowledge.state in ["provisional", "needs_revalidation"] do
+        Engine.transition!(
+          knowledge,
+          actor,
+          %{
+            state: "stale",
+            verification: "revalidation_missed",
+            confidence: max(0.0, knowledge.confidence - 0.15)
+          },
+          reason: "f4_revalidation_confidence_decay",
+          channel: "dream_time"
+        )
+      end
 
       query
       |> Ash.Changeset.for_update(:update_delivery_state, %{
@@ -262,7 +270,8 @@ defmodule MemHouse.Governance.Sweeper do
         :expires_at ->
           Ash.Query.filter(
             KnowledgeItem,
-            expires_at <= ^now and state not in ["expired", "rejected", "retracted", "redacted"]
+            expires_at <= ^now and
+              state not in ["expired", "rejected", "retracted", "redacted", "superseded"]
           )
       end
 
