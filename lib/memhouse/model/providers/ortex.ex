@@ -2,10 +2,10 @@
 
 defmodule MemHouse.Model.Providers.Ortex do
   @moduledoc """
-  Provider adapter for local ONNX embedding and cross-encoder reranking.
+  Provider adapter for local ONNX embedding.
 
-  Each role supplies its own pinned artifacts. Embedding options select pooling and dimensions;
-  reranker options select classifier inputs and output. Neither path downloads a model.
+  The embedder supplies pinned artifacts and selects pooling and dimensions. It never downloads
+  a model.
   """
 
   @behaviour MemHouse.Model.Provider
@@ -13,7 +13,6 @@ defmodule MemHouse.Model.Providers.Ortex do
   alias MemHouse.Model.Config.Role
   alias MemHouse.Model.Embedding.Ortex
   alias MemHouse.Model.Provider.Result
-  alias MemHouse.Model.Reranking.Ortex, as: Reranker
 
   @doc """
   Not supported: this is an embedding runtime and cannot generate objects.
@@ -49,28 +48,10 @@ defmodule MemHouse.Model.Providers.Ortex do
   end
 
   @doc """
-  Reranks documents with a local ONNX cross-encoder.
-
-  The reranker role has separate classifier artifacts from the embedder role.
-  Scores retain the input indexes so the retrieval engine can validate a complete ordering.
+  Not supported: reranking uses the hosted OpenRouter role.
   """
   @impl true
-  def rerank(%Role{} = config, query, documents, _opts) do
-    with {:ok, scores, tokens} <-
-           Reranker.score(Enum.map(documents, &{query, &1}), reranker_opts(config)) do
-      {:ok,
-       %Result{
-         value:
-           scores
-           |> Enum.with_index()
-           |> Enum.map(fn {relevance_score, index} ->
-             %{index: index, relevance_score: relevance_score}
-           end),
-         usage: %{input_tokens: tokens},
-         metadata: %{result_count: length(scores), execution: :local}
-       }}
-    end
-  end
+  def rerank(_config, _query, _documents, _opts), do: {:error, :ortex_is_embedding_only}
 
   # Provider/model/version keys cached sessions; identity changes load fresh artifacts.
   defp embedding_opts(config) do
@@ -89,24 +70,6 @@ defmodule MemHouse.Model.Providers.Ortex do
       input_order: Map.get(options, "input_order", ~w(input_ids attention_mask token_type_ids)),
       # Pooling must match training; changes require a version bump and re-embed.
       pooling: pooling(Map.get(options, "pooling", "cls")),
-      execution_providers:
-        options
-        |> Map.get("execution_providers", ["cpu"])
-        |> Enum.map(&execution_provider/1)
-    ]
-  end
-
-  defp reranker_opts(config) do
-    options = config.options
-
-    [
-      cache_key: {config.provider, config.model, config.model_version},
-      model_path: Map.get(options, "model_path"),
-      tokenizer_path: Map.get(options, "tokenizer_path"),
-      max_length: Map.get(options, "max_length", 512),
-      output_index: Map.get(options, "output_index", 0),
-      positive_class_index: Map.get(options, "positive_class_index", 0),
-      input_order: Map.get(options, "input_order", ~w(input_ids attention_mask token_type_ids)),
       execution_providers:
         options
         |> Map.get("execution_providers", ["cpu"])

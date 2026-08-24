@@ -14,7 +14,7 @@ the model-outage portion of `NFR-8`.
 | Role | Capability | Default |
 | --- | --- | --- |
 | `embedder` | Pinned vector generation | Local Qwen3-Embedding-0.6B through Ortex/ONNX, 1024 dimensions |
-| `reranker` | Query-document precision ranking | Local BAAI/bge-reranker-v2-m3 cross-encoder through Ortex/ONNX |
+| `reranker` | Query-document precision ranking | Voyage rerank-2.5 through OpenRouter's native rerank API |
 | `ingest_extractor` | Fast structured observation extraction | ReqLLM generation role |
 | `dream_reasoner` | Slow structured reasoning | ReqLLM reasoning role |
 | `dialectic_agent` | Grounded structured answers | ReqLLM dialectic role |
@@ -135,12 +135,15 @@ mask-aware last-token pooling, and a query-only instruction prefix.
 
 ## Reranking
 
-`MemHouse.Model.Reranking.Ortex` scores tokenized query-document pairs with a
-pinned classifier and returns its unbounded relevance logits. It never downloads
-artifacts. Reranking has a dedicated `:reranker` role so slow reasoning does not
-consume the retrieval budget. Native hosted rerank endpoints remain supported;
-structured generation is available only when retrieval deadlines are disabled.
-ADR 0015 records the boundary.
+The HTTP provider sends the bounded candidate head to OpenRouter's native
+`voyageai/rerank-2.5` endpoint and maps returned indexes and relevance scores
+back to the input documents. It uses `OPENROUTER_API_KEY` by reference and does
+not load classifier artifacts. Reranking retains its dedicated `:reranker` role
+so generation does not consume the retrieval budget. Duplicate, out-of-range,
+or malformed results fail closed in the existing retrieval outcome path;
+structured generation remains available only for non-native models when
+retrieval deadlines are disabled. ADR 0023 supersedes the local decision in
+ADR 0015.
 
 ## Provenance, metering, and safety
 

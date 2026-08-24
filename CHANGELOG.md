@@ -11,6 +11,13 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Thorough retrieval now uses OpenRouter's native `voyageai/rerank-2.5`
+  endpoint through `OPENROUTER_API_KEY`. The local BAAI classifier runtime and
+  artifact configuration are removed, while the `reranker` role, usage ledger,
+  result ordering, and `retrieval_outcomes` completion/drop contract remain.
+  The default hosted-rerank allowance and reservation are 750 ms inside the
+  unchanged 1500 ms thorough-profile deadline.
+
 - Knowledge lifecycle writes now use one executable 12-state transition graph.
   Undocumented edges fail before state, lifecycle, audit, or derived work can
   commit. State names and stored rows remain compatible. Console filters,
