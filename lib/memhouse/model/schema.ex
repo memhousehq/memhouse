@@ -661,6 +661,7 @@ defmodule MemHouse.Model.Schema.Extraction do
            anchored_elapsed_ranges(
              supporting_span,
              statement,
+             kind,
              source_message_ids,
              context,
              DateTime.to_date(occurred_at)
@@ -686,6 +687,7 @@ defmodule MemHouse.Model.Schema.Extraction do
   defp anchored_elapsed_ranges(
          supporting_span,
          statement,
+         kind,
          source_message_ids,
          context,
          observed_on
@@ -695,7 +697,8 @@ defmodule MemHouse.Model.Schema.Extraction do
         ranges
 
       [] ->
-        if elapsed_duration_statement?(statement) do
+        if elapsed_duration_statement?(statement) or
+             (kind == "event" and elapsed_start_event_statement?(statement)) do
           context
           |> Map.get(:window_messages, [])
           |> Enum.filter(&(fetch(&1, "id") in source_message_ids))
@@ -707,6 +710,13 @@ defmodule MemHouse.Model.Schema.Extraction do
           []
         end
     end
+  end
+
+  defp elapsed_start_event_statement?(statement) do
+    String.match?(
+      statement,
+      ~r/\b(?:obtained|acquired|adopted|bought|purchased|received|met|befriended|married|joined)\b|\b(?:started|began)\b[^.!?]{0,40}\b(?:owning|having|keeping|knowing|dating|living|working)\b/iu
+    )
   end
 
   defp elapsed_duration_statement?(statement) do

@@ -59,7 +59,7 @@ defmodule MemHouse.Eval.FixtureContractTest do
 
     assert Enum.sort(fixture["required_result_metadata"]) ==
              Enum.sort(
-               ~w(provider model model_version prompt_version pipeline_version run_date source_revision request_count input_tokens output_tokens estimated_cost)
+               ~w(provider model model_version prompt_version pipeline_version run_date source_revision request_count input_tokens output_tokens estimated_cost tokenizer_identity input_allowance reserved_output safety_margin context_limit)
              )
   end
 

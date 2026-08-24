@@ -14,7 +14,9 @@ changelog entry and contract-version transition.
 - Extraction prompt `extract-14` converts anchored approximate possession and
   relationship durations into dated start events. Validation rejects a
   duration-only fact, requires `relevant_from` in the implied calendar month,
-  and keeps `relevant_until` null. Existing knowledge is not rewritten.
+  and keeps `relevant_until` null. It identifies the default single and batched
+  contract; compact extraction remains `extract-compact-exp-1`. Existing
+  knowledge is not rewritten.
 
 - Matched execute experiments now accept only a closed set of component
   bindings derived from the runner's effective profile, strategies, rerank,

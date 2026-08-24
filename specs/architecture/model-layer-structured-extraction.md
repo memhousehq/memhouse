@@ -190,9 +190,11 @@ non-inferiority, privacy/attribution, cost/token, and human-review gates pass;
 the additive implementation includes deterministic evidence only.
 
 Adjacent pending anchors in the same Account, scope, and session may share one
-`extract-14` provider call. `ExtractionBatch` requires an explicit envelope per
-anchor and reuses `Extraction.cast/2` with that anchor's independent validation
-context. `utf8-bytes-v1` pre-call admission counts serialized instructions,
+provider call: `extract-14` identifies the default contract and
+`extract-compact-exp-1` identifies compact extraction. `ExtractionBatch`
+requires an explicit envelope per anchor and reuses `Extraction.cast/2` with
+that anchor's independent validation context. `utf8-bytes-v1` pre-call
+admission counts serialized instructions,
 schema, evidence windows, reserved output, and safety margin. Supported
 experiment targets are 128, 1K, 4K, and 16K; the tokenizer and all budget values
 form the admission identity stored on each completed run.

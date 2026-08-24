@@ -588,6 +588,22 @@ defmodule MemHouse.Model.SchemaExtractionTest do
       |> Map.put("relevant_from", nil)
 
     assert {:ok, [_]} = Extraction.cast(%{"items" => [unrelated]}, elapsed_context)
+
+    shortened_event =
+      event
+      |> Map.put("supporting_span", "Luna")
+      |> Map.put("relevant_from", nil)
+
+    assert {:error,
+            [
+              "items[0].anchored elapsed duration must be represented as one dated start event"
+            ]} = Extraction.cast(%{"items" => [shortened_event]}, elapsed_context)
+
+    assert {:ok, [_]} =
+             Extraction.cast(
+               %{"items" => [Map.put(shortened_event, "relevant_from", "2023-02-15T00:00:00Z")]},
+               elapsed_context
+             )
   end
 
   test "rejects non-exact relative-date terms" do
