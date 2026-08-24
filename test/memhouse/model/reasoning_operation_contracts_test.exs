@@ -269,6 +269,23 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
     assert Keyword.fetch!(synthesis_opts, :request_timeout) == 13
   end
 
+  test "a caller-supplied pass deadline takes precedence over the relative timeout" do
+    enable_split_operations()
+    install_deadline_clock([100, 100, 107, 107])
+
+    assert {:ok, _result, _provenance} =
+             Reasoner.reason_operations(%{delta: [], working_set: []}, context(),
+               request_timeout: 100,
+               request_deadline_ms: 120
+             )
+
+    assert_receive {:reasoning_provider_call, :reasoning_update, update_opts}
+    assert Keyword.fetch!(update_opts, :request_timeout) == 20
+
+    assert_receive {:reasoning_provider_call, :reasoning_synthesis, synthesis_opts}
+    assert Keyword.fetch!(synthesis_opts, :request_timeout) == 13
+  end
+
   test "structured repairs receive only the pass time that remains" do
     Application.put_env(:memhouse, :dream_reasoning_operations,
       split_enabled: true,

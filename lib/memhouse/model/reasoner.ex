@@ -42,6 +42,10 @@ defmodule MemHouse.Model.Reasoner do
   `:request_timeout` sets one monotonic millisecond budget for the complete
   operation set. Each provider call receives only the remaining allowance.
   Exhaustion before an operation starts returns `{:error, :request_timeout}`.
+  A caller coordinating a larger pass may instead supply the absolute monotonic
+  millisecond `:request_deadline_ms`; when both options are present, that
+  deadline takes precedence and `:request_timeout` is replaced with its
+  remaining allowance for each operation.
 
   Every enabled operation must finish before the caller enters the single
   governed writer transaction. Completed calls remain usage-accounted, but a
@@ -78,9 +82,15 @@ defmodule MemHouse.Model.Reasoner do
   end
 
   defp pass_deadline(opts) do
-    case Keyword.get(opts, :request_timeout) do
-      timeout when is_integer(timeout) and timeout > 0 -> Clock.monotonic_ms() + timeout
-      _timeout -> nil
+    case Keyword.get(opts, :request_deadline_ms) do
+      deadline when is_integer(deadline) ->
+        deadline
+
+      _deadline ->
+        case Keyword.get(opts, :request_timeout) do
+          timeout when is_integer(timeout) and timeout > 0 -> Clock.monotonic_ms() + timeout
+          _timeout -> nil
+        end
     end
   end
 
