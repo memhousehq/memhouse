@@ -72,8 +72,9 @@ defmodule MemHouse.Model.ProviderCircuitTest do
   Verifies provider-circuit admission, recovery, cleanup, and Account isolation.
   """
 
-  use ExUnit.Case, async: false
+  use MemHouse.DataCase, async: false
 
+  alias MemHouse.DataLayer
   alias MemHouse.Model.Config.Role
   alias MemHouse.Model.Gateway
   alias MemHouse.Model.ProviderCircuit
@@ -122,7 +123,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
 
   test "opens after bounded consecutive failures and reports content-free state" do
     events = attach_events()
-    context = %{account_id: Ecto.UUID.generate()}
+    context = Ecto.UUID.generate() |> pipeline_context()
 
     assert {:ok, first} = ProviderCircuit.checkout(@config, context, 0)
     assert :ok = ProviderCircuit.complete(first, {:error, :provider_upstream_error}, 0)
@@ -206,6 +207,29 @@ defmodule MemHouse.Model.ProviderCircuitTest do
              ProviderCircuit.checkout(@config, context, 239)
 
     assert {:ok, _next_probe} = ProviderCircuit.checkout(@config, context, 240)
+  end
+
+  test "abandoning an unused permit is replay-safe and never records a provider failure" do
+    context = %{account_id: Ecto.UUID.generate()}
+
+    assert {:ok, closed_permit} = ProviderCircuit.checkout(@config, context, 0)
+    assert :ok = ProviderCircuit.abandon(closed_permit, 1)
+    assert :ok = ProviderCircuit.abandon(closed_permit, 2)
+
+    assert %{state: :closed, consecutive_failures: 0, in_flight: 0} =
+             ProviderCircuit.status(@config, context, 2)
+
+    open!(context, 10)
+    assert {:ok, half_open_permit} = ProviderCircuit.checkout(@config, context, 110)
+    assert :ok = ProviderCircuit.abandon(half_open_permit, 120)
+
+    assert %{state: :open, probe_in_flight?: false, retry_after_ms: 100, in_flight: 0} =
+             ProviderCircuit.status(@config, context, 120)
+
+    assert {:error, %ProviderCircuit.OpenError{}} =
+             ProviderCircuit.checkout(@config, context, 219)
+
+    assert {:ok, _next_probe} = ProviderCircuit.checkout(@config, context, 220)
   end
 
   test "a stale success only drains and preserves the original open interval" do
@@ -294,7 +318,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
   end
 
   test "gateway converts provider exits and completes the circuit permit" do
-    context = %{account_id: Ecto.UUID.generate()}
+    context = Ecto.UUID.generate() |> pipeline_context()
     Application.put_env(:memhouse, :model_provider, ExitingProvider)
     config = MemHouse.Model.role_config(:ingest_extractor, context)
 
@@ -324,7 +348,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
   end
 
   test "one Account/provider/role circuit spans model identities but not providers" do
-    context = %{account_id: Ecto.UUID.generate()}
+    context = Ecto.UUID.generate() |> pipeline_context()
     open!(context, 0)
 
     same_provider_new_model = %{
@@ -348,7 +372,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
       open_ms: 30_000
     )
 
-    context = %{account_id: Ecto.UUID.generate()}
+    context = Ecto.UUID.generate() |> pipeline_context()
 
     assert {:error, :provider_upstream_error} =
              Gateway.structured_once(:ingest_extractor, [], %{}, context)
@@ -369,9 +393,8 @@ defmodule MemHouse.Model.ProviderCircuitTest do
       open_ms: 30_000
     )
 
-    account_id = Ecto.UUID.generate()
-    message = message(account_id)
-    context = %{account_id: account_id}
+    context = Ecto.UUID.generate() |> pipeline_context()
+    message = message(context.account_id)
 
     # Structured generation would ordinarily retry provider_upstream_error.
     # The first failure opens admission, so its repair and the replayed single
@@ -400,6 +423,21 @@ defmodule MemHouse.Model.ProviderCircuitTest do
     assert {:ok, second} = ProviderCircuit.checkout(@config, context, now_ms)
     assert :ok = ProviderCircuit.complete(second, {:error, :provider_upstream_error}, now_ms)
     assert ProviderCircuit.status(@config, context, now_ms).state == :open
+  end
+
+  defp pipeline_context(account_id) do
+    DataLayer.with_account_key(
+      "provider-circuit-#{account_id}",
+      [role: :system, pipeline?: true],
+      fn account, actor ->
+        %{
+          account_id: account.id,
+          scope_id: nil,
+          scope_path: "/provider-circuit-test",
+          actor: actor
+        }
+      end
+    )
   end
 
   defp message(account_id) do

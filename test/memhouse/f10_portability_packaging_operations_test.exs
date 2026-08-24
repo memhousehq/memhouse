@@ -331,6 +331,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert summary.ingest_economics == %{
              messages: 1,
              calls: 0,
+             unmetered_calls: 0,
              calls_per_message: 0.0,
              tokens_per_message: 0.0,
              cost_per_message: 0.0
@@ -527,7 +528,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
                  status: :ok,
                  duration_ms: 50,
                  usage: %{input_tokens: 600, output_tokens: 400},
-                 metadata: %{}
+                 metadata: %{metering_status: :complete}
                }
              )
 
@@ -536,6 +537,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert summary.ingest_economics == %{
              messages: 1,
              calls: 1,
+             unmetered_calls: 0,
              calls_per_message: 1.0,
              tokens_per_message: 1000.0,
              cost_per_message: 0.0014

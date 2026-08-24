@@ -8,6 +8,12 @@ The annotated, complete example is
 [`.env.example`](https://github.com/memhousehq/memhouse/blob/main/.env.example)
 in the repository.
 
+## Build identity
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MEMHOUSE_BUILD_SHA` | `unknown` | Immutable source/build identity returned by extraction-budget registration. Release and deployment automation should inject the exact Git commit SHA; `.env` is supported for source development. |
+
 ## Database
 
 | Variable | Default | Meaning |

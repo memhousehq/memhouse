@@ -8,11 +8,14 @@
 # hold environment-variable references, never secret values.
 
 import Config
+
 import Dotenvy
 
 # Later sources win, so the process environment overrides `.env`.
 env = source!([".env", System.get_env()])
 env_get = fn key, default -> Map.get(env, key, default) end
+
+config :memhouse, :build_sha, env_get.("MEMHOUSE_BUILD_SHA", "unknown")
 
 lifecycle_docs_url =
   case env_get.("MEMHOUSE_LIFECYCLE_DOCS_URL", "") do

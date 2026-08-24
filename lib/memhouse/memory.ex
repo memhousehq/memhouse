@@ -284,24 +284,52 @@ defmodule MemHouse.Memory do
   transaction. The trailing bang reflects those ordinary write failures; a
   lost claim is an expected concurrency outcome rather than an exception.
   """
-  def persist_message_extraction_result!(run, message, result, admission_identity) do
+  def persist_message_extraction_result!(
+        run,
+        message,
+        result,
+        admission_identity,
+        evidence \\ %{}
+      ) do
     run.payload
     |> MemHouse.Retrieval.MaintenancePlan.from_payload()
     |> MemHouse.Retrieval.MaintenancePlan.with_plan(fn ->
-      do_persist_message_extraction_result!(run, message, result, admission_identity)
+      do_persist_message_extraction_result!(
+        run,
+        message,
+        result,
+        admission_identity,
+        evidence
+      )
     end)
   end
 
-  defp do_persist_message_extraction_result!(run, message, result, admission_identity) do
+  defp do_persist_message_extraction_result!(
+         run,
+         message,
+         result,
+         admission_identity,
+         evidence
+       ) do
     DataLayer.with_account_id(
       run.account_id,
       [role: :system, pipeline?: true],
       fn account, actor ->
         case result do
           %{status: :ok, items: items} ->
-            case Pipeline.complete_extraction_run(run, admission_identity, actor) do
-              {:ok, _run} ->
+            evidence = Map.put(evidence, :candidate_count, length(items))
+
+            case Pipeline.complete_extraction_run(run, admission_identity, actor, evidence) do
+              {:ok, completed_run} ->
                 knowledge = Enum.map(items, &insert_knowledge!(account.id, actor, message, &1))
+
+                {:ok, _run} =
+                  Pipeline.record_extraction_outputs(
+                    completed_run,
+                    Enum.map(knowledge, & &1["id"]),
+                    actor
+                  )
+
                 mark_message_extracted!(account.id, actor, message["id"])
                 {:ok, knowledge}
 
@@ -315,7 +343,8 @@ defmodule MemHouse.Memory do
                    "terminal",
                    reason_class,
                    admission_identity,
-                   actor
+                   actor,
+                   Map.put(evidence, :candidate_count, 0)
                  ) do
               {:ok, _run} -> {:ok, []}
               {:error, :stale_extraction_claim} = stale -> stale

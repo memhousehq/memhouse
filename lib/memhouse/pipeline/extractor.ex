@@ -528,8 +528,10 @@ defmodule MemHouse.Pipeline.Extractor do
   # present.
   defp schema_context(message, context) do
     source_peer_key = Map.fetch!(message, "peer_key")
+    budgeted_extraction? = Map.has_key?(context, :account_id)
 
     context
+    |> Map.put_new(:budgeted_extraction?, budgeted_extraction?)
     |> Map.put_new(:account_id, Map.get(message, "account_id", Ecto.UUID.generate()))
     |> Map.put_new(:scope_id, Map.get(message, "scope_id", Ecto.UUID.generate()))
     |> Map.put_new(:source_peer_id, Map.get(message, "peer_id", Ecto.UUID.generate()))
