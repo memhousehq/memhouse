@@ -123,10 +123,11 @@ curl -fsS -X POST http://127.0.0.1:4000/api/v1/ask \
 `question` is required. All `search` parameters apply; `profile` defaults to
 `thorough`. Add `effort: "low"`, `"medium"`, or `"high"` to use the bounded
 read-only planner. It may select governed knowledge through stable profile and
-lineage reads; it has no write tool. Add the JSON boolean
-`include_source_recall: true` only when this caller is allowed to recover a
-bounded authorized source-message excerpt. An effort level by itself never
-grants that broader read. Every preset independently caps iterations, admitted
+lineage reads; it has no write tool. Use `include_source_exact_recall` and
+`include_source_semantic_recall` to select either source tool independently.
+`include_source_recall: true` enables both for compatibility. Set
+`include_stable_profile_recall: false` to remove profile lookup from an ablation.
+An effort level by itself never grants source reads. Every preset independently caps iterations, admitted
 items, retrieval/model calls, query tokens, total admitted evidence tokens, and
 elapsed time; exhaustion returns the best bounded evidence accumulated so far.
 

@@ -7,17 +7,31 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     @moduledoc "Reports dream operation selection before delegating to the deterministic provider."
     @behaviour MemHouse.Model.Provider
 
+    alias MemHouse.Model.Provider.Result
     alias MemHouse.Model.Providers.Deterministic
 
     @impl true
     def structured(config, messages, schema, opts) do
       if pid = Application.get_env(:memhouse, :dream_time_test_pid) do
         task = Keyword.get(opts, :task)
+        send(pid, {:dream_reasoner_call, task, opts})
         send(pid, {:dream_reasoner_task, task})
         send(pid, {:dream_reasoner_input, task, messages})
       end
 
-      Deterministic.structured(config, messages, schema, opts)
+      case Application.get_env(:memhouse, :dream_time_test_values) do
+        nil ->
+          Deterministic.structured(config, messages, schema, opts)
+
+        values ->
+          value = Agent.get_and_update(values, fn [value | rest] -> {value, rest} end)
+
+          if Keyword.get(opts, :repair_attempt) == 0 do
+            Agent.update(Application.fetch_env!(:memhouse, :dream_time_test_clock), &(&1 + 7))
+          end
+
+          {:ok, %Result{value: value, usage: %{input_tokens: 7, output_tokens: 3}}}
+      end
     end
 
     @impl true
@@ -29,6 +43,19 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     @impl true
     def rerank(config, query, documents, opts),
       do: Deterministic.rerank(config, query, documents, opts)
+  end
+
+  defmodule DeadlineClock do
+    @moduledoc "Provides a deterministic monotonic clock for dream deadline tests."
+    @behaviour MemHouse.Clock
+
+    @impl true
+    def utc_now, do: MemHouse.Clock.System.utc_now()
+
+    @impl true
+    def monotonic_ms do
+      Agent.get(Application.fetch_env!(:memhouse, :dream_time_test_clock), & &1)
+    end
   end
 
   alias MemHouse.DataLayer
@@ -64,10 +91,70 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     account_id = seed_active!("dream-time-legacy-default")
 
     assert {:ok, %{scopes: 1}} = DreamTime.run(account_id)
-    assert_receive {:dream_reasoner_task, :reasoning}
-    refute_receive {:dream_reasoner_task, :reasoning}
-    refute_receive {:dream_reasoner_task, :reasoning_update}
-    refute_receive {:dream_reasoner_task, :reasoning_synthesis}
+    assert_receive {:dream_reasoner_call, :reasoning, _opts}
+    refute_receive {:dream_reasoner_call, :reasoning, _opts}
+    refute_receive {:dream_reasoner_call, :reasoning_update, _opts}
+    refute_receive {:dream_reasoner_call, :reasoning_synthesis, _opts}
+  end
+
+  test "legacy dream-time repairs receive only the pass time that remains" do
+    provider = Application.get_env(:memhouse, :model_provider)
+    clock_module = Application.get_env(:memhouse, :clock)
+    operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+    gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+    clock = start_supervised!({Agent, fn -> 100 end}, id: :dream_time_test_clock)
+
+    values =
+      start_supervised!(
+        {Agent,
+         fn ->
+           [
+             %{"items" => [%{}], "relations" => []},
+             %{"items" => [], "relations" => []}
+           ]
+         end},
+        id: :dream_time_test_values
+      )
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+    Application.put_env(:memhouse, :clock, DeadlineClock)
+    Application.put_env(:memhouse, :dream_time_test_clock, clock)
+    Application.put_env(:memhouse, :dream_time_test_pid, self())
+
+    Application.put_env(
+      :memhouse,
+      :dream_reasoning_operations,
+      Keyword.put(operations, :split_enabled, false)
+    )
+
+    Application.put_env(:memhouse, :dream_time_gates, Keyword.put(gates, :max_elapsed_ms, 20))
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, provider)
+
+      if clock_module,
+        do: Application.put_env(:memhouse, :clock, clock_module),
+        else: Application.delete_env(:memhouse, :clock)
+
+      Application.delete_env(:memhouse, :dream_time_test_clock)
+      Application.delete_env(:memhouse, :dream_time_test_values)
+      Application.delete_env(:memhouse, :dream_time_test_pid)
+      Application.put_env(:memhouse, :dream_reasoning_operations, operations)
+      Application.put_env(:memhouse, :dream_time_gates, gates)
+    end)
+
+    account_id = seed_active!("dream-time-legacy-deadline")
+    Application.put_env(:memhouse, :dream_time_test_values, values)
+
+    assert {:ok, %{scopes: 1}} = DreamTime.run(account_id)
+
+    assert_receive {:dream_reasoner_call, :reasoning, first_opts}
+    assert Keyword.fetch!(first_opts, :request_timeout) == 20
+    assert Keyword.fetch!(first_opts, :repair_attempt) == 0
+
+    assert_receive {:dream_reasoner_call, :reasoning, repair_opts}
+    assert Keyword.fetch!(repair_opts, :request_timeout) == 13
+    assert Keyword.fetch!(repair_opts, :repair_attempt) == 1
   end
 
   test "a scope without an active-knowledge delta does not call the reasoner" do

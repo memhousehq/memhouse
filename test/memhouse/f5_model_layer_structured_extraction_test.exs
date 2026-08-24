@@ -41,6 +41,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   # Recorded provider script replayed instead of any network call. Each scenario inside it
   # is an ordered list of expected calls; see the individual tests for which one they arm.
   @cassette "test/fixtures/model/f5-provider-cassette.json"
+  @acquisition_cassette "test/fixtures/model/issue-279-acquisition-events-cassette.json"
 
   setup do
     original_provider = Application.get_env(:memhouse, :model_provider)
@@ -88,8 +89,10 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert {:error, {:model_artifact_missing, :model_path}} =
              MemHouse.Model.Embedding.Ortex.generate(["offline"], dimensions: 384)
 
-    assert {:error, {:model_artifact_missing, :model_path}} =
-             MemHouse.Model.Reranking.Ortex.score([{"query", "document"}], [])
+    reranker = Model.Config.resolve(:reranker, %{})
+    assert reranker.provider == "openrouter"
+    assert reranker.model == "voyageai/rerank-2.5"
+    assert reranker.options["api_key_ref"] == "env:OPENROUTER_API_KEY"
 
     # Role options hold secret *references* only. A literal credential in the options map is
     # rejected at the changeset, before it can reach the database, an export, or a log line.
@@ -101,6 +104,44 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              options: %{"api_key" => "must-not-be-persisted"}
            })
            |> Map.fetch!(:valid?)
+
+    refute ModelRoleConfig
+           |> Ash.Changeset.for_create(:create, %{
+             role: "reranker",
+             provider: "ortex",
+             model: "BAAI/bge-reranker-v2-m3"
+           })
+           |> Map.fetch!(:valid?)
+  end
+
+  test "legacy persisted Ortex reranker rows resolve to the hosted runtime role" do
+    _message = seed_raw!("f5-legacy-reranker", "avery", "Avery prefers weekly summaries.")
+    account_id = account_id!("f5-legacy-reranker")
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      INSERT INTO model_role_configs
+        (id, account_id, role, provider, model, options, version, active,
+         model_version, prompt_version, pipeline_version)
+      VALUES
+        (gen_random_uuid(), $1, 'reranker', 'ortex', 'BAAI/bge-reranker-v2-m3', '{}', 1, true,
+         'onnx-1-bge-reranker-v2-m3', 'pair-v1', 'f7-1')
+      """,
+      [Ecto.UUID.dump!(account_id)]
+    )
+
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn account, actor ->
+        resolved = Model.Config.resolve(:reranker, %{account_id: account.id, actor: actor})
+
+        assert resolved.provider == "openrouter"
+        assert resolved.model == "voyageai/rerank-2.5"
+        assert resolved.options["api_key_ref"] == "env:OPENROUTER_API_KEY"
+      end
+    )
   end
 
   test "an Account with a stale extractor role cannot stamp a new prompt with an old identity" do
@@ -116,7 +157,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     )
 
     assert {:error,
-            {:prompt_version_mismatch, %{expected: "extract-13", configured: "extract-9"}}} =
+            {:prompt_version_mismatch, %{expected: "extract-14", configured: "extract-9"}}} =
              Memory.extract_message_for_account(message["id"], account_id)
 
     assert %{rows: [[nil]]} =
@@ -135,7 +176,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-13",
+      prompt_version: "extract-14",
       pipeline_version: "f5-1"
     )
 
@@ -156,7 +197,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert knowledge["extracting_provider"] == "openrouter"
     assert knowledge["extracting_model"] == "openai/gpt-oss-120b"
     assert knowledge["extracting_model_version"] == "2026-07"
-    assert knowledge["prompt_version"] == "extract-13"
+    assert knowledge["prompt_version"] == "extract-14"
     assert knowledge["pipeline_version"] == "f5-1"
 
     # Two usage events, not one: the failed first attempt is metered too. Repairs cost real
@@ -170,7 +211,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
                  %Decimal{coef: 44},
                  "openrouter",
                  "2026-07",
-                 "extract-13",
+                 "extract-14",
                  "f5-1"
                ]
              ]
@@ -194,7 +235,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     # Provenance is what lets an operator answer "which model asserted this, under which
     # prompt and pipeline revision?" years later. All five identity columns must be present;
     # a knowledge row whose origin cannot be reconstructed is not auditable.
-    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-13", "f5-1"]]} =
+    assert %{rows: [["openrouter", "openai/gpt-oss-120b", "2026-07", "extract-14", "f5-1"]]} =
              Ecto.Adapters.SQL.query!(
                Repo,
                """
@@ -224,7 +265,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-13",
+      prompt_version: "extract-14",
       pipeline_version: "f5-1"
     )
 
@@ -244,6 +285,54 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              ]
   end
 
+  test "anchored ownership durations become source-grounded acquisition events" do
+    cases = [
+      {"issue-279-six-months", ~U[2023-08-11 21:17:00Z], "six_months"},
+      {"issue-279-nine-months", ~U[2023-11-30 11:13:00Z], "nine_months"}
+    ]
+
+    for {account_key, occurred_at, scenario} <- cases do
+      message =
+        seed_raw!(
+          account_key,
+          "user",
+          acquisition_observation(scenario),
+          occurred_at: occurred_at
+        )
+
+      account_id = account_id!(account_key)
+
+      put_role!(account_id, :ingest_extractor,
+        provider: "openrouter",
+        model: "openai/gpt-oss-120b",
+        model_version: "2026-08",
+        prompt_version: "extract-14",
+        pipeline_version: "f5-1"
+      )
+
+      CassetteProvider.start!(@acquisition_cassette, scenario)
+      Application.put_env(:memhouse, :model_provider, CassetteProvider)
+
+      assert {:ok, [knowledge]} =
+               Memory.extract_message_for_account(message["id"], account_id)
+
+      assert knowledge["kind"] == "event"
+      assert knowledge["subject_peer_id"] == message["peer_id"]
+      assert knowledge["source_message_ids"] == [message["id"]]
+      assert knowledge["relevant_from"].year == 2023
+      assert knowledge["relevant_from"].month == 2
+      assert knowledge["relevant_until"] == nil
+      assert knowledge["prompt_version"] == "extract-14"
+      assert knowledge["statement"] =~ ~r/\b(?:obtained|acquired|adopted)\b/iu
+      refute knowledge["statement"] =~ ~r/\b(?:6|9)\s+months?\b/iu
+
+      assert CassetteProvider.calls() == [
+               {"structured", "ingest_extractor", "extraction"},
+               {"structured", "ingest_extractor", "extraction"}
+             ]
+    end
+  end
+
   test "a missing structured object retries the original request within the repair budget" do
     message = seed_raw!("f5-missing-object", "avery", "Avery prefers weekly summaries.")
     account_id = account_id!("f5-missing-object")
@@ -252,7 +341,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-13",
+      prompt_version: "extract-14",
       pipeline_version: "f5-1"
     )
 
@@ -280,7 +369,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-08",
-      prompt_version: "extract-13",
+      prompt_version: "extract-14",
       pipeline_version: "f5-1"
     )
 
@@ -428,7 +517,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "unavailable-model",
       model_version: "1",
-      prompt_version: "extract-13",
+      prompt_version: "extract-14",
       pipeline_version: "f5-1"
     )
 
@@ -497,7 +586,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "temporarily-unavailable-model",
       model_version: "1",
-      prompt_version: "extract-13",
+      prompt_version: "extract-14",
       pipeline_version: "f5-1"
     )
 
@@ -506,7 +595,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "temporarily-unavailable-model",
       model_version: "1",
-      prompt_version: "extract-13",
+      prompt_version: "extract-14",
       pipeline_version: "f5-1",
       config_version: 1,
       options: %{}
@@ -547,7 +636,7 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
       provider: "openrouter",
       model: "openai/gpt-oss-120b",
       model_version: "2026-07",
-      prompt_version: "extract-13",
+      prompt_version: "extract-14",
       pipeline_version: "f5-1"
     )
 
@@ -612,18 +701,35 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
   # Creates the account, scope, peer, session, and raw message in one call. The message lands
   # durably without running extraction, letting each test arm its own recorded provider script
   # before the model is ever consulted.
-  defp seed_raw!(account_key, peer_key, content) do
+  defp seed_raw!(account_key, peer_key, content, overrides \\ []) do
     assert {:ok, message} =
-             Memory.ingest_message(%{
-               "account_key" => account_key,
-               "session_id" => "#{account_key}-session",
-               "scope_path" => "/f5/#{account_key}",
-               "peer_key" => peer_key,
-               "role" => "user",
-               "content" => content
-             })
+             Memory.ingest_message(
+               %{
+                 "account_key" => account_key,
+                 "session_id" => "#{account_key}-session",
+                 "scope_path" => "/f5/#{account_key}",
+                 "peer_key" => peer_key,
+                 "role" => "user",
+                 "content" => content
+               }
+               |> Map.merge(Map.new(overrides, fn {key, value} -> {to_string(key), value} end))
+             )
 
     message
+  end
+
+  defp acquisition_observation("six_months") do
+    "I've had Luna for about 6 months now, and I've been meaning to get her " <>
+      "microchipped for a while. I've heard horror stories about pets getting lost, and I " <>
+      "don't want to take any chances. I've already scheduled an appointment for next Friday " <>
+      "to get it done."
+  end
+
+  defp acquisition_observation("nine_months") do
+    "I've had my cat, Luna, for about 9 months now, and I've been trying to keep her active " <>
+      "and engaged. I've set up her cat tree, and she loves climbing up and down it. I've also " <>
+      "been rotating her toys every week to keep things fresh for her. Do you think the " <>
+      "interactive toys you recommended would be a good addition to her playtime routine?"
   end
 
   # Persists an active, versioned role configuration for one account. A stored record wins

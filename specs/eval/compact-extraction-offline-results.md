@@ -6,7 +6,7 @@ Revision: `ff72f6320c0be59e9d0b32bf748a75c48cc14d0b`
 
 Status: deterministic contract evidence only; promotion is not approved.
 
-This record compares the current `extract-13` contract with the opt-in
+This record compares the then-current `extract-13` contract with the opt-in
 `extract-compact-exp-1` contract on the same four anchored observations. The
 run used the deterministic provider and the real batch admission, structured
 validation, repair, and trusted-cast paths. It did not call a hosted model and
@@ -74,7 +74,7 @@ experiment. It does not support making it the default. In particular:
 
 Promotion therefore still requires the preregistered matched evaluation,
 privacy and category gates, external-PostgreSQL and packaged-pg0 parity, and
-human ADR review. Until then `extract-13` remains the default and no current
-extraction path is removed.
+human ADR review. At that revision, `extract-13` remained the default and no
+current extraction path was removed.
 
 <!-- SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0 -->

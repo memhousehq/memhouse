@@ -19,6 +19,8 @@ defmodule MemHouse.Eval.Experiment do
   alias MemHouse.Eval.{
     Adapter,
     ComponentBindings,
+    ExecutionEvidence,
+    Maintenance,
     Measurement,
     QueryCounter,
     Report,
@@ -309,6 +311,7 @@ defmodule MemHouse.Eval.Experiment do
         ["quality", "recall_at_10"],
         ["safety", "citation_hit_rate"],
         ["safety", "unsupported_claims"],
+        ["safety", "isolation_candidates_checked"],
         ["safety", "isolation_leaks"],
         ["safety", "dropped_strategy_runs"],
         ["cost", "model_calls"],
@@ -342,6 +345,17 @@ defmodule MemHouse.Eval.Experiment do
                   is_number(get_in(metrics, ["safety", "abstention_accuracy"]))) do
         raise ArgumentError, "fixture variants require complete numeric stage metrics"
       end
+
+      isolation_count_paths = [
+        ["safety", "isolation_candidates_checked"],
+        ["safety", "isolation_leaks"]
+      ]
+
+      isolation_counts = Enum.map(isolation_count_paths, &get_in(metrics, &1))
+
+      unless Enum.all?(isolation_counts, &(is_integer(&1) and &1 >= 0)) do
+        raise ArgumentError, "fixture isolation counts must be non-negative integers"
+      end
     end)
   end
 
@@ -370,7 +384,7 @@ defmodule MemHouse.Eval.Experiment do
 
         {report, database} =
           QueryCounter.measure(fn ->
-            run_variant(dataset, definition, variant, account_key, run_id)
+            run_variant(dataset, definition, variant, account_key, run_id, before)
           end)
 
         wall_time_ms = System.monotonic_time(:millisecond) - started_at
@@ -399,8 +413,9 @@ defmodule MemHouse.Eval.Experiment do
     {environment, measured, reports}
   end
 
-  defp run_variant(dataset, definition, variant, account_key, run_id) do
+  defp run_variant(dataset, definition, variant, account_key, run_id, before) do
     components = executable_components(variant)
+    prior_run_ids = MapSet.new(before.pipeline_runs, & &1.id)
 
     VariantRuntime.with_components(components, fn ->
       report =
@@ -419,6 +434,9 @@ defmodule MemHouse.Eval.Experiment do
           extraction_batching: components["extraction_batching"]["enabled"],
           recall_effort: components["adaptive_recall_effort"],
           source_recall: components["source_recall"],
+          source_exact_recall: components["source_exact_recall"],
+          source_semantic_recall: components["source_semantic_recall"],
+          stable_profile_recall: components["stable_profile_recall"],
           lineage_recall: components["lineage_recall"],
           dream_time: components["dream_time"],
           idle_dream_scheduling: components["idle_dream_scheduling"]["enabled"],
@@ -426,12 +444,22 @@ defmodule MemHouse.Eval.Experiment do
           durability_seed: Map.get(variant, "durability_seed", definition["seeds"]["durability"]),
           refresh_semantic_index: components["semantic_index_refresh"],
           refresh_source_semantic_index: components["source_semantic_index_refresh"],
-          refresh_recall_projection: components["recall_projection_refresh"]
+          refresh_recall_projection: components["recall_projection_refresh"],
+          after_ingest: fn _scope_path ->
+            Maintenance.settle!(account_key, prior_run_ids)
+          end,
+          before_questions: fn _scope_path ->
+            Maintenance.settle!(account_key, prior_run_ids)
+          end
         )
 
-      report
-      |> assert_executed_components!(variant, components)
-      |> Report.validate!()
+      validated =
+        report
+        |> assert_executed_components!(variant, components)
+        |> Report.validate!()
+
+      Maintenance.settle!(account_key, prior_run_ids)
+      validated
     end)
   end
 
@@ -489,25 +517,41 @@ defmodule MemHouse.Eval.Experiment do
             "execute variant #{inspect(variant["id"])} declared adaptive recall but admitted no new tool evidence to an answer context"
     end
 
-    if components["lineage_recall"] and
-         not Enum.any?(recalls, fn recall ->
-           Enum.any?(recall["outcomes"] || [], fn outcome ->
-             outcome["tool"] == "lineage" and outcome["status"] == "completed"
-           end)
-         end) do
-      raise ArgumentError,
-            "execute variant #{inspect(variant["id"])} declared lineage recall but completed no lineage tool call"
-    end
+    assert_completed_recall_tool!(recalls, variant, components, "lineage_recall", "lineage")
 
-    if components["source_recall"] and
-         not Enum.any?(recalls, fn recall ->
-           Enum.any?(recall["outcomes"] || [], fn outcome ->
-             outcome["tool"] == "source_semantic" and outcome["status"] == "completed"
-           end)
-         end) do
-      raise ArgumentError,
-            "execute variant #{inspect(variant["id"])} declared source semantic recall but completed no source_semantic tool call"
-    end
+    assert_completed_recall_tool!(
+      recalls,
+      variant,
+      components,
+      "source_exact_recall",
+      "source_exact"
+    )
+
+    assert_completed_recall_tool!(
+      recalls,
+      variant,
+      components,
+      "source_semantic_recall",
+      "source_semantic"
+    )
+
+    assert_completed_recall_tool!(
+      recalls,
+      variant,
+      components,
+      "stable_profile_recall",
+      "profile"
+    )
+  end
+
+  defp assert_completed_recall_tool!(recalls, variant, components, component, tool) do
+    ExecutionEvidence.assert_recall_tool!(
+      recalls,
+      variant,
+      components,
+      component,
+      tool
+    )
   end
 
   defp assert_refresh_components!(report, variant, components) do
@@ -550,6 +594,9 @@ defmodule MemHouse.Eval.Experiment do
       recall["retrieval_profile"] == variant["profile"] and
       is_binary(recall["retrieval_profile_version"]) and
       recall["source_recall_permitted"] == components["source_recall"] and
+      recall["source_exact_recall_permitted"] == components["source_exact_recall"] and
+      recall["source_semantic_recall_permitted"] == components["source_semantic_recall"] and
+      recall["stable_profile_recall_permitted"] == components["stable_profile_recall"] and
       recall["lineage_recall_permitted"] == components["lineage_recall"]
   end
 
@@ -597,7 +644,7 @@ defmodule MemHouse.Eval.Experiment do
     semantic_retrieval? =
       Enum.any?(components["retrieval_strategies"], &(&1 in ["semantic", "semantic_dual_lane"]))
 
-    if semantic_retrieval? or components["source_recall"] == true or
+    if semantic_retrieval? or components["source_semantic_recall"] == true or
          components["source_semantic_index_refresh"] == true,
        do: assert_local_embedder!()
 
@@ -738,6 +785,7 @@ defmodule MemHouse.Eval.Experiment do
         ["quality", "min_recall_at_10"],
         get_in(experimental, ["quality", "recall_at_10"])
       )
+      |> category_quality_checks(gates, current, experimental)
       |> optional_min(
         "safety.citation_hit_rate",
         gates,
@@ -761,6 +809,10 @@ defmodule MemHouse.Eval.Experiment do
         gates,
         ["safety", "max_isolation_leaks"],
         get_in(experimental, ["safety", "isolation_leaks"])
+      )
+      |> require_isolation_coverage(
+        gates,
+        get_in(experimental, ["safety", "isolation_candidates_checked"])
       )
       |> optional_max(
         "safety.dropped_strategy_runs",
@@ -822,8 +874,155 @@ defmodule MemHouse.Eval.Experiment do
     end
   end
 
+  defp category_quality_checks(checks, gates, current, experimental) do
+    checks
+    |> category_floor_checks(gates, experimental)
+    |> category_regression_checks(gates, current, experimental)
+  end
+
+  defp category_floor_checks(checks, gates, experimental) do
+    case get_in(gates, ["quality", "min_category_accuracy"]) do
+      nil ->
+        checks
+
+      configured when is_map(configured) ->
+        assert_category_gate_map!("min_category_accuracy", configured)
+
+        Enum.reduce(configured, checks, fn {category, expected}, acc ->
+          assert_category_gate!("min_category_accuracy", category, expected)
+          metrics = category_metrics!(experimental, category)
+          coverage = category_coverage!(metrics, category)
+          actual = if coverage > 0, do: Map.get(metrics, "accuracy"), else: nil
+
+          [
+            category_check(
+              "quality.category.#{category}.accuracy",
+              actual,
+              expected,
+              :min,
+              coverage
+            )
+            | acc
+          ]
+        end)
+
+      value ->
+        raise ArgumentError,
+              "gate quality.min_category_accuracy must be an object, got #{inspect(value)}"
+    end
+  end
+
+  defp category_regression_checks(checks, gates, current, experimental) do
+    case get_in(gates, ["quality", "max_category_accuracy_regression"]) do
+      nil ->
+        checks
+
+      configured when is_map(configured) ->
+        assert_category_gate_map!("max_category_accuracy_regression", configured)
+
+        Enum.reduce(configured, checks, fn {category, allowed}, acc ->
+          assert_category_gate!("max_category_accuracy_regression", category, allowed)
+          current_metrics = category_metrics!(current, category)
+          experimental_metrics = category_metrics!(experimental, category)
+
+          coverage =
+            min(
+              category_coverage!(current_metrics, category),
+              category_coverage!(experimental_metrics, category)
+            )
+
+          current_accuracy = Map.get(current_metrics, "accuracy")
+          experimental_accuracy = Map.get(experimental_metrics, "accuracy")
+
+          actual =
+            if coverage > 0 and is_number(current_accuracy) and
+                 is_number(experimental_accuracy),
+               do: experimental_accuracy - current_accuracy,
+               else: nil
+
+          [
+            category_check(
+              "quality.category.#{category}.accuracy_regression",
+              actual,
+              -allowed,
+              :min,
+              coverage
+            )
+            | acc
+          ]
+        end)
+
+      value ->
+        raise ArgumentError,
+              "gate quality.max_category_accuracy_regression must be an object, got #{inspect(value)}"
+    end
+  end
+
+  defp assert_category_gate_map!(name, configured) when map_size(configured) == 0 do
+    raise ArgumentError, "gate quality.#{name} must contain at least one category"
+  end
+
+  defp assert_category_gate_map!(_name, _configured), do: :ok
+
+  defp category_metrics!(metrics, category) do
+    case get_in(metrics, ["quality", "by_category"]) do
+      nil ->
+        %{}
+
+      by_category when is_map(by_category) ->
+        case Map.get(by_category, category) do
+          nil -> %{}
+          value -> value
+        end
+
+      value ->
+        raise ArgumentError,
+              "quality.by_category must be an object, got #{inspect(value)}"
+    end
+  end
+
+  defp category_coverage!(metrics, category) when is_map(metrics) do
+    case Map.get(metrics, "questions", 0) do
+      coverage when is_integer(coverage) and coverage >= 0 ->
+        coverage
+
+      value ->
+        raise ArgumentError,
+              "quality.by_category #{inspect(category)} questions must be a non-negative integer, got #{inspect(value)}"
+    end
+  end
+
+  defp category_coverage!(metrics, category) do
+    raise ArgumentError,
+          "quality.by_category #{inspect(category)} must be an object, got #{inspect(metrics)}"
+  end
+
+  defp assert_category_gate!(name, category, expected) do
+    unless is_binary(category) and category != "" and is_number(expected) and expected >= 0 and
+             expected <= 1 do
+      raise ArgumentError,
+            "gate quality.#{name} must map non-empty category names to fractions from 0 to 1"
+    end
+  end
+
+  defp category_check(name, actual, expected, direction, coverage) do
+    check(name, actual, expected, direction)
+    |> Map.put("coverage", coverage)
+  end
+
   defp optional_min(checks, name, gates, path, actual),
     do: optional_check(checks, name, gates, path, actual, :min)
+
+  # A leak ceiling is promotion evidence only when retrieval exercised the source-membership
+  # check. Keep this coupled to max_isolation_leaks so definitions cannot opt out of coverage
+  # while still presenting a passing isolation gate.
+  defp require_isolation_coverage(checks, gates, actual) do
+    if is_nil(get_in(gates, ["safety", "max_isolation_leaks"])) do
+      checks
+    else
+      [check("safety.isolation_candidates_checked", actual, 1, :min) | checks]
+    end
+  end
 
   defp optional_max(checks, name, gates, path, actual),
     do: optional_check(checks, name, gates, path, actual, :max)
@@ -889,6 +1088,8 @@ defmodule MemHouse.Eval.Experiment do
     usage = measurement["usage"]
     ingest_usage = get_in(usage, ["by_role", "ingest_extractor"]) || empty_usage()
     reasoning = report["reasoning"] || empty_reasoning()
+    by_category = get_in(report, ["metrics", "by_category"])
+    by_category = if is_nil(by_category), do: %{}, else: by_category
 
     %{
       "ingest" => %{
@@ -901,6 +1102,7 @@ defmodule MemHouse.Eval.Experiment do
       },
       "quality" => %{
         "accuracy" => overall["accuracy"],
+        "by_category" => by_category,
         "recall_at_10" => get_in(retrieval, ["recall_at_k", "10"]),
         "groundedness" => overall["mean_groundedness"],
         "context_relevance" => overall["mean_context_relevance"],

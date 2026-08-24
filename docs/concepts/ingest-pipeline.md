@@ -25,10 +25,19 @@ flowchart LR
 All effects commit or roll back together, preventing observations without audit
 entries and jobs without observations. The refresh is keyed by scope and a
 ten-second creation-time bucket, so a burst of messages and any facts extracted
-from them share one delayed projection job. It indexes immutable source
-messages even when extraction produces no Knowledge. Neither provider runs in
-the ingest transaction. Oban shares PostgreSQL, so job insertion participates
-in the transaction.
+from them share one delayed projection job. Extraction and projection runs
+capture the same content-safe, versioned maintenance plan when they are enqueued,
+so a delayed extraction worker, projection worker, or retry
+cannot observe a later runtime-profile change. The current plan indexes source
+messages and Knowledge, rebuilds RecallDocuments, resolves entities, and
+refreshes context projections. The isolated experimental minimal-profile plan
+retains the first three stages and records entity and context projection work as
+`profile_disabled` instead of executing it. That selector is local to the
+experiment execution process; concurrent requests retain the current plan.
+Reconciliation reads the latest durable plan for each scope, so it neither
+mistakes an intentional minimal cache omission for damage nor widens a required
+repair back to full maintenance. Neither provider runs in the ingest transaction.
+Oban shares PostgreSQL, so job insertion participates in the transaction.
 
 ## Who a turn is attributed to
 
@@ -51,9 +60,10 @@ both identities: the relaying credential as the actor, and the speaker as
 
 ## What happens after the response
 
-Extraction and source indexing always run after the response. Source indexing
-is the first stage of the durable scope `projection_refresh`; the diagram below
-shows the extraction lane that may later coalesce into that same refresh:
+Extraction and scheduled source indexing run after the response. Source
+indexing is the first stage of the durable scope `projection_refresh`; the
+diagram below shows the extraction lane that may later coalesce into that same
+profile-versioned refresh:
 
 ```mermaid
 sequenceDiagram
@@ -150,7 +160,7 @@ scope target and runs the same ordinary validator below. The flag changes no
 writer, queue, table, lifecycle, or Gate A/B behavior. Its prompt version
 `extract-compact-exp-1` identifies resulting provenance and usage. It remains
 off because the held-out non-inferiority/privacy gate and human ADR review are
-still required; turning it off restores `extract-13` without a data migration.
+still required; turning it off restores `extract-14` without a data migration.
 
 Extraction also does what a naive extractor gets wrong:
 
@@ -189,6 +199,12 @@ Extraction also does what a naive extractor gets wrong:
   that appears in neither the cited text nor a resolvable relative-time phrase.
   Each cited id becomes durable provenance. The supporting span validates the
   proposal but is not copied into knowledge, logs, or job arguments.
+- **Derives dated start events from elapsed durations.** A statement such as
+  "I have had X for about six months" can imply when the possession or
+  relationship started. The extractor records the start as an `event`, not the
+  elapsed duration as a timeless fact. For an approximate month duration,
+  `relevant_from` can be any date in the implied calendar month and
+  `relevant_until` is null. The statement does not claim an exact day.
 - **Records complete provenance.** Provider, model, version, prompt, and
   pipeline identity travel with the result.
 
@@ -252,10 +268,12 @@ ends that pass with a content-safe diagnostic instead of retrying the same
 deterministic error. The lane is throttled first when token budgets tighten and
 never bypasses governance.
 
-Before consolidation or a model call, a scoped gate checks four independent
+Before consolidation or model reasoning, a scoped gate checks four independent
 bounds: accumulated eligible changes, time since the latest change, time since
 the last completed pass, and the maximum delta/working-set/call duration for one
-pass. Skips emit only scope ids, counts, decisions, and reason classes. They do
+pass. The elapsed allowance is one monotonic deadline shared across split
+reasoning operations, including their repairs and retries. Skips emit only
+scope ids, counts, decisions, and reason classes. They do
 not advance the watermark. A bounded partial pass stores both the last processed
 timestamp and knowledge id, so same-microsecond rows resume without being lost
 or billed twice. Dream-produced deductions and deterministic consolidation

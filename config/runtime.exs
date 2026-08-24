@@ -8,11 +8,22 @@
 # hold environment-variable references, never secret values.
 
 import Config
+
 import Dotenvy
 
 # Later sources win, so the process environment overrides `.env`.
 env = source!([".env", System.get_env()])
 env_get = fn key, default -> Map.get(env, key, default) end
+
+config :memhouse, :build_sha, env_get.("MEMHOUSE_BUILD_SHA", "unknown")
+
+lifecycle_docs_url =
+  case env_get.("MEMHOUSE_LIFECYCLE_DOCS_URL", "") do
+    "" -> false
+    url -> url
+  end
+
+config :memhouse, :lifecycle_docs_url, lifecycle_docs_url
 
 # Lenient parsers use defaults; bang parsers reject unsafe ambiguity.
 
@@ -613,25 +624,15 @@ config :memhouse, :model_roles,
     }
   },
   reranker: %{
-    # A local cross-encoder scores query-document pairs. It requires its own
-    # classifier artifacts and never downloads them at runtime.
-    provider: env_get.("MEMHOUSE_RERANKER_PROVIDER", "ortex"),
-    model: env_get.("MEMHOUSE_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
-    model_version: env_get.("MEMHOUSE_RERANKER_VERSION", "onnx-1-bge-reranker-v2-m3"),
-    prompt_version: "pair-v1",
+    # Voyage scores query-document pairs through OpenRouter's native rerank endpoint.
+    provider: env_get.("MEMHOUSE_RERANKER_PROVIDER", "openrouter"),
+    model: env_get.("MEMHOUSE_RERANKER_MODEL", "voyageai/rerank-2.5"),
+    model_version: env_get.("MEMHOUSE_RERANKER_VERSION", "openrouter-2026-07"),
+    prompt_version: "none",
     pipeline_version: "f7-1",
     options: %{
-      "api_key_ref" => "env:MEMHOUSE_RERANKER_API_KEY",
-      "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", nil),
-      "model_path" => env_get.("MEMHOUSE_RERANKER_ORTEX_MODEL_PATH", nil),
-      "tokenizer_path" => env_get.("MEMHOUSE_RERANKER_ORTEX_TOKENIZER_PATH", nil),
-      "input_order" => ["input_ids", "attention_mask"],
-      "max_length" => env_integer.("MEMHOUSE_RERANKER_MAX_LENGTH", "512"),
-      "output_index" => env_integer.("MEMHOUSE_RERANKER_OUTPUT_INDEX", "0"),
-      "positive_class_index" => env_integer.("MEMHOUSE_RERANKER_POSITIVE_CLASS_INDEX", "0"),
-      "execution_providers" =>
-        env_get.("MEMHOUSE_RERANKER_ORTEX_EXECUTION_PROVIDERS", "cpu")
-        |> String.split(",", trim: true)
+      "api_key_ref" => "env:OPENROUTER_API_KEY",
+      "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", "https://openrouter.ai/api/v1")
     }
   },
   # Turns raw observations into structured candidate knowledge. Its output still
@@ -641,7 +642,7 @@ config :memhouse, :model_roles,
     model: generation_model.("MEMHOUSE_MODEL_INGEST", "openai/gpt-oss-120b"),
     model_version: generation_version,
     prompt_version:
-      if(compact_extraction_enabled, do: "extract-compact-exp-1", else: "extract-13"),
+      if(compact_extraction_enabled, do: "extract-compact-exp-1", else: "extract-14"),
     pipeline_version: "f5-1",
     options: generation_options
   },

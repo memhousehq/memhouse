@@ -17,7 +17,7 @@ contract transition.
 | `f7-1` | `search`, `ask`, `context` → `profile_version` | Retrieval and context profile identity |
 | `f9-1` | `readiness` → `report_version` | Skill selector language and gap-report schema |
 | `f10-1` | `GET /api/ready` | Readiness payload shape |
-| `f11-1`, `f11-suite-1` | Evaluation reports | Report schema and release bundle |
+| `f11-1`, `f11-2`, `f11-3`, `f11-suite-1` | Evaluation reports | Historical report, balanced accounting, lifecycle evidence, and release bundle schemas |
 | `f11-surface-contracts-1` | Surface contract inventory | Which surfaces exist, are gated, or are unavailable |
 | `memhouse-account-1` | Logical archive manifests | Account archive schema |
 

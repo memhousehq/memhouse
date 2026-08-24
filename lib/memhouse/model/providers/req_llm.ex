@@ -167,13 +167,36 @@ defmodule MemHouse.Model.Providers.ReqLLM do
   @doc """
   Reranks documents against a query, returning the endpoint's ranked results.
 
-  A dedicated rerank endpoint is preferred when the configured model supports
-  one. General-purpose reasoning models, including the shipped OpenRouter
-  default, do not expose that capability. Those models produce the same
-  index-and-score contract through strict structured generation instead of
-  making every `:thorough` request drop its reranker.
+  The shipped OpenRouter Voyage role uses its native endpoint. General-purpose
+  reasoning models do not expose that capability; deadline-free callers can
+  produce the same index-and-score contract through strict structured
+  generation instead.
   """
   @impl true
+  def rerank(
+        %Role{provider: "openrouter", model: "voyageai/rerank-2.5"} = config,
+        query,
+        documents,
+        opts
+      ) do
+    request_opts = request_opts(config, opts)
+
+    with api_key when is_binary(api_key) and api_key != "" <- Keyword.get(request_opts, :api_key),
+         {:ok, response} <- openrouter_rerank_request(config, query, documents, request_opts),
+         {:ok, results} <- openrouter_rerank_results(response.body, documents) do
+      {:ok,
+       %Result{
+         value: results,
+         usage: openrouter_rerank_usage(response.body),
+         metadata: %{result_count: length(results)}
+       }}
+    else
+      nil -> {:error, :missing_api_key}
+      "" -> {:error, :missing_api_key}
+      {:error, error} -> {:error, error}
+    end
+  end
+
   def rerank(%Role{} = config, query, documents, opts) do
     req_opts =
       config
@@ -203,6 +226,101 @@ defmodule MemHouse.Model.Providers.ReqLLM do
       {:error, error} ->
         {:error, error}
     end
+  end
+
+  defp openrouter_rerank_request(config, query, documents, request_opts) do
+    base_url = Map.get(config.options, "base_url") || "https://openrouter.ai/api/v1"
+
+    http_opts =
+      request_opts
+      |> Keyword.get(:req_http_options, [])
+      |> ReqLLM.Provider.Defaults.merge_finch_options()
+
+    request =
+      Req.new(
+        [
+          url: String.trim_trailing(base_url, "/") <> "/rerank",
+          method: :post,
+          headers: [{"authorization", "Bearer #{Keyword.fetch!(request_opts, :api_key)}"}],
+          json: %{
+            model: config.model,
+            query: query,
+            documents: documents,
+            top_n: length(documents)
+          },
+          receive_timeout: Keyword.get(request_opts, :receive_timeout, 30_000)
+        ] ++ http_opts
+      )
+      |> ReqLLM.Step.Retry.attach(request_opts)
+
+    case ReqLLM.TimeoutBudget.request(request, ReqLLM.TimeoutBudget.deadline(request_opts)) do
+      {:ok, %Req.Response{status: status} = response} when status in 200..299 ->
+        {:ok, response}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, {:rerank_http_status, status}}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp openrouter_rerank_results(body, documents) when is_map(body) do
+    case Map.get(body, "results") || Map.get(body, :results) do
+      results when is_list(results) and results != [] ->
+        Enum.reduce_while(results, {:ok, []}, fn result, {:ok, acc} ->
+          case openrouter_rerank_result(result, documents) do
+            {:ok, ranking} -> {:cont, {:ok, [ranking | acc]}}
+            {:error, error} -> {:halt, {:error, error}}
+          end
+        end)
+        |> then(fn
+          {:ok, parsed} -> validate_complete_rerank_results(Enum.reverse(parsed), documents)
+          error -> error
+        end)
+
+      _invalid ->
+        {:error, :invalid_rerank_response}
+    end
+  end
+
+  defp openrouter_rerank_results(_body, _documents), do: {:error, :invalid_rerank_response}
+
+  defp openrouter_rerank_result(result, documents) when is_map(result) do
+    index = Map.get(result, "index") || Map.get(result, :index)
+    score = Map.get(result, "relevance_score") || Map.get(result, :relevance_score)
+
+    with true <- is_integer(index) and index >= 0 and index < length(documents),
+         true <- is_number(score),
+         document when is_binary(document) <- Enum.at(documents, index) do
+      {:ok, %{index: index, relevance_score: score * 1.0, document: document}}
+    else
+      _invalid -> {:error, :invalid_rerank_response}
+    end
+  end
+
+  defp openrouter_rerank_result(_result, _documents), do: {:error, :invalid_rerank_response}
+
+  defp validate_complete_rerank_results(results, documents) do
+    expected_indexes =
+      case length(documents) do
+        0 -> []
+        count -> Enum.to_list(0..(count - 1))
+      end
+
+    indexes = results |> Enum.map(& &1.index) |> Enum.sort()
+
+    if indexes == expected_indexes,
+      do: {:ok, results},
+      else: {:error, :invalid_rerank_response}
+  end
+
+  defp openrouter_rerank_usage(body) do
+    total_tokens = get_in(body, ["usage", "total_tokens"]) || 0
+
+    if is_integer(total_tokens) and total_tokens >= 0,
+      do: %{input_tokens: total_tokens, output_tokens: 0},
+      else: %{}
   end
 
   defp rerank_with_structured_generation(config, query, documents, opts) do

@@ -150,6 +150,7 @@ defmodule MemHouse.Pipeline.Reconciler do
             |> Store.scopes_with_stale_source_embeddings(identity, @batch_size)
             |> Enum.count(fn row ->
               scope_id = row["scope_id"]
+              plan = Pipeline.maintenance_plan_for_scope(account_id, scope_id, actor)
 
               not Pipeline.projection_refresh_recoverable?(account_id, scope_id, actor) and
                 match?(
@@ -158,7 +159,8 @@ defmodule MemHouse.Pipeline.Reconciler do
                     account_id,
                     scope_id,
                     source_refresh_watermark(row, identity),
-                    actor
+                    actor,
+                    plan
                   )
                 )
             end)
@@ -167,21 +169,26 @@ defmodule MemHouse.Pipeline.Reconciler do
             account_id
             |> Store.scopes_missing_mentions(@batch_size)
             |> Enum.count(fn row ->
+              plan =
+                Pipeline.maintenance_plan_for_scope(account_id, row["scope_id"], actor)
+
               watermark =
                 "mentions:#{row["statement_count"]}:#{row["latest_statement_at"]}"
 
-              not Pipeline.projection_refresh_recoverable?(
-                account_id,
-                row["scope_id"],
-                actor
-              ) and
+              MemHouse.Retrieval.MaintenancePlan.scheduled?(plan, "entities") and
+                not Pipeline.projection_refresh_recoverable?(
+                  account_id,
+                  row["scope_id"],
+                  actor
+                ) and
                 match?(
                   {:ok, _run},
                   Pipeline.enqueue_projection_refresh(
                     account_id,
                     row["scope_id"],
                     watermark,
-                    actor
+                    actor,
+                    plan
                   )
                 )
             end)

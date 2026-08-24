@@ -39,7 +39,7 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
   end
 
   alias MemHouse.DataLayer
-  alias MemHouse.Eval.{Experiment, Report}
+  alias MemHouse.Eval.{ExecutionEvidence, Experiment, Report}
   alias MemHouse.Governance.Engine
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
@@ -61,10 +61,45 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
   test "execute mode reuses the runner and records Postgres stage measurements", %{
     tmp_dir: tmp_dir
   } do
+    original_roles = Application.fetch_env!(:memhouse, :model_roles)
+    original_provider = Application.get_env(:memhouse, :model_provider)
+
+    deterministic_embedder =
+      original_roles
+      |> Keyword.fetch!(:embedder)
+      |> Map.put(:provider, "fixture")
+      |> Map.put(:model, "eval-maintenance-fixture")
+      |> Map.put(:model_version, "1")
+      |> Map.put(:embedding_dimensions, 3)
+
+    Application.put_env(
+      :memhouse,
+      :model_roles,
+      Keyword.put(original_roles, :embedder, deterministic_embedder)
+    )
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_roles, original_roles)
+
+      if original_provider,
+        do: Application.put_env(:memhouse, :model_provider, original_provider),
+        else: Application.delete_env(:memhouse, :model_provider)
+    end)
+
     dataset_path = Path.expand("test/fixtures/eval/memhouse-smoke.json")
     definition_path = Path.join(tmp_dir, "execute-experiment.json")
 
-    File.write!(definition_path, Jason.encode!(definition(dataset_path)))
+    execute_definition =
+      definition(dataset_path)
+      |> put_in(["variants", Access.at(1), "profile"], "minimal")
+      |> put_in(
+        ["variants", Access.at(1), "components"],
+        executable_components("minimal", ["lexical"])
+      )
+
+    File.write!(definition_path, Jason.encode!(execute_definition))
 
     {manifest, bundle} =
       Experiment.run(definition_path,
@@ -104,6 +139,21 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     assert is_number(current["database"]["query_time_ms"])
     assert current["maintenance"]["pipeline_runs_created"] >= 3
     assert current["maintenance"]["extraction_runs"] == 2
+    assert current["maintenance"]["projection_refresh_stage_runs_completed"] > 0
+    assert current["maintenance"]["projection_refresh_stages"]["entities"]["scheduled"] > 0
+    assert current["maintenance"]["projection_refresh_stages"]["entities"]["skipped"] == 0
+
+    experimental = get_in(bundle, ["evidence", "measured", "experimental"])
+
+    assert experimental["maintenance"]["projection_refresh_stage_runs_completed"] > 0
+    assert experimental["maintenance"]["entity_resolution_runs_completed"] == 0
+    assert experimental["maintenance"]["projection_refresh_stages"]["entities"]["scheduled"] == 0
+    assert experimental["maintenance"]["projection_refresh_stages"]["entities"]["skipped"] > 0
+
+    assert experimental["maintenance"]["projection_refresh_stages"]["context_projections"][
+             "skipped"
+           ] > 0
+
     assert current["safety"]["isolation_leaks"] == 0
     assert current["dream"]["replay_durable_effects"] == 0
     assert bundle["gates"]["status"] == "passed", inspect(bundle["gates"], pretty: true)
@@ -162,6 +212,9 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
         "idle_dream_scheduling" => idle_component(true),
         "lineage_recall" => true,
         "source_recall" => true,
+        "source_exact_recall" => true,
+        "source_semantic_recall" => true,
+        "stable_profile_recall" => true,
         "source_semantic_index_refresh" => true
       })
 
@@ -266,6 +319,8 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     assert experimental_report["components"]["idle_dream_scheduling"]["enabled"] == true
     assert current["maintenance"]["dream_time_runs"] == 0
     assert experimental["maintenance"]["dream_time_runs"] == 2
+    assert current["maintenance"]["entity_resolution_runs_completed"] > 0
+    assert experimental["maintenance"]["entity_resolution_runs_completed"] > 0
     assert experimental_report["reasoning"]["enabled"] == true
 
     assert experimental_report["reasoning"]["scheduling"] == %{
@@ -304,6 +359,33 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
   test "an idle binding fails closed when its case has fewer than two active generations", %{
     tmp_dir: tmp_dir
   } do
+    original_roles = Application.fetch_env!(:memhouse, :model_roles)
+    original_provider = Application.get_env(:memhouse, :model_provider)
+
+    deterministic_embedder =
+      original_roles
+      |> Keyword.fetch!(:embedder)
+      |> Map.put(:provider, "fixture")
+      |> Map.put(:model, "eval-idle-failure-fixture")
+      |> Map.put(:model_version, "1")
+      |> Map.put(:embedding_dimensions, 3)
+
+    Application.put_env(
+      :memhouse,
+      :model_roles,
+      Keyword.put(original_roles, :embedder, deterministic_embedder)
+    )
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_roles, original_roles)
+
+      if original_provider,
+        do: Application.put_env(:memhouse, :model_provider, original_provider),
+        else: Application.delete_env(:memhouse, :model_provider)
+    end)
+
     dataset_path = Path.expand("test/fixtures/eval/memhouse-smoke.json")
     definition_path = Path.join(tmp_dir, "idle-without-generations.json")
 
@@ -329,6 +411,24 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
         source_revision: "test-source-revision"
       )
     end
+  end
+
+  test "execute validation rejects a completed outcome for a disabled recall component" do
+    recalls = [%{"outcomes" => [%{"tool" => "source_exact", "status" => "completed"}]}]
+    variant = %{"id" => "exact-disabled"}
+    components = %{"source_exact_recall" => false}
+
+    assert_raise ArgumentError,
+                 ~r/disabled source_exact_recall but completed a source_exact tool call/,
+                 fn ->
+                   ExecutionEvidence.assert_recall_tool!(
+                     recalls,
+                     variant,
+                     components,
+                     "source_exact_recall",
+                     "source_exact"
+                   )
+                 end
   end
 
   defp definition(dataset_path) do
@@ -407,7 +507,10 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
       "semantic_index_refresh" =>
         Enum.any?(strategies, &(&1 in ["semantic", "semantic_dual_lane"])),
       "source_semantic_index_refresh" => false,
-      "source_recall" => false
+      "source_recall" => false,
+      "source_exact_recall" => false,
+      "source_semantic_recall" => false,
+      "stable_profile_recall" => false
     }
   end
 

@@ -11,7 +11,7 @@ defmodule MemHouse.Eval.Runner do
 
   alias MemHouse.Clock
   alias MemHouse.DataLayer
-  alias MemHouse.Eval.{Durability, Ingest, ModelJudge, Reasoning, Scorer}
+  alias MemHouse.Eval.{Durability, Ingest, LifecycleEvidence, ModelJudge, Reasoning, Scorer}
   alias MemHouse.Memory
   alias MemHouse.Retrieval.{Indexer, RecallProjector, SourceIndexer}
   alias MemHouse.Topology.Scope
@@ -30,6 +30,10 @@ defmodule MemHouse.Eval.Runner do
   two active direct generations already present in each exact case scope. A question may set
   `metadata.peer_key` to evaluate the governed view and stable profile for that
   already-ingested Peer; omitting it retains the internal Account reader.
+
+  Optional `:after_ingest` and `:before_questions` callbacks receive the exact case scope.
+  The experiment harness uses both to settle newly enqueued durable maintenance before
+  dream-time retrieval and again before question retrieval.
 
   Non-success ingest tuples remain scored failures. Raised memory errors or invalid model
   judge results abort the run rather than producing incomplete evidence.
@@ -53,6 +57,7 @@ defmodule MemHouse.Eval.Runner do
     refresh = merge_refresh(cases)
 
     accounting = accounting(available_cases, cases)
+    lifecycle = LifecycleEvidence.snapshot(account_key, Enum.map(cases, & &1.scope_path))
 
     reasoning =
       if Keyword.get(opts, :dream_time, false),
@@ -72,7 +77,7 @@ defmodule MemHouse.Eval.Runner do
         else: nil
 
     %{
-      "report_schema" => "f11-2",
+      "report_schema" => "f11-3",
       "memhouse_version" => memhouse_version(),
       "generated_at" => Clock.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
       "benchmark" => benchmark,
@@ -108,6 +113,7 @@ defmodule MemHouse.Eval.Runner do
       "reasoning" => reasoning,
       "refresh" => refresh,
       "durability" => durability,
+      "lifecycle" => lifecycle,
       "metrics" => Scorer.summarize(question_results),
       "cases" => Enum.map(cases, &case_report/1)
     }
@@ -144,6 +150,7 @@ defmodule MemHouse.Eval.Runner do
     # durable extraction runs with one provider call, but it never reorders observations or
     # bypasses their ordinary governance writes.
     ingested = Ingest.run(messages, account_key, scope_path, opts)
+    Keyword.get(opts, :after_ingest, fn _scope_path -> :ok end).(scope_path)
 
     reasoning =
       cond do
@@ -169,6 +176,8 @@ defmodule MemHouse.Eval.Runner do
         refresh_source_semantic?,
         refresh_projection?
       )
+
+    Keyword.get(opts, :before_questions, fn _scope_path -> :ok end).(scope_path)
 
     ref_map = build_ref_map(ingested)
 
@@ -197,6 +206,15 @@ defmodule MemHouse.Eval.Runner do
               "strategies" => Keyword.get(opts, :strategies),
               "effort" => Keyword.get(opts, :recall_effort, "fixed"),
               "include_source_recall" => Keyword.get(opts, :source_recall, false),
+              "include_source_exact_recall" =>
+                Keyword.get(opts, :source_exact_recall, Keyword.get(opts, :source_recall, false)),
+              "include_source_semantic_recall" =>
+                Keyword.get(
+                  opts,
+                  :source_semantic_recall,
+                  Keyword.get(opts, :source_recall, false)
+                ),
+              "include_stable_profile_recall" => Keyword.get(opts, :stable_profile_recall, true),
               "_include_lineage_recall" => Keyword.get(opts, :lineage_recall, false)
             }
             |> put_question_peer(question)

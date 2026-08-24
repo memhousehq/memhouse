@@ -123,6 +123,7 @@ defmodule MemHouse.Model.Config do
 
     case persisted(role, context) do
       nil -> runtime(role)
+      %{provider: "ortex"} when role == :reranker -> runtime(role)
       record -> from_record(role, record)
     end
   end

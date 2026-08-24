@@ -18,6 +18,7 @@ defmodule MemHouse.Model.Providers.ReqLLMTest.StubPlug do
     if test_pid = Keyword.get(opts, :test_pid) do
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       send(test_pid, {:req_llm_request, Jason.decode!(body)})
+      send(test_pid, {:req_llm_http, conn.method, conn.request_path, conn.req_headers})
       respond(conn, opts)
     else
       respond(conn, opts)
@@ -29,7 +30,10 @@ defmodule MemHouse.Model.Providers.ReqLLMTest.StubPlug do
 
     conn
     |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(200, Jason.encode!(Keyword.fetch!(opts, :body)))
+    |> Plug.Conn.send_resp(
+      Keyword.get(opts, :status, 200),
+      Jason.encode!(Keyword.fetch!(opts, :body))
+    )
   end
 end
 
@@ -104,6 +108,19 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
     }
   end
 
+  defp reranker_role(options) do
+    %Role{
+      role: :reranker,
+      provider: "openrouter",
+      model: "voyageai/rerank-2.5",
+      model_version: "openrouter-2026-07",
+      prompt_version: "none",
+      pipeline_version: "f7-1",
+      config_version: 1,
+      options: options
+    }
+  end
+
   # Starts a stub endpoint on an ephemeral port and returns a role pointed at
   # it. Port 0 lets the OS pick, so these tests stay async-safe; the bound port
   # is read back from the listener rather than guessed.
@@ -120,6 +137,24 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
     {:ok, {_address, port}} = ThousandIsland.listener_info(pid)
 
     role(%{
+      "base_url" => "http://127.0.0.1:#{port}",
+      "api_key_ref" => "env:#{@key_variable}"
+    })
+  end
+
+  defp stubbed_reranker_role(body, plug_opts) do
+    pid =
+      start_supervised!(
+        {Bandit,
+         plug: {StubPlug, Keyword.merge([body: body], plug_opts)},
+         port: 0,
+         scheme: :http,
+         startup_log: false}
+      )
+
+    {:ok, {_address, port}} = ThousandIsland.listener_info(pid)
+
+    reranker_role(%{
       "base_url" => "http://127.0.0.1:#{port}",
       "api_key_ref" => "env:#{@key_variable}"
     })
@@ -194,6 +229,94 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
              request["response_format"]
 
     assert request["messages"] |> List.last() |> Map.fetch!("content") =~ "relationship status"
+  end
+
+  test "OpenRouter Voyage reranks through the native endpoint" do
+    config =
+      stubbed_reranker_role(
+        %{
+          "id" => "gen-rerank-stub",
+          "model" => "voyageai/rerank-2.5",
+          "results" => [
+            %{"index" => 1, "relevance_score" => 0.9},
+            %{"index" => 0, "relevance_score" => 0.2}
+          ],
+          "usage" => %{"search_units" => 1, "total_tokens" => 42}
+        },
+        test_pid: self()
+      )
+
+    assert {:ok,
+            %Result{
+              value: [
+                %{index: 1, relevance_score: 0.9, document: "second"},
+                %{index: 0, relevance_score: 0.2, document: "first"}
+              ],
+              usage: %{input_tokens: 42, output_tokens: 0}
+            }} = Adapter.rerank(config, "relationship status", ["first", "second"], [])
+
+    assert_receive {:req_llm_request, request}
+
+    assert request == %{
+             "model" => "voyageai/rerank-2.5",
+             "query" => "relationship status",
+             "documents" => ["first", "second"],
+             "top_n" => 2
+           }
+
+    assert_receive {:req_llm_http, "POST", "/rerank", headers}
+    assert {"authorization", "Bearer test-key"} in headers
+  end
+
+  test "OpenRouter Voyage rejects an out-of-range result index" do
+    config =
+      stubbed_reranker_role(
+        %{
+          "results" => [%{"index" => -1, "relevance_score" => 0.9}],
+          "usage" => %{"total_tokens" => 12}
+        },
+        []
+      )
+
+    assert {:error, :invalid_rerank_response} =
+             Adapter.rerank(config, "relationship status", ["first", "second"], [])
+  end
+
+  test "OpenRouter Voyage rejects a malformed result item" do
+    config =
+      stubbed_reranker_role(
+        %{"results" => ["not-a-ranking"], "usage" => %{"total_tokens" => 12}},
+        []
+      )
+
+    assert {:error, :invalid_rerank_response} =
+             Adapter.rerank(config, "relationship status", ["first", "second"], [])
+  end
+
+  test "OpenRouter Voyage rejects incomplete and duplicate result coverage" do
+    for results <- [
+          [%{"index" => 0, "relevance_score" => 0.9}],
+          [
+            %{"index" => 0, "relevance_score" => 0.9},
+            %{"index" => 0, "relevance_score" => 0.2}
+          ]
+        ] do
+      config = stubbed_reranker_role(%{"results" => results}, [])
+
+      assert {:error, :invalid_rerank_response} =
+               Adapter.rerank(config, "relationship status", ["first", "second"], [])
+    end
+  end
+
+  test "OpenRouter Voyage returns content-safe non-success status errors" do
+    config =
+      stubbed_reranker_role(
+        %{"error" => %{"message" => "sensitive upstream detail"}},
+        status: 429
+      )
+
+    assert {:error, {:rerank_http_status, 429}} =
+             Adapter.rerank(config, "relationship status", ["first", "second"], [])
   end
 
   describe "structured/4 on a 200 response with no object" do

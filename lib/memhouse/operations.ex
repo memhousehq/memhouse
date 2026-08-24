@@ -131,10 +131,29 @@ defmodule MemHouse.Operations.UsageEvent do
 
     # Token counts default to zero so that rows for non-model work still sum
     # cleanly alongside model rows.
-    attribute :input_tokens, :integer, allow_nil?: false, default: 0, public?: true
-    attribute :output_tokens, :integer, allow_nil?: false, default: 0, public?: true
-    attribute :embedding_tokens, :integer, allow_nil?: false, default: 0, public?: true
-    attribute :duration_ms, :integer, allow_nil?: false, default: 0, public?: true
+    attribute :input_tokens, :integer,
+      allow_nil?: false,
+      default: 0,
+      constraints: [min: 0],
+      public?: true
+
+    attribute :output_tokens, :integer,
+      allow_nil?: false,
+      default: 0,
+      constraints: [min: 0],
+      public?: true
+
+    attribute :embedding_tokens, :integer,
+      allow_nil?: false,
+      default: 0,
+      constraints: [min: 0],
+      public?: true
+
+    attribute :duration_ms, :integer,
+      allow_nil?: false,
+      default: 0,
+      constraints: [min: 0],
+      public?: true
 
     attribute :status, :string, allow_nil?: false, default: "ok", public?: true
 
@@ -464,6 +483,12 @@ defmodule MemHouse.Operations.PipelineRun do
       change set_attribute(:batch_claim_id, nil)
     end
 
+    update :record_extraction_outputs do
+      accept [:payload]
+      require_atomic? false
+      validate {MemHouse.Operations.Validations.CurrentStatusIn, statuses: ~w(completed)}
+    end
+
     update :classify_extraction_anchor do
       accept [:status, :attempt_count, :last_error_class, :processed_at, :payload]
       validate attribute_in(:status, ~w(failed repairable terminal))
@@ -787,7 +812,13 @@ defmodule MemHouse.Operations.PipelineRun do
     attribute :payload, :map, allow_nil?: false, default: %{}
 
     attribute :status, :string, allow_nil?: false, default: "pending", public?: true
-    attribute :attempt_count, :integer, allow_nil?: false, default: 0, public?: true
+
+    attribute :attempt_count, :integer,
+      allow_nil?: false,
+      default: 0,
+      constraints: [min: 0],
+      public?: true
+
     attribute :processed_at, :utc_datetime_usec, public?: true
 
     # A classification such as an exception module name, never a message.

@@ -140,6 +140,12 @@ The extractor stores the resolved date in `relevant_from` and
 `relevant_until`. It does not add an observation-time prefix to the statement.
 It keeps an ISO date in statement text only when the date is part of the claim.
 
+An elapsed possession or relationship duration can also imply a start event.
+For example, "I have had the laptop for about six months" can become an event
+that says the speaker obtained the laptop. MemHouse resolves the duration
+against `occurred_at`. An approximate month duration identifies a calendar
+month, not an exact day, and does not set `relevant_until`.
+
 ## Replaying is safe
 
 Deterministic idempotency makes replay merge provenance instead of duplicating

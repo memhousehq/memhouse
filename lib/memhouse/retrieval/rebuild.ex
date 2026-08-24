@@ -10,6 +10,7 @@ defmodule MemHouse.Retrieval.Rebuild do
   """
 
   alias MemHouse.Retrieval.Coverage
+  alias MemHouse.Retrieval.MaintenancePlan
 
   @doc """
   Rebuilds one scope's embeddings, entity index, and context projections.
@@ -56,14 +57,22 @@ defmodule MemHouse.Retrieval.Rebuild do
   remove sources as well as add them. Raw-message creation schedules this same
   operation, so a zero-fact extraction still receives source indexing.
   """
-  def refresh_scope(account_id, scope_id) do
+  def refresh_scope(account_id, scope_id),
+    do: refresh_scope(account_id, scope_id, MaintenancePlan.for_profile(:current))
+
+  @doc "Runs a coalesced refresh from the immutable plan captured by its pipeline run."
+  def refresh_scope(account_id, scope_id, payload_or_plan) do
+    plan =
+      if Map.has_key?(payload_or_plan, :stages),
+        do: payload_or_plan,
+        else: MaintenancePlan.from_payload(payload_or_plan)
+
     with {:ok, sources} <- MemHouse.Retrieval.SourceIndexer.refresh_scope(account_id, scope_id),
          {:ok, index} <- MemHouse.Retrieval.Indexer.refresh_scope(account_id, scope_id),
          {:ok, recall_documents} <-
            MemHouse.Retrieval.RecallProjector.refresh_scope(account_id, scope_id),
-         {:ok, entities} <-
-           MemHouse.Retrieval.EntityResolver.rebuild_scope(account_id, scope_id),
-         {:ok, projections} <- MemHouse.Context.Builder.refresh_scope(account_id, scope_id) do
+         {:ok, entities} <- run_entities(plan, account_id, scope_id),
+         {:ok, projections} <- run_projections(plan, account_id, scope_id) do
       emit_coverage(account_id, scope_id, index, recall_documents)
 
       {:ok,
@@ -76,6 +85,24 @@ defmodule MemHouse.Retrieval.Rebuild do
        }}
     end
   end
+
+  defp run_entities(plan, account_id, scope_id) do
+    if MaintenancePlan.scheduled?(plan, "entities") do
+      MemHouse.Retrieval.EntityResolver.rebuild_scope(account_id, scope_id)
+    else
+      {:ok, skipped()}
+    end
+  end
+
+  defp run_projections(plan, account_id, scope_id) do
+    if MaintenancePlan.scheduled?(plan, "context_projections") do
+      MemHouse.Context.Builder.refresh_scope(account_id, scope_id)
+    else
+      {:ok, skipped()}
+    end
+  end
+
+  defp skipped, do: %{status: "skipped", reason_class: "profile_disabled"}
 
   # Measured after the write phase, so the event describes what a reader would
   # now find rather than what this run intended to write. Ids and counts only.

@@ -35,6 +35,7 @@ defmodule MemHouse.Pipeline do
   alias MemHouse.DataLayer
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline.{DreamTime, Idempotency, Lock}
+  alias MemHouse.Retrieval.MaintenancePlan
   alias MemHouse.Retrieval.Store
 
   require Ash.Query
@@ -66,6 +67,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_message_extraction(struct(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_message_extraction(message, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "extraction",
       message.account_id,
@@ -74,7 +77,7 @@ defmodule MemHouse.Pipeline do
         target_type: "message",
         target_id: message.id,
         idempotency_key: Idempotency.message_extraction(message.id, message.content_hash),
-        payload: %{"content_hash" => message.content_hash}
+        payload: MaintenancePlan.put_payload(%{"content_hash" => message.content_hash}, plan)
       },
       actor
     )
@@ -91,6 +94,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_document_extraction(struct(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_document_extraction(version, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "extraction",
       version.account_id,
@@ -99,7 +104,7 @@ defmodule MemHouse.Pipeline do
         target_type: "document_version",
         target_id: version.id,
         idempotency_key: Idempotency.document_extraction(version.id, version.content_hash),
-        payload: %{"content_hash" => version.content_hash}
+        payload: MaintenancePlan.put_payload(%{"content_hash" => version.content_hash}, plan)
       },
       actor
     )
@@ -260,6 +265,24 @@ defmodule MemHouse.Pipeline do
     )
   end
 
+  @doc "Enqueues a reconciliation refresh without widening its durable maintenance plan."
+  @spec enqueue_projection_refresh(Ecto.UUID.t(), Ecto.UUID.t(), term(), map(), map()) ::
+          {:ok, PipelineRun.t()} | {:error, term()}
+  def enqueue_projection_refresh(account_id, scope_id, watermark, actor, plan) do
+    enqueue(
+      "projection_refresh",
+      account_id,
+      %{
+        scope_id: scope_id,
+        target_type: "scope",
+        target_id: scope_id,
+        idempotency_key: Idempotency.projection_refresh(scope_id, watermark, plan.id),
+        payload: plan |> MaintenancePlan.payload() |> Map.put("watermark", to_string(watermark))
+      },
+      actor
+    )
+  end
+
   @doc """
   Schedules one delayed derived-cache refresh for a burst of governed writes.
 
@@ -274,6 +297,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_derived_refresh(Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_derived_refresh(account_id, scope_id, %DateTime{} = changed_at, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "projection_refresh",
       account_id,
@@ -282,8 +307,14 @@ defmodule MemHouse.Pipeline do
         target_type: "scope",
         target_id: scope_id,
         idempotency_key:
-          Idempotency.derived_refresh(scope_id, :projection_refresh, changed_at, 10),
-        payload: %{"mode" => "coalesced"}
+          Idempotency.derived_refresh(
+            scope_id,
+            :projection_refresh,
+            changed_at,
+            10,
+            plan.id
+          ),
+        payload: MaintenancePlan.payload(plan)
       },
       actor
     )
@@ -492,9 +523,16 @@ defmodule MemHouse.Pipeline do
   Returns `{:error, :stale_extraction_claim}` when reconciliation or another
   owner has replaced the claim. In that case no attribute is changed.
   """
-  def classify_extraction_run(run, status, error_class, admission_identity, actor)
+  def classify_extraction_run(
+        run,
+        status,
+        error_class,
+        admission_identity,
+        actor,
+        evidence \\ %{}
+      )
       when status in ["failed", "repairable", "terminal"] and
-             not is_nil(run.batch_claim_id) do
+             not is_nil(run.batch_claim_id) and is_map(evidence) do
     fenced_extraction_update(
       run,
       :classify_extraction_anchor,
@@ -503,7 +541,7 @@ defmodule MemHouse.Pipeline do
         attempt_count: run.attempt_count + 1,
         last_error_class: error_class,
         processed_at: if(status == "failed", do: nil, else: Clock.utc_now()),
-        payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+        payload: extraction_evidence_payload(run, admission_identity, evidence)
       },
       actor
     )
@@ -516,18 +554,46 @@ defmodule MemHouse.Pipeline do
   processing under the supplied claim. This expected race never clears or
   overwrites the current owner's replacement claim.
   """
-  def complete_extraction_run(run, admission_identity, actor)
-      when not is_nil(run.batch_claim_id) do
+  def complete_extraction_run(run, admission_identity, actor, evidence \\ %{})
+      when not is_nil(run.batch_claim_id) and is_map(evidence) do
     fenced_extraction_update(
       run,
       :complete_extraction_anchor,
       %{
         attempt_count: run.attempt_count + 1,
         processed_at: Clock.utc_now(),
-        payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+        payload: extraction_evidence_payload(run, admission_identity, evidence)
       },
       actor
     )
+  end
+
+  @doc "Records the content-safe knowledge ids produced by one completed extraction anchor."
+  def record_extraction_outputs(run, knowledge_item_ids, actor)
+      when is_list(knowledge_item_ids) do
+    payload = Map.put(run.payload || %{}, "knowledge_item_ids", knowledge_item_ids)
+
+    run
+    |> Ash.Changeset.for_update(:record_extraction_outputs, %{payload: payload})
+    |> Ash.Changeset.set_tenant(run.account_id)
+    |> Ash.update(actor: pipeline_actor(actor))
+  end
+
+  defp extraction_evidence_payload(run, admission_identity, evidence) do
+    evidence =
+      evidence
+      |> Map.take([:anchor_count, :provider_attempts, :candidate_count])
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      |> Map.put("batch_id", run.batch_claim_id)
+
+    payload = run.payload || %{}
+    attempts = Map.get(payload, "extraction_attempts", [])
+
+    payload
+    |> Map.put("admission_identity", admission_identity)
+    |> Map.put("extraction_evidence", evidence)
+    |> Map.put("extraction_attempts", attempts ++ [evidence])
+    |> Map.put("knowledge_item_ids", [])
   end
 
   defp fenced_extraction_update(run, action, attrs, actor) do
@@ -655,6 +721,22 @@ defmodule MemHouse.Pipeline do
     )
     |> Ash.Query.set_tenant(account_id)
     |> Ash.exists?(actor: pipeline_actor(actor))
+  end
+
+  @doc "Returns the latest durable maintenance contract for a scope, or full legacy behavior."
+  @spec maintenance_plan_for_scope(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: map()
+  def maintenance_plan_for_scope(account_id, scope_id, actor) do
+    run =
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "projection_refresh" and target_type == "scope" and target_id == ^scope_id
+      )
+      |> Ash.Query.sort(inserted_at: :desc, id: :desc)
+      |> Ash.Query.limit(1)
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.read_one!(actor: pipeline_actor(actor))
+
+    MaintenancePlan.from_payload(if(run, do: run.payload, else: %{}))
   end
 
   @doc """

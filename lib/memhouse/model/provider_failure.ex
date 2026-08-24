@@ -30,6 +30,8 @@ defmodule MemHouse.Model.ProviderFailure do
       when status in @configuration_statuses,
       do: false
 
+  def transient?(%MemHouse.Operations.ExtractionBudget.Exceeded{}), do: false
+
   def transient?(%{class: class}) when class in [:invalid, :validation], do: false
   def transient?(reason) when reason in @structured_response_errors, do: false
   def transient?(_error), do: true

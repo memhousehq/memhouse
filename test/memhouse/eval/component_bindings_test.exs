@@ -13,7 +13,9 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
       "deadline" => "disabled",
       "extraction_batching" => true,
       "recall_effort" => "medium",
-      "source_recall" => true,
+      "source_exact_recall" => true,
+      "source_semantic_recall" => false,
+      "stable_profile_recall" => false,
       "source_semantic_index_refresh" => true,
       "lineage_recall" => false,
       "semantic_index_refresh" => false,
@@ -63,11 +65,14 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
              "retrieval_strategies" => ["semantic_dual_lane", "lexical"],
              "semantic_index_refresh" => false,
              "source_semantic_index_refresh" => true,
-             "source_recall" => true
+             "source_recall" => true,
+             "source_exact_recall" => true,
+             "source_semantic_recall" => false,
+             "stable_profile_recall" => false
            }
   end
 
-  test "fixed recall cannot falsely claim source or lineage behavior" do
+  test "fixed recall cannot falsely claim adaptive tool behavior" do
     variant = %{
       "id" => "lying-fixed",
       "profile" => "balanced",
@@ -76,23 +81,26 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     }
 
     assert_raise ArgumentError,
-                 ~r/cannot enable source or lineage recall with fixed effort/,
+                 ~r/cannot enable adaptive recall tools with fixed effort/,
                  fn ->
                    ComponentBindings.resolve!(variant)
                  end
   end
 
-  test "source recall cannot silently downgrade to an exact-only source index" do
-    assert_raise ArgumentError, ~r/cannot enable source recall without source semantic/, fn ->
-      ComponentBindings.resolve!(%{
-        "id" => "exact-only-source",
-        "profile" => "balanced",
-        "strategies" => ["lexical"],
-        "recall_effort" => "high",
-        "source_recall" => true,
-        "source_semantic_index_refresh" => false
-      })
-    end
+  test "source semantic recall cannot silently run without its source index" do
+    assert_raise ArgumentError,
+                 ~r/cannot enable source semantic recall without source semantic/,
+                 fn ->
+                   ComponentBindings.resolve!(%{
+                     "id" => "exact-only-source",
+                     "profile" => "balanced",
+                     "strategies" => ["lexical"],
+                     "recall_effort" => "high",
+                     "source_exact_recall" => false,
+                     "source_semantic_recall" => true,
+                     "source_semantic_index_refresh" => false
+                   })
+                 end
   end
 
   test "profile bindings keep the closed JSON string boundary" do
@@ -132,6 +140,11 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
         assert Application.fetch_env!(:memhouse, :dream_time_gates)[:idle_scheduler_enabled]
         assert Application.fetch_env!(:memhouse, :dream_reasoning_operations)[:split_enabled]
         assert Application.fetch_env!(:memhouse, :retrieval_profiles)[:minimal_enabled]
+        assert MemHouse.Retrieval.MaintenancePlan.current().profile == "minimal"
+
+        assert Task.async(fn -> MemHouse.Retrieval.MaintenancePlan.current().profile end)
+               |> Task.await() == "current"
+
         assert MemHouse.Pipeline.ExtractionAdmission.enabled?()
         assert MemHouse.Pipeline.idle_dream_time_enabled?()
         raise "stop"
@@ -142,6 +155,7 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     assert Application.fetch_env!(:memhouse, :dream_time_gates) == dream_gates
     assert Application.fetch_env!(:memhouse, :dream_reasoning_operations) == dream_operations
     assert Application.fetch_env!(:memhouse, :retrieval_profiles) == profiles
+    assert MemHouse.Retrieval.MaintenancePlan.current().profile == "current"
   end
 
   test "runtime feature switches are restored when a later switch is invalid" do
@@ -165,6 +179,7 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     assert Application.fetch_env!(:memhouse, :dream_time_gates) == dream_gates
     assert Application.fetch_env!(:memhouse, :dream_reasoning_operations) == dream_operations
     assert Application.fetch_env!(:memhouse, :retrieval_profiles) == profiles
+    assert MemHouse.Retrieval.MaintenancePlan.current().profile == "current"
   end
 
   test "split dream reasoning cannot be declared without executing dream-time" do

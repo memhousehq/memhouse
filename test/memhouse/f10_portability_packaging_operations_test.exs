@@ -236,6 +236,26 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
                  fn -> RuntimeConfig.validate!() end
   end
 
+  test "startup rejects a legacy Ortex reranker environment override" do
+    original_roles = Application.fetch_env!(:memhouse, :model_roles)
+
+    roles =
+      Keyword.update!(original_roles, :reranker, fn config ->
+        config
+        |> Map.put(:provider, "ortex")
+        |> Map.put(:model, "BAAI/bge-reranker-v2-m3")
+      end)
+
+    Application.put_env(:memhouse, :model_roles, roles)
+    on_exit(fn -> Application.put_env(:memhouse, :model_roles, original_roles) end)
+
+    assert_raise RuntimeError,
+                 "MEMHOUSE_RERANKER_PROVIDER=ortex was removed; unset legacy reranker " <>
+                   "overrides or set MEMHOUSE_RERANKER_PROVIDER=openrouter and " <>
+                   "MEMHOUSE_RERANKER_MODEL=voyageai/rerank-2.5",
+                 fn -> RuntimeConfig.validate!() end
+  end
+
   test "readiness is not ready when the configured embedder has no index" do
     original_roles = Application.fetch_env!(:memhouse, :model_roles)
 
@@ -311,6 +331,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert summary.ingest_economics == %{
              messages: 1,
              calls: 0,
+             unmetered_calls: 0,
              calls_per_message: 0.0,
              tokens_per_message: 0.0,
              cost_per_message: 0.0
@@ -507,7 +528,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
                  status: :ok,
                  duration_ms: 50,
                  usage: %{input_tokens: 600, output_tokens: 400},
-                 metadata: %{}
+                 metadata: %{metering_status: :complete}
                }
              )
 
@@ -516,6 +537,7 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert summary.ingest_economics == %{
              messages: 1,
              calls: 1,
+             unmetered_calls: 0,
              calls_per_message: 1.0,
              tokens_per_message: 1000.0,
              cost_per_message: 0.0014

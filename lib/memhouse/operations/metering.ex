@@ -223,6 +223,11 @@ defmodule MemHouse.Operations.Metering do
     %{
       messages: ingests,
       calls: length(extractor_events),
+      unmetered_calls:
+        Enum.count(
+          extractor_events,
+          &(Map.get(&1.metadata, "metering_status") != "complete")
+        ),
       calls_per_message: rate(length(extractor_events), ingests),
       tokens_per_message: rate(token_count, ingests),
       cost_per_message: per_message_cost(cost, ingests)

@@ -49,6 +49,9 @@ config :memhouse,
 # compile-time setting: Postgrex builds the type module while compiling.
 config :memhouse, MemHouse.Repo, types: MemHouse.PostgrexTypes
 
+# Optional operator documentation link shown only in the console legend.
+config :memhouse, :lifecycle_docs_url, false
+
 # Where Postgres lives. This is an infrastructure seam, not a behaviour switch:
 # `"pg0"` means the release supervises its own checksum-pinned PostgreSQL
 # process, `"external"` means an operator runs the server. Both modes are the
@@ -97,6 +100,7 @@ config :memhouse, :database,
 # boot in external mode turns this on; dev and test rely on their own Repo
 # credentials.
 config :memhouse, :require_database_url, false
+config :memhouse, :build_sha, "development"
 
 # When explicitly enabled, one extraction job may opportunistically consume
 # adjacent message jobs. The target is an experiment variable, while
@@ -345,12 +349,12 @@ config :memhouse, :retrieval_profiles,
   # profile. Bounds rerank token cost and latency; the tail below rank 20 keeps
   # its fusion order.
   rerank_head: 20,
-  # Maximum milliseconds independently offered to local reranking. The engine clamps
+  # Maximum milliseconds independently offered to hosted reranking. The engine clamps
   # this to the request's remaining hard deadline, so it reserves useful model
   # time without ever extending the overall request ceiling. A deadline-free
   # evaluation run is not clamped at all, because it is measuring the reranked
   # ordering itself.
-  rerank_timeout_ms: 120,
+  rerank_timeout_ms: 750,
   # Maximum milliseconds one retrieval strategy may run. The engine also clamps this to the
   # remaining strategy-phase budget. This prevents one lane from consuming the full
   # thorough-profile strategy budget and leaving no time for expansion or reranking.
@@ -366,7 +370,7 @@ config :memhouse, :retrieval_profiles,
   # reservation can never starve retrieval of candidates to rank. Set it to 0 to
   # restore leftover-budget behavior, where slow strategies silently cost the
   # rerank stage its allowance.
-  rerank_reserved_ms: 120,
+  rerank_reserved_ms: 750,
   # After this many incremental delta merges, a projection is rebuilt in full
   # rather than merged again. Unit: delta updates. Bounds drift and unbounded
   # growth of merged projection content.
@@ -462,7 +466,7 @@ config :memhouse, :model_cost_per_million, %{
   "dream_reasoner" => %{input: 1.0, output: 3.0},
   "dialectic_agent" => %{input: 1.0, output: 3.0},
   "embedder" => %{embedding: 0.1},
-  "reranker" => %{input: 1.0, output: 1.0}
+  "reranker" => %{input: 0.05, output: 0.0}
 }
 
 config :memhouse, :model_cost_profile, %{
@@ -529,26 +533,23 @@ config :memhouse, :model_roles,
     }
   },
   reranker: %{
-    # The cross-encoder uses independent classifier artifacts. It never shares
-    # the embedder session, because pair scoring and vector generation have
-    # different graph outputs and tokenizer input shapes.
-    provider: "ortex",
-    model: "BAAI/bge-reranker-v2-m3",
-    model_version: "onnx-1-bge-reranker-v2-m3",
-    prompt_version: "pair-v1",
+    # OpenRouter serves the native Voyage rerank endpoint. The role keeps a
+    # separate identity and budget from generation and local embeddings.
+    provider: "openrouter",
+    model: "voyageai/rerank-2.5",
+    model_version: "openrouter-2026-07",
+    prompt_version: "none",
     pipeline_version: "f7-1",
     options: %{
-      "input_order" => ["input_ids", "attention_mask"],
-      "max_length" => 512,
-      "output_index" => 0,
-      "positive_class_index" => 0
+      "api_key_ref" => "env:OPENROUTER_API_KEY",
+      "base_url" => "https://openrouter.ai/api/v1"
     }
   },
   ingest_extractor: %{
     provider: "deterministic",
     model: "local-structured-fallback",
     model_version: "1",
-    prompt_version: "extract-13",
+    prompt_version: "extract-14",
     pipeline_version: "f5-1",
     options: %{}
   },

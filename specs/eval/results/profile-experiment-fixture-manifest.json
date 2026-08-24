@@ -11,7 +11,7 @@
   },
   "definition": {
     "schema": "memhouse-experiment-definition-1",
-    "sha256": "6b28e786e3567615a784c0e9fe4e0d79c74eb9991751748c0d096e2bde734df4"
+    "sha256": "420f23fdbf8583353d59fe73d5f1e9ad2529861fade6943b2cf26254bc70adc4"
   },
   "generated_at": "2026-08-17T12:00:00Z",
   "id": "profile-experiment-fixture",

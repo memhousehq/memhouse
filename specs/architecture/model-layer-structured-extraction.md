@@ -14,7 +14,7 @@ the model-outage portion of `NFR-8`.
 | Role | Capability | Default |
 | --- | --- | --- |
 | `embedder` | Pinned vector generation | Local Qwen3-Embedding-0.6B through Ortex/ONNX, 1024 dimensions |
-| `reranker` | Query-document precision ranking | Local BAAI/bge-reranker-v2-m3 cross-encoder through Ortex/ONNX |
+| `reranker` | Query-document precision ranking | Voyage rerank-2.5 through OpenRouter's native rerank API |
 | `ingest_extractor` | Fast structured observation extraction | ReqLLM generation role |
 | `dream_reasoner` | Slow structured reasoning | ReqLLM reasoning role |
 | `dialectic_agent` | Grounded structured answers | ReqLLM dialectic role |
@@ -100,7 +100,7 @@ citation was in the retrieved set; when none survive it returns the empty
 grounded abstention, and on model error it falls back to the existing grounded
 assembler. `get_context` performs no model call.
 
-The `extract-13` and `f5-1` prompt and pipeline versions enforce subject and
+The `extract-14` and `f5-1` prompt and pipeline versions enforce subject and
 source-grounding rules:
 agent peers are excluded from the subject allowlist and machine referents are
 refused, preserving the verified contract that knowledge is about people and
@@ -135,18 +135,21 @@ mask-aware last-token pooling, and a query-only instruction prefix.
 
 ## Reranking
 
-`MemHouse.Model.Reranking.Ortex` scores tokenized query-document pairs with a
-pinned classifier and returns its unbounded relevance logits. It never downloads
-artifacts. Reranking has a dedicated `:reranker` role so slow reasoning does not
-consume the retrieval budget. Native hosted rerank endpoints remain supported;
-structured generation is available only when retrieval deadlines are disabled.
-ADR 0015 records the boundary.
+The HTTP provider sends the bounded candidate head to OpenRouter's native
+`voyageai/rerank-2.5` endpoint and maps returned indexes and relevance scores
+back to the input documents. It uses `OPENROUTER_API_KEY` by reference and does
+not load classifier artifacts. Reranking retains its dedicated `:reranker` role
+so generation does not consume the retrieval budget. Duplicate, out-of-range,
+or malformed results fail closed in the existing retrieval outcome path;
+structured generation remains available only for non-native models when
+retrieval deadlines are disabled. ADR 0023 supersedes the local decision in
+ADR 0015.
 
 ## Provenance, metering, and safety
 
 Knowledge and provenance now store provider, model, model version, prompt
 version, pipeline version, and embedding identity fields. Extraction uses
-prompt `extract-13` and pipeline `f5-1`. It defines durable claims as stable
+prompt `extract-14` and pipeline `f5-1`. It defines durable claims as stable
 facts, preferences, relationships, possessions, skills, commitments, plans,
 and lasting events. It drops conversation residue and schema validation rejects
 questions, speech-act transcriptions, and peer claims that omit their subject.
@@ -158,7 +161,11 @@ a date is part of the claim. Observation time never supplies valid time, and
 expiry remains governance policy. Readers render the structured valid-time
 fields when they need the date. The prompt requires
 `confidence_level` as `stated_explicitly`, `clearly_implied`, or `inferred`;
-`Extraction.cast/2` maps these labels to fixed stored numeric fractions.
+`Extraction.cast/2` maps these labels to fixed stored numeric fractions. An
+anchored approximate possession or relationship duration becomes the event
+that started the state. Its `relevant_from` must fall in the implied calendar
+month, `relevant_until` stays null, and a duration-only paraphrase is rejected
+before governance.
 
 The default-off `compact-explicit-v1` experiment narrows the provider response
 to statement, exact supporting span, subject reference, source-message ids,
@@ -172,19 +179,25 @@ evidence, then delegates the completed candidate to `Extraction.cast/2`.
 Thus batch anchor/source confinement, hostile-output and relayed-agent rules,
 subject allowlists, exact spans, temporal ordering, Ash validation, provenance,
 and Gate A/B remain one shared contract rather than an experimental bypass.
+Because trusted compact conversion still supplies `fact` and accepts only an
+explicit validity boundary, this experiment does not implement inferred
+acquisition events from elapsed durations. The later issue-279 live comparison
+keeps it as the C arm and records that limitation instead of claiming parity.
 
 `MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` selects both the single and batched
 schema and changes the configured extractor prompt identity. A partially
 configured Account fails on prompt-version mismatch before provider work. The
-switch creates no second store and disabling it restores `extract-13`. It is
+switch creates no second store and disabling it restores `extract-14`. It is
 not eligible to become the default until ADR 0021's matched held-out
 non-inferiority, privacy/attribution, cost/token, and human-review gates pass;
 the additive implementation includes deterministic evidence only.
 
 Adjacent pending anchors in the same Account, scope, and session may share one
-`extract-13` provider call. `ExtractionBatch` requires an explicit envelope per
-anchor and reuses `Extraction.cast/2` with that anchor's independent validation
-context. `utf8-bytes-v1` pre-call admission counts serialized instructions,
+provider call: `extract-14` identifies the default contract and
+`extract-compact-exp-1` identifies compact extraction. `ExtractionBatch`
+requires an explicit envelope per anchor and reuses `Extraction.cast/2` with
+that anchor's independent validation context. `utf8-bytes-v1` pre-call
+admission counts serialized instructions,
 schema, evidence windows, reserved output, and safety margin. Supported
 experiment targets are 128, 1K, 4K, and 16K; the tokenizer and all budget values
 form the admission identity stored on each completed run.

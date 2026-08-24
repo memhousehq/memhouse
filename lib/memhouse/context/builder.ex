@@ -188,9 +188,12 @@ defmodule MemHouse.Context.Builder do
         # level, belongs to that peer alone, and a card built from it would hand it to everyone
         # who reads the scope — past every rule retrieval applies. Provisional rows are read
         # separately for the subject-keyed peer channel below.
+        shared_states = MemHouse.Knowledge.Lifecycle.shared_projection_states()
+        peer_states = MemHouse.Knowledge.Lifecycle.peer_projection_states()
+
         scope_knowledge =
           visible_knowledge
-          |> Ash.Query.filter(state == "active")
+          |> Ash.Query.filter(state in ^shared_states)
           |> Ash.Query.filter(
             sensitivity in ["public", "internal"] or is_nil(subject_peer_id) or
               target_level in ["scope", "account"]
@@ -201,7 +204,7 @@ defmodule MemHouse.Context.Builder do
 
         peer_knowledge =
           visible_knowledge
-          |> Ash.Query.filter(state in ["active", "provisional"] and not is_nil(subject_peer_id))
+          |> Ash.Query.filter(state in ^peer_states and not is_nil(subject_peer_id))
           |> Ash.Query.sort(confidence: :desc, updated_at: :desc)
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)

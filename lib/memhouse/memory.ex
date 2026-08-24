@@ -284,16 +284,52 @@ defmodule MemHouse.Memory do
   transaction. The trailing bang reflects those ordinary write failures; a
   lost claim is an expected concurrency outcome rather than an exception.
   """
-  def persist_message_extraction_result!(run, message, result, admission_identity) do
+  def persist_message_extraction_result!(
+        run,
+        message,
+        result,
+        admission_identity,
+        evidence \\ %{}
+      ) do
+    run.payload
+    |> MemHouse.Retrieval.MaintenancePlan.from_payload()
+    |> MemHouse.Retrieval.MaintenancePlan.with_plan(fn ->
+      do_persist_message_extraction_result!(
+        run,
+        message,
+        result,
+        admission_identity,
+        evidence
+      )
+    end)
+  end
+
+  defp do_persist_message_extraction_result!(
+         run,
+         message,
+         result,
+         admission_identity,
+         evidence
+       ) do
     DataLayer.with_account_id(
       run.account_id,
       [role: :system, pipeline?: true],
       fn account, actor ->
         case result do
           %{status: :ok, items: items} ->
-            case Pipeline.complete_extraction_run(run, admission_identity, actor) do
-              {:ok, _run} ->
+            evidence = Map.put(evidence, :candidate_count, length(items))
+
+            case Pipeline.complete_extraction_run(run, admission_identity, actor, evidence) do
+              {:ok, completed_run} ->
                 knowledge = Enum.map(items, &insert_knowledge!(account.id, actor, message, &1))
+
+                {:ok, _run} =
+                  Pipeline.record_extraction_outputs(
+                    completed_run,
+                    Enum.map(knowledge, & &1["id"]),
+                    actor
+                  )
+
                 mark_message_extracted!(account.id, actor, message["id"])
                 {:ok, knowledge}
 
@@ -307,7 +343,8 @@ defmodule MemHouse.Memory do
                    "terminal",
                    reason_class,
                    admission_identity,
-                   actor
+                   actor,
+                   Map.put(evidence, :candidate_count, 0)
                  ) do
               {:ok, _run} -> {:ok, []}
               {:error, :stale_extraction_claim} = stale -> stale
@@ -744,8 +781,11 @@ defmodule MemHouse.Memory do
   answer is worth more latency than a results list, and its base retrieval is
   narrowed to knowledge. A named effort adds only bounded read-only profile,
   lineage, and knowledge tools. Source-message tools are available only when
-  the caller also passes `"include_source_recall" => true`; effort alone never
-  broadens recall from governed knowledge into immutable source text.
+  the caller also permits them. `"include_source_exact_recall"` and
+  `"include_source_semantic_recall"` select the tools independently;
+  `"include_source_recall" => true` remains the compatible shorthand for both.
+  `"include_stable_profile_recall" => false` disables stable-profile lookup.
+  Effort alone never broadens recall from governed knowledge into immutable source text.
 
   The answer is grounded twice over: the model sees nothing but the retrieved
   statements, and every citation it returns is dropped unless it matches an id
