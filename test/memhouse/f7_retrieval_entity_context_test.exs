@@ -1680,6 +1680,11 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         "Avery owns the release checklist."
       )
 
+    assert {:ok, %{statements: 1, mentions: mentions}} =
+             EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+
+    assert mentions >= 1
+
     expired = expire_active!(seeded)
     assert expired.state == "active"
 
@@ -2819,6 +2824,18 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert Enum.all?(MemHouse.F7RetrievalEntityContextTest.Provider.calls(), &(&1 == :embed))
   end
 
+  test "scope invalidation evicts projection cache entries from before the expiry-bound upgrade" do
+    account_id = Ash.UUID.generate()
+    scope_id = Ash.UUID.generate()
+    key = {account_id, scope_id, "legacy-projection"}
+
+    true = :ets.insert(Cache, {key, %{legacy: true}})
+    assert :ets.lookup(Cache, key) != []
+
+    assert :ok = Cache.invalidate_scope(account_id, scope_id)
+    assert :ets.lookup(Cache, key) == []
+  end
+
   test "entity cards name their scope-local referent and drop the summary at two sources" do
     first =
       seed_active!(
@@ -3591,6 +3608,48 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     assert {:ok, %{source_scopes: 0, scopes: 0}} =
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+  end
+
+  test "reconciliation schedules a bounded rebuild for legacy projection validity rows" do
+    seeded =
+      seed_active!(
+        "f7-projection-validity-reconcile",
+        "/f7/projection-validity-reconcile",
+        "Avery owns the release checklist."
+      )
+
+    assert {:ok, _result} =
+             MemHouse.Retrieval.Rebuild.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    DataLayer.with_actor(seeded.actor, fn account, _actor ->
+      account_id = Ecto.UUID.dump!(account.id)
+
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE projections SET validity_version = 0 WHERE account_id = $1",
+        [account_id]
+      )
+
+      # The seed's ordinary coalesced refresh is no longer recoverable; reconciliation must add
+      # a distinct upgrade-keyed run instead of reusing that completed generation.
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE pipeline_runs SET status = 'completed' WHERE account_id = $1 AND kind = 'projection_refresh'",
+        [account_id]
+      )
+    end)
+
+    before = projection_refresh_count(seeded.account.id)
+
+    assert {:ok, %{legacy_projection_scopes: 1}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before + 1
+
+    assert {:ok, %{legacy_projection_scopes: 0}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before + 1
   end
 
   test "mention coverage reports a partially indexed scope" do

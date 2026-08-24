@@ -69,6 +69,7 @@ defmodule MemHouse.Context.Cache do
   """
   def invalidate_scope(account_id, scope_id) do
     :ets.match_delete(@table, {{account_id, scope_id, :_}, :_, :_})
+    :ets.match_delete(@table, {{account_id, scope_id, :_}, :_})
 
     Phoenix.PubSub.broadcast(
       MemHouse.PubSub,
@@ -91,6 +92,7 @@ defmodule MemHouse.Context.Cache do
   def handle_info({:invalidate, account_id, scope_id}, state) do
     # The origin also receives this broadcast; repeated deletion is safe.
     :ets.match_delete(@table, {{account_id, scope_id, :_}, :_, :_})
+    :ets.match_delete(@table, {{account_id, scope_id, :_}, :_})
     {:noreply, state}
   end
 end
