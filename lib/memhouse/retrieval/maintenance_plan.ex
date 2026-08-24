@@ -38,6 +38,11 @@ defmodule MemHouse.Retrieval.MaintenancePlan do
     end
   end
 
+  @doc "Runs one worker with the exact plan captured in its durable payload."
+  def with_plan(plan, fun) when is_map(plan) and is_function(fun, 0) do
+    with_profile(plan.profile, fun)
+  end
+
   @doc "Returns the closed maintenance plan for a retrieval profile."
   def for_profile(profile) when profile in [:minimal, "minimal"] do
     %{id: "minimal-v1", profile: "minimal", stages: @minimal}
@@ -62,11 +67,15 @@ defmodule MemHouse.Retrieval.MaintenancePlan do
 
   @doc "Encodes a plan in a coalesced refresh payload."
   def payload(plan) do
-    %{
+    put_payload(%{"mode" => "coalesced"}, plan)
+  end
+
+  @doc "Adds a content-safe maintenance identity to another pipeline payload."
+  def put_payload(payload, plan) when is_map(payload) and is_map(plan) do
+    Map.merge(payload, %{
       "maintenance_profile" => plan.id,
-      "mode" => "coalesced",
       "stages" => plan.stages
-    }
+    })
   end
 
   @doc "Decodes a durable payload, defaulting legacy work to the full plan."

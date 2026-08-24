@@ -153,7 +153,7 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
       "retrieval_profile" => "minimal"
     }
 
-    {account_id, message_id, run} =
+    {account_id, message_id, extraction_run} =
       MemHouse.Eval.VariantRuntime.with_components(components, fn ->
         message =
           ingest!(
@@ -164,34 +164,43 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
             1
           )
 
-        {account_id, scope_id} = account_and_scope!("source-minimal-write", "/source/minimal")
-        assert {:ok, [knowledge]} = Memory.extract_message_for_account(message["id"], account_id)
-        activate_knowledge!(account_id, knowledge["id"])
-        [run] = projection_runs(account_id, scope_id)
-        {account_id, message["id"], run}
+        {account_id, _scope_id} = account_and_scope!("source-minimal-write", "/source/minimal")
+        [extraction_run] = extraction_runs(account_id, message["id"])
+        assert extraction_run.payload["maintenance_profile"] == "minimal-v1"
+        {account_id, message["id"], extraction_run}
       end)
 
-    assert run.payload == %{
-             "maintenance_profile" => "minimal-v1",
-             "mode" => "coalesced",
-             "stages" => %{
-               "context_projections" => "skipped",
-               "entities" => "skipped",
-               "index" => "scheduled",
-               "recall_documents" => "scheduled",
-               "sources" => "scheduled"
-             }
-           }
+    # The worker executes after the caller's process-local profile has been restored.
+    # Its governed writes must still reuse the minimal plan captured on the durable run.
+    assert MemHouse.Retrieval.MaintenancePlan.current().profile == "current"
+    assert {:ok, %{status: "completed"}} = execute_run(extraction_run)
 
-    assert {:ok, %{status: "completed"}} = execute_run(run)
+    [knowledge] = knowledge_items(account_id)
+
+    MemHouse.Retrieval.MaintenancePlan.with_profile(:minimal, fn ->
+      activate_knowledge!(account_id, knowledge.id)
+    end)
+
+    runs = projection_runs(account_id, extraction_run.scope_id)
+
+    assert Enum.all?(runs, &(&1.payload["maintenance_profile"] == "minimal-v1"))
+    assert Enum.all?(runs, &(&1.payload["stages"]["entities"] == "skipped"))
+    assert Enum.all?(runs, &(&1.payload["stages"]["context_projections"] == "skipped"))
+
+    Enum.each(runs, fn run ->
+      if run.status != "completed", do: assert({:ok, %{status: "completed"}} = execute_run(run))
+    end)
 
     assert knowledge_count(account_id) >= 1
     assert indexed_at!(account_id, message_id)
     assert derived_cache_counts(account_id) == %{mentions: 0, projections: 0, recall_documents: 1}
 
-    before_reconciliation = projection_runs(account_id, run.scope_id) |> length()
+    before_reconciliation = projection_runs(account_id, extraction_run.scope_id) |> length()
     assert {:ok, %{scopes: 0}} = Reconciler.run(account_id)
-    assert projection_runs(account_id, run.scope_id) |> length() == before_reconciliation
+
+    assert projection_runs(account_id, extraction_run.scope_id) |> length() ==
+             before_reconciliation
+
     assert derived_cache_counts(account_id) == %{mentions: 0, projections: 0, recall_documents: 1}
 
     current_components = put_in(components, ["retrieval_profile"], "balanced")
@@ -715,6 +724,32 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
         |> Ash.Query.set_tenant(account_id)
         |> Ash.read!(actor: actor, page: [limit: 100])
         |> Map.fetch!(:results)
+      end
+    )
+  end
+
+  defp extraction_runs(account_id, message_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        PipelineRun
+        |> Ash.Query.filter(kind == "extraction" and target_id == ^message_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read!(actor: actor, page: [limit: 10])
+        |> Map.fetch!(:results)
+      end
+    )
+  end
+
+  defp knowledge_items(account_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        KnowledgeItem
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read!(actor: actor)
       end
     )
   end

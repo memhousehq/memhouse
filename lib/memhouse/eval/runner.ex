@@ -31,6 +31,10 @@ defmodule MemHouse.Eval.Runner do
   `metadata.peer_key` to evaluate the governed view and stable profile for that
   already-ingested Peer; omitting it retains the internal Account reader.
 
+  Optional `:after_ingest` and `:before_questions` callbacks receive the exact case scope.
+  The experiment harness uses both to settle newly enqueued durable maintenance before
+  dream-time retrieval and again before question retrieval.
+
   Non-success ingest tuples remain scored failures. Raised memory errors or invalid model
   judge results abort the run rather than producing incomplete evidence.
   """
@@ -144,6 +148,7 @@ defmodule MemHouse.Eval.Runner do
     # durable extraction runs with one provider call, but it never reorders observations or
     # bypasses their ordinary governance writes.
     ingested = Ingest.run(messages, account_key, scope_path, opts)
+    Keyword.get(opts, :after_ingest, fn _scope_path -> :ok end).(scope_path)
 
     reasoning =
       cond do
@@ -169,6 +174,8 @@ defmodule MemHouse.Eval.Runner do
         refresh_source_semantic?,
         refresh_projection?
       )
+
+    Keyword.get(opts, :before_questions, fn _scope_path -> :ok end).(scope_path)
 
     ref_map = build_ref_map(ingested)
 

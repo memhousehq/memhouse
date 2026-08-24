@@ -146,6 +146,7 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     experimental = get_in(bundle, ["evidence", "measured", "experimental"])
 
     assert experimental["maintenance"]["projection_refresh_stage_runs_completed"] > 0
+    assert experimental["maintenance"]["entity_resolution_runs_completed"] == 0
     assert experimental["maintenance"]["projection_refresh_stages"]["entities"]["scheduled"] == 0
     assert experimental["maintenance"]["projection_refresh_stages"]["entities"]["skipped"] > 0
 
@@ -315,6 +316,8 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     assert experimental_report["components"]["idle_dream_scheduling"]["enabled"] == true
     assert current["maintenance"]["dream_time_runs"] == 0
     assert experimental["maintenance"]["dream_time_runs"] == 2
+    assert current["maintenance"]["entity_resolution_runs_completed"] > 0
+    assert experimental["maintenance"]["entity_resolution_runs_completed"] > 0
     assert experimental_report["reasoning"]["enabled"] == true
 
     assert experimental_report["reasoning"]["scheduling"] == %{

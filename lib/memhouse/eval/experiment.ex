@@ -371,7 +371,7 @@ defmodule MemHouse.Eval.Experiment do
 
         {report, database} =
           QueryCounter.measure(fn ->
-            run_variant(dataset, definition, variant, account_key, run_id)
+            run_variant(dataset, definition, variant, account_key, run_id, before)
           end)
 
         wall_time_ms = System.monotonic_time(:millisecond) - started_at
@@ -400,8 +400,9 @@ defmodule MemHouse.Eval.Experiment do
     {environment, measured, reports}
   end
 
-  defp run_variant(dataset, definition, variant, account_key, run_id) do
+  defp run_variant(dataset, definition, variant, account_key, run_id, before) do
     components = executable_components(variant)
+    prior_run_ids = MapSet.new(before.pipeline_runs, & &1.id)
 
     VariantRuntime.with_components(components, fn ->
       report =
@@ -427,7 +428,13 @@ defmodule MemHouse.Eval.Experiment do
           durability_seed: Map.get(variant, "durability_seed", definition["seeds"]["durability"]),
           refresh_semantic_index: components["semantic_index_refresh"],
           refresh_source_semantic_index: components["source_semantic_index_refresh"],
-          refresh_recall_projection: components["recall_projection_refresh"]
+          refresh_recall_projection: components["recall_projection_refresh"],
+          after_ingest: fn _scope_path ->
+            Maintenance.settle!(account_key, prior_run_ids)
+          end,
+          before_questions: fn _scope_path ->
+            Maintenance.settle!(account_key, prior_run_ids)
+          end
         )
 
       validated =
@@ -435,7 +442,7 @@ defmodule MemHouse.Eval.Experiment do
         |> assert_executed_components!(variant, components)
         |> Report.validate!()
 
-      Maintenance.settle!(account_key)
+      Maintenance.settle!(account_key, prior_run_ids)
       validated
     end)
   end

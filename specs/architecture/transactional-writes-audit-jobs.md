@@ -25,7 +25,13 @@ version tag for the frozen baseline, not a roadmap phase.
 For a message, those runs are its per-message extraction plus a delayed,
 ten-second-bucketed scope projection refresh. The latter indexes immutable
 source messages even when extraction yields zero Knowledge, while reusing the
-same scope job that a resulting governed write would request. All writes use
+same scope job that a resulting governed write would request when both capture
+the same versioned retrieval-maintenance plan. The plan is content-safe durable
+payload on both extraction and projection runs, so delayed extraction workers
+preserve it when their governed writes request projection work. The current and
+legacy identities schedule every rebuildable stage,
+while an isolated evaluation identity may explicitly skip read-only caches.
+All writes use
 the caller's `MemHouse.Repo` transaction; any error rolls back the observation,
 audit, runs, and jobs together. Message ingest is always asynchronous: HTTP and
 MCP acknowledge with the message id after commit and never run an embedding or
@@ -126,7 +132,7 @@ portability owns logical import/export.
 - message id plus content hash;
 - document-version id plus content hash;
 - scope plus dream-time watermark;
-- scope plus projection watermark;
+- scope plus projection watermark plus retrieval-maintenance-plan identity;
 - scope plus entity-resolution watermark;
 - import id plus manifest hash;
 - validation decision plus knowledge id; and

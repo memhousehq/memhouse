@@ -160,9 +160,13 @@ RecallDocuments remain scheduled, while entity and context-projection stages
 are explicitly reported as skipped. Current and legacy runs retain full
 maintenance. Canonical observations, governed Knowledge, lifecycle audit, and
 context dirty markers are unchanged, so skipped caches remain rebuildable for
-rollback. The evaluation barrier completes only the isolated Account's durable
-projection runs before measurement; pending or failed plans are not reported as
-savings. A later reconciliation preserves the scope's latest plan. Until a
+rollback. After each evaluated case ingests, the evaluation barrier completes
+only projection and entity-resolution runs created by that measured variant
+before retrieval begins. Separate legacy entity-resolution runs are counted
+explicitly; the minimal profile creates none.
+Pre-existing Account work is excluded, and every non-completed state fails the
+run instead of being reported as savings. A later reconciliation preserves the
+scope's latest plan. Until a
 reviewed decommission through issue #295, no production cache or migration is
 removed.
 

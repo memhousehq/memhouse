@@ -25,8 +25,9 @@ flowchart LR
 All effects commit or roll back together, preventing observations without audit
 entries and jobs without observations. The refresh is keyed by scope and a
 ten-second creation-time bucket, so a burst of messages and any facts extracted
-from them share one delayed projection job. The job captures a content-safe,
-versioned maintenance plan when it is enqueued, so a delayed worker or retry
+from them share one delayed projection job. Extraction and projection runs
+capture the same content-safe, versioned maintenance plan when they are enqueued,
+so a delayed extraction worker, projection worker, or retry
 cannot observe a later runtime-profile change. The current plan indexes source
 messages and Knowledge, rebuilds RecallDocuments, resolves entities, and
 refreshes context projections. The isolated experimental minimal-profile plan

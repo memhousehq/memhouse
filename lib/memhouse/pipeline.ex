@@ -67,6 +67,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_message_extraction(struct(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_message_extraction(message, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "extraction",
       message.account_id,
@@ -75,7 +77,7 @@ defmodule MemHouse.Pipeline do
         target_type: "message",
         target_id: message.id,
         idempotency_key: Idempotency.message_extraction(message.id, message.content_hash),
-        payload: %{"content_hash" => message.content_hash}
+        payload: MaintenancePlan.put_payload(%{"content_hash" => message.content_hash}, plan)
       },
       actor
     )
@@ -92,6 +94,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_document_extraction(struct(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_document_extraction(version, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "extraction",
       version.account_id,
@@ -100,7 +104,7 @@ defmodule MemHouse.Pipeline do
         target_type: "document_version",
         target_id: version.id,
         idempotency_key: Idempotency.document_extraction(version.id, version.content_hash),
-        payload: %{"content_hash" => version.content_hash}
+        payload: MaintenancePlan.put_payload(%{"content_hash" => version.content_hash}, plan)
       },
       actor
     )

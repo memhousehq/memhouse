@@ -179,7 +179,10 @@ usage, operator-priced cost, wall/recall latency, stored facts, dream-time accou
 query count/timing, and new `PipelineRun` work by kind and status. For completed projection runs,
 maintenance also reports scheduled and skipped counts for source indexing, Knowledge indexing,
 RecallDocuments, entity caches, and context projections from the immutable plan captured in each
-run. Pending or failed plans never count as completed savings. A minimal result therefore proves
+run. The legacy current dream path's separate entity-resolution lane is also completed and counted
+explicitly; minimal creates no such lane. After each case ingests, the harness executes only new
+measured cache work before its
+questions; pre-existing work is excluded and any non-completed state fails the run. A minimal result therefore proves
 entity/context work was disabled instead of inferring that from absent reads or an unchanged
 projection-run count. A telemetry handler counts only
 the bounded runner interval; the before/after snapshot queries are outside it. It never records
