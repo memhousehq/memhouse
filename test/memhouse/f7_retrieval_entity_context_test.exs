@@ -114,6 +114,38 @@ defmodule MemHouse.F7RetrievalEntityContextTest.Clock do
   def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.CountingClock do
+  @moduledoc false
+
+  @behaviour MemHouse.Clock
+
+  @key {__MODULE__, :state}
+
+  def put(now, expired, expire_on_call) do
+    :persistent_term.put(@key, %{now: now, expired: expired, expire_on_call: expire_on_call})
+    Process.put({__MODULE__, :calls}, 0)
+  end
+
+  def erase do
+    :persistent_term.erase(@key)
+    Process.delete({__MODULE__, :calls})
+  end
+
+  def calls, do: Process.get({__MODULE__, :calls}, 0)
+
+  @impl true
+  def utc_now do
+    call = calls() + 1
+    Process.put({__MODULE__, :calls}, call)
+    %{now: now, expired: expired, expire_on_call: expire_on_call} = :persistent_term.get(@key)
+
+    if is_integer(expire_on_call) and call >= expire_on_call, do: expired, else: now
+  end
+
+  @impl true
+  def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest.VanishingProvider do
   @moduledoc """
   Failure-injection provider for rebuild transaction boundaries.
@@ -1859,6 +1891,62 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       mentions =
         EntityMention
         |> Ash.Query.filter(knowledge_item_id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert mentions == []
+    end)
+  end
+
+  test "entity resolution rolls back when expiry crosses after final validation" do
+    clock = MemHouse.F7RetrievalEntityContextTest.CountingClock
+    system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
+    now = ~U[2026-08-25 13:00:00.000000Z]
+    expires_at = DateTime.add(now, 60, :second)
+    expired = DateTime.add(expires_at, 1, :second)
+
+    clock.put(now, expired, :never)
+    Application.put_env(:memhouse, :clock, clock)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :clock, system_clock)
+      clock.erase()
+    end)
+
+    calibration =
+      seed_active!(
+        "f7-entity-resolution-final-clock-calibration",
+        "/f7/entity-resolution-final-clock-calibration",
+        "Avery owns the release checklist."
+      )
+
+    set_future_expiry!(calibration, expires_at)
+    clock.put(now, expired, :never)
+
+    assert {:ok, %{mentions: calibration_mentions}} =
+             EntityResolver.rebuild_scope(calibration.account.id, calibration.scope.id)
+
+    assert calibration_mentions >= 1
+    final_clock_call = clock.calls()
+    assert final_clock_call >= 3
+
+    crossing =
+      seed_active!(
+        "f7-entity-resolution-final-clock-crossing",
+        "/f7/entity-resolution-final-clock-crossing",
+        "Avery owns the release checklist."
+      )
+
+    set_future_expiry!(crossing, expires_at)
+    clock.put(now, expired, final_clock_call)
+
+    assert {:error, :stale_projection_snapshot} =
+             EntityResolver.rebuild_scope(crossing.account.id, crossing.scope.id)
+
+    DataLayer.with_actor(crossing.actor, fn account, actor ->
+      mentions =
+        EntityMention
+        |> Ash.Query.filter(knowledge_item_id == ^crossing.knowledge.id)
         |> Ash.Query.set_tenant(account.id)
         |> Ash.read!(actor: pipeline_actor(actor))
 
@@ -4850,6 +4938,18 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         pipeline_actor(actor),
         %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :hour)},
         reason: "f7_test_expire_before_sweep",
+        channel: "pipeline"
+      )
+    end)
+  end
+
+  defp set_future_expiry!(seeded, expires_at) do
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      GovernanceEngine.transition!(
+        seeded.knowledge,
+        pipeline_actor(actor),
+        %{state: "active", expires_at: expires_at},
+        reason: "f7_test_future_expiry",
         channel: "pipeline"
       )
     end)

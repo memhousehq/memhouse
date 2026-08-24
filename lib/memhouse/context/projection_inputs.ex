@@ -13,9 +13,22 @@ defmodule MemHouse.Context.ProjectionInputs do
   alias MemHouse.Knowledge.EntityMention
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory.Visibility
+  alias MemHouse.Pipeline.Lock
   alias MemHouse.Topology.Scope
 
   require Ash.Query
+
+  @account_lock "projection-input-write"
+
+  @doc """
+  Serializes Account-wide projection inputs for the current transaction.
+
+  Returns `:ok` after acquiring the shared Account advisory lock. Callers must already be inside
+  an Account-scoped transaction. Source actions take this before their durable write; derived
+  writers take it before final revalidation so no competing mutation can cross that boundary.
+  """
+  @spec serialize_account!(Ecto.UUID.t()) :: :ok
+  def serialize_account!(account_id), do: Lock.acquire!(account_id, @account_lock)
 
   @doc """
   Advances one scope's projection-input generation and invalidates its derived projections.
@@ -112,7 +125,9 @@ defmodule MemHouse.Context.Changes.InvalidateProjectionInputs do
   """
   @impl true
   def change(changeset, opts, context) do
-    Ash.Changeset.after_action(changeset, fn changeset, result ->
+    changeset
+    |> MemHouse.Context.Changes.SerializeProjectionInputs.change([], context)
+    |> Ash.Changeset.after_action(fn changeset, result ->
       actor =
         context.actor || changeset.context[:memhouse_actor] ||
           get_in(changeset.context, [:private, :actor])
@@ -140,5 +155,37 @@ defmodule MemHouse.Context.Changes.InvalidateProjectionInputs do
       %Ash.NotLoaded{} -> Ash.Changeset.get_attribute(changeset, attribute)
       value -> value
     end
+  end
+end
+
+defmodule MemHouse.Context.Changes.SerializeProjectionInputs do
+  @moduledoc """
+  Ash change that serializes Account-wide projection-shaping mutations before their durable write.
+
+  Entity rows span scopes, while lifecycle and observation inputs can invalidate scope-derived
+  output. Sharing one Account lock with EntityResolver closes the interval between its final
+  revalidation and commit without introducing source-row/scope-row lock inversion.
+  """
+
+  use Ash.Resource.Change
+
+  alias MemHouse.Context.ProjectionInputs
+
+  @doc """
+  Registers the transaction-scoped Account lock before a resource action runs.
+
+  Returns the changeset with the hook attached. The action raises if no authenticated Account
+  actor is available or the advisory lock cannot be acquired.
+  """
+  @impl true
+  def change(changeset, _opts, context) do
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      actor =
+        context.actor || changeset.context[:memhouse_actor] ||
+          get_in(changeset.context, [:private, :actor])
+
+      :ok = ProjectionInputs.serialize_account!(actor.account_id)
+      changeset
+    end)
   end
 end

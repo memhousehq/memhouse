@@ -163,13 +163,14 @@ job termination observable without changing replay identity.
 that uses a parameterized PostgreSQL advisory-lock query. It performs no
 durable write; all durable state still goes through Ash actions.
 
-The projection-validity migration has one narrower rolling-upgrade exception: a PostgreSQL
-`BEFORE UPDATE` trigger may set only `Projection.validity_version` to `0` when an older worker
-changes derived projection content without advancing that marker. Current workers still perform
-every projection and source mutation through Ash actions. The trigger cannot be an Ash change
-because its purpose is to fail closed for already-running binaries that predate that change; it
+The projection-validity migration has one narrower stale-writer exception: a PostgreSQL `BEFORE
+UPDATE` trigger may set only `Projection.validity_version` to `0` when a schema-ahead or otherwise
+stale worker changes derived projection content without advancing that marker. Current workers
+still perform every projection and source mutation through Ash actions. The trigger cannot be an
+Ash change because its purpose is to fail closed for a writer that does not know the marker; it
 creates no content, audit, lifecycle, or queue state and is removed with the validity columns on
-rollback.
+rollback. This is not mixed-version reader support: the documented upgrade procedure stops old
+binaries before migration and restarts every node on the new release.
 
 ## Audit chain
 

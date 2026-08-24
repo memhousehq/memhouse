@@ -15,12 +15,11 @@ defmodule MemHouse.Retrieval.EntityResolver do
   """
 
   alias MemHouse.Clock
-  alias MemHouse.Context.ProjectionLock
+  alias MemHouse.Context.{ProjectionInputs, ProjectionLock}
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{Entity, EntityMention}
   alias MemHouse.Memory.Visibility
   alias MemHouse.Model.{Embedding, Gateway}
-  alias MemHouse.Pipeline.Lock
   alias MemHouse.Retrieval.{LexicalQueryAnalyzer, Vector}
 
   require Ash.Query
@@ -430,7 +429,7 @@ defmodule MemHouse.Retrieval.EntityResolver do
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        Lock.acquire!(account_id, "entity-resolution-write")
+        ProjectionInputs.serialize_account!(account_id)
         current_generation = ProjectionLock.capture!(account_id, scope_id)
         current_entity_signature = account_id |> entities!(actor) |> entity_snapshot_signature()
 
@@ -453,12 +452,19 @@ defmodule MemHouse.Retrieval.EntityResolver do
           # Runs last, once the scope's mentions have been rewritten, so an
           # entity that only this scope referenced is now visibly unreferenced.
           prune_entities!(account_id, actor)
-          :ok
+
+          if Visibility.boundary_visible?(valid_until, Clock.utc_now()) do
+            :ok
+          else
+            throw({__MODULE__, :stale_projection_snapshot})
+          end
         else
           {:error, :stale_projection_snapshot}
         end
       end
     )
+  catch
+    {__MODULE__, :stale_projection_snapshot} -> {:error, :stale_projection_snapshot}
   end
 
   defp entity_snapshot_signature(entities) do

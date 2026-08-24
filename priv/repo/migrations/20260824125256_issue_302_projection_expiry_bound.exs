@@ -3,17 +3,18 @@ defmodule MemHouse.Repo.Migrations.Issue302ProjectionExpiryBound do
   Adds fail-closed expiry, content validity, and input generations to derived projections.
 
   The update trigger clears `validity_version` when a writer changes projection content or its
-  visibility coordinates without advancing the validity marker. Rolling-upgrade writes therefore
-  become unreadable until a current worker rebuilds them. Projection-shaping Ash actions advance
-  the scope generation and dirty derived rows. Rollback removes the compatibility trigger,
-  function, projection validity columns, and scope input generation.
+  visibility coordinates without advancing the validity marker. A schema-ahead or otherwise
+  stale writer therefore becomes unreadable to current readers until a current worker rebuilds
+  it. MemHouse upgrades stop old binaries before migration; this trigger is not a mixed-version
+  reader guarantee. Projection-shaping Ash actions advance the scope generation and dirty derived
+  rows. Rollback removes the compatibility trigger, function, projection validity columns, and
+  scope input generation.
   """
 
   use Ecto.Migration
 
   @doc """
-  Adds projection validity columns, the scope input generation, and the rolling-upgrade
-  stale-write trigger.
+  Adds projection validity columns, the scope input generation, and the stale-write trigger.
 
   Returns the migration operation result and raises if PostgreSQL cannot apply the DDL.
   """

@@ -8,10 +8,12 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias MemHouse.Context.ProjectionLock
+  alias MemHouse.Context.{ProjectionInputs, ProjectionLock}
   alias MemHouse.DataLayer
   alias MemHouse.Repo
   alias MemHouse.Topology.Scope
+
+  require Ash.Query
 
   test "overlapping final writes for one scope enter one at a time" do
     {account_id, scope_id} = create_scope!()
@@ -56,6 +58,57 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
     assert_receive {:entered, :second}, 5_000
     assert :first = Task.await(first)
     assert :second = Task.await(second)
+  end
+
+  test "a real scope mutation cannot cross final projection-input validation" do
+    {account_id, scope_id} = create_scope!()
+    parent = self()
+
+    validator =
+      Task.async(fn ->
+        with_connection(fn ->
+          DataLayer.with_account_id(account_id, fn _account, _actor ->
+            backend_pid = backend_pid!()
+            ProjectionInputs.serialize_account!(account_id)
+            send(parent, {:validated, backend_pid})
+
+            receive do
+              :release -> :validated
+            end
+          end)
+        end)
+      end)
+
+    assert_receive {:validated, validator_backend_pid}, 5_000
+
+    mutation =
+      Task.async(fn ->
+        with_connection(fn ->
+          DataLayer.with_account_id(account_id, fn _account, actor ->
+            scope =
+              Scope
+              |> Ash.Query.filter(id == ^scope_id)
+              |> Ash.Query.set_tenant(account_id)
+              |> Ash.read_one!(actor: actor)
+
+            mutation_backend_pid = backend_pid!()
+            send(parent, {:mutating, mutation_backend_pid})
+
+            scope
+            |> Ash.Changeset.for_update(:update, %{name: "Changed after validation"})
+            |> Ash.Changeset.set_tenant(account_id)
+            |> Ash.update!(actor: actor)
+          end)
+        end)
+      end)
+
+    assert_receive {:mutating, mutation_backend_pid}, 5_000
+    assert_blocked_by!(mutation_backend_pid, validator_backend_pid)
+
+    send(validator.pid, :release)
+
+    assert :validated = Task.await(validator)
+    assert %Scope{name: "Changed after validation"} = Task.await(mutation)
   end
 
   defp with_connection(fun) do

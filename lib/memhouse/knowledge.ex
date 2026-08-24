@@ -774,6 +774,8 @@ defmodule MemHouse.Knowledge.Projection do
         :delta_count,
         :updated_at
       ]
+
+      change MemHouse.Context.Changes.SerializeProjectionInputs
     end
 
     # The "mark dirty" path. It accepts the content fields as well, but every caller in this
@@ -849,8 +851,9 @@ defmodule MemHouse.Knowledge.Projection do
 
     # Existing rows predate the validity coordinate and must fail closed until rebuilt. A rebuild
     # binds this marker to the projection version even when every source is non-expiring and
-    # `valid_until` is nil. A rolling-upgrade writer that changes `version` without this field
-    # therefore makes its own output unreadable until a current worker rebuilds it.
+    # `valid_until` is nil. A schema-ahead or otherwise stale writer that changes `version`
+    # without this field therefore makes its own output unreadable to current readers until a
+    # current worker rebuilds it. Mixed-version readers are excluded by the upgrade procedure.
     attribute :validity_version, :integer, allow_nil?: false, default: 0
 
     # True once an underlying statement changed and before the rebuild ran. Readers must not
@@ -937,12 +940,16 @@ defmodule MemHouse.Knowledge.Entity do
         :embedding_dimensions,
         :derived_from
       ]
+
+      require_atomic? false
+      change MemHouse.Context.Changes.SerializeProjectionInputs
     end
 
     # Used both by subject erasure and by the pruning pass that drops entities left without any
     # mention after a rebuild.
     destroy :erase do
       require_atomic? false
+      change MemHouse.Context.Changes.SerializeProjectionInputs
     end
   end
 

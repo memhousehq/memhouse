@@ -143,12 +143,13 @@ re-embed operations retain their full-corpus behavior.
 
 The projection-expiry migration makes projections readable only when their validity marker equals
 their projection version, without scanning or rewriting contents under the schema lock. This also
-fails closed when an old rolling-upgrade worker changes a projection without advancing the marker;
-a database trigger invalidates even equal-version content changes or an old worker clearing a
-lifecycle-dirty marker. The hourly reconciler selects at most 100 distinct legacy scopes per
-Account and enqueues one idempotent full
+fails closed when a schema-ahead or otherwise stale writer changes a projection without advancing
+the marker; a database trigger invalidates even equal-version content changes or a stale writer
+clearing a lifecycle-dirty marker. MemHouse does not support mixed-version readers: follow the
+upgrade procedure that stops old binaries before migration. The hourly reconciler selects at most
+100 distinct legacy scopes per Account and enqueues one idempotent full
 refresh per affected scope under the `projection-validity-v1` generation watermark. If an old
-worker writes another legacy generation after an upgrade completes, its row identity, monotonic
+stale writer writes another legacy generation after an upgrade completes, its row identity, monotonic
 version, and update time produce a new refresh run. During that bounded warm-up, context fails
 closed to the ordinary fast retrieval fallback; operators do not need to run a manual migration
 command or expose the legacy projection.
