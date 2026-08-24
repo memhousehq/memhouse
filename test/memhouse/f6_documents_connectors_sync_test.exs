@@ -331,6 +331,7 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest do
     assert Enum.all?(events, &is_nil(&1.relevant_from))
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "incremental connector sync detects hashes, supersedes prior knowledge, and tombstones deletes" do
     %{account: account, actor: actor, peer: peer, scope: scope} = context!("f6-sync")
 
@@ -467,6 +468,12 @@ defmodule MemHouse.F6DocumentsConnectorsSyncTest do
       |> Enum.find(&String.contains?(&1.statement, "Cross-source"))
 
     refute shared_after_tombstone.state in ~w(retracted superseded)
+
+    exclusive_after_tombstone =
+      document_derivations(account.id, actor, document.id).knowledge
+      |> Enum.find(&String.contains?(&1.statement, "stable"))
+
+    assert exclusive_after_tombstone.state == "retracted"
   end
 
   test "document export carries verified blobs, excludes chunks, and import rebuilds after erasure" do

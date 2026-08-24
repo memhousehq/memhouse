@@ -997,6 +997,11 @@ code {
   white-space: nowrap;
 }
 
+.badge a {
+  color: inherit;
+  text-decoration: none;
+}
+
 /* The glyph carries the same distinction the colour does, so lifecycle and
    sensitivity survive a monochrome display or colour-blind vision. */
 .badge-glyph {

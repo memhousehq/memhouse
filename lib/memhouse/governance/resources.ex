@@ -1191,7 +1191,7 @@ defmodule MemHouse.Governance.McpTools do
     # Structured listing rather than retrieval. `state` filters on lifecycle state; items the
     # caller is not authorized to see are filtered out before they leave the read path.
     action :query_knowledge, :map do
-      description "Read structured governed knowledge visible to the calling peer."
+      description "Read structured governed knowledge visible to the calling peer. Lifecycle states: #{Enum.join(MemHouse.Knowledge.Lifecycle.states(), ", ")}."
       argument :session_id, :string, allow_nil?: false, public?: true
       argument :scope_path, :string, allow_nil?: false, public?: true
       argument :state, :string, public?: true

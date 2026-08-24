@@ -377,6 +377,25 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
     }
   end
 
+  defp empty_lifecycle_evidence do
+    %{
+      "visibility" => "internal_account_scope_all_states",
+      "final_states" => Map.new(MemHouse.Knowledge.Lifecycle.states(), &{&1, 0}),
+      "absent_final_states" => MemHouse.Knowledge.Lifecycle.states(),
+      "exercised_states" => [],
+      "unexercised_states" => MemHouse.Knowledge.Lifecycle.states(),
+      "unexercised_reasons" =>
+        Map.new(
+          MemHouse.Knowledge.Lifecycle.states(),
+          &{&1, MemHouse.Knowledge.Lifecycle.absence_reason(&1)}
+        ),
+      "transitions" => [],
+      "audit_transitions" => [],
+      "lifecycle_events" => 0,
+      "lifecycle_audit_events" => 0
+    }
+  end
+
   test "f11-2 requires balanced one-time accounting while reading f11-1 remains compatible" do
     legacy = valid_report()
     assert MemHouse.Eval.Report.validate(legacy) == :ok
@@ -411,6 +430,7 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
           %{"id" => "e", "status" => "cancelled", "reason" => "cancelled"}
         ]
       })
+      |> Map.put("lifecycle", empty_lifecycle_evidence())
 
     assert MemHouse.Eval.Report.validate(current) == :ok
 
@@ -441,6 +461,82 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
     invalid = put_in(current, ["accounting", "items", Access.at(4), "id"], "d")
     assert {:error, errors} = MemHouse.Eval.Report.validate(invalid)
     assert Enum.any?(errors, &String.contains?(&1, "accounting"))
+  end
+
+  test "f11-3 lifecycle evidence includes every state and balances transition audits" do
+    lifecycle =
+      empty_lifecycle_evidence()
+      |> put_in(["final_states", "proposed"], 2)
+      |> Map.put("absent_final_states", MemHouse.Knowledge.Lifecycle.states() -- ["proposed"])
+      |> Map.put("exercised_states", ["proposed"])
+      |> Map.put("unexercised_states", MemHouse.Knowledge.Lifecycle.states() -- ["proposed"])
+      |> Map.put(
+        "unexercised_reasons",
+        Map.new(
+          MemHouse.Knowledge.Lifecycle.states() -- ["proposed"],
+          &{&1, MemHouse.Knowledge.Lifecycle.absence_reason(&1)}
+        )
+      )
+      |> Map.put("transitions", [
+        %{
+          "from_state" => nil,
+          "to_state" => "proposed",
+          "reason" => "f4_pipeline_proposed",
+          "count" => 2
+        }
+      ])
+      |> Map.put("audit_transitions", [
+        %{
+          "from_state" => nil,
+          "to_state" => "proposed",
+          "reason" => "f4_pipeline_proposed",
+          "count" => 2
+        }
+      ])
+      |> Map.put("lifecycle_events", 2)
+      |> Map.put("lifecycle_audit_events", 2)
+
+    report =
+      valid_report()
+      |> Map.put("report_schema", "f11-3")
+      |> Map.put("memhouse_version", "0.4.0")
+      |> Map.delete("cartulary_version")
+      |> Map.merge(%{
+        "available" => 0,
+        "sampled" => 0,
+        "attempted" => 0,
+        "evaluated" => 0,
+        "skipped" => 0,
+        "failed" => 0,
+        "cancelled" => 0,
+        "accounting" => %{
+          "available" => 0,
+          "sampled" => 0,
+          "attempted" => 0,
+          "evaluated" => 0,
+          "skipped" => 0,
+          "failed" => 0,
+          "cancelled" => 0,
+          "items" => []
+        },
+        "lifecycle" => lifecycle
+      })
+
+    assert Report.validate(report) == :ok
+
+    assert {:error, errors} =
+             report
+             |> put_in(["lifecycle", "lifecycle_audit_events"], 1)
+             |> Report.validate()
+
+    assert Enum.any?(errors, &String.contains?(&1, "lifecycle"))
+
+    assert {:error, errors} =
+             report
+             |> put_in(["lifecycle", "transitions", Access.at(0), "to_state"], "active")
+             |> Report.validate()
+
+    assert Enum.any?(errors, &String.contains?(&1, "lifecycle"))
   end
 
   test "durability audit evidence is content-safe and count-balanced" do

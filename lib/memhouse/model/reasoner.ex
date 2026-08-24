@@ -20,11 +20,11 @@ defmodule MemHouse.Model.Reasoner do
 
   - Do not treat a returned candidate as active knowledge. It has passed schema
     validation, nothing more.
-  - Do not call this on a request path. It is the slow lane by design and its
-    latency is not bounded by a caller's deadline.
+  - Do not call this on a request path. It is the slow lane by design. Dream-time
+    supplies a pass deadline, which split operations share rather than restart.
   """
 
-  alias MemHouse.Model
+  alias MemHouse.{Clock, Model}
   alias MemHouse.Model.Schema.{Reasoning, ReasoningSynthesis, ReasoningUpdate}
   alias MemHouse.Observability
 
@@ -39,27 +39,37 @@ defmodule MemHouse.Model.Reasoner do
   @doc """
   Runs the independently versioned operations enabled for dream-time.
 
+  `:request_timeout` sets one monotonic millisecond budget for the complete
+  operation set. Each provider call receives only the remaining allowance.
+  Exhaustion before an operation starts returns `{:error, :request_timeout}`.
+  A caller coordinating a larger pass may instead supply the absolute monotonic
+  millisecond `:request_deadline_ms`; when both options are present, that
+  deadline takes precedence and `:request_timeout` is replaced with its
+  remaining allowance for each operation.
+
   Every enabled operation must finish before the caller enters the single
-  governed writer transaction. A failure returns immediately with no partial
-  result, so the scoped watermark cannot advance on half an operation set.
+  governed writer transaction. Completed calls remain usage-accounted, but a
+  failure returns no partial result, so the scoped watermark cannot advance on
+  half an operation set.
   """
   def reason_operations(delta_and_working_set, context, opts \\ []) do
     operations = enabled_operations()
+    deadline = pass_deadline(opts)
 
     operations
     |> Enum.reduce_while({:ok, %{items: [], relations: []}, []}, fn operation,
                                                                     {:ok, combined, provenance} ->
-      case run_operation(operation, delta_and_working_set, context, opts) do
-        {:ok, result, operation_provenance} ->
-          combined = %{
-            items: combined.items ++ result.items,
-            relations: combined.relations ++ result.relations
-          }
+      with {:ok, operation_opts} <- remaining_operation_opts(opts, deadline),
+           {:ok, result, operation_provenance} <-
+             run_operation(operation, delta_and_working_set, context, operation_opts) do
+        combined = %{
+          items: combined.items ++ result.items,
+          relations: combined.relations ++ result.relations
+        }
 
-          {:cont, {:ok, combined, [operation_provenance | provenance]}}
-
-        {:error, error} ->
-          {:halt, {:error, error}}
+        {:cont, {:ok, combined, [operation_provenance | provenance]}}
+      else
+        {:error, error} -> {:halt, {:error, error}}
       end
     end)
     |> case do
@@ -68,6 +78,34 @@ defmodule MemHouse.Model.Reasoner do
 
       error ->
         error
+    end
+  end
+
+  defp pass_deadline(opts) do
+    case Keyword.get(opts, :request_deadline_ms) do
+      deadline when is_integer(deadline) ->
+        deadline
+
+      _deadline ->
+        case Keyword.get(opts, :request_timeout) do
+          timeout when is_integer(timeout) and timeout > 0 -> Clock.monotonic_ms() + timeout
+          _timeout -> nil
+        end
+    end
+  end
+
+  defp remaining_operation_opts(opts, nil), do: {:ok, opts}
+
+  defp remaining_operation_opts(opts, deadline) do
+    case deadline - Clock.monotonic_ms() do
+      remaining when remaining > 0 ->
+        {:ok,
+         opts
+         |> Keyword.put(:request_timeout, remaining)
+         |> Keyword.put(:request_deadline_ms, deadline)}
+
+      _exhausted ->
+        {:error, :request_timeout}
     end
   end
 

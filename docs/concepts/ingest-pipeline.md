@@ -160,7 +160,7 @@ scope target and runs the same ordinary validator below. The flag changes no
 writer, queue, table, lifecycle, or Gate A/B behavior. Its prompt version
 `extract-compact-exp-1` identifies resulting provenance and usage. It remains
 off because the held-out non-inferiority/privacy gate and human ADR review are
-still required; turning it off restores `extract-13` without a data migration.
+still required; turning it off restores `extract-14` without a data migration.
 
 Extraction also does what a naive extractor gets wrong:
 
@@ -199,6 +199,12 @@ Extraction also does what a naive extractor gets wrong:
   that appears in neither the cited text nor a resolvable relative-time phrase.
   Each cited id becomes durable provenance. The supporting span validates the
   proposal but is not copied into knowledge, logs, or job arguments.
+- **Derives dated start events from elapsed durations.** A statement such as
+  "I have had X for about six months" can imply when the possession or
+  relationship started. The extractor records the start as an `event`, not the
+  elapsed duration as a timeless fact. For an approximate month duration,
+  `relevant_from` can be any date in the implied calendar month and
+  `relevant_until` is null. The statement does not claim an exact day.
 - **Records complete provenance.** Provider, model, version, prompt, and
   pipeline identity travel with the result.
 
@@ -262,10 +268,12 @@ ends that pass with a content-safe diagnostic instead of retrying the same
 deterministic error. The lane is throttled first when token budgets tighten and
 never bypasses governance.
 
-Before consolidation or a model call, a scoped gate checks four independent
+Before consolidation or model reasoning, a scoped gate checks four independent
 bounds: accumulated eligible changes, time since the latest change, time since
 the last completed pass, and the maximum delta/working-set/call duration for one
-pass. Skips emit only scope ids, counts, decisions, and reason classes. They do
+pass. The elapsed allowance is one monotonic deadline shared across split
+reasoning operations, including their repairs and retries. Skips emit only
+scope ids, counts, decisions, and reason classes. They do
 not advance the watermark. A bounded partial pass stores both the last processed
 timestamp and knowledge id, so same-microsecond rows resume without being lost
 or billed twice. Dream-produced deductions and deterministic consolidation

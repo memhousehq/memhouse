@@ -30,6 +30,7 @@ settled by the blueprint specs.
 | `0019-operational-retention.md` | Terminal queue state and operational ledgers have bounded retention horizons. |
 | `0020-score-aware-retrieval-fusion.md` | Normalize scores per strategy before weighted fusion and retain rank only as a tie-break. |
 | `0021-clean-room-memory-simplification.md` | Evidence-gated simplification around one governed writer and one read-only adaptive recall seam. |
+| `0022-executable-knowledge-lifecycle-contract.md` | Retain compatible state names behind one validated graph and operator contract. |
 
 Conventions for future ADRs:
 

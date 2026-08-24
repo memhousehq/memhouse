@@ -678,6 +678,63 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert message_count!("source-planner") == before_count
   end
 
+  test "bounded Ask controls exact and semantic source recall independently" do
+    ingest!("source-planner-controls", "/source/planner", "garden schedule is Friday", "one", 1)
+
+    exact =
+      Memory.ask(%{
+        "account_key" => "source-planner-controls",
+        "scope_path" => "/source/planner",
+        "question" => "What is the garden schedule?",
+        "effort" => "medium",
+        "include_source_exact_recall" => true,
+        "include_source_semantic_recall" => false,
+        "include_stable_profile_recall" => false
+      })
+
+    assert exact["recall"]["source_exact_recall_permitted"] == true
+    assert exact["recall"]["source_semantic_recall_permitted"] == false
+    assert exact["recall"]["stable_profile_recall_permitted"] == false
+    assert Enum.any?(exact["recall"]["outcomes"], &(&1["tool"] == "source_exact"))
+    refute Enum.any?(exact["recall"]["outcomes"], &(&1["tool"] == "source_semantic"))
+    refute Enum.any?(exact["recall"]["outcomes"], &(&1["tool"] == "profile"))
+
+    semantic =
+      Memory.ask(%{
+        "account_key" => "source-planner-controls",
+        "scope_path" => "/source/planner",
+        "question" => "What is the garden schedule?",
+        "effort" => "medium",
+        "include_source_exact_recall" => false,
+        "include_source_semantic_recall" => true,
+        "include_stable_profile_recall" => false
+      })
+
+    assert semantic["recall"]["source_exact_recall_permitted"] == false
+    assert semantic["recall"]["source_semantic_recall_permitted"] == true
+    refute Enum.any?(semantic["recall"]["outcomes"], &(&1["tool"] == "source_exact"))
+    assert Enum.any?(semantic["recall"]["outcomes"], &(&1["tool"] == "source_semantic"))
+  end
+
+  test "legacy source recall permission still enables both source tools" do
+    ingest!("source-planner-legacy", "/source/planner", "garden schedule is Friday", "one", 1)
+
+    result =
+      Memory.ask(%{
+        "account_key" => "source-planner-legacy",
+        "scope_path" => "/source/planner",
+        "question" => "What is the garden schedule?",
+        "effort" => "medium",
+        "include_source_recall" => true,
+        "include_stable_profile_recall" => false
+      })
+
+    assert result["recall"]["source_exact_recall_permitted"] == true
+    assert result["recall"]["source_semantic_recall_permitted"] == true
+    assert Enum.any?(result["recall"]["outcomes"], &(&1["tool"] == "source_exact"))
+    assert Enum.any?(result["recall"]["outcomes"], &(&1["tool"] == "source_semantic"))
+  end
+
   defp ingest!(account_key, scope_path, content, session_id, second) do
     {:ok, message} =
       Memory.ingest_message(%{

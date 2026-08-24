@@ -14,6 +14,14 @@ import Dotenvy
 env = source!([".env", System.get_env()])
 env_get = fn key, default -> Map.get(env, key, default) end
 
+lifecycle_docs_url =
+  case env_get.("MEMHOUSE_LIFECYCLE_DOCS_URL", "") do
+    "" -> false
+    url -> url
+  end
+
+config :memhouse, :lifecycle_docs_url, lifecycle_docs_url
+
 # Lenient parsers use defaults; bang parsers reject unsafe ambiguity.
 
 # Absent or unparseable means false.
@@ -641,7 +649,7 @@ config :memhouse, :model_roles,
     model: generation_model.("MEMHOUSE_MODEL_INGEST", "openai/gpt-oss-120b"),
     model_version: generation_version,
     prompt_version:
-      if(compact_extraction_enabled, do: "extract-compact-exp-1", else: "extract-13"),
+      if(compact_extraction_enabled, do: "extract-compact-exp-1", else: "extract-14"),
     pipeline_version: "f5-1",
     options: generation_options
   },

@@ -39,7 +39,7 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
   end
 
   alias MemHouse.DataLayer
-  alias MemHouse.Eval.{Experiment, Report}
+  alias MemHouse.Eval.{ExecutionEvidence, Experiment, Report}
   alias MemHouse.Governance.Engine
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
@@ -212,6 +212,9 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
         "idle_dream_scheduling" => idle_component(true),
         "lineage_recall" => true,
         "source_recall" => true,
+        "source_exact_recall" => true,
+        "source_semantic_recall" => true,
+        "stable_profile_recall" => true,
         "source_semantic_index_refresh" => true
       })
 
@@ -410,6 +413,24 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
     end
   end
 
+  test "execute validation rejects a completed outcome for a disabled recall component" do
+    recalls = [%{"outcomes" => [%{"tool" => "source_exact", "status" => "completed"}]}]
+    variant = %{"id" => "exact-disabled"}
+    components = %{"source_exact_recall" => false}
+
+    assert_raise ArgumentError,
+                 ~r/disabled source_exact_recall but completed a source_exact tool call/,
+                 fn ->
+                   ExecutionEvidence.assert_recall_tool!(
+                     recalls,
+                     variant,
+                     components,
+                     "source_exact_recall",
+                     "source_exact"
+                   )
+                 end
+  end
+
   defp definition(dataset_path) do
     %{
       "schema" => "memhouse-experiment-definition-1",
@@ -486,7 +507,10 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
       "semantic_index_refresh" =>
         Enum.any?(strategies, &(&1 in ["semantic", "semantic_dual_lane"])),
       "source_semantic_index_refresh" => false,
-      "source_recall" => false
+      "source_recall" => false,
+      "source_exact_recall" => false,
+      "source_semantic_recall" => false,
+      "stable_profile_recall" => false
     }
   end
 
