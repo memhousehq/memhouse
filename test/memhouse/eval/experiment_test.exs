@@ -293,13 +293,14 @@ defmodule MemHouse.Eval.ExperimentTest do
   end
 
   test "category gates reject scalar category metrics", %{tmp_dir: tmp_dir} do
-    for gate <- ["min_category_accuracy", "max_category_accuracy_regression"] do
+    for gate <- ["min_category_accuracy", "max_category_accuracy_regression"],
+        scalar <- [4, false] do
       definition =
         definition()
         |> put_in(["gates", "quality", gate], %{"hard-query" => 0.1})
         |> put_in(
           ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
-          %{"hard-query" => 4}
+          %{"hard-query" => scalar}
         )
 
       assert_raise ArgumentError, ~r/quality.by_category "hard-query" must be an object/, fn ->

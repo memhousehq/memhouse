@@ -865,7 +865,8 @@ defmodule MemHouse.Eval.Experiment do
 
         Enum.reduce(configured, checks, fn {category, expected}, acc ->
           assert_category_gate!("min_category_accuracy", category, expected)
-          metrics = get_in(experimental, ["quality", "by_category", category]) || %{}
+          metrics = get_in(experimental, ["quality", "by_category", category])
+          metrics = if is_nil(metrics), do: %{}, else: metrics
           coverage = category_coverage!(metrics, category)
           actual = if coverage > 0, do: Map.get(metrics, "accuracy"), else: nil
 
@@ -897,8 +898,12 @@ defmodule MemHouse.Eval.Experiment do
 
         Enum.reduce(configured, checks, fn {category, allowed}, acc ->
           assert_category_gate!("max_category_accuracy_regression", category, allowed)
-          current_metrics = get_in(current, ["quality", "by_category", category]) || %{}
-          experimental_metrics = get_in(experimental, ["quality", "by_category", category]) || %{}
+          current_metrics = get_in(current, ["quality", "by_category", category])
+          current_metrics = if is_nil(current_metrics), do: %{}, else: current_metrics
+          experimental_metrics = get_in(experimental, ["quality", "by_category", category])
+
+          experimental_metrics =
+            if is_nil(experimental_metrics), do: %{}, else: experimental_metrics
 
           coverage =
             min(
