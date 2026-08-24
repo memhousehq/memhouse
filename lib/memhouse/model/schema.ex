@@ -30,6 +30,8 @@ defmodule MemHouse.Model.Schema.ExtractionSupport do
 
   @number_words ~w(one two three four five six seven eight nine ten eleven twelve)
 
+  @anchored_elapsed_months ~r/(?:\b(?:have|has|had)\b|['’]ve\b)\s+(?:[\p{L}\p{N}_,'’\-]+\s+){0,8}?(?:had|owned|kept|known|been)\b[^.!?]{0,120}?\bfor\s+(?:about|around|approximately|roughly)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+months?\b/iu
+
   @doc "Returns a trimmed string field or a content-free validation error."
   def non_empty_string(item, key) do
     case fetch(item, key) do
@@ -100,6 +102,19 @@ defmodule MemHouse.Model.Schema.ExtractionSupport do
 
   def resolve_relative_datetime(_evidence, _occurred_at), do: :error
 
+  @doc "Returns calendar-month ranges implied by anchored approximate month durations."
+  def resolve_elapsed_duration_months(source, observed_on)
+      when is_binary(source) and is_struct(observed_on, Date) do
+    @anchored_elapsed_months
+    |> Regex.scan(source)
+    |> Enum.map(fn [_text, amount] ->
+      inferred = Date.shift(observed_on, month: -relative_amount(amount))
+      Date.range(Date.beginning_of_month(inferred), Date.end_of_month(inferred))
+    end)
+  end
+
+  def resolve_elapsed_duration_months(_source, _observed_on), do: []
+
   @doc "Converts a date to UTC midnight."
   def beginning_of_day(date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
 
@@ -163,6 +178,10 @@ defmodule MemHouse.Model.Schema.Extraction do
     its supporting span must occur verbatim in one of those cited messages.
     A statement date must also be present in cited text or resolve from a
     relative-time expression in that text.
+  - **Anchored durations produce start events.** An approximate elapsed month
+    duration for a possession or relationship cannot become a timeless duration
+    fact. It must become an event whose start is in the implied calendar month
+    and whose end is null.
   - **Time bounds must be coherent.** A validity window that starts after it
     ends is rejected.
   - **Nothing here activates knowledge.** A valid candidate is still only a
@@ -183,7 +202,13 @@ defmodule MemHouse.Model.Schema.Extraction do
   alias MemHouse.Knowledge.KnowledgeItem
 
   import MemHouse.Model.Schema.ExtractionSupport,
-    only: [fetch: 2, first_person?: 1, non_empty_string: 2, resolve_relative_dates: 2]
+    only: [
+      fetch: 2,
+      first_person?: 1,
+      non_empty_string: 2,
+      resolve_elapsed_duration_months: 2,
+      resolve_relative_dates: 2
+    ]
 
   alias MemHouse.Knowledge.Statement
 
@@ -440,6 +465,15 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
          {:ok, temporal} <- temporal(item),
+         :ok <-
+           anchored_elapsed_duration(
+             item,
+             statement,
+             kind,
+             temporal,
+             source_message_ids,
+             context
+           ),
          :ok <- temporal_order(temporal),
          casted <-
            %{
@@ -607,6 +641,80 @@ defmodule MemHouse.Model.Schema.Extraction do
   end
 
   defp date_resolved?(_date, _source, _occurred_at), do: false
+
+  # An approximate elapsed duration does not support a timeless duration fact or
+  # an invented exact day. It supports the event that started the state and the
+  # calendar month in which that event occurred. This deterministic floor makes
+  # a bad first response repairable while the provider still writes the natural
+  # event wording.
+  defp anchored_elapsed_duration(
+         item,
+         statement,
+         kind,
+         temporal,
+         source_message_ids,
+         context
+       ) do
+    with {:ok, supporting_span} <- non_empty_string(item, "supporting_span"),
+         %DateTime{} = occurred_at <- Map.get(context, :occurred_at),
+         [_ | _] = ranges <-
+           anchored_elapsed_ranges(
+             supporting_span,
+             statement,
+             source_message_ids,
+             context,
+             DateTime.to_date(occurred_at)
+           ) do
+      relevant_date = temporal.relevant_from && DateTime.to_date(temporal.relevant_from)
+
+      if kind == "event" and not elapsed_duration_statement?(statement) and
+           Enum.any?(ranges, &(relevant_date in &1)) and is_nil(temporal.relevant_until) do
+        :ok
+      else
+        {:error, ["anchored elapsed duration must be represented as one dated start event"]}
+      end
+    else
+      _other -> :ok
+    end
+  end
+
+  # The supporting span is model-selected. A bad response must not evade the
+  # duration rule by shortening that span to an exact but uninformative token.
+  # Consult the cited evidence only when the proposed statement is itself a
+  # duration paraphrase, so an unrelated candidate from the same message is not
+  # forced into the acquisition-event shape.
+  defp anchored_elapsed_ranges(
+         supporting_span,
+         statement,
+         source_message_ids,
+         context,
+         observed_on
+       ) do
+    case resolve_elapsed_duration_months(supporting_span, observed_on) do
+      [_ | _] = ranges ->
+        ranges
+
+      [] ->
+        if elapsed_duration_statement?(statement) do
+          context
+          |> Map.get(:window_messages, [])
+          |> Enum.filter(&(fetch(&1, "id") in source_message_ids))
+          |> Enum.map(&fetch(&1, "content"))
+          |> Enum.filter(&is_binary/1)
+          |> Enum.join(" ")
+          |> resolve_elapsed_duration_months(observed_on)
+        else
+          []
+        end
+    end
+  end
+
+  defp elapsed_duration_statement?(statement) do
+    String.match?(
+      statement,
+      ~r/\bfor\s+(?:about|around|approximately|roughly)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+months?\b/iu
+    )
+  end
 
   # Final gate: build the real pipeline create changeset and ask whether it is
   # valid, without saving. This makes the resource's own attribute constraints,

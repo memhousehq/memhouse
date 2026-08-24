@@ -523,6 +523,73 @@ defmodule MemHouse.Model.SchemaExtractionTest do
              Extraction.cast(%{"items" => [mismatched]}, relative_context)
   end
 
+  test "bounds an approximate elapsed month duration to its implied start month" do
+    source = "I've had Luna for about 6 months now"
+
+    elapsed_context =
+      context()
+      |> Map.merge(%{
+        known_peer_keys: ["user"],
+        source_peer_key: "user",
+        source_peer_id: Ecto.UUID.generate(),
+        window_messages: [
+          %{"id" => @message_id, "peer_key" => "user", "content" => source}
+        ],
+        window_message_ids: [@message_id],
+        occurred_at: ~U[2023-08-11 21:17:00Z]
+      })
+
+    event = %{
+      "supporting_span" => source,
+      "statement" => "User obtained Luna.",
+      "kind" => "event",
+      "subject_type" => "peer",
+      "subject_ref" => "user",
+      "source_message_ids" => [@message_id],
+      "confidence_level" => "clearly_implied",
+      "sensitivity" => "personal",
+      "target_level" => "peer",
+      "relevant_from" => "2023-02-28T23:59:59Z",
+      "relevant_until" => nil
+    }
+
+    assert {:ok, [_]} = Extraction.cast(%{"items" => [event]}, elapsed_context)
+
+    wrong_month = Map.put(event, "relevant_from", "2023-03-01T00:00:00Z")
+
+    assert {:error,
+            [
+              "items[0].anchored elapsed duration must be represented as one dated start event"
+            ]} = Extraction.cast(%{"items" => [wrong_month]}, elapsed_context)
+
+    duration_fact =
+      event
+      |> Map.put("statement", "User has had Luna for about 6 months.")
+      |> Map.put("kind", "fact")
+      |> Map.put("relevant_from", nil)
+
+    assert {:error,
+            [
+              "items[0].anchored elapsed duration must be represented as one dated start event"
+            ]} = Extraction.cast(%{"items" => [duration_fact]}, elapsed_context)
+
+    shortened_span = Map.put(duration_fact, "supporting_span", "Luna")
+
+    assert {:error,
+            [
+              "items[0].anchored elapsed duration must be represented as one dated start event"
+            ]} = Extraction.cast(%{"items" => [shortened_span]}, elapsed_context)
+
+    unrelated =
+      event
+      |> Map.put("supporting_span", "Luna")
+      |> Map.put("statement", "User cares for Luna.")
+      |> Map.put("kind", "relation")
+      |> Map.put("relevant_from", nil)
+
+    assert {:ok, [_]} = Extraction.cast(%{"items" => [unrelated]}, elapsed_context)
+  end
+
   test "rejects non-exact relative-date terms" do
     source = "Avery reviewed it todayish and will publish tomorrowish."
 

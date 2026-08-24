@@ -1,0 +1,83 @@
+{
+  "id": "issue-279-acquisition-events",
+  "status": "unevaluated_live_provider",
+  "pipeline_version": "f5-1",
+  "execution": {
+    "batch_shape": "paired",
+    "repetitions_per_arm": 10,
+    "anchors_per_batch": 2,
+    "batches_per_arm": 10,
+    "anchors_per_arm": 20,
+    "total_arms": 3,
+    "total_pre_repair_provider_requests": 30,
+    "total_anchor_presentations": 60,
+    "provider_calls_per_batch_before_repair": 1,
+    "price_only_after_provider_free_admission_dry_run": true,
+    "admit_and_price_each_arm_separately": true
+  },
+  "arms": [
+    {
+      "id": "A",
+      "contract": "previous_default",
+      "prompt_version": "extract-13"
+    },
+    {
+      "id": "B",
+      "contract": "issue_279_candidate",
+      "prompt_version": "extract-14"
+    },
+    {
+      "id": "C",
+      "contract": "compact_explicit",
+      "prompt_version": "extract-compact-exp-1",
+      "known_limitation": "trusted compact conversion derives fact and cannot infer the acquisition event"
+    }
+  ],
+  "required_result_metadata": [
+    "provider",
+    "model",
+    "model_version",
+    "prompt_version",
+    "pipeline_version",
+    "run_date",
+    "source_revision",
+    "request_count",
+    "input_tokens",
+    "output_tokens",
+    "estimated_cost"
+  ],
+  "cases": [
+    {
+      "id": "six_months",
+      "speaker_peer_key": "user",
+      "occurred_at": "2023-08-11T21:17:00Z",
+      "content": "I've had Luna for about 6 months now, and I've been meaning to get her microchipped for a while. I've heard horror stories about pets getting lost, and I don't want to take any chances. I've already scheduled an appointment for next Friday to get it done.",
+      "allowed_supporting_spans": ["I've had Luna for about 6 months now"],
+      "expected": {
+        "subject_ref": "user",
+        "kind": "event",
+        "statement_semantics": "acquisition_or_start",
+        "relevant_from_start": "2023-02-01T00:00:00Z",
+        "relevant_from_end_exclusive": "2023-03-01T00:00:00Z",
+        "relevant_until": null,
+        "forbid_duration_only_ownership_memory": true
+      }
+    },
+    {
+      "id": "nine_months",
+      "speaker_peer_key": "user",
+      "occurred_at": "2023-11-30T11:13:00Z",
+      "content": "I've had my cat, Luna, for about 9 months now, and I've been trying to keep her active and engaged. I've set up her cat tree, and she loves climbing up and down it. I've also been rotating her toys every week to keep things fresh for her. Do you think the interactive toys you recommended would be a good addition to her playtime routine?",
+      "allowed_supporting_spans": ["I've had my cat, Luna, for about 9 months now"],
+      "expected": {
+        "subject_ref": "user",
+        "kind": "event",
+        "statement_semantics": "acquisition_or_start",
+        "relevant_from_start": "2023-02-01T00:00:00Z",
+        "relevant_from_end_exclusive": "2023-03-01T00:00:00Z",
+        "relevant_until": null,
+        "forbid_duration_only_ownership_memory": true
+      }
+    }
+  ]
+}

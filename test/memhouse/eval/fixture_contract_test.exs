@@ -16,6 +16,7 @@ defmodule MemHouse.Eval.FixtureContractTest do
 
   # Data, not prose: the test reads this JSON file and compares against it.
   @baseline_path "test/fixtures/eval/poc-contract-baseline.json"
+  @issue_279_path "test/fixtures/eval/issue-279-acquisition-events.json"
 
   test "poc-0 eval fixtures match the committed source and normalization baseline" do
     baseline = @baseline_path |> File.read!() |> Jason.decode!()
@@ -30,6 +31,36 @@ defmodule MemHouse.Eval.FixtureContractTest do
       assert sha256(path) == expected["sha256"]
       assert summarize(dataset) == expected["normalized"]
     end)
+  end
+
+  test "issue 279 live fixture stays unevaluated and pins repeated paired batches" do
+    fixture = @issue_279_path |> File.read!() |> Jason.decode!()
+
+    assert fixture["status"] == "unevaluated_live_provider"
+    assert fixture["pipeline_version"] == "f5-1"
+    assert fixture["execution"]["batch_shape"] == "paired"
+    assert fixture["execution"]["repetitions_per_arm"] == 10
+    assert fixture["execution"]["anchors_per_batch"] == 2
+    assert fixture["execution"]["batches_per_arm"] == 10
+    assert fixture["execution"]["anchors_per_arm"] == 20
+    assert fixture["execution"]["total_arms"] == 3
+    assert fixture["execution"]["total_pre_repair_provider_requests"] == 30
+    assert fixture["execution"]["total_anchor_presentations"] == 60
+    assert fixture["execution"]["price_only_after_provider_free_admission_dry_run"]
+    assert fixture["execution"]["admit_and_price_each_arm_separately"]
+
+    assert Enum.map(fixture["arms"], &{&1["id"], &1["prompt_version"]}) == [
+             {"A", "extract-13"},
+             {"B", "extract-14"},
+             {"C", "extract-compact-exp-1"}
+           ]
+
+    assert Enum.map(fixture["cases"], & &1["id"]) == ["six_months", "nine_months"]
+
+    assert Enum.sort(fixture["required_result_metadata"]) ==
+             Enum.sort(
+               ~w(provider model model_version prompt_version pipeline_version run_date source_revision request_count input_tokens output_tokens estimated_cost)
+             )
   end
 
   # The baseline stores raw-byte SHA-256 as lowercase hex.

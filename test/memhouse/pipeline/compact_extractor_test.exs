@@ -33,7 +33,7 @@ defmodule MemHouse.Pipeline.CompactExtractorTest do
     assert %{
              mode: :current,
              experiment_identity: nil,
-             prompt_version: "extract-13",
+             prompt_version: "extract-14",
              schema: Extraction,
              batch_schema: ExtractionBatch
            } = Extractor.extraction_contract()
