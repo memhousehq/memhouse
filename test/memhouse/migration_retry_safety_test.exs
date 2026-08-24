@@ -15,6 +15,7 @@ defmodule MemHouse.MigrationRetrySafetyTest do
   )
 
   @concurrent_index_migrations ~w(
+    20260814120000_drop_unused_entity_alias_embedding_index.exs
     20260817090001_source_message_search_vector_index.exs
     20260817090002_source_message_embedding_diskann_index.exs
     20260817090003_source_message_scope_time_index.exs
