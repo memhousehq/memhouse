@@ -511,6 +511,40 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
              )
   end
 
+  test "reservation counters at bigint maximum fail closed without arithmetic overflow", %{
+    actor: actor
+  } do
+    max_bigint = 9_223_372_036_854_775_807
+
+    Enum.each(
+      [
+        {"/bench/locomo/corpus-request-counter", max_bigint, 0, 0},
+        {"/bench/locomo/corpus-token-counter", 0, max_bigint, 0}
+      ],
+      fn {scope_root, requests, tokens, usd} ->
+        attrs =
+          scope_root
+          |> budget_attrs(max_bigint)
+          |> Map.put("token_cap", max_bigint)
+          |> Map.put("usd_micros_cap", max_bigint)
+
+        assert {:ok, _budget} = ExtractionBudget.register(actor, attrs)
+        set_budget_reservations!(actor, scope_root, requests, tokens, usd)
+
+        assert {:error, %ExtractionBudget.Exceeded{}} =
+                 ExtractionBudget.reserve(
+                   %{
+                     account_id: actor.account_id,
+                     scope_path: "#{scope_root}/case-1",
+                     actor: pipeline_actor(actor)
+                   },
+                   [%{role: "user", content: "bounded counter"}],
+                   %{"type" => "object"}
+                 )
+      end
+    )
+  end
+
   test "gateway refuses an extractor provider callback after hard-budget exhaustion", %{
     actor: actor
   } do
@@ -867,6 +901,19 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
       |> Ash.Query.filter(scope_id == ^scope_id)
       |> Ash.Query.set_tenant(actor.account_id)
       |> Ash.read_one!(actor: pipeline_actor(actor))
+    end)
+  end
+
+  defp set_budget_reservations!(actor, scope_root, requests, tokens, usd) do
+    DataLayer.in_account_transaction(actor.account_id, fn ->
+      MemHouse.Repo.query!(
+        """
+        UPDATE extraction_budget_guards
+        SET requests_reserved = $3, tokens_reserved = $4, usd_micros_reserved = $5
+        WHERE account_id = $1 AND scope_root = $2
+        """,
+        [Ecto.UUID.dump!(actor.account_id), scope_root, requests, tokens, usd]
+      )
     end)
   end
 

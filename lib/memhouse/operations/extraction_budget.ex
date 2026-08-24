@@ -123,16 +123,16 @@ defmodule MemHouse.Operations.ExtractionBudget do
           LIMIT 1
         )
         UPDATE extraction_budget_guards AS guard
-        SET requests_reserved = requests_reserved + 1,
-            tokens_reserved = tokens_reserved + $3 + $4,
+        SET requests_reserved = (requests_reserved::numeric + 1)::bigint,
+            tokens_reserved = (tokens_reserved::numeric + $3 + $4)::bigint,
             usd_micros_reserved = (usd_micros_reserved::numeric + selected.usd)::bigint,
             updated_at = now()
         FROM selected
         WHERE guard.account_id = selected.account_id
           AND guard.scope_root = selected.scope_root
           AND clock_timestamp() < selected.deadline_at
-          AND guard.requests_reserved + 1 <= guard.request_cap
-          AND guard.tokens_reserved + $3 + $4 <= guard.token_cap
+          AND guard.requests_reserved::numeric + 1 <= guard.request_cap
+          AND guard.tokens_reserved::numeric + $3 + $4 <= guard.token_cap
           AND selected.usd <= #{@max_bigint}
           AND guard.usd_micros_reserved + selected.usd <= guard.usd_micros_cap
         RETURNING GREATEST(
