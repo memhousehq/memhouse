@@ -60,9 +60,10 @@ defmodule MemHouse.Model.StructuredGenerator do
 
   Failure modes: `{:error, {:structured_validation_failed, errors}}` when the
   repair budget is exhausted and no recovery path exists or recovery fails, or
-  the provider's own `{:error, reason}`. A bounded set of transient
-  incomplete-response errors retries the original request within the same
-  budget. Other provider errors short-circuit immediately.
+  `{:error, :request_timeout}` when an absolute request deadline is exhausted
+  before another attempt starts, or the provider's own `{:error, reason}`. A
+  bounded set of transient incomplete-response errors retries the original
+  request within the same budget. Other provider errors short-circuit immediately.
   """
   def generate(role, messages, schema, context, opts \\ [])
       when is_atom(schema) and is_list(messages) and is_map(context) do
@@ -79,7 +80,9 @@ defmodule MemHouse.Model.StructuredGenerator do
   `{:error, reason, provider_attempts}`. The count is zero when admission stops
   before the provider callback, one for an unrepaired call, and at most three
   after the bounded repair loop. The ordinary `generate/5` API drops only this
-  accounting value and otherwise preserves the same result.
+  accounting value and otherwise preserves the same result. When
+  `:request_deadline_ms` is supplied, deadline exhaustion returns
+  `:request_timeout` with the count of attempts already admitted.
   """
   def generate_with_attempts(role, messages, schema, context, opts \\ [])
       when is_atom(schema) and is_list(messages) and is_map(context) do
