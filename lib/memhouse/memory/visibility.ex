@@ -33,6 +33,20 @@ defmodule MemHouse.Memory.Visibility do
   end
 
   @doc """
+  Returns the earliest non-nil lifecycle visibility boundary selected from a collection.
+
+  Projection builders use this helper for both source `expires_at` values and derived
+  `valid_until` values so every governed visibility boundary uses the same ordering rule.
+  """
+  @spec earliest_boundary(Enumerable.t(), (term() -> DateTime.t() | nil)) :: DateTime.t() | nil
+  def earliest_boundary(items, selector) when is_function(selector, 1) do
+    items
+    |> Enum.map(selector)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min_by(&DateTime.to_unix(&1, :microsecond), fn -> nil end)
+  end
+
+  @doc """
   Loads undeleted, unexpired readable knowledge in the supplied scopes and active view.
 
   The Ash tenant and actor remain mandatory even for an internal reader.

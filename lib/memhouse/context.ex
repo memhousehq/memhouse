@@ -152,7 +152,7 @@ defmodule MemHouse.Context do
             |> Enum.sort_by(&entity_card_order/1, :desc)
             |> Enum.take(@entity_cards_per_scope)
 
-          valid_until = earliest_expiry(cards)
+          valid_until = Visibility.earliest_boundary(cards, & &1.valid_until)
           cards = Enum.map(cards, & &1.content)
 
           Cache.put(cache_key, cards, valid_until)
@@ -289,13 +289,6 @@ defmodule MemHouse.Context do
         if projection, do: Cache.put(ets_key, projection, projection.valid_until)
         {projection, false}
     end
-  end
-
-  defp earliest_expiry(projections) do
-    projections
-    |> Enum.map(& &1.valid_until)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.min_by(&DateTime.to_unix(&1, :microsecond), fn -> nil end)
   end
 
   # Callers may name a session either by its internal id or by the external id they chose. A

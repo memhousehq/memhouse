@@ -28,13 +28,13 @@ defmodule MemHouse.Context.Builder do
   alias MemHouse.Context.Cache
   alias MemHouse.Context.EntityLabel
   alias MemHouse.Context.ProjectionKey
+  alias MemHouse.Context.ProjectionLock
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{EntityMention, Projection, Statement}
   alias MemHouse.Memory.Visibility
   alias MemHouse.Model.Config
   alias MemHouse.Model.Gateway
   alias MemHouse.Observations.{Message, Session}
-  alias MemHouse.Pipeline.Lock
   alias MemHouse.Retrieval.Query
   alias MemHouse.Topology.Scope
 
@@ -82,13 +82,15 @@ defmodule MemHouse.Context.Builder do
 
   Returns `{:ok, map}` with the scope card's id, the number of entity card, peer profile, and
   session summary projections written, and `entity_card_summaries_unavailable`: cards that earned
-  a summary but whose model call failed. Raises if the transaction fails or an underlying Ash call
-  fails.
+  a summary but whose model call failed. Returns `{:error, :stale_projection_snapshot}` when
+  governed knowledge changes during model work, leaving the caller's durable run retryable.
+  Raises if the transaction fails or an underlying Ash call fails.
 
   Replays are safe because projections are upserted by cache key.
   """
   def refresh_scope(account_id, scope_id) do
-    {scope, scope_knowledge, peer_knowledge, mentions, sessions, messages, actor} =
+    {scope, scope_knowledge, peer_knowledge, mentions, sessions, messages, actor,
+     snapshot_signature} =
       read_scope!(account_id, scope_id)
 
     scope_knowledge = dream_rank(scope_knowledge, scope, account_id, actor)
@@ -152,7 +154,7 @@ defmodule MemHouse.Context.Builder do
                actor
              ),
            source_ids: Enum.map(session_knowledge, & &1.id),
-           valid_until: earliest_expiry(session_knowledge)
+           valid_until: Visibility.earliest_boundary(session_knowledge, & &1.expires_at)
          }}
       end)
 
@@ -161,6 +163,7 @@ defmodule MemHouse.Context.Builder do
       scope,
       scope_knowledge,
       peer_knowledge,
+      snapshot_signature,
       %{
         sessions: sessions,
         scope: scope_attrs,
@@ -179,36 +182,9 @@ defmodule MemHouse.Context.Builder do
       [role: :system, pipeline?: true],
       fn _account, actor ->
         scope = read_one!(Scope, scope_id, account_id, actor)
-        now = Clock.utc_now()
 
-        visible_knowledge =
-          Visibility.knowledge_query([scope_id], "active", actor, true, now)
-
-        # Shared projections may only contain settled knowledge that is actually shareable.
-        # Settled is not the same as shared: an active statement about one peer, still at peer
-        # level, belongs to that peer alone, and a card built from it would hand it to everyone
-        # who reads the scope — past every rule retrieval applies. Provisional rows are read
-        # separately for the subject-keyed peer channel below.
-        shared_states = MemHouse.Knowledge.Lifecycle.shared_projection_states()
-        peer_states = MemHouse.Knowledge.Lifecycle.peer_projection_states()
-
-        scope_knowledge =
-          visible_knowledge
-          |> Ash.Query.filter(state in ^shared_states)
-          |> Ash.Query.filter(
-            sensitivity in ["public", "internal"] or is_nil(subject_peer_id) or
-              target_level in ["scope", "account"]
-          )
-          |> Ash.Query.sort(confidence: :desc, updated_at: :desc)
-          |> Ash.Query.set_tenant(account_id)
-          |> Ash.read!(actor: actor)
-
-        peer_knowledge =
-          visible_knowledge
-          |> Ash.Query.filter(state in ^peer_states and not is_nil(subject_peer_id))
-          |> Ash.Query.sort(confidence: :desc, updated_at: :desc)
-          |> Ash.Query.set_tenant(account_id)
-          |> Ash.read!(actor: actor)
+        {scope_knowledge, peer_knowledge} =
+          read_projection_knowledge!(account_id, scope_id, actor)
 
         mentions =
           EntityMention
@@ -228,112 +204,195 @@ defmodule MemHouse.Context.Builder do
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
 
-        {scope, scope_knowledge, peer_knowledge, mentions, sessions, messages, actor}
+        {scope, scope_knowledge, peer_knowledge, mentions, sessions, messages, actor,
+         projection_snapshot_signature(scope_knowledge, peer_knowledge)}
       end
     )
+  end
+
+  defp read_projection_knowledge!(account_id, scope_id, actor) do
+    now = Clock.utc_now()
+    visible_knowledge = Visibility.knowledge_query([scope_id], "active", actor, true, now)
+
+    # Shared projections may only contain settled knowledge that is actually shareable.
+    # Settled is not the same as shared: an active statement about one peer, still at peer
+    # level, belongs to that peer alone, and a card built from it would hand it to everyone
+    # who reads the scope — past every rule retrieval applies. Provisional rows are read
+    # separately for the subject-keyed peer channel below.
+    shared_states = MemHouse.Knowledge.Lifecycle.shared_projection_states()
+    peer_states = MemHouse.Knowledge.Lifecycle.peer_projection_states()
+
+    scope_knowledge =
+      visible_knowledge
+      |> Ash.Query.filter(state in ^shared_states)
+      |> Ash.Query.filter(
+        sensitivity in ["public", "internal"] or is_nil(subject_peer_id) or
+          target_level in ["scope", "account"]
+      )
+      |> Ash.Query.sort(confidence: :desc, updated_at: :desc)
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.read!(actor: actor)
+
+    peer_knowledge =
+      visible_knowledge
+      |> Ash.Query.filter(state in ^peer_states and not is_nil(subject_peer_id))
+      |> Ash.Query.sort(confidence: :desc, updated_at: :desc)
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.read!(actor: actor)
+
+    {scope_knowledge, peer_knowledge}
+  end
+
+  defp projection_snapshot_signature(scope_knowledge, peer_knowledge) do
+    [scope: scope_knowledge, peer: peer_knowledge]
+    |> Enum.map(fn {channel, items} ->
+      {channel,
+       items
+       |> Enum.map(&projection_source_revision/1)
+       |> Enum.sort_by(& &1.id)}
+    end)
+  end
+
+  defp projection_source_revision(item) do
+    Map.take(item, [
+      :id,
+      :state,
+      :statement,
+      :subject_peer_id,
+      :sensitivity,
+      :target_level,
+      :confidence,
+      :source_message_ids,
+      :expires_at,
+      :relevant_from,
+      :relevant_until,
+      :deleted_at,
+      :updated_at
+    ])
   end
 
   # Phase three commits the projection set. No provider call may be added to this callback: a
   # slow external request here would hold a pooled connection and could discard billed work.
-  @doc false
-  def serialize_projection_writes!(account_id, scope_id, fun) when is_function(fun, 0) do
-    Lock.acquire!(account_id, "projection-write:#{scope_id}")
-    fun.()
-  end
-
-  defp write_projections!(account_id, scope, scope_knowledge, peer_knowledge, projections) do
+  defp write_projections!(
+         account_id,
+         scope,
+         scope_knowledge,
+         peer_knowledge,
+         snapshot_signature,
+         projections
+       ) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        serialize_projection_writes!(account_id, scope.id, fn ->
-          entity_projections =
-            Enum.map(projections.entity_cards, &upsert_projection!(account_id, actor, &1))
+        ProjectionLock.acquire!(account_id, scope.id)
 
-          retire_stale_entity_cards!(
+        {current_scope_knowledge, current_peer_knowledge} =
+          read_projection_knowledge!(account_id, scope.id, actor)
+
+        current_signature =
+          projection_snapshot_signature(current_scope_knowledge, current_peer_knowledge)
+
+        if current_signature == snapshot_signature do
+          commit_projections!(
             account_id,
             actor,
-            scope.id,
-            MapSet.new(entity_projections, & &1.entity_id)
+            scope,
+            scope_knowledge,
+            peer_knowledge,
+            projections
           )
-
-          scope_projection =
-            upsert_projection!(
-              account_id,
-              actor,
-              %{
-                cache_key: ProjectionKey.scope(scope.id),
-                scope_id: scope.id,
-                kind: "scope_card",
-                content: projections.scope,
-                source_ids: Enum.map(scope_knowledge, & &1.id),
-                valid_until: earliest_expiry(scope_knowledge)
-              }
-            )
-
-          # Group profiles by statement subject, not source.
-          peer_projections =
-            peer_knowledge
-            |> Enum.group_by(& &1.subject_peer_id)
-            |> Enum.map(fn {peer_id, items} ->
-              upsert_projection!(
-                account_id,
-                actor,
-                %{
-                  cache_key: ProjectionKey.peer(scope.id, peer_id),
-                  scope_id: scope.id,
-                  peer_id: peer_id,
-                  kind: "peer_profile",
-                  content: Map.fetch!(projections.peers, peer_id),
-                  source_ids: Enum.map(items, & &1.id),
-                  valid_until: earliest_expiry(items)
-                }
-              )
-            end)
-
-          retire_stale_peer_profiles!(
-            account_id,
-            actor,
-            scope.id,
-            MapSet.new(peer_projections, & &1.peer_id)
-          )
-
-          session_projections =
-            projections.sessions
-            |> Enum.map(fn session ->
-              summary = Map.fetch!(projections.session_summaries, session.id)
-
-              upsert_projection!(
-                account_id,
-                actor,
-                %{
-                  cache_key: ProjectionKey.session(scope.id, session.id),
-                  scope_id: scope.id,
-                  peer_id: session.peer_id,
-                  session_id: session.id,
-                  kind: "session_summary",
-                  content: summary.content,
-                  source_ids: summary.source_ids,
-                  valid_until: summary.valid_until
-                }
-              )
-            end)
-
-          # Evict stale copies on every node.
-          Cache.invalidate_scope(account_id, scope.id)
-
-          {:ok,
-           %{
-             scope_card: scope_projection.id,
-             entity_cards: length(entity_projections),
-             entity_card_summaries_unavailable:
-               count_unavailable_summaries(projections.entity_cards),
-             peer_profiles: length(peer_projections),
-             session_summaries: length(session_projections)
-           }}
-        end)
+        else
+          {:error, :stale_projection_snapshot}
+        end
       end
     )
+  end
+
+  defp commit_projections!(account_id, actor, scope, scope_knowledge, peer_knowledge, projections) do
+    entity_projections =
+      Enum.map(projections.entity_cards, &upsert_projection!(account_id, actor, &1))
+
+    retire_stale_entity_cards!(
+      account_id,
+      actor,
+      scope.id,
+      MapSet.new(entity_projections, & &1.entity_id)
+    )
+
+    scope_projection =
+      upsert_projection!(
+        account_id,
+        actor,
+        %{
+          cache_key: ProjectionKey.scope(scope.id),
+          scope_id: scope.id,
+          kind: "scope_card",
+          content: projections.scope,
+          source_ids: Enum.map(scope_knowledge, & &1.id),
+          valid_until: Visibility.earliest_boundary(scope_knowledge, & &1.expires_at)
+        }
+      )
+
+    # Group profiles by statement subject, not source.
+    peer_projections =
+      peer_knowledge
+      |> Enum.group_by(& &1.subject_peer_id)
+      |> Enum.map(fn {peer_id, items} ->
+        upsert_projection!(
+          account_id,
+          actor,
+          %{
+            cache_key: ProjectionKey.peer(scope.id, peer_id),
+            scope_id: scope.id,
+            peer_id: peer_id,
+            kind: "peer_profile",
+            content: Map.fetch!(projections.peers, peer_id),
+            source_ids: Enum.map(items, & &1.id),
+            valid_until: Visibility.earliest_boundary(items, & &1.expires_at)
+          }
+        )
+      end)
+
+    retire_stale_peer_profiles!(
+      account_id,
+      actor,
+      scope.id,
+      MapSet.new(peer_projections, & &1.peer_id)
+    )
+
+    session_projections =
+      projections.sessions
+      |> Enum.map(fn session ->
+        summary = Map.fetch!(projections.session_summaries, session.id)
+
+        upsert_projection!(
+          account_id,
+          actor,
+          %{
+            cache_key: ProjectionKey.session(scope.id, session.id),
+            scope_id: scope.id,
+            peer_id: session.peer_id,
+            session_id: session.id,
+            kind: "session_summary",
+            content: summary.content,
+            source_ids: summary.source_ids,
+            valid_until: summary.valid_until
+          }
+        )
+      end)
+
+    # Evict stale copies on every node.
+    Cache.invalidate_scope(account_id, scope.id)
+
+    {:ok,
+     %{
+       scope_card: scope_projection.id,
+       entity_cards: length(entity_projections),
+       entity_card_summaries_unavailable: count_unavailable_summaries(projections.entity_cards),
+       peer_profiles: length(peer_projections),
+       session_summaries: length(session_projections)
+     }}
   end
 
   # A statement anyone reading the scope may see: public, about the scope rather than a person,
@@ -442,7 +501,7 @@ defmodule MemHouse.Context.Builder do
         "pinned_facts" => pinned_facts(cluster.items, @entity_card_pinned_facts)
       },
       source_ids: Enum.map(cluster.items, & &1.id),
-      valid_until: earliest_expiry(cluster.items)
+      valid_until: Visibility.earliest_boundary(cluster.items, & &1.expires_at)
     }
   end
 
@@ -655,6 +714,8 @@ defmodule MemHouse.Context.Builder do
   Returns `:ok`. Raises if a read or update fails.
   """
   def mark_dirty(account_id, actor, scope_id) do
+    ProjectionLock.acquire!(account_id, scope_id)
+
     Projection
     |> Ash.Query.filter(scope_id == ^scope_id)
     |> Ash.Query.set_tenant(account_id)
@@ -720,13 +781,6 @@ defmodule MemHouse.Context.Builder do
       _key, _old_value, new_value ->
         new_value
     end)
-  end
-
-  defp earliest_expiry(items) do
-    items
-    |> Enum.map(& &1.expires_at)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.min_by(&DateTime.to_unix(&1, :microsecond), fn -> nil end)
   end
 
   # Background ranking has no deadline and stays serial outside the read and write transactions.

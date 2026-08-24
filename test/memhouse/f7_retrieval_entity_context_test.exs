@@ -406,6 +406,74 @@ defmodule MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider d
   defp leave, do: Agent.update(__MODULE__, &%{&1 | in_flight: &1.in_flight - 1})
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider do
+  @moduledoc """
+  Pauses the first entity-card summary after Builder has loaded its projection source snapshot.
+
+  Later calls continue through the ordinary deterministic fixture provider, allowing a second
+  production refresh to finish while the first is held outside every database transaction.
+  """
+
+  @behaviour MemHouse.Model.Provider
+
+  alias MemHouse.F7RetrievalEntityContextTest.Provider
+
+  @doc "Arms one pause and reports it to `owner`."
+  def start!(owner) do
+    {:ok, _pid} = Agent.start_link(fn -> %{owner: owner, pause_next?: true} end, name: __MODULE__)
+    :ok
+  end
+
+  @doc "Stops the pause controller when armed."
+  def stop do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> Agent.stop(pid)
+    end
+  end
+
+  @impl true
+  def structured(config, messages, schema, opts),
+    do: Provider.structured(config, messages, schema, opts)
+
+  @impl true
+  def chat(config, messages, opts) do
+    if Keyword.get(opts, :task) == :entity_card, do: pause_once()
+    Provider.chat(config, messages, opts)
+  end
+
+  @impl true
+  def embed(config, texts, opts), do: Provider.embed(config, texts, opts)
+
+  @impl true
+  def rerank(config, query, documents, opts), do: Provider.rerank(config, query, documents, opts)
+
+  defp pause_once do
+    pause =
+      Agent.get_and_update(__MODULE__, fn state ->
+        if state.pause_next? do
+          {{:pause, state.owner}, %{state | pause_next?: false}}
+        else
+          {:continue, state}
+        end
+      end)
+
+    case pause do
+      {:pause, owner} ->
+        send(owner, {:projection_snapshot_captured, self()})
+
+        receive do
+          :release_projection_refresh -> :ok
+        end
+
+      :continue ->
+        :ok
+    end
+
+    :ok
+  end
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest do
   @moduledoc """
   Pins retrieval, private entity caches, and reasoning-free context assembly.
@@ -2727,6 +2795,92 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end)
   end
 
+  test "overlapping current projection refreshes commit monotonic valid generations" do
+    seeded =
+      seed_entity_cluster!(
+        "f7-projection-current-overlap",
+        "/f7/projection-current-overlap",
+        "Avery",
+        "person",
+        [
+          "Avery owns the release checklist.",
+          "Avery reviews the checklist each Friday.",
+          "Avery records the release decision."
+        ]
+      )
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    baseline = scope_projection!(seeded)
+    pause_next_projection_snapshot!()
+
+    first =
+      Task.async(fn ->
+        Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:projection_snapshot_captured, first_pid}, 1_000
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    second = scope_projection!(seeded)
+    assert second.version == baseline.version + 1
+    assert second.validity_version == second.version
+
+    send(first_pid, :release_projection_refresh)
+    assert {:ok, _counts} = Task.await(first, 5_000)
+
+    final = scope_projection!(seeded)
+    assert final.version == second.version + 1
+    assert final.validity_version == final.version
+  end
+
+  test "an older projection snapshot cannot overwrite a newer expiry boundary" do
+    seeded =
+      seed_entity_cluster!(
+        "f7-projection-stale-snapshot",
+        "/f7/projection-stale-snapshot",
+        "Avery",
+        "person",
+        [
+          "Avery owns the release checklist.",
+          "Avery reviews the checklist each Friday.",
+          "Avery records the release decision."
+        ]
+      )
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    pause_next_projection_snapshot!()
+
+    stale_refresh =
+      Task.async(fn ->
+        Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:projection_snapshot_captured, stale_pid}, 1_000
+
+    expire_active!(seeded)
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    winning = scope_projection!(seeded)
+    assert winning.validity_version == winning.version
+    refute seeded.knowledge.id in winning.source_ids
+
+    send(stale_pid, :release_projection_refresh)
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_refresh, 5_000)
+
+    final = scope_projection!(seeded)
+    assert final.version == winning.version
+    assert final.validity_version == final.version
+    refute seeded.knowledge.id in final.source_ids
+
+    context =
+      Memory.get_context(
+        %{"scope_path" => seeded.scope.path, "budget_chars" => 20_000},
+        seeded.actor
+      )
+
+    refute inspect(context) =~ seeded.knowledge.statement
+  end
+
   test "cached projections disappear when their sources expire before the lifecycle sweep" do
     clock = MemHouse.F7RetrievalEntityContextTest.Clock
     system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
@@ -4415,6 +4569,28 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         reason: "f7_test_expire_before_sweep",
         channel: "pipeline"
       )
+    end)
+  end
+
+  defp pause_next_projection_snapshot! do
+    provider = MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider
+    original_provider = Application.fetch_env!(:memhouse, :model_provider)
+
+    provider.start!(self())
+    Application.put_env(:memhouse, :model_provider, provider)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, original_provider)
+      provider.stop()
+    end)
+  end
+
+  defp scope_projection!(seeded) do
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      Projection
+      |> Ash.Query.filter(scope_id == ^seeded.scope.id and kind == "scope_card")
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: pipeline_actor(actor))
     end)
   end
 
