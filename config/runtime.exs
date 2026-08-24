@@ -8,6 +8,8 @@
 # hold environment-variable references, never secret values.
 
 import Config
+
+config :memhouse, :build_sha, System.get_env("MEMHOUSE_BUILD_SHA", "unknown")
 import Dotenvy
 
 # Later sources win, so the process environment overrides `.env`.

@@ -264,6 +264,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                "tokens_reserved" => 0,
                "usd_micros_reserved" => 0,
                "extraction_identity" => %{
+                 "build_sha" => "unknown",
                  "prompt_version" => "extract-13",
                  "pipeline_version" => "f5-1",
                  "batching_enabled" => false,
