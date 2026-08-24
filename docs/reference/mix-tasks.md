@@ -264,7 +264,8 @@ The stages cover ingest calls/tokens/facts, answer and retrieval quality, citati
 unexpected source membership, total token/cost accounting, latency, and dream-time replay. Cost is
 an estimate from the named shipped planning profile or operator override; a provider that returns
 no usage object honestly records zero tokens rather than a guess. Gates fail the command by
-default. `--report-only` writes a failed
+default. An isolation gate fails closed unless at least one retrieved candidate identity was
+checked and no unexpected source membership was found. `--report-only` writes a failed
 bundle without changing the exit status.
 Execute-mode cost stages record the profile `id` and `kind` beside
 `estimated_usd`, so two runs cannot silently compare different rate tables.

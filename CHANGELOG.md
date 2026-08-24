@@ -11,6 +11,11 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Isolation scoring now uses the `source-membership-v2` contract: a zero-leak
+  result passes only when at least one retrieved candidate identity was
+  checked. Matched experiment fixtures must record the content-free candidate
+  count, and promotion gates fail closed when isolation was not exercised.
+
 - Matched execute experiments now accept only a closed set of component
   bindings derived from the runner's effective profile, strategies, rerank,
   deadline, extraction batching, adaptive recall permissions, separate
