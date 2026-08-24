@@ -9,17 +9,18 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias MemHouse.Context.ProjectionLock
+  alias MemHouse.DataLayer
   alias MemHouse.Repo
+  alias MemHouse.Topology.Scope
 
   test "overlapping final writes for one scope enter one at a time" do
-    account_id = Ash.UUID.generate()
-    scope_id = Ash.UUID.generate()
+    {account_id, scope_id} = create_scope!()
     parent = self()
 
     first =
       Task.async(fn ->
         with_connection(fn ->
-          Repo.transaction(fn ->
+          DataLayer.with_account_id(account_id, fn _account, _actor ->
             backend_pid = backend_pid!()
             ProjectionLock.acquire!(account_id, scope_id)
             send(parent, {:entered, :first, backend_pid})
@@ -36,7 +37,7 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
     second =
       Task.async(fn ->
         with_connection(fn ->
-          Repo.transaction(fn ->
+          DataLayer.with_account_id(account_id, fn _account, _actor ->
             backend_pid = backend_pid!()
             send(parent, {:attempting, :second, backend_pid})
             ProjectionLock.acquire!(account_id, scope_id)
@@ -53,8 +54,8 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
     send(first.pid, :release)
 
     assert_receive {:entered, :second}, 5_000
-    assert {:ok, :first} = Task.await(first)
-    assert {:ok, :second} = Task.await(second)
+    assert :first = Task.await(first)
+    assert :second = Task.await(second)
   end
 
   defp with_connection(fun) do
@@ -65,6 +66,28 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
     after
       Sandbox.checkin(Repo)
     end
+  end
+
+  defp create_scope! do
+    account_key = "projection-lock-#{Ash.UUID.generate()}"
+
+    with_connection(fn ->
+      DataLayer.with_account_key(account_key, fn account, actor ->
+        scope =
+          Scope
+          |> Ash.Changeset.for_create(:ensure, %{
+            parent_id: nil,
+            key: "scope",
+            name: "Scope",
+            path: "/scope",
+            state: "active"
+          })
+          |> Ash.Changeset.set_tenant(account.id)
+          |> Ash.create!(actor: actor)
+
+        {account.id, scope.id}
+      end)
+    end)
   end
 
   defp backend_pid! do
@@ -79,7 +102,7 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
   end
 
   defp assert_blocked_by!(_blocked_pid, _blocker_pid, 0),
-    do: flunk("second projection writer never waited on the advisory lock")
+    do: flunk("second projection writer never waited on the scope row lock")
 
   defp assert_blocked_by!(blocked_pid, blocker_pid, attempts) do
     %{rows: [[blocked?]]} =

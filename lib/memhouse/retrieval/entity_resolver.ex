@@ -14,6 +14,7 @@ defmodule MemHouse.Retrieval.EntityResolver do
   blocking rebuild.
   """
 
+  alias MemHouse.Context.ProjectionLock
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{Entity, EntityMention}
   alias MemHouse.Memory.Visibility
@@ -58,15 +59,19 @@ defmodule MemHouse.Retrieval.EntityResolver do
   pruned Account-wide, because an entity is shared across scopes and only the
   full mention set can show it has become unreferenced.
 
-  Returns `{:ok, %{statements: n, mentions: n}}`. Raises if a read or write
-  fails; individual embedding or model failures do not raise, they just leave
-  that surface form unresolved.
+  Returns `{:ok, %{statements: n, mentions: n}}`, or
+  `{:error, :stale_projection_snapshot}` when a projection-shaping input changes
+  during model work. Raises if a read or write fails; individual embedding or
+  model failures do not raise, they just leave that surface form unresolved.
   """
   def rebuild_scope(account_id, scope_id) do
-    {drafts, statements, actor} = read_scope!(account_id, scope_id)
+    {drafts, statements, actor, input_generation} = read_scope!(account_id, scope_id)
     {drafts, mentions} = resolve_statements(drafts, statements, account_id, actor)
-    write_index!(drafts, mentions, account_id, scope_id)
-    {:ok, %{statements: length(statements), mentions: length(mentions)}}
+
+    case write_index!(drafts, mentions, account_id, scope_id, input_generation) do
+      :ok -> {:ok, %{statements: length(statements), mentions: length(mentions)}}
+      {:error, :stale_projection_snapshot} = error -> error
+    end
   end
 
   # Phase one. Reads everything the resolution loop needs, so that loop can run
@@ -86,6 +91,7 @@ defmodule MemHouse.Retrieval.EntityResolver do
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
+        input_generation = ProjectionLock.capture!(account_id, scope_id)
         drafts = account_id |> entities!(actor) |> Enum.map(&draft/1)
 
         statements =
@@ -95,7 +101,7 @@ defmodule MemHouse.Retrieval.EntityResolver do
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
 
-        {drafts, statements, actor}
+        {drafts, statements, actor, input_generation}
       end
     )
   end
@@ -395,27 +401,34 @@ defmodule MemHouse.Retrieval.EntityResolver do
   # entities' real ids, and prune whatever is now unreferenced. Untouched
   # drafts are not written at all — nothing this run resolved needs them to
   # change.
-  defp write_index!(drafts, mentions, account_id, scope_id) do
+  defp write_index!(drafts, mentions, account_id, scope_id, input_generation) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        # Clear first, then re-derive in the same transaction. Any other order
-        # would leave duplicate mentions for statements that are resolved
-        # again, and splitting the clear into its own transaction would expose
-        # a window where the scope has no mentions at all.
-        clear_mentions!(account_id, scope_id, actor)
+        current_generation = ProjectionLock.acquire!(account_id, scope_id)
 
-        key_to_id =
-          drafts
-          |> Enum.filter(& &1.touched?)
-          |> Map.new(&{&1.key, write_draft!(&1, account_id, actor)})
+        if current_generation == input_generation do
+          # Clear first, then re-derive in the same transaction. Any other order
+          # would leave duplicate mentions for statements that are resolved
+          # again, and splitting the clear into its own transaction would expose
+          # a window where the scope has no mentions at all.
+          clear_mentions!(account_id, scope_id, actor)
 
-        Enum.each(mentions, &write_mention!(&1, key_to_id, account_id, actor))
+          key_to_id =
+            drafts
+            |> Enum.filter(& &1.touched?)
+            |> Map.new(&{&1.key, write_draft!(&1, account_id, actor)})
 
-        # Runs last, once the scope's mentions have been rewritten, so an
-        # entity that only this scope referenced is now visibly unreferenced.
-        prune_entities!(account_id, actor)
+          Enum.each(mentions, &write_mention!(&1, key_to_id, account_id, actor))
+
+          # Runs last, once the scope's mentions have been rewritten, so an
+          # entity that only this scope referenced is now visibly unreferenced.
+          prune_entities!(account_id, actor)
+          :ok
+        else
+          {:error, :stale_projection_snapshot}
+        end
       end
     )
   end

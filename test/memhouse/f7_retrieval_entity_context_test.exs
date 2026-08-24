@@ -418,9 +418,14 @@ defmodule MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider 
 
   alias MemHouse.F7RetrievalEntityContextTest.Provider
 
-  @doc "Arms one pause and reports it to `owner`."
-  def start!(owner) do
-    {:ok, _pid} = Agent.start_link(fn -> %{owner: owner, pause_next?: true} end, name: __MODULE__)
+  @doc "Arms one projection or entity-resolution pause and reports it to `owner`."
+  def start!(owner, pause_on \\ :entity_card) do
+    {:ok, _pid} =
+      Agent.start_link(
+        fn -> %{owner: owner, pause_next?: true, pause_on: pause_on} end,
+        name: __MODULE__
+      )
+
     :ok
   end
 
@@ -438,20 +443,23 @@ defmodule MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider 
 
   @impl true
   def chat(config, messages, opts) do
-    if Keyword.get(opts, :task) == :entity_card, do: pause_once()
+    if Keyword.get(opts, :task) == :entity_card, do: pause_once(:entity_card)
     Provider.chat(config, messages, opts)
   end
 
   @impl true
-  def embed(config, texts, opts), do: Provider.embed(config, texts, opts)
+  def embed(config, texts, opts) do
+    pause_once(:entity_resolution)
+    Provider.embed(config, texts, opts)
+  end
 
   @impl true
   def rerank(config, query, documents, opts), do: Provider.rerank(config, query, documents, opts)
 
-  defp pause_once do
+  defp pause_once(pause_on) do
     pause =
       Agent.get_and_update(__MODULE__, fn state ->
-        if state.pause_next? do
+        if state.pause_next? and state.pause_on == pause_on do
           {{:pause, state.owner}, %{state | pause_next?: false}}
         else
           {:continue, state}
@@ -460,7 +468,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider 
 
     case pause do
       {:pause, owner} ->
-        send(owner, {:projection_snapshot_captured, self()})
+        send(owner, {:model_snapshot_captured, pause_on, self()})
 
         receive do
           :release_projection_refresh -> :ok
@@ -1770,6 +1778,38 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end)
   end
 
+  test "entity resolution cannot restore a mention after its source expires in flight" do
+    seeded =
+      seed_active!(
+        "f7-entity-resolution-expiry-race",
+        "/f7/entity-resolution-expiry-race",
+        "Avery owns the release checklist."
+      )
+
+    pause_next_entity_resolution!()
+
+    stale_resolution =
+      Task.async(fn ->
+        EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, stale_pid}, 1_000
+    expire_active!(seeded)
+    send(stale_pid, :release_projection_refresh)
+
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_resolution, 5_000)
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      mentions =
+        EntityMention
+        |> Ash.Query.filter(knowledge_item_id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert mentions == []
+    end)
+  end
+
   test "entity_match ranks a selective entity's statements above a scope-wide one's" do
     seeds = seed_statements!("f7-entity-idf", "/f7/entity-idf", 6)
 
@@ -2818,7 +2858,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         Builder.refresh_scope(seeded.account.id, seeded.scope.id)
       end)
 
-    assert_receive {:projection_snapshot_captured, first_pid}, 1_000
+    assert_receive {:model_snapshot_captured, :entity_card, first_pid}, 1_000
 
     assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
     second = scope_projection!(seeded)
@@ -2855,7 +2895,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         Builder.refresh_scope(seeded.account.id, seeded.scope.id)
       end)
 
-    assert_receive {:projection_snapshot_captured, stale_pid}, 1_000
+    assert_receive {:model_snapshot_captured, :entity_card, stale_pid}, 1_000
 
     expire_active!(seeded)
     assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
@@ -2879,6 +2919,53 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       )
 
     refute inspect(context) =~ seeded.knowledge.statement
+  end
+
+  test "a scope metadata change rejects an older full projection snapshot" do
+    seeded =
+      seed_entity_cluster!(
+        "f7-projection-stale-scope",
+        "/f7/projection-stale-scope",
+        "Avery",
+        "person",
+        [
+          "Avery owns the release checklist.",
+          "Avery reviews the checklist each Friday.",
+          "Avery records the release decision."
+        ]
+      )
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    baseline = scope_projection!(seeded)
+    pause_next_projection_snapshot!()
+
+    stale_refresh =
+      Task.async(fn ->
+        Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_card, stale_pid}, 1_000
+
+    updated_scope =
+      DataLayer.with_actor(seeded.actor, fn _account, actor ->
+        seeded.scope
+        |> Ash.Changeset.for_update(:update, %{name: "Renamed projection scope"})
+        |> Ash.update!(actor: pipeline_actor(actor), authorize?: false)
+      end)
+
+    send(stale_pid, :release_projection_refresh)
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_refresh, 5_000)
+
+    invalidated = scope_projection!(seeded)
+    assert invalidated.version == baseline.version
+    assert invalidated.dirty
+    assert invalidated.validity_version == 0
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    current = scope_projection!(seeded)
+    assert current.version == baseline.version + 1
+    assert current.validity_version == current.version
+    assert current.content["name"] == updated_scope.name
   end
 
   test "cached projections disappear when their sources expire before the lifecycle sweep" do
@@ -3792,6 +3879,14 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         [account_id, Ecto.UUID.dump!(seeded.knowledge.id)]
       )
 
+      # Current source triggers correctly dirtied the projection. Recreate the old deployment's
+      # unsafe clean row after that trigger so this remains a legacy-reconciliation fixture.
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE projections SET dirty = false, validity_version = 0 WHERE account_id = $1",
+        [account_id]
+      )
+
       # The seed's ordinary coalesced refresh is no longer recoverable; reconciliation must add
       # a distinct upgrade-keyed run instead of reusing that completed generation.
       Ecto.Adapters.SQL.query!(
@@ -4577,6 +4672,19 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     original_provider = Application.fetch_env!(:memhouse, :model_provider)
 
     provider.start!(self())
+    Application.put_env(:memhouse, :model_provider, provider)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, original_provider)
+      provider.stop()
+    end)
+  end
+
+  defp pause_next_entity_resolution! do
+    provider = MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider
+    original_provider = Application.fetch_env!(:memhouse, :model_provider)
+
+    provider.start!(self(), :entity_resolution)
     Application.put_env(:memhouse, :model_provider, provider)
 
     on_exit(fn ->

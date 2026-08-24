@@ -98,6 +98,18 @@
     },
     {
       "allow_nil?": false,
+      "default": "0",
+      "generated?": false,
+      "precision": null,
+      "primary_key?": false,
+      "references": null,
+      "scale": null,
+      "size": null,
+      "source": "projection_input_generation",
+      "type": "bigint"
+    },
+    {
+      "allow_nil?": false,
       "default": "fragment(\"(now() AT TIME ZONE 'utc')\")",
       "generated?": false,
       "precision": null,
@@ -127,7 +139,7 @@
   "custom_indexes": [],
   "custom_statements": [],
   "has_create_action": true,
-  "hash": "6C3A12F13F1AEB90C44EA67F2BFA5836F9D97935CE1CA9DF9D620F368CA709A6",
+  "hash": "D70EBD6DA5AFFD903EF5D725D32C51C37667AB25F3E4860067B7160E1181DEDF",
   "identities": [
     {
       "all_tenants?": false,

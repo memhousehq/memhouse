@@ -104,6 +104,7 @@ defmodule MemHouse.Topology.Scope do
     attribute :path, :string, allow_nil?: false, public?: true
     attribute :state, :string, allow_nil?: false, default: "active", public?: true
     attribute :diskann_label, :integer, public?: false
+    attribute :projection_input_generation, :integer, allow_nil?: false, default: 0
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end

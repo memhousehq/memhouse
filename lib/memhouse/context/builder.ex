@@ -83,14 +83,15 @@ defmodule MemHouse.Context.Builder do
   Returns `{:ok, map}` with the scope card's id, the number of entity card, peer profile, and
   session summary projections written, and `entity_card_summaries_unavailable`: cards that earned
   a summary but whose model call failed. Returns `{:error, :stale_projection_snapshot}` when
-  governed knowledge changes during model work, leaving the caller's durable run retryable.
+  any projection-shaping input changes during model work, leaving the caller's durable run
+  retryable.
   Raises if the transaction fails or an underlying Ash call fails.
 
   Replays are safe because projections are upserted by cache key.
   """
   def refresh_scope(account_id, scope_id) do
     {scope, scope_knowledge, peer_knowledge, mentions, sessions, messages, actor,
-     snapshot_signature} =
+     input_generation} =
       read_scope!(account_id, scope_id)
 
     scope_knowledge = dream_rank(scope_knowledge, scope, account_id, actor)
@@ -163,7 +164,7 @@ defmodule MemHouse.Context.Builder do
       scope,
       scope_knowledge,
       peer_knowledge,
-      snapshot_signature,
+      input_generation,
       %{
         sessions: sessions,
         scope: scope_attrs,
@@ -181,6 +182,7 @@ defmodule MemHouse.Context.Builder do
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
+        input_generation = ProjectionLock.capture!(account_id, scope_id)
         scope = read_one!(Scope, scope_id, account_id, actor)
 
         {scope_knowledge, peer_knowledge} =
@@ -205,7 +207,7 @@ defmodule MemHouse.Context.Builder do
           |> Ash.read!(actor: actor)
 
         {scope, scope_knowledge, peer_knowledge, mentions, sessions, messages, actor,
-         projection_snapshot_signature(scope_knowledge, peer_knowledge)}
+         input_generation}
       end
     )
   end
@@ -243,34 +245,6 @@ defmodule MemHouse.Context.Builder do
     {scope_knowledge, peer_knowledge}
   end
 
-  defp projection_snapshot_signature(scope_knowledge, peer_knowledge) do
-    [scope: scope_knowledge, peer: peer_knowledge]
-    |> Enum.map(fn {channel, items} ->
-      {channel,
-       items
-       |> Enum.map(&projection_source_revision/1)
-       |> Enum.sort_by(& &1.id)}
-    end)
-  end
-
-  defp projection_source_revision(item) do
-    Map.take(item, [
-      :id,
-      :state,
-      :statement,
-      :subject_peer_id,
-      :sensitivity,
-      :target_level,
-      :confidence,
-      :source_message_ids,
-      :expires_at,
-      :relevant_from,
-      :relevant_until,
-      :deleted_at,
-      :updated_at
-    ])
-  end
-
   # Phase three commits the projection set. No provider call may be added to this callback: a
   # slow external request here would hold a pooled connection and could discard billed work.
   defp write_projections!(
@@ -278,22 +252,16 @@ defmodule MemHouse.Context.Builder do
          scope,
          scope_knowledge,
          peer_knowledge,
-         snapshot_signature,
+         input_generation,
          projections
        ) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        ProjectionLock.acquire!(account_id, scope.id)
+        current_generation = ProjectionLock.acquire!(account_id, scope.id)
 
-        {current_scope_knowledge, current_peer_knowledge} =
-          read_projection_knowledge!(account_id, scope.id, actor)
-
-        current_signature =
-          projection_snapshot_signature(current_scope_knowledge, current_peer_knowledge)
-
-        if current_signature == snapshot_signature do
+        if current_generation == input_generation do
           commit_projections!(
             account_id,
             actor,
