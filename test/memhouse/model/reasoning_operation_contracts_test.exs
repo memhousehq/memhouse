@@ -21,9 +21,18 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
         send(pid, {:reasoning_provider_call, Keyword.fetch!(opts, :task), opts})
       end
 
+      value =
+        case Application.get_env(:memhouse, :reasoning_operation_test_values) do
+          nil ->
+            %{"items" => [], "relations" => []}
+
+          values ->
+            Agent.get_and_update(values, fn [value | rest] -> {value, rest} end)
+        end
+
       {:ok,
        %Result{
-         value: %{"items" => [], "relations" => []},
+         value: value,
          usage: %{input_tokens: 7, output_tokens: 3}
        }}
     end
@@ -209,13 +218,8 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
   end
 
   test "elapsed pass budget stops before a second reasoning operation without losing first usage" do
-    Application.put_env(:memhouse, :dream_reasoning_operations,
-      split_enabled: true,
-      update: true,
-      synthesis: true
-    )
-
-    install_deadline_clock([100, 100, 120])
+    enable_split_operations()
+    install_deadline_clock([100, 100, 100, 120])
 
     handler = {__MODULE__, self(), :deadline_operation}
     parent = self()
@@ -250,13 +254,8 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
   end
 
   test "each reasoning operation receives only the pass time that remains" do
-    Application.put_env(:memhouse, :dream_reasoning_operations,
-      split_enabled: true,
-      update: true,
-      synthesis: true
-    )
-
-    install_deadline_clock([100, 100, 107])
+    enable_split_operations()
+    install_deadline_clock([100, 100, 100, 107, 107])
 
     assert {:ok, _result, _provenance} =
              Reasoner.reason_operations(%{delta: [], working_set: []}, context(),
@@ -268,6 +267,42 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
 
     assert_receive {:reasoning_provider_call, :reasoning_synthesis, synthesis_opts}
     assert Keyword.fetch!(synthesis_opts, :request_timeout) == 13
+  end
+
+  test "structured repairs receive only the pass time that remains" do
+    Application.put_env(:memhouse, :dream_reasoning_operations,
+      split_enabled: true,
+      update: true,
+      synthesis: false
+    )
+
+    install_deadline_clock([100, 100, 100, 107])
+
+    install_provider_values([
+      %{"items" => [%{}], "relations" => []},
+      %{"items" => [], "relations" => []}
+    ])
+
+    assert {:ok, _result, _provenance} =
+             Reasoner.reason_operations(%{delta: [], working_set: []}, context(),
+               request_timeout: 20
+             )
+
+    assert_receive {:reasoning_provider_call, :reasoning_update, first_opts}
+    assert Keyword.fetch!(first_opts, :request_timeout) == 20
+    assert Keyword.fetch!(first_opts, :repair_attempt) == 0
+
+    assert_receive {:reasoning_provider_call, :reasoning_update, repair_opts}
+    assert Keyword.fetch!(repair_opts, :request_timeout) == 13
+    assert Keyword.fetch!(repair_opts, :repair_attempt) == 1
+  end
+
+  defp enable_split_operations do
+    Application.put_env(:memhouse, :dream_reasoning_operations,
+      split_enabled: true,
+      update: true,
+      synthesis: true
+    )
   end
 
   defp install_deadline_clock(readings) do
@@ -285,6 +320,14 @@ defmodule MemHouse.Model.ReasoningOperationContractsTest do
       Application.delete_env(:memhouse, :reasoning_operation_test_clock)
       Application.delete_env(:memhouse, :reasoning_operation_test_pid)
     end)
+  end
+
+  defp install_provider_values(values) do
+    values =
+      start_supervised!({Agent, fn -> values end}, id: :reasoning_operation_test_values)
+
+    Application.put_env(:memhouse, :reasoning_operation_test_values, values)
+    on_exit(fn -> Application.delete_env(:memhouse, :reasoning_operation_test_values) end)
   end
 
   defp context(overrides \\ %{}) do

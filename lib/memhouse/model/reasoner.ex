@@ -39,9 +39,14 @@ defmodule MemHouse.Model.Reasoner do
   @doc """
   Runs the independently versioned operations enabled for dream-time.
 
+  `:request_timeout` sets one monotonic millisecond budget for the complete
+  operation set. Each provider call receives only the remaining allowance.
+  Exhaustion before an operation starts returns `{:error, :request_timeout}`.
+
   Every enabled operation must finish before the caller enters the single
-  governed writer transaction. A failure returns immediately with no partial
-  result, so the scoped watermark cannot advance on half an operation set.
+  governed writer transaction. Completed calls remain usage-accounted, but a
+  failure returns no partial result, so the scoped watermark cannot advance on
+  half an operation set.
   """
   def reason_operations(delta_and_working_set, context, opts \\ []) do
     operations = enabled_operations()
@@ -83,8 +88,14 @@ defmodule MemHouse.Model.Reasoner do
 
   defp remaining_operation_opts(opts, deadline) do
     case deadline - Clock.monotonic_ms() do
-      remaining when remaining > 0 -> {:ok, Keyword.put(opts, :request_timeout, remaining)}
-      _exhausted -> {:error, :request_timeout}
+      remaining when remaining > 0 ->
+        {:ok,
+         opts
+         |> Keyword.put(:request_timeout, remaining)
+         |> Keyword.put(:request_deadline_ms, deadline)}
+
+      _exhausted ->
+        {:error, :request_timeout}
     end
   end
 

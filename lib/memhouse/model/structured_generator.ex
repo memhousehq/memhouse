@@ -27,6 +27,7 @@ defmodule MemHouse.Model.StructuredGenerator do
   are written to describe shape problems rather than to quote content.
   """
 
+  alias MemHouse.Clock
   alias MemHouse.Model.Config
   alias MemHouse.Model.Gateway
 
@@ -47,7 +48,9 @@ defmodule MemHouse.Model.StructuredGenerator do
   may be named as a subject.
 
   `opts[:max_repairs]` may lower the repair budget but never raise it above the
-  built-in ceiling. Remaining options are passed to the provider.
+  built-in ceiling. Callers that coordinate multiple generations may pass an
+  absolute monotonic `:request_deadline_ms`; every attempt then receives only
+  the remaining `:request_timeout`. Remaining options are passed to the provider.
 
   Returns `{:ok, value, provenance_map}` where `value` comes from the schema's
   `cast/2` on success, or from the schema's `recover_after_repairs/2` when
@@ -97,8 +100,16 @@ defmodule MemHouse.Model.StructuredGenerator do
   defp generate_attempt(role, messages, schema, context, opts, state) do
     # Rides along to the usage ledger so a repaired generation is visibly more
     # than one call rather than looking like a single cheap one.
-    call_opts = Keyword.put(opts, :repair_attempt, state.attempt)
+    case attempt_opts(opts, state.attempt) do
+      {:ok, call_opts} ->
+        run_attempt(role, messages, schema, context, opts, call_opts, state)
 
+      {:error, :request_timeout} ->
+        {:error, :request_timeout, state.provider_attempts}
+    end
+  end
+
+  defp run_attempt(role, messages, schema, context, opts, call_opts, state) do
     case Gateway.structured_once_with_usage_and_attempt(
            role,
            messages,
@@ -163,6 +174,27 @@ defmodule MemHouse.Model.StructuredGenerator do
 
       {:error, reason, current_attempts} ->
         {:error, reason, state.provider_attempts + current_attempts}
+    end
+  end
+
+  defp attempt_opts(opts, attempt) do
+    call_opts = Keyword.put(opts, :repair_attempt, attempt)
+
+    case Keyword.get(call_opts, :request_deadline_ms) do
+      nil ->
+        {:ok, call_opts}
+
+      deadline ->
+        case deadline - Clock.monotonic_ms() do
+          remaining when remaining > 0 ->
+            {:ok,
+             call_opts
+             |> Keyword.put(:request_timeout, remaining)
+             |> Keyword.delete(:request_deadline_ms)}
+
+          _exhausted ->
+            {:error, :request_timeout}
+        end
     end
   end
 
