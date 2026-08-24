@@ -4,7 +4,7 @@
 
 ## Status
 
-Accepted on 2026-08-24. Supersedes ADR 0015.
+Accepted on 2026-08-24. Supersedes `0015-local-cross-encoder-reranking.md`.
 
 ## Context
 

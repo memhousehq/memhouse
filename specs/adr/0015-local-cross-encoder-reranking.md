@@ -4,7 +4,7 @@
 
 ## Status
 
-Superseded by ADR 0023 on 2026-08-24.
+Superseded by `0023-openrouter-voyage-reranking.md` on 2026-08-24.
 
 ## Context
 
