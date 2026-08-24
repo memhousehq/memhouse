@@ -105,15 +105,24 @@ defmodule MemHouse.Model.Schema.ExtractionSupport do
   @doc "Returns calendar-month ranges implied by anchored approximate month durations."
   def resolve_elapsed_duration_months(source, observed_on)
       when is_binary(source) and is_struct(observed_on, Date) do
-    @anchored_elapsed_months
-    |> Regex.scan(source)
-    |> Enum.map(fn [_text, amount] ->
-      inferred = Date.shift(observed_on, month: -relative_amount(amount))
+    source
+    |> elapsed_duration_matches()
+    |> Enum.map(fn %{months: months} ->
+      inferred = Date.shift(observed_on, month: -months)
       Date.range(Date.beginning_of_month(inferred), Date.end_of_month(inferred))
     end)
   end
 
   def resolve_elapsed_duration_months(_source, _observed_on), do: []
+
+  @doc "Returns the source fragments and month counts for anchored elapsed durations."
+  def elapsed_duration_matches(source) when is_binary(source) do
+    @anchored_elapsed_months
+    |> Regex.scan(source)
+    |> Enum.map(fn [text, amount] -> %{text: text, months: relative_amount(amount)} end)
+  end
+
+  def elapsed_duration_matches(_source), do: []
 
   @doc "Converts a date to UTC midnight."
   def beginning_of_day(date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
@@ -206,6 +215,7 @@ defmodule MemHouse.Model.Schema.Extraction do
       fetch: 2,
       first_person?: 1,
       non_empty_string: 2,
+      elapsed_duration_matches: 1,
       resolve_elapsed_duration_months: 2,
       resolve_relative_dates: 2
     ]
@@ -655,46 +665,45 @@ defmodule MemHouse.Model.Schema.Extraction do
          source_message_ids,
          context
        ) do
-    with {:ok, supporting_span} <- non_empty_string(item, "supporting_span"),
-         %DateTime{} = occurred_at <- Map.get(context, :occurred_at),
-         [_ | _] = ranges <-
-           anchored_elapsed_ranges(
-             supporting_span,
-             statement,
-             kind,
-             source_message_ids,
-             context,
-             DateTime.to_date(occurred_at)
-           ) do
-      relevant_date = temporal.relevant_from && DateTime.to_date(temporal.relevant_from)
+    case non_empty_string(item, "supporting_span") do
+      {:ok, supporting_span} ->
+        matches =
+          anchored_elapsed_matches(
+            supporting_span,
+            statement,
+            kind,
+            source_message_ids,
+            context
+          )
 
-      if kind == "event" and not elapsed_duration_statement?(statement) and
-           Enum.any?(ranges, &(relevant_date in &1)) and is_nil(temporal.relevant_until) do
+        validate_anchored_elapsed_duration(
+          matches,
+          statement,
+          kind,
+          temporal,
+          Map.get(context, :occurred_at)
+        )
+
+      _other ->
         :ok
-      else
-        {:error, ["anchored elapsed duration must be represented as one dated start event"]}
-      end
-    else
-      _other -> :ok
     end
   end
 
   # The supporting span is model-selected. A bad response must not evade the
   # duration rule by shortening that span to an exact but uninformative token.
-  # Consult the cited evidence only when the proposed statement is itself a
-  # duration paraphrase, so an unrelated candidate from the same message is not
-  # forced into the acquisition-event shape.
-  defp anchored_elapsed_ranges(
+  # Consult cited evidence only for a duration paraphrase or recognized start
+  # event, and require shared relation/entity terms. That keeps an unrelated
+  # event in the same message from inheriting the duration's date.
+  defp anchored_elapsed_matches(
          supporting_span,
          statement,
          kind,
          source_message_ids,
-         context,
-         observed_on
+         context
        ) do
-    case resolve_elapsed_duration_months(supporting_span, observed_on) do
-      [_ | _] = ranges ->
-        ranges
+    case elapsed_duration_matches(supporting_span) do
+      [_ | _] = matches ->
+        matches
 
       [] ->
         if elapsed_duration_statement?(statement) or
@@ -705,11 +714,69 @@ defmodule MemHouse.Model.Schema.Extraction do
           |> Enum.map(&fetch(&1, "content"))
           |> Enum.filter(&is_binary/1)
           |> Enum.join(" ")
-          |> resolve_elapsed_duration_months(observed_on)
+          |> elapsed_duration_matches()
+          |> Enum.filter(&related_duration_match?(&1, supporting_span, statement))
         else
           []
         end
     end
+  end
+
+  defp validate_anchored_elapsed_duration([], _statement, _kind, _temporal, _occurred_at),
+    do: :ok
+
+  defp validate_anchored_elapsed_duration(
+         matches,
+         statement,
+         kind,
+         temporal,
+         %DateTime{} = occurred_at
+       ) do
+    relevant_date = temporal.relevant_from && DateTime.to_date(temporal.relevant_from)
+
+    ranges =
+      Enum.flat_map(
+        matches,
+        &resolve_elapsed_duration_months(&1.text, DateTime.to_date(occurred_at))
+      )
+
+    if kind == "event" and not elapsed_duration_statement?(statement) and
+         Enum.any?(ranges, &(relevant_date in &1)) and is_nil(temporal.relevant_until) do
+      :ok
+    else
+      anchored_elapsed_duration_error()
+    end
+  end
+
+  defp validate_anchored_elapsed_duration(
+         [_ | _],
+         _statement,
+         _kind,
+         _temporal,
+         _occurred_at
+       ),
+       do: anchored_elapsed_duration_error()
+
+  defp related_duration_match?(%{text: duration_text}, supporting_span, statement) do
+    candidate_terms = duration_relation_terms(supporting_span <> " " <> statement)
+    duration_terms = duration_relation_terms(duration_text)
+
+    not MapSet.disjoint?(candidate_terms, duration_terms)
+  end
+
+  defp duration_relation_terms(text) do
+    stopwords =
+      ~w(user person they them their have has had been for about around approximately roughly month months now obtained acquired adopted bought purchased received met befriended married joined started began owning having keeping knowing dating living working)
+
+    ~r/[\p{L}\p{N}_-]+/u
+    |> Regex.scan(String.downcase(text))
+    |> List.flatten()
+    |> Enum.reject(&(String.length(&1) < 3 or Enum.member?(stopwords, &1)))
+    |> MapSet.new()
+  end
+
+  defp anchored_elapsed_duration_error do
+    {:error, ["anchored elapsed duration must be represented as one dated start event"]}
   end
 
   defp elapsed_start_event_statement?(statement) do
