@@ -18,6 +18,9 @@ defmodule MemHouse.Eval.ComponentBindings do
     extraction_batching
     adaptive_recall_effort
     source_recall
+    source_exact_recall
+    source_semantic_recall
+    stable_profile_recall
     lineage_recall
     semantic_index_refresh
     source_semantic_index_refresh
@@ -51,25 +54,11 @@ defmodule MemHouse.Eval.ComponentBindings do
     end
 
     extraction_batching = boolean!(variant, "extraction_batching", false)
-    source_recall = boolean!(variant, "source_recall", false)
-    lineage_recall = boolean!(variant, "lineage_recall", effort != "fixed")
+    recall = resolve_recall!(variant, effort)
     idle_dream_scheduling = boolean!(variant, "idle_dream_scheduling", false)
     dream_reasoning_split = boolean!(variant, "dream_reasoning_split", false)
     dream_time = boolean!(variant, "dream_time", false)
     durability_audit = boolean!(variant, "durability_audit", false)
-
-    source_semantic_index_refresh =
-      boolean!(variant, "source_semantic_index_refresh", source_recall)
-
-    if effort == "fixed" and (source_recall or lineage_recall) do
-      raise ArgumentError,
-            "execute variant #{inspect(variant["id"])} cannot enable source or lineage recall with fixed effort"
-    end
-
-    if source_recall and not source_semantic_index_refresh do
-      raise ArgumentError,
-            "execute variant #{inspect(variant["id"])} cannot enable source recall without source semantic index refresh"
-    end
 
     if dream_reasoning_split and not dream_time do
       raise ArgumentError,
@@ -87,16 +76,48 @@ defmodule MemHouse.Eval.ComponentBindings do
       "retrieval_deadline" => deadline,
       "extraction_batching" => extraction_batching(extraction_batching),
       "adaptive_recall_effort" => effort,
-      "source_recall" => source_recall,
-      "lineage_recall" => lineage_recall,
+      "source_recall" => recall.source_exact or recall.source_semantic,
+      "source_exact_recall" => recall.source_exact,
+      "source_semantic_recall" => recall.source_semantic,
+      "stable_profile_recall" => recall.stable_profile,
+      "lineage_recall" => recall.lineage,
       "semantic_index_refresh" => boolean!(variant, "semantic_index_refresh", semantic_default),
-      "source_semantic_index_refresh" => source_semantic_index_refresh,
+      "source_semantic_index_refresh" => recall.source_semantic_index_refresh,
       "recall_projection_refresh" =>
         boolean!(variant, "recall_projection_refresh", projection_default),
       "idle_dream_scheduling" => idle_dream_scheduling(idle_dream_scheduling),
       "dream_reasoning_operations" => dream_reasoning_operations(dream_reasoning_split),
       "dream_time" => dream_time,
       "durability_audit" => durability_audit
+    }
+  end
+
+  defp resolve_recall!(variant, effort) do
+    source_recall = boolean!(variant, "source_recall", false)
+    source_exact = boolean!(variant, "source_exact_recall", source_recall)
+    source_semantic = boolean!(variant, "source_semantic_recall", source_recall)
+    stable_profile = boolean!(variant, "stable_profile_recall", effort != "fixed")
+    lineage = boolean!(variant, "lineage_recall", effort != "fixed")
+
+    source_semantic_index_refresh =
+      boolean!(variant, "source_semantic_index_refresh", source_semantic)
+
+    if effort == "fixed" and (source_exact or source_semantic or stable_profile or lineage) do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} cannot enable adaptive recall tools with fixed effort"
+    end
+
+    if source_semantic and not source_semantic_index_refresh do
+      raise ArgumentError,
+            "execute variant #{inspect(variant["id"])} cannot enable source semantic recall without source semantic index refresh"
+    end
+
+    %{
+      source_exact: source_exact,
+      source_semantic: source_semantic,
+      stable_profile: stable_profile,
+      lineage: lineage,
+      source_semantic_index_refresh: source_semantic_index_refresh
     }
   end
 

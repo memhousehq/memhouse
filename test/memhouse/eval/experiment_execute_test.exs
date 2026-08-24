@@ -162,6 +162,9 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
         "idle_dream_scheduling" => idle_component(true),
         "lineage_recall" => true,
         "source_recall" => true,
+        "source_exact_recall" => true,
+        "source_semantic_recall" => true,
+        "stable_profile_recall" => true,
         "source_semantic_index_refresh" => true
       })
 
@@ -407,7 +410,10 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
       "semantic_index_refresh" =>
         Enum.any?(strategies, &(&1 in ["semantic", "semantic_dual_lane"])),
       "source_semantic_index_refresh" => false,
-      "source_recall" => false
+      "source_recall" => false,
+      "source_exact_recall" => false,
+      "source_semantic_recall" => false,
+      "stable_profile_recall" => false
     }
   end
 
