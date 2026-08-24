@@ -220,6 +220,35 @@ defmodule MemHouse.Eval.ExperimentTest do
     assert bundle["gates"]["status"] == "passed"
   end
 
+  test "configured empty category gate maps are rejected", %{tmp_dir: tmp_dir} do
+    for gate <- ["min_category_accuracy", "max_category_accuracy_regression"] do
+      definition = put_in(definition(), ["gates", "quality", gate], %{})
+
+      assert_raise ArgumentError, ~r/must contain at least one category/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
+  test "category gate thresholds outside the fraction range are rejected", %{tmp_dir: tmp_dir} do
+    for {gate, value} <- [
+          {"min_category_accuracy", -0.01},
+          {"min_category_accuracy", 1.01},
+          {"max_category_accuracy_regression", -0.01},
+          {"max_category_accuracy_regression", 1.01}
+        ] do
+      definition = put_in(definition(), ["gates", "quality", gate], %{"hard-query" => value})
+
+      assert_raise ArgumentError, ~r/fractions from 0 to 1/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
   test "retired SQLite definitions are rejected instead of being reported as parity", %{
     tmp_dir: tmp_dir
   } do

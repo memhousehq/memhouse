@@ -861,6 +861,8 @@ defmodule MemHouse.Eval.Experiment do
         checks
 
       configured when is_map(configured) ->
+        assert_category_gate_map!("min_category_accuracy", configured)
+
         Enum.reduce(configured, checks, fn {category, expected}, acc ->
           assert_category_gate!("min_category_accuracy", category, expected)
           metrics = get_in(experimental, ["quality", "by_category", category]) || %{}
@@ -891,6 +893,8 @@ defmodule MemHouse.Eval.Experiment do
         checks
 
       configured when is_map(configured) ->
+        assert_category_gate_map!("max_category_accuracy_regression", configured)
+
         Enum.reduce(configured, checks, fn {category, allowed}, acc ->
           assert_category_gate!("max_category_accuracy_regression", category, allowed)
           current_metrics = get_in(current, ["quality", "by_category", category]) || %{}
@@ -929,10 +933,17 @@ defmodule MemHouse.Eval.Experiment do
     end
   end
 
+  defp assert_category_gate_map!(name, configured) when map_size(configured) == 0 do
+    raise ArgumentError, "gate quality.#{name} must contain at least one category"
+  end
+
+  defp assert_category_gate_map!(_name, _configured), do: :ok
+
   defp assert_category_gate!(name, category, expected) do
-    unless is_binary(category) and category != "" and is_number(expected) do
+    unless is_binary(category) and category != "" and is_number(expected) and expected >= 0 and
+             expected <= 1 do
       raise ArgumentError,
-            "gate quality.#{name} must map non-empty category names to numeric thresholds"
+            "gate quality.#{name} must map non-empty category names to fractions from 0 to 1"
     end
   end
 
