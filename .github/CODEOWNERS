@@ -25,7 +25,6 @@
 AGENTS.md @memhousehq/core @aleksei-s-popov
 CONTRIBUTING.md @memhousehq/core @aleksei-s-popov
 
-# Executable release and evaluation contracts.
 test/fixtures/eval/ @memhousehq/core @aleksei-s-popov
 
 # Published user documentation and its build definition.

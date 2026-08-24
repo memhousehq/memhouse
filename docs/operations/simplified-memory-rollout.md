@@ -28,8 +28,8 @@ The deterministic comparison command is:
 ```bash
 mix memhouse.eval.experiment \
   --definition /path/to/preregistered-memory-profile-ablation.json \
-  --manifest-output /private/tmp/memhouse-experiment-manifest.json \
-  --output /private/tmp/memhouse-comparison.json
+  --manifest-output "${TMPDIR:-/tmp}/memhouse-experiment-manifest.json" \
+  --output "${TMPDIR:-/tmp}/memhouse-comparison.json"
 ```
 
 The operator-owned definition must be versioned, pin the dataset digest, name
