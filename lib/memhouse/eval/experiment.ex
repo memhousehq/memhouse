@@ -866,7 +866,7 @@ defmodule MemHouse.Eval.Experiment do
         Enum.reduce(configured, checks, fn {category, expected}, acc ->
           assert_category_gate!("min_category_accuracy", category, expected)
           metrics = get_in(experimental, ["quality", "by_category", category]) || %{}
-          coverage = Map.get(metrics, "questions", 0)
+          coverage = category_coverage!(metrics, category)
           actual = if coverage > 0, do: Map.get(metrics, "accuracy"), else: nil
 
           [
@@ -902,8 +902,8 @@ defmodule MemHouse.Eval.Experiment do
 
           coverage =
             min(
-              Map.get(current_metrics, "questions", 0),
-              Map.get(experimental_metrics, "questions", 0)
+              category_coverage!(current_metrics, category),
+              category_coverage!(experimental_metrics, category)
             )
 
           current_accuracy = Map.get(current_metrics, "accuracy")
@@ -938,6 +938,17 @@ defmodule MemHouse.Eval.Experiment do
   end
 
   defp assert_category_gate_map!(_name, _configured), do: :ok
+
+  defp category_coverage!(metrics, category) do
+    case Map.get(metrics, "questions", 0) do
+      coverage when is_integer(coverage) and coverage >= 0 ->
+        coverage
+
+      value ->
+        raise ArgumentError,
+              "quality.by_category #{inspect(category)} questions must be a non-negative integer, got #{inspect(value)}"
+    end
+  end
 
   defp assert_category_gate!(name, category, expected) do
     unless is_binary(category) and category != "" and is_number(expected) and expected >= 0 and

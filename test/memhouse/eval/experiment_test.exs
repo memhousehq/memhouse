@@ -249,6 +249,49 @@ defmodule MemHouse.Eval.ExperimentTest do
     end
   end
 
+  test "category floor rejects malformed coverage counts", %{tmp_dir: tmp_dir} do
+    for questions <- ["4", true] do
+      definition =
+        definition()
+        |> put_in(["gates", "quality", "min_category_accuracy"], %{"hard-query" => 0.8})
+        |> put_in(
+          ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+          %{"hard-query" => %{"questions" => questions, "accuracy" => 1.0}}
+        )
+
+      assert_raise ArgumentError, ~r/questions must be a non-negative integer/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
+  test "category regression rejects malformed coverage counts", %{tmp_dir: tmp_dir} do
+    for questions <- ["4", true] do
+      definition =
+        definition()
+        |> put_in(
+          ["gates", "quality", "max_category_accuracy_regression"],
+          %{"hard-query" => 0.1}
+        )
+        |> put_in(
+          ["variants", Access.at(0), "fixture_metrics", "quality", "by_category"],
+          %{"hard-query" => %{"questions" => questions, "accuracy" => 1.0}}
+        )
+        |> put_in(
+          ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+          %{"hard-query" => %{"questions" => questions, "accuracy" => 0.75}}
+        )
+
+      assert_raise ArgumentError, ~r/questions must be a non-negative integer/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
   test "retired SQLite definitions are rejected instead of being reported as parity", %{
     tmp_dir: tmp_dir
   } do
