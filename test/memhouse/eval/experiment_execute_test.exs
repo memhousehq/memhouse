@@ -39,7 +39,7 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
   end
 
   alias MemHouse.DataLayer
-  alias MemHouse.Eval.{Experiment, Report}
+  alias MemHouse.Eval.{ExecutionEvidence, Experiment, Report}
   alias MemHouse.Governance.Engine
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
@@ -332,6 +332,24 @@ defmodule MemHouse.Eval.ExperimentExecuteTest do
         source_revision: "test-source-revision"
       )
     end
+  end
+
+  test "execute validation rejects a completed outcome for a disabled recall component" do
+    recalls = [%{"outcomes" => [%{"tool" => "source_exact", "status" => "completed"}]}]
+    variant = %{"id" => "exact-disabled"}
+    components = %{"source_exact_recall" => false}
+
+    assert_raise ArgumentError,
+                 ~r/disabled source_exact_recall but completed a source_exact tool call/,
+                 fn ->
+                   ExecutionEvidence.assert_recall_tool!(
+                     recalls,
+                     variant,
+                     components,
+                     "source_exact_recall",
+                     "source_exact"
+                   )
+                 end
   end
 
   defp definition(dataset_path) do

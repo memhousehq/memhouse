@@ -19,6 +19,7 @@ defmodule MemHouse.Eval.Experiment do
   alias MemHouse.Eval.{
     Adapter,
     ComponentBindings,
+    ExecutionEvidence,
     Measurement,
     QueryCounter,
     Report,
@@ -520,17 +521,13 @@ defmodule MemHouse.Eval.Experiment do
   end
 
   defp assert_completed_recall_tool!(recalls, variant, components, component, tool) do
-    completed? =
-      Enum.any?(recalls, fn recall ->
-        Enum.any?(recall["outcomes"] || [], fn outcome ->
-          outcome["tool"] == tool and outcome["status"] == "completed"
-        end)
-      end)
-
-    if components[component] and not completed? do
-      raise ArgumentError,
-            "execute variant #{inspect(variant["id"])} declared #{component} but completed no #{tool} tool call"
-    end
+    ExecutionEvidence.assert_recall_tool!(
+      recalls,
+      variant,
+      components,
+      component,
+      tool
+    )
   end
 
   defp assert_refresh_components!(report, variant, components) do
