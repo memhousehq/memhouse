@@ -15,7 +15,8 @@ defmodule MemHouse.Retrieval.EntityResolver do
   """
 
   alias MemHouse.DataLayer
-  alias MemHouse.Knowledge.{Entity, EntityMention, KnowledgeItem}
+  alias MemHouse.Knowledge.{Entity, EntityMention}
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Model.{Embedding, Gateway}
   alias MemHouse.Retrieval.{LexicalQueryAnalyzer, Vector}
 
@@ -88,8 +89,9 @@ defmodule MemHouse.Retrieval.EntityResolver do
         drafts = account_id |> entities!(actor) |> Enum.map(&draft/1)
 
         statements =
-          KnowledgeItem
-          |> Ash.Query.filter(scope_id == ^scope_id and state == "active" and is_nil(deleted_at))
+          [scope_id]
+          |> Visibility.knowledge_query("active", actor, true)
+          |> Ash.Query.filter(state == "active")
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
 

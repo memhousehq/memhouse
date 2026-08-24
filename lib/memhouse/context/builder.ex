@@ -29,7 +29,8 @@ defmodule MemHouse.Context.Builder do
   alias MemHouse.Context.EntityLabel
   alias MemHouse.Context.ProjectionKey
   alias MemHouse.DataLayer
-  alias MemHouse.Knowledge.{EntityMention, KnowledgeItem, Projection, Statement}
+  alias MemHouse.Knowledge.{EntityMention, Projection, Statement}
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Model.Config
   alias MemHouse.Model.Gateway
   alias MemHouse.Observations.{Message, Session}
@@ -176,6 +177,10 @@ defmodule MemHouse.Context.Builder do
       [role: :system, pipeline?: true],
       fn _account, actor ->
         scope = read_one!(Scope, scope_id, account_id, actor)
+        now = Clock.utc_now()
+
+        visible_knowledge =
+          Visibility.knowledge_query([scope_id], "active", actor, true, now)
 
         # Shared projections may only contain settled knowledge that is actually shareable.
         # Settled is not the same as shared: an active statement about one peer, still at peer
@@ -183,8 +188,8 @@ defmodule MemHouse.Context.Builder do
         # who reads the scope — past every rule retrieval applies. Provisional rows are read
         # separately for the subject-keyed peer channel below.
         scope_knowledge =
-          KnowledgeItem
-          |> Ash.Query.filter(scope_id == ^scope_id and state == "active" and is_nil(deleted_at))
+          visible_knowledge
+          |> Ash.Query.filter(state == "active")
           |> Ash.Query.filter(
             sensitivity in ["public", "internal"] or is_nil(subject_peer_id) or
               target_level in ["scope", "account"]
@@ -194,11 +199,8 @@ defmodule MemHouse.Context.Builder do
           |> Ash.read!(actor: actor)
 
         peer_knowledge =
-          KnowledgeItem
-          |> Ash.Query.filter(
-            scope_id == ^scope_id and state in ["active", "provisional"] and
-              not is_nil(subject_peer_id) and is_nil(deleted_at)
-          )
+          visible_knowledge
+          |> Ash.Query.filter(state in ["active", "provisional"] and not is_nil(subject_peer_id))
           |> Ash.Query.sort(confidence: :desc, updated_at: :desc)
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)

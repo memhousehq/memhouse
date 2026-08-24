@@ -1655,6 +1655,31 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert [] == entity_match_candidates!("f7-entity-expiry", "/f7/entity-expiry")
   end
 
+  test "entity resolution drops active rows whose expiry passed before the lifecycle sweep" do
+    seeded =
+      seed_active!(
+        "f7-entity-resolution-expiry",
+        "/f7/entity-resolution-expiry",
+        "Avery owns the release checklist."
+      )
+
+    expired = expire_active!(seeded)
+    assert expired.state == "active"
+
+    assert {:ok, %{statements: 0, mentions: 0}} =
+             EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+
+    DataLayer.with_account_key("f7-entity-resolution-expiry", fn account, actor ->
+      mentions =
+        EntityMention
+        |> Ash.Query.filter(knowledge_item_id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert mentions == []
+    end)
+  end
+
   test "entity_match ranks a selective entity's statements above a scope-wide one's" do
     seeds = seed_statements!("f7-entity-idf", "/f7/entity-idf", 6)
 
@@ -2630,6 +2655,52 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
           assert Map.keys(fact) |> Enum.sort() == ["id", "statement"]
           assert fact["id"] in projection.source_ids
         end)
+      end)
+    end)
+  end
+
+  test "projection refresh excludes active sources whose expiry passed before the lifecycle sweep" do
+    account_key = "f7-projection-expiry"
+    scope_path = "/f7/projection-expiry"
+
+    first =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery owns the release checklist.",
+        "projection-expiry-1"
+      )
+
+    second =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery reviews the release checklist each Friday.",
+        "projection-expiry-2"
+      )
+
+    mention_entity!(account_key, "Avery", [first, second])
+    expired_ids = MapSet.new([first.knowledge.id, second.knowledge.id])
+    Enum.each([first, second], &expire_active!/1)
+
+    assert {:ok, %{entity_cards: 0}} =
+             Builder.refresh_scope(first.account.id, first.scope.id)
+
+    DataLayer.with_account_key(account_key, fn account, actor ->
+      projections =
+        Projection
+        |> Ash.Query.filter(scope_id == ^first.scope.id and dirty == false)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert projections != []
+
+      Enum.each(projections, fn projection ->
+        assert MapSet.disjoint?(expired_ids, MapSet.new(projection.source_ids))
+
+        refute Enum.any?(projection.content["pinned_facts"] || [], fn fact ->
+                 MapSet.member?(expired_ids, fact["id"])
+               end)
       end)
     end)
   end
@@ -3808,6 +3879,18 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         )
 
       %{account: account, actor: actor, scope: scope, knowledge: knowledge}
+    end)
+  end
+
+  defp expire_active!(seeded) do
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      GovernanceEngine.transition!(
+        seeded.knowledge,
+        pipeline_actor(actor),
+        %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :second)},
+        reason: "f7_test_expire_before_sweep",
+        channel: "pipeline"
+      )
     end)
   end
 
