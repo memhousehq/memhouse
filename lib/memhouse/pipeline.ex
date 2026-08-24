@@ -35,6 +35,7 @@ defmodule MemHouse.Pipeline do
   alias MemHouse.DataLayer
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline.{DreamTime, Idempotency, Lock}
+  alias MemHouse.Retrieval.MaintenancePlan
   alias MemHouse.Retrieval.Store
 
   require Ash.Query
@@ -66,6 +67,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_message_extraction(struct(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_message_extraction(message, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "extraction",
       message.account_id,
@@ -74,7 +77,7 @@ defmodule MemHouse.Pipeline do
         target_type: "message",
         target_id: message.id,
         idempotency_key: Idempotency.message_extraction(message.id, message.content_hash),
-        payload: %{"content_hash" => message.content_hash}
+        payload: MaintenancePlan.put_payload(%{"content_hash" => message.content_hash}, plan)
       },
       actor
     )
@@ -91,6 +94,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_document_extraction(struct(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_document_extraction(version, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "extraction",
       version.account_id,
@@ -99,7 +104,7 @@ defmodule MemHouse.Pipeline do
         target_type: "document_version",
         target_id: version.id,
         idempotency_key: Idempotency.document_extraction(version.id, version.content_hash),
-        payload: %{"content_hash" => version.content_hash}
+        payload: MaintenancePlan.put_payload(%{"content_hash" => version.content_hash}, plan)
       },
       actor
     )
@@ -260,6 +265,24 @@ defmodule MemHouse.Pipeline do
     )
   end
 
+  @doc "Enqueues a reconciliation refresh without widening its durable maintenance plan."
+  @spec enqueue_projection_refresh(Ecto.UUID.t(), Ecto.UUID.t(), term(), map(), map()) ::
+          {:ok, PipelineRun.t()} | {:error, term()}
+  def enqueue_projection_refresh(account_id, scope_id, watermark, actor, plan) do
+    enqueue(
+      "projection_refresh",
+      account_id,
+      %{
+        scope_id: scope_id,
+        target_type: "scope",
+        target_id: scope_id,
+        idempotency_key: Idempotency.projection_refresh(scope_id, watermark, plan.id),
+        payload: plan |> MaintenancePlan.payload() |> Map.put("watermark", to_string(watermark))
+      },
+      actor
+    )
+  end
+
   @doc """
   Schedules one delayed derived-cache refresh for a burst of governed writes.
 
@@ -274,6 +297,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_derived_refresh(Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_derived_refresh(account_id, scope_id, %DateTime{} = changed_at, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "projection_refresh",
       account_id,
@@ -282,8 +307,14 @@ defmodule MemHouse.Pipeline do
         target_type: "scope",
         target_id: scope_id,
         idempotency_key:
-          Idempotency.derived_refresh(scope_id, :projection_refresh, changed_at, 10),
-        payload: %{"mode" => "coalesced"}
+          Idempotency.derived_refresh(
+            scope_id,
+            :projection_refresh,
+            changed_at,
+            10,
+            plan.id
+          ),
+        payload: MaintenancePlan.payload(plan)
       },
       actor
     )
@@ -655,6 +686,22 @@ defmodule MemHouse.Pipeline do
     )
     |> Ash.Query.set_tenant(account_id)
     |> Ash.exists?(actor: pipeline_actor(actor))
+  end
+
+  @doc "Returns the latest durable maintenance contract for a scope, or full legacy behavior."
+  @spec maintenance_plan_for_scope(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: map()
+  def maintenance_plan_for_scope(account_id, scope_id, actor) do
+    run =
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "projection_refresh" and target_type == "scope" and target_id == ^scope_id
+      )
+      |> Ash.Query.sort(inserted_at: :desc, id: :desc)
+      |> Ash.Query.limit(1)
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.read_one!(actor: pipeline_actor(actor))
+
+    MaintenancePlan.from_payload(if(run, do: run.payload, else: %{}))
   end
 
   @doc """

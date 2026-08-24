@@ -199,7 +199,15 @@ harness never stores fake deterministic embeddings.
 
 The measured section stages quality, citation, abstention, unexpected-source isolation, provider
 usage, operator-priced cost, wall/recall latency, stored facts, dream-time accounting, database
-query count/timing, and new `PipelineRun` work by kind and status. A telemetry handler counts only
+query count/timing, and new `PipelineRun` work by kind and status. For completed projection runs,
+maintenance also reports scheduled and skipped counts for source indexing, Knowledge indexing,
+RecallDocuments, entity caches, and context projections from the immutable plan captured in each
+run. The legacy current dream path's separate entity-resolution lane is also completed and counted
+explicitly; minimal creates no such lane. After each case ingests, the harness executes only new
+measured cache work before its
+questions; pre-existing work is excluded and any non-completed state fails the run. A minimal result therefore proves
+entity/context work was disabled instead of inferring that from absent reads or an unchanged
+projection-run count. A telemetry handler counts only
 the bounded runner interval; the before/after snapshot queries are outside it. It never records
 SQL, parameters, results, content, or Account ids. An idle-enabled execute case must supply at
 least two active direct-item generations in its exact scope. The harness creates real durable

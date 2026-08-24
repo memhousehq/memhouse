@@ -641,27 +641,39 @@ defmodule MemHouse.Pipeline.DreamTime do
   defp refresh!(account_id, scope_id, watermark, actor) do
     value = DateTime.to_iso8601(watermark)
 
-    Enum.each(
-      [
-        {"projection_refresh", Idempotency.projection_refresh(scope_id, value)},
-        {"entity_resolution", Idempotency.entity_resolution(scope_id, value)}
-      ],
-      fn {kind, idempotency_key} ->
+    case MemHouse.Retrieval.MaintenancePlan.current() do
+      %{profile: "minimal"} ->
         {:ok, _run} =
-          MemHouse.Pipeline.enqueue(
-            kind,
+          MemHouse.Pipeline.enqueue_derived_refresh(
             account_id,
-            %{
-              scope_id: scope_id,
-              target_type: "scope",
-              target_id: scope_id,
-              idempotency_key: idempotency_key,
-              payload: %{"watermark" => value}
-            },
+            scope_id,
+            watermark,
             actor
           )
-      end
-    )
+
+      _current ->
+        Enum.each(
+          [
+            {"projection_refresh", Idempotency.projection_refresh(scope_id, value)},
+            {"entity_resolution", Idempotency.entity_resolution(scope_id, value)}
+          ],
+          fn {kind, idempotency_key} ->
+            {:ok, _run} =
+              MemHouse.Pipeline.enqueue(
+                kind,
+                account_id,
+                %{
+                  scope_id: scope_id,
+                  target_type: "scope",
+                  target_id: scope_id,
+                  idempotency_key: idempotency_key,
+                  payload: %{"watermark" => value}
+                },
+                actor
+              )
+          end
+        )
+    end
   end
 
   defp serialise(items) do

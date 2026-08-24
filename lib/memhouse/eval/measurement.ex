@@ -12,6 +12,7 @@ defmodule MemHouse.Eval.Measurement do
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Operations.{PipelineRun, UsageEvent}
+  alias MemHouse.Retrieval.MaintenancePlan
 
   @doc "Returns a content-free snapshot for the evaluation Account."
   def snapshot(account_key) when is_binary(account_key) do
@@ -42,6 +43,10 @@ defmodule MemHouse.Eval.Measurement do
 
     run_kinds = Enum.frequencies_by(runs, & &1.kind)
     run_statuses = Enum.frequencies_by(runs, & &1.status)
+    refresh_runs = Enum.filter(runs, &(&1.kind == "projection_refresh"))
+    completed_refresh_runs = Enum.filter(refresh_runs, &(&1.status == "completed"))
+    entity_runs = Enum.filter(runs, &(&1.kind == "entity_resolution"))
+    completed_entity_runs = Enum.filter(entity_runs, &(&1.status == "completed"))
 
     %{
       "stored_facts" =>
@@ -53,6 +58,12 @@ defmodule MemHouse.Eval.Measurement do
         "extraction_runs" => Map.get(run_kinds, "extraction", 0),
         "dream_time_runs" => Map.get(run_kinds, "dream_time", 0),
         "projection_refresh_runs" => Map.get(run_kinds, "projection_refresh", 0),
+        "projection_refresh_stage_runs_completed" => length(completed_refresh_runs),
+        "projection_refresh_stages" => MaintenancePlan.accounting(completed_refresh_runs),
+        "entity_resolution_runs" => Map.get(run_kinds, "entity_resolution", 0),
+        "entity_resolution_runs_completed" => length(completed_entity_runs),
+        "cache_maintenance_runs_completed" =>
+          length(completed_refresh_runs) + length(completed_entity_runs),
         "pipeline_runs_by_kind" => run_kinds,
         "pipeline_runs_by_status" => run_statuses
       },

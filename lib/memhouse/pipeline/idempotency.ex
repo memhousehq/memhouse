@@ -91,12 +91,27 @@ defmodule MemHouse.Pipeline.Idempotency do
   def projection_refresh(scope_id, watermark),
     do: key(:projection_refresh, [scope_id, watermark])
 
+  @doc "Key for one profile-planned projection repair at a durable watermark."
+  @spec projection_refresh(Ecto.UUID.t(), term(), String.t()) :: String.t()
+  def projection_refresh(scope_id, watermark, plan_id) when is_binary(plan_id),
+    do: key(:projection_refresh, [scope_id, watermark, plan_id])
+
   @doc "Key for derived-cache work caused by ordinary governed writes in one scope."
   @spec derived_refresh(Ecto.UUID.t(), atom(), DateTime.t(), pos_integer()) :: String.t()
   def derived_refresh(scope_id, kind, %DateTime{} = changed_at, window_seconds)
       when kind in [:projection_refresh, :entity_resolution] and window_seconds > 0 do
     bucket = div(DateTime.to_unix(changed_at, :second), window_seconds)
     key(kind, [scope_id, bucket])
+  end
+
+  @doc "Key for profile-planned derived work in one scope and time bucket."
+  @spec derived_refresh(Ecto.UUID.t(), atom(), DateTime.t(), pos_integer(), String.t()) ::
+          String.t()
+  def derived_refresh(scope_id, kind, %DateTime{} = changed_at, window_seconds, plan_id)
+      when kind in [:projection_refresh, :entity_resolution] and window_seconds > 0 and
+             is_binary(plan_id) do
+    bucket = div(DateTime.to_unix(changed_at, :second), window_seconds)
+    key(kind, [scope_id, bucket, plan_id])
   end
 
   @doc """

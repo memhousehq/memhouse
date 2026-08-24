@@ -131,13 +131,114 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert knowledge_count(account_id) == 0
 
     assert [run] = projection_runs(account_id, scope_id)
-    assert run.payload == %{"mode" => "coalesced"}
+
+    assert run.payload ==
+             MemHouse.Retrieval.MaintenancePlan.payload(
+               MemHouse.Retrieval.MaintenancePlan.for_profile(:current)
+             )
+
     refute_receive {:source_embedding_call, _in_transaction?, _texts}
 
     assert {:ok, completed} = execute_run(run)
     assert completed.status == "completed"
     assert_receive {:source_embedding_call, false, ["Hi?"]}
     assert indexed_at!(account_id, message["id"])
+  end
+
+  test "minimal-profile writes durably skip entity and context projection maintenance" do
+    components = %{
+      "extraction_batching" => %{"enabled" => false},
+      "idle_dream_scheduling" => %{"enabled" => false},
+      "dream_reasoning_operations" => %{"split_enabled" => false},
+      "retrieval_profile" => "minimal"
+    }
+
+    {account_id, message_id, extraction_run} =
+      MemHouse.Eval.VariantRuntime.with_components(components, fn ->
+        message =
+          ingest!(
+            "source-minimal-write",
+            "/source/minimal",
+            "Avery owns the release checklist.",
+            "one",
+            1
+          )
+
+        {account_id, _scope_id} = account_and_scope!("source-minimal-write", "/source/minimal")
+        [extraction_run] = extraction_runs(account_id, message["id"])
+        assert extraction_run.payload["maintenance_profile"] == "minimal-v1"
+        {account_id, message["id"], extraction_run}
+      end)
+
+    # The worker executes after the caller's process-local profile has been restored.
+    # Its governed writes must still reuse the minimal plan captured on the durable run.
+    assert MemHouse.Retrieval.MaintenancePlan.current().profile == "current"
+    assert {:ok, %{status: "completed"}} = execute_run(extraction_run)
+
+    [knowledge] = knowledge_items(account_id)
+
+    MemHouse.Retrieval.MaintenancePlan.with_profile(:minimal, fn ->
+      activate_knowledge!(account_id, knowledge.id)
+    end)
+
+    runs = projection_runs(account_id, extraction_run.scope_id)
+
+    assert Enum.all?(runs, &(&1.payload["maintenance_profile"] == "minimal-v1"))
+    assert Enum.all?(runs, &(&1.payload["stages"]["entities"] == "skipped"))
+    assert Enum.all?(runs, &(&1.payload["stages"]["context_projections"] == "skipped"))
+
+    Enum.each(runs, fn run ->
+      if run.status != "completed", do: assert({:ok, %{status: "completed"}} = execute_run(run))
+    end)
+
+    assert knowledge_count(account_id) >= 1
+    assert indexed_at!(account_id, message_id)
+    assert derived_cache_counts(account_id) == %{mentions: 0, projections: 0, recall_documents: 1}
+
+    before_reconciliation = projection_runs(account_id, extraction_run.scope_id) |> length()
+    assert {:ok, %{scopes: 0}} = Reconciler.run(account_id)
+
+    assert projection_runs(account_id, extraction_run.scope_id) |> length() ==
+             before_reconciliation
+
+    assert derived_cache_counts(account_id) == %{mentions: 0, projections: 0, recall_documents: 1}
+
+    current_components = put_in(components, ["retrieval_profile"], "balanced")
+
+    current_run =
+      MemHouse.Eval.VariantRuntime.with_components(current_components, fn ->
+        message =
+          ingest!(
+            "source-current-write",
+            "/source/current",
+            "Avery owns the release checklist.",
+            "one",
+            1
+          )
+
+        {current_account_id, current_scope_id} =
+          account_and_scope!("source-current-write", "/source/current")
+
+        assert {:ok, [knowledge]} =
+                 Memory.extract_message_for_account(message["id"], current_account_id)
+
+        activate_knowledge!(current_account_id, knowledge["id"])
+
+        [current_run] = projection_runs(current_account_id, current_scope_id)
+        current_run
+      end)
+
+    assert current_run.payload["maintenance_profile"] == "current-v1"
+    assert current_run.payload["stages"]["entities"] == "scheduled"
+    assert current_run.payload["stages"]["context_projections"] == "scheduled"
+
+    assert {:ok, %{status: "completed"}} = execute_run(current_run)
+
+    assert %{mentions: mentions, projections: projection_count, recall_documents: 1} =
+             derived_cache_counts(current_run.account_id)
+
+    assert mentions > 0
+    assert projection_count > 0
   end
 
   test "duplicate source refresh requests coalesce on the scope bucket and one job" do
@@ -165,6 +266,29 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert second.id == scheduled.id
     assert projection_runs(account_id, scope_id) |> length() == 1
     assert oban_job_count(scheduled.idempotency_key) == 1
+  end
+
+  test "current and minimal maintenance plans do not coalesce into one replay identity" do
+    _current = ingest!("source-plan-identity", "/source/plan", "current", "one", 1)
+
+    components = %{
+      "extraction_batching" => %{"enabled" => false},
+      "idle_dream_scheduling" => %{"enabled" => false},
+      "dream_reasoning_operations" => %{"split_enabled" => false},
+      "retrieval_profile" => "minimal"
+    }
+
+    MemHouse.Eval.VariantRuntime.with_components(components, fn ->
+      _minimal = ingest!("source-plan-identity", "/source/plan", "minimal", "two", 2)
+    end)
+
+    {account_id, scope_id} = account_and_scope!("source-plan-identity", "/source/plan")
+    runs = projection_runs(account_id, scope_id)
+
+    assert Enum.map(runs, & &1.payload["maintenance_profile"]) |> Enum.sort() ==
+             ["current-v1", "minimal-v1"]
+
+    assert runs |> Enum.map(& &1.idempotency_key) |> Enum.uniq() |> length() == 2
   end
 
   test "failed source refresh remains replayable and later succeeds" do
@@ -661,6 +785,32 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     )
   end
 
+  defp extraction_runs(account_id, message_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        PipelineRun
+        |> Ash.Query.filter(kind == "extraction" and target_id == ^message_id)
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read!(actor: actor, page: [limit: 10])
+        |> Map.fetch!(:results)
+      end
+    )
+  end
+
+  defp knowledge_items(account_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        KnowledgeItem
+        |> Ash.Query.set_tenant(account_id)
+        |> Ash.read!(actor: actor)
+      end
+    )
+  end
+
   defp execute_run(run) do
     actor =
       DataLayer.with_account_id(
@@ -711,6 +861,43 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
       )
 
     count
+  end
+
+  defp activate_knowledge!(account_id, knowledge_id) do
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        item =
+          KnowledgeItem
+          |> Ash.Query.filter(id == ^knowledge_id)
+          |> Ash.Query.set_tenant(account_id)
+          |> Ash.read_one!(actor: actor)
+
+        GovernanceEngine.transition!(
+          item,
+          actor,
+          %{state: "active", verification: "auto_verified"},
+          reason: "minimal_profile_maintenance_fixture",
+          channel: "pipeline"
+        )
+      end
+    )
+  end
+
+  defp derived_cache_counts(account_id) do
+    %{rows: [[mentions, projections, recall_documents]]} =
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        """
+        SELECT (SELECT count(*) FROM entity_mentions WHERE account_id = $1),
+               (SELECT count(*) FROM projections WHERE account_id = $1),
+               (SELECT count(*) FROM recall_documents WHERE account_id = $1)
+        """,
+        [Ecto.UUID.dump!(account_id)]
+      )
+
+    %{mentions: mentions, projections: projections, recall_documents: recall_documents}
   end
 
   defp oban_job_count(idempotency_key) do

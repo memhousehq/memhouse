@@ -285,6 +285,14 @@ defmodule MemHouse.Memory do
   lost claim is an expected concurrency outcome rather than an exception.
   """
   def persist_message_extraction_result!(run, message, result, admission_identity) do
+    run.payload
+    |> MemHouse.Retrieval.MaintenancePlan.from_payload()
+    |> MemHouse.Retrieval.MaintenancePlan.with_plan(fn ->
+      do_persist_message_extraction_result!(run, message, result, admission_identity)
+    end)
+  end
+
+  defp do_persist_message_extraction_result!(run, message, result, admission_identity) do
     DataLayer.with_account_id(
       run.account_id,
       [role: :system, pipeline?: true],
