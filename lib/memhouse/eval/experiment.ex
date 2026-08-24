@@ -865,8 +865,7 @@ defmodule MemHouse.Eval.Experiment do
 
         Enum.reduce(configured, checks, fn {category, expected}, acc ->
           assert_category_gate!("min_category_accuracy", category, expected)
-          metrics = get_in(experimental, ["quality", "by_category", category])
-          metrics = if is_nil(metrics), do: %{}, else: metrics
+          metrics = category_metrics!(experimental, category)
           coverage = category_coverage!(metrics, category)
           actual = if coverage > 0, do: Map.get(metrics, "accuracy"), else: nil
 
@@ -898,12 +897,8 @@ defmodule MemHouse.Eval.Experiment do
 
         Enum.reduce(configured, checks, fn {category, allowed}, acc ->
           assert_category_gate!("max_category_accuracy_regression", category, allowed)
-          current_metrics = get_in(current, ["quality", "by_category", category])
-          current_metrics = if is_nil(current_metrics), do: %{}, else: current_metrics
-          experimental_metrics = get_in(experimental, ["quality", "by_category", category])
-
-          experimental_metrics =
-            if is_nil(experimental_metrics), do: %{}, else: experimental_metrics
+          current_metrics = category_metrics!(current, category)
+          experimental_metrics = category_metrics!(experimental, category)
 
           coverage =
             min(
@@ -943,6 +938,23 @@ defmodule MemHouse.Eval.Experiment do
   end
 
   defp assert_category_gate_map!(_name, _configured), do: :ok
+
+  defp category_metrics!(metrics, category) do
+    case get_in(metrics, ["quality", "by_category"]) do
+      nil ->
+        %{}
+
+      by_category when is_map(by_category) ->
+        case Map.get(by_category, category) do
+          nil -> %{}
+          value -> value
+        end
+
+      value ->
+        raise ArgumentError,
+              "quality.by_category must be an object, got #{inspect(value)}"
+    end
+  end
 
   defp category_coverage!(metrics, category) when is_map(metrics) do
     case Map.get(metrics, "questions", 0) do
@@ -1040,6 +1052,8 @@ defmodule MemHouse.Eval.Experiment do
     usage = measurement["usage"]
     ingest_usage = get_in(usage, ["by_role", "ingest_extractor"]) || empty_usage()
     reasoning = report["reasoning"] || empty_reasoning()
+    by_category = get_in(report, ["metrics", "by_category"])
+    by_category = if is_nil(by_category), do: %{}, else: by_category
 
     %{
       "ingest" => %{
@@ -1052,7 +1066,7 @@ defmodule MemHouse.Eval.Experiment do
       },
       "quality" => %{
         "accuracy" => overall["accuracy"],
-        "by_category" => get_in(report, ["metrics", "by_category"]) || %{},
+        "by_category" => by_category,
         "recall_at_10" => get_in(retrieval, ["recall_at_k", "10"]),
         "groundedness" => overall["mean_groundedness"],
         "context_relevance" => overall["mean_context_relevance"],

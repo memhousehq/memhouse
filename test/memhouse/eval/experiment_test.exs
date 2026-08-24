@@ -311,6 +311,25 @@ defmodule MemHouse.Eval.ExperimentTest do
     end
   end
 
+  test "category gates reject scalar by_category metrics", %{tmp_dir: tmp_dir} do
+    for gate <- ["min_category_accuracy", "max_category_accuracy_regression"],
+        scalar <- [4, false] do
+      definition =
+        definition()
+        |> put_in(["gates", "quality", gate], %{"hard-query" => 0.1})
+        |> put_in(
+          ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+          scalar
+        )
+
+      assert_raise ArgumentError, ~r/quality.by_category must be an object/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
   test "retired SQLite definitions are rejected instead of being reported as parity", %{
     tmp_dir: tmp_dir
   } do
