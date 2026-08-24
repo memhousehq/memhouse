@@ -101,6 +101,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       # caller, because deduplication, corroboration merging, and the content-safe audit chain
       # all key off it.
       change MemHouse.Knowledge.Changes.HashStatement
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
 
       # A statement a reader cannot read is not knowledge, whatever else is valid about the row.
       # Enforced here rather than at the extractor so no write path can bypass it.
@@ -120,6 +121,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
     update :merge_from_pipeline do
       accept [:confidence, :source_message_ids, :corroboration_count]
       require_atomic? false
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
     end
 
     # Attaches or replaces the semantic vector. The four identity fields travel with the vector
@@ -135,6 +137,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       ]
 
       require_atomic? false
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
     end
 
     # The only legal way to change lifecycle state. `reason` is mandatory because the lifecycle
@@ -169,6 +172,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       # Writes the append-only lifecycle event and the hash-chained audit entry inside this same
       # transaction, so a state change can never commit without its evidence.
       change MemHouse.Knowledge.Changes.RecordTransition
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
 
       validate attribute_in(:state, MemHouse.Knowledge.Lifecycle.states())
       validate MemHouse.Knowledge.Validations.AllowedLifecycleTransition
@@ -181,6 +185,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
     # statement is a `transition` to a terminal state, which keeps the row and its history.
     destroy :erase do
       require_atomic? false
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
     end
   end
 
@@ -1017,10 +1022,12 @@ defmodule MemHouse.Knowledge.EntityMention do
 
     create :create_from_pipeline do
       accept [:knowledge_item_id, :scope_id, :entity_id, :surface_form, :confidence]
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
 
     destroy :erase do
       require_atomic? false
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
   end
 

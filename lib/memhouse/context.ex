@@ -37,6 +37,7 @@ defmodule MemHouse.Context do
   alias MemHouse.Clock
   alias MemHouse.Context.Cache
   alias MemHouse.Context.ProjectionKey
+  alias MemHouse.Context.ProjectionLock
   alias MemHouse.Knowledge.Projection
   alias MemHouse.Memory.Visibility
   alias MemHouse.Observations.Session
@@ -138,26 +139,28 @@ defmodule MemHouse.Context do
     Enum.map_reduce(scopes, 0, fn scope, hits ->
       cache_key = {account_id, scope.id, "entity_cards"}
 
-      case Cache.fetch(cache_key, now) do
-        {:ok, cards} ->
-          {cards, hits + if(cards == [], do: 0, else: 1)}
+      with_stable_generation(account_id, scope.id, fn input_generation ->
+        case Cache.fetch(cache_key, now, input_generation) do
+          {:ok, cards} ->
+            {cards, hits + if(cards == [], do: 0, else: 1)}
 
-        :error ->
-          cards =
-            Projection
-            |> Ash.Query.filter(scope_id == ^scope.id and kind == "entity_card")
-            |> Visibility.projection_query(now)
-            |> Ash.Query.set_tenant(account_id)
-            |> Ash.read!(actor: actor)
-            |> Enum.sort_by(&entity_card_order/1, :desc)
-            |> Enum.take(@entity_cards_per_scope)
+          :error ->
+            cards =
+              Projection
+              |> Ash.Query.filter(scope_id == ^scope.id and kind == "entity_card")
+              |> Visibility.projection_query(now)
+              |> Ash.Query.set_tenant(account_id)
+              |> Ash.read!(actor: actor)
+              |> Enum.sort_by(&entity_card_order/1, :desc)
+              |> Enum.take(@entity_cards_per_scope)
 
-          valid_until = Visibility.earliest_boundary(cards, & &1.valid_until)
-          cards = Enum.map(cards, & &1.content)
+            valid_until = Visibility.earliest_boundary(cards, & &1.valid_until)
+            cards = Enum.map(cards, & &1.content)
 
-          Cache.put(cache_key, cards, valid_until)
-          {cards, hits}
-      end
+            Cache.put(cache_key, cards, valid_until, input_generation)
+            {cards, hits}
+        end
+      end)
     end)
   end
 
@@ -274,20 +277,38 @@ defmodule MemHouse.Context do
   defp projection(account_id, actor, scope_id, cache_key, now) do
     ets_key = {account_id, scope_id, cache_key}
 
-    case Cache.fetch(ets_key, now) do
-      {:ok, projection} ->
-        {projection, true}
+    with_stable_generation(account_id, scope_id, fn input_generation ->
+      case Cache.fetch(ets_key, now, input_generation) do
+        {:ok, projection} ->
+          {projection, true}
 
-      :error ->
-        projection =
-          Projection
-          |> Ash.Query.filter(cache_key == ^cache_key)
-          |> Visibility.projection_query(now)
-          |> Ash.Query.set_tenant(account_id)
-          |> Ash.read_one!(actor: actor)
+        :error ->
+          projection =
+            Projection
+            |> Ash.Query.filter(cache_key == ^cache_key)
+            |> Visibility.projection_query(now)
+            |> Ash.Query.set_tenant(account_id)
+            |> Ash.read_one!(actor: actor)
 
-        if projection, do: Cache.put(ets_key, projection, projection.valid_until)
-        {projection, false}
+          if projection,
+            do: Cache.put(ets_key, projection, projection.valid_until, input_generation)
+
+          {projection, false}
+      end
+    end)
+  end
+
+  # A source action advances its generation in the same transaction as the source write. Reading
+  # the generation on both sides of a cache/database lookup gives that lookup a committed-state
+  # linearization point without locking source rows in the opposite order from their writes.
+  defp with_stable_generation(account_id, scope_id, fun) do
+    input_generation = ProjectionLock.capture!(account_id, scope_id)
+    result = fun.(input_generation)
+
+    if ProjectionLock.capture!(account_id, scope_id) == input_generation do
+      result
+    else
+      with_stable_generation(account_id, scope_id, fun)
     end
   end
 

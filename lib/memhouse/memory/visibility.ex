@@ -50,6 +50,18 @@ defmodule MemHouse.Memory.Visibility do
   end
 
   @doc """
+  Returns whether an optional lifecycle boundary is still visible at a captured decision time.
+
+  A nil boundary is unbounded. A timestamp is visible only while it is strictly later than
+  `now`, matching the knowledge and projection query predicates.
+  """
+  @spec boundary_visible?(DateTime.t() | nil, DateTime.t()) :: boolean()
+  def boundary_visible?(nil, %DateTime{}), do: true
+
+  def boundary_visible?(%DateTime{} = boundary, %DateTime{} = now),
+    do: DateTime.compare(boundary, now) == :gt
+
+  @doc """
   Loads undeleted, unexpired readable knowledge in the supplied scopes and active view.
 
   The Ash tenant and actor remain mandatory even for an internal reader.

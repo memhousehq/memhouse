@@ -43,19 +43,8 @@ defmodule MemHouse.MigrationRetrySafetyTest do
     assert projection =~ "NEW.dirty IS DISTINCT FROM OLD.dirty"
     assert projection =~ "NEW.validity_version := 0"
     assert projection =~ "add :projection_input_generation, :bigint"
-    assert projection =~ "CREATE FUNCTION memhouse_invalidate_projection_input()"
-    assert projection =~ "UPDATE scopes"
-    assert projection =~ "SET projection_input_generation = projection_input_generation + 1"
-    assert projection =~ "(OLD.account_id, OLD.scope_id) IS DISTINCT FROM"
-
-    assert count(projection, "SET projection_input_generation = projection_input_generation + 1") ==
-             2
-
-    assert projection =~ "knowledge_items_invalidate_projection_input"
-    assert projection =~ "entity_mentions_invalidate_projection_input"
-    assert projection =~ "sessions_invalidate_projection_input"
-    assert projection =~ "messages_association_invalidate_projection_input"
-    assert projection =~ "DROP FUNCTION IF EXISTS memhouse_invalidate_projection_input()"
+    refute projection =~ "memhouse_invalidate_projection_input"
+    refute projection =~ "UPDATE scopes"
     assert projection =~ "remove :projection_input_generation"
   end
 

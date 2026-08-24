@@ -1810,6 +1810,117 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end)
   end
 
+  test "entity resolution rejects a source whose future expiry passes during model work" do
+    clock = MemHouse.F7RetrievalEntityContextTest.Clock
+    system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
+    now = ~U[2026-08-25 12:00:00.000000Z]
+
+    clock.put(now)
+    Application.put_env(:memhouse, :clock, clock)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :clock, system_clock)
+      clock.erase()
+    end)
+
+    seeded =
+      seed_active!(
+        "f7-entity-resolution-clock-expiry-race",
+        "/f7/entity-resolution-clock-expiry-race",
+        "Avery owns the release checklist."
+      )
+
+    expires_at = DateTime.add(now, 60, :second)
+
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      GovernanceEngine.transition!(
+        seeded.knowledge,
+        pipeline_actor(actor),
+        %{state: "active", expires_at: expires_at},
+        reason: "f7_test_future_expiry",
+        channel: "pipeline"
+      )
+    end)
+
+    pause_next_entity_resolution!()
+
+    stale_resolution =
+      Task.async(fn ->
+        EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, stale_pid}, 1_000
+    clock.put(DateTime.add(expires_at, 1, :second))
+    send(stale_pid, :release_projection_refresh)
+
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_resolution, 5_000)
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      mentions =
+        EntityMention
+        |> Ash.Query.filter(knowledge_item_id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert mentions == []
+    end)
+  end
+
+  test "an older cross-scope resolution cannot overwrite newer Account entity state" do
+    account_key = "f7-entity-resolution-cross-scope-race"
+
+    base =
+      seed_active!(
+        account_key,
+        "/f7/entity-resolution-cross-scope-race/base",
+        "Avery owns the release checklist."
+      )
+
+    first =
+      seed_active!(
+        account_key,
+        "/f7/entity-resolution-cross-scope-race/first",
+        "Avery Stone owns the deployment checklist."
+      )
+
+    second =
+      seed_active!(
+        account_key,
+        "/f7/entity-resolution-cross-scope-race/second",
+        "Avery reviews the deployment checklist."
+      )
+
+    assert {:ok, %{mentions: base_mentions}} =
+             EntityResolver.rebuild_scope(base.account.id, base.scope.id)
+
+    assert base_mentions >= 1
+    pause_next_entity_resolution!()
+
+    stale_resolution =
+      Task.async(fn ->
+        EntityResolver.rebuild_scope(first.account.id, first.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, stale_pid}, 1_000
+
+    assert {:ok, %{mentions: second_mentions}} =
+             EntityResolver.rebuild_scope(second.account.id, second.scope.id)
+
+    assert second_mentions >= 1
+    send(stale_pid, :release_projection_refresh)
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_resolution, 5_000)
+
+    DataLayer.with_actor(first.actor, fn account, actor ->
+      avery =
+        Entity
+        |> Ash.Query.filter(canonical_name == "Avery")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+
+      assert second.knowledge.id in avery.derived_from
+    end)
+  end
+
   test "entity_match ranks a selective entity's statements above a scope-wide one's" do
     seeds = seed_statements!("f7-entity-idf", "/f7/entity-idf", 6)
 
@@ -1962,11 +2073,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       MemHouse.F7RetrievalEntityContextTest.VanishingProvider
     )
 
-    # The provider deletes the adjudicated entity as a side effect of answering, so the write
-    # phase's re-read of it comes back empty.
-    assert_raise RuntimeError, ~r/vanished/, fn ->
-      EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
-    end
+    # The provider deletes the adjudicated entity as a side effect of answering. Account-wide
+    # entity snapshot validation now rejects that stale fold before the write phase can start.
+    assert {:error, :stale_projection_snapshot} =
+             EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
 
     # Both billed embedding calls — the one that scored the ambiguous match and the one that
     # re-embeds the widened alias set once the fold is decided — survive the later failure,
@@ -2966,6 +3076,84 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert current.version == baseline.version + 1
     assert current.validity_version == current.version
     assert current.content["name"] == updated_scope.name
+  end
+
+  test "projection-shaping scope, session, message, and mention changes invalidate warm context" do
+    account_key = "f7-scope-metadata-cache-generation"
+    scope_path = "/f7/scope-metadata-cache-generation"
+
+    seeded =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery owns the release checklist.",
+        "scope-metadata-cache-session"
+      )
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    attrs = %{
+      "scope_path" => scope_path,
+      "session_id" => "scope-metadata-cache-session",
+      "budget_chars" => 20_000
+    }
+
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == true
+
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      seeded.scope
+      |> Ash.Changeset.for_update(:update, %{name: "Renamed warm-cache scope"})
+      |> Ash.update!(actor: pipeline_actor(actor), authorize?: false)
+    end)
+
+    context = Memory.get_context(attrs, seeded.actor)
+    assert context["projection_cache_hit"] == false
+    assert context["scope_cards"] == []
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == true
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      session =
+        Session
+        |> Ash.Query.filter(external_id == "scope-metadata-cache-session")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      session
+      |> Ash.Changeset.for_update(:update, %{status: "closed"})
+      |> Ash.update!(actor: actor)
+    end)
+
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == true
+
+    assert {:ok, _message} =
+             Memory.ingest_message(
+               %{
+                 "account_key" => account_key,
+                 "session_id" => "scope-metadata-cache-session",
+                 "scope_path" => scope_path,
+                 "peer_key" => "avery",
+                 "peer_name" => "Avery",
+                 "content" => "A new projection-shaping observation."
+               },
+               seeded.actor
+             )
+
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == true
+
+    mention_entity!(account_key, "Avery", [seeded])
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
   end
 
   test "cached projections disappear when their sources expire before the lifecycle sweep" do

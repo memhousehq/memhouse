@@ -175,8 +175,9 @@ defmodule MemHouse.Context.Builder do
     )
   end
 
-  # Phase one reads one consistent source snapshot and returns the plain actor for the model phase.
-  # The actor is immutable authorization data and remains valid after this transaction closes.
+  # Phase one reads a candidate source snapshot and its generation, then returns the plain actor
+  # for the model phase. Phase three rejects it if any shaping action committed meanwhile. The
+  # actor is immutable authorization data and remains valid after this transaction closes.
   defp read_scope!(account_id, scope_id) do
     DataLayer.with_account_id(
       account_id,
@@ -676,8 +677,8 @@ defmodule MemHouse.Context.Builder do
   @doc """
   Marks every projection in a scope as unusable and evicts the in-memory copies.
 
-  Leaves content unchanged because reads reject dirty rows. Call inside the lifecycle-change
-  transaction with an internal pipeline actor so invalidation commits atomically.
+  Leaves content unchanged because reads reject dirty rows. Call inside the projection-input
+  change transaction with an internal pipeline actor so invalidation commits atomically.
 
   Returns `:ok`. Raises if a read or update fails.
   """

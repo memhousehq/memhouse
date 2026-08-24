@@ -14,11 +14,13 @@ defmodule MemHouse.Retrieval.EntityResolver do
   blocking rebuild.
   """
 
+  alias MemHouse.Clock
   alias MemHouse.Context.ProjectionLock
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{Entity, EntityMention}
   alias MemHouse.Memory.Visibility
   alias MemHouse.Model.{Embedding, Gateway}
+  alias MemHouse.Pipeline.Lock
   alias MemHouse.Retrieval.{LexicalQueryAnalyzer, Vector}
 
   require Ash.Query
@@ -57,7 +59,9 @@ defmodule MemHouse.Retrieval.EntityResolver do
 
   Note the asymmetry: mentions are cleared per scope, but orphan entities are
   pruned Account-wide, because an entity is shared across scopes and only the
-  full mention set can show it has become unreferenced.
+  full mention set can show it has become unreferenced. Final Account-wide
+  entity writes serialize and revalidate the entity snapshot so a rebuild in
+  one scope cannot overwrite newer shared state from another.
 
   Returns `{:ok, %{statements: n, mentions: n}}`, or
   `{:error, :stale_projection_snapshot}` when a projection-shaping input changes
@@ -65,10 +69,20 @@ defmodule MemHouse.Retrieval.EntityResolver do
   model failures do not raise, they just leave that surface form unresolved.
   """
   def rebuild_scope(account_id, scope_id) do
-    {drafts, statements, actor, input_generation} = read_scope!(account_id, scope_id)
+    {drafts, statements, actor, input_generation, entity_signature, valid_until} =
+      read_scope!(account_id, scope_id)
+
     {drafts, mentions} = resolve_statements(drafts, statements, account_id, actor)
 
-    case write_index!(drafts, mentions, account_id, scope_id, input_generation) do
+    case write_index!(
+           drafts,
+           mentions,
+           account_id,
+           scope_id,
+           input_generation,
+           entity_signature,
+           valid_until
+         ) do
       :ok -> {:ok, %{statements: length(statements), mentions: length(mentions)}}
       {:error, :stale_projection_snapshot} = error -> error
     end
@@ -92,7 +106,8 @@ defmodule MemHouse.Retrieval.EntityResolver do
       [role: :system, pipeline?: true],
       fn _account, actor ->
         input_generation = ProjectionLock.capture!(account_id, scope_id)
-        drafts = account_id |> entities!(actor) |> Enum.map(&draft/1)
+        entities = entities!(account_id, actor)
+        drafts = Enum.map(entities, &draft/1)
 
         statements =
           [scope_id]
@@ -101,7 +116,8 @@ defmodule MemHouse.Retrieval.EntityResolver do
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read!(actor: actor)
 
-        {drafts, statements, actor, input_generation}
+        {drafts, statements, actor, input_generation, entity_snapshot_signature(entities),
+         Visibility.earliest_boundary(statements, & &1.expires_at)}
       end
     )
   end
@@ -401,14 +417,26 @@ defmodule MemHouse.Retrieval.EntityResolver do
   # entities' real ids, and prune whatever is now unreferenced. Untouched
   # drafts are not written at all — nothing this run resolved needs them to
   # change.
-  defp write_index!(drafts, mentions, account_id, scope_id, input_generation) do
+  defp write_index!(
+         drafts,
+         mentions,
+         account_id,
+         scope_id,
+         input_generation,
+         entity_signature,
+         valid_until
+       ) do
     DataLayer.with_account_id(
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        current_generation = ProjectionLock.acquire!(account_id, scope_id)
+        Lock.acquire!(account_id, "entity-resolution-write")
+        current_generation = ProjectionLock.capture!(account_id, scope_id)
+        current_entity_signature = account_id |> entities!(actor) |> entity_snapshot_signature()
 
-        if current_generation == input_generation do
+        if current_generation == input_generation and
+             current_entity_signature == entity_signature and
+             Visibility.boundary_visible?(valid_until, Clock.utc_now()) do
           # Clear first, then re-derive in the same transaction. Any other order
           # would leave duplicate mentions for statements that are resolved
           # again, and splitting the clear into its own transaction would expose
@@ -431,6 +459,26 @@ defmodule MemHouse.Retrieval.EntityResolver do
         end
       end
     )
+  end
+
+  defp entity_snapshot_signature(entities) do
+    entities
+    |> Enum.map(fn entity ->
+      Map.take(entity, [
+        :id,
+        :canonical_name,
+        :kind,
+        :aliases,
+        :alias_embedding,
+        :embedding_provider,
+        :embedding_model,
+        :embedding_version,
+        :embedding_dimensions,
+        :derived_from,
+        :updated_at
+      ])
+    end)
+    |> Enum.sort_by(& &1.id)
   end
 
   # Persists one touched draft and returns its real id. A new draft is created
@@ -538,7 +586,8 @@ defmodule MemHouse.Retrieval.EntityResolver do
       :embedding_model,
       :embedding_version,
       :embedding_dimensions,
-      :derived_from
+      :derived_from,
+      :updated_at
     ])
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)

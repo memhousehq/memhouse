@@ -4,21 +4,20 @@ defmodule MemHouse.Context.ProjectionLock do
   @moduledoc """
   Serializes one scope's projection input snapshot, commit, and invalidation boundary.
 
-  A short shared row lock makes the input generation and every projection-shaping read one coherent
-  snapshot. After model work, an exclusive row lock serializes revalidation and commit. Database
-  triggers bump the generation for every shaping source mutation, so either a refresh commits first
-  and the later mutation invalidates it, or the mutation commits first and the refresh rejects its
-  stale generation.
+  Projection-shaping Ash actions advance a per-scope generation in their transaction. Readers
+  capture it without locking source rows; a later generation check rejects any mixed or stale
+  snapshot. Projection writers take the exclusive scope-row lock only after model work, so their
+  final version read and commit serialize without reversing the source-write lock order.
   """
 
   alias MemHouse.Repo
 
   @doc """
-  Captures a scope's projection-input generation under a shared transaction lock.
+  Reads a scope's projection-input generation without locking source rows.
 
-  Call before reading projection-shaping inputs inside a transaction. Returns the non-negative
-  generation and raises when the scope is absent or PostgreSQL cannot acquire the row lock. The
-  shared lock is released with the transaction.
+  Call before reading projection-shaping inputs and compare it again before using the snapshot.
+  Returns the non-negative generation and raises when the scope is absent or PostgreSQL cannot
+  read it.
   """
   @spec capture!(Ecto.UUID.t(), Ecto.UUID.t()) :: non_neg_integer()
   def capture!(account_id, scope_id) do
@@ -29,7 +28,6 @@ defmodule MemHouse.Context.ProjectionLock do
         SELECT projection_input_generation
         FROM scopes
         WHERE account_id = $1 AND id = $2
-        FOR SHARE
         """,
         dump_ids(account_id, scope_id)
       )

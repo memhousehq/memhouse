@@ -163,6 +163,14 @@ job termination observable without changing replay identity.
 that uses a parameterized PostgreSQL advisory-lock query. It performs no
 durable write; all durable state still goes through Ash actions.
 
+The projection-validity migration has one narrower rolling-upgrade exception: a PostgreSQL
+`BEFORE UPDATE` trigger may set only `Projection.validity_version` to `0` when an older worker
+changes derived projection content without advancing that marker. Current workers still perform
+every projection and source mutation through Ash actions. The trigger cannot be an Ash change
+because its purpose is to fail closed for already-running binaries that predate that change; it
+creates no content, audit, lifecycle, or queue state and is removed with the validity columns on
+rollback.
+
 ## Audit chain
 
 `MemHouse.Governance.AuditEvent` remains append-only and now carries:

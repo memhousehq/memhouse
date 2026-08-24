@@ -313,9 +313,12 @@ Cards carry the strictest source sensitivity, a bounded summary with model
 provenance, and a bounded set of pinned source excerpts. Full source ids remain
 private on the projection row. Updates carry a watermark, delta count, source
 ids, dirty state, and a bounded full-compaction cadence.
-Lifecycle changes mark affected projections dirty and enqueue one deterministic,
-delayed projection job in the same transaction as the state change. That job
-also refreshes entities and mentions before it writes projections.
+Projection-shaping Ash actions advance the affected scope's private input generation, mark its
+projections dirty, and broadcast cache invalidation in the same transaction as the source change.
+Lifecycle changes additionally enqueue one deterministic, delayed projection job. That job also
+refreshes entities and mentions before it writes projections. Refresh workers reject a generation
+that changed during model work; Account-wide entity writes serialize and revalidate their shared
+entity snapshot before replacing mentions.
 
 Projection keys also carry a private audience-contract namespace. A stricter
 stored-content rule advances that namespace, so nodes running the new code
@@ -325,7 +328,9 @@ is pending. A miss uses the already subject-filtered `:fast` retrieval path.
 `MemHouse.Context` reserves the caller's character budget in the required
 order: session summary, peer profile, scope cards, entity cards, then
 salience-ranked knowledge. Clean projections are cached in ETS. Invalidation is broadcast
-through Phoenix PubSub so queue-mode nodes evict the same Account/scope key.
+through Phoenix PubSub so queue-mode nodes evict the same Account/scope key. Cache entries also
+carry the input generation, and context compares that generation around each cache/database read,
+so a missed or delayed broadcast cannot serve an obsolete shaping snapshot.
 On a miss, and only on a miss, `get_context` uses the `:fast` retrieval profile.
 It never invokes dialectic or dream reasoning on the live context path.
 
