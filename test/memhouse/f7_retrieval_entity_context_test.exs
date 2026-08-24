@@ -3630,6 +3630,14 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         [account_id]
       )
 
+      # Simulate an unsafe legacy projection whose only source stopped being admissible without
+      # the old deployment invalidating the derived row. The upgrade refresh must retire it.
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE knowledge_items SET state = 'expired' WHERE account_id = $1 AND id = $2",
+        [account_id, Ecto.UUID.dump!(seeded.knowledge.id)]
+      )
+
       # The seed's ordinary coalesced refresh is no longer recoverable; reconciliation must add
       # a distinct upgrade-keyed run instead of reusing that completed generation.
       Ecto.Adapters.SQL.query!(
@@ -3645,6 +3653,43 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)
 
     assert projection_refresh_count(seeded.account.id) == before + 1
+
+    upgrade_key =
+      MemHouse.Pipeline.Idempotency.projection_refresh(
+        seeded.scope.id,
+        "projection-validity-v1"
+      )
+
+    upgrade_run =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        MemHouse.Operations.PipelineRun
+        |> Ash.Query.filter(idempotency_key == ^upgrade_key)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+      end)
+
+    assert upgrade_run
+
+    completed =
+      upgrade_run
+      |> Ash.Changeset.for_update(:execute, %{})
+      |> Ash.Changeset.set_tenant(seeded.account.id)
+      |> Ash.update!(actor: pipeline_actor(seeded.actor))
+
+    assert completed.status == "completed"
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      legacy_profiles =
+        Projection
+        |> Ash.Query.filter(
+          scope_id == ^seeded.scope.id and kind == "peer_profile" and validity_version == 0
+        )
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert legacy_profiles != []
+      assert Enum.all?(legacy_profiles, & &1.dirty)
+    end)
 
     assert {:ok, %{legacy_projection_scopes: 0}} =
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)

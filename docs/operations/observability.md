@@ -141,12 +141,12 @@ order. A burst produces at most one refresh run per scope and bucket. Its
 embedder batch contains only statements without vectors. Explicit rebuild and
 re-embed operations retain their full-corpus behavior.
 
-The projection-expiry migration upgrades clean projections in place only when every recorded
-source still exists in an admissible lifecycle state. Any row that cannot be proved safe remains
-unreadable. The hourly reconciler scans at most 100 such rows per Account and enqueues one
-idempotent full refresh per affected scope under the `projection-validity-v1` watermark. During
-that bounded warm-up, context fails closed to the ordinary fast retrieval fallback; operators do
-not need to run a manual migration command or expose the legacy projection.
+The projection-expiry migration makes existing projections unreadable without scanning or
+rewriting their contents under the schema lock. The hourly reconciler scans at most 100 legacy
+rows per Account and enqueues one idempotent full refresh per affected scope under the
+`projection-validity-v1` watermark. During that bounded warm-up, context fails closed to the
+ordinary fast retrieval fallback; operators do not need to run a manual migration command or
+expose the legacy projection.
 
 Alert on `coverage` below your threshold. Embeddings and entity mentions are
 written by this lane alone, so a refresh that was cancelled or never enqueued

@@ -12,38 +12,6 @@ defmodule MemHouse.Repo.Migrations.Issue302ProjectionExpiryBound do
       add :valid_until, :utc_datetime_usec
       add :validity_version, :bigint, null: false, default: 0
     end
-
-    # Existing projections can be upgraded in place only when every source still exists and has
-    # the lifecycle state that projection kind admits. Anything else stays at version zero and
-    # fails closed until the bounded reconciler schedules a complete scope rebuild.
-    execute """
-    UPDATE projections AS projection
-    SET valid_until = (
-          SELECT min(knowledge.expires_at)
-          FROM unnest(projection.source_ids) AS source(id)
-          JOIN knowledge_items AS knowledge
-            ON knowledge.account_id = projection.account_id
-           AND knowledge.id = source.id
-        ),
-        validity_version = 1
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM unnest(projection.source_ids) AS source(id)
-      LEFT JOIN knowledge_items AS knowledge
-        ON knowledge.account_id = projection.account_id
-       AND knowledge.id = source.id
-      WHERE knowledge.id IS NULL
-         OR knowledge.deleted_at IS NOT NULL
-         OR (
-           projection.kind = 'peer_profile'
-           AND knowledge.state NOT IN ('active', 'provisional')
-         )
-         OR (
-           projection.kind <> 'peer_profile'
-           AND knowledge.state <> 'active'
-         )
-    )
-    """
   end
 
   def down do

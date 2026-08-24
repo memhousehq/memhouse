@@ -280,6 +280,13 @@ defmodule MemHouse.Context.Builder do
             )
           end)
 
+        retire_stale_peer_profiles!(
+          account_id,
+          actor,
+          scope.id,
+          MapSet.new(peer_projections, & &1.peer_id)
+        )
+
         session_projections =
           projections.sessions
           |> Enum.map(fn session ->
@@ -436,6 +443,20 @@ defmodule MemHouse.Context.Builder do
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
     |> Enum.reject(&MapSet.member?(current_entity_ids, &1.entity_id))
+    |> Enum.each(fn projection ->
+      projection
+      |> Ash.Changeset.for_update(:refresh_from_pipeline, %{dirty: true})
+      |> Ash.Changeset.set_tenant(account_id)
+      |> Ash.update!(actor: actor, authorize?: false)
+    end)
+  end
+
+  defp retire_stale_peer_profiles!(account_id, actor, scope_id, current_peer_ids) do
+    Projection
+    |> Ash.Query.filter(scope_id == ^scope_id and kind == "peer_profile" and dirty == false)
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.read!(actor: actor)
+    |> Enum.reject(&MapSet.member?(current_peer_ids, &1.peer_id))
     |> Enum.each(fn projection ->
       projection
       |> Ash.Changeset.for_update(:refresh_from_pipeline, %{dirty: true})
