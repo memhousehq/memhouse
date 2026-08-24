@@ -225,16 +225,7 @@ defmodule MemHouse.Model.ProviderCircuit do
       {{^key, ^mode, monitor}, permits} ->
         Process.demonitor(monitor, [:flush])
         entry = Map.get(state.circuits, key, closed_entry())
-
-        {entry, transition} =
-          case mode do
-            :closed ->
-              {entry, nil}
-
-            :half_open ->
-              {%{entry | state: :open, opened_at_ms: now_ms, probe_in_flight?: false},
-               :probe_abandoned}
-          end
+        {entry, transition} = release(entry, mode, now_ms)
 
         state = %{
           state
@@ -260,16 +251,7 @@ defmodule MemHouse.Model.ProviderCircuit do
       {token, monitors} ->
         {{key, mode, ^monitor}, permits} = Map.pop(state.permits, token)
         entry = Map.get(state.circuits, key, closed_entry())
-
-        {entry, transition} =
-          case mode do
-            :closed ->
-              {entry, nil}
-
-            :half_open ->
-              {%{entry | state: :open, opened_at_ms: now_ms(), probe_in_flight?: false},
-               :probe_abandoned}
-          end
+        {entry, transition} = release(entry, mode, now_ms())
 
         state = %{
           state
@@ -341,6 +323,12 @@ defmodule MemHouse.Model.ProviderCircuit do
   # the circuit or move the original open interval. Half-open admission waits
   # for all such permits to drain, so only the designated probe can recover.
   defp finish(entry, :closed, _stale_result, _now_ms), do: {entry, nil}
+
+  defp release(entry, :closed, _now_ms), do: {entry, nil}
+
+  defp release(entry, :half_open, now_ms) do
+    {%{entry | state: :open, opened_at_ms: now_ms, probe_in_flight?: false}, :probe_abandoned}
+  end
 
   defp record_failure(entry, :half_open, now_ms) do
     {%{entry | state: :open, opened_at_ms: now_ms, probe_in_flight?: false}, :reopened}

@@ -447,6 +447,40 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
              )
   end
 
+  test "length-based scope ordering prefers specific guards over root guard", %{actor: actor} do
+    specific_scope = "/bench/locomo/root-covered"
+    assert {:ok, _root_budget} = ExtractionBudget.register(actor, budget_attrs("/", 2))
+    assert {:ok, _specific_budget} = ExtractionBudget.register(actor, budget_attrs(specific_scope, 1))
+
+    descendant_context = %{
+      account_id: actor.account_id,
+      scope_path: "#{specific_scope}/case-1",
+      actor: actor
+    }
+
+    assert {:ok, remaining_ms} =
+             ExtractionBudget.reserve(
+               descendant_context,
+               [%{role: "user", content: "specific scope first"}],
+               %{"type" => "object"}
+             )
+
+    assert remaining_ms > 0
+
+    assert {:error, %ExtractionBudget.Exceeded{}} =
+             ExtractionBudget.reserve(
+               descendant_context,
+               [%{role: "user", content: "specific scope exhausted"}],
+               %{"type" => "object"}
+             )
+
+    assert {:ok, %{requests_reserved: 1}} =
+             ExtractionBudget.register(actor, budget_attrs(specific_scope, 1))
+
+    assert {:ok, %{requests_reserved: 0}} =
+             ExtractionBudget.register(actor, budget_attrs("/", 2))
+  end
+
   defp ingest_and_extract!(actor, peer_key, scope_path, session_id) do
     assert {:ok, message} =
              Memory.ingest_message(
