@@ -15,7 +15,11 @@ defmodule MemHouse.Repo.Migrations.DropUnusedEntityAliasEmbeddingIndex do
     execute "DROP INDEX CONCURRENTLY IF EXISTS entities_alias_embedding_diskann_1024_idx"
   end
 
-  @doc "Restores the entity alias DiskANN index from the current index settings."
+  @doc """
+  Restores the entity alias DiskANN index from the current index settings.
+
+  Rollback retries replace any complete or partial existing index before recreation.
+  """
   def down do
     # Concurrent creation can commit before Ecto removes the migration marker.
     # Replace either a complete or partial build when rollback retries.
