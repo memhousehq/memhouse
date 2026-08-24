@@ -113,7 +113,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
         WITH selected AS (
           SELECT account_id, scope_root,
                  CEIL(($3::numeric * input_usd_micros_per_million +
-                       $4::numeric * output_usd_micros_per_million) / 1000000)::bigint AS usd,
+                       $4::numeric * output_usd_micros_per_million) / 1000000) AS usd,
                  deadline_at
           FROM extraction_budget_guards
           WHERE account_id = $1
@@ -125,7 +125,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
         UPDATE extraction_budget_guards AS guard
         SET requests_reserved = requests_reserved + 1,
             tokens_reserved = tokens_reserved + $3 + $4,
-            usd_micros_reserved = usd_micros_reserved + selected.usd,
+            usd_micros_reserved = (usd_micros_reserved::numeric + selected.usd)::bigint,
             updated_at = now()
         FROM selected
         WHERE guard.account_id = selected.account_id
@@ -133,6 +133,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
           AND clock_timestamp() < selected.deadline_at
           AND guard.requests_reserved + 1 <= guard.request_cap
           AND guard.tokens_reserved + $3 + $4 <= guard.token_cap
+          AND selected.usd <= #{@max_bigint}
           AND guard.usd_micros_reserved + selected.usd <= guard.usd_micros_cap
         RETURNING GREATEST(
           1,

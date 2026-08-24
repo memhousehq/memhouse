@@ -50,7 +50,7 @@ defmodule MemHouse.Operations.ExtractionEvidence do
 
         statements =
           KnowledgeItem
-          |> Ash.Query.filter(id in ^knowledge_item_ids)
+          |> Ash.Query.filter(id in ^knowledge_item_ids and scope_id in ^scope_ids)
           |> read(actor)
 
         {:ok, build(scope_root, selected, runs, usages, statements)}

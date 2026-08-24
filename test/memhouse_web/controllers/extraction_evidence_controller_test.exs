@@ -230,6 +230,43 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
            } = json_response(response, 200)
   end
 
+  test "out-of-scope attributed outputs make evidence accounting incomplete", %{
+    conn: conn,
+    actor: actor,
+    peer: peer,
+    token: token
+  } do
+    scope_root = "/bench/locomo/corpus-scope-attribution"
+    message = ingest_and_extract!(actor, peer.key, "#{scope_root}/case-1", "scope-attribution")
+
+    other =
+      ingest_and_extract!(
+        actor,
+        peer.key,
+        "/bench/locomo/other-scope/case-1",
+        "other-scope-attribution"
+      )
+
+    other_statement = knowledge_item_for_scope!(actor, other["scope_id"])
+    run = extraction_run!(actor.account_id, message["id"])
+    replace_output_attribution!(run, [other_statement.id], actor)
+
+    response =
+      conn
+      |> with_identity(token)
+      |> get("/api/v1/operations/extraction-evidence", %{"scope_root" => scope_root})
+
+    assert %{
+             "data" => %{
+               "statements" => %{"count" => 0},
+               "accounting" => %{
+                 "complete" => false,
+                 "reasons" => ["attributed extraction outputs are missing"]
+               }
+             }
+           } = json_response(response, 200)
+  end
+
   test "fails closed for a missing scope and a non-admin caller", %{
     conn: conn,
     actor: actor,
@@ -434,6 +471,44 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
       )
 
     assert %{"error" => "Invalid request"} = json_response(response, 422)
+  end
+
+  test "computed reservation cost overflow fails closed as budget exhaustion", %{actor: actor} do
+    previous_batching = Application.fetch_env!(:memhouse, :extraction_batching)
+
+    Application.put_env(
+      :memhouse,
+      :extraction_batching,
+      Keyword.put(previous_batching, :reserved_output_tokens, 1_000_000)
+    )
+
+    on_exit(fn -> Application.put_env(:memhouse, :extraction_batching, previous_batching) end)
+
+    max_bigint = 9_223_372_036_854_775_807
+    scope_root = "/bench/locomo/corpus-cost-overflow"
+
+    attrs =
+      scope_root
+      |> budget_attrs(max_bigint)
+      |> Map.merge(%{
+        "token_cap" => max_bigint,
+        "usd_micros_cap" => max_bigint,
+        "input_usd_micros_per_million" => max_bigint,
+        "output_usd_micros_per_million" => max_bigint
+      })
+
+    assert {:ok, _budget} = ExtractionBudget.register(actor, attrs)
+
+    assert {:error, %ExtractionBudget.Exceeded{}} =
+             ExtractionBudget.reserve(
+               %{
+                 account_id: actor.account_id,
+                 scope_path: "#{scope_root}/case-1",
+                 actor: pipeline_actor(actor)
+               },
+               [%{role: "user", content: "bounded overflow"}],
+               %{"type" => "object"}
+             )
   end
 
   test "gateway refuses an extractor provider callback after hard-budget exhaustion", %{
@@ -784,6 +859,15 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     )
     |> Ash.Changeset.set_tenant(run.account_id)
     |> Ash.update!(actor: pipeline_actor(actor))
+  end
+
+  defp knowledge_item_for_scope!(actor, scope_id) do
+    DataLayer.in_account_transaction(actor.account_id, fn ->
+      KnowledgeItem
+      |> Ash.Query.filter(scope_id == ^scope_id)
+      |> Ash.Query.set_tenant(actor.account_id)
+      |> Ash.read_one!(actor: pipeline_actor(actor))
+    end)
   end
 
   defp budget_attrs(scope_root, request_cap) do
