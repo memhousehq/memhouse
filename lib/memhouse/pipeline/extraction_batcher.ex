@@ -174,7 +174,8 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
             [run],
             "repairable",
             "oversized",
-            ExtractionAdmission.config()[:identity] |> Extractor.admission_identity()
+            ExtractionAdmission.config()[:identity] |> Extractor.admission_identity(),
+            %{anchor_count: 1, provider_attempts: 0}
           )
 
         result =
@@ -216,11 +217,18 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
 
     case Extractor.extract_batch_with_attempts(prepared) do
       {:ok, results, provider_attempts} ->
+        batch_evidence = %{
+          anchor_count: map_size(runs),
+          provider_attempts: provider_attempts
+        }
+
         statuses =
           Enum.map(results, fn result ->
             result_run = Map.fetch!(runs, result.anchor_id)
             result_anchor = Enum.find(prepared, &(&1.message["id"] == result.anchor_id))
-            {result.anchor_id, persist_anchor_result(result_run, result_anchor, result)}
+
+            {result.anchor_id,
+             persist_anchor_result(result_run, result_anchor, result, batch_evidence)}
           end)
           |> Map.new()
 
@@ -232,10 +240,22 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
         {result, accounting(provider_attempts)}
 
       {:error, error, provider_attempts} ->
+        batch_evidence = %{
+          anchor_count: map_size(runs),
+          provider_attempts: provider_attempts
+        }
+
         result =
           case failure_class(error) do
             {:repairable, reason_class} ->
-              statuses = mark_all(Map.values(runs), "repairable", reason_class, identity)
+              statuses =
+                mark_all(
+                  Map.values(runs),
+                  "repairable",
+                  reason_class,
+                  identity,
+                  batch_evidence
+                )
 
               {:classified_batch_result,
                {:ok,
@@ -247,7 +267,14 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
                 }}, statuses, reason_class}
 
             {:terminal, reason_class} ->
-              statuses = mark_all(Map.values(runs), "terminal", reason_class, identity)
+              statuses =
+                mark_all(
+                  Map.values(runs),
+                  "terminal",
+                  reason_class,
+                  identity,
+                  batch_evidence
+                )
 
               {:classified_batch_result,
                {:ok,
@@ -262,7 +289,9 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
               # Record every claimed anchor before returning the provider error.
               # AshOban's error callback may run as well; its convergent failed
               # update keeps the same replayable state.
-              statuses = mark_all(Map.values(runs), "failed", reason_class, identity)
+              statuses =
+                mark_all(Map.values(runs), "failed", reason_class, identity, batch_evidence)
+
               {:retryable_batch_error, error, statuses}
           end
 
@@ -282,12 +311,13 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
       else: nil
   end
 
-  defp persist_anchor_result(run, anchor, result) do
+  defp persist_anchor_result(run, anchor, result, batch_evidence) do
     case Memory.persist_message_extraction_result!(
            run,
            anchor.message,
            result,
-           result.admission_identity
+           result.admission_identity,
+           batch_evidence
          ) do
       {:ok, _knowledge} ->
         if result.status == :ok, do: "completed", else: Atom.to_string(result.status)
@@ -364,7 +394,7 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
     end
   end
 
-  defp mark_all(runs, status, reason_class, admission_identity) do
+  defp mark_all(runs, status, reason_class, admission_identity, batch_evidence) do
     Map.new(runs, fn run ->
       outcome =
         DataLayer.with_account_id(
@@ -376,7 +406,8 @@ defmodule MemHouse.Pipeline.ExtractionBatcher do
               status,
               reason_class,
               admission_identity,
-              actor
+              actor,
+              Map.put(batch_evidence, :candidate_count, 0)
             )
           end
         )
