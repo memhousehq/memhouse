@@ -81,7 +81,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                  "provenance" => [
                    %{
                      "provider" => "deterministic",
-                     "prompt_version" => "extract-13",
+                     "prompt_version" => "extract-14",
                      "pipeline_version" => "f5-1",
                      "attempts" => 1
                    }
@@ -91,7 +91,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                  "count" => 1,
                  "distributions" => %{
                    "kind" => %{"preference" => 1},
-                   "prompt_version" => %{"extract-13" => 1}
+                   "prompt_version" => %{"extract-14" => 1}
                  }
                },
                "accounting" => %{"complete" => true, "reasons" => []}
@@ -265,7 +265,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                "usd_micros_reserved" => 0,
                "extraction_identity" => %{
                  "build_sha" => "unknown",
-                 "prompt_version" => "extract-13",
+                 "prompt_version" => "extract-14",
                  "pipeline_version" => "f5-1",
                  "batching_enabled" => false,
                  "batching_identity" =>
