@@ -143,8 +143,9 @@ re-embed operations retain their full-corpus behavior.
 
 The projection-expiry migration makes projections readable only when their validity marker equals
 their projection version, without scanning or rewriting contents under the schema lock. This also
-fails closed when an old rolling-upgrade worker changes a projection without the marker. The hourly
-reconciler selects at most 100 distinct legacy scopes per Account and enqueues one idempotent full
+fails closed when an old rolling-upgrade worker changes a projection without advancing the marker;
+a database trigger invalidates even an equal-version conflict update. The hourly reconciler selects
+at most 100 distinct legacy scopes per Account and enqueues one idempotent full
 refresh per affected scope under the `projection-validity-v1` generation watermark. If an old
 worker writes another legacy generation after an upgrade completes, its row identity, monotonic
 version, and update time produce a new refresh run. During that bounded warm-up, context fails

@@ -12,6 +12,7 @@ defmodule MemHouse.MigrationRetrySafetyTest do
   @transactional_migrations ~w(
     20260817090000_governed_source_message_search.exs
     20260817100000_recall_document_dual_lane.exs
+    20260824125256_issue_302_projection_expiry_bound.exs
   )
 
   @concurrent_index_migrations ~w(
@@ -34,6 +35,11 @@ defmodule MemHouse.MigrationRetrySafetyTest do
     assert recall =~ "ALTER TABLE recall_documents ENABLE ROW LEVEL SECURITY"
     assert recall =~ "ALTER TABLE recall_documents FORCE ROW LEVEL SECURITY"
     assert recall =~ "CREATE POLICY memhouse_account_wall"
+
+    projection = read_migration("20260824125256_issue_302_projection_expiry_bound.exs")
+    assert projection =~ "BEFORE UPDATE ON projections"
+    assert projection =~ "NEW.validity_version IS NOT DISTINCT FROM OLD.validity_version"
+    assert projection =~ "NEW.validity_version := 0"
   end
 
   test "each non-transactional migration owns one retry-safe concurrent index" do

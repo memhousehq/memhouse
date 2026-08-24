@@ -12,9 +12,38 @@ defmodule MemHouse.Repo.Migrations.Issue302ProjectionExpiryBound do
       add :valid_until, :utc_datetime_usec
       add :validity_version, :bigint, null: false, default: 0
     end
+
+    execute """
+    CREATE FUNCTION memhouse_invalidate_stale_projection_write()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF NEW.validity_version IS NOT DISTINCT FROM OLD.validity_version
+         AND (NEW.version IS DISTINCT FROM OLD.version
+              OR NEW.content IS DISTINCT FROM OLD.content
+              OR NEW.source_ids IS DISTINCT FROM OLD.source_ids
+              OR NEW.sensitivity IS DISTINCT FROM OLD.sensitivity) THEN
+        NEW.validity_version := 0;
+      END IF;
+
+      RETURN NEW;
+    END;
+    $$
+    """
+
+    execute """
+    CREATE TRIGGER projections_invalidate_stale_write
+    BEFORE UPDATE ON projections
+    FOR EACH ROW
+    EXECUTE FUNCTION memhouse_invalidate_stale_projection_write()
+    """
   end
 
   def down do
+    execute "DROP TRIGGER IF EXISTS projections_invalidate_stale_write ON projections"
+    execute "DROP FUNCTION IF EXISTS memhouse_invalidate_stale_projection_write()"
+
     alter table(:projections) do
       remove :validity_version
       remove :valid_until

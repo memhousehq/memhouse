@@ -3688,17 +3688,28 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     assert late_projection
 
-    # Simulate the SQL shape of an in-flight old binary after the first upgrade: it advances the
-    # projection generation and rewrites content, but does not know either validity column. The
-    # generation mismatch must fail closed and schedule another actual current worker.
+    # Simulate the conflict-update SQL shape of an in-flight old binary that computed the same
+    # generation as the winning current worker: it rewrites content but knows neither validity
+    # column. The database must invalidate the inherited marker, fail closed, and schedule another
+    # actual current worker.
     Ecto.Adapters.SQL.query!(
       MemHouse.Repo,
-      "UPDATE projections SET version = version + 1, " <>
-        "content = jsonb_build_object('legacy', 'late old worker'), " <>
+      "UPDATE projections SET content = jsonb_build_object('legacy', 'late old worker'), " <>
         "source_ids = source_ids, dirty = false, updated_at = clock_timestamp() " <>
         "WHERE account_id = $1 AND id = $2",
       [Ecto.UUID.dump!(seeded.account.id), Ecto.UUID.dump!(late_projection.id)]
     )
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      invalidated =
+        Projection
+        |> Ash.Query.filter(id == ^late_projection.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+
+      assert invalidated.version == late_projection.version
+      assert invalidated.validity_version == 0
+    end)
 
     context =
       Memory.get_context(
