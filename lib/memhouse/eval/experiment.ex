@@ -310,6 +310,7 @@ defmodule MemHouse.Eval.Experiment do
         ["quality", "recall_at_10"],
         ["safety", "citation_hit_rate"],
         ["safety", "unsupported_claims"],
+        ["safety", "isolation_candidates_checked"],
         ["safety", "isolation_leaks"],
         ["safety", "dropped_strategy_runs"],
         ["cost", "model_calls"],
@@ -342,6 +343,17 @@ defmodule MemHouse.Eval.Experiment do
                (is_nil(get_in(metrics, ["safety", "abstention_accuracy"])) or
                   is_number(get_in(metrics, ["safety", "abstention_accuracy"]))) do
         raise ArgumentError, "fixture variants require complete numeric stage metrics"
+      end
+
+      isolation_count_paths = [
+        ["safety", "isolation_candidates_checked"],
+        ["safety", "isolation_leaks"]
+      ]
+
+      isolation_counts = Enum.map(isolation_count_paths, &get_in(metrics, &1))
+
+      unless Enum.all?(isolation_counts, &(is_integer(&1) and &1 >= 0)) do
+        raise ArgumentError, "fixture isolation counts must be non-negative integers"
       end
     end)
   end
@@ -786,6 +798,10 @@ defmodule MemHouse.Eval.Experiment do
         ["safety", "max_isolation_leaks"],
         get_in(experimental, ["safety", "isolation_leaks"])
       )
+      |> require_isolation_coverage(
+        gates,
+        get_in(experimental, ["safety", "isolation_candidates_checked"])
+      )
       |> optional_max(
         "safety.dropped_strategy_runs",
         gates,
@@ -984,6 +1000,17 @@ defmodule MemHouse.Eval.Experiment do
 
   defp optional_min(checks, name, gates, path, actual),
     do: optional_check(checks, name, gates, path, actual, :min)
+
+  # A leak ceiling is promotion evidence only when retrieval exercised the source-membership
+  # check. Keep this coupled to max_isolation_leaks so definitions cannot opt out of coverage
+  # while still presenting a passing isolation gate.
+  defp require_isolation_coverage(checks, gates, actual) do
+    if is_nil(get_in(gates, ["safety", "max_isolation_leaks"])) do
+      checks
+    else
+      [check("safety.isolation_candidates_checked", actual, 1, :min) | checks]
+    end
+  end
 
   defp optional_max(checks, name, gates, path, actual),
     do: optional_check(checks, name, gates, path, actual, :max)

@@ -197,6 +197,9 @@ fails unless its explicit dream pass records every enabled operation.
 Gates cover regression, citation and unsupported-answer failures, source-membership leaks,
 token/cost and latency budgets, and replay effects. Measured evidence is structurally separate
 from inferences and unreproduced first-party claims.
+An isolation gate is exercised only when it checks at least one retrieved candidate identity.
+Zero candidates therefore fails promotion evidence even when the leak count is zero; comparison
+artifacts record both the content-free candidate count and leak count.
 Source-membership accounting normalizes both legacy message provenance and bounded typed
 `source_references`. Message identities translate into the fixture's turn/session labels for
 citation and rank scoring; a document-version identity cannot belong to the message-only runner

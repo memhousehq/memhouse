@@ -266,7 +266,9 @@ an estimate from the named shipped planning profile or operator override; a prov
 no usage object honestly records zero tokens rather than a guess.
 `quality.min_category_accuracy` and `quality.max_category_accuracy_regression`
 are category-to-fraction maps. A requested category with no measured questions
-fails closed. Gates fail the command by default. `--report-only` writes a failed
+fails closed. Gates fail the command by
+default. An isolation gate fails closed unless at least one retrieved candidate identity was
+checked and no unexpected source membership was found. `--report-only` writes a failed
 bundle without changing the exit status.
 Execute-mode cost stages record the profile `id` and `kind` beside
 `estimated_usd`, so two runs cannot silently compare different rate tables.

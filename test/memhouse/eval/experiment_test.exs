@@ -127,6 +127,54 @@ defmodule MemHouse.Eval.ExperimentTest do
     end
   end
 
+  test "an unexercised isolation path fails the promotion gate", %{tmp_dir: tmp_dir} do
+    definition =
+      put_in(
+        definition(),
+        ["variants", Access.at(1), "fixture_metrics", "safety", "isolation_candidates_checked"],
+        0
+      )
+
+    {_run_manifest, bundle} =
+      tmp_dir
+      |> write_definition!(definition)
+      |> Experiment.run([])
+
+    assert bundle["gates"]["status"] == "failed"
+
+    assert %{
+             "gate" => "safety.isolation_candidates_checked",
+             "status" => "failed",
+             "actual" => 0,
+             "operator" => ">=",
+             "expected" => 1
+           } in bundle["gates"]["failures"]
+
+    assert_raise ArgumentError, ~r/safety.isolation_candidates_checked/, fn ->
+      Experiment.assert_gates!(bundle)
+    end
+  end
+
+  test "fixture isolation evidence requires non-negative integer counts", %{tmp_dir: tmp_dir} do
+    for {field, invalid_count} <- [
+          {"isolation_candidates_checked", 1.5},
+          {"isolation_leaks", -1}
+        ] do
+      definition =
+        put_in(
+          definition(),
+          ["variants", Access.at(1), "fixture_metrics", "safety", field],
+          invalid_count
+        )
+
+      definition_path = write_definition!(tmp_dir, definition)
+
+      assert_raise ArgumentError, ~r/isolation counts must be non-negative integers/, fn ->
+        Experiment.run(definition_path, [])
+      end
+    end
+  end
+
   test "two floating-point zero latencies produce a neutral ratio", %{tmp_dir: tmp_dir} do
     definition =
       definition()
@@ -634,6 +682,7 @@ defmodule MemHouse.Eval.ExperimentTest do
         "citation_hit_rate" => 1.0,
         "abstention_accuracy" => 1.0,
         "unsupported_claims" => 0,
+        "isolation_candidates_checked" => 2,
         "isolation_leaks" => 0,
         "dropped_strategy_runs" => 0
       },
