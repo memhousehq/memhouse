@@ -349,10 +349,9 @@ defmodule MemHouse.Eval.Experiment do
         ["safety", "isolation_leaks"]
       ]
 
-      unless Enum.all?(isolation_count_paths, fn path ->
-               count = get_in(metrics, path)
-               is_integer(count) and count >= 0
-             end) do
+      isolation_counts = Enum.map(isolation_count_paths, &get_in(metrics, &1))
+
+      unless Enum.all?(isolation_counts, &(is_integer(&1) and &1 >= 0)) do
         raise ArgumentError, "fixture isolation counts must be non-negative integers"
       end
     end)
