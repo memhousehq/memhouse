@@ -845,7 +845,9 @@ defmodule MemHouse.Knowledge.Projection do
     attribute :valid_until, :utc_datetime_usec
 
     # Existing rows predate the validity coordinate and must fail closed until rebuilt. A rebuild
-    # writes the current version even when every source is non-expiring and `valid_until` is nil.
+    # binds this marker to the projection version even when every source is non-expiring and
+    # `valid_until` is nil. A rolling-upgrade writer that changes `version` without this field
+    # therefore makes its own output unreadable until a current worker rebuilds it.
     attribute :validity_version, :integer, allow_nil?: false, default: 0
 
     # True once an underlying statement changed and before the rebuild ran. Readers must not

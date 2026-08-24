@@ -188,7 +188,7 @@ defmodule MemHouse.Pipeline.Reconciler do
 
           legacy_projection_scopes =
             Projection
-            |> Ash.Query.filter(validity_version != 1 and dirty == false)
+            |> Ash.Query.filter(validity_version != version and dirty == false)
             |> Ash.Query.select([:id, :scope_id, :updated_at, :version])
             |> Ash.Query.distinct(:scope_id)
             |> Ash.Query.sort(scope_id: :asc, updated_at: :desc, id: :desc)

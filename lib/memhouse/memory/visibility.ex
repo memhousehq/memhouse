@@ -19,6 +19,22 @@ defmodule MemHouse.Memory.Visibility do
   @visible_states ~w(active provisional)
 
   @doc """
+  Applies the fail-closed read boundary for a derived projection.
+
+  The validity marker must match the content generation, the projection must be clean, and its
+  earliest source expiry must still be later than the caller's captured decision time. Lifecycle
+  reconciliation deliberately queries projections without this filter so it can repair hidden
+  generations.
+  """
+  def projection_query(query, now) do
+    Ash.Query.filter(
+      query,
+      dirty == false and validity_version == version and
+        (is_nil(valid_until) or valid_until > ^now)
+    )
+  end
+
+  @doc """
   Loads undeleted, unexpired readable knowledge in the supplied scopes and active view.
 
   The Ash tenant and actor remain mandatory even for an internal reader.

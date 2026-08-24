@@ -24,6 +24,7 @@ defmodule MemHouseWeb.Console.Loader do
   alias MemHouse.Knowledge.LifecycleEvent
   alias MemHouse.Knowledge.Projection
   alias MemHouse.Knowledge.Provenance
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Model.Config, as: ModelConfig
   alias MemHouse.Observations.Document
   alias MemHouse.Observations.DocumentVersion
@@ -411,10 +412,8 @@ defmodule MemHouseWeb.Console.Loader do
   # lifecycle change. Legacy rows and cards at their source-expiry boundary also fail closed.
   defp entity_cards(account_id, actor, scope_ids, now) do
     Projection
-    |> Ash.Query.filter(
-      scope_id in ^MapSet.to_list(scope_ids) and kind == "entity_card" and dirty == false and
-        validity_version == 1 and (is_nil(valid_until) or valid_until > ^now)
-    )
+    |> Ash.Query.filter(scope_id in ^MapSet.to_list(scope_ids) and kind == "entity_card")
+    |> Visibility.projection_query(now)
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
     |> Map.new(&{{&1.scope_id, &1.entity_id}, &1})

@@ -3664,7 +3664,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     assert completed.status == "completed"
 
-    legacy_profile =
+    late_projection =
       DataLayer.with_actor(seeded.actor, fn account, actor ->
         legacy_profiles =
           Projection
@@ -3677,20 +3677,36 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         assert legacy_profiles != []
         assert Enum.all?(legacy_profiles, & &1.dirty)
 
-        hd(legacy_profiles)
+        Projection
+        |> Ash.Query.filter(
+          scope_id == ^seeded.scope.id and dirty == false and validity_version == version
+        )
+        |> Ash.Query.sort(kind: :asc, id: :asc)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
       end)
 
-    # A late old worker can rewrite the same cache key after the first upgrade finishes. Its
-    # changed update time is a new unsafe generation and must schedule another actual worker,
-    # rather than colliding with the completed first upgrade run.
-    legacy_profile
-    |> Ash.Changeset.for_update(:refresh_from_pipeline, %{
-      version: legacy_profile.version + 1,
-      validity_version: 0,
-      dirty: false
-    })
-    |> Ash.Changeset.set_tenant(seeded.account.id)
-    |> Ash.update!(actor: pipeline_actor(seeded.actor))
+    assert late_projection
+
+    # Simulate the SQL shape of an in-flight old binary after the first upgrade: it advances the
+    # projection generation and rewrites content, but does not know either validity column. The
+    # generation mismatch must fail closed and schedule another actual current worker.
+    Ecto.Adapters.SQL.query!(
+      MemHouse.Repo,
+      "UPDATE projections SET version = version + 1, " <>
+        "content = jsonb_build_object('legacy', 'late old worker'), " <>
+        "source_ids = source_ids, dirty = false, updated_at = clock_timestamp() " <>
+        "WHERE account_id = $1 AND id = $2",
+      [Ecto.UUID.dump!(seeded.account.id), Ecto.UUID.dump!(late_projection.id)]
+    )
+
+    context =
+      Memory.get_context(
+        %{"scope_path" => seeded.scope.path, "budget_chars" => 20_000},
+        seeded.actor
+      )
+
+    refute inspect(context) =~ "late old worker"
 
     assert {:ok, %{legacy_projection_scopes: 1}} =
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)
@@ -3707,6 +3723,16 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       |> Ash.update!(actor: pipeline_actor(seeded.actor))
 
     assert second_completed.status == "completed"
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      rebuilt =
+        Projection
+        |> Ash.Query.filter(id == ^late_projection.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+
+      assert rebuilt.validity_version == rebuilt.version
+    end)
 
     assert {:ok, %{legacy_projection_scopes: 0}} =
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)

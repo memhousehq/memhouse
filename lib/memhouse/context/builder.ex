@@ -680,13 +680,15 @@ defmodule MemHouse.Context.Builder do
         {attrs.content, attrs.source_ids, 0}
       end
 
+    version = (existing && existing.version + 1) || 1
+
     create_attrs =
       attrs
       |> Map.merge(%{
-        version: (existing && existing.version + 1) || 1,
+        version: version,
         content: content,
         source_ids: source_ids,
-        validity_version: 1,
+        validity_version: version,
         dirty: false,
         watermark: Clock.utc_now(),
         delta_count: delta_count

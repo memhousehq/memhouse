@@ -38,6 +38,7 @@ defmodule MemHouse.Context do
   alias MemHouse.Context.Cache
   alias MemHouse.Context.ProjectionKey
   alias MemHouse.Knowledge.Projection
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Observations.Session
   alias MemHouse.Retrieval.Query
 
@@ -144,10 +145,8 @@ defmodule MemHouse.Context do
         :error ->
           cards =
             Projection
-            |> Ash.Query.filter(
-              scope_id == ^scope.id and kind == "entity_card" and dirty == false and
-                validity_version == 1 and (is_nil(valid_until) or valid_until > ^now)
-            )
+            |> Ash.Query.filter(scope_id == ^scope.id and kind == "entity_card")
+            |> Visibility.projection_query(now)
             |> Ash.Query.set_tenant(account_id)
             |> Ash.read!(actor: actor)
             |> Enum.sort_by(&entity_card_order/1, :desc)
@@ -282,10 +281,8 @@ defmodule MemHouse.Context do
       :error ->
         projection =
           Projection
-          |> Ash.Query.filter(
-            cache_key == ^cache_key and dirty == false and validity_version == 1 and
-              (is_nil(valid_until) or valid_until > ^now)
-          )
+          |> Ash.Query.filter(cache_key == ^cache_key)
+          |> Visibility.projection_query(now)
           |> Ash.Query.set_tenant(account_id)
           |> Ash.read_one!(actor: actor)
 

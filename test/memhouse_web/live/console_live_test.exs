@@ -1819,7 +1819,8 @@ defmodule MemHouseWeb.ConsoleLiveTest do
             "summary" => sentinel,
             "knowledge" => [%{"id" => Ash.UUID.generate(), "statement" => sentinel}]
           },
-          source_ids: []
+          source_ids: [],
+          validity_version: 1
         },
         account.id,
         pipeline
