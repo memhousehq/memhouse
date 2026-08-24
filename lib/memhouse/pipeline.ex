@@ -568,6 +568,17 @@ defmodule MemHouse.Pipeline do
     )
   end
 
+  @doc "Records the content-safe knowledge ids produced by one completed extraction anchor."
+  def record_extraction_outputs(run, knowledge_item_ids, actor)
+      when is_list(knowledge_item_ids) do
+    payload = Map.put(run.payload || %{}, "knowledge_item_ids", knowledge_item_ids)
+
+    run
+    |> Ash.Changeset.for_update(:record_extraction_outputs, %{payload: payload})
+    |> Ash.Changeset.set_tenant(run.account_id)
+    |> Ash.update(actor: pipeline_actor(actor))
+  end
+
   defp extraction_evidence_payload(run, admission_identity, evidence) do
     evidence =
       evidence
@@ -582,6 +593,7 @@ defmodule MemHouse.Pipeline do
     |> Map.put("admission_identity", admission_identity)
     |> Map.put("extraction_evidence", evidence)
     |> Map.put("extraction_attempts", attempts ++ [evidence])
+    |> Map.put("knowledge_item_ids", [])
   end
 
   defp fenced_extraction_update(run, action, attrs, actor) do

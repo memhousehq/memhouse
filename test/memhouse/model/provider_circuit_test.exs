@@ -74,8 +74,8 @@ defmodule MemHouse.Model.ProviderCircuitTest do
 
   use MemHouse.DataCase, async: false
 
-  alias MemHouse.Model.Config.Role
   alias MemHouse.DataLayer
+  alias MemHouse.Model.Config.Role
   alias MemHouse.Model.Gateway
   alias MemHouse.Model.ProviderCircuit
   alias MemHouse.Model.ProviderCircuitTest.ExitingProvider

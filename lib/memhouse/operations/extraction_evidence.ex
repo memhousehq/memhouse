@@ -46,9 +46,11 @@ defmodule MemHouse.Operations.ExtractionEvidence do
           |> Ash.Query.filter(model_role == "ingest_extractor" and scope_id in ^scope_ids)
           |> read(actor)
 
+        knowledge_item_ids = extraction_knowledge_item_ids(runs)
+
         statements =
           KnowledgeItem
-          |> Ash.Query.filter(scope_id in ^scope_ids)
+          |> Ash.Query.filter(id in ^knowledge_item_ids)
           |> read(actor)
 
         {:ok, build(scope_root, selected, runs, usages, statements)}
@@ -72,8 +74,11 @@ defmodule MemHouse.Operations.ExtractionEvidence do
         anchors: length(runs),
         status_counts: frequencies(runs, & &1.status),
         error_classes: frequencies(runs, & &1.last_error_class),
-        job_attempts: Enum.sum(Enum.map(runs, & &1.attempt_count)),
-        attempt_count: frequencies(runs, & &1.attempt_count),
+        job_attempts: Enum.sum(Enum.map(runs, &non_negative(&1.attempt_count))),
+        attempt_count:
+          frequencies(runs, fn run ->
+            if non_negative_integer?(run.attempt_count), do: run.attempt_count
+          end),
         terminal_anchors: Enum.count(runs, &(&1.status == "terminal")),
         admission_identity: frequencies(runs, &get_in(&1.payload, ["admission_identity"])),
         candidate_yield: candidate_yield(runs),
@@ -172,52 +177,60 @@ defmodule MemHouse.Operations.ExtractionEvidence do
   end
 
   defp accounting(runs, usages, batches) do
-    present? = runs != []
-    settled? = present? and Enum.all?(runs, &(&1.status in @settled_statuses))
     settled_runs = Enum.filter(runs, &(&1.status in @settled_statuses))
-    evidence_complete? = Enum.all?(settled_runs, &valid_batch_evidence?(extraction_evidence(&1)))
-    evidence_consistent? = consistent_batch_evidence?(settled_runs)
-    cardinality_complete? = batch_cardinality_complete?(settled_runs)
+
+    checks = %{
+      present: runs != [],
+      settled: runs != [] and Enum.all?(runs, &(&1.status in @settled_statuses)),
+      evidence_complete: Enum.all?(settled_runs, &valid_batch_evidence?(extraction_evidence(&1))),
+      evidence_consistent: consistent_batch_evidence?(settled_runs),
+      cardinality_complete: batch_cardinality_complete?(settled_runs),
+      output_attribution_complete: output_attribution_complete?(settled_runs),
+      counts_complete: non_negative_counts?(runs, usages)
+    }
+
     expected_attempts = Enum.sum(Enum.map(batches, & &1["provider_attempts"]))
     unmetered = Enum.count(usages, &unmetered?/1)
 
-    requests_complete? =
-      settled? and evidence_complete? and evidence_consistent? and
-        cardinality_complete? and
-        expected_attempts == length(usages)
-
+    requests_complete? = requests_complete?(checks, expected_attempts, length(usages))
     tokens_complete? = requests_complete? and unmetered == 0
-
-    reasons =
-      []
-      |> add_reason(not present?, "extraction accounting is empty")
-      |> add_reason(not settled?, "extraction runs are not settled")
-      |> add_reason(
-        settled? and not evidence_complete?,
-        "settled extraction runs are missing batch evidence"
-      )
-      |> add_reason(
-        settled? and not evidence_consistent?,
-        "settled extraction runs disagree about batch evidence"
-      )
-      |> add_reason(
-        settled? and not cardinality_complete?,
-        "settled extraction batch cardinality does not match its anchors"
-      )
-      |> add_reason(
-        settled? and evidence_complete? and expected_attempts != length(usages),
-        "provider-attempt rows do not match settled batch evidence"
-      )
-      |> add_reason(unmetered > 0, "provider failures have unknown token usage")
+    reasons = accounting_reasons(checks, expected_attempts, length(usages), unmetered)
 
     %{
       complete: reasons == [],
-      settled: settled?,
+      settled: checks.settled,
       requests_complete: requests_complete?,
       tokens_complete: tokens_complete?,
       cost_complete: tokens_complete?,
       reasons: reasons
     }
+  end
+
+  defp requests_complete?(checks, expected_attempts, actual_attempts) do
+    Enum.all?(Map.values(checks)) and expected_attempts == actual_attempts
+  end
+
+  defp accounting_reasons(checks, expected_attempts, actual_attempts, unmetered) do
+    [
+      {not checks.present, "extraction accounting is empty"},
+      {not checks.settled, "extraction runs are not settled"},
+      {checks.settled and not checks.evidence_complete,
+       "settled extraction runs are missing batch evidence"},
+      {checks.settled and not checks.evidence_consistent,
+       "settled extraction runs disagree about batch evidence"},
+      {checks.settled and not checks.cardinality_complete,
+       "settled extraction batch cardinality does not match its anchors"},
+      {checks.settled and not checks.output_attribution_complete,
+       "settled extraction runs are missing output attribution"},
+      {not checks.counts_complete, "extraction accounting contains invalid negative counts"},
+      {checks.settled and checks.evidence_complete and expected_attempts != actual_attempts,
+       "provider-attempt rows do not match settled batch evidence"},
+      {unmetered > 0, "provider failures have unknown token usage"}
+    ]
+    |> Enum.flat_map(fn
+      {true, reason} -> [reason]
+      {false, _reason} -> []
+    end)
   end
 
   defp consistent_batch_evidence?(runs) do
@@ -246,20 +259,38 @@ defmodule MemHouse.Operations.ExtractionEvidence do
   defp extraction_evidence(run),
     do: get_in(run.payload || %{}, ["extraction_evidence"])
 
-  defp add_reason(reasons, true, reason), do: reasons ++ [reason]
-  defp add_reason(reasons, false, _reason), do: reasons
+  defp output_attribution_complete?(runs) do
+    Enum.all?(runs, fn run ->
+      candidate_count = get_in(run.payload || %{}, ["extraction_evidence", "candidate_count"])
+      ids = Map.get(run.payload || %{}, "knowledge_item_ids")
+
+      is_list(ids) and non_negative_integer?(candidate_count) and
+        length(ids) == candidate_count and
+        Enum.all?(ids, &match?({:ok, _id}, Ecto.UUID.cast(&1)))
+    end)
+  end
+
+  defp extraction_knowledge_item_ids(runs) do
+    runs
+    |> Enum.flat_map(fn run -> Map.get(run.payload || %{}, "knowledge_item_ids", []) end)
+    |> Enum.filter(&match?({:ok, _id}, Ecto.UUID.cast(&1)))
+    |> Enum.uniq()
+  end
 
   defp usage_totals(usages) do
+    input_tokens = Enum.sum(Enum.map(usages, &non_negative(&1.input_tokens)))
+    output_tokens = Enum.sum(Enum.map(usages, &non_negative(&1.output_tokens)))
+    embedding_tokens = Enum.sum(Enum.map(usages, &non_negative(&1.embedding_tokens)))
+
     %{
       provider_attempts: length(usages),
       errors: Enum.count(usages, &(&1.status == "error")),
       unmetered_attempts: Enum.count(usages, &unmetered?/1),
-      input_tokens: Enum.sum(Enum.map(usages, & &1.input_tokens)),
-      output_tokens: Enum.sum(Enum.map(usages, & &1.output_tokens)),
-      embedding_tokens: Enum.sum(Enum.map(usages, & &1.embedding_tokens)),
-      total_tokens:
-        Enum.sum(Enum.map(usages, &(&1.input_tokens + &1.output_tokens + &1.embedding_tokens))),
-      duration_ms: Enum.sum(Enum.map(usages, & &1.duration_ms))
+      input_tokens: input_tokens,
+      output_tokens: output_tokens,
+      embedding_tokens: embedding_tokens,
+      total_tokens: input_tokens + output_tokens + embedding_tokens,
+      duration_ms: Enum.sum(Enum.map(usages, &non_negative(&1.duration_ms)))
     }
   end
 
@@ -303,7 +334,7 @@ defmodule MemHouse.Operations.ExtractionEvidence do
     do: %{count: 0, min: nil, p50: nil, p95: nil, max: nil}
 
   defp duration_distribution(usages) do
-    values = usages |> Enum.map(& &1.duration_ms) |> Enum.sort()
+    values = usages |> Enum.map(&non_negative(&1.duration_ms)) |> Enum.sort()
 
     %{
       count: length(values),
@@ -318,6 +349,19 @@ defmodule MemHouse.Operations.ExtractionEvidence do
     index = max(ceil(length(values) * fraction) - 1, 0)
     Enum.at(values, index)
   end
+
+  defp non_negative_counts?(runs, usages) do
+    Enum.all?(runs, &non_negative_integer?(&1.attempt_count)) and
+      Enum.all?(usages, fn usage ->
+        Enum.all?(
+          [usage.input_tokens, usage.output_tokens, usage.embedding_tokens, usage.duration_ms],
+          &non_negative_integer?/1
+        )
+      end)
+  end
+
+  defp non_negative(value) when is_integer(value) and value >= 0, do: value
+  defp non_negative(_value), do: 0
 
   defp occurred_boundary([], _side), do: nil
 

@@ -41,6 +41,7 @@ defmodule MemHouse.Application do
           {AshAuthentication.Supervisor, otp_app: :memhouse},
           MemHouse.Operations.BudgetCounter,
           MemHouse.Model.ProviderCircuit,
+          {Task.Supervisor, name: MemHouse.Model.ProviderTaskSupervisor},
           MemHouse.Model.Embedding.QueryCache,
           MemHouse.Retrieval.Diagnostics,
           # Queues run on the Postgres engine in every deployment mode, driven by

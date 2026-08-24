@@ -320,8 +320,16 @@ defmodule MemHouse.Memory do
             evidence = Map.put(evidence, :candidate_count, length(items))
 
             case Pipeline.complete_extraction_run(run, admission_identity, actor, evidence) do
-              {:ok, _run} ->
+              {:ok, completed_run} ->
                 knowledge = Enum.map(items, &insert_knowledge!(account.id, actor, message, &1))
+
+                {:ok, _run} =
+                  Pipeline.record_extraction_outputs(
+                    completed_run,
+                    Enum.map(knowledge, & &1["id"]),
+                    actor
+                  )
+
                 mark_message_extracted!(account.id, actor, message["id"])
                 {:ok, knowledge}
 

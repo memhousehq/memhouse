@@ -5,6 +5,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
 
   alias MemHouse.DataLayer
   alias MemHouse.Identity
+  alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
   alias MemHouse.Model.Gateway
   alias MemHouse.Model.ProviderCircuit
@@ -20,6 +21,19 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     def structured(config, messages, schema, opts) do
       send(Application.fetch_env!(:memhouse, :extraction_budget_test_pid), :provider_called)
       Deterministic.structured(config, messages, schema, opts)
+    end
+  end
+
+  defmodule SlowProvider do
+    def structured(config, messages, schema, opts) do
+      Process.sleep(5_000)
+      Deterministic.structured(config, messages, schema, opts)
+    end
+  end
+
+  defmodule KillingProvider do
+    def structured(_config, _messages, _schema, _opts) do
+      Process.exit(self(), :kill)
     end
   end
 
@@ -111,6 +125,53 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     payload = json_response(response, 200)
     refute inspect(payload) =~ "Avery prefers concise weekly release summaries."
     refute inspect(payload) =~ "other-corpus"
+  end
+
+  test "statement evidence includes only outputs attributed to selected extraction runs", %{
+    conn: conn,
+    actor: actor,
+    peer: peer,
+    token: token
+  } do
+    scope_root = "/bench/locomo/corpus-run-attribution"
+    message = ingest_and_extract!(actor, peer.key, "#{scope_root}/case-1", "run-attribution")
+
+    DataLayer.in_account_transaction(actor.account_id, fn ->
+      KnowledgeItem
+      |> Ash.Changeset.new()
+      |> Ash.Changeset.set_tenant(actor.account_id)
+      |> Ash.Changeset.for_create(:create_from_pipeline, %{
+        scope_id: message["scope_id"],
+        subject_scope_id: message["scope_id"],
+        statement: "This unrelated derived row must not enter extraction evidence.",
+        kind: "skill",
+        confidence: 1.0,
+        evidence_level: "indirect",
+        sensitivity: "internal",
+        state: "proposed",
+        target_level: "scope",
+        verification: "pending",
+        source_message_ids: [message["id"]],
+        extracting_model: "system:dream-time",
+        prompt_version: "dream-time-test",
+        pipeline_version: "f5-1"
+      })
+      |> Ash.create!(actor: pipeline_actor(actor))
+    end)
+
+    response =
+      conn
+      |> with_identity(token)
+      |> get("/api/v1/operations/extraction-evidence", %{"scope_root" => scope_root})
+
+    assert %{
+             "data" => %{
+               "statements" => %{
+                 "count" => 1,
+                 "distributions" => %{"kind" => %{"preference" => 1}}
+               }
+             }
+           } = json_response(response, 200)
   end
 
   test "fails closed for a missing scope and a non-admin caller", %{
@@ -429,6 +490,84 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
 
     assert {:ok, %{requests_reserved: 0}} =
              ExtractionBudget.register(actor, budget_attrs(scope_root, 1))
+  end
+
+  test "a hard-budget wall timeout does not open the provider circuit", %{actor: actor} do
+    previous_provider = Application.get_env(:memhouse, :model_provider)
+    previous_circuit = Application.fetch_env!(:memhouse, :ingest_provider_circuit)
+    Application.put_env(:memhouse, :model_provider, SlowProvider)
+
+    Application.put_env(
+      :memhouse,
+      :ingest_provider_circuit,
+      previous_circuit
+      |> Keyword.put(:enabled, true)
+      |> Keyword.put(:failure_threshold, 1)
+      |> Keyword.put(:open_ms, 60_000)
+    )
+
+    ProviderCircuit.reset()
+
+    on_exit(fn ->
+      ProviderCircuit.reset()
+      Application.put_env(:memhouse, :model_provider, previous_provider)
+      Application.put_env(:memhouse, :ingest_provider_circuit, previous_circuit)
+    end)
+
+    scope_root = "/bench/locomo/corpus-local-timeout"
+
+    attrs =
+      scope_root
+      |> budget_attrs(1)
+      |> Map.put(
+        "deadline_at",
+        DateTime.utc_now() |> DateTime.add(1, :second) |> DateTime.to_iso8601()
+      )
+
+    assert {:ok, _budget} = ExtractionBudget.register(actor, attrs)
+
+    context = %{
+      account_id: actor.account_id,
+      scope_path: "#{scope_root}/case-1",
+      actor: pipeline_actor(actor),
+      model_provider: SlowProvider
+    }
+
+    assert {:error, %ExtractionBudget.Exceeded{reason: "wall-time cap"}, 1} =
+             Gateway.structured_once_with_usage_and_attempt(
+               :ingest_extractor,
+               [%{role: "user", content: "bounded call"}],
+               %{"type" => "object"},
+               context,
+               task: :extraction
+             )
+
+    config = MemHouse.Model.role_config(:ingest_extractor, context)
+    assert %{state: :closed, consecutive_failures: 0} = ProviderCircuit.status(config, context)
+  end
+
+  test "an abnormally exiting timed provider cannot exit the gateway caller", %{actor: actor} do
+    previous_provider = Application.get_env(:memhouse, :model_provider)
+    Application.put_env(:memhouse, :model_provider, KillingProvider)
+
+    on_exit(fn -> Application.put_env(:memhouse, :model_provider, previous_provider) end)
+
+    scope_root = "/bench/locomo/corpus-provider-exit"
+    assert {:ok, _budget} = ExtractionBudget.register(actor, budget_attrs(scope_root, 1))
+
+    assert {:error, {:provider_exit, :killed}, 1} =
+             Gateway.structured_once_with_usage_and_attempt(
+               :ingest_extractor,
+               [%{role: "user", content: "provider exits"}],
+               %{"type" => "object"},
+               %{
+                 account_id: actor.account_id,
+                 scope_path: "#{scope_root}/case-1",
+                 actor: pipeline_actor(actor),
+                 model_provider: KillingProvider
+               },
+               task: :extraction
+             )
   end
 
   test "literal corpus scope matching and Account isolation preserve reservations", %{

@@ -107,13 +107,16 @@ defmodule MemHouse.Model.Gateway do
            context,
            opts,
            fn provider -> provider.structured(config, messages, schema, opts) end,
-           fn -> reserve_extraction_budget(config.role, context, messages, schema) end
+           fn -> reserve_extraction_budget(config.role, context, messages, schema, opts) end
          ) do
       {:ok, %Result{value: value, usage: usage}} ->
         {:ok, value, config, usage || %{}, 1}
 
       {:error, %ProviderCircuit.OpenError{} = error} ->
         {:error, error, 0}
+
+      {:error, %ExtractionBudget.Exceeded{reason: "wall-time cap"} = error} ->
+        {:error, error, 1}
 
       {:error, %ExtractionBudget.Exceeded{} = error} ->
         {:error, error, 0}
@@ -126,10 +129,23 @@ defmodule MemHouse.Model.Gateway do
     end
   end
 
-  defp reserve_extraction_budget(:ingest_extractor, context, messages, schema),
-    do: ExtractionBudget.reserve(context, messages, schema)
+  @budgeted_extraction_tasks [
+    :extraction,
+    :extraction_batch,
+    :compact_extraction,
+    :compact_extraction_batch
+  ]
 
-  defp reserve_extraction_budget(_role, _context, _messages, _schema), do: {:ok, nil}
+  defp reserve_extraction_budget(:ingest_extractor, context, messages, schema, opts) do
+    if Keyword.get(opts, :task) in @budgeted_extraction_tasks and
+         Map.get(context, :budgeted_extraction?, true) do
+      ExtractionBudget.reserve(context, messages, schema)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp reserve_extraction_budget(_role, _context, _messages, _schema, _opts), do: {:ok, nil}
 
   defp matching_prompt_version(config, opts) do
     case Keyword.fetch(opts, :prompt_version) do
@@ -397,10 +413,15 @@ defmodule MemHouse.Model.Gateway do
   end
 
   defp safe_call(call, provider, timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0 do
-    task = Task.async(fn -> safe_call(call, provider, nil) end)
+    task =
+      Task.Supervisor.async_nolink(
+        MemHouse.Model.ProviderTaskSupervisor,
+        fn -> safe_call(call, provider, nil) end
+      )
 
     case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
+      {:exit, reason} -> {:error, {:provider_exit, reason}}
       nil -> {:error, %ExtractionBudget.Exceeded{reason: "wall-time cap"}}
     end
   end

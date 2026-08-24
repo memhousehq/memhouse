@@ -26,6 +26,8 @@ There is **no generated OpenAPI description** in this release — see
 | `POST /api/v1/readiness` | any identity | Skill-readiness gap report |
 | `GET /api/v1/knowledge` | any identity | Governed knowledge query |
 | `GET /api/v1/operations/costs` | account-admin | Usage and estimated cost |
+| `GET /api/v1/operations/extraction-evidence` | account-admin | Content-safe evidence for one extraction corpus subtree |
+| `PUT /api/v1/operations/extraction-budget` | account-admin | Register or update a hard extraction-run budget |
 | `POST /api/v1/operations/reconcile` | account-admin | Enqueue an Account reconciliation sweep |
 | `POST /api/v1/operations/ingest/:message_id/requeue` | account-admin | Explicitly requeue a repairable or terminal extraction anchor |
 | `POST /api/v1/operations/dream` | account-admin | Enqueue an immediate Account dream-time pass |
@@ -610,6 +612,108 @@ ingested message over the full retained ledger. Call counts include failed
 extractor calls. An unmetered failure has unknown token usage and cost, so it
 contributes only to `calls_per_message`. `terminal_extraction_failures` counts
 the Account's current permanent terminal extraction anchors.
+
+---
+
+## `GET /api/v1/operations/extraction-evidence`
+
+Account-admin only; any other role gets 403. `scope_root` is a required query
+parameter naming an exact readable scope. A missing or unreadable root gets the
+same opaque 404 response.
+
+The `data` object is a content-safe export for extraction runs in the root and
+its descendants. It contains aggregate run statuses, attempts, batch evidence,
+token and duration totals, model/prompt/pipeline provenance, and statement
+distributions. Statement rows are included only when their ids were recorded
+as outputs of the selected extraction runs; unrelated knowledge in the same
+subtree is excluded. No statement text, message id, prompt, completion,
+credential, or free-form provider metadata is returned.
+
+```json
+{
+  "data": {
+    "schema_version": "memhouse-extraction-evidence-1",
+    "scope_root": "/bench/locomo/corpus-a",
+    "scopes": {"count": 2},
+    "extraction": {
+      "anchors": 1,
+      "status_counts": {"completed": 1},
+      "job_attempts": 1,
+      "terminal_anchors": 0,
+      "candidate_yield": {"zero": 0, "one": 1, "multiple": 0}
+    },
+    "usage": {
+      "provider_attempts": 1,
+      "input_tokens": 42,
+      "output_tokens": 17,
+      "embedding_tokens": 0,
+      "total_tokens": 59,
+      "duration_ms": 8
+    },
+    "statements": {"count": 1, "distributions": {"kind": {"preference": 1}}},
+    "accounting": {
+      "complete": true,
+      "settled": true,
+      "requests_complete": true,
+      "tokens_complete": true,
+      "cost_complete": true,
+      "reasons": []
+    }
+  }
+}
+```
+
+Treat `accounting.complete: false` as a failed evidence export. Its fixed,
+content-safe `reasons` identify missing or inconsistent run, attribution,
+request, or token accounting.
+
+---
+
+## `PUT /api/v1/operations/extraction-budget`
+
+Account-admin only. Registers or updates the hard provider-admission budget for
+one corpus root. Every key is required; unknown keys, invalid roots, non-positive
+caps, negative rates, and expired deadlines return 422. Updating caps preserves
+the durable reservation counters.
+
+```json
+{
+  "scope_root": "/bench/locomo/corpus-a",
+  "request_cap": 100,
+  "token_cap": 500000,
+  "usd_micros_cap": 2000000,
+  "deadline_at": "2026-08-25T12:00:00Z",
+  "input_usd_micros_per_million": 50000,
+  "output_usd_micros_per_million": 250000
+}
+```
+
+A successful response is 200 and returns the accepted limits and current
+reservations, plus the exact extraction identity that the budget governs:
+
+```json
+{
+  "data": {
+    "scope_root": "/bench/locomo/corpus-a",
+    "request_cap": 100,
+    "token_cap": 500000,
+    "usd_micros_cap": 2000000,
+    "deadline_at": "2026-08-25T12:00:00Z",
+    "input_usd_micros_per_million": 50000,
+    "output_usd_micros_per_million": 250000,
+    "requests_reserved": 0,
+    "tokens_reserved": 0,
+    "usd_micros_reserved": 0,
+    "extraction_identity": {
+      "build_sha": "git-commit-sha",
+      "prompt_version": "extract-14",
+      "pipeline_version": "f5-1",
+      "batching_enabled": false,
+      "batching_identity": "utf8-bytes-v1:target=4096:context=131072:output=8192:margin=2048"
+    }
+  }
+}
+```
 
 ---
 

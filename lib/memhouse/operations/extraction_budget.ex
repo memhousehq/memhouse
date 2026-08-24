@@ -129,13 +129,13 @@ defmodule MemHouse.Operations.ExtractionBudget do
         FROM selected
         WHERE guard.account_id = selected.account_id
           AND guard.scope_root = selected.scope_root
-          AND now() < selected.deadline_at
+          AND clock_timestamp() < selected.deadline_at
           AND guard.requests_reserved + 1 <= guard.request_cap
           AND guard.tokens_reserved + $3 + $4 <= guard.token_cap
           AND guard.usd_micros_reserved + selected.usd <= guard.usd_micros_cap
         RETURNING GREATEST(
           1,
-          FLOOR(EXTRACT(EPOCH FROM (selected.deadline_at - now())) * 1000)
+          FLOOR(EXTRACT(EPOCH FROM (selected.deadline_at - clock_timestamp())) * 1000)
         )::bigint
         """,
         [Ecto.UUID.dump!(account_id), scope_path, input_tokens, output_tokens]
