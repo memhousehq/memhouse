@@ -3841,6 +3841,109 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
            end)
   end
 
+  test "an equal-generation legacy worker cannot clear lifecycle-dirty projection state" do
+    seeded =
+      seed_active!(
+        "f7-projection-validity-dirty-race",
+        "/f7/projection-validity-dirty-race",
+        "Avery owns the release checklist."
+      )
+
+    assert {:ok, _result} =
+             MemHouse.Retrieval.Rebuild.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    projection =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        Projection
+        |> Ash.Query.filter(
+          scope_id == ^seeded.scope.id and dirty == false and validity_version == version
+        )
+        |> Ash.Query.sort(kind: :asc, id: :asc)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+      end)
+
+    assert projection
+    next_version = projection.version + 1
+
+    current =
+      projection
+      |> Ash.Changeset.for_update(:refresh_from_pipeline, %{
+        version: next_version,
+        validity_version: next_version,
+        content: %{"legacy" => "dirty-only old worker"},
+        dirty: false
+      })
+      |> Ash.Changeset.set_tenant(seeded.account.id)
+      |> Ash.update!(actor: pipeline_actor(seeded.actor))
+
+    # Lifecycle invalidation changes only dirty state. The database invalidates the content
+    # generation at that boundary, so an old conflict update that merely clears `dirty` cannot
+    # restore visibility with the equal version it computed earlier.
+    current
+    |> Ash.Changeset.for_update(:refresh_from_pipeline, %{dirty: true})
+    |> Ash.Changeset.set_tenant(seeded.account.id)
+    |> Ash.update!(actor: pipeline_actor(seeded.actor))
+
+    Ecto.Adapters.SQL.query!(
+      MemHouse.Repo,
+      "UPDATE projections SET dirty = false, updated_at = clock_timestamp() " <>
+        "WHERE account_id = $1 AND id = $2",
+      [Ecto.UUID.dump!(seeded.account.id), Ecto.UUID.dump!(projection.id)]
+    )
+
+    invalidated =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        Projection
+        |> Ash.Query.filter(id == ^projection.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+      end)
+
+    refute invalidated.dirty
+    assert invalidated.version == next_version
+    assert invalidated.validity_version == 0
+
+    context =
+      Memory.get_context(
+        %{"scope_path" => seeded.scope.path, "budget_chars" => 20_000},
+        seeded.actor
+      )
+
+    refute inspect(context) =~ "dirty-only old worker"
+
+    DataLayer.with_actor(seeded.actor, fn account, _actor ->
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE pipeline_runs SET status = 'completed' " <>
+          "WHERE account_id = $1 AND kind = 'projection_refresh'",
+        [Ecto.UUID.dump!(account.id)]
+      )
+    end)
+
+    assert {:ok, %{legacy_projection_scopes: 1}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    completed =
+      seeded
+      |> pending_projection_refresh!()
+      |> Ash.Changeset.for_update(:execute, %{})
+      |> Ash.Changeset.set_tenant(seeded.account.id)
+      |> Ash.update!(actor: pipeline_actor(seeded.actor))
+
+    assert completed.status == "completed"
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      rebuilt =
+        Projection
+        |> Ash.Query.filter(id == ^projection.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+
+      assert rebuilt.validity_version == rebuilt.version
+    end)
+  end
+
   test "mention coverage reports a partially indexed scope" do
     first = seed_active!("f7-partial-mentions", "/f7/partial", "Avery owns the checklist.")
 

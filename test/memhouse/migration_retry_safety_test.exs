@@ -39,6 +39,8 @@ defmodule MemHouse.MigrationRetrySafetyTest do
     projection = read_migration("20260824125256_issue_302_projection_expiry_bound.exs")
     assert projection =~ "BEFORE UPDATE ON projections"
     assert projection =~ "NEW.validity_version IS NOT DISTINCT FROM OLD.validity_version"
+    assert projection =~ "NEW.valid_until IS DISTINCT FROM OLD.valid_until"
+    assert projection =~ "NEW.dirty IS DISTINCT FROM OLD.dirty"
     assert projection =~ "NEW.validity_version := 0"
   end
 

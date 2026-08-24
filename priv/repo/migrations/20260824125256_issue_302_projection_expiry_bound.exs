@@ -23,7 +23,9 @@ defmodule MemHouse.Repo.Migrations.Issue302ProjectionExpiryBound do
          AND (NEW.version IS DISTINCT FROM OLD.version
               OR NEW.content IS DISTINCT FROM OLD.content
               OR NEW.source_ids IS DISTINCT FROM OLD.source_ids
-              OR NEW.sensitivity IS DISTINCT FROM OLD.sensitivity) THEN
+              OR NEW.sensitivity IS DISTINCT FROM OLD.sensitivity
+              OR NEW.valid_until IS DISTINCT FROM OLD.valid_until
+              OR NEW.dirty IS DISTINCT FROM OLD.dirty) THEN
         NEW.validity_version := 0;
       END IF;
 
