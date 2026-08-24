@@ -97,6 +97,23 @@ defmodule MemHouse.F7RetrievalEntityContextTest.Provider do
   defp record(call), do: Agent.update(__MODULE__, &[call | &1])
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.Clock do
+  @moduledoc false
+
+  @behaviour MemHouse.Clock
+
+  @key {__MODULE__, :utc_now}
+
+  def put(now), do: :persistent_term.put(@key, now)
+  def erase, do: :persistent_term.erase(@key)
+
+  @impl true
+  def utc_now, do: :persistent_term.get(@key)
+
+  @impl true
+  def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest.VanishingProvider do
   @moduledoc """
   Failure-injection provider for rebuild transaction boundaries.
@@ -409,7 +426,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
   alias MemHouse.Actor
   alias MemHouse.Clock
-  alias MemHouse.Context.Builder
+  alias MemHouse.Context.{Builder, Cache}
   alias MemHouse.DataLayer
   alias MemHouse.Documents
   alias MemHouse.Governance.Engine, as: GovernanceEngine
@@ -1634,7 +1651,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       GovernanceEngine.transition!(
         seeded.knowledge,
         pipeline_actor(actor),
-        %{state: "active", expires_at: DateTime.add(DateTime.utc_now(), -1, :second)},
+        %{state: "active", expires_at: DateTime.add(DateTime.utc_now(), -1, :hour)},
         reason: "f7_test_expire",
         channel: "pipeline"
       )
@@ -2705,6 +2722,103 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end)
   end
 
+  test "cached projections disappear when their sources expire before the lifecycle sweep" do
+    clock = MemHouse.F7RetrievalEntityContextTest.Clock
+    system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
+    now = ~U[2026-08-24 12:00:00.000000Z]
+
+    clock.put(now)
+    Application.put_env(:memhouse, :clock, clock)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :clock, system_clock)
+      clock.erase()
+    end)
+
+    account_key = "f7-cached-projection-expiry"
+    scope_path = "/f7/cached-projection-expiry"
+
+    first =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery owns the release checklist.",
+        "cached-expiry-session"
+      )
+
+    second =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery reviews the release checklist each Friday.",
+        "cached-expiry-session"
+      )
+
+    mention_entity!(account_key, "Avery", [first, second])
+    expires_at = DateTime.add(now, 60, :second)
+
+    Enum.each([first, second], fn seeded ->
+      DataLayer.with_actor(seeded.actor, fn _account, actor ->
+        GovernanceEngine.transition!(
+          seeded.knowledge,
+          pipeline_actor(actor),
+          %{state: "active", expires_at: expires_at},
+          reason: "f7_test_future_expiry",
+          channel: "pipeline"
+        )
+      end)
+    end)
+
+    assert {:ok, %{entity_cards: 1}} =
+             Builder.refresh_scope(first.account.id, first.scope.id)
+
+    MemHouse.F7RetrievalEntityContextTest.Provider.reset!()
+
+    attrs = %{
+      "scope_path" => scope_path,
+      "session_id" => "cached-expiry-session",
+      "query" => "release checklist",
+      "budget_chars" => 20_000
+    }
+
+    warm = Memory.get_context(attrs, first.actor)
+    assert warm["fast_fallback"] == false
+    assert warm["scope_cards"] != []
+    assert warm["peer_profile"] != []
+    assert warm["entity_cards"] != []
+    assert warm["session_summary"]
+
+    clock.put(DateTime.add(expires_at, 1, :second))
+
+    DataLayer.with_actor(first.actor, fn account, actor ->
+      items =
+        KnowledgeItem
+        |> Ash.Query.filter(id in ^[first.knowledge.id, second.knowledge.id])
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert Enum.all?(items, &(&1.state == "active"))
+    end)
+
+    assert_hidden = fn context ->
+      assert context["scope_cards"] == []
+      assert context["peer_profile"] == []
+      assert context["entity_cards"] == []
+      assert context["session_summary"] == nil
+      assert context["knowledge"] == []
+      assert context["projection_cache_hit"] == false
+      assert context["fast_fallback"] == true
+    end
+
+    # The first read proves the warm ETS entry is bounded by source expiry.
+    assert_hidden.(Memory.get_context(attrs, first.actor))
+
+    # The second read proves the clean database row is rejected by the same boundary.
+    Cache.invalidate_scope(first.account.id, first.scope.id)
+    assert_hidden.(Memory.get_context(attrs, first.actor))
+    assert Enum.all?(MemHouse.F7RetrievalEntityContextTest.Provider.calls(), &(&1 == :embed))
+  end
+
   test "entity cards name their scope-local referent and drop the summary at two sources" do
     first =
       seed_active!(
@@ -3164,7 +3278,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
                 }
               ]
             },
-            source_ids: [Ash.UUID.generate(), Ash.UUID.generate()]
+            source_ids: [Ash.UUID.generate(), Ash.UUID.generate()],
+            validity_version: 1
           },
           account.id,
           pipeline
@@ -3887,7 +4002,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       GovernanceEngine.transition!(
         seeded.knowledge,
         pipeline_actor(actor),
-        %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :second)},
+        %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :hour)},
         reason: "f7_test_expire_before_sweep",
         channel: "pipeline"
       )

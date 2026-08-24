@@ -921,7 +921,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     Engine.transition!(
       knowledge,
       pipeline_actor(actor),
-      %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :second)},
+      %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :hour)},
       reason: "f4_test_due",
       channel: "test"
     )

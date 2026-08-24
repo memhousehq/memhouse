@@ -150,7 +150,8 @@ defmodule MemHouse.Context.Builder do
                scope.id,
                actor
              ),
-           source_ids: Enum.map(session_knowledge, & &1.id)
+           source_ids: Enum.map(session_knowledge, & &1.id),
+           valid_until: earliest_expiry(session_knowledge)
          }}
       end)
 
@@ -254,7 +255,8 @@ defmodule MemHouse.Context.Builder do
               scope_id: scope.id,
               kind: "scope_card",
               content: projections.scope,
-              source_ids: Enum.map(scope_knowledge, & &1.id)
+              source_ids: Enum.map(scope_knowledge, & &1.id),
+              valid_until: earliest_expiry(scope_knowledge)
             }
           )
 
@@ -272,7 +274,8 @@ defmodule MemHouse.Context.Builder do
                 peer_id: peer_id,
                 kind: "peer_profile",
                 content: Map.fetch!(projections.peers, peer_id),
-                source_ids: Enum.map(items, & &1.id)
+                source_ids: Enum.map(items, & &1.id),
+                valid_until: earliest_expiry(items)
               }
             )
           end)
@@ -292,7 +295,8 @@ defmodule MemHouse.Context.Builder do
                 session_id: session.id,
                 kind: "session_summary",
                 content: summary.content,
-                source_ids: summary.source_ids
+                source_ids: summary.source_ids,
+                valid_until: summary.valid_until
               }
             )
           end)
@@ -418,7 +422,8 @@ defmodule MemHouse.Context.Builder do
         "sensitivity" => sensitivity,
         "pinned_facts" => pinned_facts(cluster.items, @entity_card_pinned_facts)
       },
-      source_ids: Enum.map(cluster.items, & &1.id)
+      source_ids: Enum.map(cluster.items, & &1.id),
+      valid_until: earliest_expiry(cluster.items)
     }
   end
 
@@ -660,6 +665,7 @@ defmodule MemHouse.Context.Builder do
         version: (existing && existing.version + 1) || 1,
         content: content,
         source_ids: source_ids,
+        validity_version: 1,
         dirty: false,
         watermark: Clock.utc_now(),
         delta_count: delta_count
@@ -679,6 +685,13 @@ defmodule MemHouse.Context.Builder do
       _key, _old_value, new_value ->
         new_value
     end)
+  end
+
+  defp earliest_expiry(items) do
+    items
+    |> Enum.map(& &1.expires_at)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min_by(&DateTime.to_unix(&1, :microsecond), fn -> nil end)
   end
 
   # Background ranking has no deadline and stays serial outside the read and write transactions.

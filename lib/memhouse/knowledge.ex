@@ -749,6 +749,8 @@ defmodule MemHouse.Knowledge.Projection do
         :version,
         :content,
         :source_ids,
+        :valid_until,
+        :validity_version,
         :dirty,
         :watermark,
         :delta_count
@@ -762,6 +764,8 @@ defmodule MemHouse.Knowledge.Projection do
         :sensitivity,
         :content,
         :source_ids,
+        :valid_until,
+        :validity_version,
         :dirty,
         :watermark,
         :delta_count,
@@ -772,7 +776,17 @@ defmodule MemHouse.Knowledge.Projection do
     # The "mark dirty" path. It accepts the content fields as well, but every caller in this
     # codebase only flips the flag; full rewrites go through the upsert above.
     update :refresh_from_pipeline do
-      accept [:sensitivity, :version, :content, :source_ids, :dirty, :watermark, :delta_count]
+      accept [
+        :sensitivity,
+        :version,
+        :content,
+        :source_ids,
+        :valid_until,
+        :validity_version,
+        :dirty,
+        :watermark,
+        :delta_count
+      ]
     end
   end
 
@@ -825,6 +839,14 @@ defmodule MemHouse.Knowledge.Projection do
     # Statement ids the content was built from. Incremental merges keep only entries whose
     # source id is still present, so retracted statements drop out of the cache.
     attribute :source_ids, {:array, :uuid}, allow_nil?: false, default: []
+
+    # Earliest expiry among the complete source set. Context rejects the whole projection at this
+    # boundary because summaries cannot be safely edited after one of their sources disappears.
+    attribute :valid_until, :utc_datetime_usec
+
+    # Existing rows predate the validity coordinate and must fail closed until rebuilt. A rebuild
+    # writes the current version even when every source is non-expiring and `valid_until` is nil.
+    attribute :validity_version, :integer, allow_nil?: false, default: 0
 
     # True once an underlying statement changed and before the rebuild ran. Readers must not
     # serve a dirty projection.

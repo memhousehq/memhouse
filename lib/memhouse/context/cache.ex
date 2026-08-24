@@ -22,25 +22,43 @@ defmodule MemHouse.Context.Cache do
   def start_link(_opts), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
   @doc """
-  Looks up one cached projection value.
+  Looks up one cached projection value at a captured decision time.
 
-  Returns `{:ok, projection}` or `:error` for an Account/scope/projection key.
+  Returns `{:ok, projection}` or `:error` for an Account/scope/projection key. An entry whose
+  earliest source expiry is not later than `now` is deleted and treated as a miss.
   """
-  def fetch(key) do
+  def fetch(key, now) do
     case :ets.lookup(@table, key) do
-      [{^key, value}] -> {:ok, value}
-      [] -> :error
+      [{^key, nil, value}] ->
+        {:ok, value}
+
+      [{^key, %DateTime{} = valid_until, value}] ->
+        if DateTime.compare(valid_until, now) == :gt do
+          {:ok, value}
+        else
+          :ets.delete(@table, key)
+          :error
+        end
+
+      # A hot upgrade can leave the former two-tuple shape in ETS. It carries no validity bound,
+      # so discard it rather than serving content whose sources may already have expired.
+      [{^key, _legacy_value}] ->
+        :ets.delete(@table, key)
+        :error
+
+      [] ->
+        :error
     end
   end
 
   @doc """
   Stores one clean projection value under the `{account id, scope id, projection cache key}`
-  triple.
+  triple, together with the earliest expiry across its complete source set.
 
   Callers must reject dirty projections before calling. Returns `:ok`.
   """
-  def put(key, value) do
-    true = :ets.insert(@table, {key, value})
+  def put(key, value, valid_until) do
+    true = :ets.insert(@table, {key, valid_until, value})
     :ok
   end
 
@@ -50,7 +68,7 @@ defmodule MemHouse.Context.Cache do
   Deletes local entries, broadcasts to other nodes, and returns `:ok`.
   """
   def invalidate_scope(account_id, scope_id) do
-    :ets.match_delete(@table, {{account_id, scope_id, :_}, :_})
+    :ets.match_delete(@table, {{account_id, scope_id, :_}, :_, :_})
 
     Phoenix.PubSub.broadcast(
       MemHouse.PubSub,
@@ -72,7 +90,7 @@ defmodule MemHouse.Context.Cache do
   @impl true
   def handle_info({:invalidate, account_id, scope_id}, state) do
     # The origin also receives this broadcast; repeated deletion is safe.
-    :ets.match_delete(@table, {{account_id, scope_id, :_}, :_})
+    :ets.match_delete(@table, {{account_id, scope_id, :_}, :_, :_})
     {:noreply, state}
   end
 end

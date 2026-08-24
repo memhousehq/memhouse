@@ -184,7 +184,7 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
         Engine.transition!(
           expired.knowledge,
           actor,
-          %{state: "active", expires_at: DateTime.add(MemHouse.Clock.utc_now(), -1, :second)},
+          %{state: "active", expires_at: DateTime.add(MemHouse.Clock.utc_now(), -1, :hour)},
           reason: "dream_time_test_expire_before_sweep",
           channel: "pipeline"
         )
