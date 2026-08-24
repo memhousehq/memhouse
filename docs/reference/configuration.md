@@ -230,6 +230,10 @@ ignored in favor of this runtime default, because the local classifier runtime
 no longer exists. New or updated Ortex reranker bindings are rejected. Operators
 may publish a higher-version OpenRouter role row when an Account needs an
 explicit override; the old row remains as historical configuration evidence.
+Deployments must also remove legacy `MEMHOUSE_RERANKER_PROVIDER=ortex` environment
+overrides (and the associated local model variables) or replace them with the
+OpenRouter values above. Startup rejects the removed provider with an actionable
+error instead of booting a permanently degraded thorough profile.
 
 | Variable | Example | Meaning |
 | --- | --- | --- |

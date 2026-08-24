@@ -227,6 +227,14 @@ defmodule MemHouse.RuntimeConfig do
         end
       end
     end)
+
+    reranker = roles |> Keyword.fetch!(:reranker) |> Map.new()
+
+    if Map.get(reranker, :provider) == "ortex" do
+      raise "MEMHOUSE_RERANKER_PROVIDER=ortex was removed; unset legacy reranker overrides " <>
+              "or set MEMHOUSE_RERANKER_PROVIDER=openrouter and " <>
+              "MEMHOUSE_RERANKER_MODEL=voyageai/rerank-2.5"
+    end
   end
 
   defp validate_ingest_provider_circuit! do
