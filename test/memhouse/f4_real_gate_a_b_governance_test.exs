@@ -302,11 +302,13 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     # The same state matrix is read through the product's real search and /ask
     # entry points. This is deliberately separate from the pure visibility
     # predicate test: a query that forgets the lifecycle filter must fail here.
+    actor = Identity.refresh_actor(actor)
+
     other_reader =
       Identity.provision_agent(actor, %{
         key: "edge-matrix-reader",
         name: "Edge matrix reader",
-        scope_path: "/",
+        scope_path: "/governance/edge-matrix",
         role: "reader"
       })
 
@@ -375,8 +377,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
         "account_id" => actor.account_id,
         "scope_path" => "/governance/edge-matrix",
         "query" => query,
-        "strategies" => ["lexical"],
-        "deadline" => "disabled"
+        "profile" => "balanced"
       }
 
       for reader <- [actor, other_actor] do
@@ -392,7 +393,9 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
           )
 
         assert found? == expected?,
-               "unexpected search visibility for #{state} and reader #{reader.peer_id}"
+               "unexpected search visibility for #{state} and reader #{reader.peer_id}; " <>
+                 "candidates=#{inspect(Enum.map(search["candidates"], & &1["id"]))} " <>
+                 "outcomes=#{inspect(search["outcomes"])}"
       end
 
       subject_expected? =
@@ -404,8 +407,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
             "account_id" => actor.account_id,
             "scope_path" => "/governance/edge-matrix",
             "question" => "What does the lifecycle fixture say about #{query}?",
-            "strategies" => ["lexical"],
-            "deadline" => "disabled"
+            "profile" => "balanced"
           },
           actor
         )
