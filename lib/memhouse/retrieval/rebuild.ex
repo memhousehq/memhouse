@@ -9,6 +9,7 @@ defmodule MemHouse.Retrieval.Rebuild do
   build plausible projections from stale indexes.
   """
 
+  alias MemHouse.DataLayer
   alias MemHouse.Retrieval.Coverage
   alias MemHouse.Retrieval.MaintenancePlan
 
@@ -104,10 +105,14 @@ defmodule MemHouse.Retrieval.Rebuild do
 
   defp skipped, do: %{status: "skipped", reason_class: "profile_disabled"}
 
-  # Measured after the write phase, so the event describes what a reader would
-  # now find rather than what this run intended to write. Ids and counts only.
+  # Measured after the write phase in its own short Account-scoped transaction,
+  # so the event describes what a reader would now find rather than what this
+  # run intended to write. Ids and counts only.
   defp emit_coverage(account_id, scope_id, index, recall_documents) do
-    coverage = Coverage.scope(account_id, scope_id, nil, true)
+    coverage =
+      DataLayer.in_account_transaction(account_id, fn ->
+        Coverage.scope(account_id, scope_id, nil, true)
+      end)
 
     :telemetry.execute(
       [:memhouse, :retrieval, :projection_refresh],
