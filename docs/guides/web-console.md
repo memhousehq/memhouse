@@ -172,15 +172,21 @@ Two rules narrow the console beyond the ordinary scope filtering.
 **Provisional statements are visible only to their subject**, including against
 account admins. Retrieval applies the same rule.
 
-**Only curators and account admins see every state.** Members and readers see
-`active`, `needs_revalidation`, `expired`, and `superseded`, but not
-`proposed`, `held`, `rejected`, `contested`, or `redacted`.
+**Curators and account admins see every state except another subject's
+`provisional` statements.** Members and readers see `active`,
+`needs_revalidation`, `expired`, and `superseded`, but not
+`proposed`, `held`, `rejected`, `contested`, `redacted`, `stale`, or
+`retracted`.
 
 **You always see statements about yourself**, regardless of state or scope, so
 you can contest, redact, or erase them.
 
 Two people looking at the same Account will therefore see different totals.
 That is the scope tree working, not an inconsistency.
+
+Operators may set `MEMHOUSE_LIFECYCLE_DOCS_URL` to an internally reachable
+copy of the lifecycle contract. When unset, the legend remains readable and
+renders no external documentation link.
 
 ## Browse or find
 
@@ -218,7 +224,11 @@ contained scopes come with it.
 
 **What these labels mean** expands a legend for every lifecycle state and
 sensitivity level you can be shown. Each badge carries a shape as well as a
-colour, so the states remain distinguishable without relying on colour.
+colour, so the states remain distinguishable without relying on colour. A
+**Complete lifecycle contract** link appears in the legend when the deployment
+sets `MEMHOUSE_LIFECYCLE_DOCS_URL`; it opens the state contract, including each
+state's entry, exits, queue dependency, visibility, retrieval, and readiness
+behavior. Individual lifecycle badges do not link to that contract.
 
 Sort by **Confidence** or **Recorded** from the column headers, and set 25, 50,
 or 100 rows per page beneath the list. Statement text longer than the column

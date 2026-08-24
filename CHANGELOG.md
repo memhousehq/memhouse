@@ -11,6 +11,14 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Knowledge lifecycle writes now use one executable 12-state transition graph.
+  Undocumented edges fail before state, lifecycle, audit, or derived work can
+  commit. State names and stored rows remain compatible. Console filters,
+  meanings, API tool documentation, projections, readiness, and tests consume
+  the same contract. Evaluation reports advance to `f11-3` and include all-state
+  final distributions, transition reasons, unexercised states, and balanced
+  lifecycle/audit counts; historical `f11-1` and `f11-2` reports remain readable.
+
 - Isolation scoring now uses the `source-membership-v2` contract: a zero-leak
   result passes only when at least one retrieved candidate identity was
   checked. Matched experiment fixtures must record the content-free candidate

@@ -8,8 +8,8 @@ Blocking automation and reproducible reports cover the frozen API baseline
 through portability without changing the 38-Resource boundary. This implements
 `AD-EVAL-1` through `AD-EVAL-5`, `NFR-1`,
 `NFR-11`, and the evaluation framework's `EV-*` contracts. Retrieval remains
-`f7-1`; evaluation evidence is versioned `f11-1`, and the application advances
-to semantic version `0.2.0`.
+`f7-1`; current evaluation evidence is versioned `f11-3`. The `f11-1` and
+`f11-2` schemas are historical readable formats only.
 
 ## Deterministic gate
 
@@ -43,6 +43,12 @@ and BEAM source shapes. Every input carries a SHA-256. `Runner` records the
 application version, date, dataset id/hash/split, profile and exact version,
 strategy override, deadline setting, five model-role identities, judge method,
 limits, and per-question evidence.
+
+Current runner reports use `f11-3`. They retain `f11-2` one-time case
+accounting and add ADR 0022 lifecycle evidence: every final state including
+zeroes, each transition/reason count, unexercised states, and equal
+lifecycle-event and lifecycle-audit totals. Historical `f11-1` and `f11-2`
+reports remain readable and are not rewritten.
 
 An opt-in dream-time evaluation runs the Account reasoning pass after ingest,
 then replays it. Its report contains only durable counts: terminal pass states,

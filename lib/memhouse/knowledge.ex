@@ -170,10 +170,8 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       # transaction, so a state change can never commit without its evidence.
       change MemHouse.Knowledge.Changes.RecordTransition
 
-      validate attribute_in(
-                 :state,
-                 ~w(proposed active provisional held needs_revalidation superseded expired rejected contested redacted stale retracted)
-               )
+      validate attribute_in(:state, MemHouse.Knowledge.Lifecycle.states())
+      validate MemHouse.Knowledge.Validations.AllowedLifecycleTransition
 
       validate attribute_in(:sensitivity, ~w(public internal personal restricted))
       validate attribute_in(:target_level, ~w(peer scope account))

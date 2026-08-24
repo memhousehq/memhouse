@@ -758,8 +758,7 @@ defmodule MemHouseWeb.ConsoleLive.Tools do
         <option value="">active plus your provisional statements</option>
         <option
           :for={
-            state <-
-              ~w(active provisional proposed held needs_revalidation expired superseded rejected contested redacted retracted)
+            state <- MemHouse.Knowledge.Lifecycle.states()
           }
           value={state}
         >

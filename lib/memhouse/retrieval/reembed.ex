@@ -11,7 +11,7 @@ defmodule MemHouse.Retrieval.Reembed do
 
   alias MemHouse.DataLayer
   alias MemHouse.Documents.DocumentChunk
-  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.{KnowledgeItem, Lifecycle}
   alias MemHouse.Model.Config
   alias MemHouse.Model.Embedding
   alias MemHouse.Operations.PipelineRun
@@ -137,11 +137,15 @@ defmodule MemHouse.Retrieval.Reembed do
     end)
   end
 
-  defp knowledge_filter(nil),
-    do: Ash.Expr.expr(state in ["active", "provisional"] and is_nil(deleted_at))
+  defp knowledge_filter(nil) do
+    retrievable_states = Lifecycle.retrievable_states()
+    Ash.Expr.expr(state in ^retrievable_states and is_nil(deleted_at))
+  end
 
-  defp knowledge_filter(cursor),
-    do: Ash.Expr.expr(state in ["active", "provisional"] and is_nil(deleted_at) and id > ^cursor)
+  defp knowledge_filter(cursor) do
+    retrievable_states = Lifecycle.retrievable_states()
+    Ash.Expr.expr(state in ^retrievable_states and is_nil(deleted_at) and id > ^cursor)
+  end
 
   defp chunk_filter(nil), do: Ash.Expr.expr(status == "active")
   defp chunk_filter(cursor), do: Ash.Expr.expr(status == "active" and id > ^cursor)
