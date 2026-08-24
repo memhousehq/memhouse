@@ -119,6 +119,8 @@ snapshot together before starting old code, as described in
 
 Physical removal of a derived component requires a matched marginal ablation,
 compatibility-window evidence for external PostgreSQL and packaged pg0,
-rollback rehearsal, and explicit human approval. Fixture-only evidence may
-enable a canary but cannot authorize physical deletion. No component in this
-release qualified for physical deletion.
+rollback rehearsal, and explicit human approval. Fixture-only evidence cannot
+enable a canary by itself or authorize physical deletion. A canary also
+requires the deterministic matched experiment, the full external-PostgreSQL
+gate, and the packaged-pg0 CI lane. No component in this release qualified for
+physical deletion.
