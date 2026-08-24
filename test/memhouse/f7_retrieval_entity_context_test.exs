@@ -3654,21 +3654,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     assert projection_refresh_count(seeded.account.id) == before + 1
 
-    upgrade_key =
-      MemHouse.Pipeline.Idempotency.projection_refresh(
-        seeded.scope.id,
-        "projection-validity-v1"
-      )
-
-    upgrade_run =
-      DataLayer.with_actor(seeded.actor, fn account, actor ->
-        MemHouse.Operations.PipelineRun
-        |> Ash.Query.filter(idempotency_key == ^upgrade_key)
-        |> Ash.Query.set_tenant(account.id)
-        |> Ash.read_one!(actor: pipeline_actor(actor))
-      end)
-
-    assert upgrade_run
+    upgrade_run = pending_projection_refresh!(seeded)
 
     completed =
       upgrade_run
@@ -3678,23 +3664,54 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     assert completed.status == "completed"
 
-    DataLayer.with_actor(seeded.actor, fn account, actor ->
-      legacy_profiles =
-        Projection
-        |> Ash.Query.filter(
-          scope_id == ^seeded.scope.id and kind == "peer_profile" and validity_version == 0
-        )
-        |> Ash.Query.set_tenant(account.id)
-        |> Ash.read!(actor: pipeline_actor(actor))
+    legacy_profile =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        legacy_profiles =
+          Projection
+          |> Ash.Query.filter(
+            scope_id == ^seeded.scope.id and kind == "peer_profile" and validity_version == 0
+          )
+          |> Ash.Query.set_tenant(account.id)
+          |> Ash.read!(actor: pipeline_actor(actor))
 
-      assert legacy_profiles != []
-      assert Enum.all?(legacy_profiles, & &1.dirty)
-    end)
+        assert legacy_profiles != []
+        assert Enum.all?(legacy_profiles, & &1.dirty)
+
+        hd(legacy_profiles)
+      end)
+
+    # A late old worker can rewrite the same cache key after the first upgrade finishes. Its
+    # changed update time is a new unsafe generation and must schedule another actual worker,
+    # rather than colliding with the completed first upgrade run.
+    legacy_profile
+    |> Ash.Changeset.for_update(:refresh_from_pipeline, %{
+      version: legacy_profile.version + 1,
+      validity_version: 0,
+      dirty: false
+    })
+    |> Ash.Changeset.set_tenant(seeded.account.id)
+    |> Ash.update!(actor: pipeline_actor(seeded.actor))
+
+    assert {:ok, %{legacy_projection_scopes: 1}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before + 2
+
+    second_generation = pending_projection_refresh!(seeded)
+    refute second_generation.idempotency_key == completed.idempotency_key
+
+    second_completed =
+      second_generation
+      |> Ash.Changeset.for_update(:execute, %{})
+      |> Ash.Changeset.set_tenant(seeded.account.id)
+      |> Ash.update!(actor: pipeline_actor(seeded.actor))
+
+    assert second_completed.status == "completed"
 
     assert {:ok, %{legacy_projection_scopes: 0}} =
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)
 
-    assert projection_refresh_count(seeded.account.id) == before + 1
+    assert projection_refresh_count(seeded.account.id) == before + 2
   end
 
   test "legacy projection reconciliation bounds distinct scopes rather than rows" do
@@ -3704,6 +3721,9 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         "/f7/projection-validity-distinct-scopes",
         "Avery owns the release checklist."
       )
+
+    assert {:ok, _result} =
+             MemHouse.Retrieval.Rebuild.refresh_scope(seeded.account.id, seeded.scope.id)
 
     second_scope =
       create!(
@@ -3767,6 +3787,21 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)
 
     assert projection_refresh_count(seeded.account.id) == before + 2
+
+    upgrade_runs =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        MemHouse.Operations.PipelineRun
+        |> Ash.Query.filter(kind == "projection_refresh" and status == "pending")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+      end)
+
+    assert MapSet.new(upgrade_runs, & &1.scope_id) ==
+             MapSet.new([seeded.scope.id, second_scope.id])
+
+    assert Enum.all?(upgrade_runs, fn run ->
+             String.starts_with?(run.payload["watermark"], "projection-validity-v1:")
+           end)
   end
 
   test "mention coverage reports a partially indexed scope" do
@@ -4328,6 +4363,18 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       )
 
     count
+  end
+
+  defp pending_projection_refresh!(seeded) do
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      MemHouse.Operations.PipelineRun
+      |> Ash.Query.filter(
+        kind == "projection_refresh" and scope_id == ^seeded.scope.id and status == "pending"
+      )
+      |> Ash.Query.sort(inserted_at: :desc, id: :desc)
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: pipeline_actor(actor))
+    end)
   end
 
   # A five-statement corpus for ranking assertions.

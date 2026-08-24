@@ -144,9 +144,10 @@ re-embed operations retain their full-corpus behavior.
 The projection-expiry migration makes existing projections unreadable without scanning or
 rewriting their contents under the schema lock. The hourly reconciler selects at most 100 distinct
 legacy scopes per Account and enqueues one idempotent full refresh per affected scope under the
-`projection-validity-v1` watermark. During that bounded warm-up, context fails closed to the
-ordinary fast retrieval fallback; operators do not need to run a manual migration command or
-expose the legacy projection.
+`projection-validity-v1` generation watermark. If an old worker writes another legacy generation
+after an upgrade completes, its row identity, monotonic version, and update time produce a new
+refresh run. During that bounded warm-up, context fails closed to the ordinary fast retrieval
+fallback; operators do not need to run a manual migration command or expose the legacy projection.
 
 Alert on `coverage` below your threshold. Embeddings and entity mentions are
 written by this lane alone, so a refresh that was cancelled or never enqueued

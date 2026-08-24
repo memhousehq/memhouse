@@ -19,7 +19,7 @@ defmodule MemHouse.Repo.Migrations.ProjectionValidityScopeIndex do
 
     execute """
     CREATE INDEX CONCURRENTLY projections_legacy_validity_scope_idx
-    ON projections (account_id, scope_id)
+    ON projections (account_id, scope_id, updated_at DESC, id DESC)
     WHERE validity_version <> 1 AND dirty = false
     """
   end
