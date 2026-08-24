@@ -4,7 +4,7 @@
 
 ## Status
 
-Accepted on 2026-08-09.
+Superseded by `0023-openrouter-voyage-reranking.md` on 2026-08-24.
 
 ## Context
 

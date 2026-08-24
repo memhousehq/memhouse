@@ -13,10 +13,11 @@ audit history, or usage records.
 1. Back up the PostgreSQL database and blob store at one recovery point.
 2. Record the release revision, profile versions, model identities, embedding
    identity, dataset digest, thresholds, and operator-approved spend limit.
-3. Install the pinned local Ortex model and tokenizer artifacts, then run the
-   deterministic matched experiment and the full external-PostgreSQL gate.
-   Require the packaged-pg0 lane to pass in CI. Without those local artifacts,
-   the command stops before ingestion rather than substituting vectors.
+3. Install the pinned local Ortex Qwen embedding artifacts, configure
+   `OPENROUTER_API_KEY` for hosted Voyage reranking, then run the deterministic
+   matched experiment and the full external-PostgreSQL gate. Require the
+   packaged-pg0 lane to pass in CI. Without the embedding artifacts, the command
+   stops before ingestion rather than substituting vectors.
 4. Confirm source-message vectors are current and an authenticated exact and
    semantic source search succeeds in the canary scope.
 5. Keep the prior release and configuration available for the whole

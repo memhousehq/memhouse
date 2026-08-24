@@ -89,8 +89,10 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
     assert {:error, {:model_artifact_missing, :model_path}} =
              MemHouse.Model.Embedding.Ortex.generate(["offline"], dimensions: 384)
 
-    assert {:error, {:model_artifact_missing, :model_path}} =
-             MemHouse.Model.Reranking.Ortex.score([{"query", "document"}], [])
+    reranker = Model.Config.resolve(:reranker, %{})
+    assert reranker.provider == "openrouter"
+    assert reranker.model == "voyageai/rerank-2.5"
+    assert reranker.options["api_key_ref"] == "env:OPENROUTER_API_KEY"
 
     # Role options hold secret *references* only. A literal credential in the options map is
     # rejected at the changeset, before it can reach the database, an export, or a log line.
@@ -102,6 +104,44 @@ defmodule MemHouse.F5ModelLayerStructuredExtractionTest do
              options: %{"api_key" => "must-not-be-persisted"}
            })
            |> Map.fetch!(:valid?)
+
+    refute ModelRoleConfig
+           |> Ash.Changeset.for_create(:create, %{
+             role: "reranker",
+             provider: "ortex",
+             model: "BAAI/bge-reranker-v2-m3"
+           })
+           |> Map.fetch!(:valid?)
+  end
+
+  test "legacy persisted Ortex reranker rows resolve to the hosted runtime role" do
+    _message = seed_raw!("f5-legacy-reranker", "avery", "Avery prefers weekly summaries.")
+    account_id = account_id!("f5-legacy-reranker")
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      """
+      INSERT INTO model_role_configs
+        (id, account_id, role, provider, model, options, version, active,
+         model_version, prompt_version, pipeline_version)
+      VALUES
+        (gen_random_uuid(), $1, 'reranker', 'ortex', 'BAAI/bge-reranker-v2-m3', '{}', 1, true,
+         'onnx-1-bge-reranker-v2-m3', 'pair-v1', 'f7-1')
+      """,
+      [Ecto.UUID.dump!(account_id)]
+    )
+
+    DataLayer.with_account_id(
+      account_id,
+      [role: :system, pipeline?: true],
+      fn account, actor ->
+        resolved = Model.Config.resolve(:reranker, %{account_id: account.id, actor: actor})
+
+        assert resolved.provider == "openrouter"
+        assert resolved.model == "voyageai/rerank-2.5"
+        assert resolved.options["api_key_ref"] == "env:OPENROUTER_API_KEY"
+      end
+    )
   end
 
   test "an Account with a stale extractor role cannot stamp a new prompt with an old identity" do

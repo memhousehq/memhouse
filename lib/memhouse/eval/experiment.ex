@@ -19,8 +19,8 @@ defmodule MemHouse.Eval.Experiment do
   alias MemHouse.Eval.{
     Adapter,
     ComponentBindings,
-    Maintenance,
     ExecutionEvidence,
+    Maintenance,
     Measurement,
     QueryCounter,
     Report,

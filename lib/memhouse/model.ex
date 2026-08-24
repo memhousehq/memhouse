@@ -9,7 +9,7 @@ defmodule MemHouse.Model do
   Account-level roles are:
 
   - `:embedder` — pinned vector generation. Defaults to a local ONNX model.
-  - `:reranker` — bounded local cross-encoder ranking for retrieval candidates.
+  - `:reranker` — bounded hosted cross-encoder ranking for retrieval candidates.
   - `:ingest_extractor` — fast structured extraction of observations.
   - `:dream_reasoner` — slow background reasoning.
   - `:dialectic_agent` — grounded structured answers to questions.
@@ -154,6 +154,31 @@ defmodule MemHouse.Model.ValidateSecretReferences do
   defp raw_secret_key?(_value), do: false
 end
 
+defmodule MemHouse.Model.ValidateSupportedRoleProvider do
+  @moduledoc """
+  Rejects provider bindings for capabilities removed from the runtime.
+
+  Ortex remains the local embedder, but its reranker was removed. Existing
+  persisted Ortex reranker rows are ignored by configuration resolution during
+  upgrade; rejecting new or updated rows prevents that compatibility path from
+  becoming permanent configuration.
+  """
+
+  use Ash.Resource.Validation
+
+  @impl true
+  def validate(changeset, _opts, _context) do
+    role = Ash.Changeset.get_attribute(changeset, :role)
+    provider = Ash.Changeset.get_attribute(changeset, :provider)
+
+    if role == "reranker" and provider == "ortex" do
+      {:error, field: :provider, message: "Ortex reranking was removed; use openrouter"}
+    else
+      :ok
+    end
+  end
+end
+
 defmodule MemHouse.Model.ModelRoleConfig do
   @moduledoc """
   One durable, versioned model-role configuration row for an Account.
@@ -218,6 +243,7 @@ defmodule MemHouse.Model.ModelRoleConfig do
 
       # Options may hold credential references only, never credentials.
       validate MemHouse.Model.ValidateSecretReferences
+      validate MemHouse.Model.ValidateSupportedRoleProvider
     end
 
     # `role`, `account_id`, and `scope_id` are immutable row identity.
@@ -244,6 +270,7 @@ defmodule MemHouse.Model.ModelRoleConfig do
                )
 
       validate MemHouse.Model.ValidateSecretReferences
+      validate MemHouse.Model.ValidateSupportedRoleProvider
     end
   end
 

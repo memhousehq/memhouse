@@ -218,26 +218,29 @@ finishes, old vectors are intentionally absent from semantic retrieval.
 
 ## Reranker
 
-`thorough` uses the `reranker` role. It defaults to the local
-`BAAI/bge-reranker-v2-m3` ONNX cross-encoder. Supply its classifier and tokenizer
-from revision `b9a8f459d786a86f171264d4b075572506495226`. The model outputs an
-unbounded relevance logit; MemHouse uses the score only to order candidates.
-Keep `onnx/model.onnx_data` beside `onnx/model.onnx`.
+`thorough` uses the `reranker` role. It defaults to OpenRouter's native
+`voyageai/rerank-2.5` endpoint and uses the same `OPENROUTER_API_KEY` environment
+credential as other OpenRouter roles. MemHouse sends the query and bounded
+candidate head, requests every candidate back, and uses the returned score only
+to order candidates. A missing credential, HTTP failure, or malformed result
+preserves fusion order and records a dropped reranker outcome.
+
+On upgrade, an active persisted `reranker` role whose provider is `ortex` is
+ignored in favor of this runtime default, because the local classifier runtime
+no longer exists. New or updated Ortex reranker bindings are rejected. Operators
+may publish a higher-version OpenRouter role row when an Account needs an
+explicit override; the old row remains as historical configuration evidence.
+Deployments must also remove legacy `MEMHOUSE_RERANKER_PROVIDER=ortex` environment
+overrides (and the associated local model variables) or replace them with the
+OpenRouter values above. Startup rejects the removed provider with an actionable
+error instead of booting a permanently degraded thorough profile.
 
 | Variable | Example | Meaning |
 | --- | --- | --- |
-| `MEMHOUSE_RERANKER_PROVIDER` | `ortex` | `ortex` or a hosted rerank provider |
-| `MEMHOUSE_RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Model identity |
-| `MEMHOUSE_RERANKER_VERSION` | `onnx-1-bge-reranker-v2-m3` | Artifact identity |
-| `MEMHOUSE_RERANKER_ORTEX_MODEL_PATH` | absolute path | Classifier `.onnx` file |
-| `MEMHOUSE_RERANKER_ORTEX_TOKENIZER_PATH` | absolute path | Pair tokenizer JSON file |
-| `MEMHOUSE_RERANKER_ORTEX_EXECUTION_PROVIDERS` | `cpu` | ONNX Runtime execution providers |
-
-| File | SHA-256 at the pinned revision |
-| --- | --- |
-| `onnx/model.onnx` | `7653075f97489878c7c6c39425de5010b001869d2f4e5e3bf20ab0dee7324f61` |
-| `onnx/model.onnx_data` | `9a748c82efb2079d24650c489e053dbb3c71d8acbbcf04d7b2340db66f2748f7` |
-| `tokenizer.json` | `69564b696052886ed0ac63fa393e928384e0f8caada38c1f4864a9bfbf379c15` |
+| `MEMHOUSE_RERANKER_PROVIDER` | `openrouter` | Native rerank provider |
+| `MEMHOUSE_RERANKER_MODEL` | `voyageai/rerank-2.5` | OpenRouter model identity |
+| `MEMHOUSE_RERANKER_VERSION` | `openrouter-2026-07` | Recorded provider/model revision identity |
+| `MEMHOUSE_RERANKER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API root; override only for a compatible test or proxy endpoint |
 
 This release installs 1024-dimensional vector indexes only. Boot fails when
 `MEMHOUSE_EMBEDDING_DIMENSIONS` is another width. To support another width,
@@ -302,14 +305,15 @@ With no override, MemHouse uses the versioned `planning-reference-v1` rates:
 | `ingest_extractor` | 1.00 | 3.00 | — |
 | `dream_reasoner` | 1.00 | 3.00 | — |
 | `dialectic_agent` | 1.00 | 3.00 | — |
-| `reranker` | 1.00 | 1.00 | — |
+| `reranker` | 0.05 | 0.00 | — |
 | `embedder` | — | — | 0.10 |
 
-These are round provider-neutral planning rates, not a claim about a vendor's
-current or contracted price. Their purpose is to keep a fresh deployment from
-silently translating real token usage to zero USD. Set both cost variables to
-your exact contracted rates and a stable internal profile id before using the
-estimate for financial reconciliation.
+The reranker default reflects OpenRouter's documented Voyage rate on 2026-08-24;
+the other values are round provider-neutral planning rates. These are not a
+claim about a contracted price. Their purpose is to keep a fresh deployment
+from silently translating real token usage to zero USD. Set both cost variables
+to your exact contracted rates and a stable internal profile id before using
+the estimate for financial reconciliation.
 
 Dream-time is throttled first when a limit bites.
 
@@ -481,14 +485,14 @@ strategy-phase budget. Rerank reservation may further reduce the budget used by
 `MemHouse.Retrieval.Engine.retrieve/3`. A deadline-free evaluation run does not
 use this cap.
 
-`MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `120`.
+`MEMHOUSE_RETRIEVAL_RERANK_TIMEOUT_MS` defaults to `750`.
 It is the most time reranking may use, but the request's remaining profile
 deadline always wins when it is smaller. Raising it can improve thorough-search
 ranking at the cost of tail latency; it cannot extend the 1500 ms hard ceiling.
 A request that sets `deadline` to `"disabled"` is not capped by it either,
 because such a run exists to measure the reranked ordering.
 
-`MEMHOUSE_RETRIEVAL_RERANK_RESERVED_MS` defaults to `120` and is how much of a
+`MEMHOUSE_RETRIEVAL_RERANK_RESERVED_MS` defaults to `750` and is how much of a
 reranking profile's deadline is withheld from its strategies. It is clamped to
 half the profile deadline, so it cannot starve retrieval of candidates to rank.
 Set it to `0` to let the strategies spend the whole deadline, which makes a slow
