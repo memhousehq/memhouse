@@ -3697,6 +3697,78 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert projection_refresh_count(seeded.account.id) == before + 1
   end
 
+  test "legacy projection reconciliation bounds distinct scopes rather than rows" do
+    seeded =
+      seed_active!(
+        "f7-projection-validity-distinct-scopes",
+        "/f7/projection-validity-distinct-scopes",
+        "Avery owns the release checklist."
+      )
+
+    second_scope =
+      create!(
+        Scope,
+        :ensure,
+        %{
+          parent_id: seeded.scope.parent_id,
+          key: "projection-validity-later-scope",
+          name: "Projection validity later scope",
+          path: "/f7/projection-validity-later-scope",
+          state: "active"
+        },
+        seeded.account.id,
+        pipeline_actor(seeded.actor)
+      )
+
+    Enum.each(1..101, fn ordinal ->
+      create!(
+        Projection,
+        :upsert_from_pipeline,
+        %{
+          cache_key: "legacy:first:#{ordinal}",
+          scope_id: seeded.scope.id,
+          kind: "entity_card",
+          content: %{},
+          source_ids: [],
+          validity_version: 0
+        },
+        seeded.account.id,
+        pipeline_actor(seeded.actor)
+      )
+    end)
+
+    create!(
+      Projection,
+      :upsert_from_pipeline,
+      %{
+        cache_key: "legacy:later",
+        scope_id: second_scope.id,
+        kind: "entity_card",
+        content: %{},
+        source_ids: [],
+        validity_version: 0
+      },
+      seeded.account.id,
+      pipeline_actor(seeded.actor)
+    )
+
+    DataLayer.with_actor(seeded.actor, fn account, _actor ->
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE pipeline_runs SET status = 'completed' " <>
+          "WHERE account_id = $1 AND kind = 'projection_refresh'",
+        [Ecto.UUID.dump!(account.id)]
+      )
+    end)
+
+    before = projection_refresh_count(seeded.account.id)
+
+    assert {:ok, %{legacy_projection_scopes: 2}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before + 2
+  end
+
   test "mention coverage reports a partially indexed scope" do
     first = seed_active!("f7-partial-mentions", "/f7/partial", "Avery owns the checklist.")
 

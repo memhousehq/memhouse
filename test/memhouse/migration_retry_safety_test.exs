@@ -20,6 +20,7 @@ defmodule MemHouse.MigrationRetrySafetyTest do
     20260817090003_source_message_scope_time_index.exs
     20260817100001_recall_document_scope_lane_index.exs
     20260817100002_recall_document_embedding_diskann_index.exs
+    20260824125257_projection_validity_scope_index.exs
   )
 
   test "schema, backfill, and forced RLS migrations remain transactional" do

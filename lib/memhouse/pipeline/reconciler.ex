@@ -189,13 +189,13 @@ defmodule MemHouse.Pipeline.Reconciler do
           legacy_projection_scopes =
             Projection
             |> Ash.Query.filter(validity_version != 1 and dirty == false)
-            |> Ash.Query.sort(scope_id: :asc, id: :asc)
-            |> Ash.Query.limit(@batch_size)
             |> Ash.Query.select([:scope_id])
+            |> Ash.Query.distinct(:scope_id)
+            |> Ash.Query.sort(scope_id: :asc)
+            |> Ash.Query.limit(@batch_size)
             |> Ash.Query.set_tenant(account_id)
             |> Ash.read!(actor: actor)
             |> Enum.map(& &1.scope_id)
-            |> Enum.uniq()
             |> Enum.count(fn scope_id ->
               not Pipeline.projection_refresh_recoverable?(account_id, scope_id, actor) and
                 match?(

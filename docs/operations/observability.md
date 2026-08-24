@@ -142,8 +142,8 @@ embedder batch contains only statements without vectors. Explicit rebuild and
 re-embed operations retain their full-corpus behavior.
 
 The projection-expiry migration makes existing projections unreadable without scanning or
-rewriting their contents under the schema lock. The hourly reconciler scans at most 100 legacy
-rows per Account and enqueues one idempotent full refresh per affected scope under the
+rewriting their contents under the schema lock. The hourly reconciler selects at most 100 distinct
+legacy scopes per Account and enqueues one idempotent full refresh per affected scope under the
 `projection-validity-v1` watermark. During that bounded warm-up, context fails closed to the
 ordinary fast retrieval fallback; operators do not need to run a manual migration command or
 expose the legacy projection.
