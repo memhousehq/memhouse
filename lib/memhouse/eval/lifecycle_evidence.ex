@@ -104,7 +104,7 @@ defmodule MemHouse.Eval.LifecycleEvidence do
       metadata = audit.metadata
 
       if audit.action == "knowledge.created" do
-        {nil, metadata["to_state"], Map.fetch!(creation_reasons, audit.resource_id)}
+        {nil, metadata["to_state"], Map.get(creation_reasons, audit.resource_id)}
       else
         {metadata["from_state"], metadata["to_state"], metadata["reason"]}
       end

@@ -452,7 +452,7 @@ defmodule MemHouse.Eval.Report do
        }) do
     valid_edge? =
       if is_nil(from_state) do
-        to_state == "proposed"
+        to_state == MemHouse.Knowledge.Lifecycle.initial_state()
       else
         MemHouse.Knowledge.Lifecycle.allowed_transition?(from_state, to_state)
       end

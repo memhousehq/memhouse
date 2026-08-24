@@ -22,6 +22,7 @@ defmodule MemHouse.Knowledge.Lifecycle do
   @contracts [
     %{
       name: "proposed",
+      initial: true,
       meaning: "Extracted and waiting for its first gate decision.",
       stability: :transient,
       retrieval: :none,
@@ -238,10 +239,17 @@ defmodule MemHouse.Knowledge.Lifecycle do
 
   @by_name Map.new(@contracts, &{&1.name, &1})
   @states Enum.map(@contracts, & &1.name)
+  @initial_state Enum.find_value(@contracts, fn contract ->
+                   if Map.get(contract, :initial, false), do: contract.name
+                 end)
 
   @doc "Returns public lifecycle state names in operator display order."
   @spec states() :: [String.t()]
   def states, do: @states
+
+  @doc "Returns the only state accepted when the pipeline creates knowledge."
+  @spec initial_state() :: String.t()
+  def initial_state, do: @initial_state
 
   @doc "Returns the complete contract for one state, or raises for an unknown state."
   @spec fetch!(String.t()) :: map()

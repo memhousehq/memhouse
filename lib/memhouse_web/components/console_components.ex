@@ -17,9 +17,7 @@ defmodule MemHouseWeb.ConsoleComponents do
   alias MemHouse.Knowledge.Lifecycle
   alias MemHouseWeb.Console.Access
 
-  # One sentence per enum value, phrased for a reader deciding what to do next.
-  # A value missing here renders its label with no tooltip, which is why the
-  # lifecycle list must be kept in step with `Access.all_states/0`.
+  # One sentence per sensitivity value, phrased for a reader deciding what to do next.
   @meanings %{
     {"sensitivity", "public"} => "May travel anywhere the scope tree allows.",
     {"sensitivity", "internal"} => "Ordinary Account knowledge; no personal care required.",
@@ -171,29 +169,29 @@ defmodule MemHouseWeb.ConsoleComponents do
   """
   attr :family, :string, required: true
   attr :value, :any, required: true
+  attr :href, :any, default: false
 
   def badge(assigns) do
+    assigns =
+      assigns
+      |> assign(:glyph, enum_glyph(assigns.family, assigns.value))
+      |> assign(:label, enum_label(assigns.family, assigns.value))
+      |> assign(:badge_attrs, %{
+        href: assigns.href,
+        class: ["badge", "#{assigns.family}-#{assigns.value}"],
+        title: enum_meaning(assigns.family, assigns.value)
+      })
+
     ~H"""
-    <span
-      class={["badge", "#{@family}-#{@value}"]}
-      title={enum_meaning(@family, @value)}
+    <.dynamic_tag
+      tag_name={if @href, do: "a", else: "span"}
+      {@badge_attrs}
     >
-      <a
-        :if={@family == "state"}
-        href="https://memhousehq.github.io/memhouse/concepts/memory-model/#lifecycle-state-contract"
-      >
-        <span :if={enum_glyph(@family, @value)} class="badge-glyph" aria-hidden="true">
-          {enum_glyph(@family, @value)}
-        </span>
-        {enum_label(@family, @value)}
-      </a>
-      <span :if={@family != "state"}>
-        <span :if={enum_glyph(@family, @value)} class="badge-glyph" aria-hidden="true">
-          {enum_glyph(@family, @value)}
-        </span>
-        {enum_label(@family, @value)}
+      <span :if={@glyph} class="badge-glyph" aria-hidden="true">
+        {@glyph}
       </span>
-    </span>
+      {@label}
+    </.dynamic_tag>
     """
   end
 
@@ -207,9 +205,24 @@ defmodule MemHouseWeb.ConsoleComponents do
   attr :states, :list, required: true
 
   def legend(assigns) do
+    docs_url = lifecycle_docs_url()
+
+    assigns =
+      assigns
+      |> assign(:docs_url, docs_url)
+      |> assign(:docs_attrs, %{href: docs_url})
+
     ~H"""
     <details class="legend">
       <summary>What these labels mean</summary>
+      <p>
+        <.dynamic_tag
+          tag_name={if @docs_url, do: "a", else: "span"}
+          {@docs_attrs}
+        >
+          Complete lifecycle contract
+        </.dynamic_tag>
+      </p>
       <dl class="legend-list">
         <div :for={state <- @states} class="legend-row">
           <dt><.badge family="state" value={state} /></dt>
@@ -599,6 +612,10 @@ defmodule MemHouseWeb.ConsoleComponents do
 
   defp enum_meaning("state", value), do: Lifecycle.meaning(value)
   defp enum_meaning(family, value), do: Map.get(@meanings, {family, value})
+
+  defp lifecycle_docs_url do
+    Application.get_env(:memhouse, :lifecycle_docs_url, false)
+  end
 
   # Coarsest unit that still leaves a non-zero count. Months are 30 days and
   # years 365: this is a currency judgement, not a calendar.

@@ -5,6 +5,10 @@
 Everything MemHouse stores hangs off four structures — Account, Scope, Peer,
 and Knowledge — plus the raw observations knowledge is derived from.
 
+The diagram shows the most common operational flow. The generated table below
+is the complete transition contract, including privacy overrides and governed
+self-edges.
+
 ```mermaid
 erDiagram
     ACCOUNT ||--o{ SCOPE : contains

@@ -21,9 +21,6 @@ defmodule MemHouseWeb.Console.Access do
   # that have not passed a gate, or content withdrawn on purpose.
   @settled_states Lifecycle.settled_states()
 
-  # Every state the knowledge lifecycle defines. Kept in step with the
-  # `transition` action's validation list on the knowledge resource; a state
-  # added there and not here would be invisible to curators in the console.
   @all_states Lifecycle.states()
 
   # Roles whose holders govern the lifecycle rather than merely reading it.

@@ -38,10 +38,26 @@ defmodule MemHouse.Knowledge.LifecycleContractTest do
   end
 
   test "the graph gives an explicit verdict for every state pair" do
-    documented =
-      Map.new(Lifecycle.states(), fn state ->
-        {state, Lifecycle.fetch!(state).exits}
-      end)
+    documented = %{
+      "proposed" => ~w(active provisional held rejected contested redacted retracted),
+      "active" =>
+        ~w(active held needs_revalidation contested superseded expired redacted retracted),
+      "provisional" =>
+        ~w(provisional active held rejected contested superseded expired redacted stale retracted),
+      "held" => ~w(held active rejected contested superseded expired redacted retracted),
+      "needs_revalidation" =>
+        ~w(needs_revalidation active rejected contested superseded expired redacted stale retracted),
+      "superseded" => ~w(redacted retracted),
+      "expired" => ~w(redacted retracted),
+      "rejected" => ~w(redacted retracted),
+      "contested" => ~w(active rejected superseded expired redacted retracted),
+      "redacted" => ~w(retracted),
+      "stale" => ~w(active rejected contested superseded expired redacted retracted),
+      "retracted" => ~w(retracted)
+    }
+
+    assert Lifecycle.initial_state() == "proposed"
+    assert Map.keys(documented) |> Enum.sort() == Lifecycle.states() |> Enum.sort()
 
     for from_state <- Lifecycle.states(), to_state <- Lifecycle.states() do
       assert Lifecycle.allowed_transition?(from_state, to_state) ==

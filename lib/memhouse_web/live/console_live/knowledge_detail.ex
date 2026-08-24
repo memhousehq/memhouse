@@ -83,7 +83,7 @@ defmodule MemHouseWeb.ConsoleLive.KnowledgeDetail do
 
     guard(
       socket,
-      "Promotion requested. It is held until the required review and consent finish.",
+      "Promotion requested. It is held for review and, when required, subject consent.",
       fn actor ->
         Engine.request_promotion(actor, id, target_scope_id)
       end

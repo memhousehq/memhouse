@@ -328,25 +328,6 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
   # any strategy override, the deadline setting, the run limits, the dataset identity with
   # its digest and split, all five model-role identities, and how the answers were graded.
   # Together they are the complete recipe for re-running the measurement.
-  defp empty_lifecycle_evidence do
-    %{
-      "visibility" => "internal_account_scope_all_states",
-      "final_states" => Map.new(MemHouse.Knowledge.Lifecycle.states(), &{&1, 0}),
-      "absent_final_states" => MemHouse.Knowledge.Lifecycle.states(),
-      "exercised_states" => [],
-      "unexercised_states" => MemHouse.Knowledge.Lifecycle.states(),
-      "unexercised_reasons" =>
-        Map.new(
-          MemHouse.Knowledge.Lifecycle.states(),
-          &{&1, MemHouse.Knowledge.Lifecycle.absence_reason(&1)}
-        ),
-      "transitions" => [],
-      "audit_transitions" => [],
-      "lifecycle_events" => 0,
-      "lifecycle_audit_events" => 0
-    }
-  end
-
   defp valid_report do
     %{
       "report_schema" => "f11-1",
@@ -393,6 +374,25 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
           "mean_token_efficiency_ratio" => 0.5
         }
       }
+    }
+  end
+
+  defp empty_lifecycle_evidence do
+    %{
+      "visibility" => "internal_account_scope_all_states",
+      "final_states" => Map.new(MemHouse.Knowledge.Lifecycle.states(), &{&1, 0}),
+      "absent_final_states" => MemHouse.Knowledge.Lifecycle.states(),
+      "exercised_states" => [],
+      "unexercised_states" => MemHouse.Knowledge.Lifecycle.states(),
+      "unexercised_reasons" =>
+        Map.new(
+          MemHouse.Knowledge.Lifecycle.states(),
+          &{&1, MemHouse.Knowledge.Lifecycle.absence_reason(&1)}
+        ),
+      "transitions" => [],
+      "audit_transitions" => [],
+      "lifecycle_events" => 0,
+      "lifecycle_audit_events" => 0
     }
   end
 
