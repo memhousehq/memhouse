@@ -31,9 +31,12 @@ cannot observe a later runtime-profile change. The current plan indexes source
 messages and Knowledge, rebuilds RecallDocuments, resolves entities, and
 refreshes context projections. The isolated experimental minimal-profile plan
 retains the first three stages and records entity and context projection work as
-`profile_disabled` instead of executing it. Neither provider runs in the ingest
-transaction. Oban shares PostgreSQL, so job insertion participates in the
-transaction.
+`profile_disabled` instead of executing it. That selector is local to the
+experiment execution process; concurrent requests retain the current plan.
+Reconciliation reads the latest durable plan for each scope, so it neither
+mistakes an intentional minimal cache omission for damage nor widens a required
+repair back to full maintenance. Neither provider runs in the ingest transaction.
+Oban shares PostgreSQL, so job insertion participates in the transaction.
 
 ## Who a turn is attributed to
 

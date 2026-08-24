@@ -91,6 +91,11 @@ defmodule MemHouse.Pipeline.Idempotency do
   def projection_refresh(scope_id, watermark),
     do: key(:projection_refresh, [scope_id, watermark])
 
+  @doc "Key for one profile-planned projection repair at a durable watermark."
+  @spec projection_refresh(Ecto.UUID.t(), term(), String.t()) :: String.t()
+  def projection_refresh(scope_id, watermark, plan_id) when is_binary(plan_id),
+    do: key(:projection_refresh, [scope_id, watermark, plan_id])
+
   @doc "Key for derived-cache work caused by ordinary governed writes in one scope."
   @spec derived_refresh(Ecto.UUID.t(), atom(), DateTime.t(), pos_integer()) :: String.t()
   def derived_refresh(scope_id, kind, %DateTime{} = changed_at, window_seconds)

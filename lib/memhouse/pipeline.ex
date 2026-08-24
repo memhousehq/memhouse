@@ -261,6 +261,24 @@ defmodule MemHouse.Pipeline do
     )
   end
 
+  @doc "Enqueues a reconciliation refresh without widening its durable maintenance plan."
+  @spec enqueue_projection_refresh(Ecto.UUID.t(), Ecto.UUID.t(), term(), map(), map()) ::
+          {:ok, PipelineRun.t()} | {:error, term()}
+  def enqueue_projection_refresh(account_id, scope_id, watermark, actor, plan) do
+    enqueue(
+      "projection_refresh",
+      account_id,
+      %{
+        scope_id: scope_id,
+        target_type: "scope",
+        target_id: scope_id,
+        idempotency_key: Idempotency.projection_refresh(scope_id, watermark, plan.id),
+        payload: plan |> MaintenancePlan.payload() |> Map.put("watermark", to_string(watermark))
+      },
+      actor
+    )
+  end
+
   @doc """
   Schedules one delayed derived-cache refresh for a burst of governed writes.
 
@@ -664,6 +682,22 @@ defmodule MemHouse.Pipeline do
     )
     |> Ash.Query.set_tenant(account_id)
     |> Ash.exists?(actor: pipeline_actor(actor))
+  end
+
+  @doc "Returns the latest durable maintenance contract for a scope, or full legacy behavior."
+  @spec maintenance_plan_for_scope(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: map()
+  def maintenance_plan_for_scope(account_id, scope_id, actor) do
+    run =
+      PipelineRun
+      |> Ash.Query.filter(
+        kind == "projection_refresh" and target_type == "scope" and target_id == ^scope_id
+      )
+      |> Ash.Query.sort(inserted_at: :desc, id: :desc)
+      |> Ash.Query.limit(1)
+      |> Ash.Query.set_tenant(account_id)
+      |> Ash.read_one!(actor: pipeline_actor(actor))
+
+    MaintenancePlan.from_payload(if(run, do: run.payload, else: %{}))
   end
 
   @doc """

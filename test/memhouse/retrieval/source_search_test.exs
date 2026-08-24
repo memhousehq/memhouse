@@ -183,14 +183,15 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
              }
            }
 
-    assert {:ok,
-            %{
-              entities: %{status: "skipped", reason_class: "profile_disabled"},
-              projections: %{status: "skipped", reason_class: "profile_disabled"}
-            }} = Pipeline.execute(run)
+    assert {:ok, %{status: "completed"}} = execute_run(run)
 
     assert knowledge_count(account_id) >= 1
     assert indexed_at!(account_id, message_id)
+    assert derived_cache_counts(account_id) == %{mentions: 0, projections: 0, recall_documents: 1}
+
+    before_reconciliation = projection_runs(account_id, run.scope_id) |> length()
+    assert {:ok, %{scopes: 0}} = Reconciler.run(account_id)
+    assert projection_runs(account_id, run.scope_id) |> length() == before_reconciliation
     assert derived_cache_counts(account_id) == %{mentions: 0, projections: 0, recall_documents: 1}
 
     current_components = put_in(components, ["retrieval_profile"], "balanced")
@@ -222,10 +223,7 @@ defmodule MemHouse.Retrieval.SourceSearchTest do
     assert current_run.payload["stages"]["entities"] == "scheduled"
     assert current_run.payload["stages"]["context_projections"] == "scheduled"
 
-    assert {:ok, %{entities: entities, projections: projections}} = Pipeline.execute(current_run)
-    assert is_integer(entities.statements)
-    assert is_integer(entities.mentions)
-    refute Map.get(projections, :status) == "skipped"
+    assert {:ok, %{status: "completed"}} = execute_run(current_run)
 
     assert %{mentions: mentions, projections: projection_count, recall_documents: 1} =
              derived_cache_counts(current_run.account_id)

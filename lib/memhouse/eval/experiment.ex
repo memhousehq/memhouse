@@ -19,6 +19,7 @@ defmodule MemHouse.Eval.Experiment do
   alias MemHouse.Eval.{
     Adapter,
     ComponentBindings,
+    Maintenance,
     Measurement,
     QueryCounter,
     Report,
@@ -429,9 +430,13 @@ defmodule MemHouse.Eval.Experiment do
           refresh_recall_projection: components["recall_projection_refresh"]
         )
 
-      report
-      |> assert_executed_components!(variant, components)
-      |> Report.validate!()
+      validated =
+        report
+        |> assert_executed_components!(variant, components)
+        |> Report.validate!()
+
+      Maintenance.settle!(account_key)
+      validated
     end)
   end
 

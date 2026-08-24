@@ -118,7 +118,6 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
     dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
     profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
-    maintenance_profile = Application.get_env(:memhouse, :retrieval_maintenance_profile)
 
     components = %{
       "extraction_batching" => %{"enabled" => true},
@@ -133,7 +132,11 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
         assert Application.fetch_env!(:memhouse, :dream_time_gates)[:idle_scheduler_enabled]
         assert Application.fetch_env!(:memhouse, :dream_reasoning_operations)[:split_enabled]
         assert Application.fetch_env!(:memhouse, :retrieval_profiles)[:minimal_enabled]
-        assert Application.fetch_env!(:memhouse, :retrieval_maintenance_profile) == :minimal
+        assert MemHouse.Retrieval.MaintenancePlan.current().profile == "minimal"
+
+        assert Task.async(fn -> MemHouse.Retrieval.MaintenancePlan.current().profile end)
+               |> Task.await() == "current"
+
         assert MemHouse.Pipeline.ExtractionAdmission.enabled?()
         assert MemHouse.Pipeline.idle_dream_time_enabled?()
         raise "stop"
@@ -144,7 +147,7 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     assert Application.fetch_env!(:memhouse, :dream_time_gates) == dream_gates
     assert Application.fetch_env!(:memhouse, :dream_reasoning_operations) == dream_operations
     assert Application.fetch_env!(:memhouse, :retrieval_profiles) == profiles
-    assert Application.get_env(:memhouse, :retrieval_maintenance_profile) == maintenance_profile
+    assert MemHouse.Retrieval.MaintenancePlan.current().profile == "current"
   end
 
   test "runtime feature switches are restored when a later switch is invalid" do
@@ -152,7 +155,6 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
     dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
     profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
-    maintenance_profile = Application.get_env(:memhouse, :retrieval_maintenance_profile)
 
     components = %{
       "extraction_batching" => %{"enabled" => true},
@@ -169,7 +171,7 @@ defmodule MemHouse.Eval.ComponentBindingsTest do
     assert Application.fetch_env!(:memhouse, :dream_time_gates) == dream_gates
     assert Application.fetch_env!(:memhouse, :dream_reasoning_operations) == dream_operations
     assert Application.fetch_env!(:memhouse, :retrieval_profiles) == profiles
-    assert Application.get_env(:memhouse, :retrieval_maintenance_profile) == maintenance_profile
+    assert MemHouse.Retrieval.MaintenancePlan.current().profile == "current"
   end
 
   test "split dream reasoning cannot be declared without executing dream-time" do

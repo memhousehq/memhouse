@@ -10,6 +10,7 @@ defmodule MemHouse.Retrieval.MaintenancePlan do
   """
 
   @stages ~w(sources index recall_documents entities context_projections)
+  @process_key {__MODULE__, :profile}
   @scheduled Map.new(@stages, &{&1, "scheduled"})
   @minimal Map.merge(@scheduled, %{
              "entities" => "skipped",
@@ -18,9 +19,23 @@ defmodule MemHouse.Retrieval.MaintenancePlan do
 
   @doc "Returns the current runtime plan used by newly enqueued derived work."
   def current do
-    :memhouse
-    |> Application.get_env(:retrieval_maintenance_profile, :current)
+    @process_key
+    |> Process.get(:current)
     |> for_profile()
+  end
+
+  @doc "Runs one isolated caller with a profile for newly enqueued derived work."
+  def with_profile(profile, fun) when is_function(fun, 0) do
+    previous = Process.get(@process_key, :unset)
+    Process.put(@process_key, profile)
+
+    try do
+      fun.()
+    after
+      if previous == :unset,
+        do: Process.delete(@process_key),
+        else: Process.put(@process_key, previous)
+    end
   end
 
   @doc "Returns the closed maintenance plan for a retrieval profile."

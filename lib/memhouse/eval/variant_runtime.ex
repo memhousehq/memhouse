@@ -6,7 +6,8 @@ defmodule MemHouse.Eval.VariantRuntime do
 
   Runtime configuration is process-global, so execute experiments run variants
   serially. Every touched value is restored in an `after` block, including when
-  the runner or a provider raises.
+  the runner or a provider raises. Derived-maintenance selection is narrower:
+  it is process-local so unrelated requests cannot inherit an experiment plan.
   """
 
   @doc "Runs `fun` with the component feature switches installed, then restores them."
@@ -15,55 +16,49 @@ defmodule MemHouse.Eval.VariantRuntime do
     dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
     dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
     profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
-    maintenance_profile = Application.get_env(:memhouse, :retrieval_maintenance_profile)
 
-    try do
-      Application.put_env(
-        :memhouse,
-        :extraction_batching,
-        Keyword.put(batching, :enabled, switch!(components, "extraction_batching", "enabled"))
-      )
-
-      Application.put_env(
-        :memhouse,
-        :dream_time_gates,
-        Keyword.put(
-          dream_gates,
-          :idle_scheduler_enabled,
-          switch!(components, "idle_dream_scheduling", "enabled")
+    MemHouse.Retrieval.MaintenancePlan.with_profile(maintenance_profile!(components), fn ->
+      try do
+        Application.put_env(
+          :memhouse,
+          :extraction_batching,
+          Keyword.put(batching, :enabled, switch!(components, "extraction_batching", "enabled"))
         )
-      )
 
-      Application.put_env(
-        :memhouse,
-        :retrieval_profiles,
-        Keyword.put(profiles, :minimal_enabled, minimal_profile!(components))
-      )
-
-      Application.put_env(
-        :memhouse,
-        :retrieval_maintenance_profile,
-        maintenance_profile!(components)
-      )
-
-      Application.put_env(
-        :memhouse,
-        :dream_reasoning_operations,
-        Keyword.put(
-          dream_operations,
-          :split_enabled,
-          switch!(components, "dream_reasoning_operations", "split_enabled")
+        Application.put_env(
+          :memhouse,
+          :dream_time_gates,
+          Keyword.put(
+            dream_gates,
+            :idle_scheduler_enabled,
+            switch!(components, "idle_dream_scheduling", "enabled")
+          )
         )
-      )
 
-      fun.()
-    after
-      Application.put_env(:memhouse, :extraction_batching, batching)
-      Application.put_env(:memhouse, :dream_time_gates, dream_gates)
-      Application.put_env(:memhouse, :dream_reasoning_operations, dream_operations)
-      Application.put_env(:memhouse, :retrieval_profiles, profiles)
-      restore_optional(:retrieval_maintenance_profile, maintenance_profile)
-    end
+        Application.put_env(
+          :memhouse,
+          :retrieval_profiles,
+          Keyword.put(profiles, :minimal_enabled, minimal_profile!(components))
+        )
+
+        Application.put_env(
+          :memhouse,
+          :dream_reasoning_operations,
+          Keyword.put(
+            dream_operations,
+            :split_enabled,
+            switch!(components, "dream_reasoning_operations", "split_enabled")
+          )
+        )
+
+        fun.()
+      after
+        Application.put_env(:memhouse, :extraction_batching, batching)
+        Application.put_env(:memhouse, :dream_time_gates, dream_gates)
+        Application.put_env(:memhouse, :dream_reasoning_operations, dream_operations)
+        Application.put_env(:memhouse, :retrieval_profiles, profiles)
+      end
+    end)
   end
 
   defp switch!(components, component, key) do
@@ -90,7 +85,4 @@ defmodule MemHouse.Eval.VariantRuntime do
 
   defp maintenance_profile!(_components),
     do: raise(ArgumentError, "component retrieval_profile must declare a profile name")
-
-  defp restore_optional(key, nil), do: Application.delete_env(:memhouse, key)
-  defp restore_optional(key, value), do: Application.put_env(:memhouse, key, value)
 end

@@ -160,8 +160,11 @@ RecallDocuments remain scheduled, while entity and context-projection stages
 are explicitly reported as skipped. Current and legacy runs retain full
 maintenance. Canonical observations, governed Knowledge, lifecycle audit, and
 context dirty markers are unchanged, so skipped caches remain rebuildable for
-rollback. Until a reviewed decommission through issue #295, no production
-cache or migration is removed.
+rollback. The evaluation barrier completes only the isolated Account's durable
+projection runs before measurement; pending or failed plans are not reported as
+savings. A later reconciliation preserves the scope's latest plan. Until a
+reviewed decommission through issue #295, no production cache or migration is
+removed.
 
 ## Trace correlation
 
