@@ -99,6 +99,16 @@ defmodule MemHouse.Pipeline.Idempotency do
     key(kind, [scope_id, bucket])
   end
 
+  @doc "Key for profile-planned derived work in one scope and time bucket."
+  @spec derived_refresh(Ecto.UUID.t(), atom(), DateTime.t(), pos_integer(), String.t()) ::
+          String.t()
+  def derived_refresh(scope_id, kind, %DateTime{} = changed_at, window_seconds, plan_id)
+      when kind in [:projection_refresh, :entity_resolution] and window_seconds > 0 and
+             is_binary(plan_id) do
+    bucket = div(DateTime.to_unix(changed_at, :second), window_seconds)
+    key(kind, [scope_id, bucket, plan_id])
+  end
+
   @doc """
   Key for rebuilding a scope's entity and mention caches up to a watermark.
 

@@ -35,6 +35,7 @@ defmodule MemHouse.Pipeline do
   alias MemHouse.DataLayer
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline.{DreamTime, Idempotency, Lock}
+  alias MemHouse.Retrieval.MaintenancePlan
   alias MemHouse.Retrieval.Store
 
   require Ash.Query
@@ -274,6 +275,8 @@ defmodule MemHouse.Pipeline do
   @spec enqueue_derived_refresh(Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t(), map()) ::
           {:ok, PipelineRun.t()} | {:error, term()}
   def enqueue_derived_refresh(account_id, scope_id, %DateTime{} = changed_at, actor) do
+    plan = MaintenancePlan.current()
+
     enqueue(
       "projection_refresh",
       account_id,
@@ -282,8 +285,14 @@ defmodule MemHouse.Pipeline do
         target_type: "scope",
         target_id: scope_id,
         idempotency_key:
-          Idempotency.derived_refresh(scope_id, :projection_refresh, changed_at, 10),
-        payload: %{"mode" => "coalesced"}
+          Idempotency.derived_refresh(
+            scope_id,
+            :projection_refresh,
+            changed_at,
+            10,
+            plan.id
+          ),
+        payload: MaintenancePlan.payload(plan)
       },
       actor
     )

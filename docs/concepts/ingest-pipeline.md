@@ -25,10 +25,15 @@ flowchart LR
 All effects commit or roll back together, preventing observations without audit
 entries and jobs without observations. The refresh is keyed by scope and a
 ten-second creation-time bucket, so a burst of messages and any facts extracted
-from them share one delayed projection job. It indexes immutable source
-messages even when extraction produces no Knowledge. Neither provider runs in
-the ingest transaction. Oban shares PostgreSQL, so job insertion participates
-in the transaction.
+from them share one delayed projection job. The job captures a content-safe,
+versioned maintenance plan when it is enqueued, so a delayed worker or retry
+cannot observe a later runtime-profile change. The current plan indexes source
+messages and Knowledge, rebuilds RecallDocuments, resolves entities, and
+refreshes context projections. The isolated experimental minimal-profile plan
+retains the first three stages and records entity and context projection work as
+`profile_disabled` instead of executing it. Neither provider runs in the ingest
+transaction. Oban shares PostgreSQL, so job insertion participates in the
+transaction.
 
 ## Who a turn is attributed to
 
@@ -51,9 +56,10 @@ both identities: the relaying credential as the actor, and the speaker as
 
 ## What happens after the response
 
-Extraction and source indexing always run after the response. Source indexing
-is the first stage of the durable scope `projection_refresh`; the diagram below
-shows the extraction lane that may later coalesce into that same refresh:
+Extraction and scheduled source indexing run after the response. Source
+indexing is the first stage of the durable scope `projection_refresh`; the
+diagram below shows the extraction lane that may later coalesce into that same
+profile-versioned refresh:
 
 ```mermaid
 sequenceDiagram

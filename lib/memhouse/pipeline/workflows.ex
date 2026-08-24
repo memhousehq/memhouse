@@ -105,7 +105,7 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
 
         "projection_refresh" ->
           if run.payload["mode"] == "coalesced" do
-            MemHouse.Retrieval.Rebuild.refresh_scope(run.account_id, run.scope_id)
+            MemHouse.Retrieval.Rebuild.refresh_scope(run.account_id, run.scope_id, run.payload)
           else
             MemHouse.Retrieval.rebuild_scope(run.account_id, run.scope_id)
           end

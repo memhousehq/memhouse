@@ -15,6 +15,7 @@ defmodule MemHouse.Eval.VariantRuntime do
     dream_gates = Application.fetch_env!(:memhouse, :dream_time_gates)
     dream_operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
     profiles = Application.fetch_env!(:memhouse, :retrieval_profiles)
+    maintenance_profile = Application.get_env(:memhouse, :retrieval_maintenance_profile)
 
     try do
       Application.put_env(
@@ -41,6 +42,12 @@ defmodule MemHouse.Eval.VariantRuntime do
 
       Application.put_env(
         :memhouse,
+        :retrieval_maintenance_profile,
+        maintenance_profile!(components)
+      )
+
+      Application.put_env(
+        :memhouse,
         :dream_reasoning_operations,
         Keyword.put(
           dream_operations,
@@ -55,6 +62,7 @@ defmodule MemHouse.Eval.VariantRuntime do
       Application.put_env(:memhouse, :dream_time_gates, dream_gates)
       Application.put_env(:memhouse, :dream_reasoning_operations, dream_operations)
       Application.put_env(:memhouse, :retrieval_profiles, profiles)
+      restore_optional(:retrieval_maintenance_profile, maintenance_profile)
     end
   end
 
@@ -73,4 +81,16 @@ defmodule MemHouse.Eval.VariantRuntime do
 
   defp minimal_profile!(_components),
     do: raise(ArgumentError, "component retrieval_profile must declare a profile name")
+
+  defp maintenance_profile!(%{"retrieval_profile" => "minimal"}), do: :minimal
+
+  defp maintenance_profile!(%{"retrieval_profile" => profile})
+       when profile in ["fast", "balanced", "thorough"],
+       do: :current
+
+  defp maintenance_profile!(_components),
+    do: raise(ArgumentError, "component retrieval_profile must declare a profile name")
+
+  defp restore_optional(key, nil), do: Application.delete_env(:memhouse, key)
+  defp restore_optional(key, value), do: Application.put_env(:memhouse, key, value)
 end
