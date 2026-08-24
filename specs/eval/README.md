@@ -41,6 +41,15 @@ question IDs.
 mix test test/memhouse/eval/fixture_contract_test.exs
 ```
 
+`test/fixtures/eval/issue-279-acquisition-events.json` preregisters the later
+live extraction check for anchored ownership durations. It is not a result
+artifact. Each A/B/C arm uses the same 10 repeated paired batches, for 20
+anchored observations per arm: 30 pre-repair requests and 60 anchor
+presentations overall. First run each arm's requests through provider-free
+admission and record the tokenizer identity, input allowance, reserved output,
+safety margin, and context limit. Price requests, tokens, and cost separately
+per arm only after its dry run.
+
 ```bash
 mix memhouse.eval.smoke --profile balanced --account eval-poc
 ```

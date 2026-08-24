@@ -196,6 +196,188 @@ defmodule MemHouse.Eval.ExperimentTest do
     assert bundle["gates"]["status"] == "passed"
   end
 
+  test "category quality gates fail closed for missing coverage and regressions", %{
+    tmp_dir: tmp_dir
+  } do
+    definition =
+      definition()
+      |> put_in(
+        ["gates", "quality", "min_category_accuracy"],
+        %{"hard-query" => 0.8, "missing-query" => 0.5}
+      )
+      |> put_in(
+        ["gates", "quality", "max_category_accuracy_regression"],
+        %{"hard-query" => 0.05}
+      )
+      |> put_in(
+        ["variants", Access.at(0), "fixture_metrics", "quality", "by_category"],
+        %{"hard-query" => %{"questions" => 4, "accuracy" => 1.0}}
+      )
+      |> put_in(
+        ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+        %{"hard-query" => %{"questions" => 4, "accuracy" => 0.75}}
+      )
+
+    {_manifest, bundle} =
+      tmp_dir
+      |> write_definition!(definition)
+      |> Experiment.run()
+
+    assert bundle["gates"]["status"] == "failed"
+
+    assert Enum.sort(Enum.map(bundle["gates"]["failures"], & &1["gate"])) == [
+             "quality.category.hard-query.accuracy",
+             "quality.category.hard-query.accuracy_regression",
+             "quality.category.missing-query.accuracy"
+           ]
+
+    missing =
+      Enum.find(
+        bundle["gates"]["failures"],
+        &(&1["gate"] == "quality.category.missing-query.accuracy")
+      )
+
+    assert missing["actual"] == nil
+    assert missing["coverage"] == 0
+  end
+
+  test "category quality gates pass only with non-empty measured categories", %{tmp_dir: tmp_dir} do
+    category = %{"hard-query" => %{"questions" => 4, "accuracy" => 1.0}}
+
+    definition =
+      definition()
+      |> put_in(["gates", "quality", "min_category_accuracy"], %{"hard-query" => 0.8})
+      |> put_in(
+        ["gates", "quality", "max_category_accuracy_regression"],
+        %{"hard-query" => 0.0}
+      )
+      |> put_in(
+        ["variants", Access.at(0), "fixture_metrics", "quality", "by_category"],
+        category
+      )
+      |> put_in(
+        ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+        category
+      )
+
+    {_manifest, bundle} =
+      tmp_dir
+      |> write_definition!(definition)
+      |> Experiment.run()
+
+    assert bundle["gates"]["status"] == "passed"
+  end
+
+  test "configured empty category gate maps are rejected", %{tmp_dir: tmp_dir} do
+    for gate <- ["min_category_accuracy", "max_category_accuracy_regression"] do
+      definition = put_in(definition(), ["gates", "quality", gate], %{})
+
+      assert_raise ArgumentError, ~r/must contain at least one category/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
+  test "category gate thresholds outside the fraction range are rejected", %{tmp_dir: tmp_dir} do
+    for {gate, value} <- [
+          {"min_category_accuracy", -0.01},
+          {"min_category_accuracy", 1.01},
+          {"max_category_accuracy_regression", -0.01},
+          {"max_category_accuracy_regression", 1.01}
+        ] do
+      definition = put_in(definition(), ["gates", "quality", gate], %{"hard-query" => value})
+
+      assert_raise ArgumentError, ~r/fractions from 0 to 1/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
+  test "category floor rejects malformed coverage counts", %{tmp_dir: tmp_dir} do
+    for questions <- ["4", true] do
+      definition =
+        definition()
+        |> put_in(["gates", "quality", "min_category_accuracy"], %{"hard-query" => 0.8})
+        |> put_in(
+          ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+          %{"hard-query" => %{"questions" => questions, "accuracy" => 1.0}}
+        )
+
+      assert_raise ArgumentError, ~r/questions must be a non-negative integer/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
+  test "category regression rejects malformed coverage counts", %{tmp_dir: tmp_dir} do
+    for questions <- ["4", true] do
+      definition =
+        definition()
+        |> put_in(
+          ["gates", "quality", "max_category_accuracy_regression"],
+          %{"hard-query" => 0.1}
+        )
+        |> put_in(
+          ["variants", Access.at(0), "fixture_metrics", "quality", "by_category"],
+          %{"hard-query" => %{"questions" => questions, "accuracy" => 1.0}}
+        )
+        |> put_in(
+          ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+          %{"hard-query" => %{"questions" => questions, "accuracy" => 0.75}}
+        )
+
+      assert_raise ArgumentError, ~r/questions must be a non-negative integer/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
+  test "category gates reject scalar category metrics", %{tmp_dir: tmp_dir} do
+    for gate <- ["min_category_accuracy", "max_category_accuracy_regression"],
+        scalar <- [4, false] do
+      definition =
+        definition()
+        |> put_in(["gates", "quality", gate], %{"hard-query" => 0.1})
+        |> put_in(
+          ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+          %{"hard-query" => scalar}
+        )
+
+      assert_raise ArgumentError, ~r/quality.by_category "hard-query" must be an object/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
+  test "category gates reject scalar by_category metrics", %{tmp_dir: tmp_dir} do
+    for gate <- ["min_category_accuracy", "max_category_accuracy_regression"],
+        scalar <- [4, false] do
+      definition =
+        definition()
+        |> put_in(["gates", "quality", gate], %{"hard-query" => 0.1})
+        |> put_in(
+          ["variants", Access.at(1), "fixture_metrics", "quality", "by_category"],
+          scalar
+        )
+
+      assert_raise ArgumentError, ~r/quality.by_category must be an object/, fn ->
+        tmp_dir
+        |> write_definition!(definition)
+        |> Experiment.run()
+      end
+    end
+  end
+
   test "retired SQLite definitions are rejected instead of being reported as parity", %{
     tmp_dir: tmp_dir
   } do
@@ -312,7 +494,10 @@ defmodule MemHouse.Eval.ExperimentTest do
              "retrieval_deadline" => "disabled",
              "semantic_index_refresh" => true,
              "source_semantic_index_refresh" => true,
-             "source_recall" => true
+             "source_recall" => true,
+             "source_exact_recall" => true,
+             "source_semantic_recall" => true,
+             "stable_profile_recall" => true
            }
   end
 

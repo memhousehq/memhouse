@@ -161,7 +161,7 @@ held-out report showing per-field and per-category non-inferiority, zero
 privacy/attribution regressions, and lower calls, tokens, or cost, followed by
 human architecture and licensing review. No paid or live run was performed as
 part of the additive implementation. Disabling the flag immediately restores
-`extract-13` and does not migrate or rewrite stored knowledge.
+`extract-14` and does not migrate or rewrite stored knowledge.
 
 There are exactly five Account-level model roles: `embedder`, `reranker`,
 `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`. Only secret
@@ -339,7 +339,7 @@ interval instead of leaving the circuit stuck.
 | `MEMHOUSE_DREAM_MIN_INTERVAL_SECONDS` | `0` | Minimum time after the last completed scoped pass |
 | `MEMHOUSE_DREAM_MAX_DELTA_ITEMS` | `20` | Hard eligible-delta cap per pass; the durable cursor resumes the remainder |
 | `MEMHOUSE_DREAM_MAX_WORKING_SET_ITEMS` | `50` | Hard recalled knowledge cap supplied to the reasoner |
-| `MEMHOUSE_DREAM_MAX_ELAPSED_MS` | `120000` | Whole structured reasoning call timeout, including repairs and retries |
+| `MEMHOUSE_DREAM_MAX_ELAPSED_MS` | `120000` | Whole reasoning-pass timeout, shared across enabled operations, repairs, and retries |
 
 The zero duration defaults preserve immediate existing behavior. A direct-fact
 governance transaction durably schedules its scoped wakeup for the end of this
