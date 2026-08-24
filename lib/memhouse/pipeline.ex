@@ -492,9 +492,16 @@ defmodule MemHouse.Pipeline do
   Returns `{:error, :stale_extraction_claim}` when reconciliation or another
   owner has replaced the claim. In that case no attribute is changed.
   """
-  def classify_extraction_run(run, status, error_class, admission_identity, actor)
+  def classify_extraction_run(
+        run,
+        status,
+        error_class,
+        admission_identity,
+        actor,
+        evidence \\ %{}
+      )
       when status in ["failed", "repairable", "terminal"] and
-             not is_nil(run.batch_claim_id) do
+             not is_nil(run.batch_claim_id) and is_map(evidence) do
     fenced_extraction_update(
       run,
       :classify_extraction_anchor,
@@ -503,7 +510,7 @@ defmodule MemHouse.Pipeline do
         attempt_count: run.attempt_count + 1,
         last_error_class: error_class,
         processed_at: if(status == "failed", do: nil, else: Clock.utc_now()),
-        payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+        payload: extraction_evidence_payload(run, admission_identity, evidence)
       },
       actor
     )
@@ -516,18 +523,34 @@ defmodule MemHouse.Pipeline do
   processing under the supplied claim. This expected race never clears or
   overwrites the current owner's replacement claim.
   """
-  def complete_extraction_run(run, admission_identity, actor)
-      when not is_nil(run.batch_claim_id) do
+  def complete_extraction_run(run, admission_identity, actor, evidence \\ %{})
+      when not is_nil(run.batch_claim_id) and is_map(evidence) do
     fenced_extraction_update(
       run,
       :complete_extraction_anchor,
       %{
         attempt_count: run.attempt_count + 1,
         processed_at: Clock.utc_now(),
-        payload: Map.put(run.payload || %{}, "admission_identity", admission_identity)
+        payload: extraction_evidence_payload(run, admission_identity, evidence)
       },
       actor
     )
+  end
+
+  defp extraction_evidence_payload(run, admission_identity, evidence) do
+    evidence =
+      evidence
+      |> Map.take([:anchor_count, :provider_attempts, :candidate_count])
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+      |> Map.put("batch_id", run.batch_claim_id)
+
+    payload = run.payload || %{}
+    attempts = Map.get(payload, "extraction_attempts", [])
+
+    payload
+    |> Map.put("admission_identity", admission_identity)
+    |> Map.put("extraction_evidence", evidence)
+    |> Map.put("extraction_attempts", attempts ++ [evidence])
   end
 
   defp fenced_extraction_update(run, action, attrs, actor) do
