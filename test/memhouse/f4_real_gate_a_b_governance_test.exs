@@ -14,9 +14,9 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   alias MemHouse.Actor
   alias MemHouse.Clock
   alias MemHouse.DataLayer
+  alias MemHouse.Governance.AuditEvent
   alias MemHouse.Governance.Engine
   alias MemHouse.Governance.Erasure
-  alias MemHouse.Governance.AuditEvent
   alias MemHouse.Governance.GateDecision
   alias MemHouse.Governance.GateRule
   alias MemHouse.Governance.PeerQuery
