@@ -155,6 +155,26 @@ defmodule MemHouse.Eval.ExperimentTest do
     end
   end
 
+  test "fixture isolation evidence requires non-negative integer counts", %{tmp_dir: tmp_dir} do
+    for {field, invalid_count} <- [
+          {"isolation_candidates_checked", 1.5},
+          {"isolation_leaks", -1}
+        ] do
+      definition =
+        put_in(
+          definition(),
+          ["variants", Access.at(1), "fixture_metrics", "safety", field],
+          invalid_count
+        )
+
+      definition_path = write_definition!(tmp_dir, definition)
+
+      assert_raise ArgumentError, ~r/isolation counts must be non-negative integers/, fn ->
+        Experiment.run(definition_path, [])
+      end
+    end
+  end
+
   test "two floating-point zero latencies produce a neutral ratio", %{tmp_dir: tmp_dir} do
     definition =
       definition()

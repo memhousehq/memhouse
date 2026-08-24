@@ -98,6 +98,18 @@ defmodule MemHouse.Eval.ScorerTest do
              "passed" => false,
              "method" => "source-membership-v2"
            }
+
+    passing =
+      Scorer.summarize([
+        %{"isolation_candidates_checked" => 1, "isolation_leaks" => 0}
+      ])
+
+    assert passing["isolation"] == %{
+             "candidates_checked" => 1,
+             "leaks" => 0,
+             "passed" => true,
+             "method" => "source-membership-v2"
+           }
   end
 
   # Declining is the correct behaviour for an unanswerable question, so it has

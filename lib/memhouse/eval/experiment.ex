@@ -343,6 +343,18 @@ defmodule MemHouse.Eval.Experiment do
                   is_number(get_in(metrics, ["safety", "abstention_accuracy"]))) do
         raise ArgumentError, "fixture variants require complete numeric stage metrics"
       end
+
+      isolation_count_paths = [
+        ["safety", "isolation_candidates_checked"],
+        ["safety", "isolation_leaks"]
+      ]
+
+      unless Enum.all?(isolation_count_paths, fn path ->
+               count = get_in(metrics, path)
+               is_integer(count) and count >= 0
+             end) do
+        raise ArgumentError, "fixture isolation counts must be non-negative integers"
+      end
     end)
   end
 
