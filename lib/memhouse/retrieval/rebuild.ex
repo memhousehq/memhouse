@@ -19,10 +19,11 @@ defmodule MemHouse.Retrieval.Rebuild do
   Stops at the first error. Completed stages remain committed; replay is the recovery path.
 
   A successful rebuild emits `[:memhouse, :retrieval, :projection_refresh]`
-  carrying indexed/projected/removed counts and the resulting coverage, so an operator can
-  alert on a scope whose vectors never arrived instead of waiting for a user to
-  report missing recall. It is the only signal this lane produces: the stage
-  counts below are returned to the caller and stored nowhere.
+  carrying indexed/projected/removed counts and coverage read from persisted
+  scope state after the refresh writes complete, so an operator can alert on a
+  scope whose vectors never arrived instead of waiting for a user to report
+  missing recall. It is the only signal this lane produces: the stage counts
+  below are returned to the caller and stored nowhere.
 
   Returns `{:ok, %{index: ..., entities: ..., projections: ...}}` with each
   stage's counts, or the first stage error. Raises if an underlying read or

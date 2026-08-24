@@ -92,8 +92,11 @@ defmodule MemHouse.ProjectionRefreshTelemetryTest do
       assert metadata.account_id == account_id
       assert metadata.scope_id == message["scope_id"]
     after
-      cleanup_account_jobs(account_key)
-      restore_runtime_config(original)
+      try do
+        cleanup_account_jobs(account_key)
+      after
+        restore_runtime_config(original)
+      end
     end
   end
 
