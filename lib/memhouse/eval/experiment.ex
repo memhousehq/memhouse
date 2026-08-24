@@ -939,7 +939,7 @@ defmodule MemHouse.Eval.Experiment do
 
   defp assert_category_gate_map!(_name, _configured), do: :ok
 
-  defp category_coverage!(metrics, category) do
+  defp category_coverage!(metrics, category) when is_map(metrics) do
     case Map.get(metrics, "questions", 0) do
       coverage when is_integer(coverage) and coverage >= 0 ->
         coverage
@@ -948,6 +948,11 @@ defmodule MemHouse.Eval.Experiment do
         raise ArgumentError,
               "quality.by_category #{inspect(category)} questions must be a non-negative integer, got #{inspect(value)}"
     end
+  end
+
+  defp category_coverage!(metrics, category) do
+    raise ArgumentError,
+          "quality.by_category #{inspect(category)} must be an object, got #{inspect(metrics)}"
   end
 
   defp assert_category_gate!(name, category, expected) do
