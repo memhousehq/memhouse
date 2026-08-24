@@ -161,7 +161,7 @@ held-out report showing per-field and per-category non-inferiority, zero
 privacy/attribution regressions, and lower calls, tokens, or cost, followed by
 human architecture and licensing review. No paid or live run was performed as
 part of the additive implementation. Disabling the flag immediately restores
-`extract-13` and does not migrate or rewrite stored knowledge.
+`extract-14` and does not migrate or rewrite stored knowledge.
 
 There are exactly five Account-level model roles: `embedder`, `reranker`,
 `ingest_extractor`, `dream_reasoner`, and `dialectic_agent`. Only secret

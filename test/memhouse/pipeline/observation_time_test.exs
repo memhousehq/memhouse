@@ -91,6 +91,18 @@ defmodule MemHouse.Pipeline.ObservationTimeTest do
       assert prompt =~ "Valid time is independent of kind"
       refute prompt =~ "whatever else it also asserts"
     end
+
+    test "turns an anchored elapsed ownership duration into its dated start event" do
+      Memory.extract_message(seed_message!("obs-acquisition"))
+
+      prompt = system_prompt()
+
+      assert prompt =~ "elapsed possession or relationship duration"
+      assert prompt =~ "event that started the duration"
+      assert prompt =~ "implied calendar period"
+      assert prompt =~ "Store the start event"
+      assert prompt =~ "not the elapsed duration as a timeless"
+    end
   end
 
   describe "valid time" do

@@ -86,7 +86,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
     provider: "test-provider",
     model: "test-model",
     model_version: "v1",
-    prompt_version: "extract-13",
+    prompt_version: "extract-14",
     pipeline_version: "f5-1",
     config_version: 1,
     options: %{}

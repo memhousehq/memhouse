@@ -30,6 +30,8 @@ defmodule MemHouse.Model.Schema.ExtractionSupport do
 
   @number_words ~w(one two three four five six seven eight nine ten eleven twelve)
 
+  @anchored_elapsed_months ~r/(?:\b(?:have|has|had)\b|['’]ve\b)\s+(?:[\p{L}\p{N}_,'’\-]+\s+){0,8}?(?:had|owned|kept|known|been)\b[^.!?]{0,120}?\bfor\s+(?:about|around|approximately|roughly)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+months?\b/iu
+
   @doc "Returns a trimmed string field or a content-free validation error."
   def non_empty_string(item, key) do
     case fetch(item, key) do
@@ -100,6 +102,28 @@ defmodule MemHouse.Model.Schema.ExtractionSupport do
 
   def resolve_relative_datetime(_evidence, _occurred_at), do: :error
 
+  @doc "Returns calendar-month ranges implied by anchored approximate month durations."
+  def resolve_elapsed_duration_months(source, observed_on)
+      when is_binary(source) and is_struct(observed_on, Date) do
+    source
+    |> elapsed_duration_matches()
+    |> Enum.map(fn %{months: months} ->
+      inferred = Date.shift(observed_on, month: -months)
+      Date.range(Date.beginning_of_month(inferred), Date.end_of_month(inferred))
+    end)
+  end
+
+  def resolve_elapsed_duration_months(_source, _observed_on), do: []
+
+  @doc "Returns the source fragments and month counts for anchored elapsed durations."
+  def elapsed_duration_matches(source) when is_binary(source) do
+    @anchored_elapsed_months
+    |> Regex.scan(source)
+    |> Enum.map(fn [text, amount] -> %{text: text, months: relative_amount(amount)} end)
+  end
+
+  def elapsed_duration_matches(_source), do: []
+
   @doc "Converts a date to UTC midnight."
   def beginning_of_day(date), do: DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
 
@@ -163,6 +187,10 @@ defmodule MemHouse.Model.Schema.Extraction do
     its supporting span must occur verbatim in one of those cited messages.
     A statement date must also be present in cited text or resolve from a
     relative-time expression in that text.
+  - **Anchored durations produce start events.** An approximate elapsed month
+    duration for a possession or relationship cannot become a timeless duration
+    fact. It must become an event whose start is in the implied calendar month
+    and whose end is null.
   - **Time bounds must be coherent.** A validity window that starts after it
     ends is rejected.
   - **Nothing here activates knowledge.** A valid candidate is still only a
@@ -183,7 +211,14 @@ defmodule MemHouse.Model.Schema.Extraction do
   alias MemHouse.Knowledge.KnowledgeItem
 
   import MemHouse.Model.Schema.ExtractionSupport,
-    only: [fetch: 2, first_person?: 1, non_empty_string: 2, resolve_relative_dates: 2]
+    only: [
+      fetch: 2,
+      first_person?: 1,
+      non_empty_string: 2,
+      elapsed_duration_matches: 1,
+      resolve_elapsed_duration_months: 2,
+      resolve_relative_dates: 2
+    ]
 
   alias MemHouse.Knowledge.Statement
 
@@ -440,6 +475,15 @@ defmodule MemHouse.Model.Schema.Extraction do
          {:ok, sensitivity} <- enum(item, "sensitivity", allowed(:sensitivity)),
          {:ok, target_level} <- enum(item, "target_level", allowed(:target_level)),
          {:ok, temporal} <- temporal(item),
+         :ok <-
+           anchored_elapsed_duration(
+             item,
+             statement,
+             kind,
+             temporal,
+             source_message_ids,
+             context
+           ),
          :ok <- temporal_order(temporal),
          casted <-
            %{
@@ -607,6 +651,147 @@ defmodule MemHouse.Model.Schema.Extraction do
   end
 
   defp date_resolved?(_date, _source, _occurred_at), do: false
+
+  # An approximate elapsed duration does not support a timeless duration fact or
+  # an invented exact day. It supports the event that started the state and the
+  # calendar month in which that event occurred. This deterministic floor makes
+  # a bad first response repairable while the provider still writes the natural
+  # event wording.
+  defp anchored_elapsed_duration(
+         item,
+         statement,
+         kind,
+         temporal,
+         source_message_ids,
+         context
+       ) do
+    case non_empty_string(item, "supporting_span") do
+      {:ok, supporting_span} ->
+        matches =
+          anchored_elapsed_matches(
+            supporting_span,
+            statement,
+            kind,
+            source_message_ids,
+            context
+          )
+
+        validate_anchored_elapsed_duration(
+          matches,
+          statement,
+          kind,
+          temporal,
+          Map.get(context, :occurred_at)
+        )
+
+      _other ->
+        :ok
+    end
+  end
+
+  # The supporting span is model-selected. A bad response must not evade the
+  # duration rule by shortening that span to an exact but uninformative token.
+  # Consult cited evidence only for a duration paraphrase or recognized start
+  # event, and require shared relation/entity terms. That keeps an unrelated
+  # event in the same message from inheriting the duration's date.
+  defp anchored_elapsed_matches(
+         supporting_span,
+         statement,
+         kind,
+         source_message_ids,
+         context
+       ) do
+    case elapsed_duration_matches(supporting_span) do
+      [_ | _] = matches ->
+        matches
+
+      [] ->
+        if elapsed_duration_statement?(statement) or
+             (kind == "event" and elapsed_start_event_statement?(statement)) do
+          context
+          |> Map.get(:window_messages, [])
+          |> Enum.filter(&(fetch(&1, "id") in source_message_ids))
+          |> Enum.map(&fetch(&1, "content"))
+          |> Enum.filter(&is_binary/1)
+          |> Enum.join(" ")
+          |> elapsed_duration_matches()
+          |> Enum.filter(&related_duration_match?(&1, supporting_span, statement))
+        else
+          []
+        end
+    end
+  end
+
+  defp validate_anchored_elapsed_duration([], _statement, _kind, _temporal, _occurred_at),
+    do: :ok
+
+  defp validate_anchored_elapsed_duration(
+         matches,
+         statement,
+         kind,
+         temporal,
+         %DateTime{} = occurred_at
+       ) do
+    relevant_date = temporal.relevant_from && DateTime.to_date(temporal.relevant_from)
+
+    ranges =
+      Enum.flat_map(
+        matches,
+        &resolve_elapsed_duration_months(&1.text, DateTime.to_date(occurred_at))
+      )
+
+    if kind == "event" and not elapsed_duration_statement?(statement) and
+         Enum.any?(ranges, &(relevant_date in &1)) and is_nil(temporal.relevant_until) do
+      :ok
+    else
+      anchored_elapsed_duration_error()
+    end
+  end
+
+  defp validate_anchored_elapsed_duration(
+         [_ | _],
+         _statement,
+         _kind,
+         _temporal,
+         _occurred_at
+       ),
+       do: anchored_elapsed_duration_error()
+
+  defp related_duration_match?(%{text: duration_text}, supporting_span, statement) do
+    candidate_terms = duration_relation_terms(supporting_span <> " " <> statement)
+    duration_terms = duration_relation_terms(duration_text)
+
+    not MapSet.disjoint?(candidate_terms, duration_terms)
+  end
+
+  defp duration_relation_terms(text) do
+    stopwords =
+      ~w(user person they them their have has had been for about around approximately roughly month months now obtained acquired adopted bought purchased received met befriended married joined started began owning having keeping knowing dating living working)
+
+    ~r/[\p{L}\p{N}_-]+/u
+    |> Regex.scan(String.downcase(text))
+    |> List.flatten()
+    |> Enum.reject(&(String.length(&1) < 3 or Enum.member?(stopwords, &1)))
+    |> MapSet.new()
+  end
+
+  defp anchored_elapsed_duration_error do
+    {:error, ["anchored elapsed duration must be represented as one dated start event"]}
+  end
+
+  defp elapsed_start_event_statement?(statement) do
+    String.match?(
+      statement,
+      ~r/\b(?:obtained|acquired|adopted|bought|purchased|received|met|befriended|married|joined)\b|\b(?:started|began)\b[^.!?]{0,40}\b(?:owning|having|keeping|knowing|dating|living|working)\b/iu
+    )
+  end
+
+  defp elapsed_duration_statement?(statement) do
+    String.match?(
+      statement,
+      ~r/\bfor\s+(?:about|around|approximately|roughly)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+months?\b/iu
+    )
+  end
 
   # Final gate: build the real pipeline create changeset and ask whether it is
   # valid, without saving. This makes the resource's own attribute constraints,

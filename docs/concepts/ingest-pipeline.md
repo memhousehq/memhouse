@@ -150,7 +150,7 @@ scope target and runs the same ordinary validator below. The flag changes no
 writer, queue, table, lifecycle, or Gate A/B behavior. Its prompt version
 `extract-compact-exp-1` identifies resulting provenance and usage. It remains
 off because the held-out non-inferiority/privacy gate and human ADR review are
-still required; turning it off restores `extract-13` without a data migration.
+still required; turning it off restores `extract-14` without a data migration.
 
 Extraction also does what a naive extractor gets wrong:
 
@@ -189,6 +189,12 @@ Extraction also does what a naive extractor gets wrong:
   that appears in neither the cited text nor a resolvable relative-time phrase.
   Each cited id becomes durable provenance. The supporting span validates the
   proposal but is not copied into knowledge, logs, or job arguments.
+- **Derives dated start events from elapsed durations.** A statement such as
+  "I have had X for about six months" can imply when the possession or
+  relationship started. The extractor records the start as an `event`, not the
+  elapsed duration as a timeless fact. For an approximate month duration,
+  `relevant_from` can be any date in the implied calendar month and
+  `relevant_until` is null. The statement does not claim an exact day.
 - **Records complete provenance.** Provider, model, version, prompt, and
   pipeline identity travel with the result.
 
