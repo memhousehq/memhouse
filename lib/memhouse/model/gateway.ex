@@ -379,7 +379,7 @@ defmodule MemHouse.Model.Gateway do
 
     case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
-      nil -> {:error, %ExtractionBudget.ExceededError{reason: "wall-time cap"}}
+      nil -> {:error, %ExtractionBudget.Exceeded{reason: "wall-time cap"}}
     end
   end
 
