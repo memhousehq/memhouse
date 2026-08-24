@@ -9,17 +9,14 @@
 
 Closes #
 
-## Reference docs
+## Implementation context
 
-<!-- List the internal docs actually used to scope, implement, and review this PR. Include the closest specific document(s), not every possible doc. Use `N/A` only when a category truly does not apply. -->
+<!-- List only the context used to scope, implement, and review this PR. Use `N/A` only when a category truly does not apply. -->
 
+- Originating issue and acceptance criteria:
 - Modules and tests that define the behavior being changed:
-- ADRs: `specs/adr/README.md` or `specs/adr/<adr-file>.md`:
-- Architecture notes: `specs/architecture/README.md` or `specs/architecture/<note>.md`:
-- Roadmap/process docs: `specs/roadmap/beta-roadmap.md`, `specs/process/`:
-- Security/eval docs: `specs/security/README.md`, `specs/eval/README.md`, or a specific note:
 - Published user documentation affected: the page(s) under `docs/`:
-- Other internal docs:
+- Prior issue, pull request, or Git history needed for context:
 
 ## Product invariants
 
@@ -32,24 +29,24 @@ Name the invariants from `AGENTS.md` this PR depends on or preserves, and the te
 
 ## Self-explanatory code
 
-Every touched file must be readable on its own, without opening `specs/` or
-`docs/`. See the "Coding conventions" section of `AGENTS.md`.
+Every touched file must explain its own non-obvious constraints without an
+external design-document pointer. See the writing rules in `AGENTS.md`.
 
 - [ ] Every module touched has a real `@moduledoc`; no `@moduledoc false` added
 - [ ] New or changed public functions have a `@doc` covering return shape and failure modes
-- [ ] No comment or docstring points at a spec, ADR, or roadmap item for its meaning
+- [ ] No comment or docstring depends on a retired document for its meaning
 - [ ] Comments explain why, not what, and no comment contradicts the code it sits next to
 
 ## Documentation
 
-User-visible changes ship their `docs/` update in the same patch. Design
-material goes to `specs/`; development process goes to `CONTRIBUTING.md`. See
-the "Documentation layout" section of `AGENTS.md`.
+Current behavior belongs in source and tests, user and operator procedures in
+`docs/`, contributor process in `CONTRIBUTING.md`, and durable rationale in the
+scoped issue, pull request, and Git history.
 
 - [ ] Every changed route, parameter, default, environment variable, Mix task, or operational step is reflected in the affected `docs/` page
 - [ ] Any new `docs/` page is listed in the `nav:` of `mkdocs.yml`
 - [ ] `mkdocs build` passes, or the PR states that the toolchain was unavailable
-- [ ] No design document, roadmap item, ADR, or benchmark result was added under `docs/`
+- [ ] Public docs do not receive internal design history or benchmark reports
 
 ## Risk class
 

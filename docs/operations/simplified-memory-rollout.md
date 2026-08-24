@@ -27,10 +27,14 @@ The deterministic comparison command is:
 
 ```bash
 mix memhouse.eval.experiment \
-  --definition specs/eval/experiments/memory-profile-ablation.json \
+  --definition /path/to/preregistered-memory-profile-ablation.json \
   --manifest-output /private/tmp/memhouse-experiment-manifest.json \
   --output /private/tmp/memhouse-comparison.json
 ```
+
+The operator-owned definition must be versioned, pin the dataset digest, name
+the current and candidate variants, declare exact component bindings, and
+preregister the gates.
 
 No live or paid benchmark is implied by these steps. A human must approve its
 provider, models, maximum cost, sample, and time limit before it runs.
@@ -113,6 +117,8 @@ If the release itself must be rolled back, restore the database and blob
 snapshot together before starting old code, as described in
 [Upgrades](upgrades.md).
 
-Physical removal of a derived component is governed by the repository's
-[`specs/eval/component-retirement-manifest.md`](https://github.com/memhousehq/memhouse/blob/main/specs/eval/component-retirement-manifest.md).
-No component in this release qualified for physical deletion.
+Physical removal of a derived component requires a matched marginal ablation,
+compatibility-window evidence for external PostgreSQL and packaged pg0,
+rollback rehearsal, and explicit human approval. Fixture-only evidence may
+enable a canary but cannot authorize physical deletion. No component in this
+release qualified for physical deletion.

@@ -55,7 +55,7 @@ defmodule Mix.Tasks.Memhouse.Eval.Release do
 
     report =
       ReleaseSuite.run(
-        Keyword.get(opts, :manifest, "specs/eval/release-suite.json"),
+        Keyword.get(opts, :manifest, "test/fixtures/eval/release-suite.json"),
         account_key: Keyword.get(opts, :account, "eval-release"),
         run_id: Keyword.get(opts, :run_id),
         thresholds: Keyword.get(opts, :thresholds),

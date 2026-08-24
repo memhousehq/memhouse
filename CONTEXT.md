@@ -10,9 +10,7 @@ Use these files as the entry points for agent work:
 - `docs/agents/` — issue, triage, and domain-document conventions.
 - `lib/` and `test/` — current behavior and its executable specification.
 - `docs/` — published user and operator procedures.
-- `specs/adr/` — decisions and alternatives that were ruled out.
-- `specs/architecture/` — cross-cutting module boundaries.
-- `specs/roadmap/beta-roadmap.md` — outstanding work.
+- GitHub issues — outstanding scoped work and acceptance criteria.
 
 Start from current `main`, use one scoped issue, one branch, and one pull
 request, and keep human review as the merge gate.

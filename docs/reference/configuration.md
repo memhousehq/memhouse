@@ -162,8 +162,8 @@ version carrying that exact prompt identity before enabling the switch. A
 mismatch fails before the provider call and becomes operator-repairable; it
 never records false provenance.
 
-This is not a production default. ADR 0021 requires a preregistered matched
-held-out report showing per-field and per-category non-inferiority, zero
+This is not a production default. Changing the default requires a preregistered
+matched held-out report showing per-field and per-category non-inferiority, zero
 privacy/attribution regressions, and lower calls, tokens, or cost, followed by
 human architecture and licensing review. No paid or live run was performed as
 part of the additive implementation. Disabling the flag immediately restores

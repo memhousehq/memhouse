@@ -86,11 +86,7 @@ Full definitions are in the [Glossary](reference/glossary.md).
 
 ## Documentation
 
-This site covers installation, usage, and operations. Design material —
-architecture decision records, the roadmap, and evaluation evidence — is not
-published here. It lives in the
-[`specs/` directory](https://github.com/memhousehq/memhouse/tree/main/specs)
-of the repository, next to the code it describes. Contribution rules are in
+This site covers current installation, usage, and operations. Contribution rules are in
 [`CONTRIBUTING.md`](https://github.com/memhousehq/memhouse/blob/main/CONTRIBUTING.md)
 and the agent operating contract is
 [`AGENTS.md`](https://github.com/memhousehq/memhouse/blob/main/AGENTS.md).

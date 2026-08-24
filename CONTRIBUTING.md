@@ -8,8 +8,8 @@ gate.
 1. Read `AGENTS.md`.
 2. Read the modules the task touches, their tests, and the affected user guide.
    The code and its tests are the specification of current behavior.
-3. Check `specs/roadmap/beta-roadmap.md` for outstanding work, and the closest
-   `specs/adr/` record before you reopen a settled decision.
+3. Read the scoped issue and its acceptance criteria. Use relevant issue, pull
+   request, and Git history when code and tests do not show the needed rationale.
 4. Inspect the worktree and preserve unrelated changes.
 
 ## Keep changes focused
@@ -17,7 +17,8 @@ gate.
 - Implement only the approved task and its acceptance criteria.
 - Put durable writes behind Ash actions.
 - Keep migrations and resource snapshots synchronized with `mix ash.codegen`.
-- Update code, tests, docs, fixtures, and ADRs together when behavior changes.
+- Update affected code, tests, docs, fixtures, and scoped issue or pull request
+  rationale together when behavior changes.
 - Do not add automation, governance, licensing, or later-roadmap work as
   incidental cleanup.
 - Never overwrite another contributor's work.
@@ -49,14 +50,13 @@ See `AGENTS.md` for the full writing style and architecture guardrails.
 | --- | --- |
 | Source and tests | Current behavior, and the rules the system enforces |
 | `docs/` | Published setup, usage, operations, and current behavior |
-| `specs/` | Decisions, outstanding work, module boundaries, evaluation evidence, and process |
 | `CONTRIBUTING.md` | Development workflow |
 | `README.md` | Project orientation |
 
-Do not put design history in `docs/`, or leave user procedures only in specs or
-source comments. Do not add a `specs/` page that restates implemented behavior;
-it will drift from the code. Add new docs pages to `mkdocs.yml`; use absolute
-GitHub URLs for links from `docs/` outside that tree.
+Issue and pull request history holds decisions that code cannot show. Do not put
+design history or benchmark reports in `docs/`, or leave user procedures only
+in source comments. Add new docs pages to `mkdocs.yml`; use absolute GitHub URLs
+for links from `docs/` outside that tree.
 
 Behavior and documentation ship together. Common mappings:
 
@@ -66,9 +66,9 @@ Behavior and documentation ship together. Common mappings:
 | Environment or default | Configuration reference and `.env.example` |
 | Mix/release command | Mix task reference |
 | Install or operations behavior | Affected getting-started/operations page |
-| Product behavior | Affected concept and architecture note |
-| Contract version | Contract reference, changelog, architecture note |
-| Surface availability | Limitations and surface inventory |
+| Product behavior | Affected source/tests and concept or reference page |
+| Contract version | Contract tests, reference page, changelog, and scoped issue/PR rationale |
+| Surface availability | Limitations and `test/fixtures/eval/surface-contract-inventory.json` |
 
 ## Branch and PR workflow
 

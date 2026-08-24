@@ -10,13 +10,11 @@
 # Outputs: a static site in `site/` (git-ignored), uploaded as a Pages artifact.
 #
 # Assumptions and rules:
-#   * `docs/` holds user-facing documentation only — installation, usage,
-#     operations, and explanations of how the system behaves. Design documents,
-#     specifications, ADRs, roadmaps, and evaluation evidence live in `specs/`
-#     and are deliberately NOT part of this site.
+#   * `docs/` alone is the published site. Source and tests are authoritative;
+#     retained root, workflow, legal, security, and SDK files stay repository-only.
 #   * `strict: true` turns a broken internal link or a page missing from `nav`
 #     into a build failure, so the published site cannot silently rot. Links
-#     that point at `specs/` or at repository source must therefore be absolute
+#     that point at retained repository files outside `docs/` must be absolute
 #     GitHub URLs, not relative paths — MkDocs cannot resolve anything outside
 #     `docs/`.
 #   * Diagrams are Mermaid fenced blocks. The `pymdownx.superfences` custom

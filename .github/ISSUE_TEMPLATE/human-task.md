@@ -14,17 +14,14 @@ assignees: ""
 
 <!-- Explain the decision, access, product, licensing, security, or coordination concern that makes this human-only. -->
 
-## Reference docs
+## Implementation context
 
-<!-- Link the internal docs that provide the task context reviewers and implementers should read. Include the closest specific document(s), not every possible doc. Delete rows that do not apply. -->
+<!-- Link only the context needed to implement and review this task. Delete rows that do not apply. -->
 
+- Originating issue and acceptance criteria:
 - Modules and tests that define the behavior being changed:
-- ADRs: `specs/adr/README.md` or `specs/adr/<adr-file>.md`:
-- Architecture notes: `specs/architecture/README.md` or `specs/architecture/<note>.md`:
-- Roadmap/process docs: `specs/roadmap/beta-roadmap.md`, `specs/process/`:
-- Security/eval docs: `specs/security/README.md`, `specs/eval/README.md`, or a specific note:
 - Published user documentation affected: the page(s) under `docs/`:
-- Other internal docs:
+- Prior issue, pull request, or Git history needed for context:
 
 ## Product invariants
 
@@ -95,7 +92,7 @@ Execution-control labels:
 
 Risk and routing labels:
 
-- `needs-adr`: Requires an ADR before implementation.
+- `needs-adr`: Requires a human architecture decision with its rationale recorded in the scoped issue before implementation.
 - `security-sensitive`: Security review required.
 - `tenancy-sensitive`: Tenant isolation or account-boundary review required.
 - `audit-sensitive`: Audit, ledger, or immutable-history review required.
