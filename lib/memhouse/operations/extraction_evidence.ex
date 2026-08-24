@@ -103,7 +103,7 @@ defmodule MemHouse.Operations.ExtractionEvidence do
           valid_time: frequencies(statements, &valid_time_shape/1)
         }
       },
-      accounting: accounting(runs, usages, batches)
+      accounting: accounting(runs, usages, batches, statements)
     }
   end
 
@@ -176,7 +176,7 @@ defmodule MemHouse.Operations.ExtractionEvidence do
     }
   end
 
-  defp accounting(runs, usages, batches) do
+  defp accounting(runs, usages, batches, statements) do
     settled_runs = Enum.filter(runs, &(&1.status in @settled_statuses))
 
     checks = %{
@@ -186,6 +186,7 @@ defmodule MemHouse.Operations.ExtractionEvidence do
       evidence_consistent: consistent_batch_evidence?(settled_runs),
       cardinality_complete: batch_cardinality_complete?(settled_runs),
       output_attribution_complete: output_attribution_complete?(settled_runs),
+      attributed_outputs_resolved: attributed_outputs_resolved?(settled_runs, statements),
       counts_complete: non_negative_counts?(runs, usages)
     }
 
@@ -222,6 +223,8 @@ defmodule MemHouse.Operations.ExtractionEvidence do
        "settled extraction batch cardinality does not match its anchors"},
       {checks.settled and not checks.output_attribution_complete,
        "settled extraction runs are missing output attribution"},
+      {checks.settled and checks.output_attribution_complete and
+         not checks.attributed_outputs_resolved, "attributed extraction outputs are missing"},
       {not checks.counts_complete, "extraction accounting contains invalid negative counts"},
       {checks.settled and checks.evidence_complete and expected_attempts != actual_attempts,
        "provider-attempt rows do not match settled batch evidence"},
@@ -272,9 +275,22 @@ defmodule MemHouse.Operations.ExtractionEvidence do
 
   defp extraction_knowledge_item_ids(runs) do
     runs
-    |> Enum.flat_map(fn run -> Map.get(run.payload || %{}, "knowledge_item_ids", []) end)
+    |> Enum.flat_map(fn run -> output_ids(run) end)
     |> Enum.filter(&match?({:ok, _id}, Ecto.UUID.cast(&1)))
     |> Enum.uniq()
+  end
+
+  defp output_ids(run) do
+    case Map.get(run.payload || %{}, "knowledge_item_ids", []) do
+      ids when is_list(ids) -> ids
+      _malformed -> []
+    end
+  end
+
+  defp attributed_outputs_resolved?(runs, statements) do
+    expected = runs |> extraction_knowledge_item_ids() |> MapSet.new()
+    resolved = statements |> Enum.map(& &1.id) |> MapSet.new()
+    MapSet.equal?(expected, resolved)
   end
 
   defp usage_totals(usages) do

@@ -174,6 +174,62 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
            } = json_response(response, 200)
   end
 
+  test "malformed output attribution fails closed instead of crashing the exporter", %{
+    conn: conn,
+    actor: actor,
+    peer: peer,
+    token: token
+  } do
+    scope_root = "/bench/locomo/corpus-malformed-attribution"
+
+    message =
+      ingest_and_extract!(actor, peer.key, "#{scope_root}/case-1", "malformed-attribution")
+
+    run = extraction_run!(actor.account_id, message["id"])
+    replace_output_attribution!(run, "not-a-list", actor)
+
+    response =
+      conn
+      |> with_identity(token)
+      |> get("/api/v1/operations/extraction-evidence", %{"scope_root" => scope_root})
+
+    assert %{
+             "data" => %{
+               "accounting" => %{
+                 "complete" => false,
+                 "reasons" => ["settled extraction runs are missing output attribution"]
+               }
+             }
+           } = json_response(response, 200)
+  end
+
+  test "missing attributed outputs make evidence accounting incomplete", %{
+    conn: conn,
+    actor: actor,
+    peer: peer,
+    token: token
+  } do
+    scope_root = "/bench/locomo/corpus-missing-attribution"
+    message = ingest_and_extract!(actor, peer.key, "#{scope_root}/case-1", "missing-attribution")
+    run = extraction_run!(actor.account_id, message["id"])
+    replace_output_attribution!(run, [Ecto.UUID.generate()], actor)
+
+    response =
+      conn
+      |> with_identity(token)
+      |> get("/api/v1/operations/extraction-evidence", %{"scope_root" => scope_root})
+
+    assert %{
+             "data" => %{
+               "statements" => %{"count" => 0},
+               "accounting" => %{
+                 "complete" => false,
+                 "reasons" => ["attributed extraction outputs are missing"]
+               }
+             }
+           } = json_response(response, 200)
+  end
+
   test "fails closed for a missing scope and a non-admin caller", %{
     conn: conn,
     actor: actor,
@@ -363,6 +419,21 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                [%{role: "user", content: "second attempt"}],
                %{"type" => "object"}
              )
+  end
+
+  test "hard budget rejects values outside PostgreSQL bigint range", %{
+    conn: conn,
+    token: token
+  } do
+    response =
+      conn
+      |> with_identity(token)
+      |> put(
+        "/api/v1/operations/extraction-budget",
+        budget_attrs("/bench/locomo/corpus-overflow", 9_223_372_036_854_775_808)
+      )
+
+    assert %{"error" => "Invalid request"} = json_response(response, 422)
   end
 
   test "gateway refuses an extractor provider callback after hard-budget exhaustion", %{
@@ -703,6 +774,16 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
         |> Ash.read_one!(actor: pipeline_actor)
       end
     )
+  end
+
+  defp replace_output_attribution!(run, value, actor) do
+    run
+    |> Ash.Changeset.for_update(
+      :record_extraction_outputs,
+      %{payload: Map.put(run.payload, "knowledge_item_ids", value)}
+    )
+    |> Ash.Changeset.set_tenant(run.account_id)
+    |> Ash.update!(actor: pipeline_actor(actor))
   end
 
   defp budget_attrs(scope_root, request_cap) do

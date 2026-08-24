@@ -19,6 +19,7 @@ defmodule MemHouse.Operations.ExtractionBudget do
     scope_root request_cap token_cap usd_micros_cap deadline_at
     input_usd_micros_per_million output_usd_micros_per_million
   ))
+  @max_bigint 9_223_372_036_854_775_807
 
   defmodule Exceeded do
     defexception [:reason]
@@ -200,12 +201,18 @@ defmodule MemHouse.Operations.ExtractionBudget do
 
   defp fetch_positive!(attrs, key) do
     value = Map.fetch!(attrs, key)
-    if is_integer(value) and value > 0, do: value, else: raise(ArgumentError)
+
+    if is_integer(value) and value > 0 and value <= @max_bigint,
+      do: value,
+      else: raise(ArgumentError)
   end
 
   defp fetch_non_negative!(attrs, key) do
     value = Map.fetch!(attrs, key)
-    if is_integer(value) and value >= 0, do: value, else: raise(ArgumentError)
+
+    if is_integer(value) and value >= 0 and value <= @max_bigint,
+      do: value,
+      else: raise(ArgumentError)
   end
 
   defp reserved_map([requests, tokens, usd]),
