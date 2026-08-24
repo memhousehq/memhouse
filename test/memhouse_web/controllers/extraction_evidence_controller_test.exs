@@ -12,6 +12,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
   alias MemHouse.Operations.ExtractionBudget
   alias MemHouse.Operations.PipelineRun
   alias MemHouse.Pipeline.ExtractionBatcher
+  alias MemHouse.Pipeline.Extractor
 
   require Ash.Query
 
@@ -54,6 +55,8 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
       |> with_identity(token)
       |> get("/api/v1/operations/extraction-evidence", %{"scope_root" => scope_root})
 
+    prompt_version = Extractor.prompt_version()
+
     assert %{
              "data" => %{
                "schema_version" => "memhouse-extraction-evidence-1",
@@ -82,7 +85,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                  "provenance" => [
                    %{
                      "provider" => "deterministic",
-                     "prompt_version" => "extract-13",
+                     "prompt_version" => ^prompt_version,
                      "pipeline_version" => "f5-1",
                      "attempts" => 1
                    }
@@ -92,7 +95,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                  "count" => 1,
                  "distributions" => %{
                    "kind" => %{"preference" => 1},
-                   "prompt_version" => %{"extract-13" => 1}
+                   "prompt_version" => %{^prompt_version => 1}
                  }
                },
                "accounting" => %{"complete" => true, "reasons" => []}
@@ -259,6 +262,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
       })
 
     build_sha = Application.fetch_env!(:memhouse, :build_sha)
+    prompt_version = Extractor.prompt_version()
 
     assert %{
              "data" => %{
@@ -268,7 +272,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                "usd_micros_reserved" => 0,
                "extraction_identity" => %{
                  "build_sha" => ^build_sha,
-                 "prompt_version" => "extract-13",
+                 "prompt_version" => ^prompt_version,
                  "pipeline_version" => "f5-1",
                  "batching_enabled" => false,
                  "batching_identity" =>
@@ -280,7 +284,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     context = %{
       account_id: actor.account_id,
       scope_path: "#{scope_root}/case-1",
-      actor: actor
+      actor: pipeline_actor(actor)
     }
 
     assert {:ok, remaining_ms} =
@@ -315,7 +319,12 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     scope_root = "/bench/locomo/corpus-gateway-budget"
     assert {:ok, _budget} = ExtractionBudget.register(actor, budget_attrs(scope_root, 1))
 
-    context = %{account_id: actor.account_id, scope_path: "#{scope_root}/case-1", actor: actor}
+    context = %{
+      account_id: actor.account_id,
+      scope_path: "#{scope_root}/case-1",
+      actor: pipeline_actor(actor)
+    }
+
     messages = [%{role: "user", content: "Avery prefers concise summaries."}]
     schema = %{"type" => "object"}
 
@@ -342,6 +351,40 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     refute_receive :provider_called
   end
 
+  test "gateway requires a system pipeline actor before reserving extraction budget", %{
+    actor: actor
+  } do
+    previous_provider = Application.get_env(:memhouse, :model_provider)
+    Application.put_env(:memhouse, :model_provider, CountingProvider)
+    Application.put_env(:memhouse, :extraction_budget_test_pid, self())
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, previous_provider)
+      Application.delete_env(:memhouse, :extraction_budget_test_pid)
+    end)
+
+    scope_root = "/bench/locomo/corpus-reserve-authorization"
+    assert {:ok, _budget} = ExtractionBudget.register(actor, budget_attrs(scope_root, 1))
+
+    assert {:error, :unauthorized, 0} =
+             Gateway.structured_once_with_usage_and_attempt(
+               :ingest_extractor,
+               [%{role: "user", content: "request-derived actor must not reserve"}],
+               %{"type" => "object"},
+               %{
+                 account_id: actor.account_id,
+                 scope_path: "#{scope_root}/case-1",
+                 actor: actor
+               },
+               task: :extraction
+             )
+
+    refute_receive :provider_called
+
+    assert {:ok, %{requests_reserved: 0}} =
+             ExtractionBudget.register(actor, budget_attrs(scope_root, 1))
+  end
+
   test "an open provider circuit does not consume extraction budget", %{actor: actor} do
     previous_circuit = Application.fetch_env!(:memhouse, :ingest_provider_circuit)
 
@@ -362,7 +405,13 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     end)
 
     scope_root = "/bench/locomo/corpus-open-circuit"
-    context = %{account_id: actor.account_id, scope_path: "#{scope_root}/case-1", actor: actor}
+
+    context = %{
+      account_id: actor.account_id,
+      scope_path: "#{scope_root}/case-1",
+      actor: pipeline_actor(actor)
+    }
+
     config = MemHouse.Model.role_config(:ingest_extractor, context)
 
     assert {:ok, permit} = ProviderCircuit.checkout(config, context)
@@ -402,7 +451,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
                %{
                  account_id: actor.account_id,
                  scope_path: "#{literal_scope}/case-1",
-                 actor: actor
+                 actor: pipeline_actor(actor)
                },
                [%{role: "user", content: "literal scope"}],
                %{"type" => "object"}
@@ -427,7 +476,7 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
     context = %{
       account_id: actor.account_id,
       scope_path: "/bench/locomo/root-covered/case-1",
-      actor: actor
+      actor: pipeline_actor(actor)
     }
 
     assert {:ok, remaining_ms} =
@@ -450,12 +499,14 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
   test "length-based scope ordering prefers specific guards over root guard", %{actor: actor} do
     specific_scope = "/bench/locomo/root-covered"
     assert {:ok, _root_budget} = ExtractionBudget.register(actor, budget_attrs("/", 2))
-    assert {:ok, _specific_budget} = ExtractionBudget.register(actor, budget_attrs(specific_scope, 1))
+
+    assert {:ok, _specific_budget} =
+             ExtractionBudget.register(actor, budget_attrs(specific_scope, 1))
 
     descendant_context = %{
       account_id: actor.account_id,
       scope_path: "#{specific_scope}/case-1",
-      actor: actor
+      actor: pipeline_actor(actor)
     }
 
     assert {:ok, remaining_ms} =
@@ -526,6 +577,8 @@ defmodule MemHouseWeb.ExtractionEvidenceControllerTest do
       "output_usd_micros_per_million" => 250_000
     }
   end
+
+  defp pipeline_actor(actor), do: %{actor | role: :system, pipeline?: true}
 
   defp with_identity(conn, token),
     do: put_req_header(conn, "authorization", "Bearer #{token}")

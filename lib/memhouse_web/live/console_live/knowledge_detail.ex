@@ -81,9 +81,13 @@ defmodule MemHouseWeb.ConsoleLive.KnowledgeDetail do
   def handle_event("promote", %{"target_scope_id" => target_scope_id}, socket) do
     id = socket.assigns.detail.item.id
 
-    guard(socket, "Promotion requested. It is held until a second human decision.", fn actor ->
-      Engine.request_promotion(actor, id, target_scope_id)
-    end)
+    guard(
+      socket,
+      "Promotion requested. It is held for review and, when required, subject consent.",
+      fn actor ->
+        Engine.request_promotion(actor, id, target_scope_id)
+      end
+    )
   end
 
   def handle_event("subject", %{"verdict" => verdict}, socket) do

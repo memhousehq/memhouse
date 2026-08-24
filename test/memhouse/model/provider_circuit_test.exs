@@ -72,9 +72,10 @@ defmodule MemHouse.Model.ProviderCircuitTest do
   Verifies provider-circuit admission, recovery, cleanup, and Account isolation.
   """
 
-  use ExUnit.Case, async: false
+  use MemHouse.DataCase, async: false
 
   alias MemHouse.Model.Config.Role
+  alias MemHouse.DataLayer
   alias MemHouse.Model.Gateway
   alias MemHouse.Model.ProviderCircuit
   alias MemHouse.Model.ProviderCircuitTest.ExitingProvider
@@ -86,7 +87,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
     provider: "test-provider",
     model: "test-model",
     model_version: "v1",
-    prompt_version: "extract-13",
+    prompt_version: "extract-14",
     pipeline_version: "f5-1",
     config_version: 1,
     options: %{}
@@ -122,7 +123,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
 
   test "opens after bounded consecutive failures and reports content-free state" do
     events = attach_events()
-    context = %{account_id: Ecto.UUID.generate()}
+    context = Ecto.UUID.generate() |> pipeline_context()
 
     assert {:ok, first} = ProviderCircuit.checkout(@config, context, 0)
     assert :ok = ProviderCircuit.complete(first, {:error, :provider_upstream_error}, 0)
@@ -317,7 +318,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
   end
 
   test "gateway converts provider exits and completes the circuit permit" do
-    context = %{account_id: Ecto.UUID.generate()}
+    context = Ecto.UUID.generate() |> pipeline_context()
     Application.put_env(:memhouse, :model_provider, ExitingProvider)
     config = MemHouse.Model.role_config(:ingest_extractor, context)
 
@@ -347,7 +348,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
   end
 
   test "one Account/provider/role circuit spans model identities but not providers" do
-    context = %{account_id: Ecto.UUID.generate()}
+    context = Ecto.UUID.generate() |> pipeline_context()
     open!(context, 0)
 
     same_provider_new_model = %{
@@ -371,7 +372,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
       open_ms: 30_000
     )
 
-    context = %{account_id: Ecto.UUID.generate()}
+    context = Ecto.UUID.generate() |> pipeline_context()
 
     assert {:error, :provider_upstream_error} =
              Gateway.structured_once(:ingest_extractor, [], %{}, context)
@@ -392,9 +393,8 @@ defmodule MemHouse.Model.ProviderCircuitTest do
       open_ms: 30_000
     )
 
-    account_id = Ecto.UUID.generate()
-    message = message(account_id)
-    context = %{account_id: account_id}
+    context = Ecto.UUID.generate() |> pipeline_context()
+    message = message(context.account_id)
 
     # Structured generation would ordinarily retry provider_upstream_error.
     # The first failure opens admission, so its repair and the replayed single
@@ -423,6 +423,21 @@ defmodule MemHouse.Model.ProviderCircuitTest do
     assert {:ok, second} = ProviderCircuit.checkout(@config, context, now_ms)
     assert :ok = ProviderCircuit.complete(second, {:error, :provider_upstream_error}, now_ms)
     assert ProviderCircuit.status(@config, context, now_ms).state == :open
+  end
+
+  defp pipeline_context(account_id) do
+    DataLayer.with_account_key(
+      "provider-circuit-#{account_id}",
+      [role: :system, pipeline?: true],
+      fn account, actor ->
+        %{
+          account_id: account.id,
+          scope_id: nil,
+          scope_path: "/provider-circuit-test",
+          actor: actor
+        }
+      end
+    )
   end
 
   defp message(account_id) do

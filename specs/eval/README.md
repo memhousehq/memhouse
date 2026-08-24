@@ -24,12 +24,26 @@ profile version tag rather than a phase name. Current public claims must use
 the `f11-1` report schema and exact `f7-1` profile evidence; never relabel the
 historical files.
 
-New runner output uses report schema `f11-2`. It adds top-level accounting counts
+Report schema `f11-2` added top-level accounting counts
 and an `accounting` block with
 available, sampled, attempted, evaluated, skipped, failed, and cancelled counts
 plus one private-content-free item id/status record per sampled case. The counts
 must balance (attempted means evaluated, failed, or cancelled); `f11-1` remains readable as a historical compatibility format and
 the committed reports are not rewritten.
+
+New runner output uses report schema `f11-3`. It adds a content-safe `lifecycle`
+block while retaining the `f11-2` accounting contract. It reads all
+case scopes with the internal Account actor, so authorization-hidden states are
+included. `final_states` contains all public states, including zeroes, while
+`absent_final_states` describes the end-of-run snapshot and `exercised_states`
+is derived from transition history;
+`transitions` counts each `from_state`, `to_state`, and stable reason, and
+`audit_transitions` must be exactly the same distribution;
+`unexercised_states` identifies states transition history never reached and
+`unexercised_reasons` records the contract fixture each such state requires. The validator
+requires the transition total, lifecycle-event total, and matching lifecycle
+audit total to balance. This is evidence of what the fixture exercised, not a
+claim that an ordinary workload must use every state.
 
 The baseline contract also freezes the four tiny input fixtures independently
 of volatile database UUIDs and latency values.
@@ -40,6 +54,15 @@ question IDs.
 ```bash
 mix test test/memhouse/eval/fixture_contract_test.exs
 ```
+
+`test/fixtures/eval/issue-279-acquisition-events.json` preregisters the later
+live extraction check for anchored ownership durations. It is not a result
+artifact. Each A/B/C arm uses the same 10 repeated paired batches, for 20
+anchored observations per arm: 30 pre-repair requests and 60 anchor
+presentations overall. First run each arm's requests through provider-free
+admission and record the tokenizer identity, input allowance, reserved output,
+safety margin, and context limit. Price requests, tokens, and cost separately
+per arm only after its dry run.
 
 ```bash
 mix memhouse.eval.smoke --profile balanced --account eval-poc
@@ -176,7 +199,15 @@ harness never stores fake deterministic embeddings.
 
 The measured section stages quality, citation, abstention, unexpected-source isolation, provider
 usage, operator-priced cost, wall/recall latency, stored facts, dream-time accounting, database
-query count/timing, and new `PipelineRun` work by kind and status. A telemetry handler counts only
+query count/timing, and new `PipelineRun` work by kind and status. For completed projection runs,
+maintenance also reports scheduled and skipped counts for source indexing, Knowledge indexing,
+RecallDocuments, entity caches, and context projections from the immutable plan captured in each
+run. The legacy current dream path's separate entity-resolution lane is also completed and counted
+explicitly; minimal creates no such lane. After each case ingests, the harness executes only new
+measured cache work before its
+questions; pre-existing work is excluded and any non-completed state fails the run. A minimal result therefore proves
+entity/context work was disabled instead of inferring that from absent reads or an unchanged
+projection-run count. A telemetry handler counts only
 the bounded runner interval; the before/after snapshot queries are outside it. It never records
 SQL, parameters, results, content, or Account ids. An idle-enabled execute case must supply at
 least two active direct-item generations in its exact scope. The harness creates real durable
@@ -188,6 +219,9 @@ fails unless its explicit dream pass records every enabled operation.
 Gates cover regression, citation and unsupported-answer failures, source-membership leaks,
 token/cost and latency budgets, and replay effects. Measured evidence is structurally separate
 from inferences and unreproduced first-party claims.
+An isolation gate is exercised only when it checks at least one retrieved candidate identity.
+Zero candidates therefore fails promotion evidence even when the leak count is zero; comparison
+artifacts record both the content-free candidate count and leak count.
 Source-membership accounting normalizes both legacy message provenance and bounded typed
 `source_references`. Message identities translate into the fixture's turn/session labels for
 citation and rank scoring; a document-version identity cannot belong to the message-only runner

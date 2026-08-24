@@ -562,6 +562,40 @@ defmodule MemHouseWeb.MemoryControllerTest do
     assert_trace_id(conn)
   end
 
+  test "POST /api/v1/ask exposes independent recall controls in the data envelope", %{
+    conn: conn,
+    actor: actor,
+    token: token
+  } do
+    seed_memory!(actor, "http-ask-controls", "/contract/http/ask-controls")
+
+    conn =
+      conn
+      |> with_identity(token)
+      |> post(~p"/api/v1/ask", %{
+        "scope_path" => "/contract/http/ask-controls",
+        "question" => "What kind of release summaries does Avery prefer?",
+        "effort" => "low",
+        "include_source_exact_recall" => false,
+        "include_source_semantic_recall" => false,
+        "include_stable_profile_recall" => false
+      })
+
+    assert %{
+             "data" => %{
+               "recall" => %{
+                 "used" => true,
+                 "effort" => "low",
+                 "source_exact_recall_permitted" => false,
+                 "source_semantic_recall_permitted" => false,
+                 "stable_profile_recall_permitted" => false
+               }
+             }
+           } = json_response(conn, 200)
+
+    assert_trace_id(conn)
+  end
+
   # A cited abstention is distinct from the empty fallback above: the evidence
   # supports a qualified inference, but does not establish a conclusion. This
   # is a public response-shape contract because clients must not assume that an

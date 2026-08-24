@@ -118,6 +118,9 @@ defmodule MemHouse.Model.Gateway do
       {:error, %ExtractionBudget.Exceeded{} = error} ->
         {:error, error, 0}
 
+      {:error, :unauthorized} ->
+        {:error, :unauthorized, 0}
+
       {:error, error} ->
         {:error, error, 1}
     end

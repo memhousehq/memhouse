@@ -89,6 +89,7 @@
           "citation_hit_rate": 1.0,
           "abstention_accuracy": 1.0,
           "unsupported_claims": 0,
+          "isolation_candidates_checked": 2,
           "isolation_leaks": 0,
           "dropped_strategy_runs": 0
         },
@@ -147,6 +148,7 @@
           "citation_hit_rate": 1.0,
           "abstention_accuracy": 1.0,
           "unsupported_claims": 0,
+          "isolation_candidates_checked": 2,
           "isolation_leaks": 0,
           "dropped_strategy_runs": 0
         },

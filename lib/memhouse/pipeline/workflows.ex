@@ -21,6 +21,8 @@ defmodule MemHouse.Pipeline.Workflows.IngestExtraction do
 
   use Ash.Reactor
 
+  alias MemHouse.Retrieval.MaintenancePlan
+
   input(:pipeline_run)
 
   step :extract do
@@ -31,17 +33,21 @@ defmodule MemHouse.Pipeline.Workflows.IngestExtraction do
     async? false
 
     run fn %{pipeline_run: run}, _context ->
-      case run.target_type do
-        "message" ->
-          if MemHouse.Pipeline.ExtractionAdmission.enabled?() do
-            MemHouse.Pipeline.ExtractionBatcher.run(run)
-          else
-            MemHouse.Memory.extract_message_for_account(run.target_id, run.account_id)
-          end
+      run.payload
+      |> MaintenancePlan.from_payload()
+      |> MaintenancePlan.with_plan(fn ->
+        case run.target_type do
+          "message" ->
+            if MemHouse.Pipeline.ExtractionAdmission.enabled?() do
+              MemHouse.Pipeline.ExtractionBatcher.run(run)
+            else
+              MemHouse.Memory.extract_message_for_account(run.target_id, run.account_id)
+            end
 
-        "document_version" ->
-          MemHouse.Documents.process_version_for_account(run.target_id, run.account_id)
-      end
+          "document_version" ->
+            MemHouse.Documents.process_version_for_account(run.target_id, run.account_id)
+        end
+      end)
     end
   end
 
@@ -105,7 +111,7 @@ defmodule MemHouse.Pipeline.Workflows.DreamTimeReasoning do
 
         "projection_refresh" ->
           if run.payload["mode"] == "coalesced" do
-            MemHouse.Retrieval.Rebuild.refresh_scope(run.account_id, run.scope_id)
+            MemHouse.Retrieval.Rebuild.refresh_scope(run.account_id, run.scope_id, run.payload)
           else
             MemHouse.Retrieval.rebuild_scope(run.account_id, run.scope_id)
           end

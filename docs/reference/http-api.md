@@ -389,9 +389,13 @@ canonical message removes both full-text and vector hits in the same delete.
 `peer_key`, but `profile` defaults to `"thorough"`. Optional `effort` is
 `low`, `medium`, or `high`; omission keeps fixed recall. A named effort runs the
 bounded read-only recall planner over authorised knowledge, the stable identity
-projection, and typed evidence lineage. Exact and semantic source-message tools
-are included only when `include_source_recall` is the JSON boolean `true`;
-selecting an effort level alone does not broaden recall into source text.
+projection, and typed evidence lineage. `include_source_exact_recall` and
+`include_source_semantic_recall` independently add their source-message tools.
+`include_source_recall: true` is the compatible shorthand that adds both.
+`include_stable_profile_recall: false` removes stable-profile lookup; it defaults
+to `true`. These controls only remove or permit bounded read tools. They do not
+widen Account, scope, reader, or lifecycle authorization. Selecting an effort
+level alone does not broaden recall into source text.
 Profile entries and lineage nodes only select governed knowledge; they do not
 become independent facts or expose rationale. When the experimental minimal
 profile is enabled, effort-based Ask uses it as the base pass unless the request
@@ -401,7 +405,8 @@ Effort presets hard-cap iterations, admitted items, retrieval/model calls,
 query tokens, total admitted-evidence tokens, and elapsed time. The additive
 `recall` diagnostics report only counts, hashed query identities, tool outcome
 classes, and exhausted bounds; they never contain the question or evidence
-text. They also identify the preserved retrieval profile/version and count how
+text. They also identify the preserved retrieval profile/version, attest the
+effective exact-source, semantic-source, and stable-profile permissions, and count how
 many genuinely new tool items reached the bounded answer context.
 
 Returns the search payload merged with `answer`, `citations`, `abstained`,

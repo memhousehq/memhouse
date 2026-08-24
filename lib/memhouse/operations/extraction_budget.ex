@@ -81,22 +81,29 @@ defmodule MemHouse.Operations.ExtractionBudget do
     }
   end
 
-  def reserve(context, messages, schema) do
-    account_id = Map.get(context, :account_id)
-    scope_path = Map.get(context, :scope_path)
-    actor = Map.get(context, :actor)
+  def reserve(
+        %{
+          account_id: account_id,
+          scope_path: scope_path,
+          actor: %MemHouse.Actor{
+            account_id: actor_account_id,
+            role: :system,
+            pipeline?: true
+          }
+        },
+        messages,
+        schema
+      )
+      when is_binary(account_id) and account_id == actor_account_id and is_binary(scope_path) do
+    input_tokens = ExtractionAdmission.count(%{"messages" => messages, "schema" => schema})
+    output_tokens = ExtractionAdmission.config()[:reserved_output_tokens]
 
-    if is_binary(account_id) and is_binary(scope_path) and is_struct(actor, MemHouse.Actor) do
-      input_tokens = ExtractionAdmission.count(%{"messages" => messages, "schema" => schema})
-      output_tokens = ExtractionAdmission.config()[:reserved_output_tokens]
-
-      DataLayer.in_account_transaction(account_id, fn ->
-        reserve_locked(account_id, scope_path, input_tokens, output_tokens)
-      end)
-    else
-      {:ok, nil}
-    end
+    DataLayer.in_account_transaction(account_id, fn ->
+      reserve_locked(account_id, scope_path, input_tokens, output_tokens)
+    end)
   end
+
+  def reserve(_context, _messages, _schema), do: {:error, :unauthorized}
 
   defp reserve_locked(account_id, scope_path, input_tokens, output_tokens) do
     result =

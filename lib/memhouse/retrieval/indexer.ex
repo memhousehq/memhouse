@@ -10,7 +10,7 @@ defmodule MemHouse.Retrieval.Indexer do
   """
 
   alias MemHouse.DataLayer
-  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.{KnowledgeItem, Lifecycle}
   alias MemHouse.Model.Embedding
   alias MemHouse.Retrieval.DiskannLabels
 
@@ -62,10 +62,12 @@ defmodule MemHouse.Retrieval.Indexer do
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
+        retrievable_states = Lifecycle.retrievable_states()
+
         query =
           KnowledgeItem
           |> Ash.Query.filter(
-            scope_id == ^scope_id and state in ["active", "provisional"] and is_nil(deleted_at)
+            scope_id == ^scope_id and state in ^retrievable_states and is_nil(deleted_at)
           )
 
         query =

@@ -130,7 +130,7 @@ defmodule MemHouse.Retrieval.RecallProjector do
   """
 
   alias MemHouse.DataLayer
-  alias MemHouse.Knowledge.{KnowledgeItem, Provenance}
+  alias MemHouse.Knowledge.{KnowledgeItem, Lifecycle, Provenance}
   alias MemHouse.Pipeline.Consolidator
 
   @consolidator_marker Consolidator.marker()
@@ -205,11 +205,12 @@ defmodule MemHouse.Retrieval.RecallProjector do
 
   defp source_items!(account_id, scope_id, cursor, actor) do
     now = MemHouse.Clock.utc_now()
+    retrievable_states = Lifecycle.retrievable_states()
 
     query =
       KnowledgeItem
       |> Ash.Query.filter(
-        scope_id == ^scope_id and state in ["active", "provisional"] and is_nil(deleted_at) and
+        scope_id == ^scope_id and state in ^retrievable_states and is_nil(deleted_at) and
           (is_nil(expires_at) or expires_at > ^now) and not is_nil(embedding)
       )
       |> maybe_after_cursor(cursor)
@@ -317,10 +318,11 @@ defmodule MemHouse.Retrieval.RecallProjector do
   defp canonical_source_watermarks!(account_id, scope_id, page, actor) do
     ids = Enum.map(page, & &1.knowledge_item_id)
     now = MemHouse.Clock.utc_now()
+    retrievable_states = Lifecycle.retrievable_states()
 
     KnowledgeItem
     |> Ash.Query.filter(
-      id in ^ids and scope_id == ^scope_id and state in ["active", "provisional"] and
+      id in ^ids and scope_id == ^scope_id and state in ^retrievable_states and
         is_nil(deleted_at) and (is_nil(expires_at) or expires_at > ^now) and
         not is_nil(embedding)
     )

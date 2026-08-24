@@ -291,6 +291,26 @@ defmodule MemHouse.Memory do
         admission_identity,
         evidence \\ %{}
       ) do
+    run.payload
+    |> MemHouse.Retrieval.MaintenancePlan.from_payload()
+    |> MemHouse.Retrieval.MaintenancePlan.with_plan(fn ->
+      do_persist_message_extraction_result!(
+        run,
+        message,
+        result,
+        admission_identity,
+        evidence
+      )
+    end)
+  end
+
+  defp do_persist_message_extraction_result!(
+         run,
+         message,
+         result,
+         admission_identity,
+         evidence
+       ) do
     DataLayer.with_account_id(
       run.account_id,
       [role: :system, pipeline?: true],
@@ -753,8 +773,11 @@ defmodule MemHouse.Memory do
   answer is worth more latency than a results list, and its base retrieval is
   narrowed to knowledge. A named effort adds only bounded read-only profile,
   lineage, and knowledge tools. Source-message tools are available only when
-  the caller also passes `"include_source_recall" => true`; effort alone never
-  broadens recall from governed knowledge into immutable source text.
+  the caller also permits them. `"include_source_exact_recall"` and
+  `"include_source_semantic_recall"` select the tools independently;
+  `"include_source_recall" => true` remains the compatible shorthand for both.
+  `"include_stable_profile_recall" => false` disables stable-profile lookup.
+  Effort alone never broadens recall from governed knowledge into immutable source text.
 
   The answer is grounded twice over: the model sees nothing but the retrieved
   statements, and every citation it returns is dropped unless it matches an id

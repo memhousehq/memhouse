@@ -197,8 +197,21 @@ default merely because it appears in the repository. The proposed
 [clean-room memory-simplification decision](https://github.com/memhousehq/memhouse/blob/main/specs/adr/0021-clean-room-memory-simplification.md)
 requires versioned matched evaluation, content-safe operational evidence,
 rollback rehearsal, and human architecture/licensing review before a default
-changes. Until then, the profile names and queue behavior documented above are
-the operator contract.
+changes. The isolated minimal-profile evaluation captures its maintenance plan
+in each durable projection run: source and Knowledge indexes plus
+RecallDocuments remain scheduled, while entity and context-projection stages
+are explicitly reported as skipped. Current and legacy runs retain full
+maintenance. Canonical observations, governed Knowledge, lifecycle audit, and
+context dirty markers are unchanged, so skipped caches remain rebuildable for
+rollback. After each evaluated case ingests, the evaluation barrier completes
+only projection and entity-resolution runs created by that measured variant
+before retrieval begins. Separate legacy entity-resolution runs are counted
+explicitly; the minimal profile creates none.
+Pre-existing Account work is excluded, and every non-completed state fails the
+run instead of being reported as savings. A later reconciliation preserves the
+scope's latest plan. Until a
+reviewed decommission through issue #295, no production cache or migration is
+removed.
 
 ## Trace correlation
 

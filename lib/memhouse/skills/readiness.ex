@@ -19,6 +19,7 @@ defmodule MemHouse.Skills.Readiness do
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.Lifecycle
   alias MemHouse.Knowledge.LifecycleEvent
   alias MemHouse.Knowledge.Provenance
   alias MemHouse.Observability
@@ -32,7 +33,8 @@ defmodule MemHouse.Skills.Readiness do
   @report_version "f9-1"
 
   # Load unusable states only to distinguish stale knowledge from missing knowledge.
-  @readable_states ~w(active provisional needs_revalidation expired)
+  @readable_states Lifecycle.readiness_observed_states()
+  @retrievable_states Lifecycle.retrievable_states()
 
   @doc """
   Evaluates one skill's requirements for one peer at one scope and returns the gap report.
@@ -222,7 +224,7 @@ defmodule MemHouse.Skills.Readiness do
     now = Clock.utc_now()
 
     lifecycle_fresh? =
-      item.state in ["active", "provisional"] and
+      item.state in @retrievable_states and
         (is_nil(item.expires_at) or DateTime.compare(item.expires_at, now) == :gt) and
         (is_nil(item.revalidate_after) or DateTime.compare(item.revalidate_after, now) == :gt)
 
@@ -351,7 +353,7 @@ defmodule MemHouse.Skills.Readiness do
     last_validated_at =
       LifecycleEvent
       |> Ash.Query.filter(
-        knowledge_item_id in ^knowledge_ids and to_state in ["active", "provisional"]
+        knowledge_item_id in ^knowledge_ids and to_state in ^@retrievable_states
       )
       |> Ash.Query.set_tenant(account_id)
       |> Ash.read!(actor: actor)

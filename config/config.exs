@@ -49,6 +49,9 @@ config :memhouse,
 # compile-time setting: Postgrex builds the type module while compiling.
 config :memhouse, MemHouse.Repo, types: MemHouse.PostgrexTypes
 
+# Optional operator documentation link shown only in the console legend.
+config :memhouse, :lifecycle_docs_url, false
+
 # Where Postgres lives. This is an infrastructure seam, not a behaviour switch:
 # `"pg0"` means the release supervises its own checksum-pinned PostgreSQL
 # process, `"external"` means an operator runs the server. Both modes are the
@@ -549,7 +552,7 @@ config :memhouse, :model_roles,
     provider: "deterministic",
     model: "local-structured-fallback",
     model_version: "1",
-    prompt_version: "extract-13",
+    prompt_version: "extract-14",
     pipeline_version: "f5-1",
     options: %{}
   },

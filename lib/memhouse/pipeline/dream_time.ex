@@ -288,18 +288,20 @@ defmodule MemHouse.Pipeline.DreamTime do
           working_set: serialise(working_set, source_observations)
         }
 
+        request_timeout = snapshot.limits.max_elapsed_ms
+
+        request_opts = [
+          request_timeout: request_timeout,
+          request_deadline_ms: Clock.monotonic_ms() + request_timeout
+        ]
+
         result =
           if split_enabled? do
-            Reasoner.reason_operations(input, context,
-              total_timeout: snapshot.limits.max_elapsed_ms
-            )
+            Reasoner.reason_operations(input, context, request_opts)
           else
             # Hourly and manual dream-time retain the established one-call
             # contract unless the split experiment is explicitly enabled.
-            Reasoner.reason(input, context,
-              total_timeout: snapshot.limits.max_elapsed_ms,
-              return_usage: true
-            )
+            Reasoner.reason(input, context, Keyword.put(request_opts, :return_usage, true))
           end
 
         case result do
@@ -639,27 +641,39 @@ defmodule MemHouse.Pipeline.DreamTime do
   defp refresh!(account_id, scope_id, watermark, actor) do
     value = DateTime.to_iso8601(watermark)
 
-    Enum.each(
-      [
-        {"projection_refresh", Idempotency.projection_refresh(scope_id, value)},
-        {"entity_resolution", Idempotency.entity_resolution(scope_id, value)}
-      ],
-      fn {kind, idempotency_key} ->
+    case MemHouse.Retrieval.MaintenancePlan.current() do
+      %{profile: "minimal"} ->
         {:ok, _run} =
-          MemHouse.Pipeline.enqueue(
-            kind,
+          MemHouse.Pipeline.enqueue_derived_refresh(
             account_id,
-            %{
-              scope_id: scope_id,
-              target_type: "scope",
-              target_id: scope_id,
-              idempotency_key: idempotency_key,
-              payload: %{"watermark" => value}
-            },
+            scope_id,
+            watermark,
             actor
           )
-      end
-    )
+
+      _current ->
+        Enum.each(
+          [
+            {"projection_refresh", Idempotency.projection_refresh(scope_id, value)},
+            {"entity_resolution", Idempotency.entity_resolution(scope_id, value)}
+          ],
+          fn {kind, idempotency_key} ->
+            {:ok, _run} =
+              MemHouse.Pipeline.enqueue(
+                kind,
+                account_id,
+                %{
+                  scope_id: scope_id,
+                  target_type: "scope",
+                  target_id: scope_id,
+                  idempotency_key: idempotency_key,
+                  payload: %{"watermark" => value}
+                },
+                actor
+              )
+          end
+        )
+    end
   end
 
   defp serialise(items) do
