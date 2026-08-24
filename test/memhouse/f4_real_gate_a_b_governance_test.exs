@@ -528,23 +528,6 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     root = scope_by_path!(actor, "/")
     promotion = Engine.request_promotion(actor, knowledge.id, root.id)
 
-    consent_query =
-      DataLayer.with_actor(actor, fn account, current_actor ->
-        PeerQuery
-        |> Ash.Query.filter(
-          knowledge_id == ^knowledge.id and kind == "consent_upward" and state == "pending"
-        )
-        |> Ash.Query.set_tenant(account.id)
-        |> Ash.read_one!(actor: current_actor)
-      end)
-
-    # A consent answer without transcript delivery is timer evidence only. The
-    # row is already held, so this also pins the governed held -> held self-edge.
-    assert {:ok, held_deferral} =
-             PeerQueue.resolve(actor, consent_query.id, "confirm", knowledge.statement)
-
-    assert held_deferral.effect == "timer_deferred_only"
-    assert knowledge_for!(actor, knowledge.id).state == "held"
     assert promotion.knowledge.state == "held"
 
     # And a held item must not appear in an ordinary read of the destination scope. If it did,
@@ -607,6 +590,47 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert knowledge.sensitivity == "personal"
     root = scope_by_path!(actor, "/")
     promotion = Engine.request_promotion(actor, knowledge.id, root.id)
+
+    consent_query =
+      DataLayer.with_actor(actor, fn account, current_actor ->
+        PeerQuery
+        |> Ash.Query.filter(
+          knowledge_id == ^knowledge.id and kind == "consent_upward" and state == "pending"
+        )
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: current_actor)
+      end)
+
+    # The original accuracy-confirmation question is older, so close it first;
+    # the next delivery is the promotion-specific consent question.
+    assert %{"id" => confirm_id, "statement" => confirm_statement} =
+             PeerQueue.attach(
+               actor,
+               "consent-item",
+               "get_context",
+               "medical appointment"
+             )
+
+    assert confirm_id != consent_query.id
+    assert {:ok, _closed} = PeerQueue.resolve(actor, confirm_id, "unsure", confirm_statement)
+
+    assert %{"id" => delivered_id} =
+             PeerQueue.attach(
+               actor,
+               "consent-item",
+               "get_context",
+               "medical appointment"
+             )
+
+    assert delivered_id == consent_query.id
+
+    # A consent answer without transcript delivery is timer evidence only. The
+    # row is already held, so this also pins the governed held -> held self-edge.
+    assert {:ok, held_deferral} =
+             PeerQueue.resolve(actor, consent_query.id, "confirm", knowledge.statement)
+
+    assert held_deferral.effect == "timer_deferred_only"
+    assert knowledge_for!(actor, knowledge.id).state == "held"
 
     # A curator approving is necessary but not sufficient. The item stays held and the response
     # says why: the subject has not agreed. A curator cannot consent on someone else's behalf.
