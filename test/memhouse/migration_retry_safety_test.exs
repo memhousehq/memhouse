@@ -37,12 +37,11 @@ defmodule MemHouse.MigrationRetrySafetyTest do
     assert recall =~ "CREATE POLICY memhouse_account_wall"
 
     projection = read_migration("20260824125256_issue_302_projection_expiry_bound.exs")
-    assert projection =~ "BEFORE UPDATE ON projections"
-    assert projection =~ "NEW.validity_version IS NOT DISTINCT FROM OLD.validity_version"
-    assert projection =~ "NEW.valid_until IS DISTINCT FROM OLD.valid_until"
-    assert projection =~ "NEW.dirty IS DISTINCT FROM OLD.dirty"
-    assert projection =~ "NEW.validity_version := 0"
     assert projection =~ "add :projection_input_generation, :bigint"
+    assert projection =~ "add :validity_version, :bigint, null: false, default: 0"
+    refute projection =~ "CREATE TRIGGER"
+    refute projection =~ "CREATE FUNCTION"
+    refute projection =~ "NEW.validity_version := 0"
     refute projection =~ "memhouse_invalidate_projection_input"
     refute projection =~ "UPDATE scopes"
     assert projection =~ "remove :projection_input_generation"

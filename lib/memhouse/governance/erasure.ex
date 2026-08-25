@@ -45,6 +45,7 @@ defmodule MemHouse.Governance.Erasure do
   alias MemHouse.Accounts.ExternalIdentity
   alias MemHouse.Accounts.Peer
   alias MemHouse.Clock
+  alias MemHouse.Context.ProjectionInputs
   alias MemHouse.DataLayer
   alias MemHouse.Governance.Audit
   alias MemHouse.Governance.ErasureRequest
@@ -133,6 +134,7 @@ defmodule MemHouse.Governance.Erasure do
   """
   def execute!(request, actor) do
     account_id = request.account_id
+    ProjectionInputs.serialize_account!(account_id)
 
     peer =
       Peer

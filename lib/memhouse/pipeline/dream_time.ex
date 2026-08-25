@@ -275,7 +275,9 @@ defmodule MemHouse.Pipeline.DreamTime do
 
   defp reason(snapshot) do
     if MemHouse.Operations.Budget.admit?(snapshot.account_id, snapshot.scope_id, :dream_time) do
-      with {:ok, working_set} <- thorough_working_set(snapshot) do
+      with {:ok, working_set} <- thorough_working_set(snapshot),
+           {:ok, delta, working_set} <- revalidate_visible_inputs(snapshot, working_set) do
+        snapshot = %{snapshot | delta: delta}
         split_enabled? = Reasoner.split_enabled?()
         synthesis_enabled? = split_enabled? and :synthesis in Reasoner.enabled_operations()
 
@@ -438,6 +440,29 @@ defmodule MemHouse.Pipeline.DreamTime do
        |> Enum.take(snapshot.limits.max_working_set_items)}
     end
   end
+
+  defp revalidate_visible_inputs(snapshot, working_set) do
+    expected_ids = Enum.uniq(Enum.map(snapshot.delta ++ working_set, & &1.id))
+    now = Clock.utc_now()
+
+    current_by_id =
+      [snapshot.scope_id]
+      |> Visibility.knowledge_query("active", snapshot.actor, true, now)
+      |> Ash.Query.filter(id in ^expected_ids and state == "active")
+      |> Ash.Query.set_tenant(snapshot.account_id)
+      |> Ash.read!(actor: snapshot.actor)
+      |> Map.new(&{&1.id, &1})
+
+    if map_size(current_by_id) == length(expected_ids) do
+      {:ok, reload_in_order(snapshot.delta, current_by_id),
+       reload_in_order(working_set, current_by_id)}
+    else
+      {:error, :stale_dream_time_input}
+    end
+  end
+
+  defp reload_in_order(records, current_by_id),
+    do: Enum.map(records, &Map.fetch!(current_by_id, &1.id))
 
   @doc false
   def candidate_ids(candidates) when is_list(candidates) do

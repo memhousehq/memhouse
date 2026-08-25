@@ -38,7 +38,19 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
 
     @impl true
-    def embed(config, texts, opts), do: Deterministic.embed(config, texts, opts)
+    def embed(config, texts, opts) do
+      if Application.get_env(:memhouse, :dream_time_pause_retrieval?, false) do
+        Application.put_env(:memhouse, :dream_time_pause_retrieval?, false)
+        owner = Application.fetch_env!(:memhouse, :dream_time_test_pid)
+        send(owner, {:dream_retrieval_paused, self()})
+
+        receive do
+          :release_dream_retrieval -> :ok
+        end
+      end
+
+      Deterministic.embed(config, texts, opts)
+    end
 
     @impl true
     def rerank(config, query, documents, opts),
@@ -63,6 +75,7 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
   alias MemHouse.Identity
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
+  alias MemHouse.Operations.DreamTimeWatermark
   alias MemHouse.Pipeline.DreamTime
   alias MemHouse.Pipeline.DreamTime.Gate
   alias MemHouse.Topology.Scope
@@ -288,6 +301,102 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
       assert visible.knowledge.id in ids
       refute expired.knowledge.id in ids
     end
+  end
+
+  test "dream-time retries without advancing when an input expires before provider submission" do
+    provider = Application.get_env(:memhouse, :model_provider)
+    gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+    Application.put_env(:memhouse, :dream_time_test_pid, self())
+
+    Application.put_env(
+      :memhouse,
+      :dream_time_gates,
+      Keyword.merge(gates,
+        min_changes: 1,
+        idle_seconds: 0,
+        min_interval_seconds: 0,
+        max_delta_items: 10,
+        max_working_set_items: 10
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, provider)
+      Application.delete_env(:memhouse, :dream_time_test_pid)
+      Application.delete_env(:memhouse, :dream_time_pause_retrieval?)
+      Application.put_env(:memhouse, :dream_time_gates, gates)
+    end)
+
+    seeded =
+      seed_active_record!(
+        "dream-time-in-flight-expiry",
+        "expiring-input",
+        "Avery keeps the deployment checklist."
+      )
+
+    future_item =
+      DataLayer.with_account_key(
+        "dream-time-in-flight-expiry",
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          Engine.transition!(
+            seeded.knowledge,
+            actor,
+            %{state: "active", expires_at: DateTime.add(MemHouse.Clock.utc_now(), 1, :hour)},
+            reason: "dream_time_test_future_expiry",
+            channel: "pipeline"
+          )
+        end
+      )
+
+    Application.put_env(:memhouse, :dream_time_pause_retrieval?, true)
+
+    dream =
+      Task.async(fn ->
+        receive do
+          :start -> DreamTime.run_scope(seeded.account.id, seeded.scope.id)
+        end
+      end)
+
+    Ecto.Adapters.SQL.Sandbox.allow(MemHouse.Repo, self(), dream.pid)
+    send(dream.pid, :start)
+
+    assert_receive {:dream_retrieval_paused, retrieval_pid}, 5_000
+
+    DataLayer.with_account_key(
+      "dream-time-in-flight-expiry",
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        Engine.transition!(
+          future_item,
+          actor,
+          %{state: "active", expires_at: DateTime.add(MemHouse.Clock.utc_now(), -1, :second)},
+          reason: "dream_time_test_expire_during_retrieval",
+          channel: "pipeline"
+        )
+      end
+    )
+
+    send(retrieval_pid, :release_dream_retrieval)
+
+    assert {:error, :stale_dream_time_input} = Task.await(dream, 10_000)
+    refute_receive {:dream_reasoner_input, :reasoning, _}
+
+    DataLayer.with_account_key(
+      "dream-time-in-flight-expiry",
+      [role: :system, pipeline?: true],
+      fn account, actor ->
+        watermark =
+          DreamTimeWatermark
+          |> Ash.Query.filter(scope_id == ^seeded.scope.id)
+          |> Ash.Query.set_tenant(account.id)
+          |> Ash.read_one!(actor: actor)
+
+        assert is_nil(watermark)
+      end
+    )
   end
 
   test "change, idle, interval, and work gates are deterministic and independent" do

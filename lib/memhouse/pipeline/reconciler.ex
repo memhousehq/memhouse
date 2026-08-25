@@ -264,10 +264,9 @@ defmodule MemHouse.Pipeline.Reconciler do
        |> Idempotency.content_hash())
   end
 
-  # The newest clean legacy row identifies this scope's unsafe projection generation. Include
-  # both its stable id and update time: an old worker can rewrite the same cache key after a
-  # successful upgrade, and its monotonic version plus update time must receive a new durable
-  # refresh run.
+  # The newest clean legacy row identifies this scope's pre-validity projection generation.
+  # Include its stable id and update time so each distinct migrated generation receives one
+  # durable refresh run while reconciliation remains idempotent.
   defp projection_validity_watermark(projection) do
     generation = [projection.scope_id, projection.id, projection.version, projection.updated_at]
 

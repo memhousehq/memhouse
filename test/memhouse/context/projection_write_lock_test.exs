@@ -10,6 +10,8 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias MemHouse.Context.{ProjectionInputs, ProjectionLock}
   alias MemHouse.DataLayer
+  alias MemHouse.Governance.{Erasure, ErasureRequest}
+  alias MemHouse.Knowledge.Projection
   alias MemHouse.Repo
   alias MemHouse.Topology.Scope
 
@@ -109,6 +111,119 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
 
     assert :validated = Task.await(validator)
     assert %Scope{name: "Changed after validation"} = Task.await(mutation)
+  end
+
+  test "a projection commit and real scope mutation keep Account then scope lock order" do
+    {account_id, scope_id} = create_scope!()
+    parent = self()
+
+    projection_writer =
+      Task.async(fn ->
+        with_connection(fn ->
+          DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account,
+                                                                                     actor ->
+            writer_backend_pid = backend_pid!()
+            ProjectionLock.acquire!(account_id, scope_id)
+            send(parent, {:scope_locked, writer_backend_pid})
+
+            receive do
+              :write_projection ->
+                Projection
+                |> Ash.Changeset.new()
+                |> Ash.Changeset.set_tenant(account_id)
+                |> Ash.Changeset.for_create(:upsert_from_pipeline, %{
+                  cache_key: "scope:#{scope_id}:lock-order",
+                  scope_id: scope_id,
+                  kind: "scope_card",
+                  version: 1,
+                  validity_version: 1,
+                  content: %{"name" => "Current projection"},
+                  source_ids: [],
+                  dirty: false
+                })
+                |> Ash.create!(actor: actor, authorize?: false)
+            end
+          end)
+        end)
+      end)
+
+    assert_receive {:scope_locked, writer_backend_pid}, 5_000
+
+    mutation =
+      Task.async(fn ->
+        with_connection(fn ->
+          DataLayer.with_account_id(account_id, fn _account, actor ->
+            ProjectionInputs.serialize_account!(account_id)
+            mutation_backend_pid = backend_pid!()
+            send(parent, {:account_locked, mutation_backend_pid})
+
+            scope =
+              Scope
+              |> Ash.Query.filter(id == ^scope_id)
+              |> Ash.Query.set_tenant(account_id)
+              |> Ash.read_one!(actor: actor)
+
+            scope
+            |> Ash.Changeset.for_update(:update, %{name: "Mutation after projection commit"})
+            |> Ash.Changeset.set_tenant(account_id)
+            |> Ash.update!(actor: actor)
+          end)
+        end)
+      end)
+
+    assert_receive {:account_locked, mutation_backend_pid}, 5_000
+    assert_blocked_by!(mutation_backend_pid, writer_backend_pid)
+
+    send(projection_writer.pid, :write_projection)
+
+    assert %Projection{} = Task.await(projection_writer, 5_000)
+    assert %Scope{name: "Mutation after projection commit"} = Task.await(mutation, 5_000)
+  end
+
+  test "erasure acquires the Account projection-input lock before reading rows" do
+    {account_id, _scope_id} = create_scope!()
+    parent = self()
+    supervisor = start_supervised!(Task.Supervisor)
+
+    blocker =
+      Task.async(fn ->
+        with_connection(fn ->
+          DataLayer.with_account_id(account_id, fn _account, _actor ->
+            blocker_backend_pid = backend_pid!()
+            ProjectionInputs.serialize_account!(account_id)
+            send(parent, {:erasure_lock_held, blocker_backend_pid})
+
+            receive do
+              :release -> :released
+            end
+          end)
+        end)
+      end)
+
+    assert_receive {:erasure_lock_held, blocker_backend_pid}, 5_000
+
+    erasure =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        with_connection(fn ->
+          DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account,
+                                                                                     actor ->
+            erasure_backend_pid = backend_pid!()
+            send(parent, {:erasure_started, erasure_backend_pid})
+
+            Erasure.execute!(
+              %ErasureRequest{account_id: account_id, peer_id: Ash.UUID.generate()},
+              actor
+            )
+          end)
+        end)
+      end)
+
+    assert_receive {:erasure_started, erasure_backend_pid}, 5_000
+    assert_blocked_by!(erasure_backend_pid, blocker_backend_pid)
+
+    send(blocker.pid, :release)
+    assert :released = Task.await(blocker, 5_000)
+    assert catch_exit(Task.await(erasure, 5_000))
   end
 
   defp with_connection(fun) do
