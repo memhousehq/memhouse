@@ -477,9 +477,9 @@ defmodule MemHouse.Retrieval.EntityResolver do
     end
   end
 
-  # PostgreSQL marks a transaction failed after a rollback. The explicit savepoint keeps a
-  # caller's enclosing erasure transaction usable when the second expiry check rejects writes
-  # that already ran; the caller can then retry from a fresh, unexpired source snapshot.
+  # The explicit savepoint lets a rejected post-write index snapshot roll back locally without
+  # rolling back the caller's enclosing erasure transaction, which can then retry from a fresh,
+  # unexpired source snapshot.
   defp with_write_savepoint(fun) do
     savepoint!(:create)
 
