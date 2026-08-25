@@ -1292,6 +1292,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     assert decayed.confidence < knowledge.confidence
   end
 
+  @tag :issue_277_lifecycle_fixture
   test "expiry sweep still records lifecycle and audit evidence for an expired active row" do
     %{actor: actor} = bootstrap_human!("expiry-audit")
 

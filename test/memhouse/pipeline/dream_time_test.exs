@@ -306,9 +306,16 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
   test "dream-time retries without advancing when an input expires before provider submission" do
     provider = Application.get_env(:memhouse, :model_provider)
     gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+    operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
 
     Application.put_env(:memhouse, :model_provider, Provider)
     Application.put_env(:memhouse, :dream_time_test_pid, self())
+
+    Application.put_env(
+      :memhouse,
+      :dream_reasoning_operations,
+      Keyword.put(operations, :split_enabled, false)
+    )
 
     Application.put_env(
       :memhouse,
@@ -327,6 +334,7 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
       Application.delete_env(:memhouse, :dream_time_test_pid)
       Application.delete_env(:memhouse, :dream_time_pause_retrieval?)
       Application.put_env(:memhouse, :dream_time_gates, gates)
+      Application.put_env(:memhouse, :dream_reasoning_operations, operations)
     end)
 
     seeded =
