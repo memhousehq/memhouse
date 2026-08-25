@@ -66,7 +66,7 @@ defmodule MemHouse.Context.ProjectionLock do
   defp generation!(result) do
     case result do
       %{rows: [[generation]]} -> generation
-      %{rows: []} -> raise Ecto.NoResultsError, queryable: MemHouse.Topology.Scope
+      %{rows: []} -> raise Ash.Error.Query.NotFound, resource: MemHouse.Topology.Scope
     end
   end
 end

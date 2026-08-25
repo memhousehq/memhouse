@@ -146,6 +146,25 @@ defmodule MemHouse.F7RetrievalEntityContextTest.CountingClock do
   def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.UnstableProjectionLock do
+  @moduledoc false
+
+  def start!, do: Agent.start_link(fn -> 0 end, name: __MODULE__)
+
+  def stop do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> Agent.stop(pid)
+    end
+  end
+
+  def capture!(_account_id, _scope_id) do
+    Agent.get_and_update(__MODULE__, fn calls -> {calls, calls + 1} end)
+  end
+
+  def calls, do: Agent.get(__MODULE__, & &1)
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest.VanishingProvider do
   @moduledoc """
   Failure-injection provider for rebuild transaction boundaries.
@@ -504,6 +523,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider 
 
         receive do
           :release_projection_refresh -> :ok
+        after
+          5_000 -> raise "timed out waiting to release the projection refresh fixture"
         end
 
       :continue ->
@@ -2180,9 +2201,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              [Ecto.UUID.dump!(seeded.account.id)]
            ) == 1
 
-    # The write transaction rolled back entirely: clearing this scope's mentions and folding
-    # the surface form into the entity happen in the same transaction as the re-read that
-    # failed, so no mention was left behind by a half-applied rebuild.
+    # Account-wide snapshot validation rejects the stale fold before the write transaction
+    # begins, so no mention is written from the vanished entity snapshot.
     assert scalar!(
              "SELECT count(*) FROM entity_mentions WHERE scope_id = $1",
              [Ecto.UUID.dump!(seeded.scope.id)]
@@ -2957,6 +2977,45 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     # On a miss the caller still gets an answer, from the cheapest retrieval profile, and the
     # response says so. Silently serving a stale projection would be the worse failure.
     assert dirty["fast_fallback"] == true
+  end
+
+  test "context returns a fallback when projection generations never stabilize" do
+    seeded =
+      seed_active!(
+        "f7-context-generation-churn",
+        "/f7/context-generation-churn",
+        "Avery owns the release checklist."
+      )
+
+    lock = MemHouse.F7RetrievalEntityContextTest.UnstableProjectionLock
+    original_lock = Application.get_env(:memhouse, :context_projection_lock)
+    {:ok, _pid} = lock.start!()
+    Application.put_env(:memhouse, :context_projection_lock, lock)
+
+    on_exit(fn ->
+      lock.stop()
+
+      if original_lock do
+        Application.put_env(:memhouse, :context_projection_lock, original_lock)
+      else
+        Application.delete_env(:memhouse, :context_projection_lock)
+      end
+    end)
+
+    context =
+      Task.async(fn ->
+        Memory.get_context(
+          %{"scope_path" => seeded.scope.path, "budget_chars" => 20_000},
+          seeded.actor
+        )
+      end)
+      |> Task.await(5_000)
+
+    assert context["projection_cache_hit"] == false
+    assert context["fast_fallback"] == true
+    # The two authorized scopes each perform scope, peer, and entity-card reads. Every read makes
+    # two captures per attempt and stops after three attempts.
+    assert lock.calls() == 36
   end
 
   test "projection payloads are bounded summaries with pinned facts, not knowledge-row dumps" do

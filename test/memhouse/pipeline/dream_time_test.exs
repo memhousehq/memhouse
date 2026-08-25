@@ -46,6 +46,8 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
 
         receive do
           :release_dream_retrieval -> :ok
+        after
+          5_000 -> raise "timed out waiting to release the DreamTime retrieval fixture"
         end
       end
 

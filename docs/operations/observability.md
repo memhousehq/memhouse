@@ -142,7 +142,8 @@ embedder batch contains only statements without vectors. Explicit rebuild and
 re-embed operations retain their full-corpus behavior.
 
 The projection-expiry migration makes projections readable only when their validity marker equals
-their projection version, without scanning or rewriting contents under the schema lock. Existing
+their projection version, `dirty` is false, and `valid_until` is absent or later than the read's
+captured decision time, without scanning or rewriting contents under the schema lock. Existing
 rows receive marker `0` and fail closed until rebuilt. Current projection and source mutations go
 through Ash actions that advance validity or dirty the derived rows; direct database writers are
 unsupported. MemHouse does not support mixed-version readers: follow the upgrade procedure that

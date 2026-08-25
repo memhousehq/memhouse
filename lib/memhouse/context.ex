@@ -50,6 +50,7 @@ defmodule MemHouse.Context do
   # push ranked knowledge out of the payload entirely. The mention spotter fires on every
   # capitalised token, which makes that a real shape rather than a worst case.
   @entity_cards_per_scope 8
+  @stable_generation_attempts 3
 
   @doc """
   Builds one context payload for an already-authenticated caller.
@@ -139,7 +140,7 @@ defmodule MemHouse.Context do
     Enum.map_reduce(scopes, 0, fn scope, hits ->
       cache_key = {account_id, scope.id, "entity_cards"}
 
-      with_stable_generation(account_id, scope.id, fn input_generation ->
+      with_stable_generation(account_id, scope.id, {[], hits}, fn input_generation ->
         case Cache.fetch(cache_key, now, input_generation) do
           {:ok, cards} ->
             {cards, hits + if(cards == [], do: 0, else: 1)}
@@ -277,7 +278,7 @@ defmodule MemHouse.Context do
   defp projection(account_id, actor, scope_id, cache_key, now) do
     ets_key = {account_id, scope_id, cache_key}
 
-    with_stable_generation(account_id, scope_id, fn input_generation ->
+    with_stable_generation(account_id, scope_id, {nil, false}, fn input_generation ->
       case Cache.fetch(ets_key, now, input_generation) do
         {:ok, projection} ->
           {projection, true}
@@ -301,15 +302,34 @@ defmodule MemHouse.Context do
   # A source action advances its generation in the same transaction as the source write. Reading
   # the generation on both sides of a cache/database lookup gives that lookup a committed-state
   # linearization point without locking source rows in the opposite order from their writes.
-  defp with_stable_generation(account_id, scope_id, fun) do
-    input_generation = ProjectionLock.capture!(account_id, scope_id)
+  # Continuous churn fails closed to an absent projection after a fixed number of attempts so a
+  # request cannot remain trapped in this read boundary indefinitely.
+  defp with_stable_generation(account_id, scope_id, fallback, fun) do
+    with_stable_generation(
+      account_id,
+      scope_id,
+      fallback,
+      fun,
+      @stable_generation_attempts
+    )
+  end
+
+  defp with_stable_generation(account_id, scope_id, fallback, fun, attempts_left) do
+    lock = Application.get_env(:memhouse, :context_projection_lock, ProjectionLock)
+    input_generation = lock.capture!(account_id, scope_id)
     result = fun.(input_generation)
 
-    if ProjectionLock.capture!(account_id, scope_id) == input_generation do
+    if lock.capture!(account_id, scope_id) == input_generation do
       result
     else
-      with_stable_generation(account_id, scope_id, fun)
+      retry_stable_generation(account_id, scope_id, fallback, fun, attempts_left - 1)
     end
+  end
+
+  defp retry_stable_generation(_account_id, _scope_id, fallback, _fun, 0), do: fallback
+
+  defp retry_stable_generation(account_id, scope_id, fallback, fun, attempts_left) do
+    with_stable_generation(account_id, scope_id, fallback, fun, attempts_left)
   end
 
   # Callers may name a session either by its internal id or by the external id they chose. A

@@ -223,7 +223,19 @@ defmodule MemHouse.Context.ProjectionWriteLockTest do
 
     send(blocker.pid, :release)
     assert :released = Task.await(blocker, 5_000)
-    assert catch_exit(Task.await(erasure, 5_000))
+
+    assert {:exit, {%Ash.Error.Query.NotFound{resource: MemHouse.Accounts.Peer}, _stacktrace}} =
+             Task.yield(erasure, 5_000)
+  end
+
+  test "capturing an absent scope raises the Ash domain error" do
+    {account_id, _scope_id} = create_scope!()
+
+    with_connection(fn ->
+      assert_raise Ash.Error.Query.NotFound, fn ->
+        ProjectionLock.capture!(account_id, Ash.UUID.generate())
+      end
+    end)
   end
 
   defp with_connection(fun) do

@@ -56,6 +56,11 @@ defmodule MemHouse.Retrieval.EntityResolver do
   that one transaction together, in that order; any other order would leave
   duplicate mentions for statements that are resolved again.
 
+  Expiry is also a fail-closed commit boundary. If a selected statement expires
+  during model work or the final write, the rebuild returns a stale-snapshot
+  error and rolls back instead of persisting a derived mention from an already
+  invisible source. Callers may retry from a fresh source snapshot.
+
   Note the asymmetry: mentions are cleared per scope, but orphan entities are
   pruned Account-wide, because an entity is shared across scopes and only the
   full mention set can show it has become unreferenced. Final Account-wide
@@ -91,8 +96,9 @@ defmodule MemHouse.Retrieval.EntityResolver do
   # with no transaction open: the Account's entities as mutable drafts, and the
   # scope's statements.
   #
-  # Only approved, undeleted statements feed the index. Proposals under review
-  # and erased statements must leave no trace of their names here.
+  # Only approved, undeleted, unexpired statements feed the index. Proposals under review,
+  # erased statements, and rows past their expiry must leave no trace of their names here,
+  # even before the lifecycle sweep rewrites the state.
   #
   # The actor is returned too, because phase two needs one to call the model
   # layer. That is safe: an actor is a plain struct naming the Account and the

@@ -312,13 +312,20 @@ entity id only as a grouping coordinate; payloads expose no entity-cache field.
 Cards carry the strictest source sensitivity, a bounded summary with model
 provenance, and a bounded set of pinned source excerpts. Full source ids remain
 private on the projection row. Updates carry a watermark, delta count, source
-ids, dirty state, and a bounded full-compaction cadence.
+ids, dirty state, and a bounded full-compaction cadence. Each update also stores `valid_until`,
+the earliest expiry in its complete source set, and `validity_version`, a marker bound to the
+projection version. Readers reject a projection when it is dirty, its marker differs from its
+version, or its `valid_until` boundary has passed; rows written before the marker existed fail
+closed until rebuilt.
 Projection-shaping Ash actions advance the affected scope's private input generation, mark its
 projections dirty, and broadcast cache invalidation in the same transaction as the source change.
 Lifecycle changes additionally enqueue one deterministic, delayed projection job. That job also
 refreshes entities and mentions before it writes projections. Refresh workers reject a generation
 that changed during model work; Account-wide entity writes serialize and revalidate their shared
 entity snapshot before replacing mentions.
+Entity resolution additionally checks its source expiry boundary immediately before and after
+the write. A boundary crossed during model work returns a stale-snapshot result and rolls back;
+erasure retries that result from a fresh snapshot with a fixed bound before rolling back itself.
 
 Projection keys also carry a private audience-contract namespace. A stricter
 stored-content rule advances that namespace, so nodes running the new code
