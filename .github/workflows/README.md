@@ -8,8 +8,8 @@ permissions. The GitHub-Release-triggered job receives `contents: write` and
 `packages: write` so it can publish the gated outputs. Repository action access
 is deliberately narrower than “allow all”:
 GitHub-owned actions and `erlef/setup-beam@*` are the only non-local actions
-needed. The matching repository setting is documented in
-`specs/roadmap/beta-roadmap.md`.
+needed. Verify in the live repository settings that Actions access allows only
+GitHub-owned actions and `erlef/setup-beam@*`.
 
 ## `ci.yml`
 
@@ -26,8 +26,8 @@ Runs on pull requests, `main`, and merge queues:
 - `Release and container builds` runs only after all three gates and builds the
   Mix release plus production container.
 
-There is no SQLite lane. ADR-0003 requires Postgres + pgvector + PG-FTS + Oban
-in every deployment mode; pg0 and external Postgres vary infrastructure
+Every deployment mode uses PostgreSQL with pgvector, PG full-text search, and
+Oban; SQLite is unsupported. pg0 and external Postgres vary infrastructure
 location, not product behavior.
 
 ## `eval.yml`
@@ -58,8 +58,8 @@ Ed25519 private key matching MemHouse's embedded updater public key. The fan-in
 job signs `release-manifest-v1.json`; standalone updaters reject assets unless
 that detached signature and the manifest's per-platform SHA-256 both verify.
 
-Configure the CI job names as required checks only after they have reported
-successfully. See `specs/process/release-checklist.md`.
+Configure the CI job names above as required checks only after they have
+reported successfully.
 
 ## `prepare-release.yml` and `publish-release.yml`
 

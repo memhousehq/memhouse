@@ -9,6 +9,7 @@ defmodule MemHouse.Retrieval.Rebuild do
   build plausible projections from stale indexes.
   """
 
+  alias MemHouse.DataLayer
   alias MemHouse.Retrieval.Coverage
   alias MemHouse.Retrieval.MaintenancePlan
 
@@ -18,10 +19,11 @@ defmodule MemHouse.Retrieval.Rebuild do
   Stops at the first error. Completed stages remain committed; replay is the recovery path.
 
   A successful rebuild emits `[:memhouse, :retrieval, :projection_refresh]`
-  carrying indexed/projected/removed counts and the resulting coverage, so an operator can
-  alert on a scope whose vectors never arrived instead of waiting for a user to
-  report missing recall. It is the only signal this lane produces: the stage
-  counts below are returned to the caller and stored nowhere.
+  carrying indexed/projected/removed counts and coverage read from persisted
+  scope state after the refresh writes complete, so an operator can alert on a
+  scope whose vectors never arrived instead of waiting for a user to report
+  missing recall. It is the only signal this lane produces: the stage counts
+  below are returned to the caller and stored nowhere.
 
   Returns `{:ok, %{index: ..., entities: ..., projections: ...}}` with each
   stage's counts, or the first stage error. Raises if an underlying read or
@@ -104,10 +106,14 @@ defmodule MemHouse.Retrieval.Rebuild do
 
   defp skipped, do: %{status: "skipped", reason_class: "profile_disabled"}
 
-  # Measured after the write phase, so the event describes what a reader would
-  # now find rather than what this run intended to write. Ids and counts only.
+  # Measured after the write phase in its own short Account-scoped transaction,
+  # so the event describes what a reader would now find rather than what this
+  # run intended to write. Ids and counts only.
   defp emit_coverage(account_id, scope_id, index, recall_documents) do
-    coverage = Coverage.scope(account_id, scope_id, nil, true)
+    coverage =
+      DataLayer.in_account_transaction(account_id, fn ->
+        Coverage.scope(account_id, scope_id, nil, true)
+      end)
 
     :telemetry.execute(
       [:memhouse, :retrieval, :projection_refresh],
