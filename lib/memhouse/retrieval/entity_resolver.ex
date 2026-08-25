@@ -20,6 +20,7 @@ defmodule MemHouse.Retrieval.EntityResolver do
   alias MemHouse.Knowledge.{Entity, EntityMention}
   alias MemHouse.Memory.Visibility
   alias MemHouse.Model.{Embedding, Gateway}
+  alias MemHouse.Repo
   alias MemHouse.Retrieval.{LexicalQueryAnalyzer, Vector}
 
   require Ash.Query
@@ -435,43 +436,84 @@ defmodule MemHouse.Retrieval.EntityResolver do
       account_id,
       [role: :system, pipeline?: true],
       fn _account, actor ->
-        ProjectionInputs.serialize_account!(account_id)
-        current_generation = ProjectionLock.capture!(account_id, scope_id)
-        current_entity_signature = account_id |> entities!(actor) |> entity_snapshot_signature()
+        with_write_savepoint(fn ->
+          ProjectionInputs.serialize_account!(account_id)
+          current_generation = ProjectionLock.capture!(account_id, scope_id)
+          current_entity_signature = account_id |> entities!(actor) |> entity_snapshot_signature()
 
-        if current_generation == input_generation and
-             current_entity_signature == entity_signature and
-             Visibility.boundary_visible?(valid_until, Clock.utc_now()) do
-          # Clear first, then re-derive in the same transaction. Any other order
-          # would leave duplicate mentions for statements that are resolved
-          # again, and splitting the clear into its own transaction would expose
-          # a window where the scope has no mentions at all.
-          clear_mentions!(account_id, scope_id, actor)
-
-          key_to_id =
-            drafts
-            |> Enum.filter(& &1.touched?)
-            |> Map.new(&{&1.key, write_draft!(&1, account_id, actor)})
-
-          Enum.each(mentions, &write_mention!(&1, key_to_id, account_id, actor))
-
-          # Runs last, once the scope's mentions have been rewritten, so an
-          # entity that only this scope referenced is now visibly unreferenced.
-          prune_entities!(account_id, actor)
-
-          if Visibility.boundary_visible?(valid_until, Clock.utc_now()) do
-            :ok
+          if current_generation == input_generation and
+               current_entity_signature == entity_signature and
+               Visibility.boundary_visible?(valid_until, Clock.utc_now()) do
+            persist_index!(drafts, mentions, account_id, scope_id, actor, valid_until)
           else
-            throw({__MODULE__, :stale_projection_snapshot})
+            {:error, :stale_projection_snapshot}
           end
-        else
-          {:error, :stale_projection_snapshot}
-        end
+        end)
       end
     )
-  catch
-    {__MODULE__, :stale_projection_snapshot} -> {:error, :stale_projection_snapshot}
   end
+
+  defp persist_index!(drafts, mentions, account_id, scope_id, actor, valid_until) do
+    # Clear first, then re-derive in the same transaction. Any other order would leave duplicate
+    # mentions for statements that are resolved again, and splitting the clear into its own
+    # transaction would expose a window where the scope has no mentions at all.
+    clear_mentions!(account_id, scope_id, actor)
+
+    key_to_id =
+      drafts
+      |> Enum.filter(& &1.touched?)
+      |> Map.new(&{&1.key, write_draft!(&1, account_id, actor)})
+
+    Enum.each(mentions, &write_mention!(&1, key_to_id, account_id, actor))
+
+    # Runs last, once the scope's mentions have been rewritten, so an entity that only this scope
+    # referenced is now visibly unreferenced.
+    prune_entities!(account_id, actor)
+
+    if Visibility.boundary_visible?(valid_until, Clock.utc_now()) do
+      :ok
+    else
+      throw({__MODULE__, :stale_projection_snapshot})
+    end
+  end
+
+  # PostgreSQL marks a transaction failed after a rollback. The explicit savepoint keeps a
+  # caller's enclosing erasure transaction usable when the second expiry check rejects writes
+  # that already ran; the caller can then retry from a fresh, unexpired source snapshot.
+  defp with_write_savepoint(fun) do
+    savepoint!(:create)
+
+    try do
+      result = fun.()
+      savepoint!(:release)
+      result
+    catch
+      :throw, {__MODULE__, :stale_projection_snapshot} ->
+        savepoint!(:rollback)
+        savepoint!(:release)
+        {:error, :stale_projection_snapshot}
+
+      kind, reason ->
+        stacktrace = __STACKTRACE__
+        savepoint!(:rollback)
+        savepoint!(:release)
+        :erlang.raise(kind, reason, stacktrace)
+    end
+  end
+
+  defp savepoint!(:create),
+    do: Ecto.Adapters.SQL.query!(Repo, "SAVEPOINT memhouse_entity_resolution_write", [])
+
+  defp savepoint!(:rollback),
+    do:
+      Ecto.Adapters.SQL.query!(
+        Repo,
+        "ROLLBACK TO SAVEPOINT memhouse_entity_resolution_write",
+        []
+      )
+
+  defp savepoint!(:release),
+    do: Ecto.Adapters.SQL.query!(Repo, "RELEASE SAVEPOINT memhouse_entity_resolution_write", [])
 
   defp entity_snapshot_signature(entities) do
     entities

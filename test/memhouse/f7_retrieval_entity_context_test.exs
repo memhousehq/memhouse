@@ -146,6 +146,46 @@ defmodule MemHouse.F7RetrievalEntityContextTest.CountingClock do
   def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.InterleavingClock do
+  @moduledoc false
+
+  @behaviour MemHouse.Clock
+
+  def start!, do: Agent.start_link(fn -> nil end, name: __MODULE__)
+
+  def stop do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> Agent.stop(pid)
+    end
+  end
+
+  def put(now, expired, expire_on_call) do
+    Agent.update(__MODULE__, fn _state ->
+      %{now: now, expired: expired, expire_on_call: expire_on_call, calls: 0}
+    end)
+  end
+
+  def calls, do: Agent.get(__MODULE__, & &1.calls)
+
+  @impl true
+  def utc_now do
+    Agent.get_and_update(__MODULE__, fn state ->
+      calls = state.calls + 1
+
+      value =
+        if is_integer(state.expire_on_call) and calls >= state.expire_on_call,
+          do: state.expired,
+          else: state.now
+
+      {value, %{state | calls: calls}}
+    end)
+  end
+
+  @impl true
+  def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest.UnstableProjectionLock do
   @moduledoc false
 
@@ -559,6 +599,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
   alias MemHouse.DataLayer
   alias MemHouse.Documents
   alias MemHouse.Governance.Engine, as: GovernanceEngine
+  alias MemHouse.Governance.Erasure
 
   alias MemHouse.Knowledge.{
     Entity,
@@ -1973,6 +2014,117 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
       assert mentions == []
     end)
+  end
+
+  test "erasure retries a final-gate expiry from a savepoint and completes atomically" do
+    clock = MemHouse.F7RetrievalEntityContextTest.InterleavingClock
+    provider = MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider
+    system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
+    now = ~U[2026-08-25 14:00:00.000000Z]
+    expires_at = DateTime.add(now, 60, :second)
+    expired = DateTime.add(expires_at, 1, :second)
+
+    calibration =
+      seed_active!(
+        "f7-erasure-savepoint-calibration",
+        "/f7/erasure-savepoint-calibration",
+        "Blake owns the release checklist."
+      )
+
+    erased =
+      seed_active!(
+        "f7-erasure-savepoint",
+        "/f7/erasure-savepoint",
+        "Avery owns the private erasure checklist."
+      )
+
+    surviving =
+      seed_active!(
+        "f7-erasure-savepoint",
+        "/f7/erasure-savepoint",
+        "Blake owns the surviving release checklist.",
+        "blake-session",
+        peer_key: "blake",
+        peer_name: "Blake"
+      )
+
+    set_future_expiry!(calibration, expires_at)
+    set_future_expiry!(surviving, expires_at)
+
+    {:ok, _pid} = clock.start!()
+    Application.put_env(:memhouse, :clock, clock)
+    pause_next_entity_resolution!()
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :clock, system_clock)
+      clock.stop()
+    end)
+
+    clock.put(now, expired, :never)
+
+    calibration_task =
+      Task.async(fn ->
+        result = EntityResolver.rebuild_scope(calibration.account.id, calibration.scope.id)
+        {result, clock.calls()}
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, calibration_pid}, 1_000
+    clock.put(now, expired, :never)
+    send(calibration_pid, :release_projection_refresh)
+
+    assert {{:ok, %{mentions: calibration_mentions}}, final_gate_call} =
+             Task.await(calibration_task, 5_000)
+
+    assert calibration_mentions >= 1
+    assert final_gate_call >= 2
+
+    provider.stop()
+    :ok = provider.start!(self(), :entity_resolution)
+    clock.put(now, expired, :never)
+
+    erasure_task =
+      Task.async(fn ->
+        Erasure.request(erased.actor, erased.actor.peer_id, "strict")
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, erasure_pid}, 1_000
+    clock.put(now, expired, final_gate_call)
+    send(erasure_pid, :release_projection_refresh)
+
+    request = Task.await(erasure_task, 10_000)
+    assert request.state == "completed"
+
+    DataLayer.with_actor(surviving.actor, fn account, actor ->
+      surviving_knowledge =
+        KnowledgeItem
+        |> Ash.Query.filter(id == ^surviving.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+
+      assert surviving_knowledge.state == "active"
+      assert DateTime.compare(surviving_knowledge.expires_at, expired) == :lt
+
+      assert [] ==
+               EntityMention
+               |> Ash.Query.filter(knowledge_item_id == ^surviving.knowledge.id)
+               |> Ash.Query.set_tenant(account.id)
+               |> Ash.read!(actor: pipeline_actor(actor))
+
+      refute Enum.any?(
+               Entity
+               |> Ash.Query.set_tenant(account.id)
+               |> Ash.read!(actor: pipeline_actor(actor)),
+               &(surviving.knowledge.id in &1.derived_from)
+             )
+    end)
+
+    assert scalar!("SELECT count(*) FROM peers WHERE id = $1", [
+             Ecto.UUID.dump!(erased.actor.peer_id)
+           ]) == 0
+
+    assert scalar!("SELECT count(*) FROM knowledge_items WHERE id = $1", [
+             Ecto.UUID.dump!(erased.knowledge.id)
+           ]) == 0
   end
 
   test "an older cross-scope resolution cannot overwrite newer Account entity state" do
