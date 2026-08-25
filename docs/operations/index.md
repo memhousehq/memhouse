@@ -87,7 +87,7 @@ Cost estimates use operator-provided rates and the local usage ledger.
 
 ## Release and versioning
 
-MemHouse uses Semantic Versioning; `mix.exs` is authoritative and a release tag
-is exactly `v<version>`. The release checklist, the versioning policy, and the
-required CI checks are maintainer process and live in the repository under
-[`specs/process/`](https://github.com/memhousehq/memhouse/tree/main/specs/process).
+`mix.exs` is the Semantic Versioning authority. Release tags use exactly
+`v<version>`. The required checks and publish flow are listed in
+[`.github/workflows/README.md`](https://github.com/memhousehq/memhouse/blob/main/.github/workflows/README.md).
+Follow the [Upgrades](upgrades.md) procedure for operator changes.

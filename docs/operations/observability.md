@@ -271,7 +271,7 @@ OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Basic <base64 public:secret>
 
 Use the local collector when you also need local inspection.
 
-The measurement discipline behind evaluation runs — experiment labelling,
-retrieval variants, and what may be claimed from a trace — is maintainer
-material and lives in the repository under
-[`specs/observability/`](https://github.com/memhousehq/memhouse/tree/main/specs/observability).
+Label every run with its experiment, run, and variant identity. Compare only
+like-for-like datasets, profiles, and model roles. Traces are diagnostic
+evidence, not quality or correctness proof. Make no claim from a trace without
+the corresponding durable evaluation report.

@@ -25,9 +25,8 @@
 #   Python packages, and lets pull requests run the build without any write scope.
 #
 # What is deliberately NOT published
-#   Only `docs/` reaches the site. Specifications, ADRs, architecture notes, the roadmap,
-#   and evaluation evidence live in `specs/` and stay in the repository, because they
-#   describe intent and history rather than how to use the software.
+#   Only `docs/` reaches the site. Source and tests remain authoritative. Retained root,
+#   workflow, legal, security, and SDK files remain repository-only.
 #
 # Maintainer prerequisite
 #   GitHub Pages must be set to "GitHub Actions" as its source in the repository settings.

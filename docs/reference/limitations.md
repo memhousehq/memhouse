@@ -5,7 +5,7 @@
 MemHouse `0.4.0` is a community beta. These capabilities are unavailable.
 
 The machine-readable inventory is
-[`specs/eval/surface-contract-inventory.json`](https://github.com/memhousehq/memhouse/blob/main/specs/eval/surface-contract-inventory.json),
+[`test/fixtures/eval/surface-contract-inventory.json`](https://github.com/memhousehq/memhouse/blob/main/test/fixtures/eval/surface-contract-inventory.json),
 which marks these surfaces `unavailable`. Release checks reject contrary claims.
 
 ## Not implemented
@@ -105,7 +105,7 @@ These are deliberate designs, not gaps:
 
 ## Where the outstanding work is tracked
 
-Acceptance criteria live in
-[`specs/roadmap/beta-roadmap.md`](https://github.com/memhousehq/memhouse/blob/main/specs/roadmap/beta-roadmap.md).
+Current limitations are listed on this page. Scoped acceptance work is tracked
+in the repository's [open GitHub issues](https://github.com/memhousehq/memhouse/issues).
 Current behavior is verified by the suite under
 [`test/`](https://github.com/memhousehq/memhouse/tree/main/test).
