@@ -61,6 +61,9 @@ config :memhouse, :governance, attach_deadline_ms: 1_000
 # tasks do not contend for the single sandbox connection.
 config :memhouse, :retrieval_concurrency, false
 
+# Public campaign-admission tests use a fixed, non-secret build attestation.
+config :memhouse, :campaign_build_sha, "ed3f3600fdab9b09abdb40e7ee3492e334f6df72"
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 

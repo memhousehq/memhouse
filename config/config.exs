@@ -103,6 +103,10 @@ config :memhouse, :require_database_url, false
 config :memhouse, :campaign_admission, nil
 config :memhouse, :build_sha, "development"
 
+# Campaign execution uses a separately compiled revision. Runtime environment
+# changes cannot substitute another commit after the BEAM artifact is built.
+config :memhouse, :campaign_build_sha, System.get_env("MEMHOUSE_CAMPAIGN_BUILD_SHA", "unknown")
+
 # When explicitly enabled, one extraction job may opportunistically consume
 # adjacent message jobs. The target is an experiment variable, while
 # whole-request admission is a hard provider-context boundary. `utf8-bytes-v1`

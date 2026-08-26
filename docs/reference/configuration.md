@@ -107,8 +107,8 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` | `false` | Selects the evaluation-only `compact-explicit-v1` extraction contract and `extract-compact-exp-1` prompt identity |
 | `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
 
-The six campaign variables below are an evaluation-only spend boundary. Set
-all six or none. A partial configuration stops startup.
+The eight runtime campaign variables below are an evaluation-only spend
+boundary. Set all eight or none. A partial configuration stops startup.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -117,14 +117,30 @@ all six or none. A partial configuration stops startup.
 | `MEMHOUSE_CAMPAIGN_ADMISSION_SHA256` | — | Separately approved SHA-256 of the exact packet bytes |
 | `MEMHOUSE_CAMPAIGN_DEFINITION_ID` | — | Approved campaign identity |
 | `MEMHOUSE_CAMPAIGN_ARM_ID` | — | Approved arm whose prompt and batching identity must match this node |
+| `MEMHOUSE_CAMPAIGN_RUN_ID` | — | Immutable approved run id; a rerun requires a new packet and run id |
+| `MEMHOUSE_CAMPAIGN_BACKEND_MODE` | — | Exact approved PostgreSQL mode: `pg0` or `external` |
 | `MEMHOUSE_CAMPAIGN_TARGET_REVISION` | — | Full approved MemHouse target commit |
+| `MEMHOUSE_CAMPAIGN_BUILD_SHA` | `unknown` | Build-time-only full commit embedded in the campaign executable; `unknown` cannot activate spend |
+
+Generation and reranker routing can be pinned independently with
+`MEMHOUSE_OPENROUTER_GENERATION_UPSTREAM_ROUTE` and
+`MEMHOUSE_OPENROUTER_RERANKER_UPSTREAM_ROUTE`. The legacy
+`MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE` remains their fallback for ordinary
+non-campaign configuration. An admitted packet carries an exact route for each
+of its six paid roles, and activation requires the configured provider, model,
+endpoint, upstream route, credential variable reference, and credential
+presence to match before the packet is claimed. OpenRouter's canonical
+provider-selection slug for the native `voyageai/rerank-2.5` route is
+`voyageai`.
 
 Activation atomically creates
 `<ledger-dir>/<admission-sha256>.memhouse-started`. The marker is never removed
 automatically: renaming the packet or restarting/replacing the node therefore
 cannot reset reservations or replay the same approved allowance when the
 ledger directory is mounted on durable storage. A restarted campaign requires
-a newly approved packet and digest.
+a newly approved packet, run id, and digest. The packet fixes
+`consume-packet-no-resume` abort behavior and `new-packet-new-run-id` rerun
+behavior for one exact `pg0` or `external` PostgreSQL execution.
 
 `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` uses the same strict boolean boot
 parsing as the experimental switches above: `true`, `false`, `1`, `0`, `yes`,

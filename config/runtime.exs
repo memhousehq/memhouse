@@ -14,6 +14,20 @@ import Dotenvy
 # Later sources win, so the process environment overrides `.env`.
 env = source!([".env", System.get_env()])
 env_get = fn key, default -> Map.get(env, key, default) end
+database_mode = env_get.("MEMHOUSE_DATABASE_MODE", "external")
+
+# ReqLLM resolves this credential by variable name at call time. Promote a
+# Dotenvy-only value into the process environment so provider execution and
+# campaign readiness consult the same source, without placing the value in
+# application configuration or campaign state. An existing process variable
+# already won source precedence and is left unchanged.
+case {System.get_env("OPENROUTER_API_KEY"), Map.get(env, "OPENROUTER_API_KEY")} do
+  {nil, value} when is_binary(value) and value != "" ->
+    System.put_env("OPENROUTER_API_KEY", value)
+
+  _absent_or_already_set ->
+    :ok
+end
 
 config :memhouse, :build_sha, env_get.("MEMHOUSE_BUILD_SHA", "unknown")
 
@@ -23,6 +37,8 @@ campaign_admission_values = %{
   sha256: env_get.("MEMHOUSE_CAMPAIGN_ADMISSION_SHA256", ""),
   definition_id: env_get.("MEMHOUSE_CAMPAIGN_DEFINITION_ID", ""),
   arm_id: env_get.("MEMHOUSE_CAMPAIGN_ARM_ID", ""),
+  run_id: env_get.("MEMHOUSE_CAMPAIGN_RUN_ID", ""),
+  backend_mode: env_get.("MEMHOUSE_CAMPAIGN_BACKEND_MODE", ""),
   target_revision: env_get.("MEMHOUSE_CAMPAIGN_TARGET_REVISION", "")
 }
 
@@ -36,12 +52,22 @@ if Enum.any?(campaign_admission_values, fn {_key, value} -> value != "" end) do
     raise "campaign admission configuration is incomplete; missing: #{missing}"
   end
 
+  if campaign_admission_values.backend_mode != database_mode do
+    raise "MEMHOUSE_CAMPAIGN_BACKEND_MODE must match MEMHOUSE_DATABASE_MODE"
+  end
+
   config :memhouse,
          :campaign_admission,
          {campaign_admission_values.path, campaign_admission_values.sha256,
           [
             definition_id: campaign_admission_values.definition_id,
             arm_id: campaign_admission_values.arm_id,
+            run_id: campaign_admission_values.run_id,
+            backend: %{
+              "engine" => "postgres",
+              "mode" => campaign_admission_values.backend_mode,
+              "sqlite" => "unsupported"
+            },
             ledger_dir: campaign_admission_values.ledger_dir,
             target_revision: campaign_admission_values.target_revision
           ]}
@@ -285,7 +311,6 @@ config :memhouse, MemHouseWeb.Endpoint, http: [port: env_integer!.("PORT", "4000
 # to the working directory when running from source. Used to locate the pg0
 # binary shipped inside the release.
 release_root = System.get_env("RELEASE_ROOT") || File.cwd!()
-database_mode = env_get.("MEMHOUSE_DATABASE_MODE", "external")
 
 # Tests read a separate variable on purpose. A developer shell almost always has
 # DATABASE_URL pointing at the development database, and honouring it here would
@@ -534,6 +559,14 @@ generation_version =
     do: "1",
     else: env_get.("MEMHOUSE_MODEL_VERSION", "unversioned")
 
+legacy_openrouter_upstream_route = env_get.("MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE", nil)
+
+generation_openrouter_upstream_route =
+  env_get.("MEMHOUSE_OPENROUTER_GENERATION_UPSTREAM_ROUTE", legacy_openrouter_upstream_route)
+
+reranker_openrouter_upstream_route =
+  env_get.("MEMHOUSE_OPENROUTER_RERANKER_UPSTREAM_ROUTE", legacy_openrouter_upstream_route)
+
 # Note what is stored: the *name of the variable* holding the credential, not
 # the credential. Role configuration is durable and exportable, so a raw key
 # must never enter it.
@@ -568,7 +601,7 @@ generation_options = %{
   "receive_timeout" => env_integer.("MEMHOUSE_MODEL_RECEIVE_TIMEOUT_MS", "120000"),
   "request_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS", "300000"),
   "pool_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000"),
-  "upstream_route" => env_get.("MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE", nil)
+  "upstream_route" => generation_openrouter_upstream_route
 }
 
 config :memhouse, :ingest_provider_circuit,
@@ -664,7 +697,7 @@ config :memhouse, :model_roles,
     options: %{
       "api_key_ref" => "env:OPENROUTER_API_KEY",
       "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", "https://openrouter.ai/api/v1"),
-      "upstream_route" => env_get.("MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE", nil)
+      "upstream_route" => reranker_openrouter_upstream_route
     }
   },
   # Turns raw observations into structured candidate knowledge. Its output still

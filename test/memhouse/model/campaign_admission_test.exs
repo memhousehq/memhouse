@@ -66,12 +66,15 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
   alias MemHouse.Model.CampaignAdmission
   alias MemHouse.Model.CampaignAdmissionTest.Provider
   alias MemHouse.Model.CampaignAdmissionTest.StubPlug
+  alias MemHouse.Model.CampaignBuild
   alias MemHouse.Model.Config
   alias MemHouse.Model.Gateway
   alias MemHouse.Model.Providers.ReqLLM
   alias MemHouse.Model.StructuredGenerator
 
   @target_revision "ed3f3600fdab9b09abdb40e7ee3492e334f6df72"
+  @run_id "issue-287-pg0-run-1"
+  @backend %{"engine" => "postgres", "mode" => "pg0", "sqlite" => "unsupported"}
 
   setup do
     Application.ensure_all_started(:bandit)
@@ -96,10 +99,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     previous_roles = Application.fetch_env!(:memhouse, :model_roles)
     previous_circuit = Application.fetch_env!(:memhouse, :ingest_provider_circuit)
-    previous_build_sha = Application.fetch_env!(:memhouse, :build_sha)
-
     Application.put_env(:memhouse, :ingest_provider_circuit, enabled: false)
-    Application.put_env(:memhouse, :build_sha, @target_revision)
 
     Application.put_env(
       :memhouse,
@@ -111,6 +111,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
         prompt_version: "extract-14",
         pipeline_version: "f5-1",
         options: %{
+          "api_key_ref" => "env:MEMHOUSE_CAMPAIGN_TEST_KEY",
           "base_url" => "https://openrouter.ai/api/v1",
           "max_tokens" => 8,
           "upstream_route" => "openai"
@@ -122,7 +123,6 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
       System.delete_env("MEMHOUSE_CAMPAIGN_TEST_KEY")
       Application.put_env(:memhouse, :model_roles, previous_roles)
       Application.put_env(:memhouse, :ingest_provider_circuit, previous_circuit)
-      Application.put_env(:memhouse, :build_sha, previous_build_sha)
     end)
 
     :ok
@@ -235,12 +235,156 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
              activate(path, digest, arm_id: nil)
   end
 
+  test "activation binds the immutable run and backend identity" do
+    {path, digest} = write_packet!(packet(requests: 1))
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_run_mismatch}} =
+             activate(path, digest, run_id: "issue-287-external-run-1")
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_backend_mismatch}} =
+             activate(path, digest,
+               backend: %{"engine" => "postgres", "mode" => "external", "sqlite" => "unsupported"}
+             )
+  end
+
+  test "activation publishes content-free run, backend, and restart policy identity" do
+    {path, digest} = write_packet!(packet(requests: 1))
+
+    assert {:ok, _identity} = activate(path, digest)
+
+    assert CampaignAdmission.status()
+           |> Map.take([:run_id, :backend, :abort_policy, :rerun_policy]) ==
+             %{
+               run_id: @run_id,
+               backend: @backend,
+               abort_policy: "consume-packet-no-resume",
+               rerun_policy: "new-packet-new-run-id"
+             }
+  end
+
+  test "activation binds an exact route for every paid role" do
+    {path, digest} = write_packet!(packet(requests: 1))
+
+    assert {:ok, _identity} = activate(path, digest)
+
+    status = CampaignAdmission.status()
+    assert Map.keys(status.routes) |> Enum.sort() == paid_role_names()
+
+    assert status.routes["target.ingest_extractor"] == %{
+             credential: %{status: :present, variable: "MEMHOUSE_CAMPAIGN_TEST_KEY"},
+             endpoint: "https://openrouter.ai/api/v1",
+             provider: "openrouter",
+             upstream_route: "openai"
+           }
+
+    assert status.routes["target.reranker"] == %{
+             credential: %{status: :present, variable: "MEMHOUSE_CAMPAIGN_TEST_KEY"},
+             endpoint: "https://openrouter.ai/api/v1",
+             provider: "openrouter",
+             upstream_route: "voyageai"
+           }
+  end
+
+  test "missing route credentials fail before durable packet consumption" do
+    missing_variable = "MEMHOUSE_CAMPAIGN_MISSING_#{System.unique_integer([:positive])}"
+
+    campaign =
+      packet(requests: 1)
+      |> put_in(
+        ["execution", "routes", "target.ingest_extractor", "credential_ref"],
+        "env:" <> missing_variable
+      )
+
+    {path, digest} = write_packet!(campaign)
+    ledger_dir = path <> ".ledger"
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_credentials_unavailable}} =
+             activate(path, digest, ledger_dir: ledger_dir)
+
+    refute File.exists?(ledger_dir)
+  end
+
+  test "blank credentials and unbound route fields fail before durable consumption" do
+    System.put_env("MEMHOUSE_CAMPAIGN_BLANK_KEY", "   ")
+    on_exit(fn -> System.delete_env("MEMHOUSE_CAMPAIGN_BLANK_KEY") end)
+
+    blank =
+      packet(requests: 1)
+      |> put_in(
+        ["execution", "routes", "target.ingest_extractor", "credential_ref"],
+        "env:MEMHOUSE_CAMPAIGN_BLANK_KEY"
+      )
+
+    {blank_path, blank_digest} = write_packet!(blank)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_credentials_unavailable}} =
+             activate(blank_path, blank_digest)
+
+    unbound =
+      packet(requests: 1)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "unapproved"], true)
+
+    {unbound_path, unbound_digest} = write_packet!(unbound)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_routing}} =
+             activate(unbound_path, unbound_digest)
+
+    refute File.exists?(blank_path <> ".ledger")
+    refute File.exists?(unbound_path <> ".ledger")
+  end
+
+  test "known-incompatible model routes fail before durable packet consumption" do
+    reranker_on_generation =
+      packet(requests: 1)
+      |> put_in(["execution", "routes", "target.reranker", "upstream_route"], "openai")
+
+    {reranker_path, reranker_digest} = write_packet!(reranker_on_generation)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_routing}} =
+             activate(reranker_path, reranker_digest)
+
+    noncanonical_reranker =
+      packet(requests: 1)
+      |> put_in(["execution", "routes", "target.reranker", "upstream_route"], "voyage")
+
+    {noncanonical_path, noncanonical_digest} = write_packet!(noncanonical_reranker)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_routing}} =
+             activate(noncanonical_path, noncanonical_digest)
+
+    generation_on_voyage =
+      packet(requests: 1)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "upstream_route"], "voyageai")
+
+    {generation_path, generation_digest} = write_packet!(generation_on_voyage)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_routing}} =
+             activate(generation_path, generation_digest)
+
+    refute File.exists?(reranker_path <> ".ledger")
+    refute File.exists?(noncanonical_path <> ".ledger")
+    refute File.exists?(generation_path <> ".ledger")
+  end
+
   test "public activation options cannot override the running build revision" do
     {path, digest} = write_packet!(packet(requests: 1))
-    Application.put_env(:memhouse, :build_sha, String.duplicate("a", 40))
 
     assert {:error, %CampaignAdmission.Refused{reason: :target_revision_mismatch}} =
-             activate(path, digest, actual_revision: @target_revision)
+             activate(path, digest,
+               target_revision: String.duplicate("a", 40),
+               actual_revision: @target_revision
+             )
+  end
+
+  test "the campaign build revision cannot be changed through runtime application config" do
+    previous = Application.fetch_env!(:memhouse, :campaign_build_sha)
+
+    try do
+      Application.put_env(:memhouse, :campaign_build_sha, String.duplicate("a", 40))
+      assert CampaignBuild.revision() == @target_revision
+    after
+      Application.put_env(:memhouse, :campaign_build_sha, previous)
+    end
   end
 
   test "a missing, changed, or unapproved packet cannot activate spend" do
@@ -267,6 +411,14 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert Provider.calls() == 0
   end
 
+  test "a legacy single-route admission schema fails closed" do
+    legacy = packet(requests: 1) |> Map.put("schema_version", "membench-campaign-admission-1")
+    {path, digest} = write_packet!(legacy)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :unapproved_admission}} =
+             activate(path, digest)
+  end
+
   test "identity and provider routing mismatches are rejected before the callback" do
     {path, digest} = write_packet!(packet(requests: 1))
 
@@ -288,6 +440,30 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
       :memhouse,
       :model_roles,
       update_in(roles[:ingest_extractor][:options], &Map.put(&1, "upstream_route", "other"))
+    )
+
+    assert {:error, %CampaignAdmission.Refused{reason: :routing_mismatch}} =
+             Gateway.structured_once(
+               :ingest_extractor,
+               [],
+               %{},
+               %{model_provider: Provider},
+               campaign_identity: identity
+             )
+
+    assert Provider.calls() == 0
+  end
+
+  test "credential reference drift is rejected before the callback" do
+    {path, digest} = write_packet!(packet(requests: 1))
+    assert {:ok, identity} = activate(path, digest)
+
+    roles = Application.fetch_env!(:memhouse, :model_roles)
+
+    Application.put_env(
+      :memhouse,
+      :model_roles,
+      put_in(roles[:ingest_extractor][:options]["api_key_ref"], "env:OTHER_KEY")
     )
 
     assert {:error, %CampaignAdmission.Refused{reason: :routing_mismatch}} =
@@ -378,7 +554,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     campaign =
       packet(requests: 1, input_tokens: 10_000)
-      |> put_in(["execution", "endpoint"], endpoint)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "endpoint"], endpoint)
       |> put_in(["volume", "hard_caps", "wall_seconds"], 1)
 
     {path, digest} = write_packet!(campaign)
@@ -403,7 +579,8 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     configure_extractor_endpoint(endpoint)
 
     campaign =
-      packet(requests: 3, input_tokens: 30_000) |> put_in(["execution", "endpoint"], endpoint)
+      packet(requests: 3, input_tokens: 30_000)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "endpoint"], endpoint)
 
     {path, digest} = write_packet!(campaign)
 
@@ -650,6 +827,8 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
       target_revision: @target_revision,
       definition_id: "issue-287-test-v1",
       arm_id: "B",
+      run_id: @run_id,
+      backend: @backend,
       ledger_dir: path <> ".ledger"
     ]
 
@@ -664,16 +843,17 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     zero = %{"requests" => 0, "input_tokens" => 0, "output_tokens" => 0, "usd" => 0.0}
 
     %{
-      "schema_version" => "membench-campaign-admission-1",
+      "schema_version" => "membench-campaign-admission-2",
       "definition_id" => "issue-287-test-v1",
       "issue" => "memhousehq/memhouse#287",
       "admitted" => true,
       "provider_calls_permitted" => true,
       "blockers" => [],
       "execution" => %{
-        "provider" => "openrouter",
-        "endpoint" => "https://openrouter.ai/api/v1",
-        "upstream_route" => "openai"
+        "abort_policy" => "consume-packet-no-resume",
+        "backend" => @backend,
+        "rerun_policy" => "new-packet-new-run-id",
+        "run_id" => @run_id
       },
       "models" => %{
         "answerer" => "openai/gpt-oss-120b",
@@ -713,6 +893,24 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
         }
       }
     }
+    |> per_role_route_packet()
+  end
+
+  defp per_role_route_packet(packet) do
+    routes =
+      Map.new(paid_role_names(), fn role ->
+        upstream_route = if role == "target.reranker", do: "voyageai", else: "openai"
+
+        {role,
+         %{
+           "credential_ref" => "env:MEMHOUSE_CAMPAIGN_TEST_KEY",
+           "endpoint" => "https://openrouter.ai/api/v1",
+           "provider" => "openrouter",
+           "upstream_route" => upstream_route
+         }}
+      end)
+
+    put_in(packet, ["execution", "routes"], routes)
   end
 
   defp put_role_caps(packet, role_caps) do
@@ -744,7 +942,20 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     |> put_in(["volume", "hard_caps"], hard_caps)
   end
 
+  defp paid_role_names do
+    ~w(
+      harness.answerer
+      harness.judge
+      target.dialectic_agent
+      target.dream_reasoner
+      target.ingest_extractor
+      target.reranker
+    )
+  end
+
   defp hosted_role(role, model) do
+    upstream_route = if model == "voyageai/rerank-2.5", do: "voyageai", else: "openai"
+
     %{
       provider: "openrouter",
       model: model,
@@ -754,7 +965,8 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
       options: %{
         "base_url" => "https://openrouter.ai/api/v1",
         "max_tokens" => 8,
-        "upstream_route" => "openai"
+        "api_key_ref" => "env:MEMHOUSE_CAMPAIGN_TEST_KEY",
+        "upstream_route" => upstream_route
       },
       role: role
     }
