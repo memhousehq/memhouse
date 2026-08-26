@@ -268,6 +268,26 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
     assert {"authorization", "Bearer test-key"} in headers
   end
 
+  test "OpenRouter Voyage sends the pinned upstream route without fallbacks" do
+    config =
+      stubbed_reranker_role(
+        %{
+          "results" => [%{"index" => 0, "relevance_score" => 0.9}],
+          "usage" => %{"total_tokens" => 12}
+        },
+        test_pid: self()
+      )
+      |> update_in([Access.key!(:options)], &Map.put(&1, "upstream_route", "openai"))
+
+    assert {:ok, %Result{}} = Adapter.rerank(config, "query", ["document"], [])
+    assert_receive {:req_llm_request, request}
+
+    assert request["provider"] == %{
+             "only" => ["openai"],
+             "allow_fallbacks" => false
+           }
+  end
+
   test "OpenRouter Voyage rejects an out-of-range result index" do
     config =
       stubbed_reranker_role(
@@ -337,6 +357,25 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
 
       refute Map.has_key?(request, "tools")
       refute Map.has_key?(request, "tool_choice")
+    end
+
+    test "OpenRouter structured generation sends the pinned route without fallbacks" do
+      config =
+        stubbed_role(
+          completion("stop", %{"role" => "assistant", "content" => ~s({"ok":true})}),
+          test_pid: self()
+        )
+        |> update_in([Access.key!(:options)], &Map.put(&1, "upstream_route", "openai"))
+
+      assert {:ok, %Result{value: %{"ok" => true}}} =
+               Adapter.structured(config, @messages, @schema, [])
+
+      assert_receive {:req_llm_request, request}
+
+      assert request["provider"] == %{
+               "only" => ["openai"],
+               "allow_fallbacks" => false
+             }
     end
 
     test "the same endpoint reached as openai-compatible can be told to use it too" do

@@ -36,6 +36,7 @@ defmodule MemHouse.Model.Providers.ReqLLM do
 
   @behaviour MemHouse.Model.Provider
 
+  alias MemHouse.Model.CampaignAdmission
   alias MemHouse.Model.Config.Role
   alias MemHouse.Model.Provider.Result
 
@@ -242,12 +243,7 @@ defmodule MemHouse.Model.Providers.ReqLLM do
           url: String.trim_trailing(base_url, "/") <> "/rerank",
           method: :post,
           headers: [{"authorization", "Bearer #{Keyword.fetch!(request_opts, :api_key)}"}],
-          json: %{
-            model: config.model,
-            query: query,
-            documents: documents,
-            top_n: length(documents)
-          },
+          json: openrouter_rerank_body(config, query, documents),
           receive_timeout: Keyword.get(request_opts, :receive_timeout, 30_000)
         ] ++ http_opts
       )
@@ -414,7 +410,7 @@ defmodule MemHouse.Model.Providers.ReqLLM do
   # generation options before a request is built. The public
   # `request_timeout` role option maps to ReqLLM's `total_timeout`, which owns
   # the complete call budget, including transport retries.
-  defp request_opts(%Role{options: options}, overrides) do
+  defp request_opts(%Role{options: options} = config, overrides) do
     configured =
       @request_option_keys
       |> Enum.reduce([], fn key, acc ->
@@ -439,6 +435,56 @@ defmodule MemHouse.Model.Providers.ReqLLM do
     |> Keyword.merge(Keyword.take(overrides, @request_option_keys))
     |> maybe_put(:total_timeout, total_timeout)
     |> maybe_put(:req_http_options, req_http_options)
+    |> maybe_put(:provider_options, openrouter_provider_options(config))
+    |> campaign_retry_limit()
+  end
+
+  # A transport retry can be billed as another provider request. Campaign job
+  # retries and structured repairs re-enter Gateway and reserve independently;
+  # hidden adapter retries therefore stay disabled for the entire active claim.
+  defp campaign_retry_limit(opts) do
+    if Process.whereis(CampaignAdmission) && CampaignAdmission.active?(),
+      do: Keyword.put(opts, :max_retries, 0),
+      else: opts
+  end
+
+  # A campaign route is an actual wire constraint, not provenance decoration.
+  # `only` plus disabled fallbacks prevents OpenRouter from silently selecting
+  # a different upstream when the approved route is unavailable.
+  defp openrouter_provider_options(%Role{provider: "openrouter"} = config) do
+    case Map.get(config.options, "upstream_route") do
+      route when is_binary(route) and route != "" ->
+        [openrouter_provider: openrouter_provider(config)]
+
+      _absent ->
+        nil
+    end
+  end
+
+  defp openrouter_provider_options(_config), do: nil
+
+  defp openrouter_provider(%Role{} = config) do
+    case Map.get(config.options, "upstream_route") do
+      route when is_binary(route) and route != "" ->
+        %{only: [route], allow_fallbacks: false}
+
+      _absent ->
+        nil
+    end
+  end
+
+  defp openrouter_rerank_body(config, query, documents) do
+    body = %{
+      model: config.model,
+      query: query,
+      documents: documents,
+      top_n: length(documents)
+    }
+
+    case openrouter_provider(config) do
+      nil -> body
+      provider -> Map.put(body, :provider, provider)
+    end
   end
 
   # OpenRouter's forced synthetic tool is not reliable for gpt-oss models: it
