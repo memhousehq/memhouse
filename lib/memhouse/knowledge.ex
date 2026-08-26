@@ -101,6 +101,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       # caller, because deduplication, corroboration merging, and the content-safe audit chain
       # all key off it.
       change MemHouse.Knowledge.Changes.HashStatement
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
 
       # A statement a reader cannot read is not knowledge, whatever else is valid about the row.
       # Enforced here rather than at the extractor so no write path can bypass it.
@@ -120,6 +121,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
     update :merge_from_pipeline do
       accept [:confidence, :source_message_ids, :corroboration_count]
       require_atomic? false
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
     end
 
     # Attaches or replaces the semantic vector. The four identity fields travel with the vector
@@ -135,6 +137,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       ]
 
       require_atomic? false
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
     end
 
     # The only legal way to change lifecycle state. `reason` is mandatory because the lifecycle
@@ -169,6 +172,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
       # Writes the append-only lifecycle event and the hash-chained audit entry inside this same
       # transaction, so a state change can never commit without its evidence.
       change MemHouse.Knowledge.Changes.RecordTransition
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
 
       validate attribute_in(:state, MemHouse.Knowledge.Lifecycle.states())
       validate MemHouse.Knowledge.Validations.AllowedLifecycleTransition
@@ -181,6 +185,7 @@ defmodule MemHouse.Knowledge.KnowledgeItem do
     # statement is a `transition` to a terminal state, which keeps the row and its history.
     destroy :erase do
       require_atomic? false
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, knowledge?: true}
     end
   end
 
@@ -747,6 +752,8 @@ defmodule MemHouse.Knowledge.Projection do
         :version,
         :content,
         :source_ids,
+        :valid_until,
+        :validity_version,
         :dirty,
         :watermark,
         :delta_count
@@ -760,6 +767,8 @@ defmodule MemHouse.Knowledge.Projection do
         :sensitivity,
         :content,
         :source_ids,
+        :valid_until,
+        :validity_version,
         :dirty,
         :watermark,
         :delta_count,
@@ -770,7 +779,17 @@ defmodule MemHouse.Knowledge.Projection do
     # The "mark dirty" path. It accepts the content fields as well, but every caller in this
     # codebase only flips the flag; full rewrites go through the upsert above.
     update :refresh_from_pipeline do
-      accept [:sensitivity, :version, :content, :source_ids, :dirty, :watermark, :delta_count]
+      accept [
+        :sensitivity,
+        :version,
+        :content,
+        :source_ids,
+        :valid_until,
+        :validity_version,
+        :dirty,
+        :watermark,
+        :delta_count
+      ]
     end
   end
 
@@ -823,6 +842,16 @@ defmodule MemHouse.Knowledge.Projection do
     # Statement ids the content was built from. Incremental merges keep only entries whose
     # source id is still present, so retracted statements drop out of the cache.
     attribute :source_ids, {:array, :uuid}, allow_nil?: false, default: []
+
+    # Earliest expiry among the complete source set. Context rejects the whole projection at this
+    # boundary because summaries cannot be safely edited after one of their sources disappears.
+    attribute :valid_until, :utc_datetime_usec
+
+    # Existing rows predate the validity coordinate and must fail closed until rebuilt. A rebuild
+    # binds this marker to the projection version even when every source is non-expiring and
+    # `valid_until` is nil. Every supported projection write goes through the Ash action that
+    # advances both coordinates together.
+    attribute :validity_version, :integer, allow_nil?: false, default: 0
 
     # True once an underlying statement changed and before the rebuild ran. Readers must not
     # serve a dirty projection.
@@ -908,12 +937,16 @@ defmodule MemHouse.Knowledge.Entity do
         :embedding_dimensions,
         :derived_from
       ]
+
+      require_atomic? false
+      change MemHouse.Context.Changes.SerializeProjectionInputs
     end
 
     # Used both by subject erasure and by the pruning pass that drops entities left without any
     # mention after a rebuild.
     destroy :erase do
       require_atomic? false
+      change MemHouse.Context.Changes.SerializeProjectionInputs
     end
   end
 
@@ -993,10 +1026,12 @@ defmodule MemHouse.Knowledge.EntityMention do
 
     create :create_from_pipeline do
       accept [:knowledge_item_id, :scope_id, :entity_id, :surface_form, :confidence]
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
 
     destroy :erase do
       require_atomic? false
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
   end
 

@@ -17,6 +17,7 @@ defmodule MemHouse.Pipeline.DreamTime do
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{KnowledgeItem, Provenance}
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Model.Reasoner
   alias MemHouse.Observability
   alias MemHouse.Operations.DreamTimeWatermark
@@ -188,9 +189,10 @@ defmodule MemHouse.Pipeline.DreamTime do
   defp snapshot(account_id, scope_id, expected_activity) do
     DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account, actor ->
       Lock.acquire!(account_id, scope_lock_key(scope_id))
+      now = Clock.utc_now()
 
-      if current_activity?(account_id, scope_id, expected_activity, actor) do
-        eligible_snapshot(account_id, scope_id, actor)
+      if current_activity?(account_id, scope_id, expected_activity, actor, now) do
+        eligible_snapshot(account_id, scope_id, actor, now)
       else
         emit_gate(account_id, scope_id, :skip, :superseded_activity, 0, false)
         {:ok, %{status: :skipped, reason: :superseded_activity}}
@@ -198,9 +200,9 @@ defmodule MemHouse.Pipeline.DreamTime do
     end)
   end
 
-  defp eligible_snapshot(account_id, scope_id, actor) do
+  defp eligible_snapshot(account_id, scope_id, actor, now) do
     watermark = watermark(account_id, scope_id, actor)
-    delta = changed_items(account_id, scope_id, watermark, actor)
+    delta = changed_items(account_id, scope_id, watermark, actor, now)
     latest_change_at = delta |> List.last() |> then(&(&1 && &1.updated_at))
     config = Application.fetch_env!(:memhouse, :dream_time_gates)
 
@@ -208,7 +210,7 @@ defmodule MemHouse.Pipeline.DreamTime do
            length(delta),
            latest_change_at,
            watermark.last_completed_at,
-           Clock.utc_now(),
+           now,
            config
          ) do
       {:skip, reason} ->
@@ -217,18 +219,18 @@ defmodule MemHouse.Pipeline.DreamTime do
         {:ok, %{status: status, reason: reason}}
 
       {:run, limits} ->
-        prepare_ready_snapshot(account_id, scope_id, actor, watermark, delta, limits)
+        prepare_ready_snapshot(account_id, scope_id, actor, watermark, delta, limits, now)
     end
   end
 
-  defp prepare_ready_snapshot(account_id, scope_id, actor, watermark, delta, limits) do
+  defp prepare_ready_snapshot(account_id, scope_id, actor, watermark, delta, limits, now) do
     # Consolidation is deterministic and commits before the provider call. A
     # provider failure can leave this useful, governed maintenance behind, but
     # cannot advance the reasoning watermark.
     original_boundary = delta |> Enum.take(limits.max_delta_items) |> List.last()
     Consolidator.run_scope!(account_id, scope_id, actor)
-    delta = changed_items(account_id, scope_id, watermark, actor)
-    inputs = active_items(account_id, scope_id, actor)
+    delta = changed_items(account_id, scope_id, watermark, actor, now)
+    inputs = active_items(account_id, scope_id, actor, now)
 
     selected_delta = Enum.take(delta, limits.max_delta_items)
     boundary = List.last(selected_delta)
@@ -246,6 +248,7 @@ defmodule MemHouse.Pipeline.DreamTime do
          watermark: watermark,
          input_watermark: boundary.updated_at,
          input_watermark_id: boundary.id,
+         decision_at: now,
          delta: selected_delta,
          inputs: Enum.take(inputs, limits.max_working_set_items),
          limits: limits,
@@ -272,7 +275,9 @@ defmodule MemHouse.Pipeline.DreamTime do
 
   defp reason(snapshot) do
     if MemHouse.Operations.Budget.admit?(snapshot.account_id, snapshot.scope_id, :dream_time) do
-      with {:ok, working_set} <- thorough_working_set(snapshot) do
+      with {:ok, working_set} <- thorough_working_set(snapshot),
+           {:ok, delta, working_set} <- revalidate_visible_inputs(snapshot, working_set) do
+        snapshot = %{snapshot | delta: delta}
         split_enabled? = Reasoner.split_enabled?()
         synthesis_enabled? = split_enabled? and :synthesis in Reasoner.enabled_operations()
 
@@ -436,6 +441,29 @@ defmodule MemHouse.Pipeline.DreamTime do
     end
   end
 
+  defp revalidate_visible_inputs(snapshot, working_set) do
+    expected_ids = Enum.uniq(Enum.map(snapshot.delta ++ working_set, & &1.id))
+    now = Clock.utc_now()
+
+    current_by_id =
+      [snapshot.scope_id]
+      |> Visibility.knowledge_query("active", snapshot.actor, true, now)
+      |> Ash.Query.filter(id in ^expected_ids and state == "active")
+      |> Ash.Query.set_tenant(snapshot.account_id)
+      |> Ash.read!(actor: snapshot.actor)
+      |> Map.new(&{&1.id, &1})
+
+    if map_size(current_by_id) == length(expected_ids) do
+      {:ok, reload_in_order(snapshot.delta, current_by_id),
+       reload_in_order(working_set, current_by_id)}
+    else
+      {:error, :stale_dream_time_input}
+    end
+  end
+
+  defp reload_in_order(records, current_by_id),
+    do: Enum.map(records, &Map.fetch!(current_by_id, &1.id))
+
   @doc false
   def candidate_ids(candidates) when is_list(candidates) do
     candidates
@@ -470,10 +498,9 @@ defmodule MemHouse.Pipeline.DreamTime do
 
   defp load_candidates(snapshot, ids) do
     records_by_id =
-      KnowledgeItem
-      |> Ash.Query.filter(
-        id in ^ids and scope_id == ^snapshot.scope_id and state == "active" and is_nil(deleted_at)
-      )
+      [snapshot.scope_id]
+      |> Visibility.knowledge_query("active", snapshot.actor, true, snapshot.decision_at)
+      |> Ash.Query.filter(id in ^ids and state == "active")
       |> Ash.Query.set_tenant(snapshot.account_id)
       |> Ash.read!(actor: snapshot.actor)
       |> Map.new(&{&1.id, &1})
@@ -556,8 +583,8 @@ defmodule MemHouse.Pipeline.DreamTime do
     end
   end
 
-  defp changed_items(account_id, scope_id, watermark, actor) do
-    query = direct_items_query(scope_id)
+  defp changed_items(account_id, scope_id, watermark, actor, now) do
+    query = direct_items_query(scope_id, actor, now)
 
     query =
       if watermark.input_watermark_id do
@@ -576,12 +603,12 @@ defmodule MemHouse.Pipeline.DreamTime do
     |> Ash.read!(actor: actor)
   end
 
-  defp current_activity?(_account_id, _scope_id, nil, _actor), do: true
+  defp current_activity?(_account_id, _scope_id, nil, _actor, _now), do: true
 
-  defp current_activity?(account_id, scope_id, expected, actor) do
+  defp current_activity?(account_id, scope_id, expected, actor, now) do
     latest =
       scope_id
-      |> direct_items_query()
+      |> direct_items_query(actor, now)
       |> Ash.Query.sort(updated_at: :desc, id: :desc)
       |> Ash.Query.limit(1)
       |> Ash.Query.select([:id, :updated_at])
@@ -591,20 +618,21 @@ defmodule MemHouse.Pipeline.DreamTime do
     latest && {latest.updated_at, latest.id} == expected
   end
 
-  defp direct_items_query(scope_id) do
+  defp direct_items_query(scope_id, actor, now) do
     marker = Consolidator.marker()
 
-    KnowledgeItem
+    [scope_id]
+    |> Visibility.knowledge_query("active", actor, true, now)
     |> Ash.Query.filter(
-      scope_id == ^scope_id and state == "active" and is_nil(deleted_at) and
-        is_nil(deduction_key) and
+      state == "active" and is_nil(deduction_key) and
         (is_nil(extracting_model) or extracting_model != ^marker)
     )
   end
 
-  defp active_items(account_id, scope_id, actor) do
-    KnowledgeItem
-    |> Ash.Query.filter(scope_id == ^scope_id and state == "active" and is_nil(deleted_at))
+  defp active_items(account_id, scope_id, actor, now) do
+    [scope_id]
+    |> Visibility.knowledge_query("active", actor, true, now)
+    |> Ash.Query.filter(state == "active")
     |> Ash.Query.sort(updated_at: :desc, id: :asc)
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)

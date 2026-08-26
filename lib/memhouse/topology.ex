@@ -54,12 +54,22 @@ defmodule MemHouse.Topology.Scope do
       upsert? true
       upsert_identity :unique_path
       upsert_fields [:name, :state, :updated_at]
+
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, scope_attribute: :id}
     end
 
     # Relabelling and lifecycle only. `path` and `parent_id` are absent on
     # purpose: they define containment for every row that references this scope.
     update :update do
       accept [:name, :state]
+      require_atomic? false
+
+      change {MemHouse.Context.Changes.InvalidateProjectionInputs, scope_attribute: :id}
+    end
+
+    update :advance_projection_input_generation do
+      accept []
+      change atomic_update(:projection_input_generation, expr(projection_input_generation + 1))
     end
 
     # DiskANN labels are internal index metadata. Only the retrieval rebuild
@@ -85,6 +95,10 @@ defmodule MemHouse.Topology.Scope do
     policy action(:assign_diskann_label) do
       authorize_if actor_attribute_equals(:pipeline?, true)
     end
+
+    policy action(:advance_projection_input_generation) do
+      authorize_if actor_attribute_equals(:pipeline?, true)
+    end
   end
 
   attributes do
@@ -104,6 +118,7 @@ defmodule MemHouse.Topology.Scope do
     attribute :path, :string, allow_nil?: false, public?: true
     attribute :state, :string, allow_nil?: false, default: "active", public?: true
     attribute :diskann_label, :integer, public?: false
+    attribute :projection_input_generation, :integer, allow_nil?: false, default: 0
     create_timestamp :inserted_at
     update_timestamp :updated_at
   end

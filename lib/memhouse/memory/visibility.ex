@@ -17,6 +17,51 @@ defmodule MemHouse.Memory.Visibility do
   require Ash.Query
 
   @doc """
+  Applies the fail-closed read boundary for a derived projection.
+
+  The validity marker must match the content generation, the projection must be clean, and its
+  earliest source expiry must still be later than the caller's captured decision time. Lifecycle
+  reconciliation deliberately queries projections without this filter so it can repair hidden
+  generations.
+
+  `query` is an Ash projection query and `now` is the caller's captured `DateTime` decision
+  boundary. Returns the query with the fail-closed predicates applied.
+  """
+  def projection_query(query, now) do
+    Ash.Query.filter(
+      query,
+      dirty == false and validity_version == version and
+        (is_nil(valid_until) or valid_until > ^now)
+    )
+  end
+
+  @doc """
+  Returns the earliest non-nil lifecycle visibility boundary selected from a collection.
+
+  Projection builders use this helper for both source `expires_at` values and derived
+  `valid_until` values so every governed visibility boundary uses the same ordering rule.
+  """
+  @spec earliest_boundary(Enumerable.t(), (term() -> DateTime.t() | nil)) :: DateTime.t() | nil
+  def earliest_boundary(items, selector) when is_function(selector, 1) do
+    items
+    |> Enum.map(selector)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.min_by(&DateTime.to_unix(&1, :microsecond), fn -> nil end)
+  end
+
+  @doc """
+  Returns whether an optional lifecycle boundary is still visible at a captured decision time.
+
+  A nil boundary is unbounded. A timestamp is visible only while it is strictly later than
+  `now`, matching the knowledge and projection query predicates.
+  """
+  @spec boundary_visible?(DateTime.t() | nil, DateTime.t()) :: boolean()
+  def boundary_visible?(nil, %DateTime{}), do: true
+
+  def boundary_visible?(%DateTime{} = boundary, %DateTime{} = now),
+    do: DateTime.compare(boundary, now) == :gt
+
+  @doc """
   Loads undeleted, unexpired readable knowledge in the supplied scopes and active view.
 
   The Ash tenant and actor remain mandatory even for an internal reader.

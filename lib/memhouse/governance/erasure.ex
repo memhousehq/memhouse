@@ -45,6 +45,7 @@ defmodule MemHouse.Governance.Erasure do
   alias MemHouse.Accounts.ExternalIdentity
   alias MemHouse.Accounts.Peer
   alias MemHouse.Clock
+  alias MemHouse.Context.ProjectionInputs
   alias MemHouse.DataLayer
   alias MemHouse.Governance.Audit
   alias MemHouse.Governance.ErasureRequest
@@ -64,6 +65,8 @@ defmodule MemHouse.Governance.Erasure do
   alias MemHouse.Topology.RoleGrant
 
   require Ash.Query
+
+  @derived_refresh_attempts 2
 
   @doc """
   Records an erasure request and carries it out immediately.
@@ -133,6 +136,7 @@ defmodule MemHouse.Governance.Erasure do
   """
   def execute!(request, actor) do
     account_id = request.account_id
+    ProjectionInputs.serialize_account!(account_id)
 
     peer =
       Peer
@@ -383,17 +387,30 @@ defmodule MemHouse.Governance.Erasure do
 
   # Full rebuild of the caches for every scope that lost knowledge. This runs
   # after the deletions so it reads only surviving rows; running it earlier
-  # would faithfully rebuild the data being erased. Both rebuilds must succeed
-  # or the match fails and aborts the transaction.
+  # would faithfully rebuild the data being erased. Entity resolution gets one
+  # fresh retry if a source expires during model work; repeated staleness raises
+  # explicitly so the enclosing erasure transaction rolls back.
   defp refresh_derived_scopes!(account_id, actor, scope_ids) do
     Enum.each(scope_ids, fn scope_id ->
       MemHouse.Pipeline.Consolidator.run_scope!(account_id, scope_id, actor)
 
-      {:ok, _entities} =
-        MemHouse.Retrieval.EntityResolver.rebuild_scope(account_id, scope_id)
+      :ok = refresh_entities!(account_id, scope_id, @derived_refresh_attempts)
 
       {:ok, _projections} = MemHouse.Context.Builder.refresh_scope(account_id, scope_id)
     end)
+  end
+
+  defp refresh_entities!(account_id, scope_id, attempts_left) do
+    case MemHouse.Retrieval.EntityResolver.rebuild_scope(account_id, scope_id) do
+      {:ok, _entities} ->
+        :ok
+
+      {:error, :stale_projection_snapshot} when attempts_left > 1 ->
+        refresh_entities!(account_id, scope_id, attempts_left - 1)
+
+      {:error, :stale_projection_snapshot} ->
+        raise "entity projection remained stale after #{@derived_refresh_attempts} attempts"
+    end
   end
 
   # Erasure covers the peer's presence, not just their words: sessions and

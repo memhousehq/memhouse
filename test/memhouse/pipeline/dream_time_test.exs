@@ -13,7 +13,10 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     @impl true
     def structured(config, messages, schema, opts) do
       if pid = Application.get_env(:memhouse, :dream_time_test_pid) do
-        send(pid, {:dream_reasoner_call, Keyword.get(opts, :task), opts})
+        task = Keyword.get(opts, :task)
+        send(pid, {:dream_reasoner_call, task, opts})
+        send(pid, {:dream_reasoner_task, task})
+        send(pid, {:dream_reasoner_input, task, messages})
       end
 
       case Application.get_env(:memhouse, :dream_time_test_values) do
@@ -35,7 +38,21 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     def chat(config, messages, opts), do: Deterministic.chat(config, messages, opts)
 
     @impl true
-    def embed(config, texts, opts), do: Deterministic.embed(config, texts, opts)
+    def embed(config, texts, opts) do
+      if Application.get_env(:memhouse, :dream_time_pause_retrieval?, false) do
+        Application.put_env(:memhouse, :dream_time_pause_retrieval?, false)
+        owner = Application.fetch_env!(:memhouse, :dream_time_test_pid)
+        send(owner, {:dream_retrieval_paused, self()})
+
+        receive do
+          :release_dream_retrieval -> :ok
+        after
+          5_000 -> raise "timed out waiting to release the DreamTime retrieval fixture"
+        end
+      end
+
+      Deterministic.embed(config, texts, opts)
+    end
 
     @impl true
     def rerank(config, query, documents, opts),
@@ -60,6 +77,7 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
   alias MemHouse.Identity
   alias MemHouse.Knowledge.KnowledgeItem
   alias MemHouse.Memory
+  alias MemHouse.Operations.DreamTimeWatermark
   alias MemHouse.Pipeline.DreamTime
   alias MemHouse.Pipeline.DreamTime.Gate
   alias MemHouse.Topology.Scope
@@ -224,6 +242,173 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     refute inspect({operation_measurements, operation_metadata}) =~ "Dream Time Empty"
   end
 
+  test "dream-time excludes active inputs whose expiry passed before the lifecycle sweep" do
+    provider = Application.get_env(:memhouse, :model_provider)
+    gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+    Application.put_env(:memhouse, :dream_time_test_pid, self())
+
+    Application.put_env(
+      :memhouse,
+      :dream_time_gates,
+      Keyword.merge(gates,
+        min_changes: 1,
+        idle_seconds: 0,
+        min_interval_seconds: 0,
+        max_delta_items: 10,
+        max_working_set_items: 10
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, provider)
+      Application.delete_env(:memhouse, :dream_time_test_pid)
+      Application.put_env(:memhouse, :dream_time_gates, gates)
+    end)
+
+    visible =
+      seed_active_record!(
+        "dream-time-expiry",
+        "visible-input",
+        "Avery prefers concise weekly updates."
+      )
+
+    expired =
+      seed_active_record!(
+        "dream-time-expiry",
+        "expired-input",
+        "Avery keeps the obsolete deployment checklist."
+      )
+
+    DataLayer.with_account_key("dream-time-expiry", [role: :system, pipeline?: true], fn
+      _account, actor ->
+        Engine.transition!(
+          expired.knowledge,
+          actor,
+          %{state: "active", expires_at: DateTime.add(MemHouse.Clock.utc_now(), -1, :hour)},
+          reason: "dream_time_test_expire_before_sweep",
+          channel: "pipeline"
+        )
+    end)
+
+    assert {:ok, %{status: :completed}} =
+             DreamTime.run_scope(visible.account.id, visible.scope.id)
+
+    assert_receive {:dream_reasoner_input, :reasoning, messages}
+    input = messages |> List.last() |> Map.fetch!(:content) |> Jason.decode!()
+
+    for field <- ["delta", "working_set"] do
+      ids = Map.fetch!(input, field) |> Enum.map(& &1["id"])
+      assert visible.knowledge.id in ids
+      refute expired.knowledge.id in ids
+    end
+  end
+
+  test "dream-time retries without advancing when an input expires before provider submission" do
+    provider = Application.get_env(:memhouse, :model_provider)
+    gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+    operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+    Application.put_env(:memhouse, :dream_time_test_pid, self())
+
+    Application.put_env(
+      :memhouse,
+      :dream_reasoning_operations,
+      Keyword.put(operations, :split_enabled, false)
+    )
+
+    Application.put_env(
+      :memhouse,
+      :dream_time_gates,
+      Keyword.merge(gates,
+        min_changes: 1,
+        idle_seconds: 0,
+        min_interval_seconds: 0,
+        max_delta_items: 10,
+        max_working_set_items: 10
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, provider)
+      Application.delete_env(:memhouse, :dream_time_test_pid)
+      Application.delete_env(:memhouse, :dream_time_pause_retrieval?)
+      Application.put_env(:memhouse, :dream_time_gates, gates)
+      Application.put_env(:memhouse, :dream_reasoning_operations, operations)
+    end)
+
+    seeded =
+      seed_active_record!(
+        "dream-time-in-flight-expiry",
+        "expiring-input",
+        "Avery keeps the deployment checklist."
+      )
+
+    future_item =
+      DataLayer.with_account_key(
+        "dream-time-in-flight-expiry",
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          Engine.transition!(
+            seeded.knowledge,
+            actor,
+            %{state: "active", expires_at: DateTime.add(MemHouse.Clock.utc_now(), 1, :hour)},
+            reason: "dream_time_test_future_expiry",
+            channel: "pipeline"
+          )
+        end
+      )
+
+    Application.put_env(:memhouse, :dream_time_pause_retrieval?, true)
+
+    dream =
+      Task.async(fn ->
+        receive do
+          :start -> DreamTime.run_scope(seeded.account.id, seeded.scope.id)
+        end
+      end)
+
+    Ecto.Adapters.SQL.Sandbox.allow(MemHouse.Repo, self(), dream.pid)
+    send(dream.pid, :start)
+
+    assert_receive {:dream_retrieval_paused, retrieval_pid}, 5_000
+
+    DataLayer.with_account_key(
+      "dream-time-in-flight-expiry",
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        Engine.transition!(
+          future_item,
+          actor,
+          %{state: "active", expires_at: DateTime.add(MemHouse.Clock.utc_now(), -1, :second)},
+          reason: "dream_time_test_expire_during_retrieval",
+          channel: "pipeline"
+        )
+      end
+    )
+
+    send(retrieval_pid, :release_dream_retrieval)
+
+    assert {:error, :stale_dream_time_input} = Task.await(dream, 10_000)
+    refute_receive {:dream_reasoner_input, :reasoning, _}
+
+    DataLayer.with_account_key(
+      "dream-time-in-flight-expiry",
+      [role: :system, pipeline?: true],
+      fn account, actor ->
+        watermark =
+          DreamTimeWatermark
+          |> Ash.Query.filter(scope_id == ^seeded.scope.id)
+          |> Ash.Query.set_tenant(account.id)
+          |> Ash.read_one!(actor: actor)
+
+        assert is_nil(watermark)
+      end
+    )
+  end
+
   test "change, idle, interval, and work gates are deterministic and independent" do
     now = ~U[2026-08-17 12:00:00.000000Z]
 
@@ -309,30 +494,43 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
   end
 
   defp seed_active!(account_key) do
+    account_key
+    |> seed_active_record!("legacy-default", "Avery prefers concise weekly updates.")
+    |> then(& &1.account.id)
+  end
+
+  defp seed_active_record!(account_key, session_id, statement) do
     assert {:ok, message} =
              Memory.ingest_message(%{
                "account_key" => account_key,
-               "session_id" => "legacy-default",
+               "session_id" => session_id,
                "scope_path" => "/dream",
                "peer_key" => "avery",
-               "content" => "Avery prefers concise weekly updates."
+               "content" => statement
              })
 
     assert {:ok, [knowledge]} = Memory.extract_message(message["id"], account_key)
 
     DataLayer.with_account_key(account_key, [role: :system, pipeline?: true], fn account, actor ->
-      KnowledgeItem
-      |> Ash.Query.filter(id == ^knowledge["id"])
-      |> Ash.Query.set_tenant(account.id)
-      |> Ash.read_one!(actor: actor)
-      |> Engine.transition!(
-        actor,
-        %{state: "active", verification: "test"},
-        reason: "dream_time_legacy_test_activate",
-        channel: "pipeline"
-      )
+      item =
+        KnowledgeItem
+        |> Ash.Query.filter(id == ^knowledge["id"])
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+        |> Engine.transition!(
+          actor,
+          %{state: "active", verification: "test"},
+          reason: "dream_time_test_activate",
+          channel: "pipeline"
+        )
 
-      account.id
+      scope =
+        Scope
+        |> Ash.Query.filter(id == ^item.scope_id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      %{account: account, scope: scope, knowledge: item}
     end)
   end
 end

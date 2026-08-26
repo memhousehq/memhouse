@@ -860,6 +860,38 @@ defmodule MemHouseWeb.ConsoleLiveTest do
       refute html =~ "NeverRenderCanonical72"
     end
 
+    test "an expired entity card cannot name a graph hub before lifecycle sweep", %{
+      admin: admin,
+      knowledge_id: knowledge_id
+    } do
+      neighbor =
+        ingest_statement!(
+          admin,
+          "console-graph-expired-card",
+          "/console-test",
+          "The release owner publishes the weekly checklist."
+        )
+
+      activate_knowledge!(admin, [knowledge_id, neighbor.id])
+      link_named_entity!(admin, [knowledge_id, neighbor.id], "expired release owner")
+
+      DataLayer.with_actor(admin, fn account, _actor ->
+        Ecto.Adapters.SQL.query!(
+          MemHouse.Repo,
+          "UPDATE projections SET valid_until = '2000-01-01 00:00:00Z' " <>
+            "WHERE account_id = $1 AND kind = 'entity_card'",
+          [Ecto.UUID.dump!(account.id)]
+        )
+      end)
+
+      data = Loader.graph(Identity.refresh_actor(admin), scope: "/console-test")
+
+      assert [cluster] = data.clusters
+      assert cluster.label == "Shared entity 1"
+      refute cluster.labelled?
+      refute inspect(cluster) =~ "expired release owner"
+    end
+
     test "the graph renders its empty state for a peer who holds no grant", %{
       conn: conn,
       admin: admin
@@ -1787,7 +1819,8 @@ defmodule MemHouseWeb.ConsoleLiveTest do
             "summary" => sentinel,
             "knowledge" => [%{"id" => Ash.UUID.generate(), "statement" => sentinel}]
           },
-          source_ids: []
+          source_ids: [],
+          validity_version: 1
         },
         account.id,
         pipeline

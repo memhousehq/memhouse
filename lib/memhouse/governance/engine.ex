@@ -688,13 +688,8 @@ defmodule MemHouse.Governance.Engine do
         actor
       )
 
-    # Marking the cache dirty is a pipeline-owned write even when a curator triggered it, so
-    # the caller's actor is elevated for this call only.
-    MemHouse.Context.Builder.mark_dirty(
-      knowledge.account_id,
-      %{actor | role: :system, pipeline?: true},
-      knowledge.scope_id
-    )
+    # The knowledge action's projection-input change dirties and invalidates derived context in
+    # this same transaction. This callback owns only durable refresh scheduling.
   end
 
   @doc """

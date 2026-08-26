@@ -97,6 +97,114 @@ defmodule MemHouse.F7RetrievalEntityContextTest.Provider do
   defp record(call), do: Agent.update(__MODULE__, &[call | &1])
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.Clock do
+  @moduledoc false
+
+  @behaviour MemHouse.Clock
+
+  @key {__MODULE__, :utc_now}
+
+  def put(now), do: :persistent_term.put(@key, now)
+  def erase, do: :persistent_term.erase(@key)
+
+  @impl true
+  def utc_now, do: :persistent_term.get(@key)
+
+  @impl true
+  def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
+end
+
+defmodule MemHouse.F7RetrievalEntityContextTest.CountingClock do
+  @moduledoc false
+
+  @behaviour MemHouse.Clock
+
+  @key {__MODULE__, :state}
+
+  def put(now, expired, expire_on_call) do
+    :persistent_term.put(@key, %{now: now, expired: expired, expire_on_call: expire_on_call})
+    Process.put({__MODULE__, :calls}, 0)
+  end
+
+  def erase do
+    :persistent_term.erase(@key)
+    Process.delete({__MODULE__, :calls})
+  end
+
+  def calls, do: Process.get({__MODULE__, :calls}, 0)
+
+  @impl true
+  def utc_now do
+    call = calls() + 1
+    Process.put({__MODULE__, :calls}, call)
+    %{now: now, expired: expired, expire_on_call: expire_on_call} = :persistent_term.get(@key)
+
+    if is_integer(expire_on_call) and call >= expire_on_call, do: expired, else: now
+  end
+
+  @impl true
+  def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
+end
+
+defmodule MemHouse.F7RetrievalEntityContextTest.InterleavingClock do
+  @moduledoc false
+
+  @behaviour MemHouse.Clock
+
+  def start!, do: Agent.start_link(fn -> nil end, name: __MODULE__)
+
+  def stop do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> Agent.stop(pid)
+    end
+  end
+
+  def put(now, expired, expire_on_call) do
+    Agent.update(__MODULE__, fn _state ->
+      %{now: now, expired: expired, expire_on_call: expire_on_call, calls: 0}
+    end)
+  end
+
+  def calls, do: Agent.get(__MODULE__, & &1.calls)
+
+  @impl true
+  def utc_now do
+    Agent.get_and_update(__MODULE__, fn state ->
+      calls = state.calls + 1
+
+      value =
+        if is_integer(state.expire_on_call) and calls >= state.expire_on_call,
+          do: state.expired,
+          else: state.now
+
+      {value, %{state | calls: calls}}
+    end)
+  end
+
+  @impl true
+  def monotonic_ms, do: MemHouse.Clock.System.monotonic_ms()
+end
+
+defmodule MemHouse.F7RetrievalEntityContextTest.UnstableProjectionLock do
+  @moduledoc false
+
+  def start!, do: Agent.start_link(fn -> 0 end, name: __MODULE__)
+
+  def stop do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> Agent.stop(pid)
+    end
+  end
+
+  def capture!(_account_id, _scope_id) do
+    Agent.get_and_update(__MODULE__, fn calls -> {calls, calls + 1} end)
+  end
+
+  def calls, do: Agent.get(__MODULE__, & &1)
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest.VanishingProvider do
   @moduledoc """
   Failure-injection provider for rebuild transaction boundaries.
@@ -389,6 +497,84 @@ defmodule MemHouse.F7RetrievalEntityContextTest.CardSummaryConcurrencyProvider d
   defp leave, do: Agent.update(__MODULE__, &%{&1 | in_flight: &1.in_flight - 1})
 end
 
+defmodule MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider do
+  @moduledoc """
+  Pauses the first entity-card summary after Builder has loaded its projection source snapshot.
+
+  Later calls continue through the ordinary deterministic fixture provider, allowing a second
+  production refresh to finish while the first is held outside every database transaction.
+  """
+
+  @behaviour MemHouse.Model.Provider
+
+  alias MemHouse.F7RetrievalEntityContextTest.Provider
+
+  @doc "Arms one projection or entity-resolution pause and reports it to `owner`."
+  def start!(owner, pause_on \\ :entity_card) do
+    {:ok, _pid} =
+      Agent.start_link(
+        fn -> %{owner: owner, pause_next?: true, pause_on: pause_on} end,
+        name: __MODULE__
+      )
+
+    :ok
+  end
+
+  @doc "Stops the pause controller when armed."
+  def stop do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      pid -> Agent.stop(pid)
+    end
+  end
+
+  @impl true
+  def structured(config, messages, schema, opts),
+    do: Provider.structured(config, messages, schema, opts)
+
+  @impl true
+  def chat(config, messages, opts) do
+    if Keyword.get(opts, :task) == :entity_card, do: pause_once(:entity_card)
+    Provider.chat(config, messages, opts)
+  end
+
+  @impl true
+  def embed(config, texts, opts) do
+    pause_once(:entity_resolution)
+    Provider.embed(config, texts, opts)
+  end
+
+  @impl true
+  def rerank(config, query, documents, opts), do: Provider.rerank(config, query, documents, opts)
+
+  defp pause_once(pause_on) do
+    pause =
+      Agent.get_and_update(__MODULE__, fn state ->
+        if state.pause_next? and state.pause_on == pause_on do
+          {{:pause, state.owner}, %{state | pause_next?: false}}
+        else
+          {:continue, state}
+        end
+      end)
+
+    case pause do
+      {:pause, owner} ->
+        send(owner, {:model_snapshot_captured, pause_on, self()})
+
+        receive do
+          :release_projection_refresh -> :ok
+        after
+          5_000 -> raise "timed out waiting to release the projection refresh fixture"
+        end
+
+      :continue ->
+        :ok
+    end
+
+    :ok
+  end
+end
+
 defmodule MemHouse.F7RetrievalEntityContextTest do
   @moduledoc """
   Pins retrieval, private entity caches, and reasoning-free context assembly.
@@ -409,10 +595,11 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
   alias MemHouse.Actor
   alias MemHouse.Clock
-  alias MemHouse.Context.Builder
+  alias MemHouse.Context.{Builder, Cache}
   alias MemHouse.DataLayer
   alias MemHouse.Documents
   alias MemHouse.Governance.Engine, as: GovernanceEngine
+  alias MemHouse.Governance.Erasure
 
   alias MemHouse.Knowledge.{
     Entity,
@@ -1634,7 +1821,7 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       GovernanceEngine.transition!(
         seeded.knowledge,
         pipeline_actor(actor),
-        %{state: "active", expires_at: DateTime.add(DateTime.utc_now(), -1, :second)},
+        %{state: "active", expires_at: DateTime.add(DateTime.utc_now(), -1, :hour)},
         reason: "f7_test_expire",
         channel: "pipeline"
       )
@@ -1653,6 +1840,346 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert DateTime.compare(updated_knowledge.expires_at, DateTime.utc_now()) == :lt
 
     assert [] == entity_match_candidates!("f7-entity-expiry", "/f7/entity-expiry")
+  end
+
+  test "entity resolution drops active rows whose expiry passed before the lifecycle sweep" do
+    seeded =
+      seed_active!(
+        "f7-entity-resolution-expiry",
+        "/f7/entity-resolution-expiry",
+        "Avery owns the release checklist."
+      )
+
+    assert {:ok, %{statements: 1, mentions: mentions}} =
+             EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+
+    assert mentions >= 1
+
+    expired = expire_active!(seeded)
+    assert expired.state == "active"
+
+    assert {:ok, %{statements: 0, mentions: 0}} =
+             EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+
+    DataLayer.with_account_key("f7-entity-resolution-expiry", fn account, actor ->
+      mentions =
+        EntityMention
+        |> Ash.Query.filter(knowledge_item_id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert mentions == []
+    end)
+  end
+
+  test "entity resolution cannot restore a mention after its source expires in flight" do
+    seeded =
+      seed_active!(
+        "f7-entity-resolution-expiry-race",
+        "/f7/entity-resolution-expiry-race",
+        "Avery owns the release checklist."
+      )
+
+    pause_next_entity_resolution!()
+
+    stale_resolution =
+      Task.async(fn ->
+        EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, stale_pid}, 1_000
+    expire_active!(seeded)
+    send(stale_pid, :release_projection_refresh)
+
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_resolution, 5_000)
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      mentions =
+        EntityMention
+        |> Ash.Query.filter(knowledge_item_id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert mentions == []
+    end)
+  end
+
+  test "entity resolution rejects a source whose future expiry passes during model work" do
+    clock = MemHouse.F7RetrievalEntityContextTest.Clock
+    system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
+    now = ~U[2026-08-25 12:00:00.000000Z]
+
+    clock.put(now)
+    Application.put_env(:memhouse, :clock, clock)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :clock, system_clock)
+      clock.erase()
+    end)
+
+    seeded =
+      seed_active!(
+        "f7-entity-resolution-clock-expiry-race",
+        "/f7/entity-resolution-clock-expiry-race",
+        "Avery owns the release checklist."
+      )
+
+    expires_at = DateTime.add(now, 60, :second)
+
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      GovernanceEngine.transition!(
+        seeded.knowledge,
+        pipeline_actor(actor),
+        %{state: "active", expires_at: expires_at},
+        reason: "f7_test_future_expiry",
+        channel: "pipeline"
+      )
+    end)
+
+    pause_next_entity_resolution!()
+
+    stale_resolution =
+      Task.async(fn ->
+        EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, stale_pid}, 1_000
+    clock.put(DateTime.add(expires_at, 1, :second))
+    send(stale_pid, :release_projection_refresh)
+
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_resolution, 5_000)
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      mentions =
+        EntityMention
+        |> Ash.Query.filter(knowledge_item_id == ^seeded.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert mentions == []
+    end)
+  end
+
+  test "entity resolution rolls back when expiry crosses after final validation" do
+    clock = MemHouse.F7RetrievalEntityContextTest.CountingClock
+    system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
+    now = ~U[2026-08-25 13:00:00.000000Z]
+    expires_at = DateTime.add(now, 60, :second)
+    expired = DateTime.add(expires_at, 1, :second)
+
+    clock.put(now, expired, :never)
+    Application.put_env(:memhouse, :clock, clock)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :clock, system_clock)
+      clock.erase()
+    end)
+
+    calibration =
+      seed_active!(
+        "f7-entity-resolution-final-clock-calibration",
+        "/f7/entity-resolution-final-clock-calibration",
+        "Avery owns the release checklist."
+      )
+
+    set_future_expiry!(calibration, expires_at)
+    clock.put(now, expired, :never)
+
+    assert {:ok, %{mentions: calibration_mentions}} =
+             EntityResolver.rebuild_scope(calibration.account.id, calibration.scope.id)
+
+    assert calibration_mentions >= 1
+    final_clock_call = clock.calls()
+    assert final_clock_call >= 3
+
+    crossing =
+      seed_active!(
+        "f7-entity-resolution-final-clock-crossing",
+        "/f7/entity-resolution-final-clock-crossing",
+        "Avery owns the release checklist."
+      )
+
+    set_future_expiry!(crossing, expires_at)
+    clock.put(now, expired, final_clock_call)
+
+    assert {:error, :stale_projection_snapshot} =
+             EntityResolver.rebuild_scope(crossing.account.id, crossing.scope.id)
+
+    DataLayer.with_actor(crossing.actor, fn account, actor ->
+      mentions =
+        EntityMention
+        |> Ash.Query.filter(knowledge_item_id == ^crossing.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert mentions == []
+    end)
+  end
+
+  test "erasure retries a final-gate expiry from a savepoint and completes atomically" do
+    clock = MemHouse.F7RetrievalEntityContextTest.InterleavingClock
+    provider = MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider
+    system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
+    now = ~U[2026-08-25 14:00:00.000000Z]
+    expires_at = DateTime.add(now, 60, :second)
+    expired = DateTime.add(expires_at, 1, :second)
+
+    calibration =
+      seed_active!(
+        "f7-erasure-savepoint-calibration",
+        "/f7/erasure-savepoint-calibration",
+        "Blake owns the release checklist."
+      )
+
+    erased =
+      seed_active!(
+        "f7-erasure-savepoint",
+        "/f7/erasure-savepoint",
+        "Avery owns the private erasure checklist."
+      )
+
+    surviving =
+      seed_active!(
+        "f7-erasure-savepoint",
+        "/f7/erasure-savepoint",
+        "Blake owns the surviving release checklist.",
+        "blake-session",
+        peer_key: "blake",
+        peer_name: "Blake"
+      )
+
+    set_future_expiry!(calibration, expires_at)
+    set_future_expiry!(surviving, expires_at)
+
+    {:ok, _pid} = clock.start!()
+    Application.put_env(:memhouse, :clock, clock)
+    pause_next_entity_resolution!()
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :clock, system_clock)
+      clock.stop()
+    end)
+
+    clock.put(now, expired, :never)
+
+    calibration_task =
+      Task.async(fn ->
+        result = EntityResolver.rebuild_scope(calibration.account.id, calibration.scope.id)
+        {result, clock.calls()}
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, calibration_pid}, 1_000
+    clock.put(now, expired, :never)
+    send(calibration_pid, :release_projection_refresh)
+
+    assert {{:ok, %{mentions: calibration_mentions}}, final_gate_call} =
+             Task.await(calibration_task, 5_000)
+
+    assert calibration_mentions >= 1
+    assert final_gate_call >= 2
+
+    provider.stop()
+    :ok = provider.start!(self(), :entity_resolution)
+    clock.put(now, expired, :never)
+
+    erasure_task =
+      Task.async(fn ->
+        Erasure.request(erased.actor, erased.actor.peer_id, "strict")
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, erasure_pid}, 1_000
+    clock.put(now, expired, final_gate_call)
+    send(erasure_pid, :release_projection_refresh)
+
+    request = Task.await(erasure_task, 10_000)
+    assert request.state == "completed"
+
+    DataLayer.with_actor(surviving.actor, fn account, actor ->
+      surviving_knowledge =
+        KnowledgeItem
+        |> Ash.Query.filter(id == ^surviving.knowledge.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+
+      assert surviving_knowledge.state == "active"
+      assert DateTime.compare(surviving_knowledge.expires_at, expired) == :lt
+
+      assert [] ==
+               EntityMention
+               |> Ash.Query.filter(knowledge_item_id == ^surviving.knowledge.id)
+               |> Ash.Query.set_tenant(account.id)
+               |> Ash.read!(actor: pipeline_actor(actor))
+
+      refute Enum.any?(
+               Entity
+               |> Ash.Query.set_tenant(account.id)
+               |> Ash.read!(actor: pipeline_actor(actor)),
+               &(surviving.knowledge.id in &1.derived_from)
+             )
+    end)
+
+    assert scalar!("SELECT count(*) FROM peers WHERE id = $1", [
+             Ecto.UUID.dump!(erased.actor.peer_id)
+           ]) == 0
+
+    assert scalar!("SELECT count(*) FROM knowledge_items WHERE id = $1", [
+             Ecto.UUID.dump!(erased.knowledge.id)
+           ]) == 0
+  end
+
+  test "an older cross-scope resolution cannot overwrite newer Account entity state" do
+    account_key = "f7-entity-resolution-cross-scope-race"
+
+    base =
+      seed_active!(
+        account_key,
+        "/f7/entity-resolution-cross-scope-race/base",
+        "Avery owns the release checklist."
+      )
+
+    first =
+      seed_active!(
+        account_key,
+        "/f7/entity-resolution-cross-scope-race/first",
+        "Avery Stone owns the deployment checklist."
+      )
+
+    second =
+      seed_active!(
+        account_key,
+        "/f7/entity-resolution-cross-scope-race/second",
+        "Avery reviews the deployment checklist."
+      )
+
+    assert {:ok, %{mentions: base_mentions}} =
+             EntityResolver.rebuild_scope(base.account.id, base.scope.id)
+
+    assert base_mentions >= 1
+    pause_next_entity_resolution!()
+
+    stale_resolution =
+      Task.async(fn ->
+        EntityResolver.rebuild_scope(first.account.id, first.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_resolution, stale_pid}, 1_000
+
+    assert {:ok, %{mentions: second_mentions}} =
+             EntityResolver.rebuild_scope(second.account.id, second.scope.id)
+
+    assert second_mentions >= 1
+    send(stale_pid, :release_projection_refresh)
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_resolution, 5_000)
+
+    DataLayer.with_actor(first.actor, fn account, actor ->
+      avery =
+        Entity
+        |> Ash.Query.filter(canonical_name == "Avery")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline_actor(actor))
+
+      assert second.knowledge.id in avery.derived_from
+    end)
   end
 
   test "entity_match ranks a selective entity's statements above a scope-wide one's" do
@@ -1807,11 +2334,10 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       MemHouse.F7RetrievalEntityContextTest.VanishingProvider
     )
 
-    # The provider deletes the adjudicated entity as a side effect of answering, so the write
-    # phase's re-read of it comes back empty.
-    assert_raise RuntimeError, ~r/vanished/, fn ->
-      EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
-    end
+    # The provider deletes the adjudicated entity as a side effect of answering. Account-wide
+    # entity snapshot validation now rejects that stale fold before the write phase can start.
+    assert {:error, :stale_projection_snapshot} =
+             EntityResolver.rebuild_scope(seeded.account.id, seeded.scope.id)
 
     # Both billed embedding calls — the one that scored the ambiguous match and the one that
     # re-embeds the widened alias set once the fold is decided — survive the later failure,
@@ -1827,9 +2353,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
              [Ecto.UUID.dump!(seeded.account.id)]
            ) == 1
 
-    # The write transaction rolled back entirely: clearing this scope's mentions and folding
-    # the surface form into the entity happen in the same transaction as the re-read that
-    # failed, so no mention was left behind by a half-applied rebuild.
+    # Account-wide snapshot validation rejects the stale fold before the write transaction
+    # begins, so no mention is written from the vanished entity snapshot.
     assert scalar!(
              "SELECT count(*) FROM entity_mentions WHERE scope_id = $1",
              [Ecto.UUID.dump!(seeded.scope.id)]
@@ -2606,6 +3131,45 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     assert dirty["fast_fallback"] == true
   end
 
+  test "context returns a fallback when projection generations never stabilize" do
+    seeded =
+      seed_active!(
+        "f7-context-generation-churn",
+        "/f7/context-generation-churn",
+        "Avery owns the release checklist."
+      )
+
+    lock = MemHouse.F7RetrievalEntityContextTest.UnstableProjectionLock
+    original_lock = Application.get_env(:memhouse, :context_projection_lock)
+    {:ok, _pid} = lock.start!()
+    Application.put_env(:memhouse, :context_projection_lock, lock)
+
+    on_exit(fn ->
+      lock.stop()
+
+      if original_lock do
+        Application.put_env(:memhouse, :context_projection_lock, original_lock)
+      else
+        Application.delete_env(:memhouse, :context_projection_lock)
+      end
+    end)
+
+    context =
+      Task.async(fn ->
+        Memory.get_context(
+          %{"scope_path" => seeded.scope.path, "budget_chars" => 20_000},
+          seeded.actor
+        )
+      end)
+      |> Task.await(5_000)
+
+    assert context["projection_cache_hit"] == false
+    assert context["fast_fallback"] == true
+    # The two authorized scopes each perform scope, peer, and entity-card reads. Every read makes
+    # two captures per attempt and stops after three attempts.
+    assert lock.calls() == 36
+  end
+
   test "projection payloads are bounded summaries with pinned facts, not knowledge-row dumps" do
     statement = "Avery's " <> String.duplicate("releasechecklist ", 200) <> "is complete"
     seeded = seed_active!("f7-bounded-projections", "/f7/bounded", statement, "bounded-session")
@@ -2632,6 +3196,372 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
         end)
       end)
     end)
+  end
+
+  test "projection refresh excludes active sources whose expiry passed before the lifecycle sweep" do
+    account_key = "f7-projection-expiry"
+    scope_path = "/f7/projection-expiry"
+
+    first =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery owns the release checklist.",
+        "projection-expiry-1"
+      )
+
+    second =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery reviews the release checklist each Friday.",
+        "projection-expiry-2"
+      )
+
+    mention_entity!(account_key, "Avery", [first, second])
+    expired_ids = MapSet.new([first.knowledge.id, second.knowledge.id])
+    Enum.each([first, second], &expire_active!/1)
+
+    assert {:ok, %{entity_cards: 0}} =
+             Builder.refresh_scope(first.account.id, first.scope.id)
+
+    DataLayer.with_account_key(account_key, fn account, actor ->
+      projections =
+        Projection
+        |> Ash.Query.filter(scope_id == ^first.scope.id and dirty == false)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert projections != []
+
+      Enum.each(projections, fn projection ->
+        assert MapSet.disjoint?(expired_ids, MapSet.new(projection.source_ids))
+
+        refute Enum.any?(projection.content["pinned_facts"] || [], fn fact ->
+                 MapSet.member?(expired_ids, fact["id"])
+               end)
+      end)
+    end)
+  end
+
+  test "overlapping current projection refreshes commit monotonic valid generations" do
+    seeded =
+      seed_entity_cluster!(
+        "f7-projection-current-overlap",
+        "/f7/projection-current-overlap",
+        "Avery",
+        "person",
+        [
+          "Avery owns the release checklist.",
+          "Avery reviews the checklist each Friday.",
+          "Avery records the release decision."
+        ]
+      )
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    baseline = scope_projection!(seeded)
+    pause_next_projection_snapshot!()
+
+    first =
+      Task.async(fn ->
+        Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_card, first_pid}, 1_000
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    second = scope_projection!(seeded)
+    assert second.version == baseline.version + 1
+    assert second.validity_version == second.version
+
+    send(first_pid, :release_projection_refresh)
+    assert {:ok, _counts} = Task.await(first, 5_000)
+
+    final = scope_projection!(seeded)
+    assert final.version == second.version + 1
+    assert final.validity_version == final.version
+  end
+
+  test "an older projection snapshot cannot overwrite a newer expiry boundary" do
+    seeded =
+      seed_entity_cluster!(
+        "f7-projection-stale-snapshot",
+        "/f7/projection-stale-snapshot",
+        "Avery",
+        "person",
+        [
+          "Avery owns the release checklist.",
+          "Avery reviews the checklist each Friday.",
+          "Avery records the release decision."
+        ]
+      )
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    pause_next_projection_snapshot!()
+
+    stale_refresh =
+      Task.async(fn ->
+        Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_card, stale_pid}, 1_000
+
+    expire_active!(seeded)
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    winning = scope_projection!(seeded)
+    assert winning.validity_version == winning.version
+    refute seeded.knowledge.id in winning.source_ids
+
+    send(stale_pid, :release_projection_refresh)
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_refresh, 5_000)
+
+    final = scope_projection!(seeded)
+    assert final.version == winning.version
+    assert final.validity_version == final.version
+    refute seeded.knowledge.id in final.source_ids
+
+    context =
+      Memory.get_context(
+        %{"scope_path" => seeded.scope.path, "budget_chars" => 20_000},
+        seeded.actor
+      )
+
+    refute inspect(context) =~ seeded.knowledge.statement
+  end
+
+  test "a scope metadata change rejects an older full projection snapshot" do
+    seeded =
+      seed_entity_cluster!(
+        "f7-projection-stale-scope",
+        "/f7/projection-stale-scope",
+        "Avery",
+        "person",
+        [
+          "Avery owns the release checklist.",
+          "Avery reviews the checklist each Friday.",
+          "Avery records the release decision."
+        ]
+      )
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    baseline = scope_projection!(seeded)
+    pause_next_projection_snapshot!()
+
+    stale_refresh =
+      Task.async(fn ->
+        Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+      end)
+
+    assert_receive {:model_snapshot_captured, :entity_card, stale_pid}, 1_000
+
+    updated_scope =
+      DataLayer.with_actor(seeded.actor, fn _account, actor ->
+        seeded.scope
+        |> Ash.Changeset.for_update(:update, %{name: "Renamed projection scope"})
+        |> Ash.update!(actor: pipeline_actor(actor), authorize?: false)
+      end)
+
+    send(stale_pid, :release_projection_refresh)
+    assert {:error, :stale_projection_snapshot} = Task.await(stale_refresh, 5_000)
+
+    invalidated = scope_projection!(seeded)
+    assert invalidated.version == baseline.version
+    assert invalidated.dirty
+    assert invalidated.validity_version == invalidated.version
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    current = scope_projection!(seeded)
+    assert current.version == baseline.version + 1
+    assert current.validity_version == current.version
+    assert current.content["name"] == updated_scope.name
+  end
+
+  test "projection-shaping scope, session, message, and mention changes invalidate warm context" do
+    account_key = "f7-scope-metadata-cache-generation"
+    scope_path = "/f7/scope-metadata-cache-generation"
+
+    seeded =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery owns the release checklist.",
+        "scope-metadata-cache-session"
+      )
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    attrs = %{
+      "scope_path" => scope_path,
+      "session_id" => "scope-metadata-cache-session",
+      "budget_chars" => 20_000
+    }
+
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == true
+
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      seeded.scope
+      |> Ash.Changeset.for_update(:update, %{name: "Renamed warm-cache scope"})
+      |> Ash.update!(actor: pipeline_actor(actor), authorize?: false)
+    end)
+
+    context = Memory.get_context(attrs, seeded.actor)
+    assert context["projection_cache_hit"] == false
+    assert context["scope_cards"] == []
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == true
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      session =
+        Session
+        |> Ash.Query.filter(external_id == "scope-metadata-cache-session")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: actor)
+
+      session
+      |> Ash.Changeset.for_update(:update, %{status: "closed"})
+      |> Ash.update!(actor: actor)
+    end)
+
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == true
+
+    assert {:ok, _message} =
+             Memory.ingest_message(
+               %{
+                 "account_key" => account_key,
+                 "session_id" => "scope-metadata-cache-session",
+                 "scope_path" => scope_path,
+                 "peer_key" => "avery",
+                 "peer_name" => "Avery",
+                 "content" => "A new projection-shaping observation."
+               },
+               seeded.actor
+             )
+
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+
+    assert {:ok, _counts} = Builder.refresh_scope(seeded.account.id, seeded.scope.id)
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == true
+
+    mention_entity!(account_key, "Avery", [seeded])
+    assert Memory.get_context(attrs, seeded.actor)["projection_cache_hit"] == false
+  end
+
+  test "cached projections disappear when their sources expire before the lifecycle sweep" do
+    clock = MemHouse.F7RetrievalEntityContextTest.Clock
+    system_clock = Application.get_env(:memhouse, :clock, MemHouse.Clock.System)
+    now = ~U[2026-08-24 12:00:00.000000Z]
+
+    clock.put(now)
+    Application.put_env(:memhouse, :clock, clock)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :clock, system_clock)
+      clock.erase()
+    end)
+
+    account_key = "f7-cached-projection-expiry"
+    scope_path = "/f7/cached-projection-expiry"
+
+    first =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery owns the release checklist.",
+        "cached-expiry-session"
+      )
+
+    second =
+      seed_active!(
+        account_key,
+        scope_path,
+        "Avery reviews the release checklist each Friday.",
+        "cached-expiry-session"
+      )
+
+    mention_entity!(account_key, "Avery", [first, second])
+    expires_at = DateTime.add(now, 60, :second)
+
+    Enum.each([first, second], fn seeded ->
+      DataLayer.with_actor(seeded.actor, fn _account, actor ->
+        GovernanceEngine.transition!(
+          seeded.knowledge,
+          pipeline_actor(actor),
+          %{state: "active", expires_at: expires_at},
+          reason: "f7_test_future_expiry",
+          channel: "pipeline"
+        )
+      end)
+    end)
+
+    assert {:ok, %{entity_cards: 1}} =
+             Builder.refresh_scope(first.account.id, first.scope.id)
+
+    MemHouse.F7RetrievalEntityContextTest.Provider.reset!()
+
+    attrs = %{
+      "scope_path" => scope_path,
+      "session_id" => "cached-expiry-session",
+      "query" => "release checklist",
+      "budget_chars" => 20_000
+    }
+
+    warm = Memory.get_context(attrs, first.actor)
+    assert warm["fast_fallback"] == false
+    assert warm["scope_cards"] != []
+    assert warm["peer_profile"] != []
+    assert warm["entity_cards"] != []
+    assert warm["session_summary"]
+
+    clock.put(DateTime.add(expires_at, 1, :second))
+
+    DataLayer.with_actor(first.actor, fn account, actor ->
+      items =
+        KnowledgeItem
+        |> Ash.Query.filter(id in ^[first.knowledge.id, second.knowledge.id])
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert Enum.all?(items, &(&1.state == "active"))
+    end)
+
+    assert_hidden = fn context ->
+      assert context["scope_cards"] == []
+      assert context["peer_profile"] == []
+      assert context["entity_cards"] == []
+      assert context["session_summary"] == nil
+      assert context["knowledge"] == []
+      assert context["projection_cache_hit"] == false
+      assert context["fast_fallback"] == true
+    end
+
+    # The first read proves the warm ETS entry is bounded by source expiry.
+    assert_hidden.(Memory.get_context(attrs, first.actor))
+
+    # The second read proves the clean database row is rejected by the same boundary.
+    Cache.invalidate_scope(first.account.id, first.scope.id)
+    assert_hidden.(Memory.get_context(attrs, first.actor))
+    assert Enum.all?(MemHouse.F7RetrievalEntityContextTest.Provider.calls(), &(&1 == :embed))
+  end
+
+  test "scope invalidation evicts projection cache entries from before the expiry-bound upgrade" do
+    account_id = Ash.UUID.generate()
+    scope_id = Ash.UUID.generate()
+    key = {account_id, scope_id, "legacy-projection"}
+
+    true = :ets.insert(Cache, {key, %{legacy: true}})
+    assert :ets.lookup(Cache, key) != []
+
+    assert :ok = Cache.invalidate_scope(account_id, scope_id)
+    assert :ets.lookup(Cache, key) == []
   end
 
   test "entity cards name their scope-local referent and drop the summary at two sources" do
@@ -3093,7 +4023,8 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
                 }
               ]
             },
-            source_ids: [Ash.UUID.generate(), Ash.UUID.generate()]
+            source_ids: [Ash.UUID.generate(), Ash.UUID.generate()],
+            validity_version: 1
           },
           account.id,
           pipeline
@@ -3405,6 +4336,184 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
 
     assert {:ok, %{source_scopes: 0, scopes: 0}} =
              MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+  end
+
+  test "reconciliation schedules a bounded rebuild for legacy projection validity rows" do
+    seeded =
+      seed_active!(
+        "f7-projection-validity-reconcile",
+        "/f7/projection-validity-reconcile",
+        "Avery owns the release checklist."
+      )
+
+    assert {:ok, _result} =
+             MemHouse.Retrieval.Rebuild.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    DataLayer.with_actor(seeded.actor, fn account, _actor ->
+      account_id = Ecto.UUID.dump!(account.id)
+
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE projections SET validity_version = 0 WHERE account_id = $1",
+        [account_id]
+      )
+
+      # Simulate an unsafe legacy projection whose only source stopped being admissible without
+      # the old deployment invalidating the derived row. The upgrade refresh must retire it.
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE knowledge_items SET state = 'expired' WHERE account_id = $1 AND id = $2",
+        [account_id, Ecto.UUID.dump!(seeded.knowledge.id)]
+      )
+
+      # Current Ash actions correctly dirty the projection. Recreate the pre-migration unsafe
+      # clean row so this remains a legacy-reconciliation fixture rather than a supported write.
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE projections SET dirty = false, validity_version = 0 WHERE account_id = $1",
+        [account_id]
+      )
+
+      # The seed's ordinary coalesced refresh is no longer recoverable; reconciliation must add
+      # a distinct upgrade-keyed run instead of reusing that completed generation.
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE pipeline_runs SET status = 'completed' WHERE account_id = $1 AND kind = 'projection_refresh'",
+        [account_id]
+      )
+    end)
+
+    before = projection_refresh_count(seeded.account.id)
+
+    assert {:ok, %{legacy_projection_scopes: 1}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before + 1
+
+    upgrade_run = pending_projection_refresh!(seeded)
+
+    completed =
+      upgrade_run
+      |> Ash.Changeset.for_update(:execute, %{})
+      |> Ash.Changeset.set_tenant(seeded.account.id)
+      |> Ash.update!(actor: pipeline_actor(seeded.actor))
+
+    assert completed.status == "completed"
+
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      current =
+        Projection
+        |> Ash.Query.filter(scope_id == ^seeded.scope.id)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor))
+
+      assert current != []
+
+      assert Enum.all?(current, fn projection ->
+               projection.dirty or projection.validity_version == projection.version
+             end)
+
+      assert current
+             |> Enum.reject(& &1.dirty)
+             |> Enum.all?(&(seeded.knowledge.id not in &1.source_ids))
+    end)
+
+    assert {:ok, %{legacy_projection_scopes: 0}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before + 1
+  end
+
+  test "legacy projection reconciliation bounds distinct scopes rather than rows" do
+    seeded =
+      seed_active!(
+        "f7-projection-validity-distinct-scopes",
+        "/f7/projection-validity-distinct-scopes",
+        "Avery owns the release checklist."
+      )
+
+    assert {:ok, _result} =
+             MemHouse.Retrieval.Rebuild.refresh_scope(seeded.account.id, seeded.scope.id)
+
+    second_scope =
+      create!(
+        Scope,
+        :ensure,
+        %{
+          parent_id: seeded.scope.parent_id,
+          key: "projection-validity-later-scope",
+          name: "Projection validity later scope",
+          path: "/f7/projection-validity-later-scope",
+          state: "active"
+        },
+        seeded.account.id,
+        pipeline_actor(seeded.actor)
+      )
+
+    Enum.each(1..101, fn ordinal ->
+      create!(
+        Projection,
+        :upsert_from_pipeline,
+        %{
+          cache_key: "legacy:first:#{ordinal}",
+          scope_id: seeded.scope.id,
+          kind: "entity_card",
+          content: %{},
+          source_ids: [],
+          validity_version: 0
+        },
+        seeded.account.id,
+        pipeline_actor(seeded.actor)
+      )
+    end)
+
+    create!(
+      Projection,
+      :upsert_from_pipeline,
+      %{
+        cache_key: "legacy:later",
+        scope_id: second_scope.id,
+        kind: "entity_card",
+        content: %{},
+        source_ids: [],
+        validity_version: 0
+      },
+      seeded.account.id,
+      pipeline_actor(seeded.actor)
+    )
+
+    DataLayer.with_actor(seeded.actor, fn account, _actor ->
+      Ecto.Adapters.SQL.query!(
+        MemHouse.Repo,
+        "UPDATE pipeline_runs SET status = 'completed' " <>
+          "WHERE account_id = $1 AND kind = 'projection_refresh'",
+        [Ecto.UUID.dump!(account.id)]
+      )
+    end)
+
+    before = projection_refresh_count(seeded.account.id)
+
+    assert {:ok, %{legacy_projection_scopes: 2}} =
+             MemHouse.Pipeline.Reconciler.run(seeded.account.id)
+
+    assert projection_refresh_count(seeded.account.id) == before + 2
+
+    upgrade_page =
+      DataLayer.with_actor(seeded.actor, fn account, actor ->
+        MemHouse.Operations.PipelineRun
+        |> Ash.Query.filter(kind == "projection_refresh" and status == "pending")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read!(actor: pipeline_actor(actor), page: [limit: 100])
+      end)
+
+    upgrade_runs = upgrade_page.results
+
+    assert MapSet.new(upgrade_runs, & &1.scope_id) ==
+             MapSet.new([seeded.scope.id, second_scope.id])
+
+    assert Enum.all?(upgrade_runs, fn run ->
+             String.starts_with?(run.payload["watermark"], "projection-validity-v1:")
+           end)
   end
 
   test "mention coverage reports a partially indexed scope" do
@@ -3811,6 +4920,65 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
     end)
   end
 
+  defp expire_active!(seeded) do
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      GovernanceEngine.transition!(
+        seeded.knowledge,
+        pipeline_actor(actor),
+        %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :hour)},
+        reason: "f7_test_expire_before_sweep",
+        channel: "pipeline"
+      )
+    end)
+  end
+
+  defp set_future_expiry!(seeded, expires_at) do
+    DataLayer.with_actor(seeded.actor, fn _account, actor ->
+      GovernanceEngine.transition!(
+        seeded.knowledge,
+        pipeline_actor(actor),
+        %{state: "active", expires_at: expires_at},
+        reason: "f7_test_future_expiry",
+        channel: "pipeline"
+      )
+    end)
+  end
+
+  defp pause_next_projection_snapshot! do
+    provider = MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider
+    original_provider = Application.fetch_env!(:memhouse, :model_provider)
+
+    provider.start!(self())
+    Application.put_env(:memhouse, :model_provider, provider)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, original_provider)
+      provider.stop()
+    end)
+  end
+
+  defp pause_next_entity_resolution! do
+    provider = MemHouse.F7RetrievalEntityContextTest.ProjectionSnapshotPauseProvider
+    original_provider = Application.fetch_env!(:memhouse, :model_provider)
+
+    provider.start!(self(), :entity_resolution)
+    Application.put_env(:memhouse, :model_provider, provider)
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, original_provider)
+      provider.stop()
+    end)
+  end
+
+  defp scope_projection!(seeded) do
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      Projection
+      |> Ash.Query.filter(scope_id == ^seeded.scope.id and kind == "scope_card")
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: pipeline_actor(actor))
+    end)
+  end
+
   # Active statements plus the entity and mentions that group them into one card. Entity
   # resolution is bypassed so the cluster shape a test needs is stated rather than inferred from
   # what the fixture extractor happens to link. Returns the first seeded statement.
@@ -3954,6 +5122,19 @@ defmodule MemHouse.F7RetrievalEntityContextTest do
       )
 
     count
+  end
+
+  defp pending_projection_refresh!(seeded) do
+    DataLayer.with_actor(seeded.actor, fn account, actor ->
+      MemHouse.Operations.PipelineRun
+      |> Ash.Query.filter(
+        kind == "projection_refresh" and scope_id == ^seeded.scope.id and status == "pending"
+      )
+      |> Ash.Query.sort(inserted_at: :desc, id: :desc)
+      |> Ash.Query.limit(1)
+      |> Ash.Query.set_tenant(account.id)
+      |> Ash.read_one!(actor: pipeline_actor(actor))
+    end)
   end
 
   # A five-statement corpus for ranking assertions.

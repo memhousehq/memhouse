@@ -10,6 +10,7 @@ defmodule MemHouseWeb.Console.Loader do
   """
 
   alias MemHouse.Actor
+  alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Documents.ConnectorConfig
   alias MemHouse.Governance.Consent
@@ -23,6 +24,7 @@ defmodule MemHouseWeb.Console.Loader do
   alias MemHouse.Knowledge.LifecycleEvent
   alias MemHouse.Knowledge.Projection
   alias MemHouse.Knowledge.Provenance
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Model.Config, as: ModelConfig
   alias MemHouse.Observations.Document
   alias MemHouse.Observations.DocumentVersion
@@ -316,6 +318,7 @@ defmodule MemHouseWeb.Console.Loader do
     descendants? = Keyword.get(opts, :descendants?, false)
 
     DataLayer.with_actor(actor, fn account, current_actor ->
+      now = Clock.utc_now()
       scopes = scopes(account.id, current_actor)
       paths = scope_paths(scopes)
       focus = focus_scope(scopes, Keyword.get(opts, :scope))
@@ -371,7 +374,7 @@ defmodule MemHouseWeb.Console.Loader do
           @graph_cluster_limit
         )
 
-      cards = entity_cards(account.id, current_actor, drawn_scope_ids)
+      cards = entity_cards(account.id, current_actor, drawn_scope_ids, now)
       member_scopes = Map.new(knowledge, &{&1.id, &1.scope_id})
 
       indexed = Enum.with_index(shared.clusters, 1)
@@ -406,12 +409,11 @@ defmodule MemHouseWeb.Console.Loader do
   # `scope_id` alone and filters neither kind nor peer, so dropping it would return peer-profile
   # rows — another subject's provisional content — to anyone who can read the scope. Dirty rows
   # are excluded for the same reason every other reader excludes them: their content predates a
-  # lifecycle change.
-  defp entity_cards(account_id, actor, scope_ids) do
+  # lifecycle change. Legacy rows and cards at their source-expiry boundary also fail closed.
+  defp entity_cards(account_id, actor, scope_ids, now) do
     Projection
-    |> Ash.Query.filter(
-      scope_id in ^MapSet.to_list(scope_ids) and kind == "entity_card" and dirty == false
-    )
+    |> Ash.Query.filter(scope_id in ^MapSet.to_list(scope_ids) and kind == "entity_card")
+    |> Visibility.projection_query(now)
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
     |> Map.new(&{{&1.scope_id, &1.entity_id}, &1})

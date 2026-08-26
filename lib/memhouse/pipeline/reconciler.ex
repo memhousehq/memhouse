@@ -17,13 +17,15 @@ defmodule MemHouse.Pipeline.Reconciler do
   - document versions still pending, or whose processing failed;
   - active connectors that are due (or have never run);
   - scopes with missing or stale source-message embeddings and no recoverable
-    projection refresh; and
-  - scopes with active statements but no derived entity mentions.
+    projection refresh;
+  - scopes with active statements but no derived entity mentions; and
+  - scopes with pre-expiry-bound projections that could not be safely upgraded in place.
   """
 
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Documents.ConnectorConfig
+  alias MemHouse.Knowledge.Projection
   alias MemHouse.Model.Config
   alias MemHouse.Observations.DocumentVersion
   alias MemHouse.Observations.Message
@@ -58,7 +60,7 @@ defmodule MemHouse.Pipeline.Reconciler do
   two-pass sequence makes the job end durable before recovery starts.
 
   Returns `{:ok, counts}` with `:expired_claims`, `:replayed`, `:terminated`, `:messages`, `:documents`,
-  `:connectors`, `:source_scopes`, `:scopes`, and
+  `:connectors`, `:source_scopes`, `:scopes`, `:legacy_projection_scopes`, and
   `:reconciled` (the successful-enqueue sum). `:expired_claims` separately
   reports stale batch leases recovered before enqueue reconciliation. The
   remaining counts report how many enqueues *succeeded*,
@@ -191,6 +193,28 @@ defmodule MemHouse.Pipeline.Reconciler do
                 )
             end)
 
+          legacy_projection_scopes =
+            Projection
+            |> Ash.Query.filter(validity_version != version and dirty == false)
+            |> Ash.Query.select([:id, :scope_id, :updated_at, :version])
+            |> Ash.Query.distinct(:scope_id)
+            |> Ash.Query.sort(scope_id: :asc, updated_at: :desc, id: :desc)
+            |> Ash.Query.limit(@batch_size)
+            |> Ash.Query.set_tenant(account_id)
+            |> Ash.read!(actor: actor)
+            |> Enum.count(fn row ->
+              not Pipeline.projection_refresh_recoverable?(account_id, row.scope_id, actor) and
+                match?(
+                  {:ok, _run},
+                  Pipeline.enqueue_projection_refresh(
+                    account_id,
+                    row.scope_id,
+                    projection_validity_watermark(row),
+                    actor
+                  )
+                )
+            end)
+
           %{
             expired_claims: expired_claims,
             replayed: replayed,
@@ -199,7 +223,8 @@ defmodule MemHouse.Pipeline.Reconciler do
             documents: documents,
             connectors: connectors,
             source_scopes: source_scopes,
-            scopes: scopes
+            scopes: scopes,
+            legacy_projection_scopes: legacy_projection_scopes
           }
       end)
 
@@ -235,6 +260,18 @@ defmodule MemHouse.Pipeline.Reconciler do
 
     "sources:" <>
       (cursor
+       |> :erlang.term_to_binary([:deterministic])
+       |> Idempotency.content_hash())
+  end
+
+  # The newest clean legacy row identifies this scope's pre-validity projection generation.
+  # Include its stable id and update time so each distinct migrated generation receives one
+  # durable refresh run while reconciliation remains idempotent.
+  defp projection_validity_watermark(projection) do
+    generation = [projection.scope_id, projection.id, projection.version, projection.updated_at]
+
+    "projection-validity-v1:" <>
+      (generation
        |> :erlang.term_to_binary([:deterministic])
        |> Idempotency.content_hash())
   end

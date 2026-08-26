@@ -24,7 +24,7 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
   alias MemHouse.Governance.Sweeper
   alias MemHouse.Governance.ValidationItem
   alias MemHouse.Identity
-  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.{KnowledgeItem, LifecycleEvent}
   alias MemHouse.Knowledge.Lifecycle
   alias MemHouse.Memory
   alias MemHouse.Model.GroundedAnswerProvider
@@ -1290,6 +1290,67 @@ defmodule MemHouse.F4RealGateABGovernanceTest do
     decayed = knowledge_for!(actor, knowledge.id)
     assert decayed.state == "stale"
     assert decayed.confidence < knowledge.confidence
+  end
+
+  @tag :issue_277_lifecycle_fixture
+  test "expiry sweep still records lifecycle and audit evidence for an expired active row" do
+    %{actor: actor} = bootstrap_human!("expiry-audit")
+
+    create_gate_rule!(actor, %{
+      target_level: "peer",
+      sensitivity: "internal",
+      minimum_confidence: 0.5,
+      gate_a_mode: "auto_keep",
+      gate_b_mode: "auto_place",
+      minimum_corroboration: 1,
+      priority: 10
+    })
+
+    knowledge =
+      ingest!(
+        actor,
+        "expiry-audit-session",
+        "/governance/expiry-audit",
+        "Avery uses the temporary deployment checklist."
+      )
+
+    assert knowledge.state == "active"
+
+    Engine.transition!(
+      knowledge,
+      pipeline_actor(actor),
+      %{state: "active", expires_at: DateTime.add(Clock.utc_now(), -1, :hour)},
+      reason: "f4_test_due",
+      channel: "test"
+    )
+
+    assert {:ok, %{expiry: 1}} = Sweeper.run(actor.account_id, "expiry")
+    assert knowledge_for!(actor, knowledge.id).state == "expired"
+
+    DataLayer.with_actor(actor, fn account, current_actor ->
+      pipeline = %{pipeline_actor(current_actor) | scope_ids: :all}
+
+      lifecycle =
+        LifecycleEvent
+        |> Ash.Query.filter(knowledge_item_id == ^knowledge.id and reason == "f4_expiry_due")
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline)
+
+      assert lifecycle.from_state == "active"
+      assert lifecycle.to_state == "expired"
+
+      audit =
+        AuditEvent
+        |> Ash.Query.filter(resource_id == ^knowledge.id and action == "knowledge.transitioned")
+        |> Ash.Query.sort(occurred_at: :desc)
+        |> Ash.Query.limit(1)
+        |> Ash.Query.set_tenant(account.id)
+        |> Ash.read_one!(actor: pipeline)
+
+      assert audit.metadata["from_state"] == "active"
+      assert audit.metadata["to_state"] == "expired"
+      assert audit.metadata["reason"] == "f4_expiry_due"
+    end)
   end
 
   @tag :issue_277_lifecycle_fixture

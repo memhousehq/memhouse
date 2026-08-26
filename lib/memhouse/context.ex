@@ -34,9 +34,12 @@ defmodule MemHouse.Context do
     passes them through and must never derive them from the entity cache.
   """
 
+  alias MemHouse.Clock
   alias MemHouse.Context.Cache
   alias MemHouse.Context.ProjectionKey
+  alias MemHouse.Context.ProjectionLock
   alias MemHouse.Knowledge.Projection
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Observations.Session
   alias MemHouse.Retrieval.Query
 
@@ -47,6 +50,7 @@ defmodule MemHouse.Context do
   # push ranked knowledge out of the payload entirely. The mention spotter fires on every
   # capitalised token, which makes that a real shape rather than a worst case.
   @entity_cards_per_scope 8
+  @stable_generation_attempts 3
 
   @doc """
   Builds one context payload for an already-authenticated caller.
@@ -78,24 +82,25 @@ defmodule MemHouse.Context do
   def get(account, actor, scopes, attrs, internal_reader?) do
     scope_ids = Enum.map(scopes, & &1.id)
     session_id = resolve_session_id(account.id, actor, scope_ids, attrs["session_id"])
+    now = Clock.utc_now()
 
     # Peerless non-internal readers should not receive cached projections that contain internal
     # content. Skip projection reads for them and use the live fallback instead.
     public_only? = not internal_reader? and not is_binary(actor.peer_id)
 
     {scope_cards, scope_hits} =
-      if public_only?, do: {[], 0}, else: scope_cards(account.id, actor, scopes)
+      if public_only?, do: {[], 0}, else: scope_cards(account.id, actor, scopes, now)
 
     {peer_profiles, peer_hits} =
-      if public_only?, do: {[], 0}, else: peer_profiles(account.id, actor, scopes)
+      if public_only?, do: {[], 0}, else: peer_profiles(account.id, actor, scopes, now)
 
     {entity_cards, entity_hits} =
-      if public_only?, do: {[], 0}, else: entity_cards(account.id, actor, scopes)
+      if public_only?, do: {[], 0}, else: entity_cards(account.id, actor, scopes, now)
 
     {session_summary, session_hit} =
       if public_only?,
         do: {nil, false},
-        else: session_summary(account.id, actor, scopes, session_id)
+        else: session_summary(account.id, actor, scopes, session_id, now)
 
     projection_knowledge =
       projection_knowledge(scope_cards, peer_profiles, entity_cards)
@@ -131,29 +136,32 @@ defmodule MemHouse.Context do
   # The grouping coordinate remains private. Context reads all clean cards for one authorized
   # scope and returns only their content, ordered by source coverage and confidence. The list is
   # cached under a synthetic scope key so repeated requests do not enumerate projection rows.
-  defp entity_cards(account_id, actor, scopes) do
+  defp entity_cards(account_id, actor, scopes, now) do
     Enum.map_reduce(scopes, 0, fn scope, hits ->
       cache_key = {account_id, scope.id, "entity_cards"}
 
-      case Cache.fetch(cache_key) do
-        {:ok, cards} ->
-          {cards, hits + if(cards == [], do: 0, else: 1)}
+      with_stable_generation(account_id, scope.id, {[], hits}, fn input_generation ->
+        case Cache.fetch(cache_key, now, input_generation) do
+          {:ok, cards} ->
+            {cards, hits + if(cards == [], do: 0, else: 1)}
 
-        :error ->
-          cards =
-            Projection
-            |> Ash.Query.filter(
-              scope_id == ^scope.id and kind == "entity_card" and dirty == false
-            )
-            |> Ash.Query.set_tenant(account_id)
-            |> Ash.read!(actor: actor)
-            |> Enum.sort_by(&entity_card_order/1, :desc)
-            |> Enum.take(@entity_cards_per_scope)
-            |> Enum.map(& &1.content)
+          :error ->
+            cards =
+              Projection
+              |> Ash.Query.filter(scope_id == ^scope.id and kind == "entity_card")
+              |> Visibility.projection_query(now)
+              |> Ash.Query.set_tenant(account_id)
+              |> Ash.read!(actor: actor)
+              |> Enum.sort_by(&entity_card_order/1, :desc)
+              |> Enum.take(@entity_cards_per_scope)
 
-          Cache.put(cache_key, cards)
-          {cards, hits}
-      end
+            valid_until = Visibility.earliest_boundary(cards, & &1.valid_until)
+            cards = Enum.map(cards, & &1.content)
+
+            Cache.put(cache_key, cards, valid_until, input_generation)
+            {cards, hits}
+        end
+      end)
     end)
   end
 
@@ -168,9 +176,11 @@ defmodule MemHouse.Context do
   # One card per authorized scope, in the order the caller's scopes were resolved (nearest
   # first). A scope with no clean projection contributes `nil`, which is filtered out later; it
   # is not an error, it means the refresh job has not built that card yet or the card is dirty.
-  defp scope_cards(account_id, actor, scopes) do
+  defp scope_cards(account_id, actor, scopes, now) do
     Enum.map_reduce(scopes, 0, fn scope, hits ->
-      {projection, hit?} = projection(account_id, actor, scope.id, ProjectionKey.scope(scope.id))
+      {projection, hit?} =
+        projection(account_id, actor, scope.id, ProjectionKey.scope(scope.id), now)
+
       content = projection && projection.content
       {content, hits + if(hit?, do: 1, else: 0)}
     end)
@@ -179,14 +189,14 @@ defmodule MemHouse.Context do
   # A peer profile slice is only ever the *calling* peer's own slice: the cache key is built
   # from `actor.peer_id`, never from a request parameter. An actor without a peer id (a machine
   # or system caller acting for no one) gets no profile rather than someone else's.
-  defp peer_profiles(_account_id, %{peer_id: peer_id}, _scopes)
+  defp peer_profiles(_account_id, %{peer_id: peer_id}, _scopes, _now)
        when not is_binary(peer_id),
        do: {[], 0}
 
-  defp peer_profiles(account_id, actor, scopes) do
+  defp peer_profiles(account_id, actor, scopes, now) do
     Enum.map_reduce(scopes, 0, fn scope, hits ->
       {projection, hit?} =
-        projection(account_id, actor, scope.id, ProjectionKey.peer(scope.id, actor.peer_id))
+        projection(account_id, actor, scope.id, ProjectionKey.peer(scope.id, actor.peer_id), now)
 
       content = projection && projection.content
       {content || [], hits + if(hit?, do: 1, else: 0)}
@@ -195,11 +205,17 @@ defmodule MemHouse.Context do
 
   # At most one session summary is returned: the nearest scope that has a summary for this
   # session wins, because the scopes arrive nearest-first and `find_value` stops there.
-  defp session_summary(_account_id, _actor, _scopes, nil), do: {nil, false}
+  defp session_summary(_account_id, _actor, _scopes, nil, _now), do: {nil, false}
 
-  defp session_summary(account_id, actor, scopes, session_id) do
+  defp session_summary(account_id, actor, scopes, session_id, now) do
     Enum.find_value(scopes, {nil, false}, fn scope ->
-      case projection(account_id, actor, scope.id, ProjectionKey.session(scope.id, session_id)) do
+      case projection(
+             account_id,
+             actor,
+             scope.id,
+             ProjectionKey.session(scope.id, session_id),
+             now
+           ) do
         {nil, false} -> nil
         {projection, hit?} -> {projection.content, hit?}
       end
@@ -255,27 +271,65 @@ defmodule MemHouse.Context do
   end
 
   # Two-level read: the node-local in-memory cache first, then the database. The database query
-  # excludes `dirty` rows, so a projection invalidated by a lifecycle change reads as absent
-  # rather than as slightly out of date, and only clean rows are ever placed in the cache. The
+  # excludes dirty, legacy-unbounded, and expired rows, so an invalid projection reads as absent
+  # rather than as slightly out of date. Only clean, expiry-bounded rows enter the cache. The
   # boolean in the return says "served from memory", which is what the caller reports as
   # `projection_cache_hit`.
-  defp projection(account_id, actor, scope_id, cache_key) do
+  defp projection(account_id, actor, scope_id, cache_key, now) do
     ets_key = {account_id, scope_id, cache_key}
 
-    case Cache.fetch(ets_key) do
-      {:ok, projection} ->
-        {projection, true}
+    with_stable_generation(account_id, scope_id, {nil, false}, fn input_generation ->
+      case Cache.fetch(ets_key, now, input_generation) do
+        {:ok, projection} ->
+          {projection, true}
 
-      :error ->
-        projection =
-          Projection
-          |> Ash.Query.filter(cache_key == ^cache_key and dirty == false)
-          |> Ash.Query.set_tenant(account_id)
-          |> Ash.read_one!(actor: actor)
+        :error ->
+          projection =
+            Projection
+            |> Ash.Query.filter(cache_key == ^cache_key)
+            |> Visibility.projection_query(now)
+            |> Ash.Query.set_tenant(account_id)
+            |> Ash.read_one!(actor: actor)
 
-        if projection, do: Cache.put(ets_key, projection)
-        {projection, false}
+          if projection,
+            do: Cache.put(ets_key, projection, projection.valid_until, input_generation)
+
+          {projection, false}
+      end
+    end)
+  end
+
+  # A source action advances its generation in the same transaction as the source write. Reading
+  # the generation on both sides of a cache/database lookup gives that lookup a committed-state
+  # linearization point without locking source rows in the opposite order from their writes.
+  # Continuous churn fails closed to an absent projection after a fixed number of attempts so a
+  # request cannot remain trapped in this read boundary indefinitely.
+  defp with_stable_generation(account_id, scope_id, fallback, fun) do
+    with_stable_generation(
+      account_id,
+      scope_id,
+      fallback,
+      fun,
+      @stable_generation_attempts
+    )
+  end
+
+  defp with_stable_generation(account_id, scope_id, fallback, fun, attempts_left) do
+    lock = Application.get_env(:memhouse, :context_projection_lock, ProjectionLock)
+    input_generation = lock.capture!(account_id, scope_id)
+    result = fun.(input_generation)
+
+    if lock.capture!(account_id, scope_id) == input_generation do
+      result
+    else
+      retry_stable_generation(account_id, scope_id, fallback, fun, attempts_left - 1)
     end
+  end
+
+  defp retry_stable_generation(_account_id, _scope_id, fallback, _fun, 0), do: fallback
+
+  defp retry_stable_generation(account_id, scope_id, fallback, fun, attempts_left) do
+    with_stable_generation(account_id, scope_id, fallback, fun, attempts_left)
   end
 
   # Callers may name a session either by its internal id or by the external id they chose. A

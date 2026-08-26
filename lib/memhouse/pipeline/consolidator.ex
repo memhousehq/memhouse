@@ -14,6 +14,7 @@ defmodule MemHouse.Pipeline.Consolidator do
   alias MemHouse.DataLayer
   alias MemHouse.Governance.{Audit, Engine}
   alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation, LifecycleEvent, Provenance}
+  alias MemHouse.Memory.Visibility
   alias MemHouse.Pipeline.Lock
   alias MemHouse.Retrieval.Vector
 
@@ -63,7 +64,8 @@ defmodule MemHouse.Pipeline.Consolidator do
   """
   def run_scope!(account_id, scope_id, actor) do
     Lock.acquire!(account_id, "knowledge-consolidation:#{scope_id}")
-    items = active_items(account_id, scope_id, actor)
+    now = Clock.utc_now()
+    items = active_items(account_id, scope_id, actor, now)
 
     merged =
       items
@@ -74,17 +76,18 @@ defmodule MemHouse.Pipeline.Consolidator do
     # Re-read after supersession. Aggregates must be built only from the surviving
     # representatives, otherwise a retired duplicate can become a new member.
     aggregates =
-      active_items(account_id, scope_id, actor)
+      active_items(account_id, scope_id, actor, now)
       |> Enum.reject(&derived_aggregate?/1)
       |> set_groups()
-      |> Enum.reduce(0, fn group, count -> ensure_aggregate!(group, actor) + count end)
+      |> Enum.reduce(0, fn group, count -> ensure_aggregate!(group, actor, now) + count end)
 
     %{merged: merged, aggregates: aggregates}
   end
 
-  defp active_items(account_id, scope_id, actor) do
-    KnowledgeItem
-    |> Ash.Query.filter(scope_id == ^scope_id and state == "active" and is_nil(deleted_at))
+  defp active_items(account_id, scope_id, actor, now) do
+    [scope_id]
+    |> Visibility.knowledge_query("active", actor, true, now)
+    |> Ash.Query.filter(state == "active")
     |> Ash.Query.ensure_selected([:embedding])
     |> Ash.Query.set_tenant(account_id)
     |> Ash.read!(actor: actor)
@@ -183,7 +186,7 @@ defmodule MemHouse.Pipeline.Consolidator do
     end
   end
 
-  defp ensure_aggregate!(group, actor) do
+  defp ensure_aggregate!(group, actor, now) do
     [{first, subject, noun, _member} | _rest] = group
     members = group |> Enum.map(&elem(&1, 3)) |> Enum.uniq() |> Enum.sort()
     statement = "#{subject} has #{pluralize(noun)}: #{Enum.join(members, ", ")}."
@@ -191,19 +194,15 @@ defmodule MemHouse.Pipeline.Consolidator do
     marker = marker()
 
     existing =
-      KnowledgeItem
-      |> Ash.Query.filter(
-        scope_id == ^first.scope_id and extracting_model == ^marker and
-          state == "active"
-      )
-      |> Ash.Query.set_tenant(first.account_id)
-      |> Ash.read!(actor: actor)
+      first.account_id
+      |> active_items(first.scope_id, actor, now)
+      |> Enum.filter(&(&1.extracting_model == marker))
       |> Enum.find(&(&1.statement == statement))
 
     if existing do
       0
     else
-      prior_id = retire_prior_aggregate!(first, subject, noun, actor)
+      prior_id = retire_prior_aggregate!(first, subject, noun, actor, now)
       aggregate = create_aggregate!(first, statement, group, prior_id, actor)
 
       Enum.each(group, fn {item, _, _, _} -> relation!(aggregate, item, "derived_from", actor) end)
@@ -212,9 +211,9 @@ defmodule MemHouse.Pipeline.Consolidator do
     end
   end
 
-  defp retire_prior_aggregate!(first, subject, noun, actor) do
+  defp retire_prior_aggregate!(first, subject, noun, actor, now) do
     first.account_id
-    |> active_items(first.scope_id, actor)
+    |> active_items(first.scope_id, actor, now)
     |> Enum.filter(fn item ->
       derived_aggregate?(item) and
         String.starts_with?(item.statement, "#{subject} has #{pluralize(noun)}:")

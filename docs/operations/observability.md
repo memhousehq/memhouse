@@ -141,6 +141,18 @@ order. A burst produces at most one refresh run per scope and bucket. Its
 embedder batch contains only statements without vectors. Explicit rebuild and
 re-embed operations retain their full-corpus behavior.
 
+The projection-expiry migration makes projections readable only when their validity marker equals
+their projection version, `dirty` is false, and `valid_until` is absent or later than the read's
+captured decision time, without scanning or rewriting contents under the schema lock. Existing
+rows receive marker `0` and fail closed until rebuilt. Current projection and source mutations go
+through Ash actions that advance validity or dirty the derived rows; direct database writers are
+unsupported. MemHouse does not support mixed-version readers: follow the upgrade procedure that
+stops old binaries before migration. The hourly reconciler selects at most 100 distinct legacy
+scopes per Account and enqueues one idempotent full refresh per affected scope under the
+`projection-validity-v1` generation watermark. During that bounded warm-up, context fails closed
+to the ordinary fast retrieval fallback; operators do not need to run a manual migration command
+or expose the legacy projection.
+
 Alert on `coverage` below your threshold. Embeddings and entity mentions are
 written by this lane alone, so a refresh that was cancelled or never enqueued
 leaves the scope holding every statement while semantic and entity recall stay

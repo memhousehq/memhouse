@@ -12,6 +12,7 @@ defmodule MemHouse.MigrationRetrySafetyTest do
   @transactional_migrations ~w(
     20260817090000_governed_source_message_search.exs
     20260817100000_recall_document_dual_lane.exs
+    20260824125256_issue_302_projection_expiry_bound.exs
     20260825100000_diskann_typed_embedding_columns.exs
   )
 
@@ -22,6 +23,7 @@ defmodule MemHouse.MigrationRetrySafetyTest do
     20260817090003_source_message_scope_time_index.exs
     20260817100001_recall_document_scope_lane_index.exs
     20260817100002_recall_document_embedding_diskann_index.exs
+    20260824125257_projection_validity_scope_index.exs
     20260825100001_knowledge_embedding_diskann_attribute.exs
     20260825100002_document_chunk_embedding_diskann_attribute.exs
     20260825100003_source_message_embedding_diskann_attribute.exs
@@ -39,6 +41,16 @@ defmodule MemHouse.MigrationRetrySafetyTest do
     assert recall =~ "ALTER TABLE recall_documents ENABLE ROW LEVEL SECURITY"
     assert recall =~ "ALTER TABLE recall_documents FORCE ROW LEVEL SECURITY"
     assert recall =~ "CREATE POLICY memhouse_account_wall"
+
+    projection = read_migration("20260824125256_issue_302_projection_expiry_bound.exs")
+    assert projection =~ "add :projection_input_generation, :bigint"
+    assert projection =~ "add :validity_version, :bigint, null: false, default: 0"
+    refute projection =~ "CREATE TRIGGER"
+    refute projection =~ "CREATE FUNCTION"
+    refute projection =~ "NEW.validity_version := 0"
+    refute projection =~ "memhouse_invalidate_projection_input"
+    refute projection =~ "UPDATE scopes"
+    assert projection =~ "remove :projection_input_generation"
   end
 
   test "each non-transactional migration owns one retry-safe concurrent index" do

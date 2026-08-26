@@ -49,14 +49,18 @@ defmodule MemHouse.Observations.Session do
       upsert? true
       upsert_identity :external_id
       upsert_fields [:status, :updated_at]
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
 
     update :update do
       accept [:status, :closed_at]
+      require_atomic? false
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
 
     destroy :erase do
       require_atomic? false
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
   end
 
@@ -271,6 +275,7 @@ defmodule MemHouse.Observations.Message do
 
       change MemHouse.Observations.Changes.HashContent
       change MemHouse.Observations.Changes.AuditAndEnqueueMessage
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
 
     # Pipeline bookkeeping only: stamps when extraction finished. It cannot touch content.
@@ -297,6 +302,7 @@ defmodule MemHouse.Observations.Message do
 
     destroy :erase do
       require_atomic? false
+      change MemHouse.Context.Changes.InvalidateProjectionInputs
     end
   end
 
