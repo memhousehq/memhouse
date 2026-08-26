@@ -41,8 +41,9 @@ gap-report shape change moves `f9-1` and also requires a release.
 **Do not treat a contract identity as an ordering.** `f9-1` is not "newer than"
 `f7-1`; they version different things.
 
-**Expect stability.** Transitions require a changelog entry, updated contract
-evidence, and the closest architecture note.
+**Expect stability.** Transitions require updated contract tests, retained
+reference documentation, a changelog entry, and scoped issue or pull request
+rationale.
 
 ## Related
 

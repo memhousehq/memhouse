@@ -74,7 +74,7 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
   end
 
   test "release suite separates held-out tuning and published splits and covers the matrix" do
-    suite = "specs/eval/release-suite.json" |> File.read!() |> Jason.decode!()
+    suite = "test/fixtures/eval/release-suite.json" |> File.read!() |> Jason.decode!()
     runs = suite["runs"]
 
     assert suite["suite_version"] == "f11-1"
@@ -234,7 +234,7 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
 
   test "surface inventory gates shipped contracts and fails closed around the integration-surfaces boundary" do
     inventory =
-      "specs/eval/surface-contract-inventory.json"
+      "test/fixtures/eval/surface-contract-inventory.json"
       |> File.read!()
       |> Jason.decode!()
 

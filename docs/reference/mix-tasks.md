@@ -249,12 +249,12 @@ Also writes real rows. Same warning applies.
 
 ```bash
 mix memhouse.eval.experiment \
-  --definition specs/eval/experiments/memory-profile-ablation.json \
+  --definition /path/to/preregistered-experiment.json \
   --manifest-output /private/tmp/memhouse-experiment-manifest.json \
   --output /private/tmp/memhouse-comparison.json
 ```
 
-Runs the current and experimental variants over the same dataset, in order, in separate scratch
+The definition is operator-supplied and must be preregistered. The task runs the current and experimental variants over the same dataset, in order, in separate scratch
 Accounts. The first output is the environment-resolved run manifest: exact input digest, source
 revision and working-tree state, Postgres mode, model and prompt identities, safe generation
 parameters, evaluation seeds, and effective retrieval settings. The second is a machine-readable
@@ -288,7 +288,7 @@ mismatched value fails validation; the map is not free-form provenance. Runtime 
 are restored even on failure. Fixture definitions keep the map empty because fixture replay does
 not execute product components.
 
-The committed smoke definition compares the real `balanced` defaults with the opt-in `minimal`
+An operator-supplied execute definition can compare the real `balanced` defaults with the opt-in `minimal`
 dual-lane, batched, high-effort bounded-recall, idle-scheduler, split-update, and dream-pass
 configuration. Offline execution
 synchronously refreshes each isolated case Knowledge index and, only for minimal, its source
@@ -336,8 +336,8 @@ mix memhouse.eval.release \
   --output /private/tmp/memhouse-release-eval.json
 ```
 
-Runs `specs/eval/release-suite.json` against floors in
-`specs/eval/deterministic-thresholds.json`. Only release guardrails block;
+Runs `test/fixtures/eval/release-suite.json` against floors in
+`test/fixtures/eval/deterministic-thresholds.json` for release readiness. Only release guardrails block;
 ablations inform. Without `--no-model` it runs the same generative-role probe
 as the benchmark task and refuses to start when a role fails it.
 

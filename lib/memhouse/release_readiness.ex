@@ -109,8 +109,9 @@ defmodule MemHouse.ReleaseReadiness do
   @release_docs [
     "README.md",
     "AGENTS.md",
-    "specs/roadmap/beta-roadmap.md",
-    "specs/architecture/evaluation-ci-release-readiness.md"
+    ".github/workflows/README.md",
+    "docs/operations/upgrades.md",
+    "docs/reference/mix-tasks.md"
   ]
 
   # Case-folded, and both the spaced and hyphenated spellings are accepted, so
@@ -155,13 +156,13 @@ defmodule MemHouse.ReleaseReadiness do
 
     manifest =
       root
-      |> Path.join("specs/eval/release-suite.json")
+      |> Path.join("test/fixtures/eval/release-suite.json")
       |> read_local!()
       |> Jason.decode!()
 
     thresholds =
       root
-      |> Path.join("specs/eval/deterministic-thresholds.json")
+      |> Path.join("test/fixtures/eval/deterministic-thresholds.json")
       |> read_local!()
       |> Jason.decode!()
 

@@ -13,15 +13,21 @@ defmodule MemHouse.MigrationRetrySafetyTest do
     20260817090000_governed_source_message_search.exs
     20260817100000_recall_document_dual_lane.exs
     20260824125256_issue_302_projection_expiry_bound.exs
+    20260825100000_diskann_typed_embedding_columns.exs
   )
 
   @concurrent_index_migrations ~w(
+    20260814120000_drop_unused_entity_alias_embedding_index.exs
     20260817090001_source_message_search_vector_index.exs
     20260817090002_source_message_embedding_diskann_index.exs
     20260817090003_source_message_scope_time_index.exs
     20260817100001_recall_document_scope_lane_index.exs
     20260817100002_recall_document_embedding_diskann_index.exs
     20260824125257_projection_validity_scope_index.exs
+    20260825100001_knowledge_embedding_diskann_attribute.exs
+    20260825100002_document_chunk_embedding_diskann_attribute.exs
+    20260825100003_source_message_embedding_diskann_attribute.exs
+    20260825100004_recall_document_embedding_diskann_attribute.exs
   )
 
   test "schema, backfill, and forced RLS migrations remain transactional" do

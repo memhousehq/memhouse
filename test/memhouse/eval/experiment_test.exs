@@ -416,7 +416,7 @@ defmodule MemHouse.Eval.ExperimentTest do
   end
 
   test "execute component labels must exactly match the runner behavior", %{tmp_dir: tmp_dir} do
-    definition = Jason.decode!(File.read!("specs/eval/experiments/memory-profile-ablation.json"))
+    definition = execute_definition()
 
     lying_definition =
       put_in(
@@ -445,11 +445,14 @@ defmodule MemHouse.Eval.ExperimentTest do
     end
   end
 
-  test "committed execute definition binds the real minimal dual-lane and lexical profile" do
-    definition = Jason.decode!(File.read!("specs/eval/experiments/memory-profile-ablation.json"))
+  test "execute definition binds the real minimal dual-lane and lexical profile", %{
+    tmp_dir: tmp_dir
+  } do
+    definition = execute_definition()
+    definition_path = write_definition!(tmp_dir, definition)
     experimental = Enum.find(definition["variants"], &(&1["kind"] == "experimental"))
 
-    assert Experiment.mode!("specs/eval/experiments/memory-profile-ablation.json") == "execute"
+    assert Experiment.mode!(definition_path) == "execute"
     assert experimental["profile"] == "minimal"
     assert experimental["strategies"] == nil
     assert experimental["recall_effort"] == "high"
@@ -501,7 +504,10 @@ defmodule MemHouse.Eval.ExperimentTest do
            }
   end
 
-  test "offline semantic execution refuses missing local artifacts without a stand-in" do
+  test "offline semantic execution refuses missing local artifacts without a stand-in", %{
+    tmp_dir: tmp_dir
+  } do
+    definition_path = write_definition!(tmp_dir, execute_definition())
     roles = Application.fetch_env!(:memhouse, :model_roles)
     embedder = roles |> Keyword.fetch!(:embedder) |> Map.put(:provider, "ortex")
     embedder = Map.put(embedder, :options, %{"model_path" => nil, "tokenizer_path" => nil})
@@ -511,9 +517,7 @@ defmodule MemHouse.Eval.ExperimentTest do
     assert_raise ArgumentError,
                  ~r/offline semantic experiment requires existing local Ortex artifacts/,
                  fn ->
-                   Experiment.assert_offline_capabilities!(
-                     "specs/eval/experiments/memory-profile-ablation.json"
-                   )
+                   Experiment.assert_offline_capabilities!(definition_path)
                  end
 
     deterministic_embedder = Map.put(embedder, :provider, "deterministic")
@@ -525,9 +529,7 @@ defmodule MemHouse.Eval.ExperimentTest do
     )
 
     assert_raise ArgumentError, ~r/requires the local Ortex embedder, got "deterministic"/, fn ->
-      Experiment.assert_offline_capabilities!(
-        "specs/eval/experiments/memory-profile-ablation.json"
-      )
+      Experiment.assert_offline_capabilities!(definition_path)
     end
   end
 
@@ -553,19 +555,266 @@ defmodule MemHouse.Eval.ExperimentTest do
     assert Jason.decode!(File.read!(bundle_path))["gates"]["status"] == "passed"
   end
 
-  test "committed fixture evidence is exactly reproducible without providers" do
-    {manifest, bundle} =
+  test "fixture evidence is exactly reproducible without providers" do
+    {first_manifest, first_bundle} =
       Experiment.run("test/fixtures/eval/profile-experiment-fixture.json")
 
-    assert manifest ==
-             Jason.decode!(
-               File.read!("specs/eval/results/profile-experiment-fixture-manifest.json")
-             )
+    {second_manifest, second_bundle} =
+      Experiment.run("test/fixtures/eval/profile-experiment-fixture.json")
 
-    assert bundle ==
-             Jason.decode!(
-               File.read!("specs/eval/results/profile-experiment-fixture-bundle.json")
-             )
+    assert first_manifest == second_manifest
+    assert first_bundle == second_bundle
+    assert first_manifest["schema"] == "memhouse-experiment-manifest-1"
+
+    assert first_manifest["source"] == %{
+             "repository" => "memhousehq/memhouse",
+             "revision" => "fixture-revision"
+           }
+
+    assert first_manifest["models"] == %{
+             "embedder" => %{
+               "provider" => "deterministic",
+               "model" => "fixture-embedder",
+               "version" => "1",
+               "prompt_version" => "none",
+               "pipeline_version" => "fixture-1",
+               "parameters" => %{}
+             },
+             "reranker" => %{
+               "provider" => "deterministic",
+               "model" => "fixture-reranker",
+               "version" => "1",
+               "prompt_version" => "none",
+               "pipeline_version" => "fixture-1",
+               "parameters" => %{}
+             },
+             "ingest_extractor" => %{
+               "provider" => "deterministic",
+               "model" => "fixture-ingest-extractor",
+               "version" => "1",
+               "prompt_version" => "extract-fixture-1",
+               "pipeline_version" => "fixture-1",
+               "parameters" => %{"max_tokens" => 512, "temperature" => 0.0}
+             },
+             "dream_reasoner" => %{
+               "provider" => "deterministic",
+               "model" => "fixture-dream-reasoner",
+               "version" => "1",
+               "prompt_version" => "none",
+               "pipeline_version" => "fixture-1",
+               "parameters" => %{}
+             },
+             "dialectic_agent" => %{
+               "provider" => "deterministic",
+               "model" => "fixture-dialectic-agent",
+               "version" => "1",
+               "prompt_version" => "none",
+               "pipeline_version" => "fixture-1",
+               "parameters" => %{}
+             }
+           }
+
+    assert first_bundle["schema"] == "memhouse-comparison-1"
+    assert first_bundle["gates"]["status"] == "passed"
+
+    assert Map.keys(first_bundle["evidence"]["measured"]) |> Enum.sort() ==
+             ~w(current experimental)
+
+    assert get_in(first_bundle, [
+             "evidence",
+             "measured",
+             "current",
+             "safety",
+             "isolation_candidates_checked"
+           ]) == 2
+
+    assert get_in(first_bundle, [
+             "evidence",
+             "measured",
+             "experimental",
+             "safety",
+             "isolation_candidates_checked"
+           ]) == 2
+  end
+
+  defp execute_definition do
+    """
+    {
+      "schema": "memhouse-experiment-definition-1",
+      "id": "honcho-informed-memory-profile-ablation",
+      "mode": "execute",
+      "dataset": {
+        "id": "memhouse-smoke.json",
+        "sha256": "a11eb64e22a17d033f06558b05de5006df7db3f020900a3534bbfafeba741c9b",
+        "split": "release-evaluation"
+      },
+      "seeds": {
+        "case_sampling": "all",
+        "durability": "honcho-ablation-v1"
+      },
+      "variants": [
+        {
+          "id": "current-balanced",
+          "kind": "current",
+          "benchmark": "memhouse",
+          "dataset": "../../../test/fixtures/eval/memhouse-smoke.json",
+          "profile": "balanced",
+          "strategies": null,
+          "deadline": "disabled",
+          "extraction_batching": false,
+          "recall_effort": "fixed",
+          "source_recall": false,
+          "lineage_recall": false,
+          "semantic_index_refresh": true,
+          "source_semantic_index_refresh": false,
+          "recall_projection_refresh": false,
+          "idle_dream_scheduling": false,
+          "dream_reasoning_split": false,
+          "dream_time": false,
+          "components": {
+            "retrieval_profile": "balanced",
+            "retrieval_strategies": ["semantic", "lexical", "temporal", "entity_match"],
+            "retrieval_seeds": ["semantic", "lexical", "temporal", "entity_match"],
+            "retrieval_rerank": false,
+            "retrieval_deadline": "disabled",
+            "extraction_batching": {
+              "enabled": false,
+              "identity": "utf8-bytes-v1:target=4096:context=131072:output=8192:margin=2048",
+              "tokenizer": "utf8-bytes-v1",
+              "target_tokens": 4096,
+              "max_anchors": 32,
+              "context_limit_tokens": 131072,
+              "reserved_output_tokens": 8192,
+              "safety_margin_tokens": 2048,
+              "claim_timeout_seconds": 1200
+            },
+            "adaptive_recall_effort": "fixed",
+            "source_recall": false,
+            "source_exact_recall": false,
+            "source_semantic_recall": false,
+            "stable_profile_recall": false,
+            "lineage_recall": false,
+            "semantic_index_refresh": true,
+            "source_semantic_index_refresh": false,
+            "recall_projection_refresh": false,
+            "idle_dream_scheduling": {
+              "enabled": false,
+              "min_changes": 1,
+              "idle_seconds": 0,
+              "min_interval_seconds": 0,
+              "max_delta_items": 20,
+              "max_working_set_items": 50,
+              "max_elapsed_ms": 120000
+            },
+            "dream_reasoning_operations": {
+              "split_enabled": false,
+              "update": true,
+              "synthesis": false,
+              "update_prompt_version": "reason-update-1",
+              "synthesis_prompt_version": "reason-synthesis-1"
+            },
+            "dream_time": false,
+            "durability_audit": false
+          }
+        },
+        {
+          "id": "experimental-minimal",
+          "kind": "experimental",
+          "benchmark": "memhouse",
+          "dataset": "../../../test/fixtures/eval/memhouse-smoke.json",
+          "profile": "minimal",
+          "strategies": null,
+          "deadline": "disabled",
+          "extraction_batching": true,
+          "recall_effort": "high",
+          "source_recall": true,
+          "lineage_recall": true,
+          "semantic_index_refresh": true,
+          "source_semantic_index_refresh": true,
+          "recall_projection_refresh": true,
+          "idle_dream_scheduling": true,
+          "dream_reasoning_split": true,
+          "dream_time": true,
+          "components": {
+            "retrieval_profile": "minimal",
+            "retrieval_strategies": ["semantic_dual_lane", "lexical"],
+            "retrieval_seeds": ["semantic_dual_lane", "lexical"],
+            "retrieval_rerank": false,
+            "retrieval_deadline": "disabled",
+            "extraction_batching": {
+              "enabled": true,
+              "identity": "utf8-bytes-v1:target=4096:context=131072:output=8192:margin=2048",
+              "tokenizer": "utf8-bytes-v1",
+              "target_tokens": 4096,
+              "max_anchors": 32,
+              "context_limit_tokens": 131072,
+              "reserved_output_tokens": 8192,
+              "safety_margin_tokens": 2048,
+              "claim_timeout_seconds": 1200
+            },
+            "adaptive_recall_effort": "high",
+            "source_recall": true,
+            "source_exact_recall": true,
+            "source_semantic_recall": true,
+            "stable_profile_recall": true,
+            "lineage_recall": true,
+            "semantic_index_refresh": true,
+            "source_semantic_index_refresh": true,
+            "recall_projection_refresh": true,
+            "idle_dream_scheduling": {
+              "enabled": true,
+              "min_changes": 1,
+              "idle_seconds": 0,
+              "min_interval_seconds": 0,
+              "max_delta_items": 20,
+              "max_working_set_items": 50,
+              "max_elapsed_ms": 120000
+            },
+            "dream_reasoning_operations": {
+              "split_enabled": true,
+              "update": true,
+              "synthesis": false,
+              "update_prompt_version": "reason-update-1",
+              "synthesis_prompt_version": "reason-synthesis-1"
+            },
+            "dream_time": true,
+            "durability_audit": false
+          }
+        }
+      ],
+      "gates": {
+        "quality": {"max_accuracy_regression": 0.0, "min_recall_at_10": 1.0},
+        "safety": {
+          "min_citation_hit_rate": 1.0,
+          "max_unsupported_claims": 0,
+          "max_isolation_leaks": 0,
+          "max_dropped_strategy_runs": 0
+        },
+        "cost": {"max_total_tokens_ratio": 1.0},
+        "latency": {"max_recall_p95_ratio": 5.0, "max_wall_time_ratio": 5.0},
+        "dream": {"max_replay_durable_effects": 0}
+      },
+      "inferences": [
+        {
+          "claim": "A minimal deterministic retrieval path may preserve recall with fewer moving parts."
+        }
+      ],
+      "first_party_claims": [
+        {
+          "claim": "Honcho reports 90.4 percent on LongMemEval S.",
+          "source": "plastic-labs/honcho-benchmarks@20c497bff02ff8737268be6d91c197767dc7bac0",
+          "reproduced": false
+        }
+      ]
+    }
+    """
+    |> Jason.decode!()
+    |> Map.update!("variants", fn variants ->
+      Enum.map(
+        variants,
+        &Map.put(&1, "dataset", Path.expand("test/fixtures/eval/memhouse-smoke.json"))
+      )
+    end)
   end
 
   defp write_definition!(tmp_dir, definition) do

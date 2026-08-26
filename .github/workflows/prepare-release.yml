@@ -123,7 +123,7 @@ jobs:
               "docs/reference/contract-versions.md",
               "docs/reference/mix-tasks.md",
               "docs/getting-started/install-release.md",
-              "specs/eval/surface-contract-inventory.json",
+              "test/fixtures/eval/surface-contract-inventory.json",
               "test/memhouse/f11_evaluation_ci_release_readiness_test.exs",
           ]:
               replace_all(path, current, version)
@@ -179,7 +179,7 @@ jobs:
           fi
 
           git switch -c "$branch"
-          git add AGENTS.md CHANGELOG.md README.md docs mix.exs specs test
+          git add AGENTS.md CHANGELOG.md README.md docs mix.exs test
           git commit -m "Release ${TAG}"
           git push origin "HEAD:refs/heads/$branch"
 

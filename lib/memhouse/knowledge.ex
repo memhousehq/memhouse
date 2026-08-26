@@ -1060,7 +1060,7 @@ defmodule MemHouse.Knowledge.EntityMention do
     attribute :entity_id, :uuid, allow_nil?: false
 
     # The exact text that matched inside the statement. Content-bearing, so it leaves this cache
-    # only as an entity card's label, and only when the card's own sources supply it (ADR 0011).
+    # only as an entity card's label, and only when the card's own sources supply it.
     attribute :surface_form, :string, allow_nil?: false
 
     # How sure the resolver is about this link. When retrieval expands from one statement to

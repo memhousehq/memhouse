@@ -125,6 +125,6 @@ succeeds.
 
 A release is coherent only when `mix.exs`, the changelog entry, the git tag,
 and the evaluation evidence all name the same version. The release-readiness
-check enforces this and fails closed. The maintainer-facing procedure lives in
-the repository under
-[`specs/process/release-checklist.md`](https://github.com/memhousehq/memhouse/blob/main/specs/process/release-checklist.md).
+check enforces this and fails closed. Complete the required checks and publish
+flow in
+[`.github/workflows/README.md`](https://github.com/memhousehq/memhouse/blob/main/.github/workflows/README.md).

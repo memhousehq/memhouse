@@ -193,11 +193,10 @@ itself is exact within its retention horizon.
 ## Experimental simplification profiles
 
 No Honcho-informed extraction, recall, or dream-time experiment is a shipped
-default merely because it appears in the repository. The proposed
-[clean-room memory-simplification decision](https://github.com/memhousehq/memhouse/blob/main/specs/adr/0021-clean-room-memory-simplification.md)
-requires versioned matched evaluation, content-safe operational evidence,
-rollback rehearsal, and human architecture/licensing review before a default
-changes. The isolated minimal-profile evaluation captures its maintenance plan
+default merely because it appears in the repository. No experiment changes a
+production default without preregistered matched held-out evidence,
+content-safe operational evidence, rollback rehearsal, and human architecture
+and licensing review. The isolated minimal-profile evaluation captures its maintenance plan
 in each durable projection run: source and Knowledge indexes plus
 RecallDocuments remain scheduled, while entity and context-projection stages
 are explicitly reported as skipped. Current and legacy runs retain full

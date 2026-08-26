@@ -1,36 +1,30 @@
 # SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
 
-defmodule MemHouse.Repo.Migrations.DropUnusedEntityAliasEmbeddingIndex do
-  @moduledoc "Removes the entity alias vector index that has no SQL reader."
+defmodule MemHouse.Repo.Migrations.DocumentChunkEmbeddingDiskannAttribute do
+  @moduledoc false
 
   use Ecto.Migration
 
-  # Entity candidate comparison runs in memory. The database index has no SQL
-  # reader, so avoid its write and storage cost without removing the vectors.
   @disable_ddl_transaction true
   @disable_migration_lock true
 
-  @doc "Drops the unused entity alias DiskANN index without blocking writes."
   def up do
-    execute "DROP INDEX CONCURRENTLY IF EXISTS entities_alias_embedding_diskann_1024_idx"
+    execute "DROP INDEX CONCURRENTLY IF EXISTS document_chunks_embedding_diskann_1024_idx"
+    create_index("embedding_1024")
   end
 
-  @doc """
-  Restores the entity alias DiskANN index from the current index settings.
-
-  Rollback retries replace any complete or partial existing index before recreation.
-  """
   def down do
-    # Concurrent creation can commit before Ecto removes the migration marker.
-    # Replace either a complete or partial build when rollback retries.
-    execute "DROP INDEX CONCURRENTLY IF EXISTS entities_alias_embedding_diskann_1024_idx"
+    execute "DROP INDEX CONCURRENTLY IF EXISTS document_chunks_embedding_diskann_1024_idx"
+    create_index("(embedding::vector(1024))")
+  end
 
+  defp create_index(attribute) do
     execute """
-    CREATE INDEX CONCURRENTLY entities_alias_embedding_diskann_1024_idx
-    ON entities
-    USING diskann ((alias_embedding::vector(1024)) vector_cosine_ops)
+    CREATE INDEX CONCURRENTLY document_chunks_embedding_diskann_1024_idx
+    ON document_chunks
+    USING diskann (#{attribute} vector_cosine_ops, diskann_labels)
     WITH (#{diskann_options!()})
-    WHERE alias_embedding IS NOT NULL AND embedding_dimensions = 1024
+    WHERE embedding IS NOT NULL AND embedding_dimensions = 1024 AND status = 'active'
     """
   end
 

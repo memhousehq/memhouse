@@ -143,8 +143,8 @@ listed in the [limitations reference](https://memhousehq.github.io/memhouse/refe
 - Upstream-scale benchmark and independent live-judge evidence.
 
 The files under `sdk/` are transport-neutral readiness helpers, not generated
-SDKs. Remaining work is tracked in
-[`specs/roadmap/beta-roadmap.md`](specs/roadmap/beta-roadmap.md).
+SDKs. Remaining work is tracked in the repository's
+[open GitHub issues](https://github.com/memhousehq/memhouse/issues).
 
 ## Repository map
 
@@ -163,7 +163,6 @@ SDKs. Remaining work is tracked in
 | `lib/mix/tasks/` | Operator and evaluation commands |
 | `test/` | Regression and contract evidence |
 | `docs/` | Published user documentation |
-| `specs/` | Decisions, outstanding work, module boundaries, evaluation evidence, and process |
 
 Start reading at `lib/memhouse_web/router.ex`, then
 `lib/memhouse/memory.ex`, `lib/memhouse/knowledge.ex`,
@@ -193,16 +192,16 @@ are listed in the [Mix task reference](https://memhousehq.github.io/memhouse/ref
 
 ## Documentation map
 
-The source and its tests describe what MemHouse does today. Written
-documentation covers what code cannot say:
+The source and its tests describe what MemHouse does today and enforce release
+readiness. Written documentation covers what code cannot say:
 
 - `docs/`: setup, usage, operations, and current behavior; published with
   MkDocs.
-- `specs/adr/`: decisions and the alternatives they ruled out.
-- `specs/roadmap/beta-roadmap.md`: the only roadmap; what is still unbuilt.
-- `specs/architecture/`: module boundaries and cross-cutting contracts.
-- `specs/eval/`: evaluation method, thresholds, inventory, and results.
-- `specs/process/`: versioning policy and the release checklist.
+- `CONTRIBUTING.md`: development and review workflow.
+- Root, legal, security, and SDK files: project orientation and retained
+  repository contracts.
+- GitHub issues and pull requests: scoped work, acceptance criteria, and
+  rationale that code cannot show.
 
 ## License
 

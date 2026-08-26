@@ -159,8 +159,9 @@ confidence/evidence, `restricted` sensitivity, and the narrow peer or current
 scope target and runs the same ordinary validator below. The flag changes no
 writer, queue, table, lifecycle, or Gate A/B behavior. Its prompt version
 `extract-compact-exp-1` identifies resulting provenance and usage. It remains
-off because the held-out non-inferiority/privacy gate and human ADR review are
-still required; turning it off restores `extract-14` without a data migration.
+off because the held-out non-inferiority and privacy evidence plus human
+architecture and licensing review are still required; turning it off restores
+`extract-14` without a data migration.
 
 Extraction also does what a naive extractor gets wrong:
 

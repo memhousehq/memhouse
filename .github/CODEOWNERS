@@ -25,16 +25,7 @@
 AGENTS.md @memhousehq/core @aleksei-s-popov
 CONTRIBUTING.md @memhousehq/core @aleksei-s-popov
 
-# Architecture, ADRs, blueprint specs, roadmap, security, and eval docs. Every
-# design document lives under specs/; docs/ is the published user site.
-specs/ @memhousehq/core @aleksei-s-popov
-specs/adr/ @memhousehq/core @aleksei-s-popov
-specs/architecture/ @memhousehq/core @aleksei-s-popov
-specs/design/ @memhousehq/core @aleksei-s-popov
-specs/process/ @memhousehq/core @aleksei-s-popov
-specs/roadmap/ @memhousehq/core @aleksei-s-popov
-specs/security/ @memhousehq/core @aleksei-s-popov
-specs/eval/ @memhousehq/core @aleksei-s-popov
+test/fixtures/eval/ @memhousehq/core @aleksei-s-popov
 
 # Published user documentation and its build definition.
 docs/ @memhousehq/core @aleksei-s-popov
