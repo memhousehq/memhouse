@@ -42,7 +42,8 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
       "MEMHOUSE_CAMPAIGN_ARM_ID" => "B",
       "MEMHOUSE_CAMPAIGN_RUN_ID" => "issue-287-pg0-run-1",
       "MEMHOUSE_CAMPAIGN_BACKEND_MODE" => "pg0",
-      "MEMHOUSE_CAMPAIGN_TARGET_REVISION" => String.duplicate("b", 40)
+      "MEMHOUSE_CAMPAIGN_TARGET_REVISION" => String.duplicate("b", 40),
+      "MEMHOUSE_DATABASE_MODE" => "pg0"
     }
 
     originals = Map.new(variables, fn {name, _value} -> {name, System.get_env(name)} end)
@@ -63,6 +64,32 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
                "mode" => "pg0",
                "sqlite" => "unsupported"
              }
+    after
+      Enum.each(originals, fn {name, value} -> restore_env(name, value) end)
+    end
+  end
+
+  test "campaign backend must match the node's actual PostgreSQL mode" do
+    variables = %{
+      "MEMHOUSE_CAMPAIGN_ADMISSION_PATH" => "/tmp/admission.json",
+      "MEMHOUSE_CAMPAIGN_LEDGER_DIR" => "/tmp/campaign-ledger",
+      "MEMHOUSE_CAMPAIGN_ADMISSION_SHA256" => String.duplicate("a", 64),
+      "MEMHOUSE_CAMPAIGN_DEFINITION_ID" => "issue-287-v1",
+      "MEMHOUSE_CAMPAIGN_ARM_ID" => "B",
+      "MEMHOUSE_CAMPAIGN_RUN_ID" => "issue-287-pg0-run-1",
+      "MEMHOUSE_CAMPAIGN_BACKEND_MODE" => "pg0",
+      "MEMHOUSE_CAMPAIGN_TARGET_REVISION" => String.duplicate("b", 40),
+      "MEMHOUSE_DATABASE_MODE" => "external"
+    }
+
+    originals = Map.new(variables, fn {name, _value} -> {name, System.get_env(name)} end)
+
+    try do
+      Enum.each(variables, fn {name, value} -> System.put_env(name, value) end)
+
+      assert_raise RuntimeError,
+                   ~r/MEMHOUSE_CAMPAIGN_BACKEND_MODE must match MEMHOUSE_DATABASE_MODE/,
+                   fn -> Config.Reader.read!("config/runtime.exs", env: :test, target: :host) end
     after
       Enum.each(originals, fn {name, value} -> restore_env(name, value) end)
     end

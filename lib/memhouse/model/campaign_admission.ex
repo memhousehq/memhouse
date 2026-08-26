@@ -287,8 +287,8 @@ defmodule MemHouse.Model.CampaignAdmission do
          {:ok, execution} <- execution_identity(packet, opts),
          :ok <- matching_target_revision(packet, target_revision),
          {:ok, arm} <- campaign_arm(packet, opts),
-         {:ok, routing} <- routing(packet),
          {:ok, models} <- models(packet),
+         {:ok, routing} <- routing(packet, models),
          {:ok, pricing} <- pricing(packet, models),
          {:ok, roles} <- roles(packet, models, pricing, routing),
          {:ok, hard_caps} <- hard_caps(packet, roles),
@@ -439,14 +439,21 @@ defmodule MemHouse.Model.CampaignAdmission do
     end
   end
 
-  defp routing(packet) do
+  defp routing(packet, models) do
     raw = get_in(packet, ["execution", "routes"])
 
     if is_map(raw) and Map.keys(raw) |> Enum.sort() == Enum.sort(@paid_roles) do
       Enum.reduce_while(@paid_roles, {:ok, %{}}, fn role, {:ok, acc} ->
         case paid_role_route(raw[role]) do
-          {:ok, route} -> {:cont, {:ok, Map.put(acc, role, route)}}
-          {:error, reason} -> {:halt, {:error, reason}}
+          {:ok, route} ->
+            if compatible_model_route?(role, model_for_role(role, models), route) do
+              {:cont, {:ok, Map.put(acc, role, route)}}
+            else
+              {:halt, {:error, :unpriceable_routing}}
+            end
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
         end
       end)
     else
@@ -465,6 +472,9 @@ defmodule MemHouse.Model.CampaignAdmission do
        when map_size(raw_route) == 4 and is_binary(endpoint) and endpoint != "" and
               is_binary(upstream_route) and upstream_route != "" do
     cond do
+      String.trim(endpoint) == "" or String.trim(upstream_route) == "" ->
+        {:error, :unpriceable_routing}
+
       not Regex.match?(~r/\A[A-Z_][A-Z0-9_]*\z/, variable) ->
         {:error, :unpriceable_routing}
 
@@ -485,6 +495,19 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   defp paid_role_route(_invalid), do: {:error, :unpriceable_routing}
+
+  defp compatible_model_route?(
+         "target.reranker",
+         "voyageai/rerank-2.5",
+         %{upstream_route: "voyage"}
+       ),
+       do: true
+
+  defp compatible_model_route?(role, model, %{upstream_route: route})
+       when role != "target.reranker" and model != "voyageai/rerank-2.5" and route != "voyage",
+       do: true
+
+  defp compatible_model_route?(_role, _model, _route), do: false
 
   defp models(packet) do
     case packet["models"] do

@@ -14,6 +14,7 @@ import Dotenvy
 # Later sources win, so the process environment overrides `.env`.
 env = source!([".env", System.get_env()])
 env_get = fn key, default -> Map.get(env, key, default) end
+database_mode = env_get.("MEMHOUSE_DATABASE_MODE", "external")
 
 config :memhouse, :build_sha, env_get.("MEMHOUSE_BUILD_SHA", "unknown")
 
@@ -36,6 +37,10 @@ if Enum.any?(campaign_admission_values, fn {_key, value} -> value != "" end) do
 
   if missing != "" do
     raise "campaign admission configuration is incomplete; missing: #{missing}"
+  end
+
+  if campaign_admission_values.backend_mode != database_mode do
+    raise "MEMHOUSE_CAMPAIGN_BACKEND_MODE must match MEMHOUSE_DATABASE_MODE"
   end
 
   config :memhouse,
@@ -293,7 +298,6 @@ config :memhouse, MemHouseWeb.Endpoint, http: [port: env_integer!.("PORT", "4000
 # to the working directory when running from source. Used to locate the pg0
 # binary shipped inside the release.
 release_root = System.get_env("RELEASE_ROOT") || File.cwd!()
-database_mode = env_get.("MEMHOUSE_DATABASE_MODE", "external")
 
 # Tests read a separate variable on purpose. A developer shell almost always has
 # DATABASE_URL pointing at the development database, and honouring it here would

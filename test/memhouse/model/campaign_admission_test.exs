@@ -333,6 +333,29 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     refute File.exists?(unbound_path <> ".ledger")
   end
 
+  test "known-incompatible model routes fail before durable packet consumption" do
+    reranker_on_generation =
+      packet(requests: 1)
+      |> put_in(["execution", "routes", "target.reranker", "upstream_route"], "openai")
+
+    {reranker_path, reranker_digest} = write_packet!(reranker_on_generation)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_routing}} =
+             activate(reranker_path, reranker_digest)
+
+    generation_on_voyage =
+      packet(requests: 1)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "upstream_route"], "voyage")
+
+    {generation_path, generation_digest} = write_packet!(generation_on_voyage)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_routing}} =
+             activate(generation_path, generation_digest)
+
+    refute File.exists?(reranker_path <> ".ledger")
+    refute File.exists?(generation_path <> ".ledger")
+  end
+
   test "public activation options cannot override the running build revision" do
     {path, digest} = write_packet!(packet(requests: 1))
 
