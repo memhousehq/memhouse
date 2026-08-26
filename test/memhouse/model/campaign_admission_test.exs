@@ -132,7 +132,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     context = %{model_provider: Provider}
     opts = [campaign_identity: identity]
@@ -151,7 +151,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     assert {:error, %CampaignAdmission.Refused{reason: :provider_override}} =
              Gateway.structured_once(
@@ -193,18 +193,46 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
   test "an activated packet is permanently consumed across process restart" do
     {path, digest} = write_packet!(packet(requests: 1))
+    ledger_dir = path <> ".ledger"
 
     assert {:ok, _identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest, ledger_dir: ledger_dir)
 
-    assert File.exists?(path <> ".memhouse-started")
+    assert File.exists?(Path.join(ledger_dir, digest <> ".memhouse-started"))
 
     previous = Process.whereis(CampaignAdmission)
     :ok = GenServer.stop(CampaignAdmission)
     assert is_pid(await_campaign_restart(previous, 50))
 
     assert {:error, %CampaignAdmission.Refused{reason: :campaign_already_consumed}} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest, ledger_dir: ledger_dir)
+  end
+
+  test "renaming an approved packet cannot replay its digest" do
+    {path, digest} = write_packet!(packet(requests: 1))
+    ledger_dir = path <> ".ledger"
+    copy = path <> ".copy"
+    File.cp!(path, copy)
+    on_exit(fn -> File.rm(copy) end)
+
+    assert {:ok, _identity} = activate(path, digest, ledger_dir: ledger_dir)
+
+    previous = Process.whereis(CampaignAdmission)
+    :ok = GenServer.stop(CampaignAdmission)
+    assert is_pid(await_campaign_restart(previous, 50))
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_already_consumed}} =
+             activate(copy, digest, ledger_dir: ledger_dir)
+  end
+
+  test "campaign definition and arm identity are mandatory activation inputs" do
+    {path, digest} = write_packet!(packet(requests: 1))
+
+    assert {:error, %CampaignAdmission.Refused{reason: :missing_campaign_identity}} =
+             activate(path, digest, definition_id: nil)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_arm_mismatch}} =
+             activate(path, digest, arm_id: nil)
   end
 
   test "a missing, changed, or unapproved packet cannot activate spend" do
@@ -214,20 +242,18 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     digest = String.duplicate("0", 64)
 
     assert {:error, %CampaignAdmission.Refused{reason: :missing_admission}} =
-             CampaignAdmission.activate(missing, digest, target_revision: @target_revision)
+             activate(missing, digest)
 
     {path, actual_digest} = write_packet!(packet(requests: 1))
 
     assert {:error, %CampaignAdmission.Refused{reason: :dirty_admission}} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     unapproved = packet(requests: 1) |> Map.put("admitted", false)
     {unapproved_path, unapproved_digest} = write_packet!(unapproved)
 
     assert {:error, %CampaignAdmission.Refused{reason: :unapproved_admission}} =
-             CampaignAdmission.activate(unapproved_path, unapproved_digest,
-               target_revision: @target_revision
-             )
+             activate(unapproved_path, unapproved_digest)
 
     refute actual_digest == digest
     assert Provider.calls() == 0
@@ -237,7 +263,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(packet(requests: 1))
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     assert {:error, %CampaignAdmission.Refused{reason: :campaign_identity_mismatch}} =
              Gateway.structured_once(
@@ -269,13 +295,11 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
   end
 
   test "the wall ceiling is checked before the provider callback" do
-    {path, digest} = write_packet!(packet(requests: 1))
+    campaign = packet(requests: 1) |> put_in(["volume", "hard_caps", "wall_seconds"], 1)
+    {path, digest} = write_packet!(campaign)
 
-    assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest,
-               target_revision: @target_revision,
-               now_ms: 0
-             )
+    assert {:ok, identity} = activate(path, digest)
+    Process.sleep(1_050)
 
     assert {:error, %CampaignAdmission.Refused{reason: :wall_ceiling}} =
              Gateway.structured_once(
@@ -283,32 +307,29 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
                [],
                %{},
                %{model_provider: Provider},
-               campaign_identity: identity,
-               campaign_now_ms: 60_000
+               campaign_identity: identity
              )
 
     assert Provider.calls() == 0
   end
 
   test "an admitted callback receives only the remaining hard wall budget" do
-    {path, digest} = write_packet!(packet(requests: 1))
+    campaign = packet(requests: 1) |> put_in(["volume", "hard_caps", "wall_seconds"], 1)
+    {path, digest} = write_packet!(campaign)
 
-    assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest,
-               target_revision: @target_revision,
-               now_ms: 0
-             )
+    assert {:ok, identity} = activate(path, digest)
 
-    assert {:ok, %{remaining_wall_ms: 10}} =
+    assert {:ok, %{remaining_wall_ms: remaining_wall_ms}} =
              CampaignAdmission.reserve(
                Config.resolve(:ingest_extractor, %{}),
                :structured,
                1,
                8,
                ReqLLM,
-               campaign_identity: identity,
-               campaign_now_ms: 59_990
+               campaign_identity: identity
              )
+
+    assert remaining_wall_ms in 1..1_000
   end
 
   test "the exact ReqLLM adapter is killed at the remaining campaign wall" do
@@ -316,15 +337,14 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     configure_extractor_endpoint(endpoint)
 
     campaign =
-      packet(requests: 1, input_tokens: 10_000) |> put_in(["execution", "endpoint"], endpoint)
+      packet(requests: 1, input_tokens: 10_000)
+      |> put_in(["execution", "endpoint"], endpoint)
+      |> put_in(["volume", "hard_caps", "wall_seconds"], 1)
 
     {path, digest} = write_packet!(campaign)
 
-    assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest,
-               target_revision: @target_revision,
-               now_ms: 0
-             )
+    assert {:ok, identity} = activate(path, digest)
+    Process.sleep(100)
 
     assert {:error, %MemHouse.Operations.ExtractionBudget.Exceeded{reason: "wall-time cap"}} =
              Gateway.structured_once(
@@ -332,8 +352,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
                [],
                %{},
                %{},
-               campaign_identity: identity,
-               campaign_now_ms: 58_000
+               campaign_identity: identity
              )
 
     assert_receive :campaign_http_call
@@ -349,7 +368,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(campaign)
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     assert {:error, _error} =
              Gateway.structured_once(
@@ -369,7 +388,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(packet(requests: 1, input_tokens: 1))
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     assert {:error, %CampaignAdmission.Refused{reason: :input_token_ceiling} = error} =
              Gateway.structured_once(
@@ -393,7 +412,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(output_limited)
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     assert {:error, %CampaignAdmission.Refused{reason: :output_token_ceiling}} =
              Gateway.structured_once(
@@ -412,14 +431,14 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(unpriced)
 
     assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_models}} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
   end
 
   test "structured repairs reserve again and stop before an unapproved second callback" do
     {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     config = Config.resolve(:ingest_extractor, %{})
 
@@ -450,7 +469,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(packet(requests: 1))
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     roles = Application.fetch_env!(:memhouse, :model_roles)
 
@@ -498,7 +517,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     {path, digest} = write_packet!(campaign)
 
     assert {:ok, identity} =
-             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+             activate(path, digest)
 
     roles = Application.fetch_env!(:memhouse, :model_roles)
 
@@ -584,6 +603,17 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     assert Provider.calls() == 0
     assert CampaignAdmission.status().reserved.requests == 6
+  end
+
+  defp activate(path, digest, opts \\ []) do
+    defaults = [
+      target_revision: @target_revision,
+      definition_id: "issue-287-test-v1",
+      arm_id: "B",
+      ledger_dir: path <> ".ledger"
+    ]
+
+    CampaignAdmission.activate(path, digest, Keyword.merge(defaults, opts))
   end
 
   defp packet(overrides) do
@@ -751,7 +781,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     on_exit(fn ->
       File.rm(path)
-      File.rm(path <> ".memhouse-started")
+      File.rm_rf(path <> ".ledger")
     end)
 
     {path, :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)}

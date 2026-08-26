@@ -107,21 +107,24 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` | `false` | Selects the evaluation-only `compact-explicit-v1` extraction contract and `extract-compact-exp-1` prompt identity |
 | `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
 
-The five campaign variables below are an evaluation-only spend boundary. Set
-all five or none. A partial configuration stops startup.
+The six campaign variables below are an evaluation-only spend boundary. Set
+all six or none. A partial configuration stops startup.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MEMHOUSE_CAMPAIGN_ADMISSION_PATH` | — | Immutable machine-readable admission packet; its directory must permit creation of a permanent one-shot claim marker |
+| `MEMHOUSE_CAMPAIGN_ADMISSION_PATH` | — | Immutable machine-readable admission packet |
+| `MEMHOUSE_CAMPAIGN_LEDGER_DIR` | — | Absolute durable directory for digest-keyed one-shot claim markers |
 | `MEMHOUSE_CAMPAIGN_ADMISSION_SHA256` | — | Separately approved SHA-256 of the exact packet bytes |
 | `MEMHOUSE_CAMPAIGN_DEFINITION_ID` | — | Approved campaign identity |
 | `MEMHOUSE_CAMPAIGN_ARM_ID` | — | Approved arm whose prompt and batching identity must match this node |
 | `MEMHOUSE_CAMPAIGN_TARGET_REVISION` | — | Full approved MemHouse target commit |
 
-Activation atomically creates `<admission-path>.memhouse-started`. The marker
-is never removed automatically: a process or node restart therefore cannot
-reset reservations or replay the same approved allowance. A restarted campaign
-requires a newly approved packet and digest.
+Activation atomically creates
+`<ledger-dir>/<admission-sha256>.memhouse-started`. The marker is never removed
+automatically: renaming the packet or restarting/replacing the node therefore
+cannot reset reservations or replay the same approved allowance when the
+ledger directory is mounted on durable storage. A restarted campaign requires
+a newly approved packet and digest.
 
 `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` uses the same strict boolean boot
 parsing as the experimental switches above: `true`, `false`, `1`, `0`, `yes`,

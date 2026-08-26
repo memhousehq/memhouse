@@ -77,12 +77,11 @@ defmodule MemHouse.Model.CampaignAdmission do
       when is_atom(provider_module) do
     identity = Keyword.get(opts, :campaign_identity)
     campaign_role = Keyword.get(opts, :campaign_role)
-    now_ms = Keyword.get(opts, :campaign_now_ms, System.monotonic_time(:millisecond))
 
     GenServer.call(
       __MODULE__,
       {:reserve, config, operation, input_tokens, output_tokens, provider_module, identity,
-       campaign_role, now_ms}
+       campaign_role}
     )
   end
 
@@ -91,7 +90,8 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   @impl true
   def init(opts) do
-    state = %{active: nil}
+    clock = Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end)
+    state = %{active: nil, clock: clock}
     activation = Keyword.get(opts, :activate, Application.get_env(:memhouse, :campaign_admission))
 
     case activation do
@@ -102,7 +102,7 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   @impl true
   def handle_call({:activate, path, digest, opts}, _from, %{active: nil} = state) do
-    case load(path, digest, opts) do
+    case load(path, digest, Keyword.put(opts, :now_ms, state.clock.())) do
       {:ok, active} -> {:reply, {:ok, active.identity}, %{state | active: active}}
       {:error, reason} -> {:reply, {:error, %Refused{reason: reason}}, state}
     end
@@ -130,7 +130,7 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   def handle_call(
-        {:reserve, _config, _operation, _input, _output, _provider, nil, nil, _now},
+        {:reserve, _config, _operation, _input, _output, _provider, nil, nil},
         _from,
         %{active: nil} = state
       ) do
@@ -138,7 +138,7 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   def handle_call(
-        {:reserve, _config, _operation, _input, _output, _provider, _identity, _role, _now},
+        {:reserve, _config, _operation, _input, _output, _provider, _identity, _role},
         _from,
         %{active: nil} = state
       ) do
@@ -146,7 +146,7 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   def handle_call(
-        {:reserve, config, operation, input, output, provider, identity, role, now},
+        {:reserve, config, operation, input, output, provider, identity, role},
         _from,
         state
       ) do
@@ -157,7 +157,7 @@ defmodule MemHouse.Model.CampaignAdmission do
       provider_module: provider,
       identity: identity,
       role: role,
-      now_ms: now
+      now_ms: state.clock.()
     }
 
     case reserve_active(state.active, config, request) do
@@ -170,7 +170,7 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   defp activate_state(state, path, digest, opts) do
-    case load(path, digest, opts) do
+    case load(path, digest, Keyword.put(opts, :now_ms, state.clock.())) do
       {:ok, active} -> {:ok, %{state | active: active}}
       {:error, reason} -> {:stop, %Refused{reason: reason}}
     end
@@ -183,7 +183,7 @@ defmodule MemHouse.Model.CampaignAdmission do
          {:ok, packet} <- decode_packet(bytes),
          {:ok, target_revision} <- target_revision(opts),
          {:ok, active} <- validate_packet(packet, expected_digest, target_revision, opts),
-         :ok <- claim_once(path, active.identity) do
+         :ok <- claim_once(expected_digest, active.identity, opts) do
       {:ok, active}
     end
   end
@@ -191,11 +191,23 @@ defmodule MemHouse.Model.CampaignAdmission do
   # A successful activation consumes this exact packet permanently before any
   # provider call. If the process, node, or later application boot fails, the
   # marker remains and the same approved allowance cannot be reset or replayed.
-  # The packet directory is operator-controlled startup configuration.
+  # The ledger directory is durable operator-controlled startup configuration.
   # sobelow_skip ["Traversal.FileModule"]
-  defp claim_once(path, identity) do
-    marker = path <> ".memhouse-started"
+  defp claim_once(digest, identity, opts) do
+    ledger_dir = Keyword.get(opts, :ledger_dir)
 
+    with true <- is_binary(ledger_dir) and Path.type(ledger_dir) == :absolute,
+         :ok <- File.mkdir_p(ledger_dir) do
+      marker = Path.join(ledger_dir, digest <> ".memhouse-started")
+
+      claim_marker(marker, identity)
+    else
+      _invalid -> {:error, :campaign_ledger_unavailable}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp claim_marker(marker, identity) do
     case File.open(marker, [:write, :exclusive, :sync]) do
       {:ok, io} ->
         result = :file.write(io, identity <> "\n")
@@ -309,7 +321,8 @@ defmodule MemHouse.Model.CampaignAdmission do
 
     cond do
       not is_binary(value) or value == "" -> {:error, :invalid_campaign_identity}
-      is_binary(expected) and expected != value -> {:error, :campaign_identity_mismatch}
+      not is_binary(expected) or expected == "" -> {:error, :missing_campaign_identity}
+      expected != value -> {:error, :campaign_identity_mismatch}
       true -> {:ok, value}
     end
   end
@@ -330,16 +343,9 @@ defmodule MemHouse.Model.CampaignAdmission do
     requested_id = Keyword.get(opts, :arm_id)
 
     selected =
-      case {requested_id, arms} do
-        {nil, [only]} ->
-          only
-
-        {id, values} when is_binary(id) and is_list(values) ->
-          Enum.find(values, &(&1["id"] == id))
-
-        _other ->
-          nil
-      end
+      if is_binary(requested_id) and requested_id != "" and is_list(arms),
+        do: Enum.find(arms, &(&1["id"] == requested_id)),
+        else: nil
 
     batching =
       Keyword.get_lazy(opts, :batching, fn ->

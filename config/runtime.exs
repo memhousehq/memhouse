@@ -19,6 +19,7 @@ config :memhouse, :build_sha, env_get.("MEMHOUSE_BUILD_SHA", "unknown")
 
 campaign_admission_values = %{
   path: env_get.("MEMHOUSE_CAMPAIGN_ADMISSION_PATH", ""),
+  ledger_dir: env_get.("MEMHOUSE_CAMPAIGN_LEDGER_DIR", ""),
   sha256: env_get.("MEMHOUSE_CAMPAIGN_ADMISSION_SHA256", ""),
   definition_id: env_get.("MEMHOUSE_CAMPAIGN_DEFINITION_ID", ""),
   arm_id: env_get.("MEMHOUSE_CAMPAIGN_ARM_ID", ""),
@@ -41,6 +42,7 @@ if Enum.any?(campaign_admission_values, fn {_key, value} -> value != "" end) do
           [
             definition_id: campaign_admission_values.definition_id,
             arm_id: campaign_admission_values.arm_id,
+            ledger_dir: campaign_admission_values.ledger_dir,
             target_revision: campaign_admission_values.target_revision
           ]}
 end

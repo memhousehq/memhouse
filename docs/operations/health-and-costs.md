@@ -166,15 +166,15 @@ reading or changing the guard.
 ## Approved campaign pre-spend admission
 
 An explicitly approved paid campaign must start an isolated MemHouse node with
-the five `MEMHOUSE_CAMPAIGN_*` variables from the configuration reference. The
+the six `MEMHOUSE_CAMPAIGN_*` variables from the configuration reference. The
 node hashes the exact packet bytes and requires an admitted, blocker-free
 packet. It also matches the definition id, arm, target revision, extraction
 prompt, batching switch, provider, endpoint, model, and pinned OpenRouter
 upstream route before it activates.
 
-Activation permanently claims that exact packet by creating a sibling
-`.memhouse-started` marker before the first call. A process or node restart
-cannot reset its allowances; recovery requires a newly approved packet.
+Activation permanently claims that exact digest in the configured durable
+ledger directory before the first call. Renaming the packet or replacing the
+node cannot reset its allowances; recovery requires a newly approved packet.
 
 While the campaign is active, the model gateway atomically reserves worst-case
 request, input-token, output-token, reranker-token, USD, and wall-time capacity
