@@ -163,6 +163,29 @@ not SQL wildcard syntax. The Account always comes from the authenticated actor,
 and row-level security prevents another Account with the same scope text from
 reading or changing the guard.
 
+## Approved campaign pre-spend admission
+
+An explicitly approved paid campaign must start an isolated MemHouse node with
+the five `MEMHOUSE_CAMPAIGN_*` variables from the configuration reference. The
+node hashes the exact packet bytes and requires an admitted, blocker-free
+packet. It also matches the definition id, arm, target revision, extraction
+prompt, batching switch, provider, endpoint, model, and pinned OpenRouter
+upstream route before it activates.
+
+While the campaign is active, the model gateway atomically reserves worst-case
+request, input-token, output-token, reranker-token, USD, and wall-time capacity
+before each hosted provider callback. This one boundary covers extractor calls,
+structured-output repairs and job retries, dream and dialectic work, a
+target-side answerer or judge, and native Voyage reranking. Unknown roles,
+unpriced models, changed identities, routing drift, and exhausted caps make no
+provider call. Reservations are not returned after provider errors because a
+failed call can still be billable.
+
+The campaign admission process receives content-safe counts and identities
+only. It never receives or logs prompts, messages, answers, credentials, or
+free-form provider errors. With no campaign variables, the campaign guard is
+inactive and normal production behavior is unchanged.
+
 ### Extraction provider circuit
 
 Both single-message and experimental batched extraction pass through one

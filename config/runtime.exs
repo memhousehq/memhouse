@@ -17,6 +17,34 @@ env_get = fn key, default -> Map.get(env, key, default) end
 
 config :memhouse, :build_sha, env_get.("MEMHOUSE_BUILD_SHA", "unknown")
 
+campaign_admission_values = %{
+  path: env_get.("MEMHOUSE_CAMPAIGN_ADMISSION_PATH", ""),
+  sha256: env_get.("MEMHOUSE_CAMPAIGN_ADMISSION_SHA256", ""),
+  definition_id: env_get.("MEMHOUSE_CAMPAIGN_DEFINITION_ID", ""),
+  arm_id: env_get.("MEMHOUSE_CAMPAIGN_ARM_ID", ""),
+  target_revision: env_get.("MEMHOUSE_CAMPAIGN_TARGET_REVISION", "")
+}
+
+if Enum.any?(campaign_admission_values, fn {_key, value} -> value != "" end) do
+  missing =
+    campaign_admission_values
+    |> Enum.filter(fn {_key, value} -> value == "" end)
+    |> Enum.map_join(", ", fn {key, _value} -> Atom.to_string(key) end)
+
+  if missing != "" do
+    raise "campaign admission configuration is incomplete; missing: #{missing}"
+  end
+
+  config :memhouse,
+         :campaign_admission,
+         {campaign_admission_values.path, campaign_admission_values.sha256,
+          [
+            definition_id: campaign_admission_values.definition_id,
+            arm_id: campaign_admission_values.arm_id,
+            target_revision: campaign_admission_values.target_revision
+          ]}
+end
+
 lifecycle_docs_url =
   case env_get.("MEMHOUSE_LIFECYCLE_DOCS_URL", "") do
     "" -> false
@@ -537,7 +565,8 @@ generation_options = %{
   "reasoning_effort" => env_get.("MEMHOUSE_MODEL_REASONING_EFFORT", "low"),
   "receive_timeout" => env_integer.("MEMHOUSE_MODEL_RECEIVE_TIMEOUT_MS", "120000"),
   "request_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS", "300000"),
-  "pool_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000")
+  "pool_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000"),
+  "upstream_route" => env_get.("MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE", nil)
 }
 
 config :memhouse, :ingest_provider_circuit,
@@ -632,7 +661,8 @@ config :memhouse, :model_roles,
     pipeline_version: "f7-1",
     options: %{
       "api_key_ref" => "env:OPENROUTER_API_KEY",
-      "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", "https://openrouter.ai/api/v1")
+      "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", "https://openrouter.ai/api/v1"),
+      "upstream_route" => env_get.("MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE", nil)
     }
   },
   # Turns raw observations into structured candidate knowledge. Its output still

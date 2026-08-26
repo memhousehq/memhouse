@@ -34,6 +34,7 @@ defmodule MemHouse.Model.Gateway do
   problems, not model problems.
   """
 
+  alias MemHouse.Model.CampaignAdmission
   alias MemHouse.Model.Config
   alias MemHouse.Model.Provider.Result
   alias MemHouse.Model.ProviderCircuit
@@ -101,13 +102,16 @@ defmodule MemHouse.Model.Gateway do
   end
 
   defp invoke_structured_with_budget(config, messages, schema, context, opts) do
+    bounds = request_bounds(:structured, config, %{messages: messages, schema: schema}, opts)
+
     case invoke_with_admission(
            :structured,
            config,
            context,
            opts,
            fn provider -> provider.structured(config, messages, schema, opts) end,
-           fn -> reserve_extraction_budget(config.role, context, messages, schema, opts) end
+           fn -> reserve_extraction_budget(config.role, context, messages, schema, opts) end,
+           bounds
          ) do
       {:ok, %Result{value: value, usage: usage}} ->
         {:ok, value, config, usage || %{}, 1}
@@ -119,6 +123,9 @@ defmodule MemHouse.Model.Gateway do
         {:error, error, 1}
 
       {:error, %ExtractionBudget.Exceeded{} = error} ->
+        {:error, error, 0}
+
+      {:error, %CampaignAdmission.Refused{} = error} ->
         {:error, error, 0}
 
       {:error, :unauthorized} ->
@@ -168,9 +175,16 @@ defmodule MemHouse.Model.Gateway do
   def chat(role, messages, context, opts \\ []) do
     config = Config.resolve(role, context)
 
-    case invoke(:chat, config, context, opts, fn provider ->
-           provider.chat(config, messages, opts)
-         end) do
+    case invoke(
+           :chat,
+           config,
+           context,
+           opts,
+           fn provider ->
+             provider.chat(config, messages, opts)
+           end,
+           messages
+         ) do
       {:ok, %Result{value: value}} ->
         {:ok, value, Config.provenance(config)}
 
@@ -203,9 +217,16 @@ defmodule MemHouse.Model.Gateway do
   different in between.
   """
   def embed_with_config(config, texts, context, opts) when is_list(texts) do
-    case invoke(:embed, config, context, opts, fn provider ->
-           provider.embed(config, texts, opts)
-         end) do
+    case invoke(
+           :embed,
+           config,
+           context,
+           opts,
+           fn provider ->
+             provider.embed(config, texts, opts)
+           end,
+           texts
+         ) do
       {:ok, %Result{value: value}} -> {:ok, value, config}
       {:error, error} -> {:error, error}
     end
@@ -222,9 +243,16 @@ defmodule MemHouse.Model.Gateway do
       when is_binary(query) and is_list(documents) do
     config = Config.resolve(:reranker, context)
 
-    case invoke(:rerank, config, context, opts, fn provider ->
-           provider.rerank(config, query, documents, opts)
-         end) do
+    case invoke(
+           :rerank,
+           config,
+           context,
+           opts,
+           fn provider ->
+             provider.rerank(config, query, documents, opts)
+           end,
+           %{query: query, documents: documents}
+         ) do
       {:ok, %Result{value: value}} -> {:ok, value, Config.provenance(config)}
       {:error, error} -> {:error, error}
     end
@@ -256,18 +284,19 @@ defmodule MemHouse.Model.Gateway do
   # operation name, duration, token counts, and an error class. No message,
   # prompt, completion, or credential may be added to either the span or the
   # usage record.
-  defp invoke(operation, config, context, opts, call, timeout_ms \\ nil) do
+  defp invoke(operation, config, context, opts, call, request_material, timeout_ms \\ nil) do
     invoke_with_admission(
       operation,
       config,
       context,
       opts,
       call,
-      fn -> {:ok, timeout_ms} end
+      fn -> {:ok, timeout_ms} end,
+      request_bounds(operation, config, request_material, opts)
     )
   end
 
-  defp invoke_with_admission(operation, config, context, opts, call, admission)
+  defp invoke_with_admission(operation, config, context, opts, call, admission, bounds)
        when is_function(admission, 0) do
     Observability.with_span(:model, "memhouse.model.#{operation}", fn ->
       provider = provider_module(config, context)
@@ -285,16 +314,25 @@ defmodule MemHouse.Model.Gateway do
           try do
             case admission.() do
               {:ok, timeout_ms} ->
-                invoke_permitted(
-                  operation,
-                  config,
-                  context,
-                  opts,
-                  call,
-                  provider,
-                  permit,
-                  timeout_ms
-                )
+                with {:ok, _reservation} <-
+                       CampaignAdmission.reserve(
+                         config,
+                         operation,
+                         bounds.input_tokens,
+                         bounds.output_tokens,
+                         opts
+                       ) do
+                  invoke_permitted(
+                    operation,
+                    config,
+                    context,
+                    opts,
+                    call,
+                    provider,
+                    permit,
+                    timeout_ms
+                  )
+                end
 
               {:error, error} ->
                 {:error, error}
@@ -389,6 +427,30 @@ defmodule MemHouse.Model.Gateway do
 
   defp metering_status(_usage, _operation, _provider), do: :unmetered
 
+  # This uses the same target-revision-pinned `utf8-bytes-v1` convention as
+  # extraction admission: the canonical JSON byte size deliberately
+  # over-counts ordinary BPE tokens without needing a routed provider's
+  # tokenizer or exposing the content to the campaign process.
+  defp request_bounds(operation, config, material, opts) do
+    input_tokens =
+      Jason.encode!(%{
+        operation: operation,
+        provider: config.provider,
+        model: config.model,
+        material: material
+      })
+      |> byte_size()
+
+    output_tokens =
+      if operation in [:structured, :chat] do
+        Keyword.get(opts, :max_tokens, Map.get(config.options, "max_tokens", -1))
+      else
+        0
+      end
+
+    %{input_tokens: input_tokens, output_tokens: output_tokens}
+  end
+
   # Two provider names are handled in-engine: the offline deterministic
   # stand-in, and the local ONNX embedder. Everything else — hosted APIs,
   # OpenAI-compatible endpoints, self-hosted servers — is reached through the
@@ -445,6 +507,10 @@ defmodule MemHouse.Model.Gateway do
 
   def error_class(%ReqLLM.Error.API.Request{}), do: "transport_error"
   def error_class(%ProviderCircuit.OpenError{}), do: "provider_circuit_open"
+
+  def error_class(%CampaignAdmission.Refused{reason: reason}),
+    do: "campaign_admission_#{reason}"
+
   def error_class(%module{}), do: inspect(module)
   def error_class(error) when is_atom(error), do: Atom.to_string(error)
   def error_class(_error), do: "model_error"

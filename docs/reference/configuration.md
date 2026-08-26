@@ -82,6 +82,7 @@ surfaces report the available version and retain their normal deployment flow.
 | --- | --- | --- |
 | `MEMHOUSE_MODEL_PROVIDER` | `openrouter` | Provider identity |
 | `MEMHOUSE_OPENAI_COMPAT_BASE_URL` | provider default | Any OpenAI-compatible endpoint, including self-hosted |
+| `MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE` | — | Exact OpenRouter provider slug; sends `only` with fallbacks disabled |
 | `OPENROUTER_API_KEY` | — | Provider credential |
 | `MEMHOUSE_MODEL_VERSION` | `unversioned` | Recorded with every result as provenance |
 | `MEMHOUSE_MODEL_INGEST` | — | Model for the ingest-extractor role |
@@ -105,6 +106,17 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_EXTRACTION_CLAIM_TIMEOUT_SECONDS` | `1200` | Age after which reconciliation releases an interrupted batch claim; when batching is enabled, boot requires at least three `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS` budgets plus 60 seconds |
 | `MEMHOUSE_EXPERIMENTAL_COMPACT_EXTRACTION` | `false` | Selects the evaluation-only `compact-explicit-v1` extraction contract and `extract-compact-exp-1` prompt identity |
 | `MEMHOUSE_CONTEXT_SUMMARY_CONCURRENCY` | `4` | Entity-card summary calls that overlap inside one scope rebuild |
+
+The five campaign variables below are an evaluation-only spend boundary. Set
+all five or none. A partial configuration stops startup.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MEMHOUSE_CAMPAIGN_ADMISSION_PATH` | — | Immutable machine-readable admission packet |
+| `MEMHOUSE_CAMPAIGN_ADMISSION_SHA256` | — | Separately approved SHA-256 of the exact packet bytes |
+| `MEMHOUSE_CAMPAIGN_DEFINITION_ID` | — | Approved campaign identity |
+| `MEMHOUSE_CAMPAIGN_ARM_ID` | — | Approved arm whose prompt and batching identity must match this node |
+| `MEMHOUSE_CAMPAIGN_TARGET_REVISION` | — | Full approved MemHouse target commit |
 
 `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` uses the same strict boolean boot
 parsing as the experimental switches above: `true`, `false`, `1`, `0`, `yes`,

@@ -95,7 +95,10 @@ defmodule MemHouse.Eval.ModelJudge do
 
     # One attempt, no retry: a judge that needed several tries to produce a parseable grade
     # is not producing a stable measurement, and silently retrying would hide that.
-    case Gateway.structured_once(:dream_reasoner, messages, @schema, %{}, task: :eval_judge) do
+    case Gateway.structured_once(:dream_reasoner, messages, @schema, %{},
+           task: :eval_judge,
+           campaign_role: "harness.judge"
+         ) do
       {:ok, value, _config} ->
         %{
           "model_groundedness" => normalized_score(value, :groundedness),

@@ -100,6 +100,7 @@ config :memhouse, :database,
 # boot in external mode turns this on; dev and test rely on their own Repo
 # credentials.
 config :memhouse, :require_database_url, false
+config :memhouse, :campaign_admission, nil
 config :memhouse, :build_sha, "development"
 
 # When explicitly enabled, one extraction job may opportunistically consume
