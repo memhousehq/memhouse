@@ -444,13 +444,9 @@ defmodule MemHouse.Model.CampaignAdmission do
 
     if is_map(raw) and Map.keys(raw) |> Enum.sort() == Enum.sort(@paid_roles) do
       Enum.reduce_while(@paid_roles, {:ok, %{}}, fn role, {:ok, acc} ->
-        case paid_role_route(raw[role]) do
+        case validated_paid_role_route(raw[role], role, models) do
           {:ok, route} ->
-            if compatible_model_route?(role, model_for_role(role, models), route) do
-              {:cont, {:ok, Map.put(acc, role, route)}}
-            else
-              {:halt, {:error, :unpriceable_routing}}
-            end
+            {:cont, {:ok, Map.put(acc, role, route)}}
 
           {:error, reason} ->
             {:halt, {:error, reason}}
@@ -458,6 +454,16 @@ defmodule MemHouse.Model.CampaignAdmission do
       end)
     else
       {:error, :unpriceable_routing}
+    end
+  end
+
+  defp validated_paid_role_route(raw, role, models) do
+    with {:ok, route} <- paid_role_route(raw),
+         true <- compatible_model_route?(role, model_for_role(role, models), route) do
+      {:ok, route}
+    else
+      false -> {:error, :unpriceable_routing}
+      {:error, reason} -> {:error, reason}
     end
   end
 
