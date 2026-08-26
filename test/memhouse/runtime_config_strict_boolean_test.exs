@@ -40,10 +40,10 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
       "MEMHOUSE_CAMPAIGN_ADMISSION_SHA256" => String.duplicate("a", 64),
       "MEMHOUSE_CAMPAIGN_DEFINITION_ID" => "issue-287-v1",
       "MEMHOUSE_CAMPAIGN_ARM_ID" => "B",
-      "MEMHOUSE_CAMPAIGN_RUN_ID" => "issue-287-pg0-run-1",
-      "MEMHOUSE_CAMPAIGN_BACKEND_MODE" => "pg0",
+      "MEMHOUSE_CAMPAIGN_RUN_ID" => "issue-287-external-run-1",
+      "MEMHOUSE_CAMPAIGN_BACKEND_MODE" => "external",
       "MEMHOUSE_CAMPAIGN_TARGET_REVISION" => String.duplicate("b", 40),
-      "MEMHOUSE_DATABASE_MODE" => "pg0"
+      "MEMHOUSE_DATABASE_MODE" => "external"
     }
 
     originals = Map.new(variables, fn {name, _value} -> {name, System.get_env(name)} end)
@@ -57,11 +57,11 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
         |> Keyword.fetch!(:memhouse)
         |> Keyword.fetch!(:campaign_admission)
 
-      assert opts[:run_id] == "issue-287-pg0-run-1"
+      assert opts[:run_id] == "issue-287-external-run-1"
 
       assert opts[:backend] == %{
                "engine" => "postgres",
-               "mode" => "pg0",
+               "mode" => "external",
                "sqlite" => "unsupported"
              }
     after
