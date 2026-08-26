@@ -131,7 +131,7 @@ defmodule MemHouse.Retrieval.Store do
   def source_semantic(authority, vector, identity, labels, limit, excerpt_chars) do
     distance =
       if identity.dimensions == 1024,
-        do: "message.embedding::vector(1024) <=> $3::text::vector(1024)",
+        do: "message.embedding_1024 <=> $3::text::vector(1024)",
         else: "message.embedding <=> $3::text::vector"
 
     sql = """
@@ -500,7 +500,7 @@ defmodule MemHouse.Retrieval.Store do
 
     distance =
       if identity.dimensions == 1024,
-        do: "d.embedding::vector(1024) <=> $4::text::vector(1024)",
+        do: "d.embedding_1024 <=> $4::text::vector(1024)",
         else: "d.embedding <=> $4::text::vector"
 
     # Both lane subqueries repeat every visibility predicate before ORDER BY
@@ -712,7 +712,7 @@ defmodule MemHouse.Retrieval.Store do
           if identity.dimensions == 1024 do
             """
             SELECT #{@knowledge_columns},
-                   1.0 - (k.embedding::vector(1024) <=> $4::text::vector(1024)) AS score,
+                   1.0 - (k.embedding_1024 <=> $4::text::vector(1024)) AS score,
                    'knowledge' AS candidate_type
             FROM knowledge_items AS k
             JOIN scopes AS s ON s.id = k.scope_id AND s.account_id = k.account_id
@@ -727,7 +727,7 @@ defmodule MemHouse.Retrieval.Store do
               AND k.embedding_version = $7
               AND k.embedding_dimensions = $8
               AND k.diskann_labels && $9::smallint[]
-            ORDER BY k.embedding::vector(1024) <=> $4::text::vector(1024)
+            ORDER BY k.embedding_1024 <=> $4::text::vector(1024)
             LIMIT $10
             """
           else
@@ -779,7 +779,7 @@ defmodule MemHouse.Retrieval.Store do
                    'internal' AS sensitivity, c.status AS state,
                    ARRAY[]::uuid[] AS source_message_ids,
                    NULL::text AS extracting_model, 'f7-1' AS pipeline_version,
-                   1.0 - (c.embedding::vector(1024) <=> $3::text::vector(1024)) AS score,
+                   1.0 - (c.embedding_1024 <=> $3::text::vector(1024)) AS score,
                    'document_chunk' AS candidate_type,
                    c.document_id, c.document_version_id, c.position
             FROM document_chunks AS c
@@ -787,12 +787,13 @@ defmodule MemHouse.Retrieval.Store do
             WHERE c.account_id = $1
               AND c.scope_id = ANY($2)
               AND c.status = 'active'
+              AND c.embedding IS NOT NULL
               AND c.embedding_provider = $4
               AND c.embedding_model = $5
               AND c.embedding_version = $6
               AND c.embedding_dimensions = $7
               AND c.diskann_labels && $8::smallint[]
-            ORDER BY c.embedding::vector(1024) <=> $3::text::vector(1024)
+            ORDER BY c.embedding_1024 <=> $3::text::vector(1024)
             LIMIT $9
             """
           else
