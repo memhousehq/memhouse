@@ -95,6 +95,32 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
     end
   end
 
+  test "a Dotenvy OpenRouter credential reaches the provider resolver without entering config" do
+    runtime_path = Path.expand("config/runtime.exs")
+
+    temporary =
+      Path.join(System.tmp_dir!(), "memhouse-dotenv-#{System.unique_integer([:positive])}")
+
+    previous = System.get_env("OPENROUTER_API_KEY")
+    File.mkdir_p!(temporary)
+    File.write!(Path.join(temporary, ".env"), "OPENROUTER_API_KEY=dotenv-test-key\n")
+
+    try do
+      System.delete_env("OPENROUTER_API_KEY")
+
+      config =
+        File.cd!(temporary, fn ->
+          Config.Reader.read!(runtime_path, env: :test, target: :host)
+        end)
+
+      assert System.get_env("OPENROUTER_API_KEY") == "dotenv-test-key"
+      refute inspect(config) =~ "dotenv-test-key"
+    after
+      restore_env("OPENROUTER_API_KEY", previous)
+      File.rm_rf!(temporary)
+    end
+  end
+
   test "minimal-recall switch rejects an ambiguous value at boot and restores the environment" do
     original = System.get_env(@variable)
 

@@ -13,9 +13,10 @@ changelog entry and contract-version transition.
 
 - Paid campaign admission advances to `membench-campaign-admission-2` and
   rejects v1 packets. V2 binds one immutable run and PostgreSQL backend,
-  compile-time target revision, exact per-paid-role OpenRouter routes and
-  credential references, and explicit no-resume/new-packet rerun policy before
-  permanently claiming the packet digest.
+  the approved runtime target revision to the embedded build SHA, exact
+  per-paid-role OpenRouter routes and credential references, and explicit
+  no-resume/new-packet rerun policy before permanently claiming the packet
+  digest.
 
 - Thorough retrieval now uses OpenRouter's native `voyageai/rerank-2.5`
   endpoint through `OPENROUTER_API_KEY`. The local BAAI classifier runtime and

@@ -16,6 +16,19 @@ env = source!([".env", System.get_env()])
 env_get = fn key, default -> Map.get(env, key, default) end
 database_mode = env_get.("MEMHOUSE_DATABASE_MODE", "external")
 
+# ReqLLM resolves this credential by variable name at call time. Promote a
+# Dotenvy-only value into the process environment so provider execution and
+# campaign readiness consult the same source, without placing the value in
+# application configuration or campaign state. An existing process variable
+# already won source precedence and is left unchanged.
+case {System.get_env("OPENROUTER_API_KEY"), Map.get(env, "OPENROUTER_API_KEY")} do
+  {nil, value} when is_binary(value) and value != "" ->
+    System.put_env("OPENROUTER_API_KEY", value)
+
+  _absent_or_already_set ->
+    :ok
+end
+
 config :memhouse, :build_sha, env_get.("MEMHOUSE_BUILD_SHA", "unknown")
 
 campaign_admission_values = %{
