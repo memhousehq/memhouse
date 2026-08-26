@@ -235,6 +235,14 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
              activate(path, digest, arm_id: nil)
   end
 
+  test "public activation options cannot override the running build revision" do
+    {path, digest} = write_packet!(packet(requests: 1))
+    Application.put_env(:memhouse, :build_sha, String.duplicate("a", 40))
+
+    assert {:error, %CampaignAdmission.Refused{reason: :target_revision_mismatch}} =
+             activate(path, digest, actual_revision: @target_revision)
+  end
+
   test "a missing, changed, or unapproved packet cannot activate spend" do
     missing =
       Path.join(System.tmp_dir!(), "missing-campaign-#{System.unique_integer([:positive])}")
@@ -294,6 +302,30 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert Provider.calls() == 0
   end
 
+  test "a paid campaign role cannot switch to a local provider mid-campaign" do
+    {path, digest} = write_packet!(packet(requests: 1))
+    assert {:ok, identity} = activate(path, digest)
+
+    roles = Application.fetch_env!(:memhouse, :model_roles)
+
+    Application.put_env(
+      :memhouse,
+      :model_roles,
+      put_in(roles[:ingest_extractor][:provider], "deterministic")
+    )
+
+    assert {:error, %CampaignAdmission.Refused{reason: :routing_mismatch}} =
+             Gateway.structured_once(
+               :ingest_extractor,
+               [],
+               %{},
+               %{model_provider: Provider},
+               campaign_identity: identity
+             )
+
+    assert Provider.calls() == 0
+  end
+
   test "the wall ceiling is checked before the provider callback" do
     campaign = packet(requests: 1) |> put_in(["volume", "hard_caps", "wall_seconds"], 1)
     {path, digest} = write_packet!(campaign)
@@ -333,6 +365,14 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
   end
 
   test "the exact ReqLLM adapter is killed at the remaining campaign wall" do
+    warm_endpoint = start_http_stub(body: completion(%{}))
+    configure_extractor_endpoint(warm_endpoint)
+
+    assert {:ok, _result} =
+             ReqLLM.structured(Config.resolve(:ingest_extractor, %{}), [], %{}, [])
+
+    assert_receive :campaign_http_call
+
     endpoint = start_http_stub(delay: 4_000, body: completion(%{}))
     configure_extractor_endpoint(endpoint)
 
@@ -355,7 +395,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
                campaign_identity: identity
              )
 
-    assert_receive :campaign_http_call
+    assert_receive :campaign_http_call, 1_000
   end
 
   test "the admitted ReqLLM adapter makes no hidden transport retry" do

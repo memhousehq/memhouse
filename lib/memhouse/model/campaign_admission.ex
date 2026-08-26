@@ -255,7 +255,7 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   defp target_revision(opts) do
     revision = Keyword.get(opts, :target_revision)
-    actual = Keyword.get(opts, :actual_revision, Application.get_env(:memhouse, :build_sha))
+    actual = Application.get_env(:memhouse, :build_sha)
 
     cond do
       not is_binary(revision) ->
@@ -511,10 +511,11 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   defp reserve_active(
          active,
-         %Role{provider: provider},
+         %Role{provider: provider, role: role},
          %{provider_module: provider_module, identity: identity}
        )
-       when provider in @local_providers do
+       when provider in @local_providers and
+              role not in [:ingest_extractor, :dream_reasoner, :dialectic_agent, :reranker] do
     with :ok <- matching_identity(active, identity),
          :ok <- matching_provider_module(provider, provider_module) do
       {:ok, :local, active}
