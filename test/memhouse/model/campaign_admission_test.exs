@@ -42,18 +42,47 @@ defmodule MemHouse.Model.CampaignAdmissionTest.RepairSchema do
   def cast(_object, _context), do: {:error, ["invalid shape"]}
 end
 
+defmodule MemHouse.Model.CampaignAdmissionTest.StubPlug do
+  @moduledoc false
+  @behaviour Plug
+
+  @impl Plug
+  def init(opts), do: opts
+
+  @impl Plug
+  def call(conn, opts) do
+    send(Keyword.fetch!(opts, :test_pid), :campaign_http_call)
+    if delay = Keyword.get(opts, :delay), do: Process.sleep(delay)
+
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(Keyword.get(opts, :status, 200), Jason.encode!(opts[:body] || %{}))
+  end
+end
+
 defmodule MemHouse.Model.CampaignAdmissionTest do
   use ExUnit.Case, async: false
 
   alias MemHouse.Model.CampaignAdmission
   alias MemHouse.Model.CampaignAdmissionTest.Provider
+  alias MemHouse.Model.CampaignAdmissionTest.StubPlug
+  alias MemHouse.Model.Config
   alias MemHouse.Model.Gateway
+  alias MemHouse.Model.Providers.ReqLLM
   alias MemHouse.Model.StructuredGenerator
 
   @target_revision "ed3f3600fdab9b09abdb40e7ee3492e334f6df72"
 
   setup do
+    Application.ensure_all_started(:bandit)
+    Application.ensure_all_started(:req_llm)
     unless Process.whereis(CampaignAdmission), do: start_supervised!(CampaignAdmission)
+
+    unless Process.whereis(MemHouse.Model.ProviderTaskSupervisor) do
+      start_supervised!({Task.Supervisor, name: MemHouse.Model.ProviderTaskSupervisor})
+    end
+
+    System.put_env("MEMHOUSE_CAMPAIGN_TEST_KEY", "local-test-key")
 
     on_exit(fn ->
       if Process.whereis(MemHouse.Supervisor) do
@@ -90,6 +119,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     )
 
     on_exit(fn ->
+      System.delete_env("MEMHOUSE_CAMPAIGN_TEST_KEY")
       Application.put_env(:memhouse, :model_roles, previous_roles)
       Application.put_env(:memhouse, :ingest_provider_circuit, previous_circuit)
       Application.put_env(:memhouse, :build_sha, previous_build_sha)
@@ -106,14 +136,33 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     context = %{model_provider: Provider}
     opts = [campaign_identity: identity]
+    config = Config.resolve(:ingest_extractor, %{})
 
-    assert {:ok, %{}, _config} =
-             Gateway.structured_once(:ingest_extractor, [], %{}, context, opts)
+    assert {:ok, %{role: "target.ingest_extractor"}} =
+             CampaignAdmission.reserve(config, :structured, 100, 8, ReqLLM, opts)
 
     assert {:error, %CampaignAdmission.Refused{reason: :request_ceiling}} =
              Gateway.structured_once(:ingest_extractor, [], %{}, context, opts)
 
-    assert Provider.calls() == 1
+    assert Provider.calls() == 0
+  end
+
+  test "an executable provider override cannot bypass the approved route" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+
+    assert {:ok, identity} =
+             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :provider_override}} =
+             Gateway.structured_once(
+               :ingest_extractor,
+               [],
+               %{},
+               %{model_provider: Provider},
+               campaign_identity: identity
+             )
+
+    assert Provider.calls() == 0
   end
 
   test "an expected campaign identity fails closed when no admission is active" do
@@ -127,6 +176,35 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
              )
 
     assert Provider.calls() == 0
+  end
+
+  test "a named campaign role fails closed when no admission is active" do
+    assert {:error, %CampaignAdmission.Refused{reason: :missing_admission}} =
+             Gateway.structured_once(
+               :dream_reasoner,
+               [],
+               %{},
+               %{model_provider: Provider},
+               campaign_role: "harness.judge"
+             )
+
+    assert Provider.calls() == 0
+  end
+
+  test "an activated packet is permanently consumed across process restart" do
+    {path, digest} = write_packet!(packet(requests: 1))
+
+    assert {:ok, _identity} =
+             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+
+    assert File.exists?(path <> ".memhouse-started")
+
+    previous = Process.whereis(CampaignAdmission)
+    :ok = GenServer.stop(CampaignAdmission)
+    assert is_pid(await_campaign_restart(previous, 50))
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_already_consumed}} =
+             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
   end
 
   test "a missing, changed, or unapproved packet cannot activate spend" do
@@ -212,6 +290,81 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert Provider.calls() == 0
   end
 
+  test "an admitted callback receives only the remaining hard wall budget" do
+    {path, digest} = write_packet!(packet(requests: 1))
+
+    assert {:ok, identity} =
+             CampaignAdmission.activate(path, digest,
+               target_revision: @target_revision,
+               now_ms: 0
+             )
+
+    assert {:ok, %{remaining_wall_ms: 10}} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               8,
+               ReqLLM,
+               campaign_identity: identity,
+               campaign_now_ms: 59_990
+             )
+  end
+
+  test "the exact ReqLLM adapter is killed at the remaining campaign wall" do
+    endpoint = start_http_stub(delay: 4_000, body: completion(%{}))
+    configure_extractor_endpoint(endpoint)
+
+    campaign =
+      packet(requests: 1, input_tokens: 10_000) |> put_in(["execution", "endpoint"], endpoint)
+
+    {path, digest} = write_packet!(campaign)
+
+    assert {:ok, identity} =
+             CampaignAdmission.activate(path, digest,
+               target_revision: @target_revision,
+               now_ms: 0
+             )
+
+    assert {:error, %MemHouse.Operations.ExtractionBudget.Exceeded{reason: "wall-time cap"}} =
+             Gateway.structured_once(
+               :ingest_extractor,
+               [],
+               %{},
+               %{},
+               campaign_identity: identity,
+               campaign_now_ms: 58_000
+             )
+
+    assert_receive :campaign_http_call
+  end
+
+  test "the admitted ReqLLM adapter makes no hidden transport retry" do
+    endpoint = start_http_stub(status: 500)
+    configure_extractor_endpoint(endpoint)
+
+    campaign =
+      packet(requests: 3, input_tokens: 30_000) |> put_in(["execution", "endpoint"], endpoint)
+
+    {path, digest} = write_packet!(campaign)
+
+    assert {:ok, identity} =
+             CampaignAdmission.activate(path, digest, target_revision: @target_revision)
+
+    assert {:error, _error} =
+             Gateway.structured_once(
+               :ingest_extractor,
+               [],
+               %{},
+               %{},
+               campaign_identity: identity
+             )
+
+    assert_receive :campaign_http_call
+    refute_receive :campaign_http_call, 50
+    assert CampaignAdmission.status().reserved.requests == 1
+  end
+
   test "input token exhaustion is rejected before content reaches the provider" do
     {path, digest} = write_packet!(packet(requests: 1, input_tokens: 1))
 
@@ -268,6 +421,18 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert {:ok, identity} =
              CampaignAdmission.activate(path, digest, target_revision: @target_revision)
 
+    config = Config.resolve(:ingest_extractor, %{})
+
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               config,
+               :structured,
+               100,
+               8,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
     assert {:error, %CampaignAdmission.Refused{reason: :request_ceiling}} =
              StructuredGenerator.generate(
                :ingest_extractor,
@@ -278,7 +443,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
                max_repairs: 2
              )
 
-    assert Provider.calls() == 1
+    assert Provider.calls() == 0
   end
 
   test "hosted roles outside the approved paid-role set are unpriceable" do
@@ -344,15 +509,47 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
       |> Keyword.put(:reranker, hosted_role(:reranker, "voyageai/rerank-2.5"))
 
     Application.put_env(:memhouse, :model_roles, roles)
-    context = %{model_provider: Provider}
     opts = [campaign_identity: identity]
 
-    assert {:ok, %{}, _config} =
-             Gateway.structured_once(:ingest_extractor, [], %{}, context, opts)
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               8,
+               ReqLLM,
+               opts
+             )
 
-    assert {:ok, %{}, _config} = Gateway.structured_once(:dream_reasoner, [], %{}, context, opts)
-    assert {:ok, "answer", _provenance} = Gateway.chat(:dialectic_agent, [], context, opts)
-    assert {:ok, [], _provenance} = Gateway.rerank("query", ["document"], context, opts)
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:dream_reasoner, %{}),
+               :structured,
+               1,
+               8,
+               ReqLLM,
+               opts
+             )
+
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:dialectic_agent, %{}),
+               :chat,
+               1,
+               8,
+               ReqLLM,
+               opts
+             )
+
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:reranker, %{}),
+               :rerank,
+               1,
+               0,
+               ReqLLM,
+               opts
+             )
 
     roles =
       roles
@@ -363,19 +560,29 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     Application.put_env(:memhouse, :model_roles, roles)
 
-    assert {:ok, %{}, _config} =
-             Gateway.structured_once(:dream_reasoner, [], %{}, context,
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:dream_reasoner, %{}),
+               :structured,
+               1,
+               8,
+               ReqLLM,
                campaign_identity: identity,
                campaign_role: "harness.judge"
              )
 
-    assert {:ok, "answer", _provenance} =
-             Gateway.chat(:dialectic_agent, [], context,
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:dialectic_agent, %{}),
+               :chat,
+               1,
+               8,
+               ReqLLM,
                campaign_identity: identity,
                campaign_role: "harness.answerer"
              )
 
-    assert Provider.calls() == 6
+    assert Provider.calls() == 0
     assert CampaignAdmission.status().reserved.requests == 6
   end
 
@@ -484,16 +691,82 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     |> Map.delete(:role)
   end
 
+  defp configure_extractor_endpoint(endpoint) do
+    roles = Application.fetch_env!(:memhouse, :model_roles)
+
+    Application.put_env(
+      :memhouse,
+      :model_roles,
+      update_in(roles[:ingest_extractor][:options], fn options ->
+        Map.merge(options, %{
+          "api_key_ref" => "env:MEMHOUSE_CAMPAIGN_TEST_KEY",
+          "base_url" => endpoint
+        })
+      end)
+    )
+  end
+
+  defp start_http_stub(opts) do
+    pid =
+      start_supervised!(
+        {Bandit,
+         plug: {StubPlug, Keyword.put(opts, :test_pid, self())},
+         port: 0,
+         scheme: :http,
+         startup_log: false}
+      )
+
+    {:ok, {_address, port}} = ThousandIsland.listener_info(pid)
+    "http://127.0.0.1:#{port}"
+  end
+
+  defp completion(value) do
+    %{
+      "id" => "campaign-stub",
+      "object" => "chat.completion",
+      "created" => 1_700_000_000,
+      "model" => "openai/gpt-oss-120b",
+      "choices" => [
+        %{
+          "index" => 0,
+          "finish_reason" => "stop",
+          "message" => %{"role" => "assistant", "content" => Jason.encode!(value)}
+        }
+      ],
+      "usage" => %{"prompt_tokens" => 1, "completion_tokens" => 1, "total_tokens" => 2}
+    }
+  end
+
   defp write_packet!(packet) do
+    nonce = :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
+
     path =
       Path.join(
         System.tmp_dir!(),
-        "campaign-admission-#{System.unique_integer([:positive])}.json"
+        "campaign-admission-#{nonce}.json"
       )
 
     bytes = Jason.encode!(packet)
     File.write!(path, bytes)
-    on_exit(fn -> File.rm(path) end)
+
+    on_exit(fn ->
+      File.rm(path)
+      File.rm(path <> ".memhouse-started")
+    end)
+
     {path, :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)}
   end
+
+  defp await_campaign_restart(previous, attempts) when attempts > 0 do
+    case Process.whereis(CampaignAdmission) do
+      pid when is_pid(pid) and pid != previous ->
+        pid
+
+      _not_restarted ->
+        Process.sleep(2)
+        await_campaign_restart(previous, attempts - 1)
+    end
+  end
+
+  defp await_campaign_restart(_previous, 0), do: nil
 end

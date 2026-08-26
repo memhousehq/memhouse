@@ -66,16 +66,28 @@ defmodule MemHouse.Model.CampaignAdmission do
   callback. The return is `{:ok, :inactive}` outside a campaign,
   `{:ok, reservation}` when admitted, or `{:error, %Refused{}}` before spend.
   """
-  def reserve(%Role{} = config, operation, input_tokens, output_tokens, opts \\ []) do
+  def reserve(
+        %Role{} = config,
+        operation,
+        input_tokens,
+        output_tokens,
+        provider_module,
+        opts \\ []
+      )
+      when is_atom(provider_module) do
     identity = Keyword.get(opts, :campaign_identity)
     campaign_role = Keyword.get(opts, :campaign_role)
     now_ms = Keyword.get(opts, :campaign_now_ms, System.monotonic_time(:millisecond))
 
     GenServer.call(
       __MODULE__,
-      {:reserve, config, operation, input_tokens, output_tokens, identity, campaign_role, now_ms}
+      {:reserve, config, operation, input_tokens, output_tokens, provider_module, identity,
+       campaign_role, now_ms}
     )
   end
+
+  @doc "True only while an immutable campaign claim is active on this node."
+  def active?, do: status().active?
 
   @impl true
   def init(opts) do
@@ -118,7 +130,7 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   def handle_call(
-        {:reserve, _config, _operation, _input, _output, nil, _role, _now},
+        {:reserve, _config, _operation, _input, _output, _provider, nil, nil, _now},
         _from,
         %{active: nil} = state
       ) do
@@ -126,15 +138,29 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   def handle_call(
-        {:reserve, _config, _operation, _input, _output, _identity, _role, _now},
+        {:reserve, _config, _operation, _input, _output, _provider, _identity, _role, _now},
         _from,
         %{active: nil} = state
       ) do
     {:reply, refused(:missing_admission), state}
   end
 
-  def handle_call({:reserve, config, operation, input, output, identity, role, now}, _from, state) do
-    case reserve_active(state.active, config, operation, input, output, identity, role, now) do
+  def handle_call(
+        {:reserve, config, operation, input, output, provider, identity, role, now},
+        _from,
+        state
+      ) do
+    request = %{
+      operation: operation,
+      input: input,
+      output: output,
+      provider_module: provider,
+      identity: identity,
+      role: role,
+      now_ms: now
+    }
+
+    case reserve_active(state.active, config, request) do
       {:ok, reservation, active} ->
         {:reply, {:ok, reservation}, %{state | active: active}}
 
@@ -155,8 +181,36 @@ defmodule MemHouse.Model.CampaignAdmission do
          {:ok, bytes} <- read_packet(path),
          :ok <- exact_digest(bytes, expected_digest),
          {:ok, packet} <- decode_packet(bytes),
-         {:ok, target_revision} <- target_revision(opts) do
-      validate_packet(packet, expected_digest, target_revision, opts)
+         {:ok, target_revision} <- target_revision(opts),
+         {:ok, active} <- validate_packet(packet, expected_digest, target_revision, opts),
+         :ok <- claim_once(path, active.identity) do
+      {:ok, active}
+    end
+  end
+
+  # A successful activation consumes this exact packet permanently before any
+  # provider call. If the process, node, or later application boot fails, the
+  # marker remains and the same approved allowance cannot be reset or replayed.
+  # The packet directory is operator-controlled startup configuration.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp claim_once(path, identity) do
+    marker = path <> ".memhouse-started"
+
+    case File.open(marker, [:write, :exclusive, :sync]) do
+      {:ok, io} ->
+        result = :file.write(io, identity <> "\n")
+        :ok = File.close(io)
+
+        case result do
+          :ok -> :ok
+          {:error, _reason} -> {:error, :campaign_ledger_unavailable}
+        end
+
+      {:error, :eexist} ->
+        {:error, :campaign_already_consumed}
+
+      {:error, _reason} ->
+        {:error, :campaign_ledger_unavailable}
     end
   end
 
@@ -452,21 +506,30 @@ defmodule MemHouse.Model.CampaignAdmission do
   defp reserve_active(
          active,
          %Role{provider: provider},
-         _operation,
-         _input,
-         _output,
-         identity,
-         _role,
-         _now
+         %{provider_module: provider_module, identity: identity}
        )
        when provider in @local_providers do
-    case matching_identity(active, identity) do
-      :ok -> {:ok, :local, active}
+    with :ok <- matching_identity(active, identity),
+         :ok <- matching_provider_module(provider, provider_module) do
+      {:ok, :local, active}
+    else
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp reserve_active(active, config, operation, input, output, identity, role, now) do
+  defp reserve_active(
+         active,
+         config,
+         %{
+           operation: operation,
+           input: input,
+           output: output,
+           provider_module: provider_module,
+           identity: identity,
+           role: role,
+           now_ms: now
+         }
+       ) do
     with :ok <- matching_identity(active, identity),
          {:ok, paid_role} <- paid_role(config, operation, role),
          :ok <- matching_route(active, config, paid_role),
@@ -474,8 +537,10 @@ defmodule MemHouse.Model.CampaignAdmission do
          {:ok, output} <- non_negative_integer(output),
          :ok <- before_deadline(active, now),
          {:ok, charge} <- charge(active, paid_role, input, output),
-         :ok <- within_caps(active, paid_role, charge) do
-      {:ok, reservation(paid_role, charge), apply_charge(active, paid_role, charge)}
+         :ok <- within_caps(active, paid_role, charge),
+         :ok <- matching_provider_module(config.provider, provider_module) do
+      reservation = reservation(paid_role, charge, active.deadline_ms - now)
+      {:ok, reservation, apply_charge(active, paid_role, charge)}
     else
       {:error, reason} -> {:error, reason}
     end
@@ -484,6 +549,11 @@ defmodule MemHouse.Model.CampaignAdmission do
   defp matching_identity(_active, nil), do: :ok
   defp matching_identity(%{identity: identity}, identity), do: :ok
   defp matching_identity(_active, _other), do: {:error, :campaign_identity_mismatch}
+
+  defp matching_provider_module("openrouter", MemHouse.Model.Providers.ReqLLM), do: :ok
+  defp matching_provider_module("deterministic", MemHouse.Model.Providers.Deterministic), do: :ok
+  defp matching_provider_module("ortex", MemHouse.Model.Providers.Ortex), do: :ok
+  defp matching_provider_module(_provider, _module), do: {:error, :provider_override}
 
   defp paid_role(%Role{role: config_role}, _operation, requested) when is_binary(requested) do
     if requested in allowed_paid_roles(config_role),
@@ -595,7 +665,11 @@ defmodule MemHouse.Model.CampaignAdmission do
     }
   end
 
-  defp reservation(role, charge), do: Map.put(charge, :role, role)
+  defp reservation(role, charge, remaining_wall_ms) do
+    charge
+    |> Map.put(:role, role)
+    |> Map.put(:remaining_wall_ms, remaining_wall_ms)
+  end
 
   defp add_usage(left, right) do
     Map.new(left, fn {key, value} -> {key, value + Map.fetch!(right, key)} end)

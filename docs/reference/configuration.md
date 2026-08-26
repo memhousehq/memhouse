@@ -112,11 +112,16 @@ all five or none. A partial configuration stops startup.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MEMHOUSE_CAMPAIGN_ADMISSION_PATH` | — | Immutable machine-readable admission packet |
+| `MEMHOUSE_CAMPAIGN_ADMISSION_PATH` | — | Immutable machine-readable admission packet; its directory must permit creation of a permanent one-shot claim marker |
 | `MEMHOUSE_CAMPAIGN_ADMISSION_SHA256` | — | Separately approved SHA-256 of the exact packet bytes |
 | `MEMHOUSE_CAMPAIGN_DEFINITION_ID` | — | Approved campaign identity |
 | `MEMHOUSE_CAMPAIGN_ARM_ID` | — | Approved arm whose prompt and batching identity must match this node |
 | `MEMHOUSE_CAMPAIGN_TARGET_REVISION` | — | Full approved MemHouse target commit |
+
+Activation atomically creates `<admission-path>.memhouse-started`. The marker
+is never removed automatically: a process or node restart therefore cannot
+reset reservations or replay the same approved allowance. A restarted campaign
+requires a newly approved packet and digest.
 
 `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` uses the same strict boolean boot
 parsing as the experimental switches above: `true`, `false`, `1`, `0`, `yes`,

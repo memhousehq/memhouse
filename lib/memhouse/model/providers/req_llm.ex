@@ -36,6 +36,7 @@ defmodule MemHouse.Model.Providers.ReqLLM do
 
   @behaviour MemHouse.Model.Provider
 
+  alias MemHouse.Model.CampaignAdmission
   alias MemHouse.Model.Config.Role
   alias MemHouse.Model.Provider.Result
 
@@ -435,6 +436,16 @@ defmodule MemHouse.Model.Providers.ReqLLM do
     |> maybe_put(:total_timeout, total_timeout)
     |> maybe_put(:req_http_options, req_http_options)
     |> maybe_put(:provider_options, openrouter_provider_options(config))
+    |> campaign_retry_limit()
+  end
+
+  # A transport retry can be billed as another provider request. Campaign job
+  # retries and structured repairs re-enter Gateway and reserve independently;
+  # hidden adapter retries therefore stay disabled for the entire active claim.
+  defp campaign_retry_limit(opts) do
+    if Process.whereis(CampaignAdmission) && CampaignAdmission.active?(),
+      do: Keyword.put(opts, :max_retries, 0),
+      else: opts
   end
 
   # A campaign route is an actual wire constraint, not provenance decoration.

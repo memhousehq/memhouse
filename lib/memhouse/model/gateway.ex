@@ -314,12 +314,13 @@ defmodule MemHouse.Model.Gateway do
           try do
             case admission.() do
               {:ok, timeout_ms} ->
-                with {:ok, _reservation} <-
+                with {:ok, reservation} <-
                        CampaignAdmission.reserve(
                          config,
                          operation,
                          bounds.input_tokens,
                          bounds.output_tokens,
+                         provider,
                          opts
                        ) do
                   invoke_permitted(
@@ -330,7 +331,7 @@ defmodule MemHouse.Model.Gateway do
                     call,
                     provider,
                     permit,
-                    timeout_ms
+                    campaign_timeout(timeout_ms, reservation)
                   )
                 end
 
@@ -426,6 +427,13 @@ defmodule MemHouse.Model.Gateway do
   end
 
   defp metering_status(_usage, _operation, _provider), do: :unmetered
+
+  defp campaign_timeout(timeout_ms, %{remaining_wall_ms: remaining})
+       when is_integer(remaining) and remaining > 0 do
+    if is_integer(timeout_ms), do: min(timeout_ms, remaining), else: remaining
+  end
+
+  defp campaign_timeout(timeout_ms, _inactive_or_local), do: timeout_ms
 
   # This uses the same target-revision-pinned `utf8-bytes-v1` convention as
   # extraction admission: the canonical JSON byte size deliberately

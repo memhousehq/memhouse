@@ -172,6 +172,10 @@ packet. It also matches the definition id, arm, target revision, extraction
 prompt, batching switch, provider, endpoint, model, and pinned OpenRouter
 upstream route before it activates.
 
+Activation permanently claims that exact packet by creating a sibling
+`.memhouse-started` marker before the first call. A process or node restart
+cannot reset its allowances; recovery requires a newly approved packet.
+
 While the campaign is active, the model gateway atomically reserves worst-case
 request, input-token, output-token, reranker-token, USD, and wall-time capacity
 before each hosted provider callback. This one boundary covers extractor calls,
@@ -180,6 +184,11 @@ target-side answerer or judge, and native Voyage reranking. Unknown roles,
 unpriced models, changed identities, routing drift, and exhausted caps make no
 provider call. Reservations are not returned after provider errors because a
 failed call can still be billable.
+
+The admitted adapter disables its internal transport retries, so every retry
+or structured repair must re-enter the gateway and reserve another request.
+The gateway also clamps an in-flight callback to the remaining campaign wall
+budget.
 
 The campaign admission process receives content-safe counts and identities
 only. It never receives or logs prompts, messages, answers, credentials, or

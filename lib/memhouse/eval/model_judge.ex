@@ -60,7 +60,9 @@ defmodule MemHouse.Eval.ModelJudge do
 
   `question` is the question text, `answer` the produced answer, and `candidates` the
   retrieval candidates that were available to produce it; their text is joined into the
-  context the grader sees.
+  context the grader sees. An approved target-side campaign supplies its exact
+  `:campaign_identity` in the optional fourth argument; ordinary evaluation
+  calls remain outside campaign admission.
 
   Returns a string-keyed map with `"model_groundedness"`, `"model_context_relevance"`, and
   `"model_answer_relevance"` as floats in the closed interval 0.0 to 1.0, plus
@@ -71,7 +73,7 @@ defmodule MemHouse.Eval.ModelJudge do
   or when a returned score is missing or outside the allowed range. It never returns a
   default in place of a real grade.
   """
-  def score(question, answer, candidates) do
+  def score(question, answer, candidates, opts \\ []) do
     # Re-resolved per call so the independence check is enforced on every graded question,
     # not only once at the start of a run.
     identity = identity()
@@ -95,10 +97,14 @@ defmodule MemHouse.Eval.ModelJudge do
 
     # One attempt, no retry: a judge that needed several tries to produce a parseable grade
     # is not producing a stable measurement, and silently retrying would hide that.
-    case Gateway.structured_once(:dream_reasoner, messages, @schema, %{},
-           task: :eval_judge,
-           campaign_role: "harness.judge"
-         ) do
+    gateway_opts =
+      if campaign_identity = Keyword.get(opts, :campaign_identity) do
+        [task: :eval_judge, campaign_identity: campaign_identity, campaign_role: "harness.judge"]
+      else
+        [task: :eval_judge]
+      end
+
+    case Gateway.structured_once(:dream_reasoner, messages, @schema, %{}, gateway_opts) do
       {:ok, value, _config} ->
         %{
           "model_groundedness" => normalized_score(value, :groundedness),
