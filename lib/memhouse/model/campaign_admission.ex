@@ -505,12 +505,12 @@ defmodule MemHouse.Model.CampaignAdmission do
   defp compatible_model_route?(
          "target.reranker",
          "voyageai/rerank-2.5",
-         %{upstream_route: "voyage"}
+         %{upstream_route: "voyageai"}
        ),
        do: true
 
   defp compatible_model_route?(role, model, %{upstream_route: route})
-       when role != "target.reranker" and model != "voyageai/rerank-2.5" and route != "voyage",
+       when role != "target.reranker" and model != "voyageai/rerank-2.5" and route != "voyageai",
        do: true
 
   defp compatible_model_route?(_role, _model, _route), do: false

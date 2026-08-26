@@ -281,7 +281,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
              credential: %{status: :present, variable: "MEMHOUSE_CAMPAIGN_TEST_KEY"},
              endpoint: "https://openrouter.ai/api/v1",
              provider: "openrouter",
-             upstream_route: "voyage"
+             upstream_route: "voyageai"
            }
   end
 
@@ -343,9 +343,18 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_routing}} =
              activate(reranker_path, reranker_digest)
 
+    noncanonical_reranker =
+      packet(requests: 1)
+      |> put_in(["execution", "routes", "target.reranker", "upstream_route"], "voyage")
+
+    {noncanonical_path, noncanonical_digest} = write_packet!(noncanonical_reranker)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :unpriceable_routing}} =
+             activate(noncanonical_path, noncanonical_digest)
+
     generation_on_voyage =
       packet(requests: 1)
-      |> put_in(["execution", "routes", "target.ingest_extractor", "upstream_route"], "voyage")
+      |> put_in(["execution", "routes", "target.ingest_extractor", "upstream_route"], "voyageai")
 
     {generation_path, generation_digest} = write_packet!(generation_on_voyage)
 
@@ -353,6 +362,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
              activate(generation_path, generation_digest)
 
     refute File.exists?(reranker_path <> ".ledger")
+    refute File.exists?(noncanonical_path <> ".ledger")
     refute File.exists?(generation_path <> ".ledger")
   end
 
@@ -889,7 +899,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
   defp per_role_route_packet(packet) do
     routes =
       Map.new(paid_role_names(), fn role ->
-        upstream_route = if role == "target.reranker", do: "voyage", else: "openai"
+        upstream_route = if role == "target.reranker", do: "voyageai", else: "openai"
 
         {role,
          %{
@@ -944,7 +954,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
   end
 
   defp hosted_role(role, model) do
-    upstream_route = if model == "voyageai/rerank-2.5", do: "voyage", else: "openai"
+    upstream_route = if model == "voyageai/rerank-2.5", do: "voyageai", else: "openai"
 
     %{
       provider: "openrouter",

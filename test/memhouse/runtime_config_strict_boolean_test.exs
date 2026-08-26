@@ -12,7 +12,7 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
   test "generation and reranker routes can pin different provider classes" do
     variables = %{
       "MEMHOUSE_OPENROUTER_GENERATION_UPSTREAM_ROUTE" => "openai",
-      "MEMHOUSE_OPENROUTER_RERANKER_UPSTREAM_ROUTE" => "voyage"
+      "MEMHOUSE_OPENROUTER_RERANKER_UPSTREAM_ROUTE" => "voyageai"
     }
 
     originals = Map.new(variables, fn {name, _value} -> {name, System.get_env(name)} end)
@@ -27,7 +27,7 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
         |> Keyword.fetch!(:model_roles)
 
       assert get_in(roles, [:ingest_extractor, :options, "upstream_route"]) == "openai"
-      assert get_in(roles, [:reranker, :options, "upstream_route"]) == "voyage"
+      assert get_in(roles, [:reranker, :options, "upstream_route"]) == "voyageai"
     after
       Enum.each(originals, fn {name, value} -> restore_env(name, value) end)
     end

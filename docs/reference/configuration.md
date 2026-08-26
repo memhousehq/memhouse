@@ -129,7 +129,9 @@ Generation and reranker routing can be pinned independently with
 non-campaign configuration. An admitted packet carries an exact route for each
 of its six paid roles, and activation requires the configured provider, model,
 endpoint, upstream route, credential variable reference, and credential
-presence to match before the packet is claimed.
+presence to match before the packet is claimed. OpenRouter's canonical
+provider-selection slug for the native `voyageai/rerank-2.5` route is
+`voyageai`.
 
 Activation atomically creates
 `<ledger-dir>/<admission-sha256>.memhouse-started`. The marker is never removed
