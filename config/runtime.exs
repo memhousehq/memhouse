@@ -23,6 +23,8 @@ campaign_admission_values = %{
   sha256: env_get.("MEMHOUSE_CAMPAIGN_ADMISSION_SHA256", ""),
   definition_id: env_get.("MEMHOUSE_CAMPAIGN_DEFINITION_ID", ""),
   arm_id: env_get.("MEMHOUSE_CAMPAIGN_ARM_ID", ""),
+  run_id: env_get.("MEMHOUSE_CAMPAIGN_RUN_ID", ""),
+  backend_mode: env_get.("MEMHOUSE_CAMPAIGN_BACKEND_MODE", ""),
   target_revision: env_get.("MEMHOUSE_CAMPAIGN_TARGET_REVISION", "")
 }
 
@@ -42,6 +44,12 @@ if Enum.any?(campaign_admission_values, fn {_key, value} -> value != "" end) do
           [
             definition_id: campaign_admission_values.definition_id,
             arm_id: campaign_admission_values.arm_id,
+            run_id: campaign_admission_values.run_id,
+            backend: %{
+              "engine" => "postgres",
+              "mode" => campaign_admission_values.backend_mode,
+              "sqlite" => "unsupported"
+            },
             ledger_dir: campaign_admission_values.ledger_dir,
             target_revision: campaign_admission_values.target_revision
           ]}
@@ -534,6 +542,14 @@ generation_version =
     do: "1",
     else: env_get.("MEMHOUSE_MODEL_VERSION", "unversioned")
 
+legacy_openrouter_upstream_route = env_get.("MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE", nil)
+
+generation_openrouter_upstream_route =
+  env_get.("MEMHOUSE_OPENROUTER_GENERATION_UPSTREAM_ROUTE", legacy_openrouter_upstream_route)
+
+reranker_openrouter_upstream_route =
+  env_get.("MEMHOUSE_OPENROUTER_RERANKER_UPSTREAM_ROUTE", legacy_openrouter_upstream_route)
+
 # Note what is stored: the *name of the variable* holding the credential, not
 # the credential. Role configuration is durable and exportable, so a raw key
 # must never enter it.
@@ -568,7 +584,7 @@ generation_options = %{
   "receive_timeout" => env_integer.("MEMHOUSE_MODEL_RECEIVE_TIMEOUT_MS", "120000"),
   "request_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS", "300000"),
   "pool_timeout" => env_positive_integer!.("MEMHOUSE_MODEL_POOL_TIMEOUT_MS", "120000"),
-  "upstream_route" => env_get.("MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE", nil)
+  "upstream_route" => generation_openrouter_upstream_route
 }
 
 config :memhouse, :ingest_provider_circuit,
@@ -664,7 +680,7 @@ config :memhouse, :model_roles,
     options: %{
       "api_key_ref" => "env:OPENROUTER_API_KEY",
       "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", "https://openrouter.ai/api/v1"),
-      "upstream_route" => env_get.("MEMHOUSE_OPENROUTER_UPSTREAM_ROUTE", nil)
+      "upstream_route" => reranker_openrouter_upstream_route
     }
   },
   # Turns raw observations into structured candidate knowledge. Its output still

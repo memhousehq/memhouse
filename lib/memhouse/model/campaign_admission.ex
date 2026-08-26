@@ -17,6 +17,7 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   use GenServer
 
+  alias MemHouse.Model.CampaignBuild
   alias MemHouse.Model.Config.Role
 
   @paid_roles ~w(
@@ -120,10 +121,15 @@ defmodule MemHouse.Model.CampaignAdmission do
       identity: active.identity,
       definition_id: active.definition_id,
       arm: active.arm,
+      run_id: active.run_id,
+      backend: active.backend,
+      abort_policy: active.abort_policy,
+      rerun_policy: active.rerun_policy,
       target_revision: active.target_revision,
       reserved: active.reserved,
       hard_caps: active.hard_caps,
-      role_reserved: active.role_reserved
+      role_reserved: active.role_reserved,
+      routes: public_routes(active.routing)
     }
 
     {:reply, reply, state}
@@ -255,7 +261,7 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   defp target_revision(opts) do
     revision = Keyword.get(opts, :target_revision)
-    actual = Application.get_env(:memhouse, :build_sha)
+    actual = CampaignBuild.revision()
 
     cond do
       not is_binary(revision) ->
@@ -264,7 +270,7 @@ defmodule MemHouse.Model.CampaignAdmission do
       not Regex.match?(@full_sha, revision) ->
         {:error, :invalid_target_revision}
 
-      not is_binary(actual) or not Regex.match?(@full_sha, actual) ->
+      not Regex.match?(@full_sha, actual) ->
         {:error, :unknown_build_revision}
 
       actual != revision ->
@@ -278,21 +284,26 @@ defmodule MemHouse.Model.CampaignAdmission do
   defp validate_packet(packet, digest, target_revision, opts) do
     with :ok <- approved_packet(packet),
          {:ok, definition_id} <- definition_id(packet, opts),
+         {:ok, execution} <- execution_identity(packet, opts),
          :ok <- matching_target_revision(packet, target_revision),
          {:ok, arm} <- campaign_arm(packet, opts),
          {:ok, routing} <- routing(packet),
          {:ok, models} <- models(packet),
          {:ok, pricing} <- pricing(packet, models),
-         {:ok, roles} <- roles(packet, models, pricing),
+         {:ok, roles} <- roles(packet, models, pricing, routing),
          {:ok, hard_caps} <- hard_caps(packet, roles),
          {:ok, wall_seconds} <- positive_integer(hard_caps.wall_seconds, :invalid_wall_ceiling) do
       now_ms = Keyword.get(opts, :now_ms, System.monotonic_time(:millisecond))
 
       {:ok,
        %{
-         identity: "#{definition_id}:#{digest}",
+         identity: "#{definition_id}:#{execution.run_id}:#{execution.backend["mode"]}:#{digest}",
          definition_id: definition_id,
          arm: arm,
+         run_id: execution.run_id,
+         backend: execution.backend,
+         abort_policy: execution.abort_policy,
+         rerun_policy: execution.rerun_policy,
          target_revision: target_revision,
          routing: routing,
          models: models,
@@ -306,7 +317,7 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   defp approved_packet(packet) do
-    if packet["schema_version"] == "membench-campaign-admission-1" and
+    if packet["schema_version"] == "membench-campaign-admission-2" and
          packet["admitted"] == true and packet["provider_calls_permitted"] == true and
          packet["blockers"] == [] do
       :ok
@@ -326,6 +337,65 @@ defmodule MemHouse.Model.CampaignAdmission do
       true -> {:ok, value}
     end
   end
+
+  defp execution_identity(packet, opts) do
+    run_id = get_in(packet, ["execution", "run_id"])
+    backend = get_in(packet, ["execution", "backend"])
+    abort_policy = get_in(packet, ["execution", "abort_policy"])
+    rerun_policy = get_in(packet, ["execution", "rerun_policy"])
+    expected_run_id = Keyword.get(opts, :run_id)
+    expected_backend = Keyword.get(opts, :backend)
+
+    cond do
+      not valid_run_id?(run_id) ->
+        {:error, :invalid_campaign_run}
+
+      not valid_backend?(backend) ->
+        {:error, :invalid_campaign_backend}
+
+      abort_policy != "consume-packet-no-resume" or
+          rerun_policy != "new-packet-new-run-id" ->
+        {:error, :invalid_campaign_restart_policy}
+
+      not valid_run_id?(expected_run_id) ->
+        {:error, :missing_campaign_run}
+
+      not valid_backend?(expected_backend) ->
+        {:error, :missing_campaign_backend}
+
+      expected_run_id != run_id ->
+        {:error, :campaign_run_mismatch}
+
+      expected_backend != backend ->
+        {:error, :campaign_backend_mismatch}
+
+      true ->
+        {:ok,
+         %{
+           run_id: run_id,
+           backend: backend,
+           abort_policy: abort_policy,
+           rerun_policy: rerun_policy
+         }}
+    end
+  end
+
+  defp valid_run_id?(value) when is_binary(value),
+    do: Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/, value)
+
+  defp valid_run_id?(_value), do: false
+
+  defp valid_backend?(
+         backend = %{
+           "engine" => "postgres",
+           "mode" => mode,
+           "sqlite" => "unsupported"
+         }
+       )
+       when mode in ["external", "pg0"] and map_size(backend) == 3,
+       do: true
+
+  defp valid_backend?(_backend), do: false
 
   defp matching_target_revision(packet, target_revision) do
     arms = packet["arms"]
@@ -370,19 +440,51 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   defp routing(packet) do
-    case packet["execution"] do
-      %{
-        "provider" => "openrouter",
-        "endpoint" => endpoint,
-        "upstream_route" => route
-      }
-      when is_binary(endpoint) and endpoint != "" and is_binary(route) and route != "" ->
-        {:ok, %{provider: "openrouter", endpoint: endpoint, upstream_route: route}}
+    raw = get_in(packet, ["execution", "routes"])
 
-      _invalid ->
-        {:error, :unpriceable_routing}
+    if is_map(raw) and Map.keys(raw) |> Enum.sort() == Enum.sort(@paid_roles) do
+      Enum.reduce_while(@paid_roles, {:ok, %{}}, fn role, {:ok, acc} ->
+        case paid_role_route(raw[role]) do
+          {:ok, route} -> {:cont, {:ok, Map.put(acc, role, route)}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    else
+      {:error, :unpriceable_routing}
     end
   end
+
+  defp paid_role_route(
+         raw_route = %{
+           "provider" => "openrouter",
+           "endpoint" => endpoint,
+           "upstream_route" => upstream_route,
+           "credential_ref" => "env:" <> variable
+         }
+       )
+       when map_size(raw_route) == 4 and is_binary(endpoint) and endpoint != "" and
+              is_binary(upstream_route) and upstream_route != "" do
+    cond do
+      not Regex.match?(~r/\A[A-Z_][A-Z0-9_]*\z/, variable) ->
+        {:error, :unpriceable_routing}
+
+      is_nil(System.get_env(variable)) or String.trim(System.get_env(variable)) == "" ->
+        {:error, :campaign_credentials_unavailable}
+
+      true ->
+        {:ok,
+         %{
+           credential_ref: "env:" <> variable,
+           credential_status: :present,
+           credential_variable: variable,
+           endpoint: endpoint,
+           provider: "openrouter",
+           upstream_route: upstream_route
+         }}
+    end
+  end
+
+  defp paid_role_route(_invalid), do: {:error, :unpriceable_routing}
 
   defp models(packet) do
     case packet["models"] do
@@ -415,7 +517,7 @@ defmodule MemHouse.Model.CampaignAdmission do
     end)
   end
 
-  defp roles(packet, models, pricing) do
+  defp roles(packet, models, pricing, routing) do
     raw = packet["paid_roles"]
 
     if is_map(raw) and Map.keys(raw) |> Enum.sort() == Enum.sort(@paid_roles) do
@@ -424,7 +526,12 @@ defmodule MemHouse.Model.CampaignAdmission do
 
         with {:ok, caps} <- role_caps(raw[role]),
              :ok <- cap_prices_tokens(caps, pricing[model]) do
-          configured = caps |> Map.put(:model, model) |> Map.put(:rates, pricing[model])
+          configured =
+            caps
+            |> Map.put(:model, model)
+            |> Map.put(:rates, pricing[model])
+            |> Map.put(:route, routing[role])
+
           {:cont, {:ok, Map.put(acc, role, configured)}}
         else
           _invalid -> {:halt, {:error, :unpriceable_roles}}
@@ -446,7 +553,12 @@ defmodule MemHouse.Model.CampaignAdmission do
          {:ok, output} <- non_negative_integer(output),
          {:ok, usd_micros} <- non_negative_usd_micros(usd) do
       {:ok,
-       %{requests: requests, input_tokens: input, output_tokens: output, usd_micros: usd_micros}}
+       %{
+         requests: requests,
+         input_tokens: input,
+         output_tokens: output,
+         usd_micros: usd_micros
+       }}
     end
   end
 
@@ -592,6 +704,7 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   defp matching_route(active, config, role) do
     expected_model = active.roles[role].model
+    route = active.roles[role].route
 
     prompt_matches? =
       role != "target.ingest_extractor" or config.prompt_version == active.arm.prompt_version
@@ -599,9 +712,10 @@ defmodule MemHouse.Model.CampaignAdmission do
     batching_matches? =
       role != "target.ingest_extractor" or current_batching() == active.arm.batching
 
-    if config.provider == active.routing.provider and config.model == expected_model and
-         Map.get(config.options, "base_url") == active.routing.endpoint and
-         Map.get(config.options, "upstream_route") == active.routing.upstream_route and
+    if config.provider == route.provider and config.model == expected_model and
+         Map.get(config.options, "base_url") == route.endpoint and
+         Map.get(config.options, "upstream_route") == route.upstream_route and
+         Map.get(config.options, "api_key_ref") == route.credential_ref and
          prompt_matches? and batching_matches? do
       :ok
     else
@@ -689,6 +803,19 @@ defmodule MemHouse.Model.CampaignAdmission do
   defp model_for_role("target.reranker", models), do: models.reranker
   defp model_for_role("harness.judge", models), do: models.judge
   defp model_for_role(_role, models), do: models.answerer
+
+  defp public_routes(routing) do
+    Map.new(routing, fn {role, route} ->
+      public = %{
+        credential: %{status: route.credential_status, variable: route.credential_variable},
+        endpoint: route.endpoint,
+        provider: route.provider,
+        upstream_route: route.upstream_route
+      }
+
+      {role, public}
+    end)
+  end
 
   defp non_negative_integer(value) when is_integer(value) and value >= 0, do: {:ok, value}
   defp non_negative_integer(_value), do: {:error, :not_non_negative_integer}
