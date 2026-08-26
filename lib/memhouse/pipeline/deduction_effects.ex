@@ -27,6 +27,7 @@ defmodule MemHouse.Pipeline.DeductionEffects do
         synthesis_item?(item)
       )
 
+    subject = subject!(item, account_id, scope_id, actor)
     key = key(account_id, scope_id, item, contributors)
 
     existing =
@@ -38,7 +39,6 @@ defmodule MemHouse.Pipeline.DeductionEffects do
     if existing do
       existing
     else
-      subject = subject!(item, account_id, scope_id, actor)
       family_key = family_key(account_id, scope_id, item, subject)
       predecessor = active_family_member(account_id, family_key, actor)
 
@@ -202,7 +202,7 @@ defmodule MemHouse.Pipeline.DeductionEffects do
   defp subject!(item, account_id, _scope_id, actor) do
     peer =
       MemHouse.Accounts.Peer
-      |> Ash.Query.filter(key == ^item.subject_ref)
+      |> Ash.Query.filter(key == ^item.subject_ref and kind != "agent")
       |> Ash.Query.set_tenant(account_id)
       |> Ash.read_one!(actor: actor)
 
