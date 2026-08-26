@@ -14,6 +14,7 @@ defmodule MemHouse.Pipeline.DreamTime do
   prompt identity so retries do not create a second pass.
   """
 
+  alias MemHouse.Accounts.Peer
   alias MemHouse.Clock
   alias MemHouse.DataLayer
   alias MemHouse.Knowledge.{KnowledgeItem, Provenance}
@@ -25,6 +26,7 @@ defmodule MemHouse.Pipeline.DreamTime do
   alias MemHouse.Pipeline.DreamTime.Gate
   alias MemHouse.Retrieval
   alias MemHouse.Retrieval.Query
+  alias MemHouse.Topology.Scope
 
   require Ash.Query
 
@@ -290,7 +292,11 @@ defmodule MemHouse.Pipeline.DreamTime do
 
         input = %{
           delta: serialise(snapshot.delta),
-          working_set: serialise(working_set, source_observations)
+          working_set: serialise(working_set, source_observations),
+          allowed_subject_refs: %{
+            scope_path: context.scope_path,
+            peer_keys: context.known_peer_keys
+          }
         }
 
         request_timeout = snapshot.limits.max_elapsed_ms
@@ -519,9 +525,14 @@ defmodule MemHouse.Pipeline.DreamTime do
       |> Enum.map(&{&1.sensitivity, &1.target_level})
       |> Enum.max_by(fn {sensitivity, target_level} -> {sensitivity, target_level} end)
 
+    subjects = trusted_subjects(snapshot, inputs)
+
     %{
       account_id: snapshot.account_id,
       scope_id: snapshot.scope_id,
+      scope_path: scope_path!(snapshot),
+      known_peer_keys: subjects.known_peer_keys,
+      forbidden_subject_terms: subjects.agent_peer_keys,
       actor: snapshot.actor,
       reasoning_inheritance: %{sensitivity: sensitivity, target_level: target_level},
       reasoning_inputs:
@@ -537,6 +548,33 @@ defmodule MemHouse.Pipeline.DreamTime do
             source_observations: Map.get(source_observations, &1.id, [])
           }
         )
+    }
+  end
+
+  defp scope_path!(snapshot) do
+    Scope
+    |> Ash.Query.filter(id == ^snapshot.scope_id)
+    |> Ash.Query.select([:path])
+    |> Ash.Query.set_tenant(snapshot.account_id)
+    |> Ash.read_one!(actor: snapshot.actor)
+    |> Map.fetch!(:path)
+  end
+
+  defp trusted_subjects(snapshot, inputs) do
+    peer_ids = inputs |> Enum.map(& &1.subject_peer_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    peers =
+      Peer
+      |> Ash.Query.filter(id in ^peer_ids or kind == "agent")
+      |> Ash.Query.select([:key, :kind])
+      |> Ash.Query.set_tenant(snapshot.account_id)
+      |> Ash.read!(actor: snapshot.actor)
+
+    {agents, subjects} = Enum.split_with(peers, &(&1.kind == "agent"))
+
+    %{
+      known_peer_keys: subjects |> Enum.map(& &1.key) |> Enum.sort(),
+      agent_peer_keys: agents |> Enum.map(& &1.key) |> Enum.sort()
     }
   end
 

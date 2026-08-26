@@ -30,6 +30,17 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
             Agent.update(Application.fetch_env!(:memhouse, :dream_time_test_clock), &(&1 + 7))
           end
 
+          if Application.get_env(:memhouse, :dream_time_pause_reasoning?, false) do
+            owner = Application.fetch_env!(:memhouse, :dream_time_test_pid)
+            send(owner, {:dream_reasoning_paused, self()})
+
+            receive do
+              :release_dream_reasoning -> :ok
+            after
+              5_000 -> raise "timed out waiting to release the DreamTime reasoning fixture"
+            end
+          end
+
           {:ok, %Result{value: value, usage: %{input_tokens: 7, output_tokens: 3}}}
       end
     end
@@ -72,12 +83,13 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     end
   end
 
+  alias MemHouse.Accounts.Peer
   alias MemHouse.DataLayer
-  alias MemHouse.Governance.Engine
+  alias MemHouse.Governance.{AuditEvent, Engine, ValidationItem}
   alias MemHouse.Identity
-  alias MemHouse.Knowledge.KnowledgeItem
+  alias MemHouse.Knowledge.{KnowledgeItem, KnowledgeRelation, LifecycleEvent, Provenance}
   alias MemHouse.Memory
-  alias MemHouse.Operations.DreamTimeWatermark
+  alias MemHouse.Operations.{DreamTimeWatermark, PipelineRun}
   alias MemHouse.Pipeline.DreamTime
   alias MemHouse.Pipeline.DreamTime.Gate
   alias MemHouse.Topology.Scope
@@ -409,6 +421,263 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     )
   end
 
+  test "a stale relation rolls back the complete dream-time effect bundle" do
+    configure_legacy_reasoning!(notify?: true, pause?: true)
+
+    first =
+      seed_active_record!(
+        "dream-time-atomic-bundle",
+        "deduction-first",
+        "Avery owns the weekly release checklist."
+      )
+
+    second =
+      seed_active_record!(
+        "dream-time-atomic-bundle",
+        "deduction-second",
+        "Avery reviews the weekly release checklist."
+      )
+
+    stale_endpoint =
+      seed_active_record!(
+        "dream-time-atomic-bundle",
+        "stale-relation-endpoint",
+        "Avery archives the weekly release checklist."
+      )
+
+    values =
+      start_supervised!(
+        {Agent,
+         fn ->
+           [
+             %{
+               "items" => [deduction(first.knowledge.id, second.knowledge.id)],
+               "relations" => [
+                 %{
+                   "source_id" => first.knowledge.id,
+                   "target_id" => stale_endpoint.knowledge.id,
+                   "kind" => "supports"
+                 }
+               ]
+             }
+           ]
+         end},
+        id: :dream_time_test_values
+      )
+
+    Application.put_env(:memhouse, :dream_time_test_values, values)
+
+    {dream, reasoning_pid, messages} =
+      start_paused_dream(first.account.id, first.scope.id)
+
+    assert %{
+             "peer_keys" => ["avery"],
+             "scope_path" => "/dream"
+           } = allowed_subject_refs(messages)
+
+    stale_endpoint =
+      DataLayer.with_account_key(
+        "dream-time-atomic-bundle",
+        [role: :system, pipeline?: true],
+        fn _account, actor ->
+          Engine.transition!(
+            stale_endpoint.knowledge,
+            actor,
+            %{state: "needs_revalidation", verification: "test_stale_relation"},
+            reason: "dream_time_test_stale_relation_endpoint",
+            channel: "pipeline"
+          )
+        end
+      )
+
+    baseline = effect_snapshot(first.account.id, first.scope.id)
+    send(reasoning_pid, :release_dream_reasoning)
+
+    assert {:raised, %Ash.Error.Query.NotFound{}} = Task.await(dream, 10_000)
+    assert stale_endpoint.state == "needs_revalidation"
+    assert effect_snapshot(first.account.id, first.scope.id) == baseline
+  end
+
+  test "a peer becoming an agent during replayed reasoning fails closed" do
+    configure_legacy_reasoning!(notify?: true)
+
+    first =
+      seed_active_record!(
+        "dream-time-peer-kind-race",
+        "deduction-first",
+        "Avery owns the weekly release checklist."
+      )
+
+    second =
+      seed_active_record!(
+        "dream-time-peer-kind-race",
+        "deduction-second",
+        "Avery reviews the weekly release checklist."
+      )
+
+    response = %{
+      "items" => [deduction(first.knowledge.id, second.knowledge.id)],
+      "relations" => []
+    }
+
+    values =
+      start_supervised!(
+        {Agent,
+         fn ->
+           [response, response]
+         end},
+        id: :dream_time_test_values
+      )
+
+    Application.put_env(:memhouse, :dream_time_test_values, values)
+
+    assert {:ok, %{status: :completed, items: 1}} =
+             DreamTime.run_scope(first.account.id, first.scope.id)
+
+    assert_receive {:dream_reasoner_input, :reasoning, first_messages}, 5_000
+
+    assert %{
+             "peer_keys" => ["avery"],
+             "scope_path" => "/dream"
+           } = allowed_subject_refs(first_messages)
+
+    DataLayer.with_account_id(
+      first.account.id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        first.knowledge
+        |> Engine.transition!(
+          actor,
+          %{state: "needs_revalidation", verification: "test_replay"},
+          reason: "dream_time_test_replay_input",
+          channel: "pipeline"
+        )
+        |> Engine.transition!(
+          actor,
+          %{state: "active", verification: "test_replay"},
+          reason: "dream_time_test_reactivate_replay_input",
+          channel: "pipeline"
+        )
+      end
+    )
+
+    Application.put_env(:memhouse, :dream_time_pause_reasoning?, true)
+
+    {dream, reasoning_pid, messages} =
+      start_paused_dream(first.account.id, first.scope.id)
+
+    assert %{
+             "peer_keys" => ["avery"],
+             "scope_path" => "/dream"
+           } = allowed_subject_refs(messages)
+
+    DataLayer.with_account_id(
+      first.account.id,
+      [role: :system, pipeline?: true],
+      fn _account, actor -> create_peer!(first.account.id, actor, "avery", "agent") end
+    )
+
+    baseline = effect_snapshot(first.account.id, first.scope.id)
+    send(reasoning_pid, :release_dream_reasoning)
+
+    result = Task.await(dream, 10_000)
+    assert effect_snapshot(first.account.id, first.scope.id) == baseline
+
+    assert {:raised, %ArgumentError{message: "reasoner referenced an unknown peer"}} =
+             result
+  end
+
+  test "scope deductions are reachable through trusted dream-time context" do
+    configure_legacy_reasoning!(notify?: true)
+
+    seeded = seed_active_scope_records!("dream-time-scope-deduction")
+
+    values =
+      start_supervised!(
+        {Agent,
+         fn ->
+           [
+             %{
+               "items" => [
+                 deduction(seeded.first.id, seeded.second.id, %{
+                   "statement" => "The dream scope has a weekly release process.",
+                   "kind" => "fact",
+                   "subject_type" => "scope",
+                   "subject_ref" => seeded.scope.path,
+                   "target_level" => "scope"
+                 })
+               ],
+               "relations" => []
+             }
+           ]
+         end},
+        id: :dream_time_test_values
+      )
+
+    Application.put_env(:memhouse, :dream_time_test_values, values)
+
+    assert {:ok, %{status: :completed, items: 1}} =
+             DreamTime.run_scope(seeded.account.id, seeded.scope.id)
+
+    assert_receive {:dream_reasoner_input, :reasoning, messages}
+
+    assert %{
+             "peer_keys" => [],
+             "scope_path" => "/dream"
+           } = allowed_subject_refs(messages)
+
+    DataLayer.with_account_id(
+      seeded.account.id,
+      [role: :system, pipeline?: true],
+      fn _account, actor ->
+        deduction =
+          KnowledgeItem
+          |> Ash.Query.filter(scope_id == ^seeded.scope.id and not is_nil(deduction_key))
+          |> Ash.Query.set_tenant(seeded.account.id)
+          |> Ash.read_one!(actor: actor)
+
+        assert deduction.subject_scope_id == seeded.scope.id
+        assert is_nil(deduction.subject_peer_id)
+      end
+    )
+  end
+
+  test "account agent names are rejected from dream-time deduction prose" do
+    configure_legacy_reasoning!()
+
+    seeded = seed_active_scope_records!("dream-time-agent-subject")
+
+    create_peer!(seeded.account.id, seeded.actor, "relay-agent", "agent")
+
+    invalid =
+      deduction(seeded.first.id, seeded.second.id, %{
+        "statement" => "relay-agent owns the weekly release process.",
+        "kind" => "fact",
+        "subject_type" => "scope",
+        "subject_ref" => seeded.scope.path,
+        "target_level" => "scope"
+      })
+
+    values =
+      start_supervised!(
+        {Agent,
+         fn ->
+           List.duplicate(%{"items" => [invalid], "relations" => []}, 3)
+         end},
+        id: :dream_time_test_values
+      )
+
+    Application.put_env(:memhouse, :dream_time_test_values, values)
+    baseline = effect_snapshot(seeded.account.id, seeded.scope.id)
+
+    assert {:error,
+            {:structured_validation_failed,
+             ["items[0].statement must be about a person, not about the relaying agent"]}} =
+             DreamTime.run_scope(seeded.account.id, seeded.scope.id)
+
+    assert effect_snapshot(seeded.account.id, seeded.scope.id) == baseline
+  end
+
   test "change, idle, interval, and work gates are deterministic and independent" do
     now = ~U[2026-08-17 12:00:00.000000Z]
 
@@ -499,6 +768,79 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
     |> then(& &1.account.id)
   end
 
+  defp configure_legacy_reasoning!(opts \\ []) do
+    provider = Application.get_env(:memhouse, :model_provider)
+    operations = Application.fetch_env!(:memhouse, :dream_reasoning_operations)
+    gates = Application.fetch_env!(:memhouse, :dream_time_gates)
+    clock = start_supervised!({Agent, fn -> 100 end}, id: :dream_time_test_clock)
+
+    Application.put_env(:memhouse, :model_provider, Provider)
+    Application.put_env(:memhouse, :dream_time_test_clock, clock)
+
+    if opts[:notify?], do: Application.put_env(:memhouse, :dream_time_test_pid, self())
+
+    if opts[:pause?],
+      do: Application.put_env(:memhouse, :dream_time_pause_reasoning?, true)
+
+    Application.put_env(
+      :memhouse,
+      :dream_reasoning_operations,
+      Keyword.put(operations, :split_enabled, false)
+    )
+
+    Application.put_env(
+      :memhouse,
+      :dream_time_gates,
+      Keyword.merge(gates,
+        min_changes: 1,
+        idle_seconds: 0,
+        min_interval_seconds: 0,
+        max_delta_items: 10,
+        max_working_set_items: 10
+      )
+    )
+
+    on_exit(fn ->
+      Application.put_env(:memhouse, :model_provider, provider)
+      Application.delete_env(:memhouse, :dream_time_test_clock)
+      Application.delete_env(:memhouse, :dream_time_test_pid)
+      Application.delete_env(:memhouse, :dream_time_test_values)
+      Application.delete_env(:memhouse, :dream_time_pause_reasoning?)
+      Application.put_env(:memhouse, :dream_reasoning_operations, operations)
+      Application.put_env(:memhouse, :dream_time_gates, gates)
+    end)
+  end
+
+  defp start_paused_dream(account_id, scope_id) do
+    dream =
+      Task.async(fn ->
+        receive do
+          :start ->
+            try do
+              DreamTime.run_scope(account_id, scope_id)
+            rescue
+              error -> {:raised, error}
+            end
+        end
+      end)
+
+    Ecto.Adapters.SQL.Sandbox.allow(MemHouse.Repo, self(), dream.pid)
+    send(dream.pid, :start)
+
+    assert_receive {:dream_reasoning_paused, reasoning_pid}, 5_000
+    assert_receive {:dream_reasoner_input, :reasoning, messages}, 5_000
+
+    {dream, reasoning_pid, messages}
+  end
+
+  defp allowed_subject_refs(messages) do
+    messages
+    |> Enum.find(&(&1.role == "user"))
+    |> Map.fetch!(:content)
+    |> Jason.decode!()
+    |> Map.fetch!("allowed_subject_refs")
+  end
+
   defp seed_active_record!(account_key, session_id, statement) do
     assert {:ok, message} =
              Memory.ingest_message(%{
@@ -532,5 +874,139 @@ defmodule MemHouse.Pipeline.DreamTimeTest do
 
       %{account: account, scope: scope, knowledge: item}
     end)
+  end
+
+  defp seed_active_scope_records!(account_key) do
+    %{actor: actor} =
+      Identity.bootstrap_human(%{
+        email: "#{account_key}@example.test",
+        name: "Dream Scope",
+        password: "correct horse battery staple"
+      })
+
+    DataLayer.with_actor(actor, fn account, current_actor ->
+      pipeline = %{current_actor | role: :system, pipeline?: true, scope_ids: :all}
+
+      scope =
+        Scope
+        |> Ash.Changeset.new()
+        |> Ash.Changeset.set_tenant(account.id)
+        |> Ash.Changeset.for_create(:ensure, %{
+          key: "dream",
+          name: "Dream",
+          path: "/dream",
+          state: "active"
+        })
+        |> Ash.create!(actor: current_actor)
+
+      first =
+        scope_knowledge!(account.id, scope.id, "The scope owns a release checklist.", pipeline)
+
+      second =
+        scope_knowledge!(account.id, scope.id, "The scope reviews a release checklist.", pipeline)
+
+      %{account: account, actor: pipeline, scope: scope, first: first, second: second}
+    end)
+  end
+
+  defp create_peer!(account_id, actor, key, kind) do
+    Peer
+    |> Ash.Changeset.new()
+    |> Ash.Changeset.set_tenant(account_id)
+    |> Ash.Changeset.for_create(:ensure, %{key: key, name: key, kind: kind})
+    |> Ash.create!(actor: actor)
+  end
+
+  defp scope_knowledge!(account_id, scope_id, statement, actor) do
+    KnowledgeItem
+    |> Ash.Changeset.new()
+    |> Ash.Changeset.set_tenant(account_id)
+    |> Ash.Changeset.for_create(:create_from_pipeline, %{
+      scope_id: scope_id,
+      subject_scope_id: scope_id,
+      statement: statement,
+      kind: "fact",
+      confidence: 1.0,
+      evidence_level: "direct",
+      sensitivity: "internal",
+      state: "proposed",
+      target_level: "scope",
+      verification: "test",
+      source_message_ids: [],
+      extracting_model: "test",
+      pipeline_version: "f5-1"
+    })
+    |> Ash.create!(actor: actor)
+    |> Engine.transition!(
+      actor,
+      %{state: "active", verification: "test"},
+      reason: "dream_time_test_activate_scope_input",
+      channel: "pipeline"
+    )
+  end
+
+  defp deduction(first_id, second_id, overrides \\ %{}) do
+    Map.merge(
+      %{
+        "reasoning" => "Validation-only rationale.",
+        "statement" => "Avery prefers weekly release summaries.",
+        "kind" => "preference",
+        "subject_type" => "peer",
+        "subject_ref" => "avery",
+        "confidence_level" => "stated_explicitly",
+        "sensitivity" => "internal",
+        "target_level" => "peer",
+        "contributor_ids" => [first_id, second_id]
+      },
+      overrides
+    )
+  end
+
+  defp effect_snapshot(account_id, scope_id) do
+    DataLayer.with_account_id(account_id, [role: :system, pipeline?: true], fn _account, actor ->
+      %{
+        deductions: count(KnowledgeItem, account_id, actor, scope_id, [:deduction]),
+        provenance: count(Provenance, account_id, actor, scope_id),
+        lifecycle: count(LifecycleEvent, account_id, actor, scope_id),
+        audit: count(AuditEvent, account_id, actor, scope_id),
+        relations: count(KnowledgeRelation, account_id, actor, scope_id),
+        reviews: count(ValidationItem, account_id, actor, scope_id),
+        derived_jobs: count(PipelineRun, account_id, actor, scope_id, [:derived]),
+        watermarks: watermark_cursors(account_id, actor, scope_id)
+      }
+    end)
+  end
+
+  defp watermark_cursors(account_id, actor, scope_id) do
+    DreamTimeWatermark
+    |> Ash.Query.filter(scope_id == ^scope_id)
+    |> Ash.Query.select([:input_watermark, :input_watermark_id])
+    |> Ash.Query.set_tenant(account_id)
+    |> Ash.read!(actor: actor)
+    |> Enum.map(&{&1.input_watermark, &1.input_watermark_id})
+  end
+
+  defp count(resource, account_id, actor, scope_id, kind \\ nil) do
+    query =
+      resource
+      |> Ash.Query.filter(scope_id == ^scope_id)
+      |> Ash.Query.set_tenant(account_id)
+
+    query =
+      case kind do
+        [:deduction] -> Ash.Query.filter(query, not is_nil(deduction_key))
+        [:derived] -> Ash.Query.filter(query, kind in ["projection_refresh", "entity_resolution"])
+        nil -> query
+      end
+
+    opts =
+      if resource == PipelineRun,
+        do: [actor: actor, page: [limit: 1_000]],
+        else: [actor: actor]
+
+    case Ash.read!(query, opts) do
+      %{results: results} -> length(results)
+      results -> length(results)
+    end
   end
 end
