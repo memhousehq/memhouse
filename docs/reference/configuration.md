@@ -120,7 +120,7 @@ boundary. Set all eight or none. A partial configuration stops startup.
 | `MEMHOUSE_CAMPAIGN_RUN_ID` | — | Immutable approved run id; a rerun requires a new packet and run id |
 | `MEMHOUSE_CAMPAIGN_BACKEND_MODE` | — | Exact approved PostgreSQL mode: `pg0` or `external` |
 | `MEMHOUSE_CAMPAIGN_TARGET_REVISION` | — | Full approved MemHouse target commit |
-| `MEMHOUSE_CAMPAIGN_BUILD_SHA` | `unknown` | Build-time-only full commit embedded in the campaign executable; `unknown` cannot activate spend |
+| `MEMHOUSE_CAMPAIGN_BUILD_SHA` | `unknown` | Build-time-only full commit embedded in the campaign executable; pass it as a Docker build argument for a campaign image; `unknown` cannot activate spend |
 
 Generation and reranker routing can be pinned independently with
 `MEMHOUSE_OPENROUTER_GENERATION_UPSTREAM_ROUTE` and
