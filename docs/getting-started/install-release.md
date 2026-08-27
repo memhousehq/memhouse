@@ -181,13 +181,11 @@ source against that pg0 installation:
 An approved campaign container must embed its full source revision before the
 release compiles:
 
-```bash
-revision=$(git rev-parse HEAD)
-docker build \
-  --build-arg "MEMHOUSE_CAMPAIGN_BUILD_SHA=$revision" \
-  --tag memhouse:campaign \
-  .
-```
+    revision=$(git rev-parse HEAD)
+    docker build \
+      --build-arg "MEMHOUSE_CAMPAIGN_BUILD_SHA=$revision" \
+      --tag memhouse:campaign \
+      .
 
 Omit the build argument for an ordinary image. It embeds `unknown`, which
 cannot activate campaign spend.

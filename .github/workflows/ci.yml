@@ -270,6 +270,6 @@ jobs:
       # The image is built and discarded. Nothing is pushed: publishing is a deliberate
       # human action, and this workflow has read-only permissions on purpose. Note that
       # this image contains no embedded database; it is the operator-run-PostgreSQL shape.
-      # Builds an ordinary image and an attested image, then reads the public revision seam
-      # from each built release. The attested image keeps the standard CI tag.
+      # The ordinary image must retain an unknown public revision, while memhouse:ci
+      # must preserve the attested revision required by downstream checks.
       - run: ./scripts/ci-campaign-build-revision

@@ -639,10 +639,10 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     assert dockerfile =~ "ARG MEMHOUSE_CAMPAIGN_BUILD_SHA=unknown"
     assert dockerfile =~ "ENV MEMHOUSE_CAMPAIGN_BUILD_SHA=${MEMHOUSE_CAMPAIGN_BUILD_SHA}"
 
-    {environment_offset, _length} =
+    {environment_offset, _} =
       :binary.match(dockerfile, "ENV MEMHOUSE_CAMPAIGN_BUILD_SHA=${MEMHOUSE_CAMPAIGN_BUILD_SHA}")
 
-    {compile_offset, _length} = :binary.match(dockerfile, "RUN mix compile && mix release")
+    {compile_offset, _} = :binary.match(dockerfile, "RUN mix compile && mix release")
 
     assert environment_offset < compile_offset
   end
