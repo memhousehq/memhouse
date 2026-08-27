@@ -50,6 +50,11 @@ RUN --mount=type=cache,target=/root/.cache/rustler_precompiled \
     --mount=type=cache,target=/usr/local/cargo/git \
     mix deps.get --only prod && mix deps.compile
 
+# Campaign artifacts opt in to one immutable source revision. Ordinary images keep the
+# fail-closed value that cannot activate campaign spend.
+ARG MEMHOUSE_CAMPAIGN_BUILD_SHA=unknown
+ENV MEMHOUSE_CAMPAIGN_BUILD_SHA=${MEMHOUSE_CAMPAIGN_BUILD_SHA}
+
 # `rel` supplies the packaged server and migration launchers.
 COPY config config
 COPY lib lib

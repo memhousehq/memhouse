@@ -166,10 +166,12 @@ reading or changing the guard.
 ## Approved campaign pre-spend admission
 
 An explicitly approved paid campaign must use an artifact compiled with
-`MEMHOUSE_CAMPAIGN_BUILD_SHA`, then start an isolated MemHouse node with the
-eight runtime `MEMHOUSE_CAMPAIGN_*` variables from the configuration reference. The
-node hashes the exact packet bytes and requires an admitted, blocker-free
-packet. It also matches the definition id, arm, run id, PostgreSQL backend,
+`MEMHOUSE_CAMPAIGN_BUILD_SHA`. A container build must pass it through the
+`MEMHOUSE_CAMPAIGN_BUILD_SHA` Docker build argument. Use the eight runtime
+`MEMHOUSE_CAMPAIGN_*` variables from the configuration reference to start an
+isolated MemHouse node. The node hashes the exact packet bytes and requires an
+admitted, blocker-free packet. It also matches the definition id, arm, run id,
+PostgreSQL backend,
 embedded target revision, extraction prompt, batching switch, provider,
 endpoint, model, credential reference and presence, and every paid role's
 pinned OpenRouter upstream route before it activates.

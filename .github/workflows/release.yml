@@ -143,6 +143,7 @@ jobs:
 
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           docker build \
+            --build-arg "MEMHOUSE_CAMPAIGN_BUILD_SHA=$revision" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$revision" \
             --label "org.opencontainers.image.version=$version" \

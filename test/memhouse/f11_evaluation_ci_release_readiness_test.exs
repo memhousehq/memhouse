@@ -124,7 +124,7 @@ defmodule MemHouse.F11EvaluationCiReleaseReadinessTest do
           "mix memhouse.eval.release",
           "mix memhouse.release.check",
           "mix release --overwrite",
-          "docker build"
+          "./scripts/ci-campaign-build-revision"
         ] do
       assert ci =~ command
     end

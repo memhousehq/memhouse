@@ -633,6 +633,28 @@ defmodule MemHouse.F10PortabilityPackagingOperationsTest do
     refute compose =~ "redis"
   end
 
+  test "canonical container makes campaign revision available before release compilation" do
+    dockerfile = File.read!("Dockerfile")
+
+    assert dockerfile =~ "ARG MEMHOUSE_CAMPAIGN_BUILD_SHA=unknown"
+    assert dockerfile =~ "ENV MEMHOUSE_CAMPAIGN_BUILD_SHA=${MEMHOUSE_CAMPAIGN_BUILD_SHA}"
+
+    {environment_offset, _length} =
+      :binary.match(dockerfile, "ENV MEMHOUSE_CAMPAIGN_BUILD_SHA=${MEMHOUSE_CAMPAIGN_BUILD_SHA}")
+
+    {compile_offset, _length} = :binary.match(dockerfile, "RUN mix compile && mix release")
+
+    assert environment_offset < compile_offset
+  end
+
+  test "container gates verify default and supplied campaign revisions" do
+    ci = File.read!(".github/workflows/ci.yml")
+    release = File.read!(".github/workflows/release.yml")
+
+    assert ci =~ "./scripts/ci-campaign-build-revision"
+    assert release =~ ~s(--build-arg "MEMHOUSE_CAMPAIGN_BUILD_SHA=$revision")
+  end
+
   test "pg0 stages verified pgvectorscale files without rewriting a match" do
     root = temp_path("vectorscale-stage")
     source = Path.join(root, "source")

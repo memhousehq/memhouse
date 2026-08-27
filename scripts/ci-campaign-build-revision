@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MemHouse-Sustainable-Use-1.0
+
+set -euo pipefail
+
+revision="${1:-$(git rev-parse HEAD)}"
+
+if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'campaign build revision must be a full lowercase Git SHA\n' >&2
+  exit 1
+fi
+
+default_image="memhouse:campaign-build-default"
+attested_image="memhouse:ci"
+
+read_revision() {
+  docker run --rm --entrypoint /bin/sh "$1" -c \
+    "set -- /app/releases/*/start_clean.boot
+    boot_file=\${1%.boot}
+    exec /app/erts-*/bin/erl -boot \"\$boot_file\" -boot_var RELEASE_LIB /app/lib -noshell \
+    -pa /app/lib/*/ebin -eval \
+    \"io:put_chars('Elixir.MemHouse.Model.CampaignBuild':revision()), halt().\""
+}
+
+docker build --tag "$default_image" .
+
+default_revision="$(read_revision "$default_image")"
+
+if [[ "$default_revision" != "unknown" ]]; then
+  printf 'ordinary container embedded unexpected campaign revision: %s\n' \
+    "$default_revision" >&2
+  exit 1
+fi
+
+docker build \
+  --build-arg "MEMHOUSE_CAMPAIGN_BUILD_SHA=$revision" \
+  --tag "$attested_image" \
+  .
+
+attested_revision="$(read_revision "$attested_image")"
+
+if [[ "$attested_revision" != "$revision" ]]; then
+  printf 'attested container embedded %s instead of %s\n' \
+    "$attested_revision" "$revision" >&2
+  exit 1
+fi
+
+printf 'verified campaign build revisions: default=unknown attested=%s\n' "$revision"
