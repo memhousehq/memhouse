@@ -76,11 +76,31 @@ the legacy `x-memhouse-account-key` header are accepted and ignored.
 Liveness. Touches no database and no queue.
 
 ```json
-{"status": "ok", "app": "memhouse", "version": "f5-1"}
+{
+  "status": "ok",
+  "app": "memhouse",
+  "version": "f5-1",
+  "campaign_admission": {"active": false, "status": "inactive"}
+}
 ```
 
 `version` identifies the extraction-and-pipeline contract, not the application
-version.
+version. `campaign_admission` is also public and content-safe. When an approved
+campaign is active it adds the exact definition, run, backend, arm, target
+revision, and admission identity; immutable per-role caps under `role_reserved`;
+and durable per-role provider counters under `role_usage`. Every admitted role
+is present even when all counters are zero. Occurrence times are bounded UTC
+ISO-8601 strings or `null` before the first dispatch.
+
+`role_usage` counts actual provider dispatches and reconciles success, error,
+timeout, cancellation, and responses without token metering. A final campaign
+snapshot has zero `pending_attempts` and `in_flight`. The payload never includes
+prompts, completions, source text, credentials, Account identifiers, exception
+text, or arbitrary provider metadata, and reading it does not access Postgres or
+an Account context. Completed counters recover from the durable campaign ledger
+after process or application restart; recovery does not reopen the consumed
+campaign for more spend. Provider-wide totals are omitted because MemHouse
+cannot reconcile benchmark-harness calls made outside the target process.
 
 ---
 

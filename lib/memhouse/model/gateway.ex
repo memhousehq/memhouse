@@ -331,7 +331,7 @@ defmodule MemHouse.Model.Gateway do
                     call,
                     provider,
                     permit,
-                    campaign_timeout(timeout_ms, reservation)
+                    {reservation, campaign_timeout(timeout_ms, reservation)}
                   )
                 end
 
@@ -355,9 +355,20 @@ defmodule MemHouse.Model.Gateway do
     end)
   end
 
-  defp invoke_permitted(operation, config, context, opts, call, provider, permit, timeout_ms) do
+  defp invoke_permitted(
+         operation,
+         config,
+         context,
+         opts,
+         call,
+         provider,
+         permit,
+         {reservation, timeout_ms}
+       ) do
+    :ok = CampaignAdmission.dispatch(reservation)
     started_at = System.monotonic_time(:millisecond)
     result = safe_call(call, provider, timeout_ms)
+    :ok = CampaignAdmission.complete(reservation, result)
     :ok = ProviderCircuit.complete(permit, result)
     duration_ms = System.monotonic_time(:millisecond) - started_at
 
