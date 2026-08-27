@@ -145,7 +145,9 @@ behavior for one exact `pg0` or `external` PostgreSQL execution.
 The same directory stores a digest-keyed, content-safe accounting snapshot.
 MemHouse writes a pending record before returning a reservation, marks it
 in-flight before dispatching to the provider, and durably finalizes it on every
-terminal result. The snapshot contains only admitted identity, role names,
+terminal result. On restart it cancels orphaned pending records and finalizes
+orphaned dispatches as unmetered errors after their provider task is stopped.
+The snapshot contains only bounded admitted identity, role names,
 bounded counters, token totals, and UTC occurrence times. Keep the directory on
 durable storage: [`GET /api/health`](http-api.md) recovers completed counters
 from it after restart but refuses further spend from the consumed packet.

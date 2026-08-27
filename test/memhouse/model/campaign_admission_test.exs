@@ -153,6 +153,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     assert admission["active"] == true
     assert admission["identity"] == identity
+    assert admission["digest"] == digest
     assert Map.keys(admission["role_reserved"]) |> Enum.sort() == paid_role_names()
     assert Map.keys(admission["role_usage"]) |> Enum.sort() == paid_role_names()
 
@@ -368,6 +369,157 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
              )
   end
 
+  test "startup recovery accepts a caller cancelled before provider dispatch" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    opts = activation_opts(path)
+    assert {:ok, identity} = CampaignAdmission.activate(path, digest, opts)
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        result =
+          CampaignAdmission.reserve(
+            Config.resolve(:ingest_extractor, %{}),
+            :structured,
+            1,
+            1,
+            ReqLLM,
+            campaign_identity: identity
+          )
+
+        send(parent, {:reserved_before_dispatch, self(), result})
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive {:reserved_before_dispatch, ^caller, {:ok, _reservation}}
+    monitor = Process.monitor(caller)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^caller, :killed}
+
+    usage = await_usage_finalization(50)
+    assert usage["attempts"] == 0
+    assert usage["errors"] == 0
+    assert usage["unmetered_attempts"] == 0
+
+    before_restart = health_admission()
+    previous_activation = Application.get_env(:memhouse, :campaign_admission)
+
+    on_exit(fn ->
+      :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+
+      if previous_activation do
+        Application.put_env(:memhouse, :campaign_admission, previous_activation)
+      else
+        Application.delete_env(:memhouse, :campaign_admission)
+      end
+
+      {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    end)
+
+    Application.put_env(:memhouse, :campaign_admission, {path, digest, opts})
+    :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+    {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+
+    assert health_admission() == before_restart
+  end
+
+  test "startup recovery reconciles an interrupted pending reservation" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    opts = activation_opts(path)
+    assert {:ok, identity} = CampaignAdmission.activate(path, digest, opts)
+
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               1,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
+    restore_campaign_after_test(path, digest, opts)
+    restart_campaign_admission!()
+
+    first = health_admission()
+    second = health_admission()
+    assert first == second
+
+    assert first["role_usage"]["target.ingest_extractor"]
+           |> Map.take([
+             "attempts",
+             "errors",
+             "unmetered_attempts",
+             "pending_attempts",
+             "in_flight"
+           ]) ==
+             %{
+               "attempts" => 0,
+               "errors" => 0,
+               "unmetered_attempts" => 0,
+               "pending_attempts" => 0,
+               "in_flight" => 0
+             }
+  end
+
+  test "startup recovery kills and reconciles an interrupted provider dispatch" do
+    endpoint = start_http_stub(delay: 4_000, body: completion(%{}))
+    configure_extractor_endpoint(endpoint)
+
+    campaign =
+      packet(requests: 1, input_tokens: 10_000)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "endpoint"], endpoint)
+
+    {path, digest} = write_packet!(campaign)
+    opts = activation_opts(path)
+    assert {:ok, identity} = CampaignAdmission.activate(path, digest, opts)
+    restore_campaign_after_test(path, digest, opts)
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        result =
+          Gateway.structured_once(
+            :ingest_extractor,
+            [],
+            %{},
+            %{},
+            campaign_identity: identity
+          )
+
+        send(parent, {:interrupted_gateway_result, result})
+      end)
+
+    monitor = Process.monitor(caller)
+    assert_receive :campaign_http_call, 3_000
+    restart_campaign_admission!()
+
+    if Process.alive?(caller), do: Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^caller, _reason}
+    refute_receive {:interrupted_gateway_result, {:ok, _value, _config}}
+
+    first = health_admission()
+    Process.sleep(10)
+    second = health_admission()
+    assert first == second
+
+    assert first["role_usage"]["target.ingest_extractor"]
+           |> Map.take([
+             "attempts",
+             "errors",
+             "unmetered_attempts",
+             "pending_attempts",
+             "in_flight"
+           ]) ==
+             %{
+               "attempts" => 1,
+               "errors" => 1,
+               "unmetered_attempts" => 1,
+               "pending_attempts" => 0,
+               "in_flight" => 0
+             }
+  end
+
   test "the public gateway refuses a second paid request after the campaign cap is reserved" do
     {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
 
@@ -473,6 +625,26 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     assert {:error, %CampaignAdmission.Refused{reason: :campaign_arm_mismatch}} =
              activate(path, digest, arm_id: nil)
+  end
+
+  test "public campaign identity fields reject unbounded or unsafe packet text" do
+    invalid_definition =
+      packet(requests: 1)
+      |> Map.put("definition_id", String.duplicate("a", 129))
+
+    {path, digest} = write_packet!(invalid_definition)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :invalid_campaign_identity}} =
+             activate(path, digest, definition_id: String.duplicate("a", 129))
+
+    invalid_prompt =
+      packet(requests: 1)
+      |> put_in(["arms", Access.at(0), "prompt_version"], "unsafe prompt text")
+
+    {path, digest} = write_packet!(invalid_prompt)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_arm_mismatch}} =
+             activate(path, digest)
   end
 
   test "activation binds the immutable run and backend identity" do
@@ -848,7 +1020,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
       end)
 
     monitor = Process.monitor(caller)
-    assert_receive :campaign_http_call, 1_000
+    assert_receive :campaign_http_call, 3_000
     Process.exit(caller, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^caller, :killed}
     refute_receive {:unexpected_gateway_result, _result}
@@ -859,6 +1031,10 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert usage["unmetered_attempts"] == 1
     assert usage["pending_attempts"] == 0
     assert usage["in_flight"] == 0
+
+    first = health_admission()
+    Process.sleep(10)
+    assert health_admission() == first
   end
 
   test "the admitted ReqLLM adapter makes no hidden transport retry" do
@@ -1326,6 +1502,30 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
   end
 
   defp await_usage_finalization(0), do: flunk("campaign usage did not reach a terminal state")
+
+  defp restore_campaign_after_test(path, digest, opts) do
+    previous_activation = Application.get_env(:memhouse, :campaign_admission)
+
+    on_exit(fn ->
+      :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+
+      if previous_activation do
+        Application.put_env(:memhouse, :campaign_admission, previous_activation)
+      else
+        Application.delete_env(:memhouse, :campaign_admission)
+      end
+
+      {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    end)
+
+    Application.put_env(:memhouse, :campaign_admission, {path, digest, opts})
+  end
+
+  defp restart_campaign_admission! do
+    :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+    {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    :ok
+  end
 
   defp write_packet!(packet) do
     nonce = :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)

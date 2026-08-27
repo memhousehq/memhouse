@@ -22,7 +22,7 @@ application version. See
 Point orchestrator **liveness** probes here.
 
 During an approved paid campaign, `campaign_admission` exposes only the exact
-content-safe campaign identity, immutable per-role caps, and durable per-role
+content-safe campaign identity and packet digest, immutable per-role caps, and durable per-role
 dispatch/error/token counters. Every admitted role is included, including
 zero-use roles. Wait for two identical snapshots with zero pending and
 in-flight attempts before finalizing campaign accounting. This liveness read

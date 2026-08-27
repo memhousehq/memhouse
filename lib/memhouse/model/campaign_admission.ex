@@ -71,6 +71,7 @@ defmodule MemHouse.Model.CampaignAdmission do
           active: true,
           status: "active",
           identity: active.identity,
+          digest: active.digest,
           definition_id: active.definition_id,
           arm: active.arm,
           run_id: active.run_id,
@@ -83,7 +84,8 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   @doc false
-  def dispatch(reservation), do: GenServer.call(__MODULE__, {:dispatch, reservation})
+  def dispatch(reservation, lifecycle_owner \\ self()),
+    do: GenServer.call(__MODULE__, {:dispatch, reservation, lifecycle_owner})
 
   @doc false
   def complete(reservation, result),
@@ -151,6 +153,7 @@ defmodule MemHouse.Model.CampaignAdmission do
     reply = %{
       active?: true,
       identity: active.identity,
+      digest: active.digest,
       definition_id: active.definition_id,
       arm: active.arm,
       run_id: active.run_id,
@@ -210,8 +213,8 @@ defmodule MemHouse.Model.CampaignAdmission do
     end
   end
 
-  def handle_call({:dispatch, reservation}, {owner, _tag}, state) do
-    case transition_dispatch(state.active, reservation, owner) do
+  def handle_call({:dispatch, reservation, lifecycle_owner}, {owner, _tag}, state) do
+    case transition_dispatch(state.active, reservation, owner, lifecycle_owner) do
       {:ok, active} -> {:reply, :ok, %{state | active: active}}
       {:error, reason} -> {:reply, refused(reason), state}
     end
@@ -423,8 +426,8 @@ defmodule MemHouse.Model.CampaignAdmission do
     expected = Keyword.get(opts, :definition_id)
 
     cond do
-      not is_binary(value) or value == "" -> {:error, :invalid_campaign_identity}
-      not is_binary(expected) or expected == "" -> {:error, :missing_campaign_identity}
+      not valid_public_id?(value) -> {:error, :invalid_campaign_identity}
+      not valid_public_id?(expected) -> {:error, :missing_campaign_identity}
       expected != value -> {:error, :campaign_identity_mismatch}
       true -> {:ok, value}
     end
@@ -477,6 +480,11 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   defp valid_run_id?(_value), do: false
 
+  defp valid_public_id?(value) when is_binary(value),
+    do: Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/, value)
+
+  defp valid_public_id?(_value), do: false
+
   defp valid_backend?(
          backend = %{
            "engine" => "postgres",
@@ -523,8 +531,10 @@ defmodule MemHouse.Model.CampaignAdmission do
         "batching" => ^batching,
         "runtime_prompt_available" => true
       }
-      when is_binary(id) and id != "" and is_binary(prompt) and prompt != "" ->
-        {:ok, %{id: id, prompt_version: prompt, batching: batching}}
+      when is_binary(id) and is_binary(prompt) ->
+        if valid_public_id?(id) and valid_public_id?(prompt),
+          do: {:ok, %{id: id, prompt_version: prompt, batching: batching}},
+          else: {:error, :campaign_arm_mismatch}
 
       _invalid ->
         {:error, :campaign_arm_mismatch}
@@ -981,17 +991,25 @@ defmodule MemHouse.Model.CampaignAdmission do
     }
   end
 
-  defp transition_dispatch(active, reservation, _owner) when reservation in [:inactive, :local],
-    do: {:ok, active}
+  defp transition_dispatch(active, reservation, _owner, _lifecycle_owner)
+       when reservation in [:inactive, :local],
+       do: {:ok, active}
 
-  defp transition_dispatch(%{recovered?: true}, _reservation, _owner),
+  defp transition_dispatch(%{recovered?: true}, _reservation, _owner, _lifecycle_owner),
     do: {:error, :campaign_already_consumed}
 
-  defp transition_dispatch(active, %{attempt_id: attempt_id}, owner) do
+  defp transition_dispatch(active, %{attempt_id: attempt_id}, owner, lifecycle_owner)
+       when is_pid(lifecycle_owner) do
     case active.attempts[attempt_id] do
       %{state: :pending, role: role, owner: ^owner} = attempt ->
         occurred_at = DateTime.utc_now() |> DateTime.to_iso8601()
         current = active.role_usage[role]
+        previous_monitor = attempt.monitor
+
+        lifecycle_monitor =
+          if lifecycle_owner == owner,
+            do: previous_monitor,
+            else: Process.monitor(lifecycle_owner)
 
         usage =
           current
@@ -1008,18 +1026,32 @@ defmodule MemHouse.Model.CampaignAdmission do
               Map.put(active.attempts, attempt_id, %{
                 attempt
                 | state: :in_flight,
-                  occurred_at: occurred_at
+                  occurred_at: occurred_at,
+                  monitor: lifecycle_monitor,
+                  owner: lifecycle_owner
               })
         }
 
-        persist_transition(updated)
+        case persist_transition(updated) do
+          {:ok, _active} = success ->
+            if lifecycle_monitor != previous_monitor,
+              do: Process.demonitor(previous_monitor, [:flush])
+
+            success
+
+          {:error, _reason} = error ->
+            if lifecycle_monitor != previous_monitor,
+              do: Process.demonitor(lifecycle_monitor, [:flush])
+
+            error
+        end
 
       _other ->
         {:error, :invalid_campaign_attempt}
     end
   end
 
-  defp transition_dispatch(_active, _reservation, _owner),
+  defp transition_dispatch(_active, _reservation, _owner, _lifecycle_owner),
     do: {:error, :invalid_campaign_attempt}
 
   defp transition_complete(active, reservation, terminal, demonitor? \\ true)
@@ -1072,12 +1104,7 @@ defmodule MemHouse.Model.CampaignAdmission do
     updated = %{
       active
       | role_usage: Map.put(active.role_usage, role, usage),
-        attempts:
-          Map.update!(
-            active.attempts,
-            attempt_id,
-            &%{&1 | state: :terminal, monitor: nil, owner: nil}
-          )
+        attempts: Map.delete(active.attempts, attempt_id)
     }
 
     persist_transition(updated)
@@ -1170,8 +1197,10 @@ defmodule MemHouse.Model.CampaignAdmission do
       {:ok, bytes} ->
         with {:ok, payload} <- Jason.decode(bytes),
              :ok <- matching_accounting_identity(active, payload),
-             {:ok, restored} <- restore_payload(active, payload) do
-          {:ok, %{restored | recovered?: true}}
+             {:ok, restored} <- restore_payload(active, payload),
+             {:ok, reconciled} <- reconcile_recovered_attempts(restored),
+             :ok <- persist_accounting(reconciled) do
+          {:ok, %{reconciled | recovered?: true}}
         else
           _invalid -> {:error, :campaign_ledger_unavailable}
         end
@@ -1204,6 +1233,53 @@ defmodule MemHouse.Model.CampaignAdmission do
            attempts: attempts
        }}
     end
+  end
+
+  defp reconcile_recovered_attempts(active) do
+    Enum.reduce_while(active.attempts, {:ok, active}, fn
+      {attempt_id, %{state: :pending, role: role}}, {:ok, current} ->
+        usage = current.role_usage[role]
+
+        if usage.pending_attempts > 0 do
+          reconciled_usage = Map.update!(usage, :pending_attempts, &(&1 - 1))
+
+          {:cont,
+           {:ok,
+            %{
+              current
+              | role_usage: Map.put(current.role_usage, role, reconciled_usage),
+                attempts: Map.delete(current.attempts, attempt_id)
+            }}}
+        else
+          {:halt, {:error, :campaign_ledger_unavailable}}
+        end
+
+      {attempt_id, %{state: :in_flight, role: role} = attempt}, {:ok, current} ->
+        usage = current.role_usage[role]
+
+        if usage.in_flight > 0 do
+          reconciled_usage =
+            usage
+            |> Map.update!(:in_flight, &(&1 - 1))
+            |> Map.update!(:errors, &(&1 + 1))
+            |> Map.update!(:unmetered_attempts, &(&1 + 1))
+
+          terminal_attempt = %{attempt | state: :terminal, monitor: nil, owner: nil}
+
+          {:cont,
+           {:ok,
+            %{
+              current
+              | role_usage: Map.put(current.role_usage, role, reconciled_usage),
+                attempts: Map.put(current.attempts, attempt_id, terminal_attempt)
+            }}}
+        else
+          {:halt, {:error, :campaign_ledger_unavailable}}
+        end
+
+      {_attempt_id, %{state: :terminal}}, {:ok, current} ->
+        {:cont, {:ok, current}}
+    end)
   end
 
   defp restore_roles(value, shape) when is_map(value) do

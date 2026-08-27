@@ -86,8 +86,8 @@ Liveness. Touches no database and no queue.
 
 `version` identifies the extraction-and-pipeline contract, not the application
 version. `campaign_admission` is also public and content-safe. When an approved
-campaign is active it adds the exact definition, run, backend, arm, target
-revision, and admission identity; immutable per-role caps under `role_reserved`;
+campaign is active it adds the exact bounded definition, run, backend, arm,
+target revision, packet `digest`, and admission identity; immutable per-role caps under `role_reserved`;
 and durable per-role provider counters under `role_usage`. Every admitted role
 is present even when all counters are zero. Occurrence times are bounded UTC
 ISO-8601 strings or `null` before the first dispatch.
@@ -98,8 +98,9 @@ snapshot has zero `pending_attempts` and `in_flight`. The payload never includes
 prompts, completions, source text, credentials, Account identifiers, exception
 text, or arbitrary provider metadata, and reading it does not access Postgres or
 an Account context. Completed counters recover from the durable campaign ledger
-after process or application restart; recovery does not reopen the consumed
-campaign for more spend. Provider-wide totals are omitted because MemHouse
+after process or application restart. Interrupted reservations are cancelled,
+and interrupted dispatches are finalized as unmetered errors only after their
+provider task stops; recovery does not reopen the consumed campaign for more spend. Provider-wide totals are omitted because MemHouse
 cannot reconcile benchmark-harness calls made outside the target process.
 
 ---

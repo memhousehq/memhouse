@@ -67,6 +67,29 @@ defmodule MemHouse.Model.ProviderCircuitTest.ExitingProvider do
   def rerank(_config, _query, _documents, _opts), do: {:error, :unsupported}
 end
 
+defmodule MemHouse.Model.ProviderCircuitTest.AbruptProvider do
+  @moduledoc "Simulates provider raises and throws at the gateway boundary."
+
+  @behaviour MemHouse.Model.Provider
+
+  @impl true
+  def structured(_config, _messages, _schema, _opts) do
+    case Application.fetch_env!(:memhouse, :abrupt_provider_test_mode) do
+      :raise -> raise "provider exception remains private"
+      :throw -> throw(:provider_throw)
+    end
+  end
+
+  @impl true
+  def chat(_config, _messages, _opts), do: {:error, :unsupported}
+
+  @impl true
+  def embed(_config, _texts, _opts), do: {:error, :unsupported}
+
+  @impl true
+  def rerank(_config, _query, _documents, _opts), do: {:error, :unsupported}
+end
+
 defmodule MemHouse.Model.ProviderCircuitTest do
   @moduledoc """
   Verifies provider-circuit admission, recovery, cleanup, and Account isolation.
@@ -78,6 +101,7 @@ defmodule MemHouse.Model.ProviderCircuitTest do
   alias MemHouse.Model.Config.Role
   alias MemHouse.Model.Gateway
   alias MemHouse.Model.ProviderCircuit
+  alias MemHouse.Model.ProviderCircuitTest.AbruptProvider
   alias MemHouse.Model.ProviderCircuitTest.ExitingProvider
   alias MemHouse.Model.ProviderCircuitTest.Provider
   alias MemHouse.Pipeline.Extractor
@@ -323,6 +347,27 @@ defmodule MemHouse.Model.ProviderCircuitTest do
     config = MemHouse.Model.role_config(:ingest_extractor, context)
 
     assert {:error, {:provider_exit, :provider_timeout}} =
+             Gateway.structured_once(:ingest_extractor, [], %{}, context)
+
+    assert ProviderCircuit.status(config, context, 0).in_flight == 0
+  end
+
+  test "gateway converts provider raises and throws and completes each circuit permit" do
+    context = Ecto.UUID.generate() |> pipeline_context()
+    Application.put_env(:memhouse, :model_provider, AbruptProvider)
+    on_exit(fn -> Application.delete_env(:memhouse, :abrupt_provider_test_mode) end)
+    config = MemHouse.Model.role_config(:ingest_extractor, context)
+
+    Application.put_env(:memhouse, :abrupt_provider_test_mode, :raise)
+
+    assert {:error, %RuntimeError{}} =
+             Gateway.structured_once(:ingest_extractor, [], %{}, context)
+
+    assert ProviderCircuit.status(config, context, 0).in_flight == 0
+
+    Application.put_env(:memhouse, :abrupt_provider_test_mode, :throw)
+
+    assert {:error, {:provider_throw, :provider_throw}} =
              Gateway.structured_once(:ingest_extractor, [], %{}, context)
 
     assert ProviderCircuit.status(config, context, 0).in_flight == 0

@@ -365,10 +365,8 @@ defmodule MemHouse.Model.Gateway do
          permit,
          {reservation, timeout_ms}
        ) do
-    :ok = CampaignAdmission.dispatch(reservation)
     started_at = System.monotonic_time(:millisecond)
-    result = safe_call(call, provider, timeout_ms)
-    :ok = CampaignAdmission.complete(reservation, result)
+    result = accounted_safe_call(call, provider, timeout_ms, reservation)
     :ok = ProviderCircuit.complete(permit, result)
     duration_ms = System.monotonic_time(:millisecond) - started_at
 
@@ -504,6 +502,85 @@ defmodule MemHouse.Model.Gateway do
       {:ok, result} -> result
       {:exit, reason} -> {:error, {:provider_exit, reason}}
       nil -> {:error, %ExtractionBudget.Exceeded{reason: "wall-time cap"}}
+    end
+  end
+
+  defp accounted_safe_call(call, provider, timeout_ms, reservation)
+       when reservation in [:inactive, :local] do
+    :ok = CampaignAdmission.dispatch(reservation)
+    result = safe_call(call, provider, timeout_ms)
+    :ok = CampaignAdmission.complete(reservation, result)
+    result
+  end
+
+  defp accounted_safe_call(call, provider, nil, reservation) do
+    :ok = CampaignAdmission.dispatch(reservation)
+    result = safe_call(call, provider, nil)
+    :ok = CampaignAdmission.complete(reservation, result)
+    result
+  end
+
+  defp accounted_safe_call(call, provider, timeout_ms, reservation)
+       when is_integer(timeout_ms) and timeout_ms > 0 do
+    owner = self()
+    admission = Process.whereis(CampaignAdmission)
+
+    task =
+      Task.Supervisor.async_nolink(
+        MemHouse.Model.ProviderTaskSupervisor,
+        fn ->
+          receive do
+            :campaign_provider_dispatch -> safe_call(call, provider, nil)
+          end
+        end
+      )
+
+    lifecycle = spawn(fn -> provider_lifecycle_guard(owner, task.pid, admission) end)
+    :ok = CampaignAdmission.dispatch(reservation, lifecycle)
+    send(task.pid, :campaign_provider_dispatch)
+
+    result =
+      case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+        {:ok, result} -> result
+        {:exit, reason} -> {:error, {:provider_exit, reason}}
+        nil -> {:error, %ExtractionBudget.Exceeded{reason: "wall-time cap"}}
+      end
+
+    :ok = CampaignAdmission.complete(reservation, result)
+    send(lifecycle, :complete)
+    result
+  end
+
+  defp provider_lifecycle_guard(owner, provider_task, admission) do
+    owner_ref = Process.monitor(owner)
+    task_ref = Process.monitor(provider_task)
+    admission_ref = if is_pid(admission), do: Process.monitor(admission)
+    provider_lifecycle_loop(owner_ref, task_ref, admission_ref, provider_task, false)
+  end
+
+  defp provider_lifecycle_loop(owner_ref, task_ref, admission_ref, provider_task, task_down?) do
+    receive do
+      :complete ->
+        :ok
+
+      {:DOWN, ^task_ref, :process, ^provider_task, _reason} ->
+        provider_lifecycle_loop(owner_ref, task_ref, admission_ref, provider_task, true)
+
+      {:DOWN, ^owner_ref, :process, _owner, _reason} ->
+        stop_provider_task(provider_task, task_ref, task_down?)
+
+      {:DOWN, ^admission_ref, :process, _admission, _reason} ->
+        stop_provider_task(provider_task, task_ref, task_down?)
+    end
+  end
+
+  defp stop_provider_task(_provider_task, _task_ref, true), do: :ok
+
+  defp stop_provider_task(provider_task, task_ref, false) do
+    Process.exit(provider_task, :kill)
+
+    receive do
+      {:DOWN, ^task_ref, :process, ^provider_task, _reason} -> :ok
     end
   end
 
