@@ -1179,10 +1179,19 @@ defmodule MemHouse.Model.CampaignAdmission do
     }
 
     with :ok <- File.write(temporary, Jason.encode!(payload), [:sync]),
-         :ok <- File.rename(temporary, path) do
+         :ok <- File.rename(temporary, path),
+         :ok <- sync_directory(Path.dirname(path)) do
       :ok
     else
       _error -> {:error, :campaign_ledger_unavailable}
+    end
+  end
+
+  defp sync_directory(directory) do
+    with {:ok, descriptor} <- :file.open(String.to_charlist(directory), [:read, :raw, :directory]) do
+      result = :file.sync(descriptor)
+      :ok = :file.close(descriptor)
+      result
     end
   end
 
@@ -1190,6 +1199,15 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   # sobelow_skip ["Traversal.FileModule"]
   defp restore_accounting(active, :recovered) do
+    with :ok <- stop_interrupted_provider_tasks() do
+      restore_recovered_accounting(active)
+    end
+  end
+
+  # The ledger path is derived only from the validated operator-selected
+  # directory and the authenticated fixed-length digest.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp restore_recovered_accounting(active) do
     case File.read(accounting_path(active)) do
       {:error, :enoent} ->
         {:ok, %{active | recovered?: true}}
@@ -1207,6 +1225,39 @@ defmodule MemHouse.Model.CampaignAdmission do
 
       {:error, _reason} ->
         {:error, :campaign_ledger_unavailable}
+    end
+  end
+
+  defp stop_interrupted_provider_tasks do
+    case Process.whereis(MemHouse.Model.CampaignProviderTaskSupervisor) do
+      nil ->
+        :ok
+
+      _supervisor ->
+        MemHouse.Model.CampaignProviderTaskSupervisor
+        |> Task.Supervisor.children()
+        |> Enum.reduce_while(:ok, fn provider_task, :ok ->
+          reference = Process.monitor(provider_task)
+
+          case Task.Supervisor.terminate_child(
+                 MemHouse.Model.CampaignProviderTaskSupervisor,
+                 provider_task
+               ) do
+            :ok ->
+              await_provider_task_down(reference, provider_task)
+              {:cont, :ok}
+
+            {:error, :not_found} ->
+              Process.demonitor(reference, [:flush])
+              {:cont, :ok}
+          end
+        end)
+    end
+  end
+
+  defp await_provider_task_down(reference, provider_task) do
+    receive do
+      {:DOWN, ^reference, :process, ^provider_task, _reason} -> :ok
     end
   end
 

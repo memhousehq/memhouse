@@ -40,6 +40,7 @@ defmodule MemHouse.Application do
           MemHouse.Database.RoleGuard,
           {AshAuthentication.Supervisor, otp_app: :memhouse},
           MemHouse.Operations.BudgetCounter,
+          {Task.Supervisor, name: MemHouse.Model.CampaignProviderTaskSupervisor},
           MemHouse.Model.CampaignAdmission,
           MemHouse.Model.ProviderCircuit,
           {Task.Supervisor, name: MemHouse.Model.ProviderTaskSupervisor},

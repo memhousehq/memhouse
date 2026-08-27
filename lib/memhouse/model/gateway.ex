@@ -524,37 +524,63 @@ defmodule MemHouse.Model.Gateway do
        when is_integer(timeout_ms) and timeout_ms > 0 do
     owner = self()
     admission = Process.whereis(CampaignAdmission)
+    result_ref = make_ref()
 
-    task =
-      Task.Supervisor.async_nolink(
-        MemHouse.Model.ProviderTaskSupervisor,
-        fn ->
-          receive do
-            :campaign_provider_dispatch -> safe_call(call, provider, nil)
-          end
-        end
-      )
+    {lifecycle, lifecycle_ref} =
+      spawn_monitor(fn ->
+        provider_lifecycle_guard(owner, admission, result_ref, call, provider)
+      end)
 
-    lifecycle = spawn(fn -> provider_lifecycle_guard(owner, task.pid, admission) end)
+    provider_task = await_provider_task(lifecycle, lifecycle_ref, result_ref)
+    provider_ref = Process.monitor(provider_task)
     :ok = CampaignAdmission.dispatch(reservation, lifecycle)
-    send(task.pid, :campaign_provider_dispatch)
+    send(provider_task, :campaign_provider_dispatch)
 
     result =
-      case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
-        {:ok, result} -> result
-        {:exit, reason} -> {:error, {:provider_exit, reason}}
-        nil -> {:error, %ExtractionBudget.Exceeded{reason: "wall-time cap"}}
+      receive do
+        {:campaign_provider_result, ^result_ref, result} ->
+          result
+
+        {:DOWN, ^provider_ref, :process, ^provider_task, reason} ->
+          {:error, {:provider_exit, reason}}
+      after
+        timeout_ms ->
+          stop_provider_task(provider_task, provider_ref, false)
+          flush_provider_result(result_ref)
+          {:error, %ExtractionBudget.Exceeded{reason: "wall-time cap"}}
       end
 
     :ok = CampaignAdmission.complete(reservation, result)
     send(lifecycle, :complete)
+    Process.demonitor(lifecycle_ref, [:flush])
+    Process.demonitor(provider_ref, [:flush])
     result
   end
 
-  defp provider_lifecycle_guard(owner, provider_task, admission) do
+  defp await_provider_task(lifecycle, lifecycle_ref, result_ref) do
+    receive do
+      {:campaign_provider_ready, ^result_ref, ^lifecycle, provider_task} ->
+        provider_task
+
+      {:DOWN, ^lifecycle_ref, :process, ^lifecycle, reason} ->
+        exit({:provider_lifecycle_start_failed, reason})
+    end
+  end
+
+  defp provider_lifecycle_guard(owner, admission, result_ref, call, provider) do
     owner_ref = Process.monitor(owner)
-    task_ref = Process.monitor(provider_task)
     admission_ref = if is_pid(admission), do: Process.monitor(admission)
+
+    {:ok, provider_task} =
+      Task.Supervisor.start_child(MemHouse.Model.CampaignProviderTaskSupervisor, fn ->
+        receive do
+          :campaign_provider_dispatch ->
+            send(owner, {:campaign_provider_result, result_ref, safe_call(call, provider, nil)})
+        end
+      end)
+
+    task_ref = Process.monitor(provider_task)
+    send(owner, {:campaign_provider_ready, result_ref, self(), provider_task})
     provider_lifecycle_loop(owner_ref, task_ref, admission_ref, provider_task, false)
   end
 
@@ -581,6 +607,14 @@ defmodule MemHouse.Model.Gateway do
 
     receive do
       {:DOWN, ^task_ref, :process, ^provider_task, _reason} -> :ok
+    end
+  end
+
+  defp flush_provider_result(result_ref) do
+    receive do
+      {:campaign_provider_result, ^result_ref, _result} -> :ok
+    after
+      0 -> :ok
     end
   end
 

@@ -494,6 +494,8 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert_receive :campaign_http_call, 3_000
     restart_campaign_admission!()
 
+    assert Task.Supervisor.children(MemHouse.Model.CampaignProviderTaskSupervisor) == []
+
     if Process.alive?(caller), do: Process.exit(caller, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^caller, _reason}
     refute_receive {:interrupted_gateway_result, {:ok, _value, _config}}
@@ -518,6 +520,32 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
                "pending_attempts" => 0,
                "in_flight" => 0
              }
+  end
+
+  test "a persisted accounting transition syncs the ledger directory" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    assert {:ok, identity} = activate(path, digest)
+    admission = Process.whereis(CampaignAdmission)
+
+    :erlang.trace(admission, true, [:call])
+    :erlang.trace_pattern({:file, :sync, 1}, true, [:local])
+
+    on_exit(fn ->
+      :erlang.trace(admission, false, [:call])
+      :erlang.trace_pattern({:file, :sync, 1}, false, [:local])
+    end)
+
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               8,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
+    assert_receive {:trace, ^admission, :call, {:file, :sync, [_directory_descriptor]}}
   end
 
   test "the public gateway refuses a second paid request after the campaign cap is reserved" do
@@ -1031,6 +1059,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert usage["unmetered_attempts"] == 1
     assert usage["pending_attempts"] == 0
     assert usage["in_flight"] == 0
+    assert Task.Supervisor.children(MemHouse.Model.CampaignProviderTaskSupervisor) == []
 
     first = health_admission()
     Process.sleep(10)
