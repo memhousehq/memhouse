@@ -688,17 +688,22 @@ config :memhouse, :model_roles,
     }
   },
   reranker: %{
-    # Voyage scores query-document pairs through OpenRouter's native rerank endpoint.
+    # Voyage uses OpenRouter's native endpoint. A generation-only model uses the
+    # bounded generation settings below so its fallback cannot request the full
+    # model context as output.
     provider: env_get.("MEMHOUSE_RERANKER_PROVIDER", "openrouter"),
     model: env_get.("MEMHOUSE_RERANKER_MODEL", "voyageai/rerank-2.5"),
     model_version: env_get.("MEMHOUSE_RERANKER_VERSION", "openrouter-2026-07"),
     prompt_version: "none",
     pipeline_version: "f7-1",
-    options: %{
-      "api_key_ref" => "env:OPENROUTER_API_KEY",
-      "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", "https://openrouter.ai/api/v1"),
-      "upstream_route" => reranker_openrouter_upstream_route
-    }
+    options:
+      generation_options
+      |> Map.take(~w(max_tokens reasoning_effort receive_timeout request_timeout pool_timeout))
+      |> Map.merge(%{
+        "api_key_ref" => "env:OPENROUTER_API_KEY",
+        "base_url" => env_get.("MEMHOUSE_RERANKER_BASE_URL", "https://openrouter.ai/api/v1"),
+        "upstream_route" => reranker_openrouter_upstream_route
+      })
   },
   # Turns raw observations into structured candidate knowledge. Its output still
   # passes validation and governance before anything becomes usable memory.

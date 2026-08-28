@@ -547,7 +547,12 @@ config :memhouse, :model_roles,
     pipeline_version: "f7-1",
     options: %{
       "api_key_ref" => "env:OPENROUTER_API_KEY",
-      "base_url" => "https://openrouter.ai/api/v1"
+      "base_url" => "https://openrouter.ai/api/v1",
+      "max_tokens" => 8192,
+      "reasoning_effort" => "low",
+      "receive_timeout" => 120_000,
+      "request_timeout" => 300_000,
+      "pool_timeout" => 120_000
     }
   },
   ingest_extractor: %{

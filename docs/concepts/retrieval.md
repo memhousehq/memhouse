@@ -185,6 +185,9 @@ every result as `profile_version`.
 
 `deadline_ms` covers strategy execution and reranking. Late strategies are
 dropped, not retried, and reported. Larger deadlines trade latency for recall.
+When a configured model has no native rerank endpoint, MemHouse uses strict
+structured generation behind the same engine-owned deadline. The fallback does
+not extend the profile budget.
 
 A reranking profile reserves the rerank allowance before the strategies start,
 and the result reports the reservation as `reserved_rerank_ms`. Reranking

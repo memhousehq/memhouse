@@ -231,6 +231,45 @@ defmodule MemHouse.Model.Providers.ReqLLMTest do
     assert request["messages"] |> List.last() |> Map.fetch!("content") =~ "relationship status"
   end
 
+  test "a deadline-bound generation-only model uses the structured reranker" do
+    config =
+      stubbed_role(
+        completion("stop", %{
+          "role" => "assistant",
+          "content" =>
+            ~s({"rankings":[{"index":1,"relevance_score":0.9},{"index":0,"relevance_score":0.2}]})
+        })
+      )
+
+    assert {:ok, %Result{}} =
+             Adapter.rerank(
+               config,
+               "relationship status",
+               ["first", "second"],
+               deadline?: true
+             )
+  end
+
+  test "a generation-only reranker rejects an incomplete structured result" do
+    config =
+      stubbed_role(
+        completion("stop", %{
+          "role" => "assistant",
+          "content" => ~s({"rankings":[{"index":0,"relevance_score":0.9}]})
+        })
+      )
+
+    assert {:error, :invalid_rerank_response} =
+             Adapter.rerank(config, "query", ["first", "second"], deadline?: true)
+  end
+
+  test "a generation-only reranker maps a missing object to an error" do
+    config = stubbed_role(completion("stop", %{"role" => "assistant", "content" => nil}))
+
+    assert {:error, :missing_structured_object} =
+             Adapter.rerank(config, "query", ["first"], deadline?: true)
+  end
+
   test "OpenRouter Voyage reranks through the native endpoint" do
     config =
       stubbed_reranker_role(
