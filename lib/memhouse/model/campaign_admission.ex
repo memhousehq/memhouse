@@ -75,6 +75,9 @@ defmodule MemHouse.Model.CampaignAdmission do
   def complete(reservation, result),
     do: GenServer.call(__MODULE__, {:complete, reservation, terminal_usage(result)})
 
+  @doc false
+  def cancel(reservation), do: GenServer.call(__MODULE__, {:cancel, reservation})
+
   @doc """
   Atomically reserves one worst-case paid provider attempt.
 
@@ -210,6 +213,25 @@ defmodule MemHouse.Model.CampaignAdmission do
       {:ok, active} -> {:reply, :ok, put_active(state, active)}
       {:error, reason} -> {:reply, refused(reason), state}
     end
+  end
+
+  def handle_call({:cancel, %{attempt_id: attempt_id}}, {owner, _tag}, state) do
+    attempt = state.active && state.active.attempts[attempt_id]
+
+    case attempt do
+      %{state: :pending, owner: ^owner} ->
+        case cancel_pending(state.active, attempt_id) do
+          {:ok, active} -> {:reply, :ok, put_active(state, active)}
+          {:error, reason} -> {:reply, refused(reason), state}
+        end
+
+      _other ->
+        {:reply, refused(:invalid_campaign_attempt), state}
+    end
+  end
+
+  def handle_call({:cancel, _reservation}, _from, state) do
+    {:reply, refused(:invalid_campaign_attempt), state}
   end
 
   @impl true

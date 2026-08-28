@@ -543,6 +543,7 @@ defmodule MemHouse.Model.Gateway do
         )
 
       {:error, reason} ->
+        _cancelled = CampaignAdmission.cancel(reservation)
         Process.demonitor(lifecycle_ref, [:flush])
         {:error, reason}
     end
@@ -574,6 +575,7 @@ defmodule MemHouse.Model.Gateway do
 
       {:error, %CampaignAdmission.Refused{} = error} ->
         stop_provider_task(provider_task, provider_ref, false)
+        _cancelled = CampaignAdmission.cancel(reservation)
         finish_provider_lifecycle(lifecycle, lifecycle_ref, provider_ref)
         {:error, error}
     end

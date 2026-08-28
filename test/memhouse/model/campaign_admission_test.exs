@@ -423,6 +423,34 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert health_admission() == before_restart
   end
 
+  test "an owner can durably cancel before dispatch while remaining alive" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    assert {:ok, identity} = activate(path, digest)
+
+    assert {:ok, reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               1,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
+    assert :ok = CampaignAdmission.cancel(reservation)
+    assert Process.alive?(self())
+
+    usage = health_admission()["role_usage"]["target.ingest_extractor"]
+    assert usage["attempts"] == 0
+    assert usage["pending_attempts"] == 0
+    assert usage["in_flight"] == 0
+
+    first = health_admission()
+    Process.sleep(10)
+    assert health_admission() == first
+    assert CampaignAdmission.status().role_reserved["target.ingest_extractor"].requests == 1
+  end
+
   test "a monitored caller ledger failure preserves the process and old snapshot" do
     {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
     opts = activation_opts(path)
