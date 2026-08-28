@@ -103,6 +103,10 @@ and interrupted dispatches are finalized as unmetered errors only after their
 provider task stops; recovery does not reopen the consumed campaign for more spend. Provider-wide totals are omitted because MemHouse
 cannot reconcile benchmark-harness calls made outside the target process.
 
+While campaign admission is recovering after a restart, the non-blocking
+snapshot is `{"active": false, "status": "recovering"}`. Do not finalize a
+campaign until the active snapshot is present and the two-snapshot rule passes.
+
 ---
 
 ## `GET /api/ready`

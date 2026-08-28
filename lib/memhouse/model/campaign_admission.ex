@@ -31,6 +31,8 @@ defmodule MemHouse.Model.CampaignAdmission do
   @local_providers ~w(deterministic ortex)
   @full_sha ~r/\A[0-9a-f]{40}\z/
   @digest ~r/\A[0-9a-f]{64}\z/
+  @public_status_key {__MODULE__, :public_status}
+  @provider_shutdown_timeout_ms 5_000
 
   defmodule Refused do
     @moduledoc "A content-free campaign admission rejection."
@@ -42,6 +44,7 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   @doc false
   def start_link(opts \\ []) do
+    :persistent_term.put(@public_status_key, %{active: false, status: "recovering"})
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
@@ -61,27 +64,8 @@ defmodule MemHouse.Model.CampaignAdmission do
   end
 
   @doc "Returns the bounded campaign state safe for the public health probe."
-  def public_status do
-    case status() do
-      %{active?: false} ->
-        %{active: false, status: "inactive"}
-
-      active ->
-        %{
-          active: true,
-          status: "active",
-          identity: active.identity,
-          digest: active.digest,
-          definition_id: active.definition_id,
-          arm: active.arm,
-          run_id: active.run_id,
-          backend: active.backend,
-          target_revision: active.target_revision,
-          role_reserved: active.role_caps,
-          role_usage: public_role_usage(active.role_usage)
-        }
-    end
-  end
+  def public_status,
+    do: :persistent_term.get(@public_status_key, %{active: false, status: "inactive"})
 
   @doc false
   def dispatch(reservation, lifecycle_owner \\ self()),
@@ -128,6 +112,7 @@ defmodule MemHouse.Model.CampaignAdmission do
 
     case activation do
       nil ->
+        publish_public_status(nil)
         {:ok, state}
 
       {path, digest, activate_opts} ->
@@ -138,7 +123,7 @@ defmodule MemHouse.Model.CampaignAdmission do
   @impl true
   def handle_call({:activate, path, digest, opts}, _from, %{active: nil} = state) do
     case load(path, digest, Keyword.put(opts, :now_ms, state.clock.())) do
-      {:ok, active} -> {:reply, {:ok, active.identity}, %{state | active: active}}
+      {:ok, active} -> {:reply, {:ok, active.identity}, put_active(state, active)}
       {:error, reason} -> {:reply, {:error, %Refused{reason: reason}}, state}
     end
   end
@@ -206,7 +191,7 @@ defmodule MemHouse.Model.CampaignAdmission do
 
     case reserve_active(state.active, config, request) do
       {:ok, reservation, active} ->
-        {:reply, {:ok, reservation}, %{state | active: active}}
+        {:reply, {:ok, reservation}, put_active(state, active)}
 
       {:error, reason} ->
         {:reply, refused(reason), state}
@@ -215,14 +200,14 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   def handle_call({:dispatch, reservation, lifecycle_owner}, {owner, _tag}, state) do
     case transition_dispatch(state.active, reservation, owner, lifecycle_owner) do
-      {:ok, active} -> {:reply, :ok, %{state | active: active}}
+      {:ok, active} -> {:reply, :ok, put_active(state, active)}
       {:error, reason} -> {:reply, refused(reason), state}
     end
   end
 
   def handle_call({:complete, reservation, terminal}, _from, state) do
     case transition_complete(state.active, reservation, terminal) do
-      {:ok, active} -> {:reply, :ok, %{state | active: active}}
+      {:ok, active} -> {:reply, :ok, put_active(state, active)}
       {:error, reason} -> {:reply, refused(reason), state}
     end
   end
@@ -234,19 +219,21 @@ defmodule MemHouse.Model.CampaignAdmission do
         {:noreply, state}
 
       {attempt_id, %{state: :pending}} ->
-        {:ok, active} = cancel_pending(active, attempt_id)
-        {:noreply, %{state | active: active}}
+        case cancel_pending(active, attempt_id) do
+          {:ok, active} -> {:noreply, put_active(state, active)}
+          {:error, :campaign_ledger_unavailable} -> {:noreply, state}
+        end
 
       {attempt_id, %{state: :in_flight}} ->
-        {:ok, active} =
-          transition_complete(
-            active,
-            %{attempt_id: attempt_id},
-            %{status: :error, usage: nil},
-            false
-          )
-
-        {:noreply, %{state | active: active}}
+        case transition_complete(
+               active,
+               %{attempt_id: attempt_id},
+               %{status: :error, usage: nil},
+               false
+             ) do
+          {:ok, active} -> {:noreply, put_active(state, active)}
+          {:error, :campaign_ledger_unavailable} -> {:noreply, state}
+        end
 
       {_attempt_id, _attempt} ->
         {:noreply, state}
@@ -255,9 +242,36 @@ defmodule MemHouse.Model.CampaignAdmission do
 
   defp activate_state(state, path, digest, opts) do
     case load(path, digest, Keyword.put(opts, :now_ms, state.clock.())) do
-      {:ok, active} -> {:ok, %{state | active: active}}
+      {:ok, active} -> {:ok, put_active(state, active)}
       {:error, reason} -> {:stop, %Refused{reason: reason}}
     end
+  end
+
+  defp put_active(state, active) do
+    publish_public_status(active)
+    %{state | active: active}
+  end
+
+  defp publish_public_status(nil) do
+    :persistent_term.put(@public_status_key, %{active: false, status: "inactive"})
+  end
+
+  defp publish_public_status(active) do
+    :persistent_term.put(@public_status_key, %{
+      active: true,
+      status: "active",
+      identity: active.identity,
+      digest: active.digest,
+      definition_id: active.definition_id,
+      arm: active.arm,
+      run_id: active.run_id,
+      backend: active.backend,
+      target_revision: active.target_revision,
+      # The benchmark contract names admitted packet caps role_reserved. This is
+      # deliberately distinct from the consumed reservations in active.role_reserved.
+      role_reserved: active.role_caps,
+      role_usage: public_role_usage(active.role_usage)
+    })
   end
 
   defp load(path, expected_digest, opts) do
@@ -1236,28 +1250,37 @@ defmodule MemHouse.Model.CampaignAdmission do
       _supervisor ->
         MemHouse.Model.CampaignProviderTaskSupervisor
         |> Task.Supervisor.children()
-        |> Enum.reduce_while(:ok, fn provider_task, :ok ->
-          reference = Process.monitor(provider_task)
-
-          case Task.Supervisor.terminate_child(
-                 MemHouse.Model.CampaignProviderTaskSupervisor,
-                 provider_task
-               ) do
-            :ok ->
-              await_provider_task_down(reference, provider_task)
-              {:cont, :ok}
-
-            {:error, :not_found} ->
-              Process.demonitor(reference, [:flush])
-              {:cont, :ok}
-          end
-        end)
+        |> Enum.reduce_while(:ok, &stop_interrupted_provider_task/2)
     end
+  end
+
+  defp stop_interrupted_provider_task(provider_task, :ok) do
+    reference = Process.monitor(provider_task)
+
+    case Task.Supervisor.terminate_child(
+           MemHouse.Model.CampaignProviderTaskSupervisor,
+           provider_task
+         ) do
+      :ok -> reduce_provider_shutdown(await_provider_task_down(reference, provider_task))
+      {:error, :not_found} -> demonitor_missing_provider(reference)
+    end
+  end
+
+  defp reduce_provider_shutdown(:ok), do: {:cont, :ok}
+  defp reduce_provider_shutdown({:error, _reason} = error), do: {:halt, error}
+
+  defp demonitor_missing_provider(reference) do
+    Process.demonitor(reference, [:flush])
+    {:cont, :ok}
   end
 
   defp await_provider_task_down(reference, provider_task) do
     receive do
       {:DOWN, ^reference, :process, ^provider_task, _reason} -> :ok
+    after
+      @provider_shutdown_timeout_ms ->
+        Process.demonitor(reference, [:flush])
+        {:error, :campaign_ledger_unavailable}
     end
   end
 
