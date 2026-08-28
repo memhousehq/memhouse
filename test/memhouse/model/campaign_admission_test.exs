@@ -140,6 +140,18 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     refute inspect(response) =~ "credential"
   end
 
+  test "public health stays non-blocking while campaign admission is unavailable" do
+    admission = Process.whereis(CampaignAdmission)
+    :ok = :sys.suspend(admission)
+
+    on_exit(fn ->
+      if Process.alive?(admission), do: :sys.resume(admission)
+    end)
+
+    response = Task.async(fn -> health_admission() end) |> Task.await(100)
+    assert response["status"] in ["inactive", "recovering"]
+  end
+
   test "public health reports every admitted role with exact caps and zero durable usage" do
     {path, digest} =
       write_packet!(packet(requests: 0, input_tokens: 0, output_tokens: 0, usd: 0.0))
@@ -228,6 +240,25 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     assert is_binary(first["role_usage"]["target.ingest_extractor"]["first_occurred_at"])
     refute Map.has_key?(first, "provider_totals")
+  end
+
+  test "public role_reserved remains the admitted cap after a smaller reservation" do
+    {path, digest} = write_packet!(packet(requests: 3, input_tokens: 100))
+    assert {:ok, identity} = activate(path, digest)
+
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               8,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
+    assert health_admission()["role_reserved"]["target.ingest_extractor"]["requests"] == 3
+    assert health_admission()["role_reserved"]["target.ingest_extractor"]["input_tokens"] == 100
+    assert CampaignAdmission.status().role_reserved["target.ingest_extractor"].requests == 1
   end
 
   test "public health reconciles a returned provider error as unmetered" do
@@ -337,24 +368,8 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     before_restart = health_admission()
     assert before_restart["role_usage"]["target.ingest_extractor"]["attempts"] == 1
     assert before_restart["role_usage"]["target.ingest_extractor"]["input_tokens"] == 1
-    previous_activation = Application.get_env(:memhouse, :campaign_admission)
-
-    on_exit(fn ->
-      :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
-
-      if previous_activation do
-        Application.put_env(:memhouse, :campaign_admission, previous_activation)
-      else
-        Application.delete_env(:memhouse, :campaign_admission)
-      end
-
-      {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
-    end)
-
-    Application.put_env(:memhouse, :campaign_admission, {path, digest, opts})
-
-    :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
-    {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    restore_campaign_after_test(path, digest, opts)
+    restart_campaign_admission!()
 
     assert health_admission() == before_restart
 
@@ -402,25 +417,84 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     assert usage["unmetered_attempts"] == 0
 
     before_restart = health_admission()
-    previous_activation = Application.get_env(:memhouse, :campaign_admission)
-
-    on_exit(fn ->
-      :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
-
-      if previous_activation do
-        Application.put_env(:memhouse, :campaign_admission, previous_activation)
-      else
-        Application.delete_env(:memhouse, :campaign_admission)
-      end
-
-      {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
-    end)
-
-    Application.put_env(:memhouse, :campaign_admission, {path, digest, opts})
-    :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
-    {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    restore_campaign_after_test(path, digest, opts)
+    restart_campaign_admission!()
 
     assert health_admission() == before_restart
+  end
+
+  test "an owner can durably cancel before dispatch while remaining alive" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    assert {:ok, identity} = activate(path, digest)
+    admission = Process.whereis(CampaignAdmission)
+    {:monitors, monitors_before} = Process.info(admission, :monitors)
+
+    assert {:ok, reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               1,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
+    assert :ok = CampaignAdmission.cancel(reservation)
+    assert Process.alive?(self())
+    assert Process.info(admission, :monitors) == {:monitors, monitors_before}
+
+    usage = health_admission()["role_usage"]["target.ingest_extractor"]
+    assert usage["attempts"] == 0
+    assert usage["pending_attempts"] == 0
+    assert usage["in_flight"] == 0
+
+    first = health_admission()
+    Process.sleep(10)
+    assert health_admission() == first
+    assert CampaignAdmission.status().role_reserved["target.ingest_extractor"].requests == 1
+  end
+
+  test "a monitored caller ledger failure preserves the process and old snapshot" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    opts = activation_opts(path)
+    ledger_dir = Keyword.fetch!(opts, :ledger_dir)
+    saved_ledger_dir = ledger_dir <> ".saved"
+    assert {:ok, identity} = CampaignAdmission.activate(path, digest, opts)
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        result =
+          CampaignAdmission.reserve(
+            Config.resolve(:ingest_extractor, %{}),
+            :structured,
+            1,
+            1,
+            ReqLLM,
+            campaign_identity: identity
+          )
+
+        send(parent, {:ledger_failure_reservation, self(), result})
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive {:ledger_failure_reservation, ^caller, {:ok, _reservation}}
+    before_failure = health_admission()
+    File.rename!(ledger_dir, saved_ledger_dir)
+    File.write!(ledger_dir, "blocks ledger directory")
+
+    on_exit(fn ->
+      File.rm(ledger_dir)
+      File.rename(saved_ledger_dir, ledger_dir)
+    end)
+
+    monitor = Process.monitor(caller)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^caller, :killed}
+    Process.sleep(20)
+
+    assert Process.alive?(Process.whereis(CampaignAdmission))
+    assert health_admission() == before_failure
   end
 
   test "startup recovery reconciles an interrupted pending reservation" do
