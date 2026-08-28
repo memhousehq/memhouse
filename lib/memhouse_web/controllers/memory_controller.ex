@@ -12,6 +12,7 @@ defmodule MemHouseWeb.MemoryController do
 
   alias MemHouse.Governance.PublicOperations
   alias MemHouse.Memory
+  alias MemHouse.Model.CampaignAdmission
   alias MemHouse.Operations.Health
   alias MemHouse.Pipeline
 
@@ -19,7 +20,12 @@ defmodule MemHouseWeb.MemoryController do
   Liveness probe. Unauthenticated, and touches no database or queue.
   """
   def health(conn, _params) do
-    json(conn, %{status: "ok", app: "memhouse", version: "f5-1"})
+    json(conn, %{
+      status: "ok",
+      app: "memhouse",
+      version: "f5-1",
+      campaign_admission: CampaignAdmission.public_status()
+    })
   end
 
   @doc """

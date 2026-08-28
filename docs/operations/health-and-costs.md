@@ -7,7 +7,12 @@
 Unauthenticated. Touches no database and no queue.
 
 ```json
-{"status": "ok", "app": "memhouse", "version": "f5-1"}
+{
+  "status": "ok",
+  "app": "memhouse",
+  "version": "f5-1",
+  "campaign_admission": {"active": false, "status": "inactive"}
+}
 ```
 
 `version` identifies the extraction-and-pipeline contract, **not** the
@@ -15,6 +20,14 @@ application version. See
 [Contract versions](../reference/contract-versions.md).
 
 Point orchestrator **liveness** probes here.
+
+During an approved paid campaign, `campaign_admission` exposes only the exact
+content-safe campaign identity and packet digest, immutable per-role caps, and durable per-role
+dispatch/error/token counters. Every admitted role is included, including
+zero-use roles. Wait for two identical snapshots with zero pending and
+in-flight attempts before finalizing campaign accounting. This liveness read
+does not query Postgres or require an Account. See the
+[HTTP reference](../reference/http-api.md#get-apihealth) for the field contract.
 
 ## Readiness: `GET /api/ready`
 

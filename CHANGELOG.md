@@ -11,6 +11,13 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Public `GET /api/health` now reports inactive or exact active paid-campaign
+  admission state. Active responses include immutable per-role packet caps and
+  durable dispatch, error, unmetered, pending, in-flight, token, and bounded UTC
+  occurrence accounting. Accounting is written around the real provider
+  boundary, recovers read-only after restart, remains independent of Account
+  data, and omits provider-wide totals that the target cannot reconcile.
+
 - Paid campaign admission advances to `membench-campaign-admission-2` and
   rejects v1 packets. V2 binds one immutable run and PostgreSQL backend,
   the approved runtime target revision to the embedded build SHA, exact

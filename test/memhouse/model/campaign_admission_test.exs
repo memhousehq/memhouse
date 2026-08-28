@@ -63,6 +63,10 @@ end
 defmodule MemHouse.Model.CampaignAdmissionTest do
   use ExUnit.Case, async: false
 
+  import Phoenix.ConnTest
+
+  @endpoint MemHouseWeb.Endpoint
+
   alias MemHouse.Model.CampaignAdmission
   alias MemHouse.Model.CampaignAdmissionTest.Provider
   alias MemHouse.Model.CampaignAdmissionTest.StubPlug
@@ -126,6 +130,422 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
     end)
 
     :ok
+  end
+
+  test "public health reports content-safe inactive campaign admission" do
+    response = get(build_conn(), "/api/health") |> json_response(200)
+
+    assert response["campaign_admission"] == %{"active" => false, "status" => "inactive"}
+    refute inspect(response) =~ "account_id"
+    refute inspect(response) =~ "credential"
+  end
+
+  test "public health reports every admitted role with exact caps and zero durable usage" do
+    {path, digest} =
+      write_packet!(packet(requests: 0, input_tokens: 0, output_tokens: 0, usd: 0.0))
+
+    assert {:ok, identity} = activate(path, digest)
+
+    admission =
+      get(build_conn(), "/api/health")
+      |> json_response(200)
+      |> Map.fetch!("campaign_admission")
+
+    assert admission["active"] == true
+    assert admission["identity"] == identity
+    assert admission["digest"] == digest
+    assert Map.keys(admission["role_reserved"]) |> Enum.sort() == paid_role_names()
+    assert Map.keys(admission["role_usage"]) |> Enum.sort() == paid_role_names()
+
+    assert admission["role_reserved"]["target.ingest_extractor"] == %{
+             "requests" => 0,
+             "input_tokens" => 0,
+             "output_tokens" => 0,
+             "reranker_input_tokens" => 0,
+             "usd_micros" => 0
+           }
+
+    assert admission["role_usage"]["target.ingest_extractor"] == %{
+             "attempts" => 0,
+             "errors" => 0,
+             "unmetered_attempts" => 0,
+             "pending_attempts" => 0,
+             "in_flight" => 0,
+             "input_tokens" => 0,
+             "output_tokens" => 0,
+             "first_occurred_at" => nil,
+             "last_occurred_at" => nil
+           }
+  end
+
+  test "public health durably accounts a successful real gateway dispatch" do
+    endpoint = start_http_stub(body: completion(%{}))
+    configure_extractor_endpoint(endpoint)
+
+    campaign =
+      packet(requests: 1, input_tokens: 10_000)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "endpoint"], endpoint)
+
+    {path, digest} = write_packet!(campaign)
+    assert {:ok, identity} = activate(path, digest)
+
+    assert {:ok, %{}, _config} =
+             Gateway.structured_once(
+               :ingest_extractor,
+               [],
+               %{},
+               %{},
+               campaign_identity: identity
+             )
+
+    assert_receive :campaign_http_call
+
+    first = health_admission()
+    second = health_admission()
+    assert first == second
+
+    assert first["role_reserved"]["target.ingest_extractor"] == %{
+             "requests" => 1,
+             "input_tokens" => 10_000,
+             "output_tokens" => 8,
+             "reranker_input_tokens" => 0,
+             "usd_micros" => 1_000_000
+           }
+
+    assert first["role_usage"]["target.ingest_extractor"] == %{
+             "attempts" => 1,
+             "errors" => 0,
+             "unmetered_attempts" => 0,
+             "pending_attempts" => 0,
+             "in_flight" => 0,
+             "input_tokens" => 1,
+             "output_tokens" => 1,
+             "first_occurred_at" =>
+               first["role_usage"]["target.ingest_extractor"]["first_occurred_at"],
+             "last_occurred_at" =>
+               first["role_usage"]["target.ingest_extractor"]["last_occurred_at"]
+           }
+
+    assert is_binary(first["role_usage"]["target.ingest_extractor"]["first_occurred_at"])
+    refute Map.has_key?(first, "provider_totals")
+  end
+
+  test "public health reconciles a returned provider error as unmetered" do
+    endpoint = start_http_stub(status: 500)
+    configure_extractor_endpoint(endpoint)
+
+    campaign =
+      packet(requests: 1, input_tokens: 10_000)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "endpoint"], endpoint)
+
+    {path, digest} = write_packet!(campaign)
+    assert {:ok, identity} = activate(path, digest)
+
+    assert {:error, _reason} =
+             Gateway.structured_once(
+               :ingest_extractor,
+               [],
+               %{},
+               %{},
+               campaign_identity: identity
+             )
+
+    assert_receive :campaign_http_call
+
+    assert health_admission()["role_usage"]["target.ingest_extractor"]
+           |> Map.take([
+             "attempts",
+             "errors",
+             "unmetered_attempts",
+             "pending_attempts",
+             "in_flight"
+           ]) ==
+             %{
+               "attempts" => 1,
+               "errors" => 1,
+               "unmetered_attempts" => 1,
+               "pending_attempts" => 0,
+               "in_flight" => 0
+             }
+  end
+
+  test "public health reconciles a successful response without provider usage" do
+    endpoint = start_http_stub(body: completion(%{}) |> Map.delete("usage"))
+    configure_extractor_endpoint(endpoint)
+
+    campaign =
+      packet(requests: 1, input_tokens: 10_000)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "endpoint"], endpoint)
+
+    {path, digest} = write_packet!(campaign)
+    assert {:ok, identity} = activate(path, digest)
+
+    assert {:ok, %{}, _config} =
+             Gateway.structured_once(
+               :ingest_extractor,
+               [],
+               %{},
+               %{},
+               campaign_identity: identity
+             )
+
+    usage = health_admission()["role_usage"]["target.ingest_extractor"]
+    assert usage["attempts"] == 1
+    assert usage["errors"] == 0
+    assert usage["unmetered_attempts"] == 1
+    assert usage["input_tokens"] == 0
+    assert usage["output_tokens"] == 0
+  end
+
+  test "startup recovery preserves completed usage without reopening campaign spend" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    opts = activation_opts(path)
+    assert {:ok, identity} = CampaignAdmission.activate(path, digest, opts)
+
+    assert {:ok, reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               1,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
+    assert :ok = CampaignAdmission.dispatch(reservation)
+
+    assert :ok =
+             CampaignAdmission.complete(
+               reservation,
+               {:ok,
+                %MemHouse.Model.Provider.Result{
+                  value: %{},
+                  usage: %{input_tokens: 1, output_tokens: 1}
+                }}
+             )
+
+    assert :ok =
+             CampaignAdmission.complete(
+               reservation,
+               {:ok,
+                %MemHouse.Model.Provider.Result{
+                  value: %{},
+                  usage: %{input_tokens: 1, output_tokens: 1}
+                }}
+             )
+
+    before_restart = health_admission()
+    assert before_restart["role_usage"]["target.ingest_extractor"]["attempts"] == 1
+    assert before_restart["role_usage"]["target.ingest_extractor"]["input_tokens"] == 1
+    previous_activation = Application.get_env(:memhouse, :campaign_admission)
+
+    on_exit(fn ->
+      :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+
+      if previous_activation do
+        Application.put_env(:memhouse, :campaign_admission, previous_activation)
+      else
+        Application.delete_env(:memhouse, :campaign_admission)
+      end
+
+      {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    end)
+
+    Application.put_env(:memhouse, :campaign_admission, {path, digest, opts})
+
+    :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+    {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+
+    assert health_admission() == before_restart
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_already_consumed}} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               1,
+               ReqLLM,
+               campaign_identity: identity
+             )
+  end
+
+  test "startup recovery accepts a caller cancelled before provider dispatch" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    opts = activation_opts(path)
+    assert {:ok, identity} = CampaignAdmission.activate(path, digest, opts)
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        result =
+          CampaignAdmission.reserve(
+            Config.resolve(:ingest_extractor, %{}),
+            :structured,
+            1,
+            1,
+            ReqLLM,
+            campaign_identity: identity
+          )
+
+        send(parent, {:reserved_before_dispatch, self(), result})
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive {:reserved_before_dispatch, ^caller, {:ok, _reservation}}
+    monitor = Process.monitor(caller)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^caller, :killed}
+
+    usage = await_usage_finalization(50)
+    assert usage["attempts"] == 0
+    assert usage["errors"] == 0
+    assert usage["unmetered_attempts"] == 0
+
+    before_restart = health_admission()
+    previous_activation = Application.get_env(:memhouse, :campaign_admission)
+
+    on_exit(fn ->
+      :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+
+      if previous_activation do
+        Application.put_env(:memhouse, :campaign_admission, previous_activation)
+      else
+        Application.delete_env(:memhouse, :campaign_admission)
+      end
+
+      {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    end)
+
+    Application.put_env(:memhouse, :campaign_admission, {path, digest, opts})
+    :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+    {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+
+    assert health_admission() == before_restart
+  end
+
+  test "startup recovery reconciles an interrupted pending reservation" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    opts = activation_opts(path)
+    assert {:ok, identity} = CampaignAdmission.activate(path, digest, opts)
+
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               1,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
+    restore_campaign_after_test(path, digest, opts)
+    restart_campaign_admission!()
+
+    first = health_admission()
+    second = health_admission()
+    assert first == second
+
+    assert first["role_usage"]["target.ingest_extractor"]
+           |> Map.take([
+             "attempts",
+             "errors",
+             "unmetered_attempts",
+             "pending_attempts",
+             "in_flight"
+           ]) ==
+             %{
+               "attempts" => 0,
+               "errors" => 0,
+               "unmetered_attempts" => 0,
+               "pending_attempts" => 0,
+               "in_flight" => 0
+             }
+  end
+
+  test "startup recovery kills and reconciles an interrupted provider dispatch" do
+    endpoint = start_http_stub(delay: 4_000, body: completion(%{}))
+    configure_extractor_endpoint(endpoint)
+
+    campaign =
+      packet(requests: 1, input_tokens: 10_000)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "endpoint"], endpoint)
+
+    {path, digest} = write_packet!(campaign)
+    opts = activation_opts(path)
+    assert {:ok, identity} = CampaignAdmission.activate(path, digest, opts)
+    restore_campaign_after_test(path, digest, opts)
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        result =
+          Gateway.structured_once(
+            :ingest_extractor,
+            [],
+            %{},
+            %{},
+            campaign_identity: identity
+          )
+
+        send(parent, {:interrupted_gateway_result, result})
+      end)
+
+    monitor = Process.monitor(caller)
+    assert_receive :campaign_http_call, 3_000
+    restart_campaign_admission!()
+
+    assert Task.Supervisor.children(MemHouse.Model.CampaignProviderTaskSupervisor) == []
+
+    if Process.alive?(caller), do: Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^caller, _reason}
+    refute_receive {:interrupted_gateway_result, {:ok, _value, _config}}
+
+    first = health_admission()
+    Process.sleep(10)
+    second = health_admission()
+    assert first == second
+
+    assert first["role_usage"]["target.ingest_extractor"]
+           |> Map.take([
+             "attempts",
+             "errors",
+             "unmetered_attempts",
+             "pending_attempts",
+             "in_flight"
+           ]) ==
+             %{
+               "attempts" => 1,
+               "errors" => 1,
+               "unmetered_attempts" => 1,
+               "pending_attempts" => 0,
+               "in_flight" => 0
+             }
+  end
+
+  test "a persisted accounting transition syncs the ledger directory" do
+    {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
+    assert {:ok, identity} = activate(path, digest)
+    admission = Process.whereis(CampaignAdmission)
+
+    :erlang.trace(admission, true, [:call])
+    :erlang.trace_pattern({:file, :sync, 1}, true, [:local])
+
+    on_exit(fn ->
+      :erlang.trace(admission, false, [:call])
+      :erlang.trace_pattern({:file, :sync, 1}, false, [:local])
+    end)
+
+    assert {:ok, _reservation} =
+             CampaignAdmission.reserve(
+               Config.resolve(:ingest_extractor, %{}),
+               :structured,
+               1,
+               8,
+               ReqLLM,
+               campaign_identity: identity
+             )
+
+    assert_receive {:trace, ^admission, :call, {:file, :sync, [_directory_descriptor]}}
   end
 
   test "the public gateway refuses a second paid request after the campaign cap is reserved" do
@@ -233,6 +653,26 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     assert {:error, %CampaignAdmission.Refused{reason: :campaign_arm_mismatch}} =
              activate(path, digest, arm_id: nil)
+  end
+
+  test "public campaign identity fields reject unbounded or unsafe packet text" do
+    invalid_definition =
+      packet(requests: 1)
+      |> Map.put("definition_id", String.duplicate("a", 129))
+
+    {path, digest} = write_packet!(invalid_definition)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :invalid_campaign_identity}} =
+             activate(path, digest, definition_id: String.duplicate("a", 129))
+
+    invalid_prompt =
+      packet(requests: 1)
+      |> put_in(["arms", Access.at(0), "prompt_version"], "unsafe prompt text")
+
+    {path, digest} = write_packet!(invalid_prompt)
+
+    assert {:error, %CampaignAdmission.Refused{reason: :campaign_arm_mismatch}} =
+             activate(path, digest)
   end
 
   test "activation binds the immutable run and backend identity" do
@@ -572,6 +1012,58 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
              )
 
     assert_receive :campaign_http_call, 1_000
+
+    usage = health_admission()["role_usage"]["target.ingest_extractor"]
+    assert usage["attempts"] == 1
+    assert usage["errors"] == 1
+    assert usage["unmetered_attempts"] == 1
+    assert usage["pending_attempts"] == 0
+    assert usage["in_flight"] == 0
+  end
+
+  test "a cancelled gateway caller durably finalizes its in-flight attempt" do
+    endpoint = start_http_stub(delay: 4_000, body: completion(%{}))
+    configure_extractor_endpoint(endpoint)
+
+    campaign =
+      packet(requests: 1, input_tokens: 10_000)
+      |> put_in(["execution", "routes", "target.ingest_extractor", "endpoint"], endpoint)
+
+    {path, digest} = write_packet!(campaign)
+    assert {:ok, identity} = activate(path, digest)
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        result =
+          Gateway.structured_once(
+            :ingest_extractor,
+            [],
+            %{},
+            %{},
+            campaign_identity: identity
+          )
+
+        send(parent, {:unexpected_gateway_result, result})
+      end)
+
+    monitor = Process.monitor(caller)
+    assert_receive :campaign_http_call, 3_000
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^caller, :killed}
+    refute_receive {:unexpected_gateway_result, _result}
+
+    usage = await_usage_finalization(50)
+    assert usage["attempts"] == 1
+    assert usage["errors"] == 1
+    assert usage["unmetered_attempts"] == 1
+    assert usage["pending_attempts"] == 0
+    assert usage["in_flight"] == 0
+    assert Task.Supervisor.children(MemHouse.Model.CampaignProviderTaskSupervisor) == []
+
+    first = health_admission()
+    Process.sleep(10)
+    assert health_admission() == first
   end
 
   test "the admitted ReqLLM adapter makes no hidden transport retry" do
@@ -823,7 +1315,11 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
   end
 
   defp activate(path, digest, opts \\ []) do
-    defaults = [
+    CampaignAdmission.activate(path, digest, Keyword.merge(activation_opts(path), opts))
+  end
+
+  defp activation_opts(path) do
+    [
       target_revision: @target_revision,
       definition_id: "issue-287-test-v1",
       arm_id: "B",
@@ -831,8 +1327,6 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
       backend: @backend,
       ledger_dir: path <> ".ledger"
     ]
-
-    CampaignAdmission.activate(path, digest, Keyword.merge(defaults, opts))
   end
 
   defp packet(overrides) do
@@ -1017,6 +1511,49 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
       ],
       "usage" => %{"prompt_tokens" => 1, "completion_tokens" => 1, "total_tokens" => 2}
     }
+  end
+
+  defp health_admission do
+    get(build_conn(), "/api/health")
+    |> json_response(200)
+    |> Map.fetch!("campaign_admission")
+  end
+
+  defp await_usage_finalization(attempts) when attempts > 0 do
+    usage = health_admission()["role_usage"]["target.ingest_extractor"]
+
+    if usage["pending_attempts"] == 0 and usage["in_flight"] == 0 do
+      usage
+    else
+      Process.sleep(2)
+      await_usage_finalization(attempts - 1)
+    end
+  end
+
+  defp await_usage_finalization(0), do: flunk("campaign usage did not reach a terminal state")
+
+  defp restore_campaign_after_test(path, digest, opts) do
+    previous_activation = Application.get_env(:memhouse, :campaign_admission)
+
+    on_exit(fn ->
+      :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+
+      if previous_activation do
+        Application.put_env(:memhouse, :campaign_admission, previous_activation)
+      else
+        Application.delete_env(:memhouse, :campaign_admission)
+      end
+
+      {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    end)
+
+    Application.put_env(:memhouse, :campaign_admission, {path, digest, opts})
+  end
+
+  defp restart_campaign_admission! do
+    :ok = Supervisor.terminate_child(MemHouse.Supervisor, CampaignAdmission)
+    {:ok, _pid} = Supervisor.restart_child(MemHouse.Supervisor, CampaignAdmission)
+    :ok
   end
 
   defp write_packet!(packet) do

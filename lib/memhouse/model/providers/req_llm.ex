@@ -142,7 +142,8 @@ defmodule MemHouse.Model.Providers.ReqLLM do
 
   Two response shapes are handled because usage reporting is optional across
   endpoints: with counts, they are recorded; without, the vectors are still
-  returned and the usage row simply shows zero tokens rather than a guess.
+  returned and the attempt is marked unmetered with zero token totals rather
+  than guessing usage.
   """
   @impl true
   def embed(%Role{} = config, texts, opts) do
@@ -209,7 +210,7 @@ defmodule MemHouse.Model.Providers.ReqLLM do
         {:ok,
          %Result{
            value: response.results,
-           usage: response.meta |> Map.get(:usage, %{}) |> usage(),
+           usage: response.meta |> Map.get(:usage) |> usage(),
            metadata: %{result_count: length(response.results)}
          }}
 
@@ -312,11 +313,11 @@ defmodule MemHouse.Model.Providers.ReqLLM do
   end
 
   defp openrouter_rerank_usage(body) do
-    total_tokens = get_in(body, ["usage", "total_tokens"]) || 0
+    total_tokens = get_in(body, ["usage", "total_tokens"])
 
     if is_integer(total_tokens) and total_tokens >= 0,
       do: %{input_tokens: total_tokens, output_tokens: 0},
-      else: %{}
+      else: nil
   end
 
   defp rerank_with_structured_generation(config, query, documents, opts) do
@@ -591,17 +592,35 @@ defmodule MemHouse.Model.Providers.ReqLLM do
   defp maybe_put(keyword, _key, ""), do: keyword
   defp maybe_put(keyword, key, value), do: Keyword.put(keyword, key, value)
 
-  defp usage(value), do: ReqLLM.Usage.normalize(value || %{})
+  defp usage(nil), do: nil
+
+  defp usage(value) do
+    normalized = ReqLLM.Usage.normalize(value)
+
+    if Enum.any?(
+         [:input_tokens, :output_tokens, :embedding_tokens],
+         &positive_usage?(Map.get(normalized, &1))
+       ),
+       do: normalized,
+       else: nil
+  end
+
+  defp positive_usage?(count) when is_integer(count) and count > 0, do: true
+  defp positive_usage?(_count), do: false
 
   # Embedding endpoints report their consumption as input tokens. Recording it
   # separately as embedding tokens keeps the ledger able to distinguish cheap
   # bulk embedding from generation spend, and output tokens are forced to zero
   # because an embedding produces none.
   defp embedding_usage(value) do
-    normalized = usage(value)
+    case usage(value) do
+      nil ->
+        nil
 
-    normalized
-    |> Map.put(:embedding_tokens, Map.get(normalized, :input_tokens, 0) || 0)
-    |> Map.put(:output_tokens, 0)
+      normalized ->
+        normalized
+        |> Map.put(:embedding_tokens, Map.get(normalized, :input_tokens, 0) || 0)
+        |> Map.put(:output_tokens, 0)
+    end
   end
 end

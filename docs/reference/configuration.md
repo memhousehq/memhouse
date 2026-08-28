@@ -142,6 +142,16 @@ a newly approved packet, run id, and digest. The packet fixes
 `consume-packet-no-resume` abort behavior and `new-packet-new-run-id` rerun
 behavior for one exact `pg0` or `external` PostgreSQL execution.
 
+The same directory stores a digest-keyed, content-safe accounting snapshot.
+MemHouse writes a pending record before returning a reservation, marks it
+in-flight before dispatching to the provider, and durably finalizes it on every
+terminal result. On restart it cancels orphaned pending records and finalizes
+orphaned dispatches as unmetered errors after their provider task is stopped.
+The snapshot contains only bounded admitted identity, role names,
+bounded counters, token totals, and UTC occurrence times. Keep the directory on
+durable storage: [`GET /api/health`](http-api.md) recovers completed counters
+from it after restart but refuses further spend from the consumed packet.
+
 `MEMHOUSE_EXPERIMENTAL_MINIMAL_RECALL` uses the same strict boolean boot
 parsing as the experimental switches above: `true`, `false`, `1`, `0`, `yes`,
 `no`, `on`, and `off` are accepted; ambiguous or misspelled values stop boot.
