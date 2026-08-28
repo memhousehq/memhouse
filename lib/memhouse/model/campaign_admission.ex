@@ -1134,7 +1134,7 @@ defmodule MemHouse.Model.CampaignAdmission do
     do: {:error, :invalid_campaign_attempt}
 
   defp cancel_pending(active, attempt_id) do
-    %{role: role} = active.attempts[attempt_id]
+    %{role: role, monitor: reference} = active.attempts[attempt_id]
     usage = Map.update!(active.role_usage[role], :pending_attempts, &(&1 - 1))
 
     updated = %{
@@ -1143,7 +1143,14 @@ defmodule MemHouse.Model.CampaignAdmission do
         attempts: Map.delete(active.attempts, attempt_id)
     }
 
-    persist_transition(updated)
+    case persist_transition(updated) do
+      {:ok, _active} = success ->
+        if is_reference(reference), do: Process.demonitor(reference, [:flush])
+        success
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp complete_usage(usage, %{status: status, usage: metering}, rates) do

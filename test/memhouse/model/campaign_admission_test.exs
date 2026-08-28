@@ -426,6 +426,8 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
   test "an owner can durably cancel before dispatch while remaining alive" do
     {path, digest} = write_packet!(packet(requests: 1, input_tokens: 10_000))
     assert {:ok, identity} = activate(path, digest)
+    admission = Process.whereis(CampaignAdmission)
+    {:monitors, monitors_before} = Process.info(admission, :monitors)
 
     assert {:ok, reservation} =
              CampaignAdmission.reserve(
@@ -439,6 +441,7 @@ defmodule MemHouse.Model.CampaignAdmissionTest do
 
     assert :ok = CampaignAdmission.cancel(reservation)
     assert Process.alive?(self())
+    assert Process.info(admission, :monitors) == {:monitors, monitors_before}
 
     usage = health_admission()["role_usage"]["target.ingest_extractor"]
     assert usage["attempts"] == 0
