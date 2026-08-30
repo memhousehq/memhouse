@@ -89,10 +89,10 @@ surfaces report the available version and retain their normal deployment flow.
 | `MEMHOUSE_MODEL_DREAM` | — | Model for the dream-reasoner role |
 | `MEMHOUSE_MODEL_ASK` | — | Model for the dialectic-agent role |
 | `MEMHOUSE_MODEL_LOCAL_FALLBACK` | `true` in dev, off in prod | Deterministic local adapter |
-| `MEMHOUSE_MODEL_REASONING_EFFORT` | `low` | Reasoning-token budget shared by all three generation roles |
-| `MEMHOUSE_MODEL_MAX_TOKENS` | `8192` | Output-token cap shared by all three generation roles |
+| `MEMHOUSE_MODEL_REASONING_EFFORT` | `low` | Reasoning-token budget shared by generation roles and a generation-backed reranker |
+| `MEMHOUSE_MODEL_MAX_TOKENS` | `8192` | Output-token cap shared by generation roles and a generation-backed reranker |
 | `MEMHOUSE_MODEL_RECEIVE_TIMEOUT_MS` | `120000` | Maximum idle wait (ms) between response chunks |
-| `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS` | `300000` | Total model-call ceiling (ms) shared by all three generation roles |
+| `MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS` | `300000` | Total model-call ceiling (ms) shared by generation roles and a generation-backed reranker |
 | `MEMHOUSE_MODEL_STREAM_POOL_SIZE` | `16` | Connections in each shared HTTP/1 shard |
 | `MEMHOUSE_MODEL_STREAM_POOL_COUNT` | `1` | Shared HTTP/1 shard count; raise only for a measured shard bottleneck |
 | `MEMHOUSE_MODEL_POOL_TIMEOUT_MS` | `120000` | Maximum wait (ms) to check out a model HTTP connection |

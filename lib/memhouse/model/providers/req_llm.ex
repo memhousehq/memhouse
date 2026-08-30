@@ -170,9 +170,9 @@ defmodule MemHouse.Model.Providers.ReqLLM do
   Reranks documents against a query, returning the endpoint's ranked results.
 
   The shipped OpenRouter Voyage role uses its native endpoint. General-purpose
-  reasoning models do not expose that capability; deadline-free callers can
-  produce the same index-and-score contract through strict structured
-  generation instead.
+  reasoning models do not expose that capability; they produce the same
+  index-and-score contract through strict structured generation. The retrieval
+  engine owns and enforces any caller deadline around this provider call.
   """
   @impl true
   def rerank(
@@ -216,13 +216,10 @@ defmodule MemHouse.Model.Providers.ReqLLM do
 
       {:error, %ReqLLM.Error.Invalid.Parameter{parameter: parameter}}
       when is_binary(parameter) ->
-        if String.ends_with?(parameter, "does not support reranking operations") and
-             not Keyword.get(opts, :deadline?, false) do
+        if String.ends_with?(parameter, "does not support reranking operations") do
           rerank_with_structured_generation(config, query, documents, opts)
         else
-          # Structured generation is deliberately available for offline analysis,
-          # but is an expensive fallback and cannot sit inside a retrieval deadline.
-          {:error, :rerank_endpoint_required_within_deadline}
+          {:error, %ReqLLM.Error.Invalid.Parameter{parameter: parameter}}
         end
 
       {:error, error} ->
@@ -347,18 +344,47 @@ defmodule MemHouse.Model.Providers.ReqLLM do
            structured_request_opts(config, opts)
          ) do
       {:ok, response} ->
-        rankings = response |> ReqLLM.Response.object() |> Map.get("rankings", [])
+        case ReqLLM.Response.object(response) do
+          object when is_map(object) ->
+            with {:ok, rankings} <- structured_rerank_results(object, documents) do
+              {:ok,
+               %Result{
+                 value: rankings,
+                 usage: usage(response.usage),
+                 metadata: %{result_count: length(rankings)}
+               }}
+            end
 
-        {:ok,
-         %Result{
-           value: rankings,
-           usage: usage(response.usage),
-           metadata: %{result_count: length(rankings)}
-         }}
+          _unusable ->
+            {:error, incomplete_reason(response.finish_reason, :missing_structured_object)}
+        end
 
       {:error, error} ->
         {:error, error}
     end
+  end
+
+  defp structured_rerank_results(object, documents) do
+    rankings = Map.get(object, "rankings")
+
+    expected_indexes =
+      case length(documents) do
+        0 -> []
+        count -> Enum.to_list(0..(count - 1))
+      end
+
+    valid? =
+      is_list(rankings) and
+        Enum.all?(rankings, fn
+          %{"index" => index, "relevance_score" => score} ->
+            is_integer(index) and index >= 0 and index < length(documents) and is_number(score)
+
+          _invalid ->
+            false
+        end) and
+        rankings |> Enum.map(& &1["index"]) |> Enum.sort() == expected_indexes
+
+    if valid?, do: {:ok, rankings}, else: {:error, :invalid_rerank_response}
   end
 
   defp rerank_schema do

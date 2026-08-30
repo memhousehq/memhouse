@@ -11,6 +11,11 @@ changelog entry and contract-version transition.
 
 ### Changed
 
+- Generation-backed reranking now uses the configured reasoning, output-token,
+  receive, request, and pool limits. It no longer asks OpenRouter for the
+  model's full context as output, and the retrieval engine still owns the
+  profile deadline.
+
 - Public `GET /api/health` now reports inactive or exact active paid-campaign
   admission state. Active responses include immutable per-role packet caps and
   durable dispatch, error, unmetered, pending, in-flight, token, and bounded UTC

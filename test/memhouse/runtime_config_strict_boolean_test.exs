@@ -12,7 +12,12 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
   test "generation and reranker routes can pin different provider classes" do
     variables = %{
       "MEMHOUSE_OPENROUTER_GENERATION_UPSTREAM_ROUTE" => "openai",
-      "MEMHOUSE_OPENROUTER_RERANKER_UPSTREAM_ROUTE" => "voyageai"
+      "MEMHOUSE_OPENROUTER_RERANKER_UPSTREAM_ROUTE" => "voyageai",
+      "MEMHOUSE_MODEL_MAX_TOKENS" => "2048",
+      "MEMHOUSE_MODEL_REASONING_EFFORT" => "low",
+      "MEMHOUSE_MODEL_RECEIVE_TIMEOUT_MS" => "45000",
+      "MEMHOUSE_MODEL_REQUEST_TIMEOUT_MS" => "60000",
+      "MEMHOUSE_MODEL_POOL_TIMEOUT_MS" => "30000"
     }
 
     originals = Map.new(variables, fn {name, _value} -> {name, System.get_env(name)} end)
@@ -28,6 +33,20 @@ defmodule MemHouse.RuntimeConfigStrictBooleanTest do
 
       assert get_in(roles, [:ingest_extractor, :options, "upstream_route"]) == "openai"
       assert get_in(roles, [:reranker, :options, "upstream_route"]) == "voyageai"
+
+      assert Map.take(roles[:reranker].options, [
+               "max_tokens",
+               "reasoning_effort",
+               "receive_timeout",
+               "request_timeout",
+               "pool_timeout"
+             ]) == %{
+               "max_tokens" => 2048,
+               "reasoning_effort" => "low",
+               "receive_timeout" => 45_000,
+               "request_timeout" => 60_000,
+               "pool_timeout" => 30_000
+             }
     after
       Enum.each(originals, fn {name, value} -> restore_env(name, value) end)
     end
