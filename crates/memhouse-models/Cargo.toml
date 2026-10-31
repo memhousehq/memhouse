@@ -1,0 +1,20 @@
+[package]
+name = "memhouse-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["local"]
+local = ["dep:fastembed"]
+
+[dependencies]
+memhouse-core.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+fastembed = { workspace = true, optional = true }

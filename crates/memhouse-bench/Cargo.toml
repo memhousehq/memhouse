@@ -1,0 +1,27 @@
+[package]
+name = "memhouse-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+memhouse-core.workspace = true
+memhouse-server.workspace = true
+memhouse-models.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+rand.workspace = true
+futures.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+sha2.workspace = true
+hex.workspace = true
+sqlx.workspace = true
+memhouse-store-postgres.workspace = true

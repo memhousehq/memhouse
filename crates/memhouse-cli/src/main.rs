@@ -1,0 +1,579 @@
+//! `memhouse`: one binary to run, connect, operate and benchmark MemHouse.
+
+mod connect;
+mod up;
+
+use anyhow::Context;
+use clap::{Parser, Subcommand};
+use memhouse_core::config::default_config_path;
+use memhouse_core::types::*;
+use memhouse_core::{templates, Config};
+use rand::Rng;
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "memhouse", version, about = "Governed long-term memory for AI agents. Rust + Postgres.", long_about = None)]
+struct Cli {
+    /// Config file (default ~/.memhouse/config.toml, or $MEMHOUSE_CONFIG)
+    #[arg(long, global = true, env = "MEMHOUSE_CONFIG")]
+    config: Option<PathBuf>,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// One-step local setup: start Postgres+pgvector in Docker, write config, download the embedding model
+    Up {
+        #[arg(long, default_value_t = 54329)]
+        port: u16,
+        /// Use-case template: personal, coding, support, sales, success
+        #[arg(long)]
+        template: Option<String>,
+    },
+    /// Stop the managed Postgres container (data is kept)
+    Down,
+    /// Write a config for an existing Postgres (needs the pgvector extension available)
+    Init {
+        #[arg(long)]
+        database_url: String,
+        #[arg(long)]
+        template: Option<String>,
+        /// Embedding provider: local or openai (any OpenAI-compatible endpoint, e.g. Ollama)
+        #[arg(long, default_value = "local")]
+        embedding: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        dim: Option<usize>,
+        #[arg(long)]
+        base_url: Option<String>,
+        #[arg(long)]
+        api_key_env: Option<String>,
+        /// Overwrite an existing config file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Run the HTTP server: REST API, MCP over HTTP at /mcp, Memory Browser at /
+    Serve {
+        #[arg(long)]
+        bind: Option<String>,
+    },
+    /// Run the MCP server over stdio (what agents launch)
+    Mcp {
+        /// Default subject for this agent (e.g. repo:myapp, user:alice)
+        #[arg(long)]
+        subject: Option<String>,
+        /// Name recorded as the actor in the audit log
+        #[arg(long, default_value = "agent")]
+        actor: String,
+    },
+    /// Connect an agent: writes its MCP config and verifies a recall
+    Connect {
+        /// claude-code, claude-desktop, cursor, vscode, windsurf, codex, gemini, zed, goose, http, all
+        agent: String,
+        #[arg(long)]
+        subject: Option<String>,
+        /// Print the configuration instead of writing it
+        #[arg(long)]
+        print: bool,
+        /// Write project-level config (in the current directory) where the agent supports it
+        #[arg(long)]
+        project: bool,
+        #[arg(long)]
+        no_verify: bool,
+    },
+    /// List supported agents and templates
+    Agents,
+    /// Check configuration, database, model and MCP round-trip
+    Doctor,
+    /// Print the API key for the REST/HTTP endpoints
+    Key,
+    /// Store a memory
+    Remember {
+        content: String,
+        #[arg(long, short)]
+        subject: Option<String>,
+        #[arg(long, short, default_value = "semantic")]
+        kind: String,
+        #[arg(long = "tag", short = 't')]
+        tags: Vec<String>,
+    },
+    /// Search memory
+    Recall {
+        query: String,
+        #[arg(long, short)]
+        subject: Option<String>,
+        #[arg(short, default_value_t = 10)]
+        k: usize,
+        #[arg(long)]
+        rerank: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List recent memories
+    List {
+        #[arg(long, short)]
+        subject: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Delete one memory, or everything about a subject (--subject)
+    Forget {
+        id: Option<String>,
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Ingest a conversation (JSON array of {role, content[, timestamp]}) as episodic memory
+    Ingest {
+        file: PathBuf,
+        #[arg(long, short)]
+        subject: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Export memories as canonical JSONL (MemHouse Memory Format v1)
+    Export {
+        #[arg(long, short)]
+        subject: Option<String>,
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+    },
+    /// Import a JSONL export (ids, timestamps and provenance are preserved)
+    Import { file: PathBuf },
+    /// Audit log: show recent events or verify the hash chain
+    Audit {
+        #[arg(long)]
+        verify: bool,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Show counts
+    Stats,
+    /// Apply retention rules now
+    Retention,
+    /// Benchmark and validate memory quality, safety and latency
+    Bench {
+        #[command(subcommand)]
+        cmd: memhouse_bench::BenchCmd,
+    },
+}
+
+fn random_token(n: usize) -> String {
+    const CHARS: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut r = rand::thread_rng();
+    (0..n).map(|_| CHARS[r.gen_range(0..CHARS.len())] as char).collect()
+}
+
+fn self_launch(cfg_path: &Option<PathBuf>, subject: &Option<String>) -> anyhow::Result<connect::Launch> {
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let mut args = vec!["mcp".to_string()];
+    if let Some(s) = subject {
+        args.push("--subject".into());
+        args.push(s.clone());
+    }
+    let mut env = vec![];
+    if let Some(p) = cfg_path {
+        env.push(("MEMHOUSE_CONFIG".to_string(), std::fs::canonicalize(p).unwrap_or(p.clone()).display().to_string()));
+    }
+    Ok(connect::Launch { command: exe.display().to_string(), args, env })
+}
+
+async fn engine(cfg: Config) -> anyhow::Result<memhouse_core::Engine> {
+    memhouse_server::build_engine(cfg, true).await.context("starting the memory engine (is Postgres running? try `memhouse up` or `memhouse doctor`)")
+}
+
+fn print_next_steps(path: &std::path::Path) {
+    println!("\nMemHouse is ready. Config: {}\n", path.display());
+    println!("Connect an agent (writes its MCP config and checks a recall):");
+    println!("  memhouse connect claude-code      # or: cursor, claude-desktop, vscode, windsurf, codex, gemini, all");
+    println!("Try it from the terminal:");
+    println!("  memhouse remember \"Alice prefers email over phone\" --subject user:alice");
+    println!("  memhouse recall \"how should I contact Alice?\" --subject user:alice");
+    println!("Run the HTTP API and Memory Browser:");
+    println!("  memhouse serve                     # http://127.0.0.1:7077");
+    println!("Benchmark it:");
+    println!("  memhouse bench run --suite governance && memhouse bench run --dataset longmemeval-s --limit 50");
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "warn,memhouse=info".into());
+    tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
+    if let Err(e) = run(cli).await {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
+    let cfg_path = cli.config.clone();
+    let path_or_default = cfg_path.clone().unwrap_or_else(default_config_path);
+    match cli.cmd {
+        Cmd::Up { port, template } => {
+            let mut cfg = if path_or_default.exists() { Config::load(Some(&path_or_default))? } else { Config::default() };
+            let fresh = !path_or_default.exists();
+            if fresh || up::managed(&cfg) {
+                let password = if fresh {
+                    random_token(24)
+                } else {
+                    cfg.database.url.split(':').nth(2).and_then(|s| s.split('@').next()).unwrap_or("memhouse").to_string()
+                };
+                let url = up::start(port, &password)?;
+                if fresh {
+                    cfg.database.url = url.clone();
+                    cfg.database.container = Some(up::CONTAINER.into());
+                    cfg.server.api_keys = vec![format!("mh_{}", random_token(32))];
+                }
+                eprintln!("Waiting for Postgres ...");
+                up::wait_ready(&cfg.database.url, std::time::Duration::from_secs(90)).await?;
+            } else {
+                eprintln!("Using the database from {} (not managed by `memhouse up`).", path_or_default.display());
+            }
+            if let Some(t) = template {
+                let t = templates::find(&t).ok_or_else(|| anyhow::anyhow!("unknown template '{t}'"))?;
+                templates::apply(&mut cfg, t);
+            }
+            let path = cfg.save(Some(&path_or_default))?;
+            eprintln!("Loading the embedding model ({}) and preparing the schema ...", cfg.embedding.model);
+            let eng = engine(Config::load(Some(&path))?).await?;
+            let st = eng.store.stats(&eng.cfg.memory.tenant).await?;
+            println!("✓ Postgres ready, schema migrated, {} memories stored", st.committed);
+            print_next_steps(&path);
+        }
+        Cmd::Down => up::stop()?,
+        Cmd::Init { database_url, template, embedding, model, dim, base_url, api_key_env, force } => {
+            if path_or_default.exists() && !force {
+                anyhow::bail!("{} already exists (use --force to overwrite)", path_or_default.display());
+            }
+            let mut cfg = Config::default();
+            cfg.database.url = database_url;
+            cfg.server.api_keys = vec![format!("mh_{}", random_token(32))];
+            cfg.embedding.provider = embedding.clone();
+            if embedding != "local" {
+                cfg.embedding.query_prefix = None;
+                cfg.embedding.model = model.clone().unwrap_or_else(|| "text-embedding-3-small".into());
+                cfg.embedding.dim = dim.unwrap_or(1536);
+                cfg.embedding.base_url = base_url;
+                cfg.embedding.api_key_env = api_key_env.or_else(|| Some("OPENAI_API_KEY".into()));
+            } else if let Some(m) = model {
+                let (_, d, _) = memhouse_models::local::resolve_embedding(&m)?;
+                cfg.embedding.model = m;
+                cfg.embedding.dim = d;
+                if !cfg.embedding.model.contains("bge") {
+                    cfg.embedding.query_prefix = None;
+                }
+            }
+            if let Some(t) = template {
+                let t = templates::find(&t).ok_or_else(|| anyhow::anyhow!("unknown template '{t}'"))?;
+                templates::apply(&mut cfg, t);
+            }
+            let path = cfg.save(Some(&path_or_default))?;
+            let eng = engine(Config::load(Some(&path))?).await?;
+            let _ = eng.store.stats(&eng.cfg.memory.tenant).await?;
+            println!("✓ Connected and migrated");
+            print_next_steps(&path);
+        }
+        Cmd::Serve { bind } => {
+            let mut cfg = Config::load(cfg_path.as_deref())?;
+            if let Some(b) = bind {
+                cfg.server.bind = b;
+            }
+            let eng = engine(cfg).await?;
+            let e2 = eng.clone();
+            tokio::spawn(async move {
+                loop {
+                    if let Err(e) = e2.apply_retention().await {
+                        tracing::warn!("retention: {e:#}");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                }
+            });
+            memhouse_server::serve(eng).await?;
+        }
+        Cmd::Mcp { subject, actor } => {
+            let mut cfg = Config::load(cfg_path.as_deref())?;
+            if let Some(s) = subject {
+                cfg.memory.default_subject = s;
+            }
+            let eng = memhouse_server::build_engine(cfg, false).await?;
+            memhouse_server::mcp::serve_stdio(eng, actor).await?;
+        }
+        Cmd::Connect { agent, subject, print, project, no_verify } => {
+            let cfg = Config::load(cfg_path.as_deref())?;
+            if !path_or_default.exists() && !print {
+                anyhow::bail!("no config at {}; run `memhouse up` first", path_or_default.display());
+            }
+            let launch = self_launch(&cfg_path, &subject)?;
+            let agents: Vec<String> = if agent == "all" {
+                detected_agents()
+            } else {
+                vec![agent]
+            };
+            if agents.is_empty() {
+                println!("No supported agents detected. Use e.g. `memhouse connect cursor --print`.");
+            }
+            for a in &agents {
+                connect::connect(&connect::ConnectOpts {
+                    agent: a.clone(),
+                    launch: self_launch(&cfg_path, &subject)?,
+                    print_only: print,
+                    project,
+                    http_url: format!("http://{}", cfg.server.bind),
+                    api_key: cfg.server.api_keys.first().cloned(),
+                })?;
+            }
+            if !print && !no_verify && agents.iter().any(|a| a != "http" && a != "zed" && a != "goose") {
+                match connect::verify(&launch) {
+                    Ok(msg) => println!("✓ Verified the MCP server the agent will launch: {msg}"),
+                    Err(e) => println!("✗ MCP check failed: {e:#}\n  Run `memhouse doctor` for details."),
+                }
+            }
+        }
+        Cmd::Agents => {
+            println!("Agents (memhouse connect <name>):");
+            for a in connect::AGENTS {
+                println!("  {:<15} {}", a.name, a.title);
+            }
+            println!("\nTemplates (memhouse up --template <name>):");
+            for t in templates::TEMPLATES {
+                println!("  {:<15} {} — subjects like {}", t.name, t.title, t.subject_hint);
+            }
+        }
+        Cmd::Doctor => doctor(&cfg_path).await?,
+        Cmd::Key => {
+            let cfg = Config::load(cfg_path.as_deref())?;
+            match cfg.server.api_keys.first() {
+                Some(k) => println!("{k}"),
+                None => anyhow::bail!("no API key configured; run `memhouse up` or `memhouse init`"),
+            }
+        }
+        Cmd::Remember { content, subject, kind, tags } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;
+            let r = eng
+                .remember(RememberRequest { subject, content, kind: Some(kind), tags, actor: Some("cli".into()), ..Default::default() })
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+        }
+        Cmd::Recall { query, subject, k, rerank, json } => {
+            let mut cfg = Config::load(cfg_path.as_deref())?;
+            if rerank {
+                cfg.rerank.enabled = true;
+            }
+            let eng = engine(cfg).await?;
+            let r = eng.recall(RecallRequest { subject, query, k: Some(k), actor: Some("cli".into()), ..Default::default() }).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                for (i, h) in r.hits.iter().enumerate() {
+                    let m = &h.memory;
+                    println!("{:>2}. [{:.3}] ({}, {}) {}", i + 1, h.score, m.kind, m.occurred_at.unwrap_or(m.created_at).format("%Y-%m-%d"), m.content.replace('\n', " ⏎ "));
+                    println!("    id {}", m.id);
+                }
+                println!("{} results in {:.1} ms", r.hits.len(), r.took_ms);
+            }
+        }
+        Cmd::List { subject, limit, all } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            let subject = subject.or_else(|| Some(eng.cfg.memory.default_subject.clone()));
+            for m in eng.list(None, subject, None, limit, 0, all).await? {
+                println!("{}  {:<11} {:<10} {}  {}", m.id, m.kind.as_str(), m.status.as_str(), m.created_at.format("%Y-%m-%d"), m.content.replace('\n', " "));
+            }
+        }
+        Cmd::Forget { id, subject, yes } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            match (id, subject) {
+                (Some(id), _) => {
+                    let id = uuid::Uuid::parse_str(&id)?;
+                    println!("{}", if eng.forget(None, id, Some("cli".into())).await? { "deleted" } else { "not found" });
+                }
+                (None, Some(s)) => {
+                    if !yes {
+                        eprint!("Permanently erase every memory of subject '{s}'? [y/N] ");
+                        std::io::stderr().flush()?;
+                        let mut a = String::new();
+                        std::io::stdin().lock().read_line(&mut a)?;
+                        if !a.trim().eq_ignore_ascii_case("y") {
+                            return Ok(());
+                        }
+                    }
+                    println!("erased {} memories of {s}", eng.forget_subject(None, &s, Some("cli".into())).await?);
+                }
+                _ => anyhow::bail!("give a memory id or --subject"),
+            }
+        }
+        Cmd::Ingest { file, subject, session } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            let messages: Vec<Message> = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
+            let r = eng.ingest(IngestRequest { subject, session_id: session, messages, actor: Some("cli".into()), ..Default::default() }).await?;
+            println!("stored {} rounds ({} quarantined, {} already present)", r.stored, r.quarantined, r.deduplicated);
+        }
+        Cmd::Export { subject, out } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            let mut w: Box<dyn Write> = match out {
+                Some(p) => Box::new(std::io::BufWriter::new(std::fs::File::create(p)?)),
+                None => Box::new(std::io::stdout()),
+            };
+            writeln!(w, "{}", serde_json::json!({"format": "memhouse.memory", "version": 1, "exported_at": chrono::Utc::now(), "embedder": eng.embedder.id()}))?;
+            let mut offset = 0;
+            let mut n = 0;
+            loop {
+                let batch = eng.list(None, subject.clone(), None, 1000, offset, true).await?;
+                if batch.is_empty() {
+                    break;
+                }
+                offset += batch.len();
+                for m in batch {
+                    writeln!(w, "{}", serde_json::to_string(&m)?)?;
+                    n += 1;
+                }
+            }
+            eprintln!("exported {n} memories");
+        }
+        Cmd::Import { file } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            let text = std::fs::read_to_string(&file)?;
+            let mut lines = text.lines();
+            let header: serde_json::Value = serde_json::from_str(lines.next().unwrap_or("{}"))?;
+            if header["format"] != "memhouse.memory" {
+                anyhow::bail!("not a MemHouse export (missing header line)");
+            }
+            let mut batch: Vec<Memory> = vec![];
+            let (mut added, mut skipped) = (0, 0);
+            for l in lines.filter(|l| !l.trim().is_empty()) {
+                let m: Memory = serde_json::from_str(l)?;
+                if eng.store.get(&m.tenant, m.id).await?.is_some() {
+                    skipped += 1;
+                    continue;
+                }
+                batch.push(m);
+            }
+            for chunk in batch.chunks(256) {
+                let texts: Vec<String> = chunk.iter().map(|m| m.content.clone()).collect();
+                let vecs = eng.embed_passages(&texts).await?;
+                let recs: Vec<NewMemory> = chunk
+                    .iter()
+                    .zip(vecs)
+                    .map(|(m, v)| NewMemory {
+                        content_hash: memhouse_core::engine::content_hash(&format!("{}\u{1f}{}", m.kind.as_str(), m.content)),
+                        memory: m.clone(),
+                        embedding: Some(v),
+                    })
+                    .collect();
+                eng.store.insert(&recs).await?;
+                added += recs.len();
+            }
+            eng.store.audit("cli", "memory.import", &eng.cfg.memory.tenant, None, None, serde_json::json!({"added": added, "skipped": skipped, "file": file.display().to_string()})).await?;
+            println!("imported {added} memories ({skipped} already present)");
+        }
+        Cmd::Audit { verify, limit } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            if verify {
+                let (n, broken) = eng.store.audit_verify().await?;
+                match broken {
+                    None => println!("✓ audit chain intact ({n} events)"),
+                    Some(id) => anyhow::bail!("audit chain broken at event {id} (checked {n})"),
+                }
+            } else {
+                for e in eng.store.audit_log(&eng.cfg.memory.tenant, limit).await? {
+                    println!("{} {:<6} {:<18} {:<14} {:<20} {}", e.at.format("%Y-%m-%d %H:%M:%S"), e.id, e.action, e.actor, e.subject.unwrap_or_default(), e.detail);
+                }
+            }
+        }
+        Cmd::Stats => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            println!("{}", serde_json::to_string_pretty(&eng.store.stats(&eng.cfg.memory.tenant).await?)?);
+        }
+        Cmd::Retention => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            println!("purged {} records", eng.apply_retention().await?);
+        }
+        Cmd::Bench { cmd } => {
+            let cfg = Config::load(cfg_path.as_deref())?;
+            memhouse_bench::main(cmd, cfg).await?;
+        }
+    }
+    Ok(())
+}
+
+fn detected_agents() -> Vec<String> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut v = vec![];
+    if connect::which("claude").is_some() {
+        v.push("claude-code".into());
+    }
+    let desktop = if cfg!(target_os = "macos") { home.join("Library/Application Support/Claude") } else { dirs::config_dir().unwrap_or_default().join("Claude") };
+    if desktop.exists() {
+        v.push("claude-desktop".into());
+    }
+    if home.join(".cursor").exists() {
+        v.push("cursor".into());
+    }
+    if home.join(".codeium/windsurf").exists() {
+        v.push("windsurf".into());
+    }
+    if home.join(".codex").exists() || connect::which("codex").is_some() {
+        v.push("codex".into());
+    }
+    if home.join(".gemini").exists() || connect::which("gemini").is_some() {
+        v.push("gemini".into());
+    }
+    v
+}
+
+async fn doctor(cfg_path: &Option<PathBuf>) -> anyhow::Result<()> {
+    let path = cfg_path.clone().unwrap_or_else(default_config_path);
+    let ok = |s: &str| println!("✓ {s}");
+    let bad = |s: &str| println!("✗ {s}");
+    if path.exists() {
+        ok(&format!("config {}", path.display()));
+    } else {
+        bad(&format!("no config at {} — run `memhouse up`", path.display()));
+        return Ok(());
+    }
+    let cfg = Config::load(Some(&path))?;
+    if up::managed(&cfg) {
+        match up::container_state() {
+            Some(s) if s == "running" => ok(&format!("container {} running", up::CONTAINER)),
+            Some(s) => bad(&format!("container {} is {s} — run `memhouse up`", up::CONTAINER)),
+            None => bad(&format!("container {} missing — run `memhouse up`", up::CONTAINER)),
+        }
+    }
+    let t = std::time::Instant::now();
+    match memhouse_server::build_engine(cfg.clone(), true).await {
+        Ok(eng) => {
+            ok(&format!("database {} reachable, schema ready ({:.1}s incl. model load)", memhouse_store_postgres::redact_url(&cfg.database.url), t.elapsed().as_secs_f32()));
+            ok(&format!("embedder {} ({} dims)", eng.embedder.id(), eng.embedder.dim()));
+            if let Some(r) = &eng.reranker {
+                ok(&format!("reranker {}", r.id()));
+            }
+            let st = eng.store.stats(&cfg.memory.tenant).await?;
+            ok(&format!("{} memories, {} subjects, {} audit events", st.committed, st.subjects, st.audit_events));
+            match eng.store.audit_verify().await? {
+                (n, None) => ok(&format!("audit chain intact ({n} events)")),
+                (_, Some(id)) => bad(&format!("audit chain broken at event {id}")),
+            }
+        }
+        Err(e) => {
+            bad(&format!("engine: {e:#}"));
+            return Ok(());
+        }
+    }
+    match connect::verify(&self_launch(cfg_path, &None)?) {
+        Ok(m) => ok(&format!("MCP stdio round-trip: {m}")),
+        Err(e) => bad(&format!("MCP stdio round-trip: {e:#}")),
+    }
+    if cfg.server.api_keys.is_empty() {
+        bad("no API key for the HTTP server (run `memhouse init --force` or set MEMHOUSE_API_KEY)");
+    } else {
+        ok("API key configured (`memhouse key`)");
+    }
+    Ok(())
+}

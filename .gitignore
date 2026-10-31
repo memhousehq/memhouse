@@ -1,0 +1,5 @@
+/target
+.DS_Store
+/bench-data/
+/bench-results/*/items.jsonl
+.fastembed_cache/

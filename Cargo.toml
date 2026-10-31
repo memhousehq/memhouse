@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/memhouse/memhouse"
+rust-version = "1.85"
+
+[workspace.dependencies]
+memhouse-core = { path = "crates/memhouse-core" }
+memhouse-store-postgres = { path = "crates/memhouse-store-postgres" }
+memhouse-models = { path = "crates/memhouse-models" }
+memhouse-server = { path = "crates/memhouse-server" }
+memhouse-bench = { path = "crates/memhouse-bench" }
+
+anyhow = "1"
+thiserror = "2"
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+regex = "1"
+once_cell = "1"
+sha2 = "0.10"
+hex = "0.4"
+futures = "0.3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+clap = { version = "4", features = ["derive", "env"] }
+fastembed = { version = "7", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
+rand = "0.8"
+dirs = "5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

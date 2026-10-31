@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MemHouse Memory Browser</title>
+<style>
+:root{--bg:#FAF8F4;--surface:#fff;--ink:#16181D;--slate:#4B5263;--line:#E3DED4;--accent:#B0431E;--accent-deep:#8A3216;--ok:#2E6A4E;--warn:#8F5A00;--bad:#B42318;--code:#101216;--mono:ui-monospace,"JetBrains Mono",Menlo,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#101216;--surface:#1B1E24;--ink:#F2EFE9;--slate:#A9AFBC;--line:#2B2F37;--accent:#F08A5D;--accent-deep:#F08A5D;--ok:#6FC39A;--warn:#F08A5D;--bad:#F08A5D}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 Inter,system-ui,-apple-system,sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:14px 24px;border-bottom:1px solid var(--line)}
+h1{font:600 20px/1.2 "Source Serif 4",Georgia,serif;margin:0}h1 span{color:var(--accent)}
+main{display:grid;grid-template-columns:260px 1fr;gap:0;min-height:calc(100vh - 56px)}
+aside{border-right:1px solid var(--line);padding:16px;overflow:auto}
+section{padding:16px 24px;overflow:auto}
+input,select,button{font:inherit;color:inherit;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:7px 10px}
+button{cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button.primary:hover{background:var(--accent-deep)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.subj{display:flex;justify-content:space-between;padding:6px 8px;border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:13px}
+.subj:hover,.subj.on{background:var(--surface);outline:1px solid var(--line)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
+.content{white-space:pre-wrap;word-break:break-word}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--slate)}
+.chip{border:1px solid var(--line);border-radius:999px;padding:1px 8px}.mono{font-family:var(--mono)}
+.st-committed{color:var(--ok)}.st-quarantined{color:var(--bad)}.st-superseded{color:var(--slate);text-decoration:line-through}
+.muted{color:var(--slate)}#stats{margin-left:auto;font-size:13px;color:var(--slate)}
+@media (max-width:760px){main{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header><h1>Mem<span>House</span> · Memory Browser</h1><div id="stats"></div></header>
+<main>
+<aside>
+  <div class="row" style="margin-bottom:12px"><input id="key" type="password" placeholder="API key" style="flex:1"><button onclick="saveKey()">Use</button></div>
+  <div class="muted" style="font-size:12px;margin-bottom:8px">Subjects</div>
+  <div id="subjects"></div>
+</aside>
+<section>
+  <div class="row">
+    <input id="q" placeholder="Search memory…" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')search()">
+    <select id="kind"><option value="">all kinds</option><option>semantic</option><option>preference</option><option>procedural</option><option>commitment</option><option>episodic</option><option>document</option></select>
+    <button class="primary" onclick="search()">Recall</button>
+    <label class="muted"><input type="checkbox" id="all"> show superseded / quarantined</label>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <input id="new" placeholder="Remember something for this subject…" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')add()">
+    <button onclick="add()">Remember</button>
+  </div>
+  <div id="list"></div>
+</section>
+</main>
+<script>
+let KEY=''; try{KEY=localStorage.getItem('mh_key')||''}catch(e){}
+let SUBJECT=null;
+document.getElementById('key').value=KEY;
+function saveKey(){KEY=document.getElementById('key').value.trim();try{localStorage.setItem('mh_key',KEY)}catch(e){}load()}
+async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'content-type':'application/json','authorization':'Bearer '+KEY,'x-memhouse-actor':'browser',...(opts.headers||{})}});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j}
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function card(m,extra=''){const d=(m.occurred_at||m.created_at||'').slice(0,10);return `<div class="card"><div class="content">${esc(m.content)}</div><div class="chips"><span class="chip st-${m.status}">● ${m.status}</span><span class="chip">${m.kind}</span><span class="chip">${d}</span><span class="chip">source: ${esc(m.source)}</span>${(m.tags||[]).map(t=>`<span class="chip">#${esc(t)}</span>`).join('')}${extra}<span class="chip mono">${m.id}</span><button style="padding:0 8px;font-size:12px" onclick="del('${m.id}')">forget</button></div></div>`}
+async function load(){
+  if(!KEY){document.getElementById('list').innerHTML='<p class="muted">Enter the API key from <span class="mono">~/.memhouse/config.toml</span> (or run <span class="mono">memhouse key</span>).</p>';return}
+  try{
+    const s=await api('/v1/stats');document.getElementById('stats').textContent=`${s.committed} memories · ${s.subjects} subjects · ${s.quarantined} quarantined · ${s.audit_events} audit events`;
+    const subs=await api('/v1/subjects');if(!SUBJECT&&subs.length)SUBJECT=subs[0].subject;
+    document.getElementById('subjects').innerHTML=subs.map(x=>`<div class="subj ${x.subject===SUBJECT?'on':''}" onclick="pick('${esc(x.subject)}')"><span>${esc(x.subject)}</span><span class="muted">${x.memories}</span></div>`).join('')||'<p class="muted">No memories yet.</p>';
+    await showList();
+  }catch(e){document.getElementById('list').innerHTML=`<p class="st-quarantined">${esc(e.message)}</p>`}
+}
+function pick(s){SUBJECT=s;document.getElementById('q').value='';load()}
+async function showList(){if(!SUBJECT)return;const k=document.getElementById('kind').value;const all=document.getElementById('all').checked;
+  const ms=await api(`/v1/memories?subject=${encodeURIComponent(SUBJECT)}&limit=200${k?'&kind='+k:''}${all?'&all=true':''}`);
+  document.getElementById('list').innerHTML=`<p class="muted">${ms.length} most recent memories of <span class="mono">${esc(SUBJECT)}</span></p>`+ms.map(m=>card(m)).join('')}
+async function search(){const q=document.getElementById('q').value.trim();if(!q)return showList();const k=document.getElementById('kind').value;
+  const r=await api('/v1/recall',{method:'POST',body:JSON.stringify({subject:SUBJECT,query:q,k:20,kinds:k?[k]:null})});
+  document.getElementById('list').innerHTML=`<p class="muted">${r.hits.length} results in ${r.took_ms.toFixed(1)} ms${r.reranked?' (reranked)':''}</p>`+r.hits.map(h=>card(h.memory,`<span class="chip">score ${h.score.toFixed(3)}${h.keyword_rank?` · kw #${h.keyword_rank}`:''}${h.vector_rank?` · vec #${h.vector_rank}`:''}</span>`)).join('')}
+async function add(){const c=document.getElementById('new').value.trim();if(!c)return;const r=await api('/v1/memories',{method:'POST',body:JSON.stringify({subject:SUBJECT,content:c})});document.getElementById('new').value='';if(r.note)alert(r.note);load()}
+async function del(id){if(!confirm('Permanently delete this memory?'))return;await api('/v1/memories/'+id,{method:'DELETE'});load()}
+load();
+</script>
+</body>
+</html>
