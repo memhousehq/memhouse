@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Model Context Protocol server (JSON-RPC 2.0). The same handler serves stdio (for agents that
 //! launch `memhouse mcp`) and streamable HTTP (`POST /mcp`). It only calls the engine (AP-2).
 

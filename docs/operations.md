@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # Operations guide
 
 This guide covers running MemHouse on a laptop, on a server and in the cloud: deployment, sizing,

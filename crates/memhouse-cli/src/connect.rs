@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `memhouse connect <agent>`: write the agent's MCP configuration in one command (TR-TPL-04),
 //! then verify that the configured command answers a real recall over MCP.
 

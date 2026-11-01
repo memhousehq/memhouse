@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! HTTP gateway: REST API, streamable-HTTP MCP endpoint and the Memory Browser page.
 
 pub mod mcp;

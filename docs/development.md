@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # Developer guide
 
 For people changing MemHouse itself: how the code is laid out, how to build and test it, and how to
@@ -88,6 +89,9 @@ cargo xtask ci
 | Step | What it runs | Needs |
 |---|---|---|
 | fmt | `cargo fmt --all -- --check` (settings in `rustfmt.toml`) | — |
+| spdx headers | `cargo xtask spdx`: every source and doc file carries the licence its path requires | — |
+| secret scan | `cargo xtask secrets`: no credentials or credential files in the tree ([secrets.md](security/secrets.md)) | — |
+| dependency policy | `cargo deny check`: permissive licences only, no known vulnerabilities, crates.io only (`deny.toml`) | `cargo install cargo-deny --locked` |
 | clippy | `cargo clippy --workspace --all-targets --release -- -D warnings` (MSRV in `clippy.toml`) | — |
 | unit tests | `cargo test --workspace --release`: gate (including `proptest` properties), query analysis, enrichment parsing, metrics, batching, SQL quoting, plan checker | — |
 | release build | `cargo build --release -p memhouse-cli` | — |
@@ -95,16 +99,23 @@ cargo xtask ci
 | benchmark guard | `memhouse bench guard`: the governance suite plus the T1 benchmark runs, compared with `bench/baselines.json` | a benchmark database (`memhouse up` once) and the datasets (`memhouse bench download longmemeval-s`, `locomo`) |
 
 It takes about 5 minutes on a laptop. Options: `--tier 2` (adds LoCoMo with cached enrichment,
-about $0.01), `--fix` (apply rustfmt), `--skip-e2e` (no Docker), `--skip-guard` (no benchmark
+about $0.01), `--fix` (apply rustfmt and add missing SPDX headers), `--skip-e2e` (no Docker), `--skip-guard` (no benchmark
 database). `scripts/ci.sh` is the same command.
 
-Run it before every push automatically:
+Install the hooks once per clone:
 
 ```bash
 cargo xtask install-hooks
 ```
 
-`git push --no-verify` skips it once.
+| Hook | Runs | Skip once |
+|---|---|---|
+| pre-commit | `cargo xtask secrets --staged` | `git commit --no-verify` (false positives only) |
+| commit-msg | requires a DCO `Signed-off-by` line (`git commit -s`, see [CONTRIBUTING.md](../CONTRIBUTING.md)) | — |
+| pre-push | `cargo xtask ci` | `git push --no-verify` |
+
+`cargo xtask install-hooks --repo ../other-repo` installs the pre-commit and commit-msg hooks in
+another repository.
 
 ### The benchmark guard
 
@@ -116,7 +127,7 @@ memhouse bench guard --tier 2     # adds cached enrichment
 It runs the governance suite (every check must pass, and there must be at least as many checks as
 the baseline), LongMemEval_S on a 50-question sample, and LoCoMo, then prints a table of each
 metric against its baseline and threshold (see
-[development-plan.md section 3](../draft_plan/development-plan.md#3-the-benchmark-guard)). The
+[roadmap section 3](roadmap.md#3-the-benchmark-guard)). The
 report is also written to `bench-results/guard/`.
 
 - **Quality metrics are deterministic**: the same code gives the same numbers, so any drop is real.

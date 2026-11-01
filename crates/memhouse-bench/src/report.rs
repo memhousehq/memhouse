@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Human-readable reports (Markdown) from a run summary, plus side-by-side comparison of runs.
 
 use crate::baselines;

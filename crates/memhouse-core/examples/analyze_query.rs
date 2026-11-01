@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Prints the query plan for each `<rfc3339 time>\t<question>` line on stdin as JSON.
 use std::io::BufRead;
 

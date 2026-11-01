@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Configuration: one TOML file (`~/.memhouse/config.toml` by default), every field
 //! overridable by environment variables so agents and containers can configure it too.
 

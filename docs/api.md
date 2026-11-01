@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # API reference
 
 MemHouse has three ways in, and all of them call the same engine:

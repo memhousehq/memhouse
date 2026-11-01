@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # MemHouse
 
 Open-source, governed memory for AI agents. Rust + Postgres.
@@ -212,8 +213,10 @@ memhouse down                    # stop the container; data stays in the Docker 
 [Governance and compliance](docs/governance.md) · [Development](docs/development.md) ·
 [Architecture](docs/architecture.md) · [Benchmarks](docs/benchmarks.md)
 
-Design documents are in [`draft_plan/`](draft_plan/).
+Design documents are in [`docs/design/`](docs/design/) and the plan of record is [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Licence
 
-Apache-2.0.
+Code: Apache-2.0 ([LICENSE](LICENSE)). Documentation in `docs/`: CC BY 4.0 ([docs/LICENSE](docs/LICENSE)).
+Every file names its licence in an `SPDX-License-Identifier` line. Contributions are signed off
+under the DCO; see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md).

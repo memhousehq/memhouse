@@ -2,7 +2,10 @@
 name = "xtask"
 version = "0.0.0"
 edition.workspace = true
+license.workspace = true
 publish = false
 
-# Development tasks: `cargo xtask ci`, `cargo xtask install-hooks`. Standard library only.
+# Development tasks: `cargo xtask ci`, `spdx`, `secrets`, `install-hooks`.
 [dependencies]
+regex.workspace = true
+sha2.workspace = true

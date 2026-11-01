@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Governance and safety suite: deterministic checks, never decided by a model (strategy 7.5).
 //! Each check maps to a requirement and is a hard gate (pass/fail), plus a few rate metrics.
 

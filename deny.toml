@@ -1,0 +1,50 @@
+# Dependency policy (packaging plan section 4): permissive licences only, no known
+# vulnerabilities, crates only from crates.io. Run by `cargo xtask ci` as `cargo deny check`.
+# An exception needs a reason here and a maintainer's review (CODEOWNERS).
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "Unicode-3.0",
+  "BSL-1.0",
+  # Permissive data licence: Mozilla's CA root certificates (webpki-roots, used for TLS).
+  "CDLA-Permissive-2.0",
+]
+# Our own crates are Apache-2.0 but unpublished; check them like any other.
+private = { ignore = false }
+
+# Reviewed exceptions. MPL-2.0 is file-level copyleft: using the crate unmodified only requires
+# keeping its source available, which crates.io does. To be confirmed by counsel with the licence
+# decision (docs/adr/0001-licence.md).
+[[licenses.exceptions]]
+crate = "option-ext"   # via dirs -> dirs-sys
+allow = ["MPL-2.0"]
+
+[advisories]
+version = 2
+# Unmaintained or yanked crates are reported; vulnerabilities fail the build.
+unmaintained = "workspace"
+yanked = "warn"
+ignore = []
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

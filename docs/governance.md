@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # Governance and compliance guide
 
 This guide is for security, privacy and compliance reviewers, and for the engineers who answer
@@ -359,7 +360,7 @@ Run it in CI and keep the reports: they are audit evidence for every release.
 
 ## Known gaps
 
-These are tracked against the requirements in [`draft_plan/`](../draft_plan/) and stated here so
+These are tracked against the requirements in [`docs/design/`](design/) and stated here so
 reviewers don't have to find them:
 
 - **No per-key scopes or roles.** Any valid key can read and erase any subject in the tenant. The

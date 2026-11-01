@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Public data types shared by the engine, the store adapters, the API and the benchmark.
 
 use chrono::{DateTime, Utc};

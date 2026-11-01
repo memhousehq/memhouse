@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Benchmark runner: replays each conversation into MemHouse through the public engine API,
 //! asks every question, scores retrieval against ground-truth evidence and (optionally) scores
 //! answers with an LLM judge using the benchmark's own protocol.

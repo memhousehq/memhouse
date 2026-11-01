@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # Benchmarks
 
 MemHouse ships its own benchmark tool (`memhouse bench`). It downloads the public datasets,

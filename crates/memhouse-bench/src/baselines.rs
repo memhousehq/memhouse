@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Published reference results, with sources. Most memory-vendor numbers are self-reported and
 //! were produced with different answer and judge models; they are context, not a leaderboard.
 //! Collected October 2026.

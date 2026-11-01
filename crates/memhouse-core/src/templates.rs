@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Ready-made use-case templates (TPL). A template sets how subjects are named, which kinds of
 //! memory matter, governance defaults and the guidance given to the agent over MCP.
 

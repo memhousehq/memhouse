@@ -1,8 +1,14 @@
-//! Development tasks for MemHouse (goal G01 of draft_plan/development-plan.md).
+// SPDX-License-Identifier: Apache-2.0
+//! Development tasks for MemHouse (goals G01 and G02 of docs/roadmap.md).
 //!
-//! `cargo xtask ci` is the one local CI entry point: fmt, clippy, unit tests, release build, the
-//! end-to-end script, and the benchmark guard (which includes the governance suite). It stops at
-//! the first failing step. `cargo xtask install-hooks` runs it before every `git push`.
+//! `cargo xtask ci` is the one local CI entry point: fmt, licence headers, secret scan,
+//! dependency policy, clippy, unit tests, release build, the end-to-end script, and the benchmark
+//! guard (which includes the governance suite). It stops at the first failing step.
+//! `cargo xtask install-hooks` runs the secret scan before every commit, checks the DCO sign-off on
+//! every commit message, and runs the CI before every `git push`.
+
+mod secrets;
+mod spdx;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -12,12 +18,16 @@ const USAGE: &str = "\
 usage: cargo xtask <task> [options]
 
 tasks:
-  ci              fmt, clippy, tests, release build, e2e, benchmark guard
+  ci              fmt, SPDX headers, secret scan, cargo-deny, clippy, tests, release build, e2e, benchmark guard
     --tier <n>      guard tier: 1 (default, free) or 2 (adds cached enrichment, ~$0.01)
-    --fix           apply rustfmt instead of checking it
+    --fix           apply rustfmt and add missing SPDX headers instead of checking them
     --skip-e2e      skip scripts/e2e.sh (no Docker needed)
     --skip-guard    skip the benchmark guard (no benchmark database needed)
-  install-hooks   install a git pre-push hook that runs `cargo xtask ci`
+  spdx [--fix]    check (or add) SPDX licence identifiers
+  secrets         scan for credentials: the working tree (default), --staged changes, or the whole --history
+    --repo <path>   scan another repository (e.g. ../other-repo)
+  install-hooks   pre-commit secret scan, commit-msg DCO check, pre-push `cargo xtask ci`
+    --repo <path>   install the secret-scan and DCO hooks into another repository (no pre-push CI)
 ";
 
 struct Step {
@@ -31,7 +41,9 @@ fn main() -> ExitCode {
     let root = workspace_root();
     let result = match args.first().map(String::as_str) {
         Some("ci") => ci(&root, &args[1..]),
-        Some("install-hooks") => install_hooks(&root),
+        Some("spdx") => spdx_task(&root, args[1..].iter().any(|a| a == "--fix")),
+        Some("secrets") => secrets_task(&root, &args[1..]),
+        Some("install-hooks") => install_hooks(&root, &args[1..]),
         _ => {
             eprint!("{USAGE}");
             return ExitCode::from(2);
@@ -66,10 +78,7 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
     }
     let bin = root.join("target/release/memhouse");
     let mut steps: Vec<Step> = vec![];
-    let mut run = |name: &'static str, mut cmd: Command| -> Result<(), String> {
-        eprintln!("\n== {name}");
-        let t = Instant::now();
-        let ok = cmd.current_dir(root).status().map_err(|e| format!("{name}: {e}"))?.success();
+    let mut record = |name: &'static str, t: Instant, ok: bool| -> Result<(), String> {
         steps.push(Step { name, secs: t.elapsed().as_secs_f64(), ok });
         if ok {
             Ok(())
@@ -77,14 +86,33 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
             Err(format!("step '{name}' failed"))
         }
     };
+    let run = |name: &'static str, mut cmd: Command, record: &mut dyn FnMut(&'static str, Instant, bool) -> Result<(), String>| -> Result<(), String> {
+        eprintln!("\n== {name}");
+        let t = Instant::now();
+        let ok = cmd.current_dir(root).status().map_err(|e| format!("{name}: {e}"))?.success();
+        record(name, t, ok)
+    };
 
     let started = Instant::now();
     let result = (|| {
-        run("fmt", cargo(if fix { &["fmt", "--all"] } else { &["fmt", "--all", "--", "--check"] }))?;
+        run("fmt", cargo(if fix { &["fmt", "--all"] } else { &["fmt", "--all", "--", "--check"] }), &mut record)?;
+        eprintln!("\n== spdx headers");
+        let t = Instant::now();
+        let ok = spdx_task(root, fix).map_err(|e| eprintln!("{e}")).is_ok();
+        record("spdx headers", t, ok)?;
+        eprintln!("\n== secret scan");
+        let t = Instant::now();
+        let ok = report(secrets::scan_tree(root)?, "working tree").is_ok();
+        record("secret scan", t, ok)?;
+        if which("cargo-deny").is_none() {
+            eprintln!("\n== dependency policy\ncargo-deny is not installed: `cargo install cargo-deny --locked`");
+            record("dependency policy", Instant::now(), false)?;
+        }
+        run("dependency policy", cargo(&["deny", "--all-features", "check"]), &mut record)?;
         // Release profile throughout, so clippy, tests and the binary share one build.
-        run("clippy", cargo(&["clippy", "--workspace", "--all-targets", "--release", "--", "-D", "warnings"]))?;
-        run("unit tests", cargo(&["test", "--workspace", "--release"]))?;
-        run("release build", cargo(&["build", "--release", "-p", "memhouse-cli"]))?;
+        run("clippy", cargo(&["clippy", "--workspace", "--all-targets", "--release", "--", "-D", "warnings"]), &mut record)?;
+        run("unit tests", cargo(&["test", "--workspace", "--release"]), &mut record)?;
+        run("release build", cargo(&["build", "--release", "-p", "memhouse-cli"]), &mut record)?;
         if !skip_e2e {
             // A throwaway home so the script never touches the developer's config; the model
             // cache is shared to avoid a download per run.
@@ -97,21 +125,21 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
             if let Some(models) = model_cache() {
                 cmd.env("MEMHOUSE_MODEL_CACHE", models);
             }
-            let r = run("e2e", cmd);
+            let r = run("e2e", cmd, &mut record);
             let _ = std::fs::remove_dir_all(&home);
             r?;
         }
         if !skip_guard {
             let mut cmd = Command::new(&bin);
             cmd.args(["bench", "guard", "--tier", &tier]);
-            run("benchmark guard", cmd)?;
+            run("benchmark guard", cmd, &mut record)?;
         }
         Ok::<(), String>(())
     })();
 
     eprintln!("\n== summary ({:.0} s)", started.elapsed().as_secs_f64());
     for s in &steps {
-        eprintln!("  {} {:<16} {:>6.1} s", if s.ok { "✓" } else { "✗" }, s.name, s.secs);
+        eprintln!("  {} {:<18} {:>6.1} s", if s.ok { "✓" } else { "✗" }, s.name, s.secs);
     }
     result
 }
@@ -122,6 +150,67 @@ fn cargo(args: &[&str]) -> Command {
     c
 }
 
+fn which(bin: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(bin)).find(|f| f.is_file()))
+}
+
+/// Tracked and untracked-but-not-ignored files, relative to `repo`.
+fn files(repo: &Path) -> Result<Vec<String>, String> {
+    let out = Command::new("git").args(["ls-files", "-co", "--exclude-standard"]).current_dir(repo).output().map_err(|e| format!("git: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).lines().filter(|f| repo.join(f).is_file()).map(String::from).collect())
+}
+
+fn spdx_task(root: &Path, fix: bool) -> Result<(), String> {
+    let problems = spdx::check(root, &files(root)?, fix)?;
+    for p in &problems {
+        eprintln!("  {p}");
+    }
+    if problems.is_empty() {
+        eprintln!("SPDX headers: ok");
+        Ok(())
+    } else {
+        Err(format!("{} file(s) with a missing or wrong SPDX licence identifier", problems.len()))
+    }
+}
+
+fn report(found: Vec<secrets::Finding>, what: &str) -> Result<(), String> {
+    for f in &found {
+        eprintln!("  {}  {}  {}  [fingerprint {}]", f.place, f.rule, f.preview, f.fingerprint);
+    }
+    if found.is_empty() {
+        eprintln!("secret scan ({what}): nothing found");
+        Ok(())
+    } else {
+        Err(format!(
+            "secret scan ({what}): {} possible secret(s). Remove them (and rotate any real key, see docs/security/secrets.md), \
+             or mark a test fixture with `secret-scan: allow`",
+            found.len()
+        ))
+    }
+}
+
+fn secrets_task(root: &Path, args: &[String]) -> Result<(), String> {
+    let mut repo = root.to_path_buf();
+    let (mut staged, mut history) = (false, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--repo" => repo = PathBuf::from(it.next().ok_or("--repo needs a path")?),
+            "--staged" => staged = true,
+            "--history" => history = true,
+            other => return Err(format!("unknown option '{other}'\n{USAGE}")),
+        }
+    }
+    let label = repo.display().to_string();
+    if history {
+        report(secrets::scan_history(&repo)?, &format!("{label}, full history"))
+    } else if staged {
+        report(secrets::scan_staged(&repo)?, &format!("{label}, staged changes"))
+    } else {
+        report(secrets::scan_tree(&repo)?, &format!("{label}, working tree"))
+    }
+}
+
 /// The developer's downloaded embedding models, if any: `$MEMHOUSE_HOME/models` or `~/.memhouse/models`.
 fn model_cache() -> Option<PathBuf> {
     let home = std::env::var_os("MEMHOUSE_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".memhouse")))?;
@@ -129,25 +218,52 @@ fn model_cache() -> Option<PathBuf> {
     m.is_dir().then_some(m)
 }
 
-fn install_hooks(root: &Path) -> Result<(), String> {
-    let out = Command::new("git").args(["rev-parse", "--git-path", "hooks"]).current_dir(root).output().map_err(|e| format!("git: {e}"))?;
+fn install_hooks(root: &Path, args: &[String]) -> Result<(), String> {
+    let repo = match args {
+        [flag, path] if flag == "--repo" => std::fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?,
+        [] => root.to_path_buf(),
+        _ => return Err(USAGE.into()),
+    };
+    let product = repo == root;
+    let out = Command::new("git").args(["rev-parse", "--git-path", "hooks"]).current_dir(&repo).output().map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
-        return Err("not a git repository".into());
+        return Err(format!("{} is not a git repository", repo.display()));
     }
-    let dir = root.join(String::from_utf8_lossy(&out.stdout).trim());
+    let dir = repo.join(String::from_utf8_lossy(&out.stdout).trim());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let hook = dir.join("pre-push");
-    if hook.exists() && !std::fs::read_to_string(&hook).unwrap_or_default().contains("cargo xtask ci") {
-        let backup = dir.join("pre-push.bak");
-        std::fs::rename(&hook, &backup).map_err(|e| e.to_string())?;
-        eprintln!("existing pre-push hook moved to {}", backup.display());
+    // Hooks call back into this checkout, so they work for any repository.
+    let xtask = format!("cargo run --quiet --manifest-path \"{}/Cargo.toml\" --package xtask --", root.display());
+    let mut hooks = vec![
+        (
+            "pre-commit",
+            format!("# Secret scan of staged changes. Bypass only for a false positive: git commit --no-verify\nexec {xtask} secrets --repo \"{}\" --staged\n", repo.display()),
+        ),
+        (
+            "commit-msg",
+            "# DCO: every commit is signed off (git commit -s). See CONTRIBUTING.md.\n\
+             grep -qE '^Signed-off-by: .+ <[^>]+@[^>]+>' \"$1\" || { echo \"commit message has no Signed-off-by line: use git commit -s (see CONTRIBUTING.md)\" >&2; exit 1; }\n"
+                .to_string(),
+        ),
+    ];
+    if product {
+        hooks.push(("pre-push", format!("# Skip once with `git push --no-verify`.\nexec {xtask} ci\n")));
     }
-    std::fs::write(&hook, "#!/bin/sh\n# Installed by `cargo xtask install-hooks`. Skip once with `git push --no-verify`.\nexec cargo xtask ci\n").map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    for (name, body) in hooks {
+        let hook = dir.join(name);
+        if hook.exists() && !std::fs::read_to_string(&hook).unwrap_or_default().contains("Installed by `cargo xtask install-hooks`") {
+            let backup = dir.join(format!("{name}.bak"));
+            std::fs::rename(&hook, &backup).map_err(|e| e.to_string())?;
+            eprintln!("existing {name} hook moved to {}", backup.display());
+        }
+        // Git runs hooks with a minimal PATH (GUI clients especially), so add the rustup bin dir.
+        let script = format!("#!/bin/sh\n# Installed by `cargo xtask install-hooks`.\nPATH=\"${{CARGO_HOME:-$HOME/.cargo}}/bin:$PATH\"\n{body}");
+        std::fs::write(&hook, script).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        }
+        eprintln!("installed {}", hook.display());
     }
-    eprintln!("installed {}", hook.display());
     Ok(())
 }

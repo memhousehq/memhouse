@@ -1,6 +1,7 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # Architecture (local profile)
 
-This is the first implemented slice of the design in [`draft_plan/`](../draft_plan/). It covers the
+This is the first implemented slice of the design in [`docs/design/`](design/). It covers the
 Standard-profile shape (one binary, customer's Postgres) running locally. Everything is built so
 that the Scale profile can replace adapters, not rewrite the engine (TR-CORE-01).
 

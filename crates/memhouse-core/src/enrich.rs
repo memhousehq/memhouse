@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Asynchronous enrichment: a small LLM reads each stored session and writes back short,
 //! dated, self-contained facts (events, preferences, plans, changes). Ingest only queues a
 //! job, so writes stay fast and recall keeps working on the raw rounds while jobs run; facts

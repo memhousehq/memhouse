@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Embedding throughput probe through MemHouse's own local embedder:
 //! `cargo run --release -p memhouse-models --example embed_speed -- <words> <count>`
 use memhouse_core::config::EmbeddingConfig;

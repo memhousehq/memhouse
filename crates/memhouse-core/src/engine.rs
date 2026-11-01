@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The memory engine: one implementation of write gate, routing, ranking, redaction and audit,
 //! shared by every transport (REST, MCP, CLI, benchmark).
 

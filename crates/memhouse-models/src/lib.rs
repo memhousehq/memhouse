@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Model clients: embedders, rerankers and chat models (TR-MS-01, TR-LT-06).
 //! `local` runs ONNX models in-process (offline after the first download);
 //! `openai` talks to any OpenAI-compatible endpoint (OpenAI, Ollama, vLLM, LM Studio...).

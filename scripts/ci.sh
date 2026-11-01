@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # Local CI: fmt, clippy, unit tests, release build, e2e, benchmark guard. Same as `cargo xtask ci`.
 # Options: --tier 2, --fix, --skip-e2e, --skip-guard (see `cargo xtask`).
 set -euo pipefail

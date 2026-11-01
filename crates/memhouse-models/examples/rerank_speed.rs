@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Cross-encoder latency probe: `cargo run --release -p memhouse-models --example rerank_speed -- <docs> <words> [model]`
 use memhouse_core::config::RerankConfig;
 use memhouse_core::Reranker;

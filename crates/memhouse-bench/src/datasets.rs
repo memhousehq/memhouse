@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Public long-term memory benchmarks, loaded into one shape: a conversation (haystack of dated
 //! sessions) plus questions with ground-truth evidence.
 

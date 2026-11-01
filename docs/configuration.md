@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # Configuration reference
 
 MemHouse reads one TOML file. Environment variables override it, so containers and agents can

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `memhouse`: one binary to run, connect, operate and benchmark MemHouse.
 
 mod connect;

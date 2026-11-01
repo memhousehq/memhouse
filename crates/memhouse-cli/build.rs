@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! On macOS, ONNX Runtime's CoreML code uses `@available`, which needs clang's runtime builtins
 //! (`___isPlatformVersionAtLeast`). rustc links with `-nodefaultlibs`, so pass the archive to the
 //! linker. Link args only apply to this package's own binaries (examples, tests); `memhouse-cli`

@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # MemHouse documentation
 
 | Guide | Read it when you want to… |
@@ -9,5 +10,7 @@
 | [Developer guide](development.md) | change MemHouse itself: crate layout, build and test, extension points, schema changes, benchmarking a change |
 | [Architecture](architecture.md) | understand how recall, writes and enrichment work inside |
 | [Benchmarks](benchmarks.md) | see the results and reproduce them |
+| [Roadmap](roadmap.md) | see what is planned next, goal by goal, and how each change is benchmarked |
+| [Secrets](security/secrets.md) | handle credentials in development, CI and the cloud |
 
-Design documents written before the code are in [`draft_plan/`](../draft_plan/).
+Design documents written before the code are in [`design/`](design/).

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Retrieval metrics (same definitions as the LongMemEval reference code), bootstrap confidence
 //! intervals and latency percentiles.
 

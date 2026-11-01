@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Postgres store adapter: pgvector for exact per-subject vector scoring, built-in full-text search
 //! for keywords, hybrid fusion in a single SQL statement (TR-RQ), hash-chained audit, deletion ledger.
 

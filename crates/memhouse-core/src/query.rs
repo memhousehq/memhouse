@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Query analysis without an LLM: time windows ("two weeks ago", "last Saturday", "in February",
 //! "the past three months") resolved against the time of the question, and sub-queries for
 //! questions that compare or combine several things ("A or B", "between A and B", quoted titles,

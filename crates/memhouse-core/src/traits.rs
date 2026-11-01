@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Adapter interfaces (TR-CORE-02). The engine only talks to these.
 
 use crate::types::*;

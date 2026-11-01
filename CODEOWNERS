@@ -1,0 +1,12 @@
+# Owners review changes to their paths. Forge usernames replace the address at publication (G09).
+*                         3368890+aleksei-s-popov@users.noreply.github.com
+
+# Safety-critical paths need an owner's review even for small changes.
+/crates/memhouse-core/src/gate.rs        3368890+aleksei-s-popov@users.noreply.github.com
+/crates/memhouse-store-postgres/         3368890+aleksei-s-popov@users.noreply.github.com
+/crates/memhouse-bench/src/governance.rs 3368890+aleksei-s-popov@users.noreply.github.com
+/bench/baselines.json                    3368890+aleksei-s-popov@users.noreply.github.com
+/deny.toml                               3368890+aleksei-s-popov@users.noreply.github.com
+/.secret-scan-allow                      3368890+aleksei-s-popov@users.noreply.github.com
+/LICENSE                                 3368890+aleksei-s-popov@users.noreply.github.com
+

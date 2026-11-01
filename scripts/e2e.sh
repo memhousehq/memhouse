@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # End-to-end check of a fresh local install: up → remember/recall → REST → MCP → governance gates.
 # Uses an isolated MEMHOUSE_HOME so it never touches ~/.memhouse.
 set -euo pipefail

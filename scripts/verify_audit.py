@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Verify the MemHouse audit hash chain without the MemHouse binary.
 
 Reads the audit table as CSV on stdin. See docs/governance.md#verify-the-chain-independently

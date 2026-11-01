@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `memhouse up` / `down`: run a local Postgres with pgvector in Docker, managed for the user.
 
 use anyhow::Context;

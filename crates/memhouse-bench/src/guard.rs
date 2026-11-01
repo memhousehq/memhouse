@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `memhouse bench guard`: the regression guard every development goal ends with
-//! (draft_plan/development-plan.md, section 3). Runs the benchmark tiers and compares each metric
+//! (docs/roadmap.md, section 3). Runs the benchmark tiers and compares each metric
 //! with `bench/baselines.json`; fails if any metric moved past its threshold.
 
 use crate::report::Summary;

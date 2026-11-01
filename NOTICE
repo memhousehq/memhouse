@@ -1,0 +1,12 @@
+MemHouse
+Copyright 2026 The MemHouse Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE), except the
+documentation in docs/, which is licensed under the Creative Commons Attribution 4.0
+International licence (see docs/LICENSE). Each file names its licence in an SPDX-License-Identifier
+line.
+
+"MemHouse" and the MemHouse logo are trademarks; the licences above do not grant rights to them.
+
+Third-party components are listed with their licences by `cargo deny list` and are subject to
+their own licence terms.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Write gate: redaction of PII and secrets, and prompt-injection screening.
 //! Runs on every write path before anything reaches the store (TR-IN-04, GOV-05, QUAL-02).
 //! These checks are deterministic so the safety gates in the benchmark never depend on a model.
@@ -148,7 +149,7 @@ mod tests {
 
     #[test]
     fn redacts_secrets_and_email() {
-        let out = screen("key sk-proj-abcdefghijklmnopqrstuv mail bob@example.com", &all(), false);
+        let out = screen("key sk-proj-abcdefghijklmnopqrstuv mail bob@example.com", &all(), false); // secret-scan: allow (fake fixture)
         assert!(!out.content.contains("sk-proj"));
         assert!(!out.content.contains("bob@example.com"));
         assert_eq!(out.redactions, vec!["secret", "email"]);

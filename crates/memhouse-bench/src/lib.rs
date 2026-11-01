@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `memhouse bench`: the validation tool shipped with MemHouse. Runs public long-term memory
 //! benchmarks (LongMemEval, LoCoMo) and the governance/safety gates against a real engine, and
 //! writes reproducible reports.
