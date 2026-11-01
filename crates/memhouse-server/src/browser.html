@@ -56,14 +56,15 @@ let SUBJECT=null;
 document.getElementById('key').value=KEY;
 function saveKey(){KEY=document.getElementById('key').value.trim();try{localStorage.setItem('mh_key',KEY)}catch(e){}load()}
 async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'content-type':'application/json','authorization':'Bearer '+KEY,'x-memhouse-actor':'browser',...(opts.headers||{})}});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j}
-function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+// HTML-escape for text and attribute values. Never interpolate data into inline JavaScript: pass it through data-* attributes.
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function card(m,extra=''){const d=(m.occurred_at||m.created_at||'').slice(0,10);return `<div class="card"><div class="content">${esc(m.content)}</div><div class="chips"><span class="chip st-${m.status}">● ${m.status}</span><span class="chip">${m.kind}</span><span class="chip">${d}</span><span class="chip">source: ${esc(m.source)}</span>${(m.tags||[]).map(t=>`<span class="chip">#${esc(t)}</span>`).join('')}${extra}<span class="chip mono">${m.id}</span><button style="padding:0 8px;font-size:12px" onclick="del('${m.id}')">forget</button></div></div>`}
 async function load(){
   if(!KEY){document.getElementById('list').innerHTML='<p class="muted">Enter the API key from <span class="mono">~/.memhouse/config.toml</span> (or run <span class="mono">memhouse key</span>).</p>';return}
   try{
     const s=await api('/v1/stats');document.getElementById('stats').textContent=`${s.committed} memories · ${s.subjects} subjects · ${s.quarantined} quarantined · ${s.audit_events} audit events`;
     const subs=await api('/v1/subjects');if(!SUBJECT&&subs.length)SUBJECT=subs[0].subject;
-    document.getElementById('subjects').innerHTML=subs.map(x=>`<div class="subj ${x.subject===SUBJECT?'on':''}" onclick="pick('${esc(x.subject)}')"><span>${esc(x.subject)}</span><span class="muted">${x.memories}</span></div>`).join('')||'<p class="muted">No memories yet.</p>';
+    document.getElementById('subjects').innerHTML=subs.map(x=>`<div class="subj ${x.subject===SUBJECT?'on':''}" data-subject="${esc(x.subject)}" onclick="pick(this.dataset.subject)"><span>${esc(x.subject)}</span><span class="muted">${x.memories}</span></div>`).join('')||'<p class="muted">No memories yet.</p>';
     await showList();
   }catch(e){document.getElementById('list').innerHTML=`<p class="st-quarantined">${esc(e.message)}</p>`}
 }

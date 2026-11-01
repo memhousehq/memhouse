@@ -26,3 +26,13 @@ sha2.workspace = true
 hex.workspace = true
 sqlx.workspace = true
 memhouse-store-postgres.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+half = { version = "2", optional = true }
+
+[features]
+# Technology spike (roadmap G03): `cargo run --release -p memhouse-bench --features spike --example spike_storage -- <run-id>`
+spike = ["dep:rusqlite", "dep:half"]
+
+[[example]]
+name = "spike_storage"
+required-features = ["spike"]

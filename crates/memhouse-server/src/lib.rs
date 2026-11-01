@@ -243,3 +243,27 @@ async fn browser() -> Html<&'static str> {
 
 /// Keep a handle to the trait so downstream crates can name it without importing core.
 pub type DynStore = Arc<dyn Store>;
+
+#[cfg(test)]
+mod tests {
+    /// Data must never be interpolated into inline JavaScript in the Memory Browser: HTML escaping
+    /// doesn't protect a JS string inside an attribute (the browser decodes entities first), so a
+    /// subject name like `x');alert(1);('` would run script and could read the stored API key.
+    #[test]
+    fn browser_never_interpolates_data_into_inline_handlers() {
+        let html = include_str!("browser.html");
+        for (i, line) in html.lines().enumerate() {
+            for attr in ["onclick=\"", "onchange=\"", "oninput=\"", "onkeydown=\"", "onsubmit=\""] {
+                let mut rest = line;
+                while let Some(p) = rest.find(attr) {
+                    let handler = &rest[p + attr.len()..];
+                    let handler = &handler[..handler.find('"').unwrap_or(handler.len())];
+                    // UUIDs from the server (m.id) are the only allowed interpolation.
+                    let bad = handler.contains("${") && !handler.contains("${m.id}");
+                    assert!(!bad, "browser.html:{}: data interpolated into an inline handler: {handler}", i + 1);
+                    rest = &rest[p + attr.len()..];
+                }
+            }
+        }
+    }
+}
