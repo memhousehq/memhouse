@@ -59,6 +59,9 @@ pub trait Store: Send + Sync {
     /// Erase everything held about a subject. Returns the number of records removed.
     /// `purge_cache` also removes the subject's cached vectors (always true for erasure requests).
     async fn delete_subject(&self, tenant: &str, subject: &str, actor: &str, purge_cache: bool) -> anyhow::Result<u64>;
+    /// Retention: delete episodic rounds written more than `days` ago, with the same cascade as
+    /// `delete` (cached vectors, derived facts, enrichment jobs, cached extractions, ledger rows).
+    /// Returns rounds plus derived facts removed.
     async fn purge_episodic_older_than(&self, tenant: &str, days: u32) -> anyhow::Result<u64>;
     async fn embed_cache_get(&self, model: &str, hashes: &[String]) -> anyhow::Result<Vec<(String, Vec<f32>)>>;
     async fn embed_cache_put(&self, model: &str, items: &[(String, Vec<f32>)]) -> anyhow::Result<()>;

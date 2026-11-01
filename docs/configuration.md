@@ -273,7 +273,7 @@ See [governance.md](governance.md) for what each control does and how to prove i
 | `quarantine_injection` | true | instruction-like content is stored as `quarantined` and never recalled |
 | `denied_labels` | `[]` | records carrying these labels are never recalled. Labels can only be set through `memhouse import` today; the write API doesn't take them yet. |
 | `audit_reads` | false | write a `memory.recall` audit event for every recall |
-| `episodic_retention_days` | 0 | purge conversation rounds older than this many days (0 = keep) |
+| `episodic_retention_days` | 0 | purge conversation rounds older than this many days, with the facts and caches derived from them (0 = keep) |
 | `max_content_chars` | 20000 | longer `remember` content is rejected; longer ingest rounds are truncated |
 
 ## `[server]`

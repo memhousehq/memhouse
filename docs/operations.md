@@ -400,9 +400,9 @@ psql "$LIVE_URL" -c "\copy (SELECT tenant, subject, memory_id, scope, at FROM mh
 CREATE TEMP TABLE ledger (tenant text, subject text, memory_id uuid, scope text, at timestamptz);
 \copy ledger FROM 'ledger.csv' CSV
 
--- Single-memory deletions, and the facts derived from them
+-- Single-memory deletions and retention purges, and the facts derived from them
 DELETE FROM mh_memory m USING ledger l
- WHERE l.scope = 'memory' AND m.tenant = l.tenant
+ WHERE l.scope IN ('memory', 'retention') AND m.tenant = l.tenant
    AND (m.id = l.memory_id OR m.metadata->'source_ids' ? l.memory_id::text);
 
 -- Subject erasures

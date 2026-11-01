@@ -586,15 +586,76 @@ LIMIT $15
     }
 
     async fn purge_episodic_older_than(&self, tenant: &str, days: u32) -> anyhow::Result<u64> {
-        let n = sqlx::query(
-            "DELETE FROM mh_memory WHERE tenant = $1 AND kind = 'episodic' AND created_at < now() - make_interval(days => $2)",
-        )
-        .bind(tenant)
-        .bind(days as i32)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-        Ok(n)
+        // Same cascade as `delete`, in batches so a large purge never holds one huge transaction:
+        // the rounds, their cached vectors, facts derived from them (and their vectors), the jobs
+        // that read them (and their cached extractions), and a ledger row per round.
+        let mut total = 0u64;
+        loop {
+            let mut tx = self.pool.begin().await?;
+            let rows = sqlx::query(
+                "DELETE FROM mh_memory WHERE id IN (SELECT id FROM mh_memory WHERE tenant = $1 AND kind = 'episodic' \
+                 AND created_at < now() - make_interval(days => $2) LIMIT 1000) RETURNING id, subject, content, alt_hash",
+            )
+            .bind(tenant)
+            .bind(days as i32)
+            .fetch_all(&mut *tx)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            let mut ids = Vec::with_capacity(rows.len());
+            let mut subjects = Vec::with_capacity(rows.len());
+            let mut contents = Vec::with_capacity(rows.len());
+            let mut alt_hashes = vec![];
+            for r in &rows {
+                ids.push(r.try_get::<Uuid, _>("id")?);
+                subjects.push(r.try_get::<String, _>("subject")?);
+                contents.push(r.try_get::<String, _>("content")?);
+                if let Some(h) = r.try_get::<Option<String>, _>("alt_hash")? {
+                    alt_hashes.push(h);
+                }
+            }
+            let id_strs: Vec<String> = ids.iter().map(|u| u.to_string()).collect();
+            sqlx::query(
+                "DELETE FROM mh_embed_cache WHERE hash IN (SELECT encode(sha256(convert_to($1 || c, 'UTF8')), 'hex') FROM unnest($2::text[]) c) \
+                 OR hash = ANY($3)",
+            )
+            .bind(&self.passage_prefix)
+            .bind(&contents)
+            .bind(&alt_hashes)
+            .execute(&mut *tx)
+            .await?;
+            let facts: i64 = sqlx::query_scalar(
+                "WITH d AS (DELETE FROM mh_memory WHERE tenant = $1 AND metadata -> 'source_ids' ?| $2::text[] RETURNING content), \
+                 c AS (DELETE FROM mh_embed_cache c USING d WHERE c.hash = encode(sha256(convert_to($3 || d.content, 'UTF8')), 'hex')) \
+                 SELECT count(*) FROM d",
+            )
+            .bind(tenant)
+            .bind(&id_strs)
+            .bind(&self.passage_prefix)
+            .fetch_one(&mut *tx)
+            .await?;
+            sqlx::query(
+                "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND round_ids && $2::uuid[] RETURNING cache_key) \
+                 DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key",
+            )
+            .bind(tenant)
+            .bind(&ids)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) \
+                 SELECT $1, s, i, 'retention', 'system' FROM unnest($2::text[], $3::uuid[]) AS t(s, i)",
+            )
+            .bind(tenant)
+            .bind(&subjects)
+            .bind(&ids)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            total += rows.len() as u64 + facts as u64;
+        }
+        Ok(total)
     }
 
     async fn embed_cache_get(&self, model: &str, hashes: &[String]) -> anyhow::Result<Vec<(String, Vec<f32>)>> {

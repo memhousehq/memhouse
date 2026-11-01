@@ -63,7 +63,7 @@ flowchart LR
 | Deletion ledger | always on | — | `mh_deletion_ledger` |
 | Hash-chained audit log of writes and deletions | always on | — | `audit_chain` check, `memhouse audit --verify` |
 | Audit of reads | off | `audit_reads` | `memory.recall` events |
-| Episodic retention | off (keep) | `episodic_retention_days` | `retention.purge` events |
+| Episodic retention, including derived data | off (keep) | `episodic_retention_days` | `retention_cascade` check, `retention.purge` events |
 | API authentication | always on | `[server] api_keys` | 401 without a key |
 | Content size limit | 20,000 chars | `max_content_chars` | 400 response |
 
@@ -217,8 +217,10 @@ episodic_retention_days = 365
 
 `memhouse serve` purges episodic memories (conversation rounds) older than this every hour, and
 `memhouse retention` does it on demand. Each purge writes a `retention.purge` audit event with the
-record count. Durable facts (`semantic`, `preference`, …) are kept. Use `valid_to` for facts that
-should expire.
+record count. A purge cascades exactly like a deletion: the rounds' cached vectors, the facts
+extracted from them, their enrichment jobs and cached extractions go too, and every purged round
+gets a `retention` row in the deletion ledger. Facts you stored explicitly (`semantic`,
+`preference`, …) are kept. Use `valid_to` for those that should expire.
 
 ## Audit log
 
@@ -315,7 +317,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-14 checks pass on the current release:
+15 checks pass on the current release:
 
 | Check | What it proves |
 |---|---|
@@ -332,6 +334,7 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `determinism` | embeddings are reproducible, so runs can be repeated |
 | `enrich_async_gate` | recall works while enrichment is pending; derived facts are redacted and screened |
 | `enrich_deletion` | deleting a round removes its facts and cached extraction |
+| `retention_cascade` | a retention purge removes old rounds with their derived facts, jobs and cached extraction, and keeps explicit memories |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 
@@ -343,7 +346,7 @@ Run it in CI and keep the reports: they are audit evidence for every release.
 | Right of access / portability | GDPR Art. 15, 20 | `memhouse export --subject` (JSONL) |
 | Right to erasure | GDPR Art. 17, CCPA | subject erasure incl. derived data and caches; deletion ledger for backups |
 | Rectification | GDPR Art. 16 | `PATCH` / `memory_update` with history kept |
-| Storage limitation | GDPR Art. 5(1)(e) | `episodic_retention_days`, `valid_to` |
+| Storage limitation | GDPR Art. 5(1)(e) | `episodic_retention_days` (cascades to derived facts), `valid_to` |
 | Records of processing / accountability | GDPR Art. 30, SOC 2 CC7 | hash-chained audit log with actors |
 | Integrity of records | SOX, SEC 17a-4 (supporting), HIPAA §164.312(c) | tamper-evident chain plus external anchoring |
 | Access logging | HIPAA §164.312(b) | `audit_reads = true` |
@@ -360,10 +363,8 @@ reviewers don't have to find them:
   relationship-based authorizer (ACC, D-01..D-07) is designed, not built.
 - **Labels can't be set through the API.** `denied_labels` works on recall, but labels arrive only
   through import.
-- **Retention is by write time** (`created_at`), not event time, and it purges episodic rounds
-  only. Enrichment facts derived from a purged round are **kept**, along with the purged rounds'
-  cached vectors. If facts must expire with their source, use subject erasure or delete them with
-  SQL (`metadata->'source_ids'`).
+- **Retention is by write time** (`created_at`), not event time. An imported or backfilled
+  conversation is kept for the full period from when it was imported.
 - **Ledger re-application after a restore is a manual SQL procedure.**
 - **The audit log keeps subject identifiers after erasure** (e.g. `customer:acme`, never content).
   Use pseudonymous subject ids (an internal customer number, not an email address) so the log
@@ -389,4 +390,4 @@ Short answers for vendor security reviews:
 | Data deletion? | Hard delete of the record and all derived data (vectors, extracted facts, caches), recorded in a deletion ledger. |
 | PII handling? | Secrets, card numbers, SSNs and IBANs (and optionally email, phone, IP) are redacted before storage. |
 | AI-specific risks? | Instruction-like content is quarantined on every write path, including LLM-extracted facts. |
-| How are controls tested? | 14 automated checks (`memhouse bench run --suite governance`) on every release. |
+| How are controls tested? | 15 automated checks (`memhouse bench run --suite governance`) on every release. |

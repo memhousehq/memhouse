@@ -52,7 +52,7 @@ replace the defaults without touching the engine.
 | `core/src/config.rs` | every config key, its default and its environment override |
 | `store-postgres/src/lib.rs` | schema, the single-statement hybrid search, the audit chain, cascading deletes |
 | `server/src/lib.rs` / `mcp.rs` | routes, auth middleware, MCP tools |
-| `bench/src/governance.rs` | the 14 governance checks |
+| `bench/src/governance.rs` | the 15 governance checks |
 
 ## Build
 
@@ -165,7 +165,7 @@ impl memhouse_core::Store for SqliteStore {
 ```
 
 Then wire it into `memhouse_server::build_engine` (selected by the URL scheme, for example) and
-run the governance suite against it. **The suite is the acceptance test for a store:** all 14
+run the governance suite against it. **The suite is the acceptance test for a store:** all 15
 checks must pass.
 
 ### Add an embedding or rerank provider

@@ -488,6 +488,59 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         ));
     }
 
+    // 15. Retention purges derived data with its source (GOV-08). Runs in a tenant of its own:
+    // a 0-day purge removes every episodic round of the tenant, and must not touch benchmark data.
+    {
+        let tenant = format!("bench:{run_id}:retention");
+        let subj = s("retention");
+        let canary = rand_alnum(&mut rng, 10);
+        let stub = Arc::new(StubExtractor { canary: canary.clone(), card: luhn_complete("4", 16, &mut rng), prompts: Mutex::new(vec![]) });
+        let mut cfg = (*engine.cfg).clone();
+        cfg.enrich.enabled = true;
+        cfg.enrich.min_user_chars = 1;
+        let e = Engine { chat: Some(stub.clone()), cfg: Arc::new(cfg), ..engine.clone() };
+        e.remember(RememberRequest { tenant: Some(tenant.clone()), subject: Some(subj.clone()), content: format!("The user's favourite colour is teal-{canary}."), actor: Some("bench".into()), ..Default::default() }).await?;
+        let msgs = vec![
+            Message { role: "user".into(), content: format!("We finally adopted a kitten last weekend, we called her {canary}!"), timestamp: None, id: None },
+            Message { role: "assistant".into(), content: "Congratulations!".into(), timestamp: None, id: None },
+        ];
+        e.ingest(IngestRequest { tenant: Some(tenant.clone()), subject: Some(subj.clone()), session_id: Some("r1".into()), messages: msgs, actor: Some("bench".into()), ..Default::default() }).await?;
+        let spend = memhouse_core::enrich::Spend::default();
+        for _ in 0..200 {
+            let st = e.store.enrich_status(&tenant, Some(&subj)).await?;
+            if st.pending + st.running == 0 {
+                break;
+            }
+            e.enrich_once(&spend).await?;
+        }
+        let list = |e: Engine| {
+            let (t, s) = (tenant.clone(), subj.clone());
+            async move { e.list(Some(t), Some(s), None, 1000, 0, true).await }
+        };
+        let before = list(e.clone()).await?;
+        let facts_before = before.iter().filter(|m| m.metadata["derived"].as_bool() == Some(true)).count();
+        let key = stub.prompts.lock().unwrap().first().map(|p| memhouse_core::enrich::cache_key("stub:extractor", p));
+        let cached_before = match &key { Some(k) => e.store.llm_cache_get(k).await?.is_some(), None => false };
+        let purged = e.store.purge_episodic_older_than(&tenant, 0).await?;
+        let after = list(e.clone()).await?;
+        let rounds_left = after.iter().filter(|m| m.kind == MemoryKind::Episodic).count();
+        let facts_left = after.iter().filter(|m| m.metadata["derived"].as_bool() == Some(true)).count();
+        let kept = after.iter().filter(|m| m.content.contains("teal-")).count();
+        let cached_after = match &key { Some(k) => e.store.llm_cache_get(k).await?.is_some(), None => false };
+        let st = e.store.enrich_status(&tenant, Some(&subj)).await?;
+        let jobs_n = st.pending + st.running + st.done + st.failed;
+        checks.push(check(
+            "retention_cascade",
+            "GOV-08 / TR-WF-01 (derived path)",
+            "Retention removes old conversation rounds together with the facts, jobs and cached extraction derived from them, and keeps explicit memories",
+            facts_before > 0 && cached_before && rounds_left == 0 && facts_left == 0 && kept == 1 && !cached_after && jobs_n == 0,
+            format!("purged {purged}; rounds left {rounds_left}, derived facts {facts_before} → {facts_left}, explicit kept {kept}, cached extraction {cached_before} → {cached_after}, jobs {jobs_n}"),
+            "0 / n → 0 / 1 / true → false / 0",
+            String::new(),
+        ));
+        e.forget_subject(Some(tenant.clone()), &subj, Some("bench".into())).await?;
+    }
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;
