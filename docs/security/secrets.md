@@ -24,13 +24,13 @@ How credentials are handled in development and in CI.
 
 | Secret | Used by | Lives in | Rotation | Introduced |
 |---|---|---|---|---|
-| LLM key (OpenRouter) for paid benchmarks and dev enrichment | developers; CI tiers T2–T4 | dev: `.env` (ignored) or a password manager; CI: forge environment `benchmarks` with a required reviewer; provider spend cap | 90 days; on staff change | now (dev), G09 (CI) |
+| LLM key (OpenRouter) for paid benchmarks and dev enrichment | developers; CI tiers T2–T4 | dev: `.env` (ignored) or a password manager; CI: forge environment `benchmarks` with a required reviewer; provider spend cap | 90 days; on staff change | G02 (dev), G09 (CI) |
 | Local Postgres passwords | `memhouse up` | generated into the config file (mode 0600) | on demand (`memhouse down`, remove the volume, `memhouse up`) | exists |
-| MemHouse API keys | deployments, agents | config file 0600 or `MEMHOUSE_API_KEY`; hashed per principal from G06; cloud: secret manager | per key; on staff or client change | exists, G06 |
+| MemHouse API keys | deployments | config file 0600 or `MEMHOUSE_API_KEY`; hashed per principal from G06; cloud: secret manager | per key; on staff or client change | exists, G06 |
 | Community release signing | release pipeline | keyless Sigstore through CI OIDC; nothing stored | n/a | G21 |
 | Package publishing (crates.io, PyPI, npm, container registry) | release pipeline | trusted publishing (OIDC); registry token scoped to the run | n/a | G21 |
 | Homebrew tap and website pushes | release pipeline | GitHub App or fine-grained token limited to that repository, in environment `release` | 90 days | G21 |
-| Stored release signing keys | release pipeline | HSM or cloud KMS, two-person approval | yearly | G29 |
+| Stored release signing keys (SC-02) | release pipeline | HSM or cloud KMS, two-person approval | yearly | G29 |
 | Customer-managed keys | deployments that require them | the customer's KMS | the customer's policy | G29 |
 
 ## In development
