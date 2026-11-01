@@ -48,18 +48,27 @@ confidence intervals; on LongMemEval_S the interval for recall_all@5 is about ±
 
 ### Against published retrieval baselines
 
-The LongMemEval paper (Table 9) reports retrievers on **LongMemEval_M**, the 500-session
-variant of each question. Our numbers are on **LongMemEval_S**, the ~50-session variant the
-memory vendors use for their QA results. **The comparison favours MemHouse**; M is the
-like-for-like split (`memhouse bench run --dataset longmemeval-m`) and has not been run yet.
+The LongMemEval paper (Table 9) reports retrievers on **LongMemEval_M**, where each question
+has about 500 sessions (~1.5M tokens) of history instead of ~50. MemHouse on M is from a
+stratified 50-question sample (`--stride 10`, 48 scored, ~2,450 rounds per question); a full
+M run takes about 11 hours on this laptop and has not been done.
 
 | System | Split | session R@5 | session R@10 | session nDCG@10 |
 |---|---|---|---|---|
-| **MemHouse default (bge-small Q, no LLM)** | S | **90.4** | **95.7** | **93.8** |
-| Contriever + LLM-extracted fact keys | M | 76.2 | 86.2 | 65.8 |
+| **MemHouse default (bge-small Q, no LLM)** | **M**, 48 q | **77.1** [64.6–87.5] | **89.6** [81.2–97.9] | **83.0** [75.6–89.6] |
+| MemHouse, `--no-analysis` | M, 48 q | 81.2 | 89.6 | 82.9 |
+| Contriever + LLM-extracted fact keys (paper's best) | M | 76.2 | 86.2 | 65.8 |
 | Stella V5 1.5B | M | 72.0 | 79.4 | 61.5 |
 | Contriever | M | 72.3 | 82.3 | 66.3 |
 | BM25 | M | 63.4 | 71.0 | 54.0 |
+| MemHouse default | S, 470 q | 90.4 | 95.7 | 93.8 |
+
+On the like-for-like split MemHouse matches the paper's best retriever at R@5 and is ahead at
+R@10 and on ranking quality (nDCG@10 +17 points), without the LLM key-extraction pass at
+ingest that system needs. The sample is small: the R@5 interval is ±11 points, so "on par" is
+the honest reading for R@5. The 4-point R@5 gap between analysis on and off on M is two
+questions. M recall is p50 105 / p95 243 ms (exact vector search over ~5k vectors per subject,
+while ingest runs).
 
 Memory vendors (Mem0, Zep, Supermemory, Mastra) publish answer accuracy, not retrieval recall,
 so there is no direct retrieval number to compare against; see [Answer accuracy](#answer-accuracy-qa).
@@ -199,6 +208,7 @@ memhouse bench download longmemeval-s
 memhouse bench run --dataset longmemeval-s --embedding-model bge-small-en-v1.5-onnx-Q --label full-v5
 memhouse bench run --dataset locomo --embedding-model bge-small-en-v1.5-onnx-Q --label full-v5
 memhouse bench run --dataset longmemeval-s --embedding-model bge-small-en-v1.5-onnx-Q --no-analysis --label full-v5-noanalysis
+memhouse bench download longmemeval-m && memhouse bench run --dataset longmemeval-m --stride 10 --embedding-model bge-small-en-v1.5-onnx-Q --label m50-v5
 memhouse bench run --dataset longmemeval-s --types temporal-reasoning --window-weight 1.0 --label tr-w10
 memhouse bench run --dataset longmemeval-s --stride 10 --mode dense --label s50-dense   # ablations
 memhouse bench run --dataset longmemeval-s --stride 10 --rerank --label s50-rerank

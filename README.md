@@ -146,7 +146,7 @@ Current results on a laptop CPU, no LLM in the loop (details and baselines in [d
 | LongMemEval_S (470 scored) | 90.4 | 95.7 | 93.8 | 64 / 91 ms |
 | LoCoMo (1,536 scored) | 79.0 | 87.9 | 78.7 | 43 / 57 ms |
 
-For reference, the best retriever in the LongMemEval paper (Contriever + LLM-extracted keys) reaches 76.2 / 86.2 / 65.8 on the harder 500-session M split; the M run is still to do.
+On the harder 500-session LongMemEval_M split (50-question sample) MemHouse scores 77.1 / 89.6 / 83.0, against 76.2 / 86.2 / 65.8 for the best retriever in the LongMemEval paper (Contriever + LLM-extracted keys).
 
 ## Configuration
 
