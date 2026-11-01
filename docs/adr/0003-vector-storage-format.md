@@ -3,10 +3,10 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (spike, G03); Lite from G16, Postgres migration in G30 |
+| Status | **Proposed — pending the user's review** (spike G03) ; Lite from G16, Postgres migration in G30 |
 | Date | 1 November 2026 |
 | Requirements | SCALE-03, SCALE-06, TR-DB-02, TR-DB-07, TR-LT-03, TR-RQ-02 |
-| Evidence | [evidence/storage-spike.md](evidence/storage-spike.md) |
+| Evidence | [evidence/spike-acceptance.md](evidence/spike-acceptance.md) (section 6.10 coverage), [evidence/storage-spike.md](evidence/storage-spike.md) |
 
 ## Decision
 

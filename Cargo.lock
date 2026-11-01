@@ -1577,6 +1577,7 @@ dependencies = [
  "futures",
  "half",
  "hex",
+ "libc",
  "memhouse-core",
  "memhouse-models",
  "memhouse-server",

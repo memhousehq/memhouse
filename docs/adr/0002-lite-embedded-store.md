@@ -3,10 +3,10 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (spike, G03); built in G16 |
+| Status | **Proposed — pending the user's review** (spike G03) ; built in G16 |
 | Date | 1 November 2026 |
 | Requirements | TR-LT-02, TR-LT-03, TR-LT-04, TR-LT-05, PROF-04, PROF-06, PROF-07, TD-12 |
-| Evidence | [evidence/storage-spike.md](evidence/storage-spike.md) (`crates/memhouse-bench/examples/spike_storage.rs`) |
+| Evidence | [evidence/spike-acceptance.md](evidence/spike-acceptance.md) (section 6.10 coverage), [evidence/storage-spike.md](evidence/storage-spike.md) (`crates/memhouse-bench/examples/spike_storage.rs`) |
 
 ## Decision
 
@@ -46,11 +46,29 @@ the 50 ms p95 (query embedding excluded, as the requirement says).
 | LanceDB / an embedded vector database | adds a second store for text and metadata; per-subject exact scoring doesn't need an ANN index |
 | `sqlite-vec` / `sqlite-vss` extensions | an extension to ship and load per platform; the in-process scan is already fast enough and exact |
 
+## Lite profile targets (measured, [evidence/lite-profile-spike.md](evidence/lite-profile-spike.md))
+
+100,000 memories in one file (10,000 per subject), fresh process, all networking denied:
+
+| Target | Result |
+|---|---|
+| PROF-07 recall p95 ≤ 50 ms | 25.9 ms with local query embedding (1 model session); 13.8 ms store only |
+| PROF-07 write acknowledgement p95 ≤ 20 ms | 3.34 ms, durable against power loss (`synchronous = FULL`, `fullfsync`) |
+| PROF-07 written memory recallable ≤ 2 s | 23 ms p95 |
+| PROF-06 resident memory ≤ 256 MB | **store: 16 MB peak.** With the bundled local model: 394 MB (1 session), 610 MB (default 4 sessions) |
+| PROF-04 one process, no external service | yes, with the network denied |
+
+**Open decision for the user (G16):** the store meets PROF-06 easily, but the bundled local
+embedding model doesn't fit in 256 MB on its own (157 MB per session at load, growing during
+inference). Options: (a) read PROF-06 as excluding the optional local model, as its binary-size
+clause already does, and give the model its own budget; (b) default Lite to one session and work on
+the runtime's memory (fixed input shapes, memory-pattern settings) to bring the total under 256 MB;
+(c) ship a smaller default model. Lite defaults to one model session either way.
+
 ## Still to verify (G16)
 
-- PROF-06 resident memory ≤ 256 MB with 100,000 memories (the spike process held every round in
-  memory twice plus the model, 281 MB; the real store reads per subject).
-- PROF-07 write acknowledgement p95 ≤ 20 ms and gated memories recallable within 2 s.
+- PROF-06 with the final Lite binary and the option chosen above.
+- PROF-07 again through the real engine path (gate, audit, fusion), not the spike's direct SQL.
 - Kill-and-restart durability of the job table (TR-LT-05), file encryption (TR-LT-08), and the
   conformance kits of G15.
 - Concurrency: one writer at a time in WAL mode; Lite targets one process, and the profile

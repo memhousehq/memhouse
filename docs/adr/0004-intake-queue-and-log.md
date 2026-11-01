@@ -3,10 +3,10 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted for Lite and Standard (G10); Scale candidate to confirm at load (G31) |
+| Status | **Proposed — pending the user's review** (spike G03) ; Scale candidate to confirm at load (G31) |
 | Date | 1 November 2026 |
 | Requirements | TD-04, TD-05, PR-6, SCALE-09, TR-IN-01 to TR-IN-07, TR-LT-05, PERF-03, PERF-04 |
-| Evidence | [evidence/postgres-spike.md](evidence/postgres-spike.md) (`scripts/spike/run.sh`) |
+| Evidence | [evidence/spike-acceptance.md](evidence/spike-acceptance.md) (section 6.10 coverage), [evidence/postgres-spike.md](evidence/postgres-spike.md) (`scripts/spike/run.sh`) |
 
 ## Decision
 

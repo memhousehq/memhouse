@@ -28,11 +28,16 @@ sqlx.workspace = true
 memhouse-store-postgres.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 half = { version = "2", optional = true }
+libc = { version = "0.2", optional = true }
 
 [features]
 # Technology spike (roadmap G03): `cargo run --release -p memhouse-bench --features spike --example spike_storage -- <run-id>`
-spike = ["dep:rusqlite", "dep:half"]
+spike = ["dep:rusqlite", "dep:half", "dep:libc"]
 
 [[example]]
 name = "spike_storage"
+required-features = ["spike"]
+
+[[example]]
+name = "spike_lite_profile"
 required-features = ["spike"]
