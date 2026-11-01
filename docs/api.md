@@ -98,18 +98,23 @@ audit always use the configured tenant.
   "source": "rest",
   "confidence": 1.0,
   "metadata": { "message_refs": ["0", "1"], "round": 0 },
-  "created_at": "2026-11-01T15:21:55.247863Z"
+  "created_at": "2026-11-01T15:21:55.247863Z",
+  "provenance": { "agent": "rest", "policy_version": "gov-3b1f0c9a2d4e" }
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `status` | `committed` (recallable), `superseded` (replaced by a newer version and kept for audit), `quarantined` (looked like prompt injection; never recalled) |
+| `status` | `committed` (recallable), `superseded` (replaced by a newer version and kept for audit), `quarantined` (looked like prompt injection; never recalled), `candidate` (waiting for its gate), `rejected`, `expired` (past `expires_at`). See the [lifecycle](schema.md#lifecycle-core-02). |
+| `kind` | `working` (expires, see `expires_at`), `episodic`, `semantic`, `preference`, `procedural`, `commitment`, `document` |
 | `occurred_at` | When the thing happened (event time). Date-aware recall uses it. |
 | `valid_from` / `valid_to` | When the memory is true. After `valid_to` it drops out of recall. |
 | `supersedes` | The id of the memory this one replaced. |
 | `source` | Where it came from: the actor by default (`rest`, `cli`, your `x-memhouse-actor`), `mcp`, or `enrich:<model>` for extracted facts |
 | `metadata` | Free-form JSON. Enrichment facts carry `derived: true`, `source_ids`, `extractor` and `prompt_version`. |
+| `expires_at` | After this the memory is not recalled (working memory always has one). |
+| `scope` | `{org, team, agent, user, session}`: narrower visibility inside the subject (resolution arrives in G11). |
+| `provenance` | `agent` (writer), `user` (acting user), `policy_version` (the policy that admitted it), `request_key`, and for extracted facts `extractor` and `extractor_config`. |
 
 Fields that are empty or unset are left out of the JSON.
 
@@ -132,6 +137,13 @@ Body (`RememberRequest`):
 | `supersedes` | uuid | | replace this memory, the same as `PATCH` |
 | `source` | string | | defaults to the actor (`rest`, or your `x-memhouse-actor`) |
 | `metadata` | object | | stored as given |
+| `labels` | string[] | | sensitivity labels; `[governance] denied_labels` keeps them out of recall |
+| `scope` | object | | `{org, team, agent, user, session}` |
+| `user` | string | | the user the agent acts for (provenance) |
+| `request_key` | string | | idempotency key: a repeat with the same key and body returns the first result; the same key with another body is an error |
+| `expires_at` | time | | `working` memory defaults to now + `[memory] working_ttl_secs` |
+| `structured` | `{record_type, attrs}` | | the queryable form of a record (an order, a ticket); same id as the text |
+| `code_refs` | `{path, blob_hash}[]` | | files the memory is about, for staleness checks |
 | `tenant`, `actor` | string | | |
 
 ```bash
@@ -250,6 +262,7 @@ Assistant text is cut to `[memory] assistant_chars` (1,200) for indexing.
 | `session_id` | string | groups rounds; also the enrichment unit |
 | `session_time` | time | the time of messages that have no `timestamp` of their own |
 | `per_message` | bool | one record per message instead of per round (for group chats without a `user` role) |
+| `scope`, `user`, `request_key` | | as for `POST /v1/memories` |
 | `source`, `actor` | string | |
 
 ```bash

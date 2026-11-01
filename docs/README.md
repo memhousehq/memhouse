@@ -9,6 +9,7 @@
 | [Governance and compliance](governance.md) | answer a security or privacy review: data flows, redaction, quarantine, erasure, audit chain, control mapping, known gaps |
 | [Developer guide](development.md) | change MemHouse itself: crate layout, build and test, extension points, schema changes, benchmarking a change |
 | [Architecture](architecture.md) | understand how recall, writes and enrichment work inside |
+| [Logical schema](schema.md) and [Memory Format](memory-format.md) | see what a record holds, its lifecycle, how upgrades work, and the export format with its conformance vectors |
 | [Benchmarks](benchmarks.md) | see the results and reproduce them |
 | [Roadmap](roadmap.md) | see what is planned next, goal by goal, and how each change is benchmarked |
 | [Secrets](security/secrets.md) | handle credentials in development, CI and the cloud |

@@ -61,6 +61,13 @@ test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/recall
   -d '{"subject":"customer:acme","query":"renewal"}')" = 500
 # Later steps keep the new model, as an edited config would.
 
+step "Memory Format v2: import v1 and v2, export, import again"
+"$BIN" import memory-format/vectors/v1-export.jsonl | grep "imported 4 records .* from a v1 file" >/dev/null
+"$BIN" import memory-format/vectors/v2-full.jsonl | grep "imported 11 records (0 already present), 2 links and 1 policies from a v2 file" >/dev/null
+"$BIN" export -o "$MEMHOUSE_HOME/export.jsonl" 2>/dev/null
+grep '"type":"link"' "$MEMHOUSE_HOME/export.jsonl" | wc -l | grep -q 2
+"$BIN" import "$MEMHOUSE_HOME/export.jsonl" | grep "imported 0 records" >/dev/null
+
 step "audit chain"
 "$BIN" audit --verify
 

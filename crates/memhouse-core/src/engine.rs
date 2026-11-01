@@ -22,10 +22,33 @@ pub struct Engine {
     /// LLM for background enrichment (only workers use it; ingest just queues jobs).
     pub chat: Option<Arc<dyn ChatModel>>,
     pub cfg: Arc<Config>,
+    /// Version of the compiled policy every write records (provenance; see `policy`).
+    pub policy_version: String,
 }
 
 pub fn content_hash(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
+}
+
+/// The policy as compiled from configuration: today the governance settings. Access-decision
+/// values (D-01…D-07) join it in G08.
+pub fn policy_body(cfg: &Config) -> serde_json::Value {
+    serde_json::json!({ "governance": cfg.governance, "decisions": {} })
+}
+
+/// `gov-` and a hash of the policy body: equal settings give equal versions on every node.
+pub fn policy_version(cfg: &Config) -> String {
+    format!("gov-{}", &content_hash(&policy_body(cfg).to_string())[..12])
+}
+
+/// Hash of a request without its key and caller, for idempotency checks.
+fn request_hash(request: &impl serde::Serialize) -> String {
+    let mut v = serde_json::to_value(request).unwrap_or_default();
+    if let Some(o) = v.as_object_mut() {
+        o.remove("request_key");
+        o.remove("actor");
+    }
+    content_hash(&v.to_string())
 }
 
 /// Rough token estimate (4 characters per token) used for context packing.
@@ -42,7 +65,66 @@ fn truncate_chars(s: &str, n: usize) -> &str {
 
 impl Engine {
     pub fn new(store: Arc<dyn Store>, embedder: Arc<dyn Embedder>, reranker: Option<Arc<dyn Reranker>>, cfg: Config) -> Engine {
-        Engine { store, embedder, reranker, chat: None, cfg: Arc::new(cfg) }
+        let policy_version = policy_version(&cfg);
+        Engine { store, embedder, reranker, chat: None, cfg: Arc::new(cfg), policy_version }
+    }
+
+    /// The compiled policy this engine writes under, as stored in `mh_policy`.
+    pub fn policy(&self) -> crate::format::PolicyLine {
+        crate::format::PolicyLine { version: self.policy_version.clone(), body: policy_body(&self.cfg), created_at: Utc::now() }
+    }
+
+    fn provenance(&self, actor: &str, user: &Option<String>, request_key: &Option<String>) -> Provenance {
+        Provenance {
+            agent: Some(actor.to_string()),
+            user: user.clone(),
+            policy_version: Some(self.policy_version.clone()),
+            request_key: request_key.clone(),
+            extractor: None,
+            extractor_config: None,
+        }
+    }
+
+    /// Idempotency (CORE-06): the stored response for a repeated key, or an error when the key
+    /// was used for a different request. `None` means go ahead.
+    async fn replay<T: serde::de::DeserializeOwned>(&self, tenant: &str, key: &Option<String>, request: &impl serde::Serialize) -> anyhow::Result<Option<T>> {
+        let Some(key) = key else { return Ok(None) };
+        let Some((hash, response)) = self.store.request_get(tenant, key).await? else { return Ok(None) };
+        anyhow::ensure!(hash == request_hash(request), "request key '{key}' was already used for a different request");
+        Ok(Some(serde_json::from_value(response)?))
+    }
+
+    async fn remember_key(
+        &self,
+        tenant: &str,
+        subject: &str,
+        op: &str,
+        key: &Option<String>,
+        request: &impl serde::Serialize,
+        response: &impl serde::Serialize,
+    ) -> anyhow::Result<()> {
+        if let Some(key) = key {
+            self.store.request_put(tenant, key, subject, op, &request_hash(request), &serde_json::to_value(response)?).await?;
+        }
+        Ok(())
+    }
+
+    /// Link `subject` to another subject (ACC-06), held in `subject`'s own partition.
+    pub async fn link(&self, tenant: Option<String>, subject: &str, linked_subject: &str, link_type: &str, memory_id: Option<Uuid>, actor: &str) -> anyhow::Result<Link> {
+        let tenant = self.tenant(&tenant);
+        anyhow::ensure!(subject != linked_subject, "a link joins two different subjects");
+        let link = Link {
+            tenant: tenant.clone(),
+            subject: subject.into(),
+            linked_subject: linked_subject.into(),
+            link_type: link_type.into(),
+            memory_id,
+            created_by: actor.into(),
+            created_at: Utc::now(),
+        };
+        self.store.link_put(&link).await?;
+        self.store.audit(actor, "subject.link", &tenant, Some(subject), memory_id, serde_json::json!({ "linked_subject": linked_subject, "link_type": link_type })).await?;
+        Ok(link)
     }
 
     pub fn with_chat(mut self, chat: Option<Arc<dyn ChatModel>>) -> Engine {
@@ -113,7 +195,20 @@ impl Engine {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
+        if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
+            return Ok(done);
+        }
+        let result = self.remember_once(&req, &tenant, &subject, &actor).await?;
+        self.remember_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await?;
+        Ok(result)
+    }
+
+    async fn remember_once(&self, req: &RememberRequest, tenant: &str, subject: &str, actor: &str) -> anyhow::Result<RememberResult> {
+        let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
+        if let Some(st) = &req.structured {
+            anyhow::ensure!(!st.record_type.trim().is_empty() && st.attrs.is_object(), "structured needs a record_type and an attrs object");
+        }
         let gated = self.screen(&req.content)?;
         let hash = content_hash(&format!("{}\u{1f}{}", kind.as_str(), gated.content));
 
@@ -156,6 +251,7 @@ impl Engine {
         if !gated.injection.is_empty() {
             metadata["quarantine_reasons"] = serde_json::json!(gated.injection);
         }
+        let expires_at = req.expires_at.or_else(|| (kind == MemoryKind::Working).then(|| now + chrono::Duration::seconds(self.cfg.memory.working_ttl_secs as i64)));
         let mem = Memory {
             id,
             tenant: tenant.clone(),
@@ -169,14 +265,21 @@ impl Engine {
             valid_from: now,
             valid_to: req.valid_to,
             supersedes: req.supersedes,
-            labels: vec![],
+            labels: req.labels.clone(),
             tags: req.tags.clone(),
             source: req.source.clone().unwrap_or_else(|| actor.clone()),
             confidence: 1.0,
             metadata,
             created_at: now,
+            expires_at,
+            scope: req.scope.clone().unwrap_or_default(),
+            provenance: self.provenance(&actor, &req.user, &req.request_key),
         };
-        self.store.insert(&[NewMemory { memory: mem, embedding, content_hash: hash, alt: None }]).await?;
+        let mut rec = NewMemory::new(mem, hash);
+        rec.embedding = embedding;
+        rec.structured = req.structured.clone();
+        rec.code_refs = req.code_refs.clone();
+        self.store.insert(&[rec]).await?;
         let mut superseded = None;
         if let Some(old) = req.supersedes {
             if status == MemoryStatus::Committed && self.store.set_superseded(&tenant, old, id).await? {
@@ -214,6 +317,16 @@ impl Engine {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
+        if let Some(done) = self.replay::<IngestResult>(&tenant, &req.request_key, &req).await? {
+            return Ok(done);
+        }
+        let result = self.ingest_once(&req, &tenant, &subject, &actor).await?;
+        self.remember_key(&tenant, &subject, "ingest", &req.request_key, &req, &result).await?;
+        Ok(result)
+    }
+
+    async fn ingest_once(&self, req: &IngestRequest, tenant: &str, subject: &str, actor: &str) -> anyhow::Result<IngestResult> {
+        let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let session = req.session_id.clone().unwrap_or_else(|| Uuid::now_v7().to_string());
         let rounds = if req.per_message {
             req.messages
@@ -268,8 +381,8 @@ impl Engine {
                 focus.push((recs.len(), f.content));
             }
             texts.push(gated.content.clone());
-            recs.push(NewMemory {
-                memory: Memory {
+            recs.push(NewMemory::new(
+                Memory {
                     id,
                     tenant: tenant.clone(),
                     subject: subject.clone(),
@@ -288,11 +401,12 @@ impl Engine {
                     confidence: 1.0,
                     metadata,
                     created_at: now,
+                    expires_at: None,
+                    scope: req.scope.clone().unwrap_or_default(),
+                    provenance: self.provenance(&actor, &req.user, &req.request_key),
                 },
-                embedding: None,
-                content_hash: hash,
-                alt: None,
-            });
+                hash,
+            ));
         }
         if recs.is_empty() {
             return Ok(out);
@@ -529,9 +643,13 @@ impl Engine {
 
     /// Apply retention rules (episodic purge). Returns records removed.
     pub async fn apply_retention(&self) -> anyhow::Result<u64> {
+        let expired = self.store.expire_due(&self.cfg.memory.tenant).await?;
+        if expired > 0 {
+            self.store.audit("system", "retention.expire", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": expired })).await?;
+        }
         let days = self.cfg.governance.episodic_retention_days;
         if days == 0 {
-            return Ok(0);
+            return Ok(expired);
         }
         let n = self.store.purge_episodic_older_than(&self.cfg.memory.tenant, days).await?;
         if n > 0 {

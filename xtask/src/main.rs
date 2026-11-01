@@ -23,6 +23,7 @@ tasks:
     --fix           apply rustfmt and add missing SPDX headers instead of checking them
     --skip-e2e      skip scripts/e2e.sh (no Docker needed)
     --skip-guard    skip the benchmark guard (no benchmark database needed)
+    --skip-latency  report the guard's timings without failing on them (a machine known to be busy)
   spdx [--fix]    check (or add) SPDX licence identifiers
   secrets         scan for credentials: the working tree (default), --staged changes, or the whole --history
     --repo <path>   scan another repository (e.g. ../other-repo)
@@ -65,7 +66,7 @@ fn workspace_root() -> PathBuf {
 
 fn ci(root: &Path, args: &[String]) -> Result<(), String> {
     let mut tier = "1".to_string();
-    let (mut fix, mut skip_e2e, mut skip_guard) = (false, false, false);
+    let (mut fix, mut skip_e2e, mut skip_guard, mut skip_latency) = (false, false, false, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -73,6 +74,7 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
             "--fix" => fix = true,
             "--skip-e2e" => skip_e2e = true,
             "--skip-guard" => skip_guard = true,
+            "--skip-latency" => skip_latency = true,
             other => return Err(format!("unknown option '{other}'\n{USAGE}")),
         }
     }
@@ -132,6 +134,9 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
         if !skip_guard {
             let mut cmd = Command::new(&bin);
             cmd.args(["bench", "guard", "--tier", &tier]);
+            if skip_latency {
+                cmd.arg("--skip-latency");
+            }
             run("benchmark guard", cmd, &mut record)?;
         }
         Ok::<(), String>(())

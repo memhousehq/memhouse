@@ -190,7 +190,7 @@ audit_reads = false              # audit every recall too
 ```bash
 memhouse doctor                  # config, container, database, model, audit chain, MCP round-trip
 memhouse audit --verify          # verify the hash chain
-memhouse export -o backup.jsonl  # canonical JSONL (MemHouse Memory Format v1)
+memhouse export -o backup.jsonl  # canonical JSONL (MemHouse Memory Format v2, docs/memory-format.md)
 memhouse import backup.jsonl
 memhouse forget --subject customer:acme   # right to be forgotten
 memhouse down                    # stop the container; data stays in the Docker volume

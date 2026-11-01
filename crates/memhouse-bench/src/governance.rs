@@ -101,7 +101,7 @@ fn rand_alnum(rng: &mut StdRng, n: usize) -> String {
     (0..n).map(|_| C[rng.gen_range(0..C.len())] as char).collect()
 }
 
-fn check(id: &str, req: &str, title: &str, passed: bool, value: String, target: &str, detail: String) -> Check {
+pub(crate) fn check(id: &str, req: &str, title: &str, passed: bool, value: String, target: &str, detail: String) -> Check {
     Check { id: id.into(), requirement: req.into(), title: title.into(), passed, value, target: target.into(), detail }
 }
 
@@ -970,6 +970,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         Err(e) => check("reembed", "TR-MS-04", "Re-embedding moves every memory to the new model", false, "error".into(), "pass", format!("{e:#}")),
     });
 
+    // 20–24. Schema v2: idempotency, lifecycle, representations, the format and the upgrade.
+    checks.extend(crate::schema_checks::run(engine, run_id).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;
@@ -1041,9 +1044,9 @@ fn plan_violations(plan: &serde_json::Value) -> Vec<String> {
 
 /// Deterministic stand-in embedder: hashed bag of words, so recall by shared words works and
 /// two instances with different names and sizes produce incomparable vectors.
-struct StubEmbedder {
-    id: String,
-    dim: usize,
+pub(crate) struct StubEmbedder {
+    pub(crate) id: String,
+    pub(crate) dim: usize,
 }
 
 #[async_trait::async_trait]
@@ -1070,9 +1073,11 @@ impl memhouse_core::Embedder for StubEmbedder {
     }
 }
 
-async fn stub_engine(base: &Engine, url: &str, id: &str, dim: usize, prefix: &str, migrate: bool) -> anyhow::Result<Engine> {
+pub(crate) async fn stub_engine(base: &Engine, url: &str, id: &str, dim: usize, prefix: &str, migrate: bool) -> anyhow::Result<Engine> {
     let mut cfg = (*base.cfg).clone();
     cfg.database.url = url.to_string();
+    // Scratch databases hold the conformance vectors, which use the tenant "default".
+    cfg.memory.tenant = "default".into();
     cfg.embedding.passage_prefix = Some(prefix.to_string()).filter(|p| !p.is_empty());
     cfg.embedding.query_prefix = None;
     cfg.rerank.enabled = false;
@@ -1086,16 +1091,34 @@ async fn stub_engine(base: &Engine, url: &str, id: &str, dim: usize, prefix: &st
 
 /// Model A writes, model B (another size and passage prefix) takes over with `reembed`, with a
 /// write arriving mid-run and an aborted attempt to a third model; A must then be refused.
+/// A fresh database next to the benchmark one, for checks that change a whole database.
+pub(crate) struct Scratch {
+    admin: sqlx::PgPool,
+    db: String,
+    pub(crate) url: String,
+}
+
+impl Scratch {
+    pub(crate) async fn create(engine: &Engine, suffix: &str) -> anyhow::Result<Scratch> {
+        let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&engine.cfg.database.url).await?;
+        let db: String = sqlx::query_scalar("SELECT current_database() || '_' || $1").bind(suffix).fetch_one(&admin).await?;
+        sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)")).execute(&admin).await?;
+        sqlx::raw_sql(&format!("CREATE DATABASE \"{db}\"")).execute(&admin).await?;
+        let (head, tail) = engine.cfg.database.url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;
+        let query = tail.split_once('?').map(|(_, q)| format!("?{q}")).unwrap_or_default();
+        Ok(Scratch { url: format!("{head}/{db}{query}"), admin, db })
+    }
+
+    pub(crate) async fn drop(self) -> anyhow::Result<()> {
+        sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.db)).execute(&self.admin).await?;
+        Ok(())
+    }
+}
+
 async fn reembed_check(engine: &Engine) -> anyhow::Result<Check> {
-    let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&engine.cfg.database.url).await?;
-    let db: String = sqlx::query_scalar("SELECT current_database() || '_reembed'").fetch_one(&admin).await?;
-    sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)")).execute(&admin).await?;
-    sqlx::raw_sql(&format!("CREATE DATABASE \"{db}\"")).execute(&admin).await?;
-    let (head, tail) = engine.cfg.database.url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;
-    let query = tail.split_once('?').map(|(_, q)| format!("?{q}")).unwrap_or_default();
-    let url = format!("{head}/{db}{query}");
-    let result = reembed_scenario(engine, &url).await;
-    sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)")).execute(&admin).await?;
+    let scratch = Scratch::create(engine, "reembed").await?;
+    let result = reembed_scenario(engine, &scratch.url).await;
+    scratch.drop().await?;
     let (passed, value, detail) = result?;
     Ok(check("reembed", "TR-MS-04", "Re-embedding moves every memory to the new model; the old one is refused afterwards", passed, value, "all", detail))
 }

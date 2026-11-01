@@ -9,6 +9,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryKind {
+    /// Short-lived task context for one session; expires (MEM-01).
+    Working,
     /// Raw conversation history: a user/assistant round.
     Episodic,
     /// Durable facts about the subject.
@@ -24,10 +26,12 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 6] = [MemoryKind::Episodic, MemoryKind::Semantic, MemoryKind::Preference, MemoryKind::Procedural, MemoryKind::Commitment, MemoryKind::Document];
+    pub const ALL: [MemoryKind; 7] =
+        [MemoryKind::Working, MemoryKind::Episodic, MemoryKind::Semantic, MemoryKind::Preference, MemoryKind::Procedural, MemoryKind::Commitment, MemoryKind::Document];
 
     pub fn as_str(&self) -> &'static str {
         match self {
+            MemoryKind::Working => "working",
             MemoryKind::Episodic => "episodic",
             MemoryKind::Semantic => "semantic",
             MemoryKind::Preference => "preference",
@@ -48,29 +52,150 @@ impl std::fmt::Display for MemoryKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Lifecycle of a record (CORE-02). Only `committed` records are recalled.
+///
+/// ```text
+/// candidate ──► committed ──► superseded
+///     │  │          │  └────► expired
+///     │  └► rejected │
+///     └──► quarantined ◄┘ ──► rejected   (quarantined ──► committed on release)
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryStatus {
+    /// Proposed, waiting for its gate (asynchronous admission, G10).
+    Candidate,
     Committed,
+    /// Replaced by a newer version (`superseded_by`).
     Superseded,
+    /// Held back by the gate (for example an injected instruction).
     Quarantined,
+    /// Refused by the gate or a reviewer.
+    Rejected,
+    /// Past `expires_at` (working memory, commitments).
+    Expired,
 }
 
 impl MemoryStatus {
+    pub const ALL: [MemoryStatus; 6] =
+        [MemoryStatus::Candidate, MemoryStatus::Committed, MemoryStatus::Superseded, MemoryStatus::Quarantined, MemoryStatus::Rejected, MemoryStatus::Expired];
+
     pub fn as_str(&self) -> &'static str {
         match self {
+            MemoryStatus::Candidate => "candidate",
             MemoryStatus::Committed => "committed",
             MemoryStatus::Superseded => "superseded",
             MemoryStatus::Quarantined => "quarantined",
+            MemoryStatus::Rejected => "rejected",
+            MemoryStatus::Expired => "expired",
         }
     }
-    pub fn parse(s: &str) -> MemoryStatus {
-        match s {
-            "superseded" => MemoryStatus::Superseded,
-            "quarantined" => MemoryStatus::Quarantined,
-            _ => MemoryStatus::Committed,
-        }
+
+    pub fn parse(s: &str) -> Option<MemoryStatus> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
     }
+
+    /// No record leaves these states.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, MemoryStatus::Superseded | MemoryStatus::Rejected | MemoryStatus::Expired)
+    }
+
+    /// The transitions of the state machine above.
+    pub fn can_become(&self, to: MemoryStatus) -> bool {
+        use MemoryStatus::*;
+        matches!((self, to), (Candidate, Committed | Rejected | Quarantined | Expired) | (Committed, Superseded | Quarantined | Expired) | (Quarantined, Committed | Rejected))
+    }
+
+    /// States a record may be in to move to `to`.
+    pub fn sources_of(to: MemoryStatus) -> Vec<MemoryStatus> {
+        Self::ALL.into_iter().filter(|s| s.can_become(to)).collect()
+    }
+}
+
+/// Narrower visibility inside a subject (MEM-04). All empty means the whole subject; resolution
+/// order (user over team over org) is applied by recall from G11.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+impl Scope {
+    pub fn is_empty(&self) -> bool {
+        *self == Scope::default()
+    }
+}
+
+/// Who and what admitted a record (GOV-03), and which model derived it (TR-MS-02). The source
+/// turn is the record's `session_id` and `turn_ref`; its confidence is `confidence`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provenance {
+    /// The writing agent (principal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The user the agent acted for, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// The compiled policy that admitted the record (`mh_policy`; `legacy-v1` before schema v2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<String>,
+    /// The client's idempotency key for the request that wrote it (CORE-06).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_key: Option<String>,
+    /// For derived records: the model that extracted it, and its prompt and configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extractor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extractor_config: Option<String>,
+}
+
+impl Provenance {
+    pub fn is_empty(&self) -> bool {
+        *self == Provenance::default()
+    }
+}
+
+/// The queryable form of a structured record (HYB-02), under the same id as its text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Structured {
+    pub record_type: String,
+    /// A JSON object of attributes, queried exactly, never by similarity.
+    pub attrs: serde_json::Value,
+}
+
+/// A file a memory is about (TR-TPL-02): stale when the file's content hash changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeRef {
+    pub path: String,
+    pub blob_hash: String,
+}
+
+/// A reference from one subject to another (ACC-06), stored with the subject that holds it.
+/// Following it also needs a relationship with the linked subject (enforced from G27).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Link {
+    pub tenant: String,
+    pub subject: String,
+    pub linked_subject: String,
+    pub link_type: String,
+    /// The record that justifies the link, if any; deleting it deletes the link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_id: Option<Uuid>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
 }
 
 /// A stored memory record.
@@ -103,6 +228,13 @@ pub struct Memory {
     #[serde(default)]
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
+    /// After this the record is no longer recalled (working memory, MEM-01).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Scope::is_empty")]
+    pub scope: Scope,
+    #[serde(default, skip_serializing_if = "Provenance::is_empty")]
+    pub provenance: Provenance,
 }
 
 /// A record ready to be inserted (embedding already computed).
@@ -113,6 +245,14 @@ pub struct NewMemory {
     pub content_hash: String,
     /// Second vector (embedding-cache key, vector) for the round's user text alone.
     pub alt: Option<(String, Vec<f32>)>,
+    pub structured: Option<Structured>,
+    pub code_refs: Vec<CodeRef>,
+}
+
+impl NewMemory {
+    pub fn new(memory: Memory, content_hash: String) -> NewMemory {
+        NewMemory { memory, embedding: None, content_hash, alt: None, structured: None, code_refs: vec![] }
+    }
 }
 
 /// What a database's vectors were made with. Vectors are only comparable within one identity, so
@@ -123,6 +263,13 @@ pub struct EmbeddingIdentity {
     pub dim: usize,
     /// Prefix added to passages before embedding (part of the text the model saw).
     pub passage_prefix: String,
+}
+
+impl EmbeddingIdentity {
+    /// Short hash of the whole identity, stamped on every vector (TR-MS-02, INT-07).
+    pub fn config_hash(&self) -> String {
+        crate::engine::content_hash(&serde_json::to_string(self).expect("identity serializes"))[..16].to_string()
+    }
 }
 
 impl std::fmt::Display for EmbeddingIdentity {
@@ -149,6 +296,14 @@ pub struct ReembedRow {
 pub struct ReembedVectors {
     pub id: Uuid,
     pub embedding: Vec<f32>,
+    pub alt: Option<(String, Vec<f32>)>,
+}
+
+/// A record of an export file on its way into a store, with its vectors.
+#[derive(Debug, Clone)]
+pub struct ImportRow {
+    pub record: crate::format::RecordLine,
+    pub embedding: Option<Vec<f32>>,
     pub alt: Option<(String, Vec<f32>)>,
 }
 
@@ -198,6 +353,24 @@ pub struct RememberRequest {
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub actor: Option<String>,
+    /// Sensitivity labels (ACC-04); recall can exclude them.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub scope: Option<Scope>,
+    /// The user the calling agent acts for (provenance).
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Idempotency key: a repeat with the same key and request returns the first result (CORE-06).
+    #[serde(default)]
+    pub request_key: Option<String>,
+    /// Working memory and other short-lived records; working memory defaults to `memory.working_ttl_secs`.
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub structured: Option<Structured>,
+    #[serde(default)]
+    pub code_refs: Vec<CodeRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,11 +379,11 @@ pub struct RememberResult {
     pub status: MemoryStatus,
     /// True when an equivalent memory already existed and nothing new was written.
     pub deduplicated: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redactions: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
@@ -234,6 +407,12 @@ pub struct IngestRequest {
     pub source: Option<String>,
     #[serde(default)]
     pub actor: Option<String>,
+    #[serde(default)]
+    pub scope: Option<Scope>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub request_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

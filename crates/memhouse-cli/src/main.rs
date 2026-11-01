@@ -4,6 +4,7 @@
 mod connect;
 mod up;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use memhouse_core::config::default_config_path;
 use memhouse_core::types::*;
@@ -143,14 +144,17 @@ enum Cmd {
         #[arg(long)]
         session: Option<String>,
     },
-    /// Export memories as canonical JSONL (MemHouse Memory Format v1)
+    /// Export a tenant (or one subject) as Memory Format v2 JSONL (docs/memory-format.md)
     Export {
         #[arg(long, short)]
         subject: Option<String>,
         #[arg(long, short)]
         out: Option<PathBuf>,
+        /// Tenant to export (default: [memory] tenant)
+        #[arg(long)]
+        tenant: Option<String>,
     },
-    /// Import a JSONL export (ids, timestamps and provenance are preserved)
+    /// Import a Memory Format v1 or v2 file (ids, states, timestamps and provenance are kept; vectors are made with this config's model)
     Import { file: PathBuf },
     /// Re-embed every stored memory with the model now in [embedding] (after changing it)
     Reembed {
@@ -433,66 +437,25 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let r = eng.ingest(IngestRequest { subject, session_id: session, messages, actor: Some("cli".into()), ..Default::default() }).await?;
             println!("stored {} rounds ({} quarantined, {} already present)", r.stored, r.quarantined, r.deduplicated);
         }
-        Cmd::Export { subject, out } => {
+        Cmd::Export { subject, out, tenant } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            let tenant = tenant.unwrap_or_else(|| eng.cfg.memory.tenant.clone());
             let mut w: Box<dyn Write> = match out {
                 Some(p) => Box::new(std::io::BufWriter::new(std::fs::File::create(p)?)),
-                None => Box::new(std::io::stdout()),
+                None => Box::new(std::io::BufWriter::new(std::io::stdout())),
             };
-            writeln!(w, "{}", serde_json::json!({"format": "memhouse.memory", "version": 1, "exported_at": chrono::Utc::now(), "embedder": eng.embedder.id()}))?;
-            let mut offset = 0;
-            let mut n = 0;
-            loop {
-                let batch = eng.list(None, subject.clone(), None, 1000, offset, true).await?;
-                if batch.is_empty() {
-                    break;
-                }
-                offset += batch.len();
-                for m in batch {
-                    writeln!(w, "{}", serde_json::to_string(&m)?)?;
-                    n += 1;
-                }
-            }
-            eprintln!("exported {n} memories");
+            let r = memhouse_core::format::export(&eng, &mut *w, &tenant, subject.as_deref()).await?;
+            w.flush()?;
+            eprintln!("exported {} records, {} links and {} policies (Memory Format v{})", r.records, r.links, r.policies, memhouse_core::format::VERSION);
         }
         Cmd::Import { file } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
-            let text = std::fs::read_to_string(&file)?;
-            let mut lines = text.lines();
-            let header: serde_json::Value = serde_json::from_str(lines.next().unwrap_or("{}"))?;
-            if header["format"] != "memhouse.memory" {
-                anyhow::bail!("not a MemHouse export (missing header line)");
+            let f = std::io::BufReader::new(std::fs::File::open(&file).with_context(|| format!("opening {}", file.display()))?);
+            let r = memhouse_core::format::import(&eng, f, "cli").await?;
+            println!("imported {} records ({} already present), {} links and {} policies from a v{} file", r.records, r.skipped, r.links, r.policies, r.version);
+            if r.second_vectors_dropped > 0 {
+                println!("  {} rounds kept only their main vector (their user-only text could not be recovered exactly)", r.second_vectors_dropped);
             }
-            let mut batch: Vec<Memory> = vec![];
-            let (mut added, mut skipped) = (0, 0);
-            for l in lines.filter(|l| !l.trim().is_empty()) {
-                let m: Memory = serde_json::from_str(l)?;
-                if eng.store.get(&m.tenant, m.id).await?.is_some() {
-                    skipped += 1;
-                    continue;
-                }
-                batch.push(m);
-            }
-            for chunk in batch.chunks(256) {
-                let texts: Vec<String> = chunk.iter().map(|m| m.content.clone()).collect();
-                let vecs = eng.embed_passages(&texts).await?;
-                let recs: Vec<NewMemory> = chunk
-                    .iter()
-                    .zip(vecs)
-                    .map(|(m, v)| NewMemory {
-                        content_hash: memhouse_core::engine::content_hash(&format!("{}\u{1f}{}", m.kind.as_str(), m.content)),
-                        memory: m.clone(),
-                        embedding: Some(v),
-                        alt: None,
-                    })
-                    .collect();
-                eng.store.insert(&recs).await?;
-                added += recs.len();
-            }
-            eng.store
-                .audit("cli", "memory.import", &eng.cfg.memory.tenant, None, None, serde_json::json!({"added": added, "skipped": skipped, "file": file.display().to_string()}))
-                .await?;
-            println!("imported {added} memories ({skipped} already present)");
         }
         Cmd::Reembed { dry_run, abort, batch, yes } => {
             use memhouse_core::reembed;

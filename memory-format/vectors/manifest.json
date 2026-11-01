@@ -1,0 +1,65 @@
+{
+  "description": "Conformance vectors for MemHouse Memory Format v2 (docs/memory-format.md). A reader passes when every valid file is read with the stated counts and every invalid file is rejected with an error naming the stated rule.",
+  "cases": [
+    {
+      "file": "v2-minimal.jsonl",
+      "records": 1
+    },
+    {
+      "file": "v2-full.jsonl",
+      "records": 11,
+      "links": 2,
+      "policies": 1,
+      "note": "every state, kind, provenance, scope, labels, structured, code refs, links, a second vector, a version chain"
+    },
+    {
+      "file": "v1-export.jsonl",
+      "records": 4,
+      "note": "format v1 (schema v1): read and upgraded"
+    },
+    {
+      "file": "invalid-version.jsonl",
+      "error": "newer than this build"
+    },
+    {
+      "file": "invalid-not-memhouse.jsonl",
+      "error": "not a MemHouse export"
+    },
+    {
+      "file": "invalid-unknown-field.jsonl",
+      "error": "unknown field"
+    },
+    {
+      "file": "invalid-unknown-type.jsonl",
+      "error": "unknown line type"
+    },
+    {
+      "file": "invalid-unknown-kind.jsonl",
+      "error": "unknown variant"
+    },
+    {
+      "file": "invalid-superseded-without-successor.jsonl",
+      "error": "superseded_by"
+    },
+    {
+      "file": "invalid-working-without-expiry.jsonl",
+      "error": "expires_at"
+    },
+    {
+      "file": "invalid-hash.jsonl",
+      "error": "sha256"
+    },
+    {
+      "file": "invalid-confidence.jsonl",
+      "error": "confidence"
+    },
+    {
+      "file": "invalid-self-link.jsonl",
+      "error": "two different subjects"
+    },
+    {
+      "file": "invalid-structured-attrs.jsonl",
+      "error": "attrs object"
+    }
+  ]
+}

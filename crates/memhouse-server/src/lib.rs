@@ -27,7 +27,10 @@ pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<En
     let store = PgStore::connect(&cfg.database.url, cfg.database.max_connections, cfg.embedding.passage_prefix.as_deref().unwrap_or("")).await?;
     store.migrate(embedder.dim(), embedder.id()).await?;
     let chat = memhouse_models::enrich_chat(&cfg, None)?;
-    Ok(Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat))
+    let engine = Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat);
+    // Records name the policy that admitted them; the policy itself is kept with them.
+    engine.store.policy_put(&engine.policy()).await?;
+    Ok(engine)
 }
 
 /// An engine on the configured embedder without the start-up identity check, for

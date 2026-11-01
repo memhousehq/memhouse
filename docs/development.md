@@ -363,12 +363,19 @@ contract it will follow, so sync jobs written now will port across directly.
 
 ## Change the schema
 
-The DDL is one idempotent block in `PgStore::migrate`
-([`store-postgres/src/lib.rs`](../crates/memhouse-store-postgres/src/lib.rs)).
+The logical model is [docs/schema.md](schema.md); change it there first. The Postgres DDL is
+`schema_v1_ddl` plus one block per later version (`SCHEMA_V2_DDL`), run in order by
+`PgStore::migrate` ([`store-postgres/src/lib.rs`](../crates/memhouse-store-postgres/src/lib.rs)).
 
-- Only **additive** changes: `CREATE TABLE/INDEX IF NOT EXISTS`, `ALTER TABLE … ADD COLUMN IF NOT EXISTS`.
-  Old and new binaries must be able to share a database during a rolling restart.
-- Bump `SCHEMA_VERSION` and say what changed in the commit message.
+- Expand, backfill, switch, contract: only **additive** DDL (`CREATE TABLE/INDEX IF NOT EXISTS`,
+  `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, nullable columns), a batched idempotent backfill, and
+  removals only in a later version. Old and new binaries must share a database during a rolling
+  restart; the `schema_upgrade` governance check proves it for v1 → v2.
+- Bump `memhouse_core::format::SCHEMA_VERSION`, extend the upgrade check, and say what changed in
+  the commit message.
+- A new field that belongs to a record goes into [Memory Format](memory-format.md) too
+  (`RecordLine`, the spec, a conformance vector), or export → import loses it; the
+  `format_roundtrip` check fails until it does.
 - New tables holding subject data must be covered by `delete` and `delete_subject`, with a
   governance check that proves it.
 - Don't add an approximate vector index to `mh_memory`. Per-subject recall is exact by design

@@ -367,17 +367,18 @@ pg_dump -Fc -d "$DATABASE_URL" -f memhouse-$(date +%F).dump
 pg_restore -d "$NEW_DATABASE_URL" --no-owner memhouse-2026-11-01.dump
 ```
 
-There is also a portable, model-independent export:
+There is also a portable, model-independent export in [Memory Format v2](memory-format.md):
 
 ```bash
-memhouse export -o memhouse.jsonl                       # every memory, including superseded and quarantined
+memhouse export -o memhouse.jsonl                       # the tenant: every record in every state, links, policies
 memhouse export --subject customer:acme -o acme.jsonl
-memhouse import memhouse.jsonl                           # ids, timestamps, provenance kept; re-embeds
+memhouse import memhouse.jsonl                           # v1 or v2; ids, states, timestamps, provenance kept; re-embeds
 ```
 
-The first line is a header (`{"format":"memhouse.memory","version":1,"exported_at":…,"embedder":…}`)
-and each further line is one Memory object. Import skips ids that already exist, so it is safe
-to run twice. Use it to move between embedding models or into another deployment.
+The first line is a header; then one `policy`, `record` or `link` object per line. Vectors are
+not in the file: an import embeds with its own model. Import skips ids that already exist, so it
+is safe to run twice, and export → import → export reproduces every line. It does not include the
+audit chain or the deletion ledger: back those up with the database.
 
 ### Re-applying deletions after a restore
 
@@ -429,7 +430,11 @@ is planned (TR-WF-03).
 1. Read the release notes.
 2. Back up (`pg_dump`, or a snapshot).
 3. Replace the binary and restart. The schema migrates on start-up with additive
-   `CREATE/ALTER … IF NOT EXISTS` statements. `mh_meta.schema_version` records the version.
+   `CREATE/ALTER … IF NOT EXISTS` statements, then backfills new fields in batches.
+   `mh_meta.schema_version` records the version; a database newer than the binary is refused.
+   Version 1 → 2 adds provenance, scopes, the full lifecycle, working memory, structured records,
+   code references, links, policies and request keys; no memory is re-embedded or re-extracted
+   ([schema](schema.md#upgrading-from-v1)).
 4. `memhouse doctor`.
 
 Rolling restarts work: old and new processes can share the database while the changes are additive.
@@ -514,7 +519,9 @@ A cron job that checks integrity and alerts on failure:
 | Symptom | Cause and fix |
 |---|---|
 | `cannot connect to Postgres at …` | Check the URL, the network and `pg_hba.conf`. With `memhouse up`, `docker ps` should list `memhouse-pg`; run `memhouse up` again to start it. |
-| `this database stores 384-dimensional embeddings but the configured model produces 768` | The model changed. Revert `[embedding]`, or use a new database with export/import. |
+| `this database's memories are embedded with …, but the configuration says …` | `[embedding]` changed. Revert it, or run `memhouse reembed` ([Changing the embedding model](#changing-the-embedding-model)). |
+| `this database has schema version N, newer than this build` | A newer MemHouse already upgraded the database. Run that version (or newer). |
+| `pgvector … is too old` | `ALTER EXTENSION vector UPDATE;` (0.5 at least, 0.8 recommended); on a managed service, upgrade the extension from its console. |
 | `extension "vector" is not available` | Install pgvector on the database server (`postgresql-17-pgvector`), or use the `pgvector/pgvector` image. |
 | `401 missing or invalid API key` | Run `memhouse key` and send `Authorization: Bearer <key>`. If the message says no keys are configured, run `memhouse init`. |
 | `cannot listen on 127.0.0.1:7077` | The port is in use. Set `--bind` or `MEMHOUSE_BIND`. |

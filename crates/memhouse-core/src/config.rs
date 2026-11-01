@@ -219,6 +219,8 @@ pub struct MemoryConfig {
     /// demoting everything outside the window.
     pub window_top: usize,
     pub window_top_weight: f32,
+    /// Lifetime of working memory when the write gives no `expires_at` (MEM-01).
+    pub working_ttl_secs: u64,
     /// RRF weight of each sub-query probe (0 = off: on LongMemEval they added noise).
     pub subquery_weight: f32,
     /// Active template (support, sales, success, coding, personal).
@@ -243,6 +245,7 @@ impl Default for MemoryConfig {
             window_weight: 0.15,
             window_top: 3,
             window_top_weight: 1.0,
+            working_ttl_secs: 86_400,
             subquery_weight: 0.0,
             template: None,
         }

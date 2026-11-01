@@ -279,8 +279,8 @@ impl Engine {
             if !gated.injection.is_empty() {
                 metadata["quarantine_reasons"] = serde_json::json!(gated.injection);
             }
-            recs.push(NewMemory {
-                memory: Memory {
+            recs.push(NewMemory::new(
+                Memory {
                     id: Uuid::now_v7(),
                     tenant: job.tenant.clone(),
                     subject: job.subject.clone(),
@@ -299,11 +299,19 @@ impl Engine {
                     confidence: 0.9,
                     metadata,
                     created_at: now,
+                    expires_at: None,
+                    scope: src.first().map(|r| r.scope.clone()).unwrap_or_default(),
+                    provenance: Provenance {
+                        agent: Some("enrich".into()),
+                        user: src.first().and_then(|r| r.provenance.user.clone()),
+                        policy_version: Some(self.policy_version.clone()),
+                        request_key: None,
+                        extractor: Some(model.to_string()),
+                        extractor_config: Some(PROMPT_VERSION.to_string()),
+                    },
                 },
-                embedding: None,
-                content_hash: hash,
-                alt: None,
-            });
+                hash,
+            ));
         }
         let existing = self.store.existing_hashes(&job.tenant, &job.subject, &recs.iter().map(|r| r.content_hash.clone()).collect::<Vec<_>>()).await?;
         recs.retain(|r| !existing.contains(&r.content_hash));

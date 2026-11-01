@@ -88,6 +88,29 @@ pub trait Store: Send + Sync {
     async fn llm_cache_get(&self, key: &str) -> anyhow::Result<Option<String>>;
     async fn llm_cache_put(&self, key: &str, model: &str, text: &str) -> anyhow::Result<()>;
 
+    // Schema v2: the rest of a logical record, links, policies and request keys.
+    /// Full records for an export, in id order after `after` (TR-CORE-03).
+    async fn export_records(&self, tenant: &str, subject: Option<&str>, after: Option<Uuid>, limit: usize) -> anyhow::Result<Vec<crate::format::RecordLine>>;
+    async fn export_links(&self, tenant: &str, subject: Option<&str>) -> anyhow::Result<Vec<Link>>;
+    async fn export_policies(&self) -> anyhow::Result<Vec<crate::format::PolicyLine>>;
+    /// Insert records exactly as given (ids, states, timestamps, provenance); ids already present
+    /// are skipped. Returns how many were inserted.
+    async fn import_records(&self, rows: &[ImportRow]) -> anyhow::Result<u64>;
+    /// Record a compiled policy version (first write wins).
+    async fn policy_put(&self, policy: &crate::format::PolicyLine) -> anyhow::Result<()>;
+    /// Add a link between two subjects (an existing one is left as it is).
+    async fn link_put(&self, link: &Link) -> anyhow::Result<()>;
+    async fn links(&self, tenant: &str, subject: &str) -> anyhow::Result<Vec<Link>>;
+    /// The stored (request hash, response) for an idempotency key (CORE-06).
+    async fn request_get(&self, tenant: &str, key: &str) -> anyhow::Result<Option<(String, serde_json::Value)>>;
+    async fn request_put(&self, tenant: &str, key: &str, subject: &str, operation: &str, request_hash: &str, response: &serde_json::Value) -> anyhow::Result<()>;
+    /// Move records past `expires_at` to `expired` (working memory). Returns how many.
+    async fn expire_due(&self, tenant: &str) -> anyhow::Result<u64>;
+    /// Structured records of a subject by type, matched exactly on attributes (HYB-02).
+    async fn structured_query(&self, tenant: &str, subject: &str, record_type: &str, attrs: &serde_json::Value) -> anyhow::Result<Vec<(Uuid, serde_json::Value)>>;
+    /// Code references of a subject (a repository) whose stored hash differs from the given one.
+    async fn stale_code_refs(&self, tenant: &str, subject: &str, path: &str, blob_hash: &str) -> anyhow::Result<Vec<Uuid>>;
+
     // Re-embedding to another model in place (see `reembed`). Stores that can't do it say so.
     /// The identity the stored vectors were made with, and the target of an unfinished re-embedding.
     async fn embedding_identity(&self) -> anyhow::Result<(Option<EmbeddingIdentity>, Option<EmbeddingIdentity>)> {

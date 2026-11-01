@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, SubsecRound, Utc};
+use memhouse_core::format::{PolicyLine, RecordLine};
 use memhouse_core::types::*;
 use memhouse_core::Store;
 use sha2::{Digest, Sha256};
@@ -11,7 +12,8 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: &str = "1";
+/// The logical schema version this build migrates to (see `docs/schema.md`).
+pub const SCHEMA_VERSION: u32 = memhouse_core::format::SCHEMA_VERSION;
 
 #[derive(Clone)]
 pub struct PgStore {
@@ -21,6 +23,8 @@ pub struct PgStore {
     /// The embedder this process writes with (set by `migrate`), stamped on every row so the
     /// database refuses vectors from a process left on the old model after a re-embedding.
     embedder: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Configuration hash of that embedder (model, dimension, prefix), stamped with every vector.
+    embedder_config: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// When the database's embedder was last compared with ours (recall checks every 5 s).
     checked: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     recheck: std::time::Duration,
@@ -32,11 +36,18 @@ fn drop_next_columns() -> String {
 }
 
 /// Columns that hold vectors for the re-embedding target until the switch.
-const NEXT_COLS: [(&str, &str); 4] = [("embedding_next", "embedding"), ("embedding_alt_next", "embedding_alt"), ("alt_hash_next", "alt_hash"), ("embedder_next", "embedder")];
+const NEXT_COLS: [(&str, &str); 5] = [
+    ("embedding_next", "embedding"),
+    ("embedding_alt_next", "embedding_alt"),
+    ("alt_hash_next", "alt_hash"),
+    ("embedder_next", "embedder"),
+    ("embedder_config_next", "embedder_config"),
+];
 
 const COLS: &str = "m.id, m.tenant, m.subject, m.kind, m.status, m.content, m.session_id, m.turn_ref, \
     m.occurred_at, m.valid_from, m.valid_to, m.supersedes, m.labels, m.tags, m.source, m.confidence, \
-    m.metadata, m.created_at";
+    m.metadata, m.created_at, m.expires_at, m.scope_org, m.scope_team, m.scope_agent, m.scope_user, m.scope_session, \
+    m.prov_agent, m.prov_user, m.policy_version, m.request_key, m.extractor, m.extractor_config";
 
 fn vec_literal(v: &[f32]) -> String {
     let mut s = String::with_capacity(v.len() * 10 + 2);
@@ -67,8 +78,8 @@ fn row_to_memory(r: &PgRow) -> anyhow::Result<Memory> {
         id: r.try_get("id")?,
         tenant: r.try_get("tenant")?,
         subject: r.try_get("subject")?,
-        kind: MemoryKind::parse(&kind).unwrap_or(MemoryKind::Semantic),
-        status: MemoryStatus::parse(&status),
+        kind: MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}' in the database"))?,
+        status: MemoryStatus::parse(&status).ok_or_else(|| anyhow::anyhow!("unknown status '{status}' in the database"))?,
         content: r.try_get("content")?,
         session_id: r.try_get("session_id")?,
         turn_ref: r.try_get("turn_ref")?,
@@ -82,8 +93,148 @@ fn row_to_memory(r: &PgRow) -> anyhow::Result<Memory> {
         confidence: r.try_get("confidence")?,
         metadata: r.try_get("metadata")?,
         created_at: r.try_get("created_at")?,
+        expires_at: r.try_get("expires_at")?,
+        scope: Scope {
+            org: r.try_get("scope_org")?,
+            team: r.try_get("scope_team")?,
+            agent: r.try_get("scope_agent")?,
+            user: r.try_get("scope_user")?,
+            session: r.try_get("scope_session")?,
+        },
+        provenance: Provenance {
+            agent: r.try_get("prov_agent")?,
+            user: r.try_get("prov_user")?,
+            policy_version: r.try_get("policy_version")?,
+            request_key: r.try_get("request_key")?,
+            extractor: r.try_get("extractor")?,
+            extractor_config: r.try_get("extractor_config")?,
+        },
     })
 }
+
+fn row_to_link(r: &PgRow) -> anyhow::Result<Link> {
+    Ok(Link {
+        tenant: r.try_get("tenant")?,
+        subject: r.try_get("subject")?,
+        linked_subject: r.try_get("linked_subject")?,
+        link_type: r.try_get("link_type")?,
+        memory_id: r.try_get("memory_id")?,
+        created_by: r.try_get("created_by")?,
+        created_at: r.try_get("created_at")?,
+    })
+}
+
+/// A full export record: the memory plus what only the store holds.
+fn row_to_record(r: &PgRow) -> anyhow::Result<RecordLine> {
+    let m = row_to_memory(r)?;
+    let record_type: Option<String> = r.try_get("record_type")?;
+    let attrs: Option<serde_json::Value> = r.try_get("attrs")?;
+    let code_refs: serde_json::Value = r.try_get("code_refs")?;
+    Ok(RecordLine {
+        id: m.id,
+        tenant: m.tenant,
+        subject: m.subject,
+        kind: m.kind,
+        status: m.status,
+        content: m.content,
+        content_hash: r.try_get("content_hash")?,
+        session_id: m.session_id,
+        turn_ref: m.turn_ref,
+        occurred_at: m.occurred_at,
+        valid_from: m.valid_from,
+        valid_to: m.valid_to,
+        expires_at: m.expires_at,
+        supersedes: m.supersedes,
+        superseded_by: r.try_get("superseded_by")?,
+        labels: m.labels,
+        tags: m.tags,
+        scope: m.scope,
+        source: m.source,
+        confidence: m.confidence,
+        provenance: m.provenance,
+        alt_hash: r.try_get("alt_hash")?,
+        structured: record_type.map(|t| Structured { record_type: t, attrs: attrs.unwrap_or_else(|| serde_json::json!({})) }),
+        code_refs: serde_json::from_value(code_refs)?,
+        metadata: m.metadata,
+        created_at: m.created_at,
+        updated_at: r.try_get("updated_at")?,
+    })
+}
+
+/// The v2 additions (`docs/schema.md`). Expand-only: new columns are nullable and new tables
+/// stand alone, so a v1 process keeps working against a v2 database.
+const SCHEMA_V2_DDL: &str = r#"
+ALTER TABLE mh_memory
+  ADD COLUMN IF NOT EXISTS expires_at       timestamptz,
+  ADD COLUMN IF NOT EXISTS scope_org        text,
+  ADD COLUMN IF NOT EXISTS scope_team       text,
+  ADD COLUMN IF NOT EXISTS scope_agent      text,
+  ADD COLUMN IF NOT EXISTS scope_user       text,
+  ADD COLUMN IF NOT EXISTS scope_session    text,
+  ADD COLUMN IF NOT EXISTS prov_agent       text,
+  ADD COLUMN IF NOT EXISTS prov_user        text,
+  ADD COLUMN IF NOT EXISTS policy_version   text,
+  ADD COLUMN IF NOT EXISTS request_key      text,
+  ADD COLUMN IF NOT EXISTS extractor        text,
+  ADD COLUMN IF NOT EXISTS extractor_config text,
+  ADD COLUMN IF NOT EXISTS embedder_config  text;
+CREATE INDEX IF NOT EXISTS mh_memory_expiry_idx ON mh_memory (tenant, expires_at) WHERE expires_at IS NOT NULL;
+
+-- Structured records (HYB-02): the queryable form, under the text record's id (HYB-04).
+CREATE TABLE IF NOT EXISTS mh_structured (
+  memory_id   uuid PRIMARY KEY REFERENCES mh_memory (id) ON DELETE CASCADE,
+  tenant      text NOT NULL,
+  subject     text NOT NULL,
+  record_type text NOT NULL,
+  attrs       jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mh_structured_type_idx ON mh_structured (tenant, subject, record_type);
+CREATE INDEX IF NOT EXISTS mh_structured_attrs_idx ON mh_structured USING gin (attrs jsonb_path_ops);
+
+-- Files a memory is about (TR-TPL-02); a changed blob hash marks the memory stale.
+CREATE TABLE IF NOT EXISTS mh_code_ref (
+  memory_id  uuid NOT NULL REFERENCES mh_memory (id) ON DELETE CASCADE,
+  tenant     text NOT NULL,
+  subject    text NOT NULL,
+  path       text NOT NULL,
+  blob_hash  text NOT NULL,
+  PRIMARY KEY (memory_id, path)
+);
+CREATE INDEX IF NOT EXISTS mh_code_ref_path_idx ON mh_code_ref (tenant, subject, path);
+
+-- Links between subjects (ACC-06), held by the subject that has them.
+CREATE TABLE IF NOT EXISTS mh_link (
+  tenant         text NOT NULL,
+  subject        text NOT NULL,
+  linked_subject text NOT NULL,
+  link_type      text NOT NULL,
+  memory_id      uuid REFERENCES mh_memory (id) ON DELETE CASCADE,
+  created_by     text NOT NULL,
+  created_at     timestamptz NOT NULL,
+  PRIMARY KEY (tenant, subject, linked_subject, link_type)
+);
+CREATE INDEX IF NOT EXISTS mh_link_linked_idx ON mh_link (tenant, linked_subject);
+
+-- Idempotency keys (CORE-06): the first response to a key is returned for its repeats.
+CREATE TABLE IF NOT EXISTS mh_request_key (
+  tenant       text NOT NULL,
+  key          text NOT NULL,
+  subject      text NOT NULL,
+  operation    text NOT NULL,
+  request_hash text NOT NULL,
+  response     jsonb NOT NULL,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant, key)
+);
+CREATE INDEX IF NOT EXISTS mh_request_key_subject_idx ON mh_request_key (tenant, subject);
+
+-- Compiled policies that admitted records (provenance.policy_version).
+CREATE TABLE IF NOT EXISTS mh_policy (
+  version    text PRIMARY KEY,
+  body       jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+"#;
 
 // One argument per hashed field, in hash order; a struct would hide that order.
 #[allow(clippy::too_many_arguments)]
@@ -113,7 +264,14 @@ impl PgStore {
             .connect(url)
             .await
             .map_err(|e| anyhow::anyhow!("cannot connect to Postgres at {}: {e}", redact_url(url)))?;
-        Ok(PgStore { pool, passage_prefix: passage_prefix.to_string(), embedder: Default::default(), checked: Default::default(), recheck: std::time::Duration::from_secs(5) })
+        Ok(PgStore {
+            pool,
+            passage_prefix: passage_prefix.to_string(),
+            embedder: Default::default(),
+            embedder_config: Default::default(),
+            checked: Default::default(),
+            recheck: std::time::Duration::from_secs(5),
+        })
     }
 
     pub async fn meta(&self, key: &str) -> anyhow::Result<Option<String>> {
@@ -186,6 +344,7 @@ base AS (
     AND ($5::text[] IS NULL OR m.tags && $5)
     AND NOT (m.labels && $6::text[])
     AND m.valid_from <= $16 AND (m.valid_to IS NULL OR m.valid_to > $16)
+    AND (m.expires_at IS NULL OR m.expires_at > $16)
     AND ($7::timestamptz IS NULL OR m.occurred_at IS NULL OR m.occurred_at <= $7)
     AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
       SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
@@ -279,28 +438,11 @@ fn search_query<'a>(
         .bind(q.windows.iter().map(|w| w.1).collect::<Vec<_>>())
 }
 
-#[async_trait]
-impl Store for PgStore {
-    async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()> {
-        let mine = EmbeddingIdentity { embedder: embedder_id.to_string(), dim, passage_prefix: self.passage_prefix.clone() };
-        if let Some(db) = self.identity_of("").await? {
-            // Databases from before the prefix was recorded take the configured one.
-            let prefix_known = self.meta("passage_prefix").await?.is_some();
-            let same = db.embedder == mine.embedder && db.dim == mine.dim && (!prefix_known || db.passage_prefix == mine.passage_prefix);
-            if !same {
-                let unfinished = self.identity_of("reembed_target_").await?.is_some_and(|t| t == mine);
-                anyhow::bail!(
-                    "this database's memories are embedded with {db}, but the configuration says {mine}. {}",
-                    if unfinished {
-                        "A re-embedding to it is unfinished: run `memhouse reembed` to complete it."
-                    } else {
-                        "Run `memhouse reembed` to re-embed every memory with the configured model, or go back to the previous [embedding] settings."
-                    }
-                );
-            }
-        }
-        let ddl = format!(
-            r#"
+/// The schema as it was at version 1, kept verbatim: `migrate` runs it, then the v2 additions,
+/// and the upgrade test builds a v1 database from it.
+pub fn schema_v1_ddl(dim: usize) -> String {
+    format!(
+        r#"
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS mh_meta (key text PRIMARY KEY, value text NOT NULL);
 CREATE TABLE IF NOT EXISTS mh_memory (
@@ -416,8 +558,194 @@ BEGIN
 END $$;
 CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FOR EACH ROW EXECUTE FUNCTION mh_memory_embedder_guard();
 "#
-        );
-        sqlx::raw_sql(&ddl).execute(&self.pool).await?;
+    )
+}
+
+/// ADR 0007: refuse pgvector below 0.5, warn below 0.7.0 (half-precision and binary vectors).
+async fn check_pgvector(pool: &PgPool) -> anyhow::Result<()> {
+    let v: Option<String> = sqlx::query_scalar("SELECT extversion FROM pg_extension WHERE extname = 'vector'").fetch_optional(pool).await?;
+    let v = v.ok_or_else(|| anyhow::anyhow!("the pgvector extension is not installed"))?;
+    let parts: Vec<u32> = v.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+    let (major, minor) = (parts.first().copied().unwrap_or(0), parts.get(1).copied().unwrap_or(0));
+    if (major, minor) < (0, 5) {
+        anyhow::bail!("pgvector {v} is too old; MemHouse needs 0.5 or later and recommends 0.8 (ALTER EXTENSION vector UPDATE)");
+    }
+    if (major, minor) < (0, 7) {
+        tracing::warn!("pgvector {v} works, but half-precision and binary vectors need 0.7.0 or later; 0.8 is recommended");
+    }
+    Ok(())
+}
+
+/// A record and its vectors as columns: one path for `insert` and `import_records`.
+struct WriteRow<'a> {
+    r: &'a RecordLine,
+    embedding: Option<String>,
+    alt: Option<String>,
+}
+
+impl PgStore {
+    /// Fill the v2 columns of records written under schema v1, in batches (the same rules as
+    /// `format::legacy_provenance`), then record schema version 2.
+    async fn backfill_v2(&self, embedder: &str, config: &str) -> anyhow::Result<()> {
+        loop {
+            let n = sqlx::query(
+                "UPDATE mh_memory SET \
+                   prov_agent = CASE WHEN source LIKE 'enrich:%' THEN 'enrich' ELSE source END, \
+                   policy_version = $3, \
+                   extractor = CASE WHEN metadata ->> 'derived' = 'true' THEN metadata ->> 'extractor' END, \
+                   extractor_config = CASE WHEN metadata ->> 'derived' = 'true' THEN metadata ->> 'prompt_version' END, \
+                   embedder = CASE WHEN embedding IS NOT NULL THEN coalesce(embedder, $1) END, \
+                   embedder_config = CASE WHEN embedding IS NOT NULL THEN $2 END \
+                 WHERE id IN (SELECT id FROM mh_memory WHERE policy_version IS NULL LIMIT 5000)",
+            )
+            .bind(embedder)
+            .bind(config)
+            .bind(memhouse_core::format::LEGACY_POLICY)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+            if n == 0 {
+                break;
+            }
+        }
+        // v1 stamped supersessions and status changes with the database's clock, which can trail
+        // the application's by milliseconds; raise those stamps to the record's own times so
+        // every record satisfies the format's ordering rules.
+        sqlx::query(
+            "UPDATE mh_memory SET updated_at = greatest(updated_at, created_at), valid_to = greatest(valid_to, valid_from) \
+             WHERE updated_at < created_at OR valid_to < valid_from",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
+            .bind(SCHEMA_VERSION.to_string())
+            .bind(SCHEMA_VERSION as i32)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Insert records with every column; `skip_existing` ignores ids already present. Returns
+    /// the ids inserted.
+    async fn write_rows(&self, rows: &[WriteRow<'_>], skip_existing: bool) -> anyhow::Result<Vec<Uuid>> {
+        let embedder = self.embedder.lock().unwrap().clone();
+        let config = self.embedder_config.lock().unwrap().clone();
+        let mut inserted = vec![];
+        let mut tx = self.pool.begin().await?;
+        for chunk in rows.chunks(400) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, embedding, embedding_alt, alt_hash, embedder, embedder_config, \
+                 session_id, turn_ref, occurred_at, valid_from, valid_to, expires_at, supersedes, superseded_by, labels, tags, \
+                 scope_org, scope_team, scope_agent, scope_user, scope_session, source, confidence, \
+                 prov_agent, prov_user, policy_version, request_key, extractor, extractor_config, metadata, created_at, updated_at) ",
+            );
+            qb.push_values(chunk, |mut b, w| {
+                let r = w.r;
+                let has_vec = w.embedding.is_some();
+                b.push_bind(r.id)
+                    .push_bind(&r.tenant)
+                    .push_bind(&r.subject)
+                    .push_bind(r.kind.as_str())
+                    .push_bind(r.status.as_str())
+                    .push_bind(&r.content)
+                    .push_bind(&r.content_hash)
+                    .push_bind(w.embedding.clone())
+                    .push_unseparated("::vector")
+                    .push_bind(w.alt.clone())
+                    .push_unseparated("::vector")
+                    .push_bind(w.alt.as_ref().and(r.alt_hash.clone()))
+                    .push_bind(embedder.clone().filter(|_| has_vec))
+                    .push_bind(config.clone().filter(|_| has_vec))
+                    .push_bind(&r.session_id)
+                    .push_bind(&r.turn_ref)
+                    .push_bind(r.occurred_at)
+                    .push_bind(r.valid_from)
+                    .push_bind(r.valid_to)
+                    .push_bind(r.expires_at)
+                    .push_bind(r.supersedes)
+                    .push_bind(r.superseded_by)
+                    .push_bind(&r.labels)
+                    .push_bind(&r.tags)
+                    .push_bind(&r.scope.org)
+                    .push_bind(&r.scope.team)
+                    .push_bind(&r.scope.agent)
+                    .push_bind(&r.scope.user)
+                    .push_bind(&r.scope.session)
+                    .push_bind(&r.source)
+                    .push_bind(r.confidence)
+                    .push_bind(&r.provenance.agent)
+                    .push_bind(&r.provenance.user)
+                    .push_bind(&r.provenance.policy_version)
+                    .push_bind(&r.provenance.request_key)
+                    .push_bind(&r.provenance.extractor)
+                    .push_bind(&r.provenance.extractor_config)
+                    .push_bind(&r.metadata)
+                    .push_bind(r.created_at)
+                    .push_bind(r.updated_at);
+            });
+            if skip_existing {
+                qb.push(" ON CONFLICT (id) DO NOTHING");
+            }
+            qb.push(" RETURNING id");
+            let ids: Vec<Uuid> = qb.build_query_scalar().fetch_all(&mut *tx).await?;
+            inserted.extend(ids);
+        }
+        let done: std::collections::HashSet<Uuid> = inserted.iter().copied().collect();
+        for w in rows.iter().filter(|w| done.contains(&w.r.id)) {
+            let r = w.r;
+            if let Some(st) = &r.structured {
+                sqlx::query("INSERT INTO mh_structured (memory_id, tenant, subject, record_type, attrs) VALUES ($1, $2, $3, $4, $5)")
+                    .bind(r.id)
+                    .bind(&r.tenant)
+                    .bind(&r.subject)
+                    .bind(&st.record_type)
+                    .bind(&st.attrs)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            for c in &r.code_refs {
+                sqlx::query("INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) VALUES ($1, $2, $3, $4, $5)")
+                    .bind(r.id)
+                    .bind(&r.tenant)
+                    .bind(&r.subject)
+                    .bind(&c.path)
+                    .bind(&c.blob_hash)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(inserted)
+    }
+}
+
+#[async_trait]
+impl Store for PgStore {
+    async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()> {
+        let mine = EmbeddingIdentity { embedder: embedder_id.to_string(), dim, passage_prefix: self.passage_prefix.clone() };
+        if let Some(db) = self.identity_of("").await? {
+            // Databases from before the prefix was recorded take the configured one.
+            let prefix_known = self.meta("passage_prefix").await?.is_some();
+            let same = db.embedder == mine.embedder && db.dim == mine.dim && (!prefix_known || db.passage_prefix == mine.passage_prefix);
+            if !same {
+                let unfinished = self.identity_of("reembed_target_").await?.is_some_and(|t| t == mine);
+                anyhow::bail!(
+                    "this database's memories are embedded with {db}, but the configuration says {mine}. {}",
+                    if unfinished {
+                        "A re-embedding to it is unfinished: run `memhouse reembed` to complete it."
+                    } else {
+                        "Run `memhouse reembed` to re-embed every memory with the configured model, or go back to the previous [embedding] settings."
+                    }
+                );
+            }
+        }
+        let stored_version: Option<u32> = self.meta("schema_version").await?.map(|v| v.parse()).transpose()?;
+        if let Some(v) = stored_version.filter(|v| *v > SCHEMA_VERSION) {
+            anyhow::bail!("this database has schema version {v}, newer than this build ({SCHEMA_VERSION}); upgrade MemHouse");
+        }
+        sqlx::raw_sql(&schema_v1_ddl(dim)).execute(&self.pool).await?;
+        check_pgvector(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V2_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -426,7 +754,12 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
         ] {
             sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING").bind(k).bind(v).execute(&self.pool).await?;
         }
+        let config = mine.config_hash();
+        if stored_version.is_some_and(|v| v < 2) {
+            self.backfill_v2(embedder_id, &config).await?;
+        }
         *self.embedder.lock().unwrap() = Some(embedder_id.to_string());
+        *self.embedder_config.lock().unwrap() = Some(config);
         Ok(())
     }
 
@@ -434,44 +767,47 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
         if records.is_empty() {
             return Ok(());
         }
-        let embedder = self.embedder.lock().unwrap().clone();
-        let mut tx = self.pool.begin().await?;
-        for chunk in records.chunks(500) {
-            let mut qb = sqlx::QueryBuilder::new(
-                "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, embedding, embedding_alt, alt_hash, embedder, \
-                 session_id, turn_ref, occurred_at, valid_from, valid_to, supersedes, labels, tags, source, confidence, metadata, created_at) ",
-            );
-            qb.push_values(chunk, |mut b, r| {
-                let m = &r.memory;
-                b.push_bind(m.id)
-                    .push_bind(&m.tenant)
-                    .push_bind(&m.subject)
-                    .push_bind(m.kind.as_str())
-                    .push_bind(m.status.as_str())
-                    .push_bind(&m.content)
-                    .push_bind(&r.content_hash)
-                    .push_bind(r.embedding.as_ref().map(|v| vec_literal(v)))
-                    .push_unseparated("::vector")
-                    .push_bind(r.alt.as_ref().map(|(_, v)| vec_literal(v)))
-                    .push_unseparated("::vector")
-                    .push_bind(r.alt.as_ref().map(|(h, _)| h.clone()))
-                    .push_bind(r.embedding.as_ref().and(embedder.clone()))
-                    .push_bind(&m.session_id)
-                    .push_bind(&m.turn_ref)
-                    .push_bind(m.occurred_at)
-                    .push_bind(m.valid_from)
-                    .push_bind(m.valid_to)
-                    .push_bind(m.supersedes)
-                    .push_bind(&m.labels)
-                    .push_bind(&m.tags)
-                    .push_bind(&m.source)
-                    .push_bind(m.confidence)
-                    .push_bind(&m.metadata)
-                    .push_bind(m.created_at);
-            });
-            qb.build().execute(&mut *tx).await?;
-        }
-        tx.commit().await?;
+        let lines: Vec<RecordLine> = records
+            .iter()
+            .map(|n| {
+                let m = &n.memory;
+                RecordLine {
+                    id: m.id,
+                    tenant: m.tenant.clone(),
+                    subject: m.subject.clone(),
+                    kind: m.kind,
+                    status: m.status,
+                    content: m.content.clone(),
+                    content_hash: n.content_hash.clone(),
+                    session_id: m.session_id.clone(),
+                    turn_ref: m.turn_ref.clone(),
+                    occurred_at: m.occurred_at,
+                    valid_from: m.valid_from,
+                    valid_to: m.valid_to,
+                    expires_at: m.expires_at,
+                    supersedes: m.supersedes,
+                    superseded_by: None,
+                    labels: m.labels.clone(),
+                    tags: m.tags.clone(),
+                    scope: m.scope.clone(),
+                    source: m.source.clone(),
+                    confidence: m.confidence,
+                    provenance: m.provenance.clone(),
+                    alt_hash: n.alt.as_ref().map(|(h, _)| h.clone()),
+                    structured: n.structured.clone(),
+                    code_refs: n.code_refs.clone(),
+                    metadata: m.metadata.clone(),
+                    created_at: m.created_at,
+                    updated_at: m.created_at,
+                }
+            })
+            .collect();
+        let rows: Vec<WriteRow> = lines
+            .iter()
+            .zip(records)
+            .map(|(r, n)| WriteRow { r, embedding: n.embedding.as_ref().map(|v| vec_literal(v)), alt: n.alt.as_ref().map(|(_, v)| vec_literal(v)) })
+            .collect();
+        self.write_rows(&rows, false).await?;
         Ok(())
     }
 
@@ -574,8 +910,8 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
 
     async fn set_superseded(&self, tenant: &str, id: Uuid, by: Uuid) -> anyhow::Result<bool> {
         let r = sqlx::query(
-            "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, valid_to = COALESCE(valid_to, now()), updated_at = now() \
-             WHERE tenant = $1 AND id = $2 AND status <> 'superseded'",
+            "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, valid_to = COALESCE(valid_to, greatest(now(), valid_from)), updated_at = greatest(now(), created_at) \
+             WHERE tenant = $1 AND id = $2 AND status = 'committed'",
         )
         .bind(tenant)
         .bind(id)
@@ -586,10 +922,14 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
     }
 
     async fn set_status(&self, tenant: &str, id: Uuid, status: MemoryStatus) -> anyhow::Result<bool> {
-        let r = sqlx::query("UPDATE mh_memory SET status = $3, updated_at = now() WHERE tenant = $1 AND id = $2")
+        // Only the transitions of the lifecycle (CORE-02); anything else changes nothing.
+        let from: Vec<&str> = MemoryStatus::sources_of(status).iter().map(|s| s.as_str()).collect();
+        // greatest(): the database's clock may trail the application's, which set created_at.
+        let r = sqlx::query("UPDATE mh_memory SET status = $3, updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2 AND status = ANY($4)")
             .bind(tenant)
             .bind(id)
             .bind(status.as_str())
+            .bind(&from)
             .execute(&self.pool)
             .await?;
         Ok(r.rows_affected() > 0)
@@ -653,6 +993,9 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
             .await?;
         }
         let n = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND subject = $2").bind(tenant).bind(subject).execute(&mut *tx).await?.rows_affected();
+        // Links held by the subject and links to it from others, and remembered responses.
+        sqlx::query("DELETE FROM mh_link WHERE tenant = $1 AND (subject = $2 OR linked_subject = $2)").bind(tenant).bind(subject).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1 AND subject = $2").bind(tenant).bind(subject).execute(&mut *tx).await?;
         if purge_cache {
             sqlx::query(
                 "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND subject = $2 RETURNING cache_key) \
@@ -987,6 +1330,131 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
         Ok(())
     }
 
+    async fn export_records(&self, tenant: &str, subject: Option<&str>, after: Option<Uuid>, limit: usize) -> anyhow::Result<Vec<RecordLine>> {
+        let rows = sqlx::query(&format!(
+            "SELECT {COLS}, m.content_hash, m.superseded_by, m.updated_at, m.alt_hash, s.record_type, s.attrs, \
+               coalesce((SELECT jsonb_agg(jsonb_build_object('path', c.path, 'blob_hash', c.blob_hash) ORDER BY c.path) \
+                         FROM mh_code_ref c WHERE c.memory_id = m.id), '[]'::jsonb) AS code_refs \
+             FROM mh_memory m LEFT JOIN mh_structured s ON s.memory_id = m.id \
+             WHERE m.tenant = $1 AND ($2::text IS NULL OR m.subject = $2) AND ($3::uuid IS NULL OR m.id > $3) \
+             ORDER BY m.id LIMIT $4"
+        ))
+        .bind(tenant)
+        .bind(subject)
+        .bind(after)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_record).collect()
+    }
+
+    async fn export_links(&self, tenant: &str, subject: Option<&str>) -> anyhow::Result<Vec<Link>> {
+        let rows = sqlx::query(
+            "SELECT tenant, subject, linked_subject, link_type, memory_id, created_by, created_at FROM mh_link \
+             WHERE tenant = $1 AND ($2::text IS NULL OR subject = $2) ORDER BY subject, linked_subject, link_type",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_link).collect()
+    }
+
+    async fn export_policies(&self) -> anyhow::Result<Vec<PolicyLine>> {
+        let rows = sqlx::query("SELECT version, body, created_at FROM mh_policy ORDER BY version").fetch_all(&self.pool).await?;
+        rows.iter().map(|r| Ok(PolicyLine { version: r.try_get("version")?, body: r.try_get("body")?, created_at: r.try_get("created_at")? })).collect()
+    }
+
+    async fn import_records(&self, rows: &[ImportRow]) -> anyhow::Result<u64> {
+        let w: Vec<WriteRow> =
+            rows.iter().map(|i| WriteRow { r: &i.record, embedding: i.embedding.as_ref().map(|v| vec_literal(v)), alt: i.alt.as_ref().map(|(_, v)| vec_literal(v)) }).collect();
+        Ok(self.write_rows(&w, true).await?.len() as u64)
+    }
+
+    async fn policy_put(&self, p: &PolicyLine) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO mh_policy (version, body, created_at) VALUES ($1, $2, $3) ON CONFLICT (version) DO NOTHING")
+            .bind(&p.version)
+            .bind(&p.body)
+            .bind(p.created_at.trunc_subsecs(6))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn link_put(&self, l: &Link) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO mh_link (tenant, subject, linked_subject, link_type, memory_id, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&l.tenant)
+        .bind(&l.subject)
+        .bind(&l.linked_subject)
+        .bind(&l.link_type)
+        .bind(l.memory_id)
+        .bind(&l.created_by)
+        .bind(l.created_at.trunc_subsecs(6))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn links(&self, tenant: &str, subject: &str) -> anyhow::Result<Vec<Link>> {
+        self.export_links(tenant, Some(subject)).await
+    }
+
+    async fn request_get(&self, tenant: &str, key: &str) -> anyhow::Result<Option<(String, serde_json::Value)>> {
+        Ok(sqlx::query_as("SELECT request_hash, response FROM mh_request_key WHERE tenant = $1 AND key = $2").bind(tenant).bind(key).fetch_optional(&self.pool).await?)
+    }
+
+    async fn request_put(&self, tenant: &str, key: &str, subject: &str, operation: &str, request_hash: &str, response: &serde_json::Value) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO mh_request_key (tenant, key, subject, operation, request_hash, response) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING")
+            .bind(tenant)
+            .bind(key)
+            .bind(subject)
+            .bind(operation)
+            .bind(request_hash)
+            .bind(response)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn expire_due(&self, tenant: &str) -> anyhow::Result<u64> {
+        let from: Vec<&str> = MemoryStatus::sources_of(MemoryStatus::Expired).iter().map(|s| s.as_str()).collect();
+        Ok(sqlx::query("UPDATE mh_memory SET status = 'expired', updated_at = greatest(now(), created_at) WHERE tenant = $1 AND expires_at <= now() AND status = ANY($2)")
+            .bind(tenant)
+            .bind(&from)
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+
+    async fn structured_query(&self, tenant: &str, subject: &str, record_type: &str, attrs: &serde_json::Value) -> anyhow::Result<Vec<(Uuid, serde_json::Value)>> {
+        Ok(sqlx::query_as(
+            "SELECT s.memory_id, s.attrs FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id \
+             WHERE s.tenant = $1 AND s.subject = $2 AND s.record_type = $3 AND s.attrs @> $4 AND m.status = 'committed' ORDER BY s.memory_id",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .bind(record_type)
+        .bind(attrs)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    async fn stale_code_refs(&self, tenant: &str, subject: &str, path: &str, blob_hash: &str) -> anyhow::Result<Vec<Uuid>> {
+        Ok(sqlx::query_scalar(
+            "SELECT c.memory_id FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
+             WHERE c.tenant = $1 AND c.subject = $2 AND c.path = $3 AND c.blob_hash <> $4 AND m.status = 'committed' ORDER BY c.memory_id",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .bind(path)
+        .bind(blob_hash)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     async fn embedding_identity(&self) -> anyhow::Result<(Option<EmbeddingIdentity>, Option<EmbeddingIdentity>)> {
         Ok((self.identity_of("").await?, self.identity_of("reembed_target_").await?))
     }
@@ -1003,6 +1471,11 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
     }
 
     async fn reembed_begin(&self, target: &EmbeddingIdentity) -> anyhow::Result<()> {
+        let version: u32 = self.meta("schema_version").await?.unwrap_or_default().parse().unwrap_or(0);
+        anyhow::ensure!(
+            version == SCHEMA_VERSION,
+            "the database is at schema version {version}; start MemHouse once with the previous [embedding] settings to upgrade it to {SCHEMA_VERSION}, then re-embed"
+        );
         match self.identity_of("reembed_target_").await? {
             Some(t) if t == *target => return Ok(()),
             Some(t) => anyhow::bail!("an unfinished re-embedding to {t} exists; abort it first"),
@@ -1014,7 +1487,7 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
         let dim = target.dim;
         sqlx::query(&format!(
             "ALTER TABLE mh_memory ADD COLUMN embedding_next vector({dim}), ADD COLUMN embedding_alt_next vector({dim}), \
-             ADD COLUMN alt_hash_next text, ADD COLUMN embedder_next text"
+             ADD COLUMN alt_hash_next text, ADD COLUMN embedder_next text, ADD COLUMN embedder_config_next text"
         ))
         .execute(&mut *tx)
         .await?;
@@ -1050,7 +1523,7 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
         let alt: Vec<Option<String>> = rows.iter().map(|r| r.alt.as_ref().map(|(_, v)| vec_literal(v))).collect();
         let hash: Vec<Option<String>> = rows.iter().map(|r| r.alt.as_ref().map(|(h, _)| h.clone())).collect();
         sqlx::query(
-            "UPDATE mh_memory m SET embedding_next = u.e::vector, embedding_alt_next = u.a::vector, alt_hash_next = u.h, embedder_next = $5 \
+            "UPDATE mh_memory m SET embedding_next = u.e::vector, embedding_alt_next = u.a::vector, alt_hash_next = u.h, embedder_next = $5, embedder_config_next = $6 \
              FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[]) AS u(id, e, a, h) WHERE m.id = u.id",
         )
         .bind(&ids)
@@ -1058,6 +1531,7 @@ CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FO
         .bind(&alt)
         .bind(&hash)
         .bind(&target.embedder)
+        .bind(target.config_hash())
         .execute(&self.pool)
         .await?;
         Ok(())

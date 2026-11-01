@@ -88,6 +88,7 @@ query_analysis = true
 window_weight = 0.15
 window_top = 3
 window_top_weight = 1.0
+working_ttl_secs = 86400               # working memory without expires_at lives this long
 subquery_weight = 0.0
 
 [enrich]
@@ -136,9 +137,10 @@ separate migrate step. The database user needs `CREATE` rights on first start, o
 
 ## `[embedding]`
 
-The embedding dimension is **fixed per database**. MemHouse stores it in `mh_meta` and refuses to
-start if the configured model produces a different dimension. To change models, point at a new
-database and use `memhouse export` / `memhouse import`, which re-embeds everything.
+The embedding model and dimension are **fixed per database**. MemHouse stores them in `mh_meta`
+and refuses to start with a different model. To change models, run `memhouse reembed` (in place,
+[operations](operations.md#changing-the-embedding-model)), or export and import into a new
+database, which embeds everything with the new model.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -250,6 +252,7 @@ change them only with a benchmark run to compare against (see [development.md](d
 | `query_analysis` | true | date-aware recall (time-window probe) |
 | `window_weight` | 0.15 | fusion weight of every in-window hit |
 | `window_top`, `window_top_weight` | 3, 1.0 | extra weight for the top N in-window hits |
+| `working_ttl_secs` | 86400 | lifetime of `working` memory written without `expires_at` |
 | `subquery_weight` | 0.0 | weight of "A or B" sub-query probes (off: added noise on LongMemEval) |
 
 How the weights combine in fusion:

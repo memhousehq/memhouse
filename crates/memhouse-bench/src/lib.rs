@@ -10,6 +10,7 @@ pub mod guard;
 pub mod metrics;
 pub mod report;
 pub mod runner;
+mod schema_checks;
 
 use anyhow::Context;
 use clap::{Args, Subcommand};
