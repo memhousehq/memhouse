@@ -177,6 +177,13 @@ pub struct MemoryConfig {
     pub recency_half_life_days: f32,
     /// Characters of assistant text kept when indexing an episodic round.
     pub assistant_chars: usize,
+    /// Read time expressions ("two weeks ago", "in March") and comparisons ("A or B") from the
+    /// query and run extra retrieval probes for them.
+    pub query_analysis: bool,
+    /// RRF weight of the probe restricted to the query's time windows.
+    pub window_weight: f32,
+    /// RRF weight of each sub-query probe (0 = off: on LongMemEval they added noise).
+    pub subquery_weight: f32,
     /// Active template (support, sales, success, coding, personal).
     pub template: Option<String>,
 }
@@ -195,6 +202,9 @@ impl Default for MemoryConfig {
             recency_weight: 0.0,
             recency_half_life_days: 90.0,
             assistant_chars: 1200,
+            query_analysis: true,
+            window_weight: 0.3,
+            subquery_weight: 0.0,
             template: None,
         }
     }

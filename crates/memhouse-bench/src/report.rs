@@ -17,6 +17,9 @@ pub struct RunConfig {
     pub rrf_k: f32,
     pub keyword_weight: f32,
     pub vector_weight: f32,
+    /// Query analysis probes, if on (absent in runs made before it existed).
+    #[serde(default)]
+    pub query_analysis: Option<String>,
     pub concurrency: usize,
     pub selection: String,
     pub answer_model: Option<String>,
@@ -61,6 +64,7 @@ pub fn markdown(s: &Summary) -> String {
     let _ = writeln!(o, "| Embedder | `{}` |", c.embedder);
     let _ = writeln!(o, "| Reranker | {} |", c.reranker.as_deref().map(|r| format!("`{r}`")).unwrap_or_else(|| "off".into()));
     let _ = writeln!(o, "| Retrieval | {} (RRF k={}, keyword w={}, vector w={}, {} candidates per retriever) |", c.mode, c.rrf_k, c.keyword_weight, c.vector_weight, c.candidates_per_retriever);
+    let _ = writeln!(o, "| Query analysis | {} |", c.query_analysis.as_deref().unwrap_or("off"));
     let _ = writeln!(o, "| Selection | {} |", c.selection);
     if let Some(m) = &c.answer_model {
         let _ = writeln!(o, "| Answer model | `{m}` (top {} memories) |", c.answer_k.unwrap_or(0));
@@ -112,7 +116,7 @@ pub fn markdown(s: &Summary) -> String {
         let l = &a.recall_latency;
         let _ = writeln!(o, "## Latency and throughput\n");
         let _ = writeln!(o, "| Metric | Value |\n|---|---|");
-        let _ = writeln!(o, "| Recall (end to end: query embedding + one SQL statement{}) | p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms · n={} |", if c.reranker.is_some() { " + rerank" } else { "" }, l.p50_ms, l.p95_ms, l.p99_ms, l.n);
+        let _ = writeln!(o, "| Recall (end to end: query embedding + one SQL statement per probe{}) | p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms · n={} |", if c.reranker.is_some() { " + rerank" } else { "" }, l.p50_ms, l.p95_ms, l.p99_ms, l.n);
         let sl = &a.search_latency;
         let el = &a.query_embed_latency;
         let _ = writeln!(o, "| — of which SQL hybrid search (Postgres) | p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms |", sl.p50_ms, sl.p95_ms, sl.p99_ms);

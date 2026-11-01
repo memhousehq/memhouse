@@ -1570,6 +1570,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dirs 5.0.1",
+ "futures",
  "hex",
  "once_cell",
  "rand 0.8.8",

@@ -3,6 +3,7 @@
 pub mod config;
 pub mod engine;
 pub mod gate;
+pub mod query;
 pub mod templates;
 pub mod traits;
 pub mod types;

@@ -8,6 +8,7 @@ Run `20261101-011945-4312ce` · 2026-11-01 01:19 UTC · 673 s wall time
 | Embedder | `local:Qdrant/bge-small-en-v1.5-onnx-Q` |
 | Reranker | off |
 | Retrieval | keyword (RRF k=60, keyword w=1, vector w=1, 100 candidates per retriever) |
+| Query analysis | off |
 | Selection | limit=all stride=10 offset=0 types=all |
 | Host | macos aarch64 · 8 CPU threads · embeddings on CPU |
 

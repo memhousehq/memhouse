@@ -8,6 +8,7 @@ Run `20261101-023735-edb628` · 2026-11-01 02:37 UTC · 497 s wall time
 | Embedder | `local:Qdrant/bge-small-en-v1.5-onnx-Q` |
 | Reranker | `local:jinaai/jina-reranker-v1-turbo-en` |
 | Retrieval | hybrid (RRF k=60, keyword w=1, vector w=1, 100 candidates per retriever) |
+| Query analysis | off |
 | Selection | limit=all stride=10 offset=0 types=all |
 | Host | macos aarch64 · 8 CPU threads · embeddings on CPU |
 

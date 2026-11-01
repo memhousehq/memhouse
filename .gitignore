@@ -5,3 +5,5 @@
 .fastembed_cache/
 /.dev-home/
 bench-results/logs/
+
+.env

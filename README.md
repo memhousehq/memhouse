@@ -83,7 +83,7 @@ curl -s localhost:7077/v1/recall -H "authorization: Bearer $KEY" -H "content-typ
 | GET | `/v1/memories?subject=&kind=&limit=&all=` | list |
 | GET / PATCH / DELETE | `/v1/memories/{id}` | get, supersede with new content, delete |
 | POST | `/v1/ingest` | store a conversation (`messages: [{role, content, timestamp?}]`) |
-| POST | `/v1/recall` | hybrid recall (`query, k, kinds, tags, as_of, mode, rerank, token_budget`) |
+| POST | `/v1/recall` | hybrid recall (`query, k, kinds, tags, as_of, reference_time, mode, rerank, analyze, token_budget`) |
 | GET | `/v1/subjects`, `/v1/stats`, `/v1/audit` | browse and operate |
 | DELETE | `/v1/subjects/{subject}` | erase everything about a subject |
 | POST | `/mcp` | MCP over streamable HTTP |
@@ -96,12 +96,21 @@ agent ──MCP/REST──▶ memhouse (Rust)
                       │ local embedding (ONNX, CPU) with content-addressed cache
                       ▼
                    Postgres + pgvector
-                      one SQL statement per recall:
-                      full-text candidates ┐
+                      one SQL statement per probe:
+                      BM25 full-text       ┐
                                            ├─ reciprocal rank fusion → (optional cross-encoder rerank)
                       exact vector scan    ┘   → validity / as-of filter → token-budget packing
                       (per subject, no ANN index: exact top-k)
 ```
+
+- **Date-aware recall (no LLM):** recall reads time expressions ("two weeks ago", "last
+  Saturday", "in February", "the past three months", "June 3rd") relative to `reference_time`,
+  `as_of` or now, and runs the query a second time restricted to that window. The two ranked
+  lists are fused, so in-window memories rise without hiding the rest (people often mention an
+  event days after it happened). The result's `plan` field shows the windows it read; turn it
+  off with `analyze: false` or `[memory] query_analysis = false`.
+- **Two vectors per conversation round:** the whole round, and the user's own words alone, so a
+  fact mentioned in passing is not drowned out by a long assistant reply. Keyword search is BM25.
 
 - **Memory kinds:** `episodic` (conversation rounds), `semantic`, `preference`, `procedural`, `commitment`, `document`.
 - **Subjects** partition memory (a user, customer, account or repository). Recall never crosses subjects or tenants. The governance suite checks this on every run.
@@ -132,10 +141,12 @@ memhouse bench report bench-results/*                       # compare runs side 
 
 Current results on a laptop CPU, no LLM in the loop (details and baselines in [docs/benchmarks.md](docs/benchmarks.md)):
 
-| Dataset | session recall_all@5 | session recall_all@10 | recall p50 / p95 |
-|---|---|---|---|
-| LongMemEval_S (470 scored) | 81.1 | 86.4 | 56 / 82 ms |
-| LoCoMo (1,536 scored) | 73.6 | 84.4 | 55 / 76 ms |
+| Dataset | session recall_all@5 | session recall_all@10 | session nDCG@10 | recall p50 / p95 |
+|---|---|---|---|---|
+| LongMemEval_S (470 scored) | 90.4 | 95.7 | 93.8 | 64 / 91 ms |
+| LoCoMo (1,536 scored) | 79.0 | 87.9 | 78.7 | 43 / 57 ms |
+
+For reference, the best retriever in the LongMemEval paper (Contriever + LLM-extracted keys) reaches 76.2 / 86.2 / 65.8 on the harder 500-session M split; the M run is still to do.
 
 ## Configuration
 
@@ -150,6 +161,7 @@ enabled = false                  # cross-encoder reranking (jina-reranker-v1-tur
 [memory]
 template = "support"             # personal | coding | support | sales | success
 default_subject = "customer:unknown"
+query_analysis = true            # date-aware recall: time-window probe (window_weight = 0.3)
 [governance]
 redact = ["secret", "card", "ssn", "iban"]   # also: email, phone, ip
 quarantine_injection = true

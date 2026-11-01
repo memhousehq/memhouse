@@ -196,7 +196,10 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
                 subject: Some(subject.clone()),
                 query: q.question.clone(),
                 k: Some(FETCH_K),
-                as_of: q.date,
+                // The question date is "now" for the question, not a filter: the reference
+                // protocol searches the whole history, and LongMemEval_S stamps some evidence
+                // sessions later on the question's own day.
+                reference_time: q.date,
                 mode: Some(spec.mode),
                 rerank: Some(spec.rerank),
                 actor: Some("bench".into()),
@@ -227,7 +230,7 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
         });
     }
     if !spec.keep {
-        engine.forget_subject(None, &subject, Some("bench".into())).await?;
+        engine.reset_subject(None, &subject, Some("bench".into())).await?;
     }
     Ok(ItemResult { conv_id: item.conv_id, sessions: item.sessions.len(), rounds, ingest_ms, questions: out })
 }

@@ -374,6 +374,8 @@ fn locomo_to_item(c: &serde_json::Value, types: Option<&[String]>) -> anyhow::Re
         sessions.push(Session { id: sid, date, turns });
         n += 1;
     }
+    // LoCoMo questions carry no date; they are asked after the last session.
+    let asked = sessions.iter().filter_map(|s| s.date).max().map(|d| d + chrono::Duration::days(1));
     let mut questions = vec![];
     for (qi, q) in c["qa"].as_array().map(|a| a.as_slice()).unwrap_or(&[]).iter().enumerate() {
         let cat = q["category"].as_i64().unwrap_or(0);
@@ -395,7 +397,7 @@ fn locomo_to_item(c: &serde_json::Value, types: Option<&[String]>) -> anyhow::Re
             qtype,
             question: q["question"].as_str().unwrap_or("").to_string(),
             answer,
-            date: None,
+            date: asked,
             evidence_sessions: ev_sessions,
             evidence_turns: evidence.iter().map(|(s, t)| format!("D{s}:{t}")).collect(),
             abstention: cat == 5,

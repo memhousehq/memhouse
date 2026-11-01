@@ -3,6 +3,7 @@
 
 use crate::config::Config;
 use crate::gate;
+use crate::query;
 use crate::traits::{EmbedKind, Embedder, Reranker, Store};
 use crate::types::*;
 use chrono::Utc;
@@ -92,11 +93,12 @@ impl Engine {
             .collect())
     }
 
-    async fn embed_query(&self, q: &str) -> anyhow::Result<Vec<f32>> {
+    async fn embed_queries(&self, qs: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
         let prefix = self.cfg.embedding.query_prefix.clone().unwrap_or_default();
-        let text = format!("{prefix}{q}");
-        let mut v = self.embedder.embed(&[text], EmbedKind::Query).await?;
-        v.pop().ok_or_else(|| anyhow::anyhow!("embedder returned no vector"))
+        let texts: Vec<String> = qs.iter().map(|q| format!("{prefix}{q}")).collect();
+        let v = self.embedder.embed(&texts, EmbedKind::Query).await?;
+        anyhow::ensure!(v.len() == qs.len(), "embedder returned {} vectors for {} queries", v.len(), qs.len());
+        Ok(v)
     }
 
     fn screen(&self, content: &str) -> anyhow::Result<gate::GateOutcome> {
@@ -183,7 +185,7 @@ impl Engine {
             created_at: now,
         };
         self.store
-            .insert(&[NewMemory { memory: mem, embedding, content_hash: hash }])
+            .insert(&[NewMemory { memory: mem, embedding, content_hash: hash, alt: None }])
             .await?;
         let mut superseded = None;
         if let Some(old) = req.supersedes {
@@ -236,6 +238,7 @@ impl Engine {
                 .enumerate()
                 .map(|(i, m)| Round {
                     text: format!("{}: {}", m.role, m.content.trim()),
+                    focus: None,
                     timestamp: m.timestamp,
                     refs: vec![m.id.clone().unwrap_or_else(|| i.to_string())],
                 })
@@ -247,6 +250,8 @@ impl Engine {
         let mut out = IngestResult::default();
         let mut recs: Vec<NewMemory> = Vec::with_capacity(rounds.len());
         let mut texts = Vec::with_capacity(rounds.len());
+        // (record index, gated user text) for rounds that get a second, user-only vector.
+        let mut focus: Vec<(usize, String)> = vec![];
         let gated_rounds: Vec<(usize, gate::GateOutcome, String)> = rounds
             .iter()
             .enumerate()
@@ -279,6 +284,9 @@ impl Engine {
                 metadata["redactions"] = serde_json::json!(gated.redactions);
             }
             let id = Uuid::now_v7();
+            if let Some(f) = r.focus.as_deref().and_then(|f| self.screen(f).ok()) {
+                focus.push((recs.len(), f.content));
+            }
             texts.push(gated.content.clone());
             recs.push(NewMemory {
                 memory: Memory {
@@ -303,14 +311,22 @@ impl Engine {
                 },
                 embedding: None,
                 content_hash: hash,
+                alt: None,
             });
         }
         if recs.is_empty() {
             return Ok(out);
         }
-        let vecs = self.embed_passages(&texts).await?;
+        let n = texts.len();
+        texts.extend(focus.iter().map(|(_, f)| f.clone()));
+        let mut vecs = self.embed_passages(&texts).await?;
+        let focus_vecs = vecs.split_off(n);
         for (rec, v) in recs.iter_mut().zip(vecs) {
             rec.embedding = Some(v);
+        }
+        let prefix = self.cfg.embedding.passage_prefix.clone().unwrap_or_default();
+        for ((i, f), v) in focus.into_iter().zip(focus_vecs) {
+            recs[i].alt = Some((content_hash(&format!("{prefix}{f}")), v));
         }
         self.store.insert(&recs).await?;
         out.ids = recs.iter().map(|r| r.memory.id).collect();
@@ -328,8 +344,10 @@ impl Engine {
         Ok(out)
     }
 
-    /// Hybrid recall: keyword + exact per-subject vector search fused by RRF in one SQL statement,
-    /// then optional cross-encoder reranking, recency weighting and token-budget packing.
+    /// Hybrid recall: keyword (BM25) + exact per-subject vector search fused by RRF in one SQL
+    /// statement per probe. Query analysis adds a time-window probe for dated questions; probes
+    /// are fused by weighted RRF, then optional cross-encoder reranking, recency weighting and
+    /// token-budget packing.
     pub async fn recall(&self, req: RecallRequest) -> anyhow::Result<RecallResult> {
         let start = Instant::now();
         let tenant = self.tenant(&req.tenant);
@@ -337,7 +355,27 @@ impl Engine {
         let k = req.k.unwrap_or(self.cfg.memory.default_k).clamp(1, 200);
         let mode = req.mode.unwrap_or_default();
         let use_rerank = req.rerank.unwrap_or(self.cfg.rerank.enabled) && self.reranker.is_some();
-        let embedding = if mode == RetrievalMode::Keyword { None } else { Some(self.embed_query(&req.query).await?) };
+        let now = req.reference_time.or(req.as_of).unwrap_or_else(Utc::now);
+        let plan = if req.analyze.unwrap_or(self.cfg.memory.query_analysis) {
+            let mut p = query::analyze(&req.query, now);
+            // A probe with no weight is not run at all.
+            if self.cfg.memory.window_weight <= 0.0 {
+                p.windows.clear();
+            }
+            if self.cfg.memory.subquery_weight <= 0.0 {
+                p.subqueries.clear();
+            }
+            Some(p).filter(|p| !p.windows.is_empty() || !p.subqueries.is_empty())
+        } else {
+            None
+        };
+        let subqueries: &[String] = plan.as_ref().map(|p| p.subqueries.as_slice()).unwrap_or(&[]);
+        let mut embeddings = if mode == RetrievalMode::Keyword {
+            vec![None; 1 + subqueries.len()]
+        } else {
+            let texts: Vec<String> = std::iter::once(&req.query).chain(subqueries).cloned().collect();
+            self.embed_queries(&texts).await?.into_iter().map(Some).collect()
+        };
         let embed_ms = start.elapsed().as_secs_f64() * 1000.0;
         let fused_limit = if use_rerank { self.cfg.rerank.candidates.max(k) } else { k };
         let rerank_n = self.cfg.rerank.candidates.max(1);
@@ -345,7 +383,7 @@ impl Engine {
             tenant: tenant.clone(),
             subject: subject.clone(),
             text: req.query.clone(),
-            embedding,
+            embedding: embeddings[0].take(),
             kinds: req.kinds.clone(),
             tags: req.tags.clone(),
             denied_labels: self.cfg.governance.denied_labels.clone(),
@@ -357,9 +395,34 @@ impl Engine {
             rrf_k: self.cfg.memory.rrf_k,
             keyword_weight: self.cfg.memory.keyword_weight,
             vector_weight: self.cfg.memory.vector_weight,
+            windows: vec![],
         };
+        // Extra probes: the same query inside the time windows it mentions, and one per sub-query.
+        let mut probes: Vec<(SearchQuery, f32)> = vec![];
+        if let Some(p) = &plan {
+            if !p.windows.is_empty() {
+                let mut w = q.clone();
+                w.windows = p.windows.iter().map(|w| (w.start, w.end)).collect();
+                probes.push((w, self.cfg.memory.window_weight));
+            }
+            for (sq, emb) in p.subqueries.iter().zip(embeddings.into_iter().skip(1)) {
+                let mut s = q.clone();
+                s.text = sq.clone();
+                s.embedding = emb;
+                probes.push((s, self.cfg.memory.subquery_weight));
+            }
+        }
         let t_search = Instant::now();
-        let mut hits = self.store.search(&q).await?;
+        let mut hits = if probes.is_empty() {
+            self.store.search(&q).await?
+        } else {
+            let main = self.store.search(&q);
+            let rest = futures::future::try_join_all(probes.iter().map(|(p, _)| self.store.search(p)));
+            let (main, rest) = futures::future::try_join(main, rest).await?;
+            let lists: Vec<(Vec<Hit>, f32)> =
+                std::iter::once((main, 1.0)).chain(rest.into_iter().zip(probes.iter().map(|(_, w)| *w))).collect();
+            fuse(lists, self.cfg.memory.rrf_k, fused_limit)
+        };
         let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;
         let t_rerank = Instant::now();
         let candidates = hits.len();
@@ -424,6 +487,7 @@ impl Engine {
             rerank_ms: if use_rerank { t_rerank.elapsed().as_secs_f64() * 1000.0 } else { 0.0 },
             candidates,
             reranked: use_rerank,
+            plan,
         })
     }
 
@@ -470,9 +534,21 @@ impl Engine {
     pub async fn forget_subject(&self, tenant: Option<String>, subject: &str, actor: Option<String>) -> anyhow::Result<u64> {
         let t = self.tenant(&tenant);
         let actor = actor.unwrap_or_else(|| "api".into());
-        let n = self.store.delete_subject(&t, subject, &actor).await?;
+        let n = self.store.delete_subject(&t, subject, &actor, true).await?;
         self.store
             .audit(&actor, "subject.erase", &t, Some(subject), None, serde_json::json!({ "records": n }))
+            .await?;
+        Ok(n)
+    }
+
+    /// Drop a subject's records but keep the content-addressed embedding cache. For benchmarks and
+    /// tests over public data that re-ingest the same text; not an erasure (use `forget_subject`).
+    pub async fn reset_subject(&self, tenant: Option<String>, subject: &str, actor: Option<String>) -> anyhow::Result<u64> {
+        let t = self.tenant(&tenant);
+        let actor = actor.unwrap_or_else(|| "api".into());
+        let n = self.store.delete_subject(&t, subject, &actor, false).await?;
+        self.store
+            .audit(&actor, "subject.reset", &t, Some(subject), None, serde_json::json!({ "records": n }))
             .await?;
         Ok(n)
     }
@@ -514,6 +590,8 @@ fn sigmoid(x: f32) -> f32 {
 #[derive(Debug, Clone)]
 pub struct Round {
     pub text: String,
+    /// The user's own words, when the round also holds replies (embedded as a second vector).
+    pub focus: Option<String>,
     pub timestamp: Option<chrono::DateTime<Utc>>,
     /// Caller references (or positions) of the messages it contains.
     pub refs: Vec<String>,
@@ -532,9 +610,12 @@ pub fn build_rounds(messages: &[Message], assistant_chars: usize) -> Vec<Round> 
             if let Some(c) = cur.take() {
                 rounds.push(c);
             }
-            cur = Some(Round { text: String::new(), timestamp: m.timestamp, refs: vec![] });
+            cur = Some(Round { text: String::new(), focus: None, timestamp: m.timestamp, refs: vec![] });
         }
         let c = cur.as_mut().unwrap();
+        if is_user && c.text.is_empty() && m.content.trim().chars().count() >= 20 {
+            c.focus = Some(m.content.trim().to_string());
+        }
         let body = if is_user { m.content.as_str() } else { truncate_chars(&m.content, assistant_chars) };
         if !c.text.is_empty() {
             c.text.push('\n');
@@ -547,6 +628,12 @@ pub fn build_rounds(messages: &[Message], assistant_chars: usize) -> Vec<Round> 
     }
     if let Some(c) = cur {
         rounds.push(c);
+    }
+    // A round that is only the user's message needs no second vector.
+    for r in rounds.iter_mut() {
+        if r.refs.len() < 2 {
+            r.focus = None;
+        }
     }
     rounds
 }
@@ -576,3 +663,27 @@ mod tests {
         assert_eq!(r.len(), 2);
     }
 }
+
+/// Weighted reciprocal rank fusion of several probes' ranked lists. The first list's hit data
+/// (keyword/vector ranks, similarity) is kept for a memory found by several probes.
+fn fuse(lists: Vec<(Vec<Hit>, f32)>, rrf_k: f32, limit: usize) -> Vec<Hit> {
+    let mut by_id: HashMap<Uuid, Hit> = HashMap::new();
+    let mut score: HashMap<Uuid, f32> = HashMap::new();
+    for (hits, w) in lists {
+        for (rank, h) in hits.into_iter().enumerate() {
+            *score.entry(h.memory.id).or_default() += w / (rrf_k + 1.0 + rank as f32);
+            by_id.entry(h.memory.id).or_insert(h);
+        }
+    }
+    let mut out: Vec<Hit> = by_id
+        .into_values()
+        .map(|mut h| {
+            h.score = score[&h.memory.id];
+            h
+        })
+        .collect();
+    out.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.memory.id.cmp(&b.memory.id)));
+    out.truncate(limit);
+    out
+}
+

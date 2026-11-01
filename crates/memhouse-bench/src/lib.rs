@@ -107,6 +107,13 @@ pub struct RunArgs {
     pub keyword_weight: Option<f32>,
     #[arg(long)]
     pub vector_weight: Option<f32>,
+    /// Turn off query analysis (time-window and sub-query probes), for ablations
+    #[arg(long)]
+    pub no_analysis: bool,
+    #[arg(long)]
+    pub window_weight: Option<f32>,
+    #[arg(long)]
+    pub subquery_weight: Option<f32>,
 }
 
 fn slug(s: &str) -> String {
@@ -195,6 +202,15 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
     if let Some(w) = args.vector_weight {
         cfg.memory.vector_weight = w;
     }
+    if args.no_analysis {
+        cfg.memory.query_analysis = false;
+    }
+    if let Some(w) = args.window_weight {
+        cfg.memory.window_weight = w;
+    }
+    if let Some(w) = args.subquery_weight {
+        cfg.memory.subquery_weight = w;
+    }
     cfg.memory.tenant = "bench".into();
     cfg.memory.recency_weight = 0.0;
     cfg.governance.audit_reads = false;
@@ -248,6 +264,7 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
             rrf_k: cfg.memory.rrf_k,
             keyword_weight: cfg.memory.keyword_weight,
             vector_weight: cfg.memory.vector_weight,
+            query_analysis: cfg.memory.query_analysis.then(|| format!("window w={}, sub-query w={}", cfg.memory.window_weight, cfg.memory.subquery_weight)),
             concurrency: args.concurrency,
             selection: format!(
                 "limit={} stride={} offset={} types={}",

@@ -117,6 +117,8 @@ pub struct NewMemory {
     pub memory: Memory,
     pub embedding: Option<Vec<f32>>,
     pub content_hash: String,
+    /// Second vector (embedding-cache key, vector) for the round's user text alone.
+    pub alt: Option<(String, Vec<f32>)>,
 }
 
 /// One message of a conversation handed to `ingest`.
@@ -234,6 +236,13 @@ pub struct RecallRequest {
     /// Approximate token budget for the returned context.
     #[serde(default)]
     pub token_budget: Option<usize>,
+    /// Override query analysis (time windows and sub-queries) on/off.
+    #[serde(default)]
+    pub analyze: Option<bool>,
+    /// "Now" for reading relative time in the query ("two weeks ago"). Defaults to `as_of`, then
+    /// the current time. Unlike `as_of` it filters nothing.
+    #[serde(default)]
+    pub reference_time: Option<DateTime<Utc>>,
     #[serde(default)]
     pub actor: Option<String>,
 }
@@ -265,6 +274,9 @@ pub struct RecallResult {
     pub rerank_ms: f64,
     pub candidates: usize,
     pub reranked: bool,
+    /// How the query was read: time windows and sub-queries that got their own retrieval probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<crate::query::QueryPlan>,
 }
 
 /// Parameters passed from the engine to a store's single-statement hybrid search.
@@ -288,6 +300,8 @@ pub struct SearchQuery {
     pub rrf_k: f32,
     pub keyword_weight: f32,
     pub vector_weight: f32,
+    /// Only memories whose event time falls in one of these `[start, end)` windows (empty = any time).
+    pub windows: Vec<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

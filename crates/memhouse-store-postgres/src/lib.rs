@@ -144,6 +144,8 @@ CREATE TABLE IF NOT EXISTS mh_memory (
   content_hash  text NOT NULL,
   tsv           tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
   embedding     vector({dim}),
+  embedding_alt vector({dim}),
+  alt_hash      text,
   embedder      text,
   session_id    text,
   turn_ref      text,
@@ -160,6 +162,10 @@ CREATE TABLE IF NOT EXISTS mh_memory (
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now()
 );
+-- Second vector for episodic rounds: the user's own words, so a passing remark is not drowned
+-- out by a long assistant reply. alt_hash is its embedding-cache key (purged on deletion).
+ALTER TABLE mh_memory ADD COLUMN IF NOT EXISTS embedding_alt vector({dim});
+ALTER TABLE mh_memory ADD COLUMN IF NOT EXISTS alt_hash text;
 CREATE INDEX IF NOT EXISTS mh_memory_subject_idx ON mh_memory (tenant, subject, status, kind);
 CREATE INDEX IF NOT EXISTS mh_memory_hash_idx ON mh_memory (tenant, subject, content_hash);
 CREATE INDEX IF NOT EXISTS mh_memory_tsv_idx ON mh_memory USING gin (tsv);
@@ -218,7 +224,7 @@ CREATE TABLE IF NOT EXISTS mh_deletion_ledger (
         let mut tx = self.pool.begin().await?;
         for chunk in records.chunks(500) {
             let mut qb = sqlx::QueryBuilder::new(
-                "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, embedding, embedder, \
+                "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, embedding, embedding_alt, alt_hash, embedder, \
                  session_id, turn_ref, occurred_at, valid_from, valid_to, supersedes, labels, tags, source, confidence, metadata, created_at) ",
             );
             qb.push_values(chunk, |mut b, r| {
@@ -232,6 +238,9 @@ CREATE TABLE IF NOT EXISTS mh_deletion_ledger (
                     .push_bind(&r.content_hash)
                     .push_bind(r.embedding.as_ref().map(|v| vec_literal(v)))
                     .push_unseparated("::vector")
+                    .push_bind(r.alt.as_ref().map(|(_, v)| vec_literal(v)))
+                    .push_unseparated("::vector")
+                    .push_bind(r.alt.as_ref().map(|(h, _)| h.clone()))
                     .push_bind(Option::<String>::None)
                     .push_bind(&m.session_id)
                     .push_bind(&m.turn_ref)
@@ -263,7 +272,7 @@ WITH q AS (
   SELECT CASE WHEN $3 = '' THEN NULL ELSE to_tsquery('english', $3) END AS tsq
 ),
 base AS (
-  SELECT m.id, m.tsv, m.embedding
+  SELECT m.id, m.tsv, m.embedding, m.embedding_alt
   FROM mh_memory m
   WHERE m.tenant = $1 AND m.subject = $2 AND m.status = 'committed'
     AND ($4::text[] IS NULL OR m.kind = ANY($4))
@@ -271,18 +280,44 @@ base AS (
     AND NOT (m.labels && $6::text[])
     AND m.valid_from <= $16 AND (m.valid_to IS NULL OR m.valid_to > $16)
     AND ($7::timestamptz IS NULL OR m.occurred_at IS NULL OR m.occurred_at <= $7)
+    AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
+      SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
+      WHERE m.occurred_at >= w.s AND m.occurred_at < w.e))
 ),
-kw AS (
-  SELECT b.id, row_number() OVER (ORDER BY ts_rank_cd(b.tsv, q.tsq, 1) DESC, b.id) AS rk
-  FROM base b, q
+-- BM25 (k1 = 1.2, b = 0.75) over the subject's memories. Term frequencies come from the stored
+-- tsvector positions, document frequencies from the matched rows (a row matches a term iff it
+-- contains it), document length is the number of distinct lexemes.
+matched AS (
+  SELECT b.id, b.tsv FROM base b, q
   WHERE $10 AND q.tsq IS NOT NULL AND b.tsv @@ q.tsq
+),
+qterms AS (
+  SELECT DISTINCT lex FROM unnest(tsvector_to_array(to_tsvector('english', $17))) AS lex
+),
+stats AS (
+  SELECT count(*)::float8 AS n, greatest(avg(length(tsv)), 1)::float8 AS avgdl FROM base
+),
+tf AS (
+  SELECT mt.id, u.lexeme, coalesce(array_length(u.positions, 1), 1)::float8 AS tf, length(mt.tsv)::float8 AS dl
+  FROM matched mt, unnest(mt.tsv) u
+  WHERE u.lexeme IN (SELECT lex FROM qterms)
+),
+df AS (SELECT lexeme, count(*)::float8 AS df FROM tf GROUP BY lexeme),
+kw AS (
+  SELECT id, row_number() OVER (ORDER BY bm25 DESC, id) AS rk FROM (
+    SELECT tf.id, sum(ln(1 + (st.n - df.df + 0.5) / (df.df + 0.5))
+                      * tf.tf * 2.2 / (tf.tf + 1.2 * (0.25 + 0.75 * tf.dl / st.avgdl))) AS bm25
+    FROM tf JOIN df USING (lexeme), stats st
+    GROUP BY tf.id
+  ) s
   ORDER BY rk LIMIT $8
 ),
 vec AS (
-  SELECT b.id, row_number() OVER (ORDER BY b.embedding <=> $9::vector, b.id) AS rk,
-         1 - (b.embedding <=> $9::vector) AS sim
-  FROM base b
-  WHERE $11 AND b.embedding IS NOT NULL
+  SELECT id, row_number() OVER (ORDER BY dist, id) AS rk, 1 - dist AS sim FROM (
+    SELECT b.id, least(b.embedding <=> $9::vector, coalesce(b.embedding_alt <=> $9::vector, 2)) AS dist
+    FROM base b
+    WHERE $11 AND b.embedding IS NOT NULL
+  ) d
   ORDER BY rk LIMIT $8
 ),
 fused AS (
@@ -315,6 +350,9 @@ LIMIT $15
             .bind(q.vector_weight as f64)
             .bind(q.limit as i64)
             .bind(q.valid_at)
+            .bind(&q.text)
+            .bind(q.windows.iter().map(|w| w.0).collect::<Vec<_>>())
+            .bind(q.windows.iter().map(|w| w.1).collect::<Vec<_>>())
             .fetch_all(&self.pool)
             .await?;
         rows.iter()
@@ -425,7 +463,7 @@ LIMIT $15
 
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING subject, content")
+        let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING subject, content, alt_hash")
             .bind(tenant)
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -433,10 +471,12 @@ LIMIT $15
         let Some(row) = row else { return Ok(false) };
         let subject: String = row.try_get("subject")?;
         let content: String = row.try_get("content")?;
-        // Also drop the cached embedding of this exact content (every representation goes, TR-WF-01).
-        sqlx::query("DELETE FROM mh_embed_cache WHERE hash = encode(sha256(convert_to($1 || $2, 'UTF8')), 'hex')")
+        let alt_hash: Option<String> = row.try_get("alt_hash")?;
+        // Also drop the cached embeddings of this content (every representation goes, TR-WF-01).
+        sqlx::query("DELETE FROM mh_embed_cache WHERE hash = encode(sha256(convert_to($1 || $2, 'UTF8')), 'hex') OR hash = $3")
             .bind(&self.passage_prefix)
             .bind(&content)
+            .bind(alt_hash)
             .execute(&mut *tx)
             .await?;
         sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) VALUES ($1, $2, $3, 'memory', $4)")
@@ -450,27 +490,30 @@ LIMIT $15
         Ok(true)
     }
 
-    async fn delete_subject(&self, tenant: &str, subject: &str, actor: &str) -> anyhow::Result<u64> {
+    async fn delete_subject(&self, tenant: &str, subject: &str, actor: &str, purge_cache: bool) -> anyhow::Result<u64> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "DELETE FROM mh_embed_cache c USING mh_memory m WHERE m.tenant = $1 AND m.subject = $2 \
-             AND c.hash = encode(sha256(convert_to($3 || m.content, 'UTF8')), 'hex')",
-        )
-        .bind(tenant)
-        .bind(subject)
-        .bind(&self.passage_prefix)
-        .execute(&mut *tx)
-        .await?;
+        if purge_cache {
+            sqlx::query(
+                "DELETE FROM mh_embed_cache c USING mh_memory m WHERE m.tenant = $1 AND m.subject = $2 \
+                 AND (c.hash = encode(sha256(convert_to($3 || m.content, 'UTF8')), 'hex') OR c.hash = m.alt_hash)",
+            )
+            .bind(tenant)
+            .bind(subject)
+            .bind(&self.passage_prefix)
+            .execute(&mut *tx)
+            .await?;
+        }
         let n = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND subject = $2")
             .bind(tenant)
             .bind(subject)
             .execute(&mut *tx)
             .await?
             .rows_affected();
-        sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, scope, actor) VALUES ($1, $2, 'subject', $3)")
+        sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, scope, actor) VALUES ($1, $2, $4, $3)")
             .bind(tenant)
             .bind(subject)
             .bind(actor)
+            .bind(if purge_cache { "subject" } else { "subject-reset" })
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;

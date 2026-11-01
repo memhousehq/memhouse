@@ -472,6 +472,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         content_hash: memhouse_core::engine::content_hash(&format!("{}\u{1f}{}", m.kind.as_str(), m.content)),
                         memory: m.clone(),
                         embedding: Some(v),
+                        alt: None,
                     })
                     .collect();
                 eng.store.insert(&recs).await?;
