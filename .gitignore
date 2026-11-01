@@ -7,3 +7,4 @@
 bench-results/logs/
 
 .env
+/bench-results/guard/

@@ -596,29 +596,6 @@ pub fn build_rounds(messages: &[Message], assistant_chars: usize) -> Vec<Round> 
     rounds
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn msg(role: &str, c: &str) -> Message {
-        Message { role: role.into(), content: c.into(), timestamp: None, id: None }
-    }
-
-    #[test]
-    fn rounds_group_user_and_replies() {
-        let r = build_rounds(&[msg("user", "hi"), msg("assistant", "hello"), msg("user", "I moved to Lisbon"), msg("assistant", "nice"), msg("assistant", "anything else?")], 100);
-        assert_eq!(r.len(), 2);
-        assert_eq!(r[1].refs, vec!["2", "3", "4"]);
-        assert!(r[1].text.starts_with("user: I moved to Lisbon"));
-    }
-
-    #[test]
-    fn leading_assistant_message_gets_own_round() {
-        let r = build_rounds(&[msg("assistant", "Welcome!"), msg("user", "thanks")], 100);
-        assert_eq!(r.len(), 2);
-    }
-}
-
 /// Weighted reciprocal rank fusion of several probes' ranked lists. The first list's hit data
 /// (keyword/vector ranks, similarity) is kept for a memory found by several probes.
 fn fuse(lists: Vec<(Vec<Hit>, f32)>, rrf_k: f32, limit: usize) -> Vec<Hit> {
@@ -640,4 +617,27 @@ fn fuse(lists: Vec<(Vec<Hit>, f32)>, rrf_k: f32, limit: usize) -> Vec<Hit> {
     out.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.memory.id.cmp(&b.memory.id)));
     out.truncate(limit);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: &str, c: &str) -> Message {
+        Message { role: role.into(), content: c.into(), timestamp: None, id: None }
+    }
+
+    #[test]
+    fn rounds_group_user_and_replies() {
+        let r = build_rounds(&[msg("user", "hi"), msg("assistant", "hello"), msg("user", "I moved to Lisbon"), msg("assistant", "nice"), msg("assistant", "anything else?")], 100);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[1].refs, vec!["2", "3", "4"]);
+        assert!(r[1].text.starts_with("user: I moved to Lisbon"));
+    }
+
+    #[test]
+    fn leading_assistant_message_gets_own_round() {
+        let r = build_rounds(&[msg("assistant", "Welcome!"), msg("user", "thanks")], 100);
+        assert_eq!(r.len(), 2);
+    }
 }

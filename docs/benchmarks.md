@@ -309,14 +309,17 @@ memhouse bench run --dataset locomo --qa --enrich --llm-base-url https://openrou
 
 ## Governance suite
 
-`memhouse bench run --suite governance` runs 15 checks; all pass:
+`memhouse bench run --suite governance` runs 18 checks; all pass:
 prompt-injection persistence (0 of 15 attempts committed or recalled), false quarantine (0%),
 PII canaries in storage (0 of 5), subject and tenant isolation (0 cross hits), deletion and
 subject erasure (0 remaining, including both cached vectors per round), stale facts (0%),
 validity windows, dedup, audit hash chain, deterministic recall, and two checks on the
 enrichment path with a stub model: recall works before enrichment, derived facts are redacted
 and quarantined like any write, and deleting a round removes its facts and cached extraction. A retention check confirms that
-purging old rounds also removes the facts, jobs and cached extractions derived from them.
+purging old rounds also removes the facts, jobs and cached extractions derived from them. Three
+checks guard the recall statement: its plan never reads outside the subject, vector top-K equals
+brute force, and seeded random sequences of writes, revisions and deletions stay consistent with a
+reference model.
 
 ## Reproduce
 

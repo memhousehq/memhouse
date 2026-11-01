@@ -317,7 +317,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-15 checks pass on the current release:
+18 checks pass on the current release:
 
 | Check | What it proves |
 |---|---|
@@ -335,6 +335,9 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `enrich_async_gate` | recall works while enrichment is pending; derived facts are redacted and screened |
 | `enrich_deletion` | deleting a round removes its facts and cached extraction |
 | `retention_cascade` | a retention purge removes old rounds with their derived facts, jobs and cached extraction, and keeps explicit memories |
+| `recall_plan_scoped` | the recall statement's query plan only reads the requested subject's rows |
+| `exact_topk` | vector recall returns exactly the brute-force top 10 |
+| `invariants` | seeded random sequences of remember, repeat, revise and forget stay consistent with a reference model |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 
@@ -390,4 +393,4 @@ Short answers for vendor security reviews:
 | Data deletion? | Hard delete of the record and all derived data (vectors, extracted facts, caches), recorded in a deletion ledger. |
 | PII handling? | Secrets, card numbers, SSNs and IBANs (and optionally email, phone, IP) are redacted before storage. |
 | AI-specific risks? | Instruction-like content is quarantined on every write path, including LLM-extracted facts. |
-| How are controls tested? | 15 automated checks (`memhouse bench run --suite governance`) on every release. |
+| How are controls tested? | 18 automated checks (`memhouse bench run --suite governance`) on every release. |

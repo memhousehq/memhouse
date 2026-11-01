@@ -175,4 +175,32 @@ mod tests {
             assert!(!screen(s, &[], true).quarantine(), "{s}");
         }
     }
+
+    proptest::proptest! {
+        // Redaction is idempotent: screening already-screened text changes nothing more.
+        #[test]
+        fn screening_is_idempotent(text in "[ -~]{0,200}") {
+            let once = screen(&text, &all(), true);
+            let twice = screen(&once.content, &all(), true);
+            proptest::prop_assert_eq!(once.content, twice.content);
+        }
+
+        // A Luhn-valid card number never survives, wherever it appears in the text.
+        #[test]
+        fn valid_cards_never_survive(prefix in "[a-z ]{0,40}", digits in proptest::collection::vec(0u32..10, 15), suffix in "[a-z ]{0,40}") {
+            let mut d = digits.clone();
+            let sum: u32 = d.iter().rev().enumerate().map(|(i, &x)| if i % 2 == 0 { let y = x * 2; if y > 9 { y - 9 } else { y } } else { x }).sum();
+            d.push((10 - sum % 10) % 10);
+            let card: String = d.iter().map(|x| char::from_digit(*x, 10).unwrap()).collect();
+            let out = screen(&format!("{prefix} {card} {suffix}"), &all(), false);
+            proptest::prop_assert!(!out.content.contains(&card), "card survived: {}", out.content);
+        }
+
+        // Text with no digits, '@' or key-like tokens passes through unchanged.
+        #[test]
+        fn plain_words_pass_through(text in "[a-z ,.]{0,200}") {
+            let out = screen(&text, &all(), false);
+            proptest::prop_assert_eq!(out.content, text);
+        }
+    }
 }

@@ -22,3 +22,6 @@ sha2.workspace = true
 hex.workspace = true
 dirs.workspace = true
 rand.workspace = true
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }

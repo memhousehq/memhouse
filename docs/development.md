@@ -52,7 +52,7 @@ replace the defaults without touching the engine.
 | `core/src/config.rs` | every config key, its default and its environment override |
 | `store-postgres/src/lib.rs` | schema, the single-statement hybrid search, the audit chain, cascading deletes |
 | `server/src/lib.rs` / `mcp.rs` | routes, auth middleware, MCP tools |
-| `bench/src/governance.rs` | the 15 governance checks |
+| `bench/src/governance.rs` | the 18 governance checks |
 
 ## Build
 
@@ -79,26 +79,63 @@ export MEMHOUSE_HOME=$PWD/.dev-home            # gitignored
 
 ## Test
 
-| Layer | Command | Needs |
+One command runs everything, in order, and stops at the first failure:
+
+```bash
+cargo xtask ci
+```
+
+| Step | What it runs | Needs |
 |---|---|---|
-| Unit tests (gate, query analysis, enrichment parsing, metrics, batching, SQL quoting) | `cargo test --workspace` | nothing |
-| End-to-end: up → CLI → REST → MCP → governance | `scripts/e2e.sh` | Docker; uses a throwaway home and container |
-| Governance suite | `memhouse bench run --suite governance` | a database |
-| Retrieval quality | `memhouse bench run --dataset longmemeval-s --stride 10` | a database and the dataset |
+| fmt | `cargo fmt --all -- --check` (settings in `rustfmt.toml`) | — |
+| clippy | `cargo clippy --workspace --all-targets --release -- -D warnings` (MSRV in `clippy.toml`) | — |
+| unit tests | `cargo test --workspace --release`: gate (including `proptest` properties), query analysis, enrichment parsing, metrics, batching, SQL quoting, plan checker | — |
+| release build | `cargo build --release -p memhouse-cli` | — |
+| e2e | `scripts/e2e.sh`: up → CLI → REST → MCP → doctor → audit, in a throwaway home and container | Docker |
+| benchmark guard | `memhouse bench guard`: the governance suite plus the T1 benchmark runs, compared with `bench/baselines.json` | a benchmark database (`memhouse up` once) and the datasets (`memhouse bench download longmemeval-s`, `locomo`) |
+
+It takes about 5 minutes on a laptop. Options: `--tier 2` (adds LoCoMo with cached enrichment,
+about $0.01), `--fix` (apply rustfmt), `--skip-e2e` (no Docker), `--skip-guard` (no benchmark
+database). `scripts/ci.sh` is the same command.
+
+Run it before every push automatically:
 
 ```bash
-cargo test --workspace
+cargo xtask install-hooks
 ```
+
+`git push --no-verify` skips it once.
+
+### The benchmark guard
 
 ```bash
-cargo build --release -p memhouse-cli && scripts/e2e.sh
+memhouse bench guard              # tier 1: free, ~2 min
+memhouse bench guard --tier 2     # adds cached enrichment
 ```
 
-`scripts/e2e.sh` keeps its container if you set `KEEP=1`, and takes `BIN`, `PORT`, `PG_PORT` and
-`CONTAINER` overrides.
+It runs the governance suite (every check must pass, and there must be at least as many checks as
+the baseline), LongMemEval_S on a 50-question sample, and LoCoMo, then prints a table of each
+metric against its baseline and threshold (see
+[development-plan.md section 3](../draft_plan/development-plan.md#3-the-benchmark-guard)). The
+report is also written to `bench-results/guard/`.
 
-Before you send a change, run all four. Changes to ranking, the gate or ingest must not lower the
-governance pass rate or the retrieval numbers in [benchmarks.md](benchmarks.md).
+- **Quality metrics are deterministic**: the same code gives the same numbers, so any drop is real.
+- **Timings are not.** Latency is gated on the SQL search time with generous limits (+50% or
+  +5 ms), and total recall time only catches large regressions (+100%). A run where only timings
+  fail is repeated once. On a machine you know is busy, `--skip-latency` reports timings without
+  failing on them.
+- **Check that the guard can fail** by passing a bad setting to every run:
+  `memhouse bench guard -- --vector-weight 0` fails on nDCG and round recall.
+- **After a deliberate improvement**, record the new values with `memhouse bench guard --update`
+  (thresholds are kept) and commit `bench/baselines.json` with the change.
+
+The governance suite includes three checks that guard the recall statement itself: its query plan
+never reads outside the subject (`recall_plan_scoped`, TR-RQ-01), vector top-K equals brute force
+(`exact_topk`, TR-RQ-02) and random sequences of writes, revisions and deletions stay consistent
+with a reference model (`invariants`).
+
+`scripts/e2e.sh` on its own keeps its container with `KEEP=1`, and takes `BIN`, `PORT`, `PG_PORT`,
+`CONTAINER` and `MEMHOUSE_MODEL_CACHE` (reuse downloaded models) overrides.
 
 ## Request lifecycle in code
 
@@ -165,7 +202,7 @@ impl memhouse_core::Store for SqliteStore {
 ```
 
 Then wire it into `memhouse_server::build_engine` (selected by the URL scheme, for example) and
-run the governance suite against it. **The suite is the acceptance test for a store:** all 15
+run the governance suite against it. **The suite is the acceptance test for a store:** all 18
 checks must pass.
 
 ### Add an embedding or rerank provider
@@ -329,6 +366,9 @@ The DDL is one idempotent block in `PgStore::migrate`
 ## Benchmark a change
 
 Every ranking change is judged by the benchmark, not by intuition.
+
+For routine changes, `memhouse bench guard` is enough. For a ranking experiment, compare runs
+directly:
 
 ```bash
 memhouse bench download longmemeval-s

@@ -8,6 +8,7 @@ use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Check {
@@ -666,6 +667,302 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         e.forget_subject(Some(tenant.clone()), &subj, Some("bench".into())).await?;
     }
 
+    // 16. Recall's query plan never reads outside the requested subject (TR-RQ-01). Seeded with
+    // 20 subjects in a tenant of their own so the planner sees a realistic, analysed table.
+    {
+        let tenant = format!("bench:{run_id}:plan");
+        let subjects: Vec<String> = (0..20).map(|i| format!("plan:{i}")).collect();
+        for subj in &subjects {
+            let msgs: Vec<Message> = (0..60)
+                .flat_map(|j| {
+                    let w = rand_word(&mut rng, 7);
+                    [
+                        Message {
+                            role: "user".into(),
+                            content: format!("Note {j} about {w}: the {} meeting moved to {}", rand_word(&mut rng, 6), rand_word(&mut rng, 8)),
+                            timestamp: None,
+                            id: None,
+                        },
+                        Message { role: "assistant".into(), content: format!("Noted, {w}."), timestamp: None, id: None },
+                    ]
+                })
+                .collect();
+            engine
+                .ingest(IngestRequest {
+                    tenant: Some(tenant.clone()),
+                    subject: Some(subj.clone()),
+                    session_id: Some("p".into()),
+                    messages: msgs,
+                    actor: Some("bench".into()),
+                    ..Default::default()
+                })
+                .await?;
+        }
+        let emb = engine.embedder.embed(&["when did the meeting move".to_string()], EmbedKind::Query).await?.pop();
+        let now = chrono::Utc::now();
+        let probe = |mode: RetrievalMode, windows: Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>, kinds: Option<Vec<MemoryKind>>| SearchQuery {
+            tenant: tenant.clone(),
+            subject: subjects[3].clone(),
+            text: "when did the meeting move".into(),
+            embedding: emb.clone(),
+            kinds,
+            tags: None,
+            denied_labels: vec!["secret".into()],
+            as_of: None,
+            valid_at: now,
+            mode,
+            per_retriever: 100,
+            limit: 10,
+            rrf_k: 60.0,
+            keyword_weight: 1.0,
+            vector_weight: 1.0,
+            windows,
+        };
+        let variants = [
+            ("hybrid", probe(RetrievalMode::Hybrid, vec![], None)),
+            ("dense", probe(RetrievalMode::Dense, vec![], None)),
+            ("keyword", probe(RetrievalMode::Keyword, vec![], None)),
+            ("window+kinds", probe(RetrievalMode::Hybrid, vec![(now - chrono::Duration::days(30), now)], Some(vec![MemoryKind::Episodic]))),
+        ];
+        let mut checked = 0;
+        let mut violations = vec![];
+        let mut scans: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut supported = true;
+        for (name, q) in &variants {
+            match engine.store.search_plan(q).await? {
+                Some(plan) => {
+                    checked += 1;
+                    for t in plan_scans(&plan) {
+                        *scans.entry(t).or_default() += 1;
+                    }
+                    for v in plan_violations(&plan) {
+                        violations.push(format!("{name}: {v}"));
+                    }
+                }
+                None => supported = false,
+            }
+        }
+        checks.push(check(
+            "recall_plan_scoped",
+            "TR-RQ-01 / SCALE-04",
+            "The recall statement's plan only reads the requested subject's rows (no sequential scan, every memory-table scan keyed on subject or id)",
+            supported && violations.is_empty(),
+            if supported { format!("{} violations in {checked} plans", violations.len()) } else { "store has no query planner to inspect".into() },
+            "0",
+            format!(
+                "memory-table scans: {}{}",
+                scans.iter().map(|(k, n)| format!("{k} ×{n}")).collect::<Vec<_>>().join(", "),
+                if violations.is_empty() { String::new() } else { format!("; {}", violations.join("; ")) }
+            ),
+        ));
+        for subj in &subjects {
+            engine.forget_subject(Some(tenant.clone()), subj, Some("bench".into())).await?;
+        }
+    }
+
+    // 17. Per-subject vector scoring is exact: top-K equals brute force over the same vectors (TR-RQ-02, SCALE-03).
+    {
+        let tenant = format!("bench:{run_id}:exact");
+        let subj = s("exact");
+        let names = ["Ana", "Ben", "Chen", "Dara", "Eli", "Fatima", "Goran", "Hana", "Ivo", "Juno"];
+        let things = ["sailing", "chess", "sourdough", "jazz", "rock climbing", "pottery", "astronomy", "salsa", "birding", "go-karts", "ceramics", "violin"];
+        let cities = ["Lisbon", "Osaka", "Quito", "Tromsø", "Accra", "Hobart", "Tbilisi", "Valparaíso", "Riga", "Hanoi"];
+        for i in 0..120 {
+            let content = format!(
+                "{} took up {} in {} after {} weeks of {}",
+                names[i % names.len()],
+                things[rng.gen_range(0..things.len())],
+                cities[rng.gen_range(0..cities.len())],
+                rng.gen_range(2..40),
+                rand_word(&mut rng, 6)
+            );
+            engine
+                .remember(RememberRequest {
+                    tenant: Some(tenant.clone()),
+                    subject: Some(subj.clone()),
+                    content,
+                    kind: Some(MemoryKind::Semantic),
+                    actor: Some("bench".into()),
+                    ..Default::default()
+                })
+                .await?;
+        }
+        let stored = engine.list(Some(tenant.clone()), Some(subj.clone()), None, 1000, 0, false).await?;
+        let vecs = engine.embed_passages(&stored.iter().map(|m| m.content.clone()).collect::<Vec<_>>()).await?;
+        let mut mismatches = 0;
+        let mut detail = vec![];
+        let queries = ["who learned to sail", "pottery in Japan", "music hobbies", "someone in South America", "a sport picked up recently"];
+        for qtext in queries {
+            let qv = engine.embedder.embed(&[qtext.to_string()], EmbedKind::Query).await?.remove(0);
+            let mut brute: Vec<(f64, Uuid)> = stored.iter().zip(&vecs).map(|(m, v)| (cosine_distance(&qv, v), m.id)).collect();
+            brute.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            let q = SearchQuery {
+                tenant: tenant.clone(),
+                subject: subj.clone(),
+                text: qtext.into(),
+                embedding: Some(qv.clone()),
+                kinds: None,
+                tags: None,
+                denied_labels: vec![],
+                as_of: None,
+                valid_at: chrono::Utc::now(),
+                mode: RetrievalMode::Dense,
+                per_retriever: 200,
+                limit: 10,
+                rrf_k: 60.0,
+                keyword_weight: 1.0,
+                vector_weight: 1.0,
+                windows: vec![],
+            };
+            let hits = engine.store.search(&q).await?;
+            let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();
+            for (i, h) in hits.iter().enumerate() {
+                let (bd, bid) = brute[i];
+                // Same record, or a tie within float precision.
+                if h.memory.id != bid && (dist.get(&h.memory.id).copied().unwrap_or(f64::MAX) - bd).abs() > 1e-5 {
+                    mismatches += 1;
+                    detail.push(format!("'{qtext}' rank {}", i + 1));
+                }
+            }
+            if hits.len() != 10.min(brute.len()) {
+                mismatches += 1;
+                detail.push(format!("'{qtext}' returned {} hits", hits.len()));
+            }
+        }
+        checks.push(check(
+            "exact_topk",
+            "TR-RQ-02 / SCALE-03",
+            "Per-subject vector recall returns exactly the brute-force top 10 (no approximate index)",
+            mismatches == 0,
+            format!("{mismatches} rank mismatches over {} queries", queries.len()),
+            "0",
+            format!("{} records; {}", stored.len(), detail.join(", ")),
+        ));
+        engine.forget_subject(Some(tenant.clone()), &subj, Some("bench".into())).await?;
+    }
+
+    // 18. Invariants under random operation sequences (property-based, seeded): the committed set
+    // matches a model, superseded and deleted records never come back, duplicates collapse.
+    {
+        let tenant = format!("bench:{run_id}:inv");
+        let subj = s("invariants");
+        let mut model: std::collections::HashMap<Uuid, String> = Default::default();
+        let mut superseded: std::collections::HashMap<Uuid, String> = Default::default();
+        let mut deleted: std::collections::HashSet<Uuid> = Default::default();
+        let mut violations: Vec<String> = vec![];
+        let mut ops = 0;
+        let mut counts = [0usize; 4]; // remember, repeat, revise, forget
+        let pool: Vec<String> =
+            (0..40).map(|i| format!("Customer {} prefers {} for invoice {}", rand_word(&mut rng, 6), ["email", "phone", "post", "chat"][i % 4], 1000 + i)).collect();
+        let pick = |rng: &mut StdRng, m: &std::collections::HashMap<Uuid, String>| -> Option<Uuid> {
+            let mut ids: Vec<Uuid> = m.keys().copied().collect();
+            ids.sort();
+            (!ids.is_empty()).then(|| ids[rng.gen_range(0..ids.len())])
+        };
+        for seq in 0..5 {
+            for _ in 0..25 {
+                ops += 1;
+                let r: f64 = rng.gen();
+                let req = |content: String| RememberRequest {
+                    tenant: Some(tenant.clone()),
+                    subject: Some(subj.clone()),
+                    content,
+                    kind: Some(MemoryKind::Semantic),
+                    actor: Some("bench".into()),
+                    ..Default::default()
+                };
+                if r < 0.45 {
+                    counts[0] += 1;
+                    let res = engine.remember(req(pool[rng.gen_range(0..pool.len())].clone())).await?;
+                    if res.deduplicated {
+                        if !model.contains_key(&res.id) {
+                            violations.push(format!("seq {seq}: dedup returned a non-committed record"));
+                        }
+                    } else if res.status == MemoryStatus::Committed {
+                        model.insert(res.id, engine.store.get(&tenant, res.id).await?.map(|m| m.content).unwrap_or_default());
+                    }
+                } else if r < 0.60 {
+                    if let Some(id) = pick(&mut rng, &model) {
+                        counts[1] += 1;
+                        let res = engine.remember(req(model[&id].clone())).await?;
+                        if !(res.deduplicated && res.id == id) {
+                            violations.push(format!("seq {seq}: exact repeat was not deduplicated to the same id"));
+                        }
+                    }
+                } else if r < 0.80 {
+                    if let Some(id) = pick(&mut rng, &model) {
+                        counts[2] += 1;
+                        let content = format!("{} (updated {})", model[&id], rand_word(&mut rng, 5));
+                        let res = engine.update(Some(tenant.clone()), id, content.clone(), Some("bench".into())).await?;
+                        if res.superseded == Some(id) {
+                            let old = model.remove(&id).unwrap_or_default();
+                            superseded.insert(id, old);
+                            model.insert(res.id, content);
+                        } else if !res.deduplicated {
+                            violations.push(format!("seq {seq}: revise neither superseded nor deduplicated"));
+                        }
+                    }
+                } else {
+                    let target = if rng.gen_bool(0.7) { pick(&mut rng, &model) } else { pick(&mut rng, &superseded) };
+                    if let Some(id) = target {
+                        counts[3] += 1;
+                        if !engine.forget(Some(tenant.clone()), id, Some("bench".into())).await? {
+                            violations.push(format!("seq {seq}: forget of a live record returned false"));
+                        }
+                        model.remove(&id);
+                        superseded.remove(&id);
+                        deleted.insert(id);
+                    }
+                }
+            }
+            // Check the invariants after each sequence.
+            let committed = engine.list(Some(tenant.clone()), Some(subj.clone()), None, 1000, 0, false).await?;
+            let all = engine.list(Some(tenant.clone()), Some(subj.clone()), None, 1000, 0, true).await?;
+            let got: std::collections::HashSet<Uuid> = committed.iter().map(|m| m.id).collect();
+            let want: std::collections::HashSet<Uuid> = model.keys().copied().collect();
+            if got != want {
+                violations.push(format!("seq {seq}: committed set differs from the model ({} vs {})", got.len(), want.len()));
+            }
+            if all.iter().any(|m| deleted.contains(&m.id)) {
+                violations.push(format!("seq {seq}: a deleted record is still stored"));
+            }
+            for id in superseded.keys() {
+                if !all.iter().any(|m| m.id == *id && m.status == MemoryStatus::Superseded) {
+                    violations.push(format!("seq {seq}: superseded record {id} lost its history"));
+                }
+            }
+            let mut contents: Vec<&str> = committed.iter().map(|m| m.content.as_str()).collect();
+            contents.sort();
+            if contents.windows(2).any(|w| w[0] == w[1]) {
+                violations.push(format!("seq {seq}: two committed records with identical content"));
+            }
+            for (id, content) in superseded.iter().take(10) {
+                let r =
+                    engine.recall(RecallRequest { tenant: Some(tenant.clone()), subject: Some(subj.clone()), query: content.clone(), k: Some(10), ..Default::default() }).await?;
+                if r.hits.iter().any(|h| h.memory.id == *id || deleted.contains(&h.memory.id) || h.memory.status != MemoryStatus::Committed) {
+                    violations.push(format!("seq {seq}: recall returned a superseded, deleted or uncommitted record"));
+                }
+            }
+        }
+        checks.push(check(
+            "invariants",
+            "CORE-03 / CORE-04 / CORE-06 / GOV-07",
+            "Random sequences of remember, repeat, revise and forget keep the store consistent with a reference model",
+            violations.is_empty(),
+            format!("{} violations in {ops} operations", violations.len()),
+            "0",
+            format!(
+                "5 seeded sequences: {} remember, {} repeat, {} revise, {} forget; {}",
+                counts[0],
+                counts[1],
+                counts[2],
+                counts[3],
+                violations.into_iter().take(5).collect::<Vec<_>>().join("; ")
+            ),
+        ));
+        engine.forget_subject(Some(tenant.clone()), &subj, Some("bench".into())).await?;
+    }
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;
@@ -676,4 +973,86 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
 
     let passed = checks.iter().filter(|c| c.passed).count();
     Ok(GovernanceReport { failed: checks.len() - passed, passed, checks, took_ms: start.elapsed().as_secs_f64() * 1000.0 })
+}
+
+fn rand_word(rng: &mut StdRng, n: usize) -> String {
+    const C: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+    (0..n).map(|_| C[rng.gen_range(0..C.len())] as char).collect()
+}
+
+fn cosine_distance(a: &[f32], b: &[f32]) -> f64 {
+    let (mut dot, mut na, mut nb) = (0f64, 0f64, 0f64);
+    for (x, y) in a.iter().zip(b) {
+        dot += *x as f64 * *y as f64;
+        na += *x as f64 * *x as f64;
+        nb += *y as f64 * *y as f64;
+    }
+    1.0 - dot / (na.sqrt() * nb.sqrt())
+}
+
+/// Node types of every memory-table scan in an EXPLAIN (FORMAT JSON) plan.
+fn plan_scans(plan: &serde_json::Value) -> Vec<String> {
+    fn walk(n: &serde_json::Value, out: &mut Vec<String>) {
+        if n.get("Relation Name").and_then(|v| v.as_str()) == Some("mh_memory") {
+            out.push(n["Node Type"].as_str().unwrap_or("?").to_string());
+        }
+        for c in n.get("Plans").and_then(|v| v.as_array()).into_iter().flatten() {
+            walk(c, out);
+        }
+    }
+    let mut out = vec![];
+    for p in plan.as_array().into_iter().flatten() {
+        walk(&p["Plan"], &mut out);
+    }
+    out
+}
+
+/// Scans of the memory table in an EXPLAIN (FORMAT JSON) plan that could read another subject's
+/// rows: any sequential scan, or an index/bitmap scan not keyed on subject or on id.
+fn plan_violations(plan: &serde_json::Value) -> Vec<String> {
+    fn walk(n: &serde_json::Value, out: &mut Vec<String>) {
+        if n.get("Relation Name").and_then(|v| v.as_str()) == Some("mh_memory") {
+            let ty = n["Node Type"].as_str().unwrap_or("");
+            let conds = ["Index Cond", "Recheck Cond", "Filter"].iter().filter_map(|k| n.get(*k).and_then(|v| v.as_str())).collect::<Vec<_>>().join(" ");
+            let keyed = ["Index Cond", "Recheck Cond"].iter().filter_map(|k| n.get(*k).and_then(|v| v.as_str())).any(|c| c.contains("subject") || c.contains("(id ="));
+            if ty == "Seq Scan" || !keyed {
+                out.push(format!("{ty} on mh_memory ({conds})"));
+            }
+        }
+        if let Some(children) = n.get("Plans").and_then(|v| v.as_array()) {
+            for c in children {
+                walk(c, out);
+            }
+        }
+    }
+    let mut out = vec![];
+    for p in plan.as_array().into_iter().flatten() {
+        walk(&p["Plan"], &mut out);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn plan_check_flags_unscoped_scans() {
+        let scoped = json!([{"Plan": {"Node Type": "Nested Loop", "Plans": [
+            {"Node Type": "Index Scan", "Relation Name": "mh_memory", "Index Cond": "((tenant = $1) AND (subject = $2))"},
+            {"Node Type": "Index Scan", "Relation Name": "mh_memory", "Index Cond": "(id = f.id)"}
+        ]}}]);
+        assert!(plan_violations(&scoped).is_empty());
+        let seq = json!([{"Plan": {"Node Type": "Seq Scan", "Relation Name": "mh_memory", "Filter": "(subject = $2)"}}]);
+        assert_eq!(plan_violations(&seq).len(), 1);
+        let unkeyed = json!([{"Plan": {"Node Type": "Bitmap Heap Scan", "Relation Name": "mh_memory", "Recheck Cond": "(tsv @@ q.tsq)"}}]);
+        assert_eq!(plan_violations(&unkeyed).len(), 1);
+    }
+
+    #[test]
+    fn cosine_distance_matches_definition() {
+        assert!((cosine_distance(&[1.0, 0.0], &[1.0, 0.0])).abs() < 1e-12);
+        assert!((cosine_distance(&[1.0, 0.0], &[0.0, 1.0]) - 1.0).abs() < 1e-12);
+    }
 }

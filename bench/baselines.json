@@ -1,0 +1,109 @@
+{
+  "note": "Guard baselines for draft_plan/development-plan.md section 3. Change only after a deliberate improvement (memhouse bench guard --update). Latency gates on the SQL search time (what the engine and store control); total recall time includes query embedding, which varies with CPU load, so it only catches large regressions (+100%).",
+  "measured_at": "2026-11-01",
+  "embedding_model": "bge-small-en-v1.5-onnx-Q",
+  "governance": {
+    "min_checks": 18,
+    "source": "bench-results/20261101-175534-6f4df3_governance_guard_base"
+  },
+  "runs": [
+    {
+      "name": "longmemeval-s stride 10",
+      "tier": 1,
+      "args": [
+        "--dataset",
+        "longmemeval-s",
+        "--stride",
+        "10"
+      ],
+      "source": "bench-results/20261101-165053-d64b41_longmemeval-s_guard_base_lme_s50",
+      "checks": [
+        {
+          "metric": "session/recall_all@5",
+          "baseline": 0.913,
+          "max_drop": 0.022
+        },
+        {
+          "metric": "session/ndcg@10",
+          "baseline": 0.9424,
+          "max_drop": 0.02
+        },
+        {
+          "metric": "round/recall_all@10",
+          "baseline": 0.8478,
+          "max_drop": 0.022
+        },
+        {
+          "metric": "search_p50_ms",
+          "baseline": 9.7,
+          "max_rise_pct": 50,
+          "min_rise": 5
+        },
+        {
+          "metric": "recall_p95_ms",
+          "baseline": 63.1,
+          "max_rise_pct": 100
+        }
+      ]
+    },
+    {
+      "name": "locomo",
+      "tier": 1,
+      "args": [
+        "--dataset",
+        "locomo"
+      ],
+      "source": "bench-results/20261101-165025-f2ef0c_locomo_guard_base_locomo",
+      "checks": [
+        {
+          "metric": "session/recall_all@5",
+          "baseline": 0.788,
+          "max_drop": 0.01
+        },
+        {
+          "metric": "session/ndcg@10",
+          "baseline": 0.786,
+          "max_drop": 0.01
+        },
+        {
+          "metric": "round/recall_all@10",
+          "baseline": 0.592,
+          "max_drop": 0.01
+        },
+        {
+          "metric": "search_p50_ms",
+          "baseline": 9.0,
+          "max_rise_pct": 50,
+          "min_rise": 5
+        },
+        {
+          "metric": "recall_p95_ms",
+          "baseline": 61.1,
+          "max_rise_pct": 100
+        }
+      ]
+    },
+    {
+      "name": "locomo + enrich",
+      "tier": 2,
+      "args": [
+        "--dataset",
+        "locomo",
+        "--enrich"
+      ],
+      "source": "bench-results/20261101-134543-abf8f9_locomo_final_locomo_v3",
+      "checks": [
+        {
+          "metric": "session/recall_all@5",
+          "baseline": 0.796,
+          "max_drop": 0.01
+        },
+        {
+          "metric": "round/recall_all@10",
+          "baseline": 0.66,
+          "max_drop": 0.01
+        }
+      ]
+    }
+  ]
+}

@@ -6,6 +6,10 @@ set -euo pipefail
 BIN=${BIN:-./target/release/memhouse}
 export MEMHOUSE_HOME=${MEMHOUSE_HOME:-$(mktemp -d)/memhouse}
 PORT=${PORT:-7097}
+# Reuse already-downloaded embedding models instead of fetching them into the throwaway home.
+if [ -n "${MEMHOUSE_MODEL_CACHE:-}" ] && [ ! -e "$MEMHOUSE_HOME/models" ]; then
+  mkdir -p "$MEMHOUSE_HOME" && ln -s "$MEMHOUSE_MODEL_CACHE" "$MEMHOUSE_HOME/models"
+fi
 
 step() { printf '\n== %s\n' "$*"; }
 
@@ -40,8 +44,10 @@ curl -sf "http://127.0.0.1:$PORT/mcp" -H "authorization: Bearer $KEY" -H "conten
 step "doctor (includes MCP stdio round-trip)"
 "$BIN" doctor | tee /dev/stderr | grep -q "MCP stdio round-trip"
 
-step "governance gates"
-"$BIN" bench run --suite governance --out "$MEMHOUSE_HOME/bench-results" >/dev/null
+if [ "${SKIP_GOVERNANCE:-0}" != 1 ]; then  # `cargo xtask ci` runs it in the benchmark guard instead
+  step "governance gates"
+  "$BIN" bench run --suite governance --out "$MEMHOUSE_HOME/bench-results" >/dev/null
+fi
 
 step "audit chain"
 "$BIN" audit --verify

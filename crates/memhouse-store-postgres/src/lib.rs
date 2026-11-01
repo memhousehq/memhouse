@@ -70,6 +70,8 @@ fn row_to_memory(r: &PgRow) -> anyhow::Result<Memory> {
     })
 }
 
+// One argument per hashed field, in hash order; a struct would hide that order.
+#[allow(clippy::too_many_arguments)]
 fn audit_hash(prev: &str, at: &DateTime<Utc>, actor: &str, action: &str, tenant: &str, subject: Option<&str>, memory_id: Option<Uuid>, detail: &str) -> String {
     let mut h = Sha256::new();
     for part in [
@@ -113,6 +115,114 @@ pub fn redact_url(url: &str) -> String {
         (Some(s), Some(at)) if at > s => format!("{}://***@{}", &url[..s], &url[at + 1..]),
         _ => url.to_string(),
     }
+}
+
+/// The single-statement hybrid recall (keyword + vector candidates fused by RRF, section 4.5).
+fn search_sql() -> String {
+    format!(
+        r#"
+WITH q AS (
+  SELECT CASE WHEN $3 = '' THEN NULL ELSE to_tsquery('english', $3) END AS tsq
+),
+base AS (
+  SELECT m.id, m.tsv, m.embedding, m.embedding_alt
+  FROM mh_memory m
+  WHERE m.tenant = $1 AND m.subject = $2 AND m.status = 'committed'
+    AND ($4::text[] IS NULL OR m.kind = ANY($4))
+    AND ($5::text[] IS NULL OR m.tags && $5)
+    AND NOT (m.labels && $6::text[])
+    AND m.valid_from <= $16 AND (m.valid_to IS NULL OR m.valid_to > $16)
+    AND ($7::timestamptz IS NULL OR m.occurred_at IS NULL OR m.occurred_at <= $7)
+    AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
+      SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
+      WHERE m.occurred_at >= w.s AND m.occurred_at < w.e))
+),
+-- BM25 (k1 = 1.2, b = 0.75) over the subject's memories. Term frequencies come from the stored
+-- tsvector positions, document frequencies from the matched rows (a row matches a term iff it
+-- contains it), document length is the number of distinct lexemes.
+matched AS (
+  SELECT b.id, b.tsv FROM base b, q
+  WHERE $10 AND q.tsq IS NOT NULL AND b.tsv @@ q.tsq
+),
+qterms AS (
+  SELECT DISTINCT lex FROM unnest(tsvector_to_array(to_tsvector('english', $17))) AS lex
+),
+stats AS (
+  SELECT count(*)::float8 AS n, greatest(avg(length(tsv)), 1)::float8 AS avgdl FROM base
+),
+tf AS (
+  SELECT mt.id, u.lexeme, coalesce(array_length(u.positions, 1), 1)::float8 AS tf, length(mt.tsv)::float8 AS dl
+  FROM matched mt, unnest(mt.tsv) u
+  WHERE u.lexeme IN (SELECT lex FROM qterms)
+),
+df AS (SELECT lexeme, count(*)::float8 AS df FROM tf GROUP BY lexeme),
+kw AS (
+  SELECT id, row_number() OVER (ORDER BY bm25 DESC, id) AS rk FROM (
+    SELECT tf.id, sum(ln(1 + (st.n - df.df + 0.5) / (df.df + 0.5))
+                      * tf.tf * 2.2 / (tf.tf + 1.2 * (0.25 + 0.75 * tf.dl / st.avgdl))) AS bm25
+    FROM tf JOIN df USING (lexeme), stats st
+    GROUP BY tf.id
+  ) s
+  ORDER BY rk LIMIT $8
+),
+vec AS (
+  SELECT id, row_number() OVER (ORDER BY dist, id) AS rk, 1 - dist AS sim FROM (
+    SELECT b.id, least(b.embedding <=> $9::vector, coalesce(b.embedding_alt <=> $9::vector, 2)) AS dist
+    FROM base b
+    WHERE $11 AND b.embedding IS NOT NULL
+  ) d
+  ORDER BY rk LIMIT $8
+),
+fused AS (
+  SELECT id, sum(s) AS score, max(krk) AS krk, max(vrk) AS vrk, max(sim) AS sim FROM (
+    SELECT id, $13::float8 / ($12::float8 + rk) AS s, rk::int AS krk, NULL::int AS vrk, NULL::float8 AS sim FROM kw
+    UNION ALL
+    SELECT id, $14::float8 / ($12::float8 + rk), NULL, rk::int, sim FROM vec
+  ) u GROUP BY id
+),
+-- Rank first, then fetch only the top rows, each by primary key. The tenant and subject filter
+-- keeps this step inside the subject too (TR-RQ-01) without steering the planner off the key.
+top AS (
+  SELECT * FROM fused ORDER BY score DESC, sim DESC NULLS LAST LIMIT $15
+)
+SELECT {COLS}, f.score, f.krk, f.vrk, f.sim
+FROM top f CROSS JOIN LATERAL (
+  SELECT * FROM mh_memory x WHERE x.id = f.id AND x.tenant = $1 AND x.subject = $2 LIMIT 1
+) m
+ORDER BY f.score DESC, f.sim DESC NULLS LAST
+"#
+    )
+}
+
+/// Bind a `SearchQuery` to `sql` (the recall statement, or an EXPLAIN of it).
+fn search_query<'a>(
+    sql: &'a str,
+    q: &'a SearchQuery,
+    tsq: &'a str,
+    kinds: Option<Vec<String>>,
+    use_kw: bool,
+    use_vec: bool,
+) -> sqlx::query::Query<'a, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    sqlx::query(sql)
+        .bind(&q.tenant)
+        .bind(&q.subject)
+        .bind(tsq)
+        .bind(kinds)
+        .bind(q.tags.clone())
+        .bind(&q.denied_labels)
+        .bind(q.as_of)
+        .bind(q.per_retriever as i64)
+        .bind(q.embedding.as_ref().map(|v| vec_literal(v)))
+        .bind(use_kw)
+        .bind(use_vec)
+        .bind(q.rrf_k as f64)
+        .bind(q.keyword_weight as f64)
+        .bind(q.vector_weight as f64)
+        .bind(q.limit as i64)
+        .bind(q.valid_at)
+        .bind(&q.text)
+        .bind(q.windows.iter().map(|w| w.0).collect::<Vec<_>>())
+        .bind(q.windows.iter().map(|w| w.1).collect::<Vec<_>>())
 }
 
 #[async_trait]
@@ -288,95 +398,8 @@ CREATE TABLE IF NOT EXISTS mh_llm_cache (
         let use_vec = q.mode != RetrievalMode::Keyword && q.embedding.is_some();
         let tsq = if use_kw { or_query(&q.text) } else { String::new() };
         let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
-        let sql = format!(
-            r#"
-WITH q AS (
-  SELECT CASE WHEN $3 = '' THEN NULL ELSE to_tsquery('english', $3) END AS tsq
-),
-base AS (
-  SELECT m.id, m.tsv, m.embedding, m.embedding_alt
-  FROM mh_memory m
-  WHERE m.tenant = $1 AND m.subject = $2 AND m.status = 'committed'
-    AND ($4::text[] IS NULL OR m.kind = ANY($4))
-    AND ($5::text[] IS NULL OR m.tags && $5)
-    AND NOT (m.labels && $6::text[])
-    AND m.valid_from <= $16 AND (m.valid_to IS NULL OR m.valid_to > $16)
-    AND ($7::timestamptz IS NULL OR m.occurred_at IS NULL OR m.occurred_at <= $7)
-    AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
-      SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
-      WHERE m.occurred_at >= w.s AND m.occurred_at < w.e))
-),
--- BM25 (k1 = 1.2, b = 0.75) over the subject's memories. Term frequencies come from the stored
--- tsvector positions, document frequencies from the matched rows (a row matches a term iff it
--- contains it), document length is the number of distinct lexemes.
-matched AS (
-  SELECT b.id, b.tsv FROM base b, q
-  WHERE $10 AND q.tsq IS NOT NULL AND b.tsv @@ q.tsq
-),
-qterms AS (
-  SELECT DISTINCT lex FROM unnest(tsvector_to_array(to_tsvector('english', $17))) AS lex
-),
-stats AS (
-  SELECT count(*)::float8 AS n, greatest(avg(length(tsv)), 1)::float8 AS avgdl FROM base
-),
-tf AS (
-  SELECT mt.id, u.lexeme, coalesce(array_length(u.positions, 1), 1)::float8 AS tf, length(mt.tsv)::float8 AS dl
-  FROM matched mt, unnest(mt.tsv) u
-  WHERE u.lexeme IN (SELECT lex FROM qterms)
-),
-df AS (SELECT lexeme, count(*)::float8 AS df FROM tf GROUP BY lexeme),
-kw AS (
-  SELECT id, row_number() OVER (ORDER BY bm25 DESC, id) AS rk FROM (
-    SELECT tf.id, sum(ln(1 + (st.n - df.df + 0.5) / (df.df + 0.5))
-                      * tf.tf * 2.2 / (tf.tf + 1.2 * (0.25 + 0.75 * tf.dl / st.avgdl))) AS bm25
-    FROM tf JOIN df USING (lexeme), stats st
-    GROUP BY tf.id
-  ) s
-  ORDER BY rk LIMIT $8
-),
-vec AS (
-  SELECT id, row_number() OVER (ORDER BY dist, id) AS rk, 1 - dist AS sim FROM (
-    SELECT b.id, least(b.embedding <=> $9::vector, coalesce(b.embedding_alt <=> $9::vector, 2)) AS dist
-    FROM base b
-    WHERE $11 AND b.embedding IS NOT NULL
-  ) d
-  ORDER BY rk LIMIT $8
-),
-fused AS (
-  SELECT id, sum(s) AS score, max(krk) AS krk, max(vrk) AS vrk, max(sim) AS sim FROM (
-    SELECT id, $13::float8 / ($12::float8 + rk) AS s, rk::int AS krk, NULL::int AS vrk, NULL::float8 AS sim FROM kw
-    UNION ALL
-    SELECT id, $14::float8 / ($12::float8 + rk), NULL, rk::int, sim FROM vec
-  ) u GROUP BY id
-)
-SELECT {COLS}, f.score, f.krk, f.vrk, f.sim
-FROM fused f JOIN mh_memory m ON m.id = f.id
-ORDER BY f.score DESC, f.sim DESC NULLS LAST
-LIMIT $15
-"#
-        );
-        let rows = sqlx::query(&sql)
-            .bind(&q.tenant)
-            .bind(&q.subject)
-            .bind(&tsq)
-            .bind(kinds)
-            .bind(q.tags.clone())
-            .bind(&q.denied_labels)
-            .bind(q.as_of)
-            .bind(q.per_retriever as i64)
-            .bind(q.embedding.as_ref().map(|v| vec_literal(v)))
-            .bind(use_kw)
-            .bind(use_vec)
-            .bind(q.rrf_k as f64)
-            .bind(q.keyword_weight as f64)
-            .bind(q.vector_weight as f64)
-            .bind(q.limit as i64)
-            .bind(q.valid_at)
-            .bind(&q.text)
-            .bind(q.windows.iter().map(|w| w.0).collect::<Vec<_>>())
-            .bind(q.windows.iter().map(|w| w.1).collect::<Vec<_>>())
-            .fetch_all(&self.pool)
-            .await?;
+        let sql = search_sql();
+        let rows = search_query(&sql, q, &tsq, kinds, use_kw, use_vec).fetch_all(&self.pool).await?;
         rows.iter()
             .map(|r| {
                 Ok(Hit {
@@ -389,6 +412,18 @@ LIMIT $15
                 })
             })
             .collect()
+    }
+
+    async fn search_plan(&self, q: &SearchQuery) -> anyhow::Result<Option<serde_json::Value>> {
+        // Fresh statistics, so the plan is the one the planner would pick on this data.
+        sqlx::query("ANALYZE mh_memory").execute(&self.pool).await?;
+        let use_kw = q.mode != RetrievalMode::Dense;
+        let use_vec = q.mode != RetrievalMode::Keyword && q.embedding.is_some();
+        let tsq = if use_kw { or_query(&q.text) } else { String::new() };
+        let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
+        let sql = format!("EXPLAIN (FORMAT JSON) {}", search_sql());
+        let row = search_query(&sql, q, &tsq, kinds, use_kw, use_vec).fetch_one(&self.pool).await?;
+        Ok(Some(row.try_get::<serde_json::Value, _>(0)?))
     }
 
     async fn get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>> {

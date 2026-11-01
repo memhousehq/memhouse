@@ -5,6 +5,7 @@
 pub mod baselines;
 pub mod datasets;
 pub mod governance;
+pub mod guard;
 pub mod metrics;
 pub mod report;
 pub mod runner;
@@ -29,7 +30,9 @@ pub enum BenchCmd {
         force: bool,
     },
     /// Run a benchmark dataset and/or the governance suite
-    Run(RunArgs),
+    Run(Box<RunArgs>),
+    /// Regression guard: run the benchmark tiers and compare them with bench/baselines.json
+    Guard(guard::GuardArgs),
     /// Rebuild report.md for a results directory, or compare several runs
     Report {
         /// One or more results directories (bench-results/<run>)
@@ -186,7 +189,10 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
                 println!("  {:<20} {}  [{}]", d.name, d.title, have);
             }
             println!("\nSuites (memhouse bench run --suite <name>):");
-            println!("  {:<20} 12 deterministic governance and safety gates: injection, PII, isolation, deletion, supersession, validity, audit", "governance");
+            println!(
+                "  {:<20} deterministic governance and safety gates: injection, PII, isolation, deletion, supersession, validity, audit, recall scope and exactness",
+                "governance"
+            );
             Ok(())
         }
         BenchCmd::Download { dataset, force } => {
@@ -207,11 +213,21 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        BenchCmd::Run(args) => run(args, cfg).await,
+        BenchCmd::Run(args) => {
+            let (summary, _) = run_to(*args, cfg, false).await?;
+            if let Some(g) = &summary.governance {
+                if g.failed > 0 {
+                    anyhow::bail!("{} governance gate(s) failed", g.failed);
+                }
+            }
+            Ok(())
+        }
+        BenchCmd::Guard(args) => guard::run(args, cfg).await,
     }
 }
 
-async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
+/// Run one benchmark and write its results directory. `quiet` skips printing the report.
+pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Result<(report::Summary, PathBuf)> {
     if args.dataset.is_none() && args.suite.is_none() {
         anyhow::bail!("give --dataset <name> and/or --suite governance (see `memhouse bench list`)");
     }
@@ -411,14 +427,11 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
     std::fs::write(out_dir.join("summary.json"), serde_json::to_string_pretty(&summary)?)?;
     let md = report::markdown(&summary);
     std::fs::write(out_dir.join("report.md"), &md)?;
-    println!("{md}");
-    eprintln!("Results written to {}", out_dir.display());
-    if let Some(g) = &summary.governance {
-        if g.failed > 0 {
-            anyhow::bail!("{} governance gate(s) failed", g.failed);
-        }
+    if !quiet {
+        println!("{md}");
     }
-    Ok(())
+    eprintln!("Results written to {}", out_dir.display());
+    Ok((summary, out_dir))
 }
 
 /// USD per million (prompt, completion) tokens: the explicit flag, else list prices for common

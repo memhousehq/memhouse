@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub database: DatabaseConfig,
@@ -16,21 +16,6 @@ pub struct Config {
     pub server: ServerConfig,
     pub memory: MemoryConfig,
     pub governance: GovernanceConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            database: DatabaseConfig::default(),
-            embedding: EmbeddingConfig::default(),
-            rerank: RerankConfig::default(),
-            llm: None,
-            enrich: EnrichConfig::default(),
-            server: ServerConfig::default(),
-            memory: MemoryConfig::default(),
-            governance: GovernanceConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

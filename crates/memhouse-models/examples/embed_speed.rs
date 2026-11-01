@@ -8,8 +8,7 @@ async fn main() {
     let a: Vec<String> = std::env::args().collect();
     let words: usize = a.get(1).and_then(|s| s.parse().ok()).unwrap_or(250);
     let count: usize = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(256);
-    let mut cfg = EmbeddingConfig::default();
-    cfg.batch_size = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(32);
+    let mut cfg = EmbeddingConfig { batch_size: a.get(3).and_then(|s| s.parse().ok()).unwrap_or(32), ..Default::default() };
     if let Some(m) = a.get(4) {
         cfg.model = m.clone();
     }

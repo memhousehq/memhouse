@@ -1,0 +1,8 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+# Development tasks: `cargo xtask ci`, `cargo xtask install-hooks`. Standard library only.
+[dependencies]

@@ -38,6 +38,11 @@ pub trait Store: Send + Sync {
     async fn insert(&self, records: &[NewMemory]) -> anyhow::Result<()>;
     /// One hybrid statement per subject: keyword + vector candidates fused by RRF.
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>>;
+    /// The query plan of `search` for these parameters (stores with a planner), so tests can check
+    /// that recall never scans outside the subject (TR-RQ-01).
+    async fn search_plan(&self, _q: &SearchQuery) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
     async fn get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>>;
     async fn list(&self, q: &ListQuery) -> anyhow::Result<Vec<Memory>>;
     /// Records of the subject whose content hash matches (exact dedup).
