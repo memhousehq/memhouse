@@ -84,9 +84,10 @@ pub const DATASETS: &[DatasetInfo] = &[
 ];
 
 pub fn info(name: &str) -> anyhow::Result<&'static DatasetInfo> {
-    DATASETS.iter().find(|d| d.name == name).ok_or_else(|| {
-        anyhow::anyhow!("unknown dataset '{name}'. Available: {}", DATASETS.iter().map(|d| d.name).collect::<Vec<_>>().join(", "))
-    })
+    DATASETS
+        .iter()
+        .find(|d| d.name == name)
+        .ok_or_else(|| anyhow::anyhow!("unknown dataset '{name}'. Available: {}", DATASETS.iter().map(|d| d.name).collect::<Vec<_>>().join(", ")))
 }
 
 pub fn data_dir() -> PathBuf {

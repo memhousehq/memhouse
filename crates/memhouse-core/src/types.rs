@@ -23,14 +23,7 @@ pub enum MemoryKind {
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 6] = [
-        MemoryKind::Episodic,
-        MemoryKind::Semantic,
-        MemoryKind::Preference,
-        MemoryKind::Procedural,
-        MemoryKind::Commitment,
-        MemoryKind::Document,
-    ];
+    pub const ALL: [MemoryKind; 6] = [MemoryKind::Episodic, MemoryKind::Semantic, MemoryKind::Preference, MemoryKind::Procedural, MemoryKind::Commitment, MemoryKind::Document];
 
     pub fn as_str(&self) -> &'static str {
         match self {

@@ -67,11 +67,21 @@ pub fn markdown(s: &Summary) -> String {
     let _ = writeln!(o, "| MemHouse | {} |", c.memhouse_version);
     let _ = writeln!(o, "| Embedder | `{}` |", c.embedder);
     let _ = writeln!(o, "| Reranker | {} |", c.reranker.as_deref().map(|r| format!("`{r}`")).unwrap_or_else(|| "off".into()));
-    let _ = writeln!(o, "| Retrieval | {} (RRF k={}, keyword w={}, vector w={}, {} candidates per retriever) |", c.mode, c.rrf_k, c.keyword_weight, c.vector_weight, c.candidates_per_retriever);
+    let _ = writeln!(
+        o,
+        "| Retrieval | {} (RRF k={}, keyword w={}, vector w={}, {} candidates per retriever) |",
+        c.mode, c.rrf_k, c.keyword_weight, c.vector_weight, c.candidates_per_retriever
+    );
     let _ = writeln!(o, "| Query analysis | {} |", c.query_analysis.as_deref().unwrap_or("off"));
     let _ = writeln!(o, "| Selection | {} |", c.selection);
     if let Some(m) = &c.answer_model {
-        let _ = writeln!(o, "| Answer model | `{m}` (top {} rounds{}, answer prompt v{}) |", c.answer_k.unwrap_or(0), c.enrich_model.as_ref().map(|e| format!(" + facts from `{e}`")).unwrap_or_default(), c.answer_prompt.unwrap_or(1));
+        let _ = writeln!(
+            o,
+            "| Answer model | `{m}` (top {} rounds{}, answer prompt v{}) |",
+            c.answer_k.unwrap_or(0),
+            c.enrich_model.as_ref().map(|e| format!(" + facts from `{e}`")).unwrap_or_default(),
+            c.answer_prompt.unwrap_or(1)
+        );
         let _ = writeln!(o, "| Judge model | `{}` |", c.judge_model.clone().unwrap_or_default());
     }
     let _ = writeln!(o, "| Host | {} |\n", c.host);
@@ -120,14 +130,29 @@ pub fn markdown(s: &Summary) -> String {
             let _ = writeln!(o, "## Background enrichment (async LLM fact extraction)\n");
             let _ = writeln!(o, "| Metric | Value |\n|---|---|");
             let _ = writeln!(o, "| Model | `{}` |", e.model);
-            let _ = writeln!(o, "| Jobs (one per ingested session) | {} ({} LLM calls, {} from cache, {} skipped as too short, {} failed) |", e.jobs, e.llm_calls, e.cached, e.skipped, e.failed);
+            let _ = writeln!(
+                o,
+                "| Jobs (one per ingested session) | {} ({} LLM calls, {} from cache, {} skipped as too short, {} failed) |",
+                e.jobs, e.llm_calls, e.cached, e.skipped, e.failed
+            );
             let _ = writeln!(o, "| Facts stored | {} |", e.facts);
             let _ = writeln!(o, "| Tokens | {} prompt + {} completion |", e.calls.prompt_tokens, e.calls.completion_tokens);
-            let _ = writeln!(o, "| **Cost** | **${:.4}** (${:.6} per LLM call; {} of {} calls priced by the provider) |", e.calls.cost_usd.max(0.0), e.calls.cost_usd.max(0.0) / e.llm_calls.max(1) as f64, e.calls.cost_reported_calls, e.calls.calls);
+            let _ = writeln!(
+                o,
+                "| **Cost** | **${:.4}** (${:.6} per LLM call; {} of {} calls priced by the provider) |",
+                e.calls.cost_usd.max(0.0),
+                e.calls.cost_usd.max(0.0) / e.llm_calls.max(1) as f64,
+                e.calls.cost_reported_calls,
+                e.calls.calls
+            );
             let _ = writeln!(o, "| LLM call latency | p50 {:.0} · p95 {:.0} · p99 {:.0} ms |", e.calls.latency.p50_ms, e.calls.latency.p95_ms, e.calls.latency.p99_ms);
             let _ = writeln!(o, "| Lag, ingest to facts searchable | p50 {:.1} s · p95 {:.1} s |", e.lag.p50_ms / 1000.0, e.lag.p95_ms / 1000.0);
             if e.recall_during.n > 0 {
-                let _ = writeln!(o, "| Recall while jobs were still pending (does not wait) | p50 {:.0} · p95 {:.0} ms over {} recalls, {} jobs pending |", e.recall_during.p50_ms, e.recall_during.p95_ms, e.recall_during.n, e.recall_during_pending_jobs);
+                let _ = writeln!(
+                    o,
+                    "| Recall while jobs were still pending (does not wait) | p50 {:.0} · p95 {:.0} ms over {} recalls, {} jobs pending |",
+                    e.recall_during.p50_ms, e.recall_during.p95_ms, e.recall_during.n, e.recall_during_pending_jobs
+                );
             }
             let _ = writeln!(o);
         }
@@ -147,12 +172,33 @@ pub fn markdown(s: &Summary) -> String {
                 let _ = writeln!(
                     o,
                     "| {role} | `{}` | {} | {} | {} | {:.4} | {src} | {} | {:.0} / {:.0} / {:.0} ms |",
-                    model.clone().unwrap_or_default(), r.calls, r.prompt_tokens, r.completion_tokens, r.cost_usd, r.retries, r.latency.p50_ms, r.latency.p95_ms, r.latency.p99_ms
+                    model.clone().unwrap_or_default(),
+                    r.calls,
+                    r.prompt_tokens,
+                    r.completion_tokens,
+                    r.cost_usd,
+                    r.retries,
+                    r.latency.p50_ms,
+                    r.latency.p95_ms,
+                    r.latency.p99_ms
                 );
             }
             let n = t.answer.calls.max(1) as f64;
-            let _ = writeln!(o, "| **total** | | {} | {} | {} | **{:.4}** | | | |\n", t.answer.calls + t.judge.calls, t.answer.prompt_tokens + t.judge.prompt_tokens, t.answer.completion_tokens + t.judge.completion_tokens, t.total_cost_usd);
-            let _ = writeln!(o, "Per question: {:.0} prompt + {:.0} completion tokens to the answer model, ${:.5} in all.\n", t.answer.prompt_tokens as f64 / n, t.answer.completion_tokens as f64 / n, t.total_cost_usd / n);
+            let _ = writeln!(
+                o,
+                "| **total** | | {} | {} | {} | **{:.4}** | | | |\n",
+                t.answer.calls + t.judge.calls,
+                t.answer.prompt_tokens + t.judge.prompt_tokens,
+                t.answer.completion_tokens + t.judge.completion_tokens,
+                t.total_cost_usd
+            );
+            let _ = writeln!(
+                o,
+                "Per question: {:.0} prompt + {:.0} completion tokens to the answer model, ${:.5} in all.\n",
+                t.answer.prompt_tokens as f64 / n,
+                t.answer.completion_tokens as f64 / n,
+                t.total_cost_usd / n
+            );
             let (r, ra, al) = (&a.recall_latency, &t.recall_plus_answer_latency, &t.answer.latency);
             let _ = writeln!(o, "**Latency with and without the external LLM call** (the judge is benchmark-only and excluded):\n");
             let _ = writeln!(o, "| | p50 | p95 | p99 |\n|---|---|---|---|");
@@ -164,23 +210,53 @@ pub fn markdown(s: &Summary) -> String {
         let l = &a.recall_latency;
         let _ = writeln!(o, "## Latency and throughput\n");
         let _ = writeln!(o, "| Metric | Value |\n|---|---|");
-        let _ = writeln!(o, "| Recall (end to end: query embedding + one SQL statement per probe{}) | p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms · n={} |", if c.reranker.is_some() { " + rerank" } else { "" }, l.p50_ms, l.p95_ms, l.p99_ms, l.n);
+        let _ = writeln!(
+            o,
+            "| Recall (end to end: query embedding + one SQL statement per probe{}) | p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms · n={} |",
+            if c.reranker.is_some() { " + rerank" } else { "" },
+            l.p50_ms,
+            l.p95_ms,
+            l.p99_ms,
+            l.n
+        );
         let sl = &a.search_latency;
         let el = &a.query_embed_latency;
         let _ = writeln!(o, "| — of which SQL hybrid search (Postgres) | p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms |", sl.p50_ms, sl.p95_ms, sl.p99_ms);
         let _ = writeln!(o, "| — of which query embedding (CPU, shared with concurrent ingest) | p50 {:.1} ms · p95 {:.1} ms |", el.p50_ms, el.p95_ms);
-        let _ = writeln!(o, "| Ingest | {} rounds, {:.0} rounds/s with {} workers (includes embedding on CPU, cache hits for repeated sessions) |\n", a.ingest_rounds, a.rounds_per_second, c.concurrency);
+        let _ = writeln!(
+            o,
+            "| Ingest | {} rounds, {:.0} rounds/s with {} workers (includes embedding on CPU, cache hits for repeated sessions) |\n",
+            a.ingest_rounds, a.rounds_per_second, c.concurrency
+        );
 
         let refs: Vec<_> = baselines::RETRIEVAL.iter().filter(|_| s.dataset.starts_with("longmemeval")).collect();
         if !refs.is_empty() && has_session {
             let _ = writeln!(o, "## Reference: published retrieval results\n");
             let _ = writeln!(o, "From the LongMemEval paper (Table 9). These were measured on **LongMemEval_M** (~500 sessions per question); compare against MemHouse runs on the same split. The paper's \"Recall@k\" is compared here with MemHouse's recall_all@k (the stricter of the two definitions in the reference code).\n");
             let _ = writeln!(o, "| System | Granularity | R@5 | nDCG@5 | R@10 | nDCG@10 |\n|---|---|---|---|---|---|");
-            if let (Some(r5), Some(n5), Some(r10), Some(n10)) = (get(a, "session/recall_all@5"), get(a, "session/ndcg@5"), get(a, "session/recall_all@10"), get(a, "session/ndcg@10")) {
-                let _ = writeln!(o, "| **MemHouse (this run, {})** | session | **{:.1}** | **{:.1}** | **{:.1}** | **{:.1}** |", s.dataset, r5.mean * 100.0, n5.mean * 100.0, r10.mean * 100.0, n10.mean * 100.0);
+            if let (Some(r5), Some(n5), Some(r10), Some(n10)) =
+                (get(a, "session/recall_all@5"), get(a, "session/ndcg@5"), get(a, "session/recall_all@10"), get(a, "session/ndcg@10"))
+            {
+                let _ = writeln!(
+                    o,
+                    "| **MemHouse (this run, {})** | session | **{:.1}** | **{:.1}** | **{:.1}** | **{:.1}** |",
+                    s.dataset,
+                    r5.mean * 100.0,
+                    n5.mean * 100.0,
+                    r10.mean * 100.0,
+                    n10.mean * 100.0
+                );
             }
             if let (Some(r5), Some(n5), Some(r10), Some(n10)) = (get(a, "round/recall_all@5"), get(a, "round/ndcg@5"), get(a, "round/recall_all@10"), get(a, "round/ndcg@10")) {
-                let _ = writeln!(o, "| **MemHouse (this run, {})** | round | **{:.1}** | **{:.1}** | **{:.1}** | **{:.1}** |", s.dataset, r5.mean * 100.0, n5.mean * 100.0, r10.mean * 100.0, n10.mean * 100.0);
+                let _ = writeln!(
+                    o,
+                    "| **MemHouse (this run, {})** | round | **{:.1}** | **{:.1}** | **{:.1}** | **{:.1}** |",
+                    s.dataset,
+                    r5.mean * 100.0,
+                    n5.mean * 100.0,
+                    r10.mean * 100.0,
+                    n10.mean * 100.0
+                );
             }
             for r in refs {
                 let _ = writeln!(o, "| {} | {} | {:.1} | {:.1} | {:.1} | {:.1} |", r.system, r.granularity, r.r5 * 100.0, r.n5 * 100.0, r.r10 * 100.0, r.n10 * 100.0);
@@ -200,8 +276,11 @@ pub fn markdown(s: &Summary) -> String {
             }
             let _ = writeln!(o);
         }
-        let _ = writeln!(o, "Published search latencies (Mem0 paper, LoCoMo, hosted services incl. network): {}.\n",
-            baselines::LATENCY.iter().map(|l| format!("{} p50 {:.0} / p95 {:.0} ms", l.system, l.p50_ms, l.p95_ms)).collect::<Vec<_>>().join("; "));
+        let _ = writeln!(
+            o,
+            "Published search latencies (Mem0 paper, LoCoMo, hosted services incl. network): {}.\n",
+            baselines::LATENCY.iter().map(|l| format!("{} p50 {:.0} / p95 {:.0} ms", l.system, l.p50_ms, l.p95_ms)).collect::<Vec<_>>().join("; ")
+        );
     }
 
     if let Some(g) = &s.governance {
@@ -209,7 +288,8 @@ pub fn markdown(s: &Summary) -> String {
         let _ = writeln!(o, "**{} of {} checks passed** ({:.0} ms). Deterministic checks, never decided by a model.\n", g.passed, g.passed + g.failed, g.took_ms);
         let _ = writeln!(o, "| | Check | Requirement | Result | Target | Detail |\n|---|---|---|---|---|---|");
         for c in &g.checks {
-            let _ = writeln!(o, "| {} | {} | {} | {} | {} | {} |", if c.passed { "✅ pass" } else { "❌ FAIL" }, c.title, c.requirement, c.value, c.target, c.detail.replace('|', "/"));
+            let _ =
+                writeln!(o, "| {} | {} | {} | {} | {} | {} |", if c.passed { "✅ pass" } else { "❌ FAIL" }, c.title, c.requirement, c.value, c.target, c.detail.replace('|', "/"));
         }
         let _ = writeln!(o);
     }
@@ -220,10 +300,7 @@ pub fn markdown(s: &Summary) -> String {
 pub fn compare(runs: &[Summary]) -> String {
     let mut o = String::new();
     let _ = writeln!(o, "# MemHouse benchmark comparison\n");
-    let keys = [
-        "session/recall_any@5", "session/recall_all@5", "session/recall_all@10", "session/ndcg@10",
-        "round/recall_all@10", "round/ndcg@10",
-    ];
+    let keys = ["session/recall_any@5", "session/recall_all@5", "session/recall_all@10", "session/ndcg@10", "round/recall_all@10", "round/ndcg@10"];
     let _ = write!(o, "| Run | Dataset | n | {} | QA acc | recall p50 / p95 ms |\n|---|---|---|", keys.join(" | "));
     for _ in keys {
         let _ = write!(o, "---|");
@@ -239,7 +316,10 @@ pub fn compare(runs: &[Summary]) -> String {
         let _ = writeln!(
             o,
             " {} | {:.1} / {:.1} |",
-            a.qa_accuracy.as_ref().map(|e| format!("{:.1}{}", e.mean * 100.0, a.llm.as_ref().map(|t| format!(" (${:.2})", t.total_cost_usd)).unwrap_or_default())).unwrap_or_else(|| "–".into()),
+            a.qa_accuracy
+                .as_ref()
+                .map(|e| format!("{:.1}{}", e.mean * 100.0, a.llm.as_ref().map(|t| format!(" (${:.2})", t.total_cost_usd)).unwrap_or_default()))
+                .unwrap_or_else(|| "–".into()),
             a.recall_latency.p50_ms,
             a.recall_latency.p95_ms
         );

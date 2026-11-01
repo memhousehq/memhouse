@@ -242,14 +242,7 @@ impl Engine {
         Ok((Some(key), outcome))
     }
 
-    async fn store_facts(
-        &self,
-        job: &EnrichJob,
-        rounds: &[Memory],
-        session_time: Option<DateTime<Utc>>,
-        facts: Vec<ExtractedFact>,
-        model: &str,
-    ) -> anyhow::Result<usize> {
+    async fn store_facts(&self, job: &EnrichJob, rounds: &[Memory], session_time: Option<DateTime<Utc>>, facts: Vec<ExtractedFact>, model: &str) -> anyhow::Result<usize> {
         let now = Utc::now();
         let mut recs: Vec<NewMemory> = vec![];
         let mut seen = std::collections::HashSet::new();
@@ -361,7 +354,10 @@ mod tests {
 
     #[test]
     fn parses_fenced_json_and_dates() {
-        let f = parse("```json\n{\"facts\": [{\"text\": \"The user bought an air fryer\", \"kind\": \"event\", \"date\": \"2023-03-15\", \"rounds\": [2, \"3\"]}, {\"text\": \"ok\"}]}\n```").unwrap();
+        let f = parse(
+            "```json\n{\"facts\": [{\"text\": \"The user bought an air fryer\", \"kind\": \"event\", \"date\": \"2023-03-15\", \"rounds\": [2, \"3\"]}, {\"text\": \"ok\"}]}\n```",
+        )
+        .unwrap();
         assert_eq!(f.len(), 1);
         assert_eq!(parse_date("2023-03-15").unwrap().format("%F").to_string(), "2023-03-15");
         assert_eq!(parse_date("2023-03").unwrap().format("%F").to_string(), "2023-03-01");

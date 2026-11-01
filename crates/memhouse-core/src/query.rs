@@ -33,8 +33,7 @@ pub fn analyze(text: &str, now: DateTime<Utc>) -> QueryPlan {
 
 const NUM: &str = r"(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a couple of|couple of|a few|few|several)";
 const UNIT: &str = r"(day|week|month|year)s?";
-const MONTHS: [&str; 12] =
-    ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const MONTHS: [&str; 12] = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
 
 fn num(s: &str) -> Option<i64> {
     Some(match s {
@@ -100,10 +99,8 @@ fn weekday(s: &str) -> Option<Weekday> {
 }
 
 static AGO: Lazy<Regex> = Lazy::new(|| Regex::new(&format!(r"\b{NUM}\s+{UNIT}\s+ago\b")).unwrap());
-static PAST: Lazy<Regex> =
-    Lazy::new(|| Regex::new(&format!(r"\b(?:past|last|previous)\s+(?:{NUM}\s+)?{UNIT}\b")).unwrap());
-static LAST_WEEKDAY: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b(last|this past|this|on)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b").unwrap());
+static PAST: Lazy<Regex> = Lazy::new(|| Regex::new(&format!(r"\b(?:past|last|previous)\s+(?:{NUM}\s+)?{UNIT}\b")).unwrap());
+static LAST_WEEKDAY: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(last|this past|this|on)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b").unwrap());
 static LAST_WEEKEND: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(last|this past) weekend\b").unwrap());
 static YESTERDAY: Lazy<Regex> = Lazy::new(|| Regex::new(r"\byesterday\b").unwrap());
 static THIS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bthis\s+(week|month|year)\b").unwrap());
@@ -202,13 +199,11 @@ pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
     out
 }
 
-static QUOTED: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?:^|[\s(])['"‘“]([^'"‘’“”]{3,80})['"’”](?:[\s,.?!:;)]|$)"#).unwrap());
+static QUOTED: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:^|[\s(])['"‘“]([^'"‘’“”]{3,80})['"’”](?:[\s,.?!:;)]|$)"#).unwrap());
 static BETWEEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bbetween\s+(.+?)\s+and\s+(.+?)\s*(?:[?!]|\.\s*$|$)").unwrap());
 static CLAUSE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\s+(?:when|before|after|since|while|until)\s+").unwrap());
-static LEAD: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)^(?:which|what|who|whom|whose|when|where|how\s+(?:many\s+\w+|much|long|old|often)?|did|do|does|was|were|is|are|had|have|has)\b\s*").unwrap()
-});
+static LEAD: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^(?:which|what|who|whom|whose|when|where|how\s+(?:many\s+\w+|much|long|old|often)?|did|do|does|was|were|is|are|had|have|has)\b\s*").unwrap());
 static ARTICLE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:the|a|an|my|our|that|those)\s+").unwrap());
 
 fn clean(s: &str) -> String {

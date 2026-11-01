@@ -134,11 +134,7 @@ fn arg_time(args: &Value, k: &str) -> anyhow::Result<Option<chrono::DateTime<chr
 fn arg_kinds(args: &Value, k: &str) -> anyhow::Result<Option<Vec<MemoryKind>>> {
     match args.get(k).and_then(|v| v.as_array()) {
         None => Ok(None),
-        Some(a) => a
-            .iter()
-            .map(|v| v.as_str().and_then(MemoryKind::parse).ok_or_else(|| anyhow::anyhow!("unknown kind {v}")))
-            .collect::<anyhow::Result<Vec<_>>>()
-            .map(Some),
+        Some(a) => a.iter().map(|v| v.as_str().and_then(MemoryKind::parse).ok_or_else(|| anyhow::anyhow!("unknown kind {v}"))).collect::<anyhow::Result<Vec<_>>>().map(Some),
     }
 }
 
@@ -235,10 +231,7 @@ async fn call_tool(engine: &Engine, name: &str, args: &Value, actor: &str) -> an
             let text = if ms.is_empty() {
                 "No memories yet.".into()
             } else {
-                ms.iter()
-                    .map(|m| format!("- [{}] ({}, {}) {}", m.id, m.kind, m.created_at.format("%Y-%m-%d"), m.content.replace('\n', " ")))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                ms.iter().map(|m| format!("- [{}] ({}, {}) {}", m.id, m.kind, m.created_at.format("%Y-%m-%d"), m.content.replace('\n', " "))).collect::<Vec<_>>().join("\n")
             };
             Ok((text, json!({ "count": ms.len() })))
         }

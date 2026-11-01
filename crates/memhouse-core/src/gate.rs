@@ -44,54 +44,38 @@ static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
             replacement: "[REDACTED:secret]",
             check: None,
         },
-        Rule {
-            category: "card",
-            re: r(r"\b(?:\d[ -]?){12,18}\d\b"),
-            replacement: "[REDACTED:card]",
-            check: Some(luhn_ok),
-        },
-        Rule {
-            category: "ssn",
-            re: r(r"\b\d{3}-\d{2}-\d{4}\b"),
-            replacement: "[REDACTED:ssn]",
-            check: None,
-        },
-        Rule {
-            category: "iban",
-            re: r(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b"),
-            replacement: "[REDACTED:iban]",
-            check: None,
-        },
-        Rule {
-            category: "email",
-            re: r(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),
-            replacement: "[REDACTED:email]",
-            check: None,
-        },
-        Rule {
-            category: "phone",
-            re: r(r"(?:\+\d{1,3}[ .\-]?)?\(?\b\d{3}\)?[ .\-]?\d{3}[ .\-]?\d{4}\b"),
-            replacement: "[REDACTED:phone]",
-            check: None,
-        },
-        Rule {
-            category: "ip",
-            re: r(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"),
-            replacement: "[REDACTED:ip]",
-            check: None,
-        },
+        Rule { category: "card", re: r(r"\b(?:\d[ -]?){12,18}\d\b"), replacement: "[REDACTED:card]", check: Some(luhn_ok) },
+        Rule { category: "ssn", re: r(r"\b\d{3}-\d{2}-\d{4}\b"), replacement: "[REDACTED:ssn]", check: None },
+        Rule { category: "iban", re: r(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b"), replacement: "[REDACTED:iban]", check: None },
+        Rule { category: "email", re: r(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), replacement: "[REDACTED:email]", check: None },
+        Rule { category: "phone", re: r(r"(?:\+\d{1,3}[ .\-]?)?\(?\b\d{3}\)?[ .\-]?\d{3}[ .\-]?\d{4}\b"), replacement: "[REDACTED:phone]", check: None },
+        Rule { category: "ip", re: r(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"), replacement: "[REDACTED:ip]", check: None },
     ]
 });
 
 static INJECTION: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
     let r = |p: &str| Regex::new(&format!("(?i){p}")).expect("valid regex");
     vec![
-        ("override", r(r"\b(?:ignore|disregard|forget|override)\b[^.\n]{0,40}\b(?:previous|prior|above|earlier|all|any|your)\b[^.\n]{0,25}\b(?:instructions?|prompts?|rules?|guidelines?|directives?)")),
-        ("role_hijack", r(r"\b(?:you are now|from now on,? you (?:are|will|must)|act as (?:an? )?(?:unrestricted|jailbroken|dan)\b|pretend (?:that )?you have no (?:rules|restrictions))")),
+        (
+            "override",
+            r(
+                r"\b(?:ignore|disregard|forget|override)\b[^.\n]{0,40}\b(?:previous|prior|above|earlier|all|any|your)\b[^.\n]{0,25}\b(?:instructions?|prompts?|rules?|guidelines?|directives?)",
+            ),
+        ),
+        (
+            "role_hijack",
+            r(r"\b(?:you are now|from now on,? you (?:are|will|must)|act as (?:an? )?(?:unrestricted|jailbroken|dan)\b|pretend (?:that )?you have no (?:rules|restrictions))"),
+        ),
         ("system_prompt", r(r"\b(?:reveal|print|show|output|leak)\b[^.\n]{0,30}\b(?:system prompt|hidden instructions|developer message)")),
         ("chat_markup", r(r"<\|(?:im_start|im_end|system|endoftext)\|>|\[/?INST\]|<<SYS>>|^\s*###\s*(?:system|instruction)s?\s*:")),
-        ("memory_directive", r(r"\b(?:always|whenever)\b[^.\n]{0,60}\b(?:send|forward|email|upload|transfer|exfiltrate)\b[^.\n]{0,60}\b(?:to|at)\b[^.\n]{0,40}(?:https?://|@|\bwallet\b)")),
-        ("tool_directive", r(r"\b(?:run|execute|call)\b[^.\n]{0,20}\b(?:the )?(?:command|tool|function)\b[^.\n]{0,40}\b(?:rm -rf|curl [^ ]+\s*\|\s*(?:ba)?sh|transfer_funds|delete_all)")),
+        (
+            "memory_directive",
+            r(r"\b(?:always|whenever)\b[^.\n]{0,60}\b(?:send|forward|email|upload|transfer|exfiltrate)\b[^.\n]{0,60}\b(?:to|at)\b[^.\n]{0,40}(?:https?://|@|\bwallet\b)"),
+        ),
+        (
+            "tool_directive",
+            r(r"\b(?:run|execute|call)\b[^.\n]{0,20}\b(?:the )?(?:command|tool|function)\b[^.\n]{0,40}\b(?:rm -rf|curl [^ ]+\s*\|\s*(?:ba)?sh|transfer_funds|delete_all)"),
+        ),
     ]
 });
 
@@ -107,7 +91,11 @@ fn luhn_ok(s: &str) -> bool {
         .map(|(i, &d)| {
             if i % 2 == 1 {
                 let x = d * 2;
-                if x > 9 { x - 9 } else { x }
+                if x > 9 {
+                    x - 9
+                } else {
+                    x
+                }
             } else {
                 d
             }
@@ -139,15 +127,7 @@ pub fn screen(content: &str, redact: &[String], check_injection: bool) -> GateOu
             redactions.push(rule.category.to_string());
         }
     }
-    let injection = if check_injection {
-        INJECTION
-            .iter()
-            .filter(|(_, re)| re.is_match(&text))
-            .map(|(name, _)| name.to_string())
-            .collect()
-    } else {
-        vec![]
-    };
+    let injection = if check_injection { INJECTION.iter().filter(|(_, re)| re.is_match(&text)).map(|(name, _)| name.to_string()).collect() } else { vec![] };
     GateOutcome { content: text, redactions, injection }
 }
 
@@ -191,11 +171,7 @@ mod tests {
         ] {
             assert!(screen(s, &[], true).quarantine(), "{s}");
         }
-        for s in [
-            "I prefer window seats",
-            "We decided to ignore the flaky test for now",
-            "Remember to send the invoice to the customer on Friday",
-        ] {
+        for s in ["I prefer window seats", "We decided to ignore the flaky test for now", "Remember to send the invoice to the customer on Friday"] {
             assert!(!screen(s, &[], true).quarantine(), "{s}");
         }
     }

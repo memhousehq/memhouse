@@ -223,11 +223,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let mut cfg = if path_or_default.exists() { Config::load(Some(&path_or_default))? } else { Config::default() };
             let fresh = !path_or_default.exists();
             if fresh || up::managed(&cfg).is_some() {
-                let password = if fresh {
-                    random_token(24)
-                } else {
-                    cfg.database.url.split(':').nth(2).and_then(|s| s.split('@').next()).unwrap_or("memhouse").to_string()
-                };
+                let password = if fresh { random_token(24) } else { cfg.database.url.split(':').nth(2).and_then(|s| s.split('@').next()).unwrap_or("memhouse").to_string() };
                 let container = if fresh { name.clone() } else { up::managed(&cfg).unwrap_or(up::CONTAINER).to_string() };
                 let url = up::start(&container, port, &password, fresh)?;
                 if fresh {
@@ -318,11 +314,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 anyhow::bail!("no config at {}; run `memhouse up` first", path_or_default.display());
             }
             let launch = self_launch(&cfg_path, &subject)?;
-            let agents: Vec<String> = if agent == "all" {
-                detected_agents()
-            } else {
-                vec![agent]
-            };
+            let agents: Vec<String> = if agent == "all" { detected_agents() } else { vec![agent] };
             if agents.is_empty() {
                 println!("No supported agents detected. Use e.g. `memhouse connect cursor --print`.");
             }
@@ -364,9 +356,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Remember { content, subject, kind, tags } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;
-            let r = eng
-                .remember(RememberRequest { subject, content, kind: Some(kind), tags, actor: Some("cli".into()), ..Default::default() })
-                .await?;
+            let r = eng.remember(RememberRequest { subject, content, kind: Some(kind), tags, actor: Some("cli".into()), ..Default::default() }).await?;
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Cmd::Recall { query, subject, k, rerank, json } => {
@@ -478,7 +468,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 eng.store.insert(&recs).await?;
                 added += recs.len();
             }
-            eng.store.audit("cli", "memory.import", &eng.cfg.memory.tenant, None, None, serde_json::json!({"added": added, "skipped": skipped, "file": file.display().to_string()})).await?;
+            eng.store
+                .audit("cli", "memory.import", &eng.cfg.memory.tenant, None, None, serde_json::json!({"added": added, "skipped": skipped, "file": file.display().to_string()}))
+                .await?;
             println!("imported {added} memories ({skipped} already present)");
         }
         Cmd::Audit { verify, limit } => {

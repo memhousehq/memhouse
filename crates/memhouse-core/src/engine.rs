@@ -40,12 +40,7 @@ fn truncate_chars(s: &str, n: usize) -> &str {
 }
 
 impl Engine {
-    pub fn new(
-        store: Arc<dyn Store>,
-        embedder: Arc<dyn Embedder>,
-        reranker: Option<Arc<dyn Reranker>>,
-        cfg: Config,
-    ) -> Engine {
+    pub fn new(store: Arc<dyn Store>, embedder: Arc<dyn Embedder>, reranker: Option<Arc<dyn Reranker>>, cfg: Config) -> Engine {
         Engine { store, embedder, reranker, chat: None, cfg: Arc::new(cfg) }
     }
 
@@ -59,9 +54,7 @@ impl Engine {
     }
 
     fn subject(&self, s: &Option<String>) -> String {
-        s.clone()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| self.cfg.memory.default_subject.clone())
+        s.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| self.cfg.memory.default_subject.clone())
     }
 
     /// Embed passages through the content-addressed cache, so re-ingesting the same text is free.
@@ -73,8 +66,7 @@ impl Engine {
         let mut unique: Vec<String> = hashes.clone();
         unique.sort();
         unique.dedup();
-        let cached: HashMap<String, Vec<f32>> =
-            self.store.embed_cache_get(&model, &unique).await?.into_iter().collect();
+        let cached: HashMap<String, Vec<f32>> = self.store.embed_cache_get(&model, &unique).await?.into_iter().collect();
         let mut missing_idx = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (i, h) in hashes.iter().enumerate() {
@@ -88,16 +80,12 @@ impl Engine {
             for chunk in missing_idx.chunks(batch) {
                 let to_embed: Vec<String> = chunk.iter().map(|&i| texts[i].clone()).collect();
                 let vecs = self.embedder.embed(&to_embed, EmbedKind::Passage).await?;
-                let items: Vec<(String, Vec<f32>)> =
-                    chunk.iter().zip(vecs).map(|(&i, v)| (hashes[i].clone(), v)).collect();
+                let items: Vec<(String, Vec<f32>)> = chunk.iter().zip(vecs).map(|(&i, v)| (hashes[i].clone(), v)).collect();
                 self.store.embed_cache_put(&model, &items).await?;
                 fresh.extend(items);
             }
         }
-        Ok(hashes
-            .iter()
-            .map(|h| cached.get(h).or_else(|| fresh.get(h)).cloned().unwrap_or_default())
-            .collect())
+        Ok(hashes.iter().map(|h| cached.get(h).or_else(|| fresh.get(h)).cloned().unwrap_or_default()).collect())
     }
 
     async fn embed_queries(&self, qs: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
@@ -114,11 +102,7 @@ impl Engine {
             anyhow::bail!("content is empty");
         }
         if content.chars().count() > g.max_content_chars {
-            anyhow::bail!(
-                "content is {} characters; the limit is {} (governance.max_content_chars)",
-                content.chars().count(),
-                g.max_content_chars
-            );
+            anyhow::bail!("content is {} characters; the limit is {} (governance.max_content_chars)", content.chars().count(), g.max_content_chars);
         }
         Ok(gate::screen(content, &g.redact, g.quarantine_injection))
     }
@@ -191,9 +175,7 @@ impl Engine {
             metadata,
             created_at: now,
         };
-        self.store
-            .insert(&[NewMemory { memory: mem, embedding, content_hash: hash, alt: None }])
-            .await?;
+        self.store.insert(&[NewMemory { memory: mem, embedding, content_hash: hash, alt: None }]).await?;
         let mut superseded = None;
         if let Some(old) = req.supersedes {
             if status == MemoryStatus::Committed && self.store.set_superseded(&tenant, old, id).await? {
@@ -222,14 +204,7 @@ impl Engine {
             deduplicated: false,
             redactions: gated.redactions,
             superseded,
-            note: if status == MemoryStatus::Quarantined {
-                Some(format!(
-                    "quarantined: looks like an instruction to the agent ({})",
-                    gated.injection.join(", ")
-                ))
-            } else {
-                None
-            },
+            note: if status == MemoryStatus::Quarantined { Some(format!("quarantined: looks like an instruction to the agent ({})", gated.injection.join(", "))) } else { None },
         })
     }
 
@@ -268,10 +243,7 @@ impl Engine {
                 (i, g, h)
             })
             .collect();
-        let existing = self
-            .store
-            .existing_hashes(&tenant, &subject, &gated_rounds.iter().map(|(_, _, h)| h.clone()).collect::<Vec<_>>())
-            .await?;
+        let existing = self.store.existing_hashes(&tenant, &subject, &gated_rounds.iter().map(|(_, _, h)| h.clone()).collect::<Vec<_>>()).await?;
         for (i, gated, hash) in gated_rounds {
             let r = &rounds[i];
             if existing.contains(&hash) {
@@ -343,14 +315,7 @@ impl Engine {
             self.store.enrich_enqueue(&tenant, &subject, &session, &committed).await?;
         }
         self.store
-            .audit(
-                &actor,
-                "memory.ingest",
-                &tenant,
-                Some(&subject),
-                None,
-                serde_json::json!({ "session": session, "records": recs.len(), "quarantined": out.quarantined }),
-            )
+            .audit(&actor, "memory.ingest", &tenant, Some(&subject), None, serde_json::json!({ "session": session, "records": recs.len(), "quarantined": out.quarantined }))
             .await?;
         Ok(out)
     }
@@ -431,12 +396,8 @@ impl Engine {
             let rest = futures::future::try_join_all(probes.iter().map(|(p, _)| self.store.search(p)));
             let (main, rest) = futures::future::try_join(main, rest).await?;
             let (top, top_w) = (self.cfg.memory.window_top, self.cfg.memory.window_top_weight);
-            let bonus = (top > 0 && top_w > 0.0 && plan.as_ref().is_some_and(|p| !p.windows.is_empty()))
-                .then(|| (rest[0].iter().take(top).cloned().collect::<Vec<Hit>>(), top_w));
-            let lists: Vec<(Vec<Hit>, f32)> = std::iter::once((main, 1.0))
-                .chain(rest.into_iter().zip(probes.iter().map(|(_, w)| *w)))
-                .chain(bonus)
-                .collect();
+            let bonus = (top > 0 && top_w > 0.0 && plan.as_ref().is_some_and(|p| !p.windows.is_empty())).then(|| (rest[0].iter().take(top).cloned().collect::<Vec<Hit>>(), top_w));
+            let lists: Vec<(Vec<Hit>, f32)> = std::iter::once((main, 1.0)).chain(rest.into_iter().zip(probes.iter().map(|(_, w)| *w))).chain(bonus).collect();
             fuse(lists, self.cfg.memory.rrf_k, fused_limit)
         };
         let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;
@@ -508,19 +469,9 @@ impl Engine {
     }
 
     /// Replace a memory with new content; the old version stays for audit but is no longer recalled.
-    pub async fn update(
-        &self,
-        tenant: Option<String>,
-        id: Uuid,
-        content: String,
-        actor: Option<String>,
-    ) -> anyhow::Result<RememberResult> {
+    pub async fn update(&self, tenant: Option<String>, id: Uuid, content: String, actor: Option<String>) -> anyhow::Result<RememberResult> {
         let t = self.tenant(&tenant);
-        let old = self
-            .store
-            .get(&t, id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("memory {id} not found"))?;
+        let old = self.store.get(&t, id).await?.ok_or_else(|| anyhow::anyhow!("memory {id} not found"))?;
         self.remember(RememberRequest {
             tenant: Some(t),
             subject: Some(old.subject),
@@ -540,9 +491,7 @@ impl Engine {
         let mem = self.store.get(&t, id).await?;
         let ok = self.store.delete(&t, id, &actor).await?;
         if ok {
-            self.store
-                .audit(&actor, "memory.delete", &t, mem.as_ref().map(|m| m.subject.as_str()), Some(id), serde_json::json!({}))
-                .await?;
+            self.store.audit(&actor, "memory.delete", &t, mem.as_ref().map(|m| m.subject.as_str()), Some(id), serde_json::json!({})).await?;
         }
         Ok(ok)
     }
@@ -551,9 +500,7 @@ impl Engine {
         let t = self.tenant(&tenant);
         let actor = actor.unwrap_or_else(|| "api".into());
         let n = self.store.delete_subject(&t, subject, &actor, true).await?;
-        self.store
-            .audit(&actor, "subject.erase", &t, Some(subject), None, serde_json::json!({ "records": n }))
-            .await?;
+        self.store.audit(&actor, "subject.erase", &t, Some(subject), None, serde_json::json!({ "records": n })).await?;
         Ok(n)
     }
 
@@ -563,23 +510,20 @@ impl Engine {
         let t = self.tenant(&tenant);
         let actor = actor.unwrap_or_else(|| "api".into());
         let n = self.store.delete_subject(&t, subject, &actor, false).await?;
-        self.store
-            .audit(&actor, "subject.reset", &t, Some(subject), None, serde_json::json!({ "records": n }))
-            .await?;
+        self.store.audit(&actor, "subject.reset", &t, Some(subject), None, serde_json::json!({ "records": n })).await?;
         Ok(n)
     }
 
-    pub async fn list(&self, tenant: Option<String>, subject: Option<String>, kinds: Option<Vec<MemoryKind>>, limit: usize, offset: usize, include_inactive: bool) -> anyhow::Result<Vec<Memory>> {
-        self.store
-            .list(&ListQuery {
-                tenant: self.tenant(&tenant),
-                subject,
-                kinds,
-                include_inactive,
-                limit: limit.clamp(1, 1000),
-                offset,
-            })
-            .await
+    pub async fn list(
+        &self,
+        tenant: Option<String>,
+        subject: Option<String>,
+        kinds: Option<Vec<MemoryKind>>,
+        limit: usize,
+        offset: usize,
+        include_inactive: bool,
+    ) -> anyhow::Result<Vec<Memory>> {
+        self.store.list(&ListQuery { tenant: self.tenant(&tenant), subject, kinds, include_inactive, limit: limit.clamp(1, 1000), offset }).await
     }
 
     /// Apply retention rules (episodic purge). Returns records removed.
@@ -590,9 +534,7 @@ impl Engine {
         }
         let n = self.store.purge_episodic_older_than(&self.cfg.memory.tenant, days).await?;
         if n > 0 {
-            self.store
-                .audit("system", "retention.purge", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": n, "days": days }))
-                .await?;
+            self.store.audit("system", "retention.purge", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": n, "days": days })).await?;
         }
         Ok(n)
     }
@@ -664,10 +606,7 @@ mod tests {
 
     #[test]
     fn rounds_group_user_and_replies() {
-        let r = build_rounds(
-            &[msg("user", "hi"), msg("assistant", "hello"), msg("user", "I moved to Lisbon"), msg("assistant", "nice"), msg("assistant", "anything else?")],
-            100,
-        );
+        let r = build_rounds(&[msg("user", "hi"), msg("assistant", "hello"), msg("user", "I moved to Lisbon"), msg("assistant", "nice"), msg("assistant", "anything else?")], 100);
         assert_eq!(r.len(), 2);
         assert_eq!(r[1].refs, vec!["2", "3", "4"]);
         assert!(r[1].text.starts_with("user: I moved to Lisbon"));
@@ -702,4 +641,3 @@ fn fuse(lists: Vec<(Vec<Hit>, f32)>, rrf_k: f32, limit: usize) -> Vec<Hit> {
     out.truncate(limit);
     out
 }
-

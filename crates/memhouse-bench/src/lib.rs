@@ -288,18 +288,29 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
     };
     let run_id = format!("{}-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"), &uuid::Uuid::new_v4().to_string()[..6]);
     let name = args.dataset.clone().unwrap_or_else(|| args.suite.clone().unwrap_or_default());
-    let out_dir = args
-        .out
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("bench-results"))
-        .join(format!("{}_{}{}", run_id, name, args.label.as_deref().map(|l| format!("_{}", slug(l))).unwrap_or_default()));
+    let out_dir = args.out.clone().unwrap_or_else(|| PathBuf::from("bench-results")).join(format!(
+        "{}_{}{}",
+        run_id,
+        name,
+        args.label.as_deref().map(|l| format!("_{}", slug(l))).unwrap_or_default()
+    ));
     std::fs::create_dir_all(&out_dir)?;
 
     let qa = if args.qa {
-        let base = args.llm_base_url.clone().unwrap_or_else(|| if args.llm_provider == "anthropic" { "https://api.anthropic.com/v1".into() } else { "https://api.openai.com/v1".into() });
-        let mk = |model: &str, max_tokens: u32| LlmConfig { provider: args.llm_provider.clone(), base_url: base.clone(), model: model.to_string(), api_key_env: Some(args.llm_key_env.clone()), max_tokens, temperature: 0.0, extra: None };
+        let base =
+            args.llm_base_url.clone().unwrap_or_else(|| if args.llm_provider == "anthropic" { "https://api.anthropic.com/v1".into() } else { "https://api.openai.com/v1".into() });
+        let mk = |model: &str, max_tokens: u32| LlmConfig {
+            provider: args.llm_provider.clone(),
+            base_url: base.clone(),
+            model: model.to_string(),
+            api_key_env: Some(args.llm_key_env.clone()),
+            max_tokens,
+            temperature: 0.0,
+            extra: None,
+        };
         Some(runner::QaSetup {
-            answer: memhouse_models::Llm::new(&mk(&args.answer_model, if args.answer_prompt >= 2 { 1000 } else { 600 }))?.with_price(price(args.answer_price.as_deref(), &args.answer_model)?),
+            answer: memhouse_models::Llm::new(&mk(&args.answer_model, if args.answer_prompt >= 2 { 1000 } else { 600 }))?
+                .with_price(price(args.answer_price.as_deref(), &args.answer_model)?),
             judge: memhouse_models::Llm::new(&mk(&args.judge_model, 10))?.with_price(price(args.judge_price.as_deref(), &args.judge_model)?),
             answer_k: args.answer_k,
             answer_facts: if args.enrich { args.answer_facts } else { 0 },
@@ -327,7 +338,9 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
             rrf_k: cfg.memory.rrf_k,
             keyword_weight: cfg.memory.keyword_weight,
             vector_weight: cfg.memory.vector_weight,
-            query_analysis: cfg.memory.query_analysis.then(|| format!("window w={}, top {} +{}, sub-query w={}", cfg.memory.window_weight, cfg.memory.window_top, cfg.memory.window_top_weight, cfg.memory.subquery_weight)),
+            query_analysis: cfg.memory.query_analysis.then(|| {
+                format!("window w={}, top {} +{}, sub-query w={}", cfg.memory.window_weight, cfg.memory.window_top, cfg.memory.window_top_weight, cfg.memory.subquery_weight)
+            }),
             concurrency: args.concurrency,
             selection: format!(
                 "limit={} stride={} offset={} types={}",

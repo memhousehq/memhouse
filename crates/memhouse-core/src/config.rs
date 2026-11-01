@@ -44,11 +44,7 @@ pub struct DatabaseConfig {
 
 impl Default for DatabaseConfig {
     fn default() -> Self {
-        DatabaseConfig {
-            url: "postgres://memhouse:memhouse@127.0.0.1:54329/memhouse".into(),
-            max_connections: 16,
-            container: None,
-        }
+        DatabaseConfig { url: "postgres://memhouse:memhouse@127.0.0.1:54329/memhouse".into(), max_connections: 16, container: None }
     }
 }
 
@@ -111,13 +107,7 @@ pub struct RerankConfig {
 
 impl Default for RerankConfig {
     fn default() -> Self {
-        RerankConfig {
-            enabled: false,
-            model: "jina-reranker-v1-turbo-en".into(),
-            candidates: 20,
-            max_length: 256,
-            fused_weight: 0.15,
-        }
+        RerankConfig { enabled: false, model: "jina-reranker-v1-turbo-en".into(), candidates: 20, max_length: 256, fused_weight: 0.15 }
     }
 }
 

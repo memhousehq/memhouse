@@ -45,13 +45,7 @@ pub trait Store: Send + Sync {
     /// Which of these content hashes the subject already has (batch dedup for ingest).
     async fn existing_hashes(&self, tenant: &str, subject: &str, hashes: &[String]) -> anyhow::Result<std::collections::HashSet<String>>;
     /// Most similar committed record of the same kind (near-dup check).
-    async fn nearest(
-        &self,
-        tenant: &str,
-        subject: &str,
-        kind: MemoryKind,
-        embedding: &[f32],
-    ) -> anyhow::Result<Option<(Uuid, f32)>>;
+    async fn nearest(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32]) -> anyhow::Result<Option<(Uuid, f32)>>;
     async fn set_superseded(&self, tenant: &str, id: Uuid, by: Uuid) -> anyhow::Result<bool>;
     async fn set_status(&self, tenant: &str, id: Uuid, status: MemoryStatus) -> anyhow::Result<bool>;
     /// Hard delete of one record and every derived representation; records the deletion in the ledger.
@@ -65,15 +59,7 @@ pub trait Store: Send + Sync {
     async fn purge_episodic_older_than(&self, tenant: &str, days: u32) -> anyhow::Result<u64>;
     async fn embed_cache_get(&self, model: &str, hashes: &[String]) -> anyhow::Result<Vec<(String, Vec<f32>)>>;
     async fn embed_cache_put(&self, model: &str, items: &[(String, Vec<f32>)]) -> anyhow::Result<()>;
-    async fn audit(
-        &self,
-        actor: &str,
-        action: &str,
-        tenant: &str,
-        subject: Option<&str>,
-        memory_id: Option<Uuid>,
-        detail: serde_json::Value,
-    ) -> anyhow::Result<()>;
+    async fn audit(&self, actor: &str, action: &str, tenant: &str, subject: Option<&str>, memory_id: Option<Uuid>, detail: serde_json::Value) -> anyhow::Result<()>;
     async fn audit_log(&self, tenant: &str, limit: usize) -> anyhow::Result<Vec<AuditEvent>>;
     /// Recompute the hash chain. Returns (events checked, first broken event id).
     async fn audit_verify(&self) -> anyhow::Result<(u64, Option<i64>)>;

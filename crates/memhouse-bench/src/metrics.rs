@@ -14,12 +14,7 @@ pub fn eval_ranking(ranked: &[String], relevant: &HashSet<String>, k: usize) -> 
     let top: HashSet<&String> = ranked.iter().take(k).collect();
     let any = relevant.iter().any(|r| top.contains(r)) as u8 as f64;
     let all = relevant.iter().all(|r| top.contains(r)) as u8 as f64;
-    let dcg: f64 = ranked
-        .iter()
-        .take(k)
-        .enumerate()
-        .map(|(i, d)| if relevant.contains(d) { 1.0 / ((i + 2) as f64).log2() } else { 0.0 })
-        .sum();
+    let dcg: f64 = ranked.iter().take(k).enumerate().map(|(i, d)| if relevant.contains(d) { 1.0 / ((i + 2) as f64).log2() } else { 0.0 }).sum();
     let ideal: f64 = (0..relevant.len().min(k)).map(|i| 1.0 / ((i + 2) as f64).log2()).sum();
     (any, all, if ideal > 0.0 { dcg / ideal } else { 0.0 })
 }
@@ -50,9 +45,7 @@ pub fn bootstrap(values: &[f64], resamples: usize) -> Estimate {
         return Estimate { mean, lo: mean, hi: mean, n };
     }
     let mut rng = StdRng::seed_from_u64(0x6d656d686f757365);
-    let mut means: Vec<f64> = (0..resamples)
-        .map(|_| (0..n).map(|_| values[rng.gen_range(0..n)]).sum::<f64>() / n as f64)
-        .collect();
+    let mut means: Vec<f64> = (0..resamples).map(|_| (0..n).map(|_| values[rng.gen_range(0..n)]).sum::<f64>() / n as f64).collect();
     means.sort_by(|a, b| a.total_cmp(b));
     let lo = means[(resamples as f64 * 0.025) as usize];
     let hi = means[((resamples as f64 * 0.975) as usize).min(resamples - 1)];
@@ -76,14 +69,7 @@ pub fn latency(samples: &[f64]) -> Latency {
     let mut v = samples.to_vec();
     v.sort_by(|a, b| a.total_cmp(b));
     let q = |p: f64| v[((v.len() as f64 - 1.0) * p).round() as usize];
-    Latency {
-        n: v.len(),
-        mean_ms: v.iter().sum::<f64>() / v.len() as f64,
-        p50_ms: q(0.50),
-        p95_ms: q(0.95),
-        p99_ms: q(0.99),
-        max_ms: *v.last().unwrap(),
-    }
+    Latency { n: v.len(), mean_ms: v.iter().sum::<f64>() / v.len() as f64, p50_ms: q(0.50), p95_ms: q(0.95), p99_ms: q(0.99), max_ms: *v.last().unwrap() }
 }
 
 #[cfg(test)]

@@ -9,7 +9,11 @@ pub const IMAGE: &str = "pgvector/pgvector:pg17";
 pub const CONTAINER: &str = "memhouse-pg";
 
 pub fn volume_for(container: &str) -> String {
-    if container == CONTAINER { "memhouse-pgdata".into() } else { format!("{container}-data") }
+    if container == CONTAINER {
+        "memhouse-pgdata".into()
+    } else {
+        format!("{container}-data")
+    }
 }
 
 fn docker(args: &[&str]) -> anyhow::Result<(bool, String)> {
@@ -60,13 +64,33 @@ pub fn start(name: &str, port: u16, password: &str, fresh: bool) -> anyhow::Resu
             let pw = format!("POSTGRES_PASSWORD={password}");
             let vol = format!("{}:/var/lib/postgresql/data", volume_for(name));
             let (ok, out) = docker(&[
-                "run", "-d", "--name", name, "--restart", "unless-stopped",
-                "-e", "POSTGRES_USER=memhouse", "-e", &pw, "-e", "POSTGRES_DB=memhouse",
-                "-p", &port_map, "-v", &vol,
-                "--label", "org.memhouse.managed=true",
+                "run",
+                "-d",
+                "--name",
+                name,
+                "--restart",
+                "unless-stopped",
+                "-e",
+                "POSTGRES_USER=memhouse",
+                "-e",
+                &pw,
+                "-e",
+                "POSTGRES_DB=memhouse",
+                "-p",
+                &port_map,
+                "-v",
+                &vol,
+                "--label",
+                "org.memhouse.managed=true",
                 IMAGE,
-                "-c", "shared_buffers=256MB", "-c", "work_mem=32MB", "-c", "max_connections=200",
-                "-c", "synchronous_commit=on",
+                "-c",
+                "shared_buffers=256MB",
+                "-c",
+                "work_mem=32MB",
+                "-c",
+                "max_connections=200",
+                "-c",
+                "synchronous_commit=on",
             ])?;
             if !ok {
                 anyhow::bail!("docker run failed: {out}");

@@ -38,11 +38,7 @@ fn vec_literal(v: &[f32]) -> String {
 
 /// Turn free text into an OR-of-terms tsquery string that is always syntactically valid.
 pub fn or_query(text: &str) -> String {
-    let mut terms: Vec<String> = text
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.chars().count() >= 2)
-        .map(|w| w.to_lowercase())
-        .collect();
+    let mut terms: Vec<String> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 2).map(|w| w.to_lowercase()).collect();
     terms.sort();
     terms.dedup();
     terms.truncate(64);
@@ -238,11 +234,7 @@ CREATE TABLE IF NOT EXISTS mh_llm_cache (
         );
         sqlx::raw_sql(&ddl).execute(&self.pool).await?;
         for (k, v) in [("schema_version", SCHEMA_VERSION.to_string()), ("embedding_dim", dim.to_string()), ("embedder", embedder_id.to_string())] {
-            sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING")
-                .bind(k)
-                .bind(v)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING").bind(k).bind(v).execute(&self.pool).await?;
         }
         Ok(())
     }
@@ -400,11 +392,7 @@ LIMIT $15
     }
 
     async fn get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>> {
-        let row = sqlx::query(&format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = $2"))
-            .bind(tenant)
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(&format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = $2")).bind(tenant).bind(id).fetch_optional(&self.pool).await?;
         row.map(|r| row_to_memory(&r)).transpose()
     }
 
@@ -427,14 +415,12 @@ LIMIT $15
     }
 
     async fn find_by_hash(&self, tenant: &str, subject: &str, hash: &str) -> anyhow::Result<Option<Uuid>> {
-        Ok(sqlx::query_scalar(
-            "SELECT id FROM mh_memory WHERE tenant = $1 AND subject = $2 AND content_hash = $3 AND status <> 'superseded' LIMIT 1",
-        )
-        .bind(tenant)
-        .bind(subject)
-        .bind(hash)
-        .fetch_optional(&self.pool)
-        .await?)
+        Ok(sqlx::query_scalar("SELECT id FROM mh_memory WHERE tenant = $1 AND subject = $2 AND content_hash = $3 AND status <> 'superseded' LIMIT 1")
+            .bind(tenant)
+            .bind(subject)
+            .bind(hash)
+            .fetch_optional(&self.pool)
+            .await?)
     }
 
     async fn existing_hashes(&self, tenant: &str, subject: &str, hashes: &[String]) -> anyhow::Result<std::collections::HashSet<String>> {
@@ -493,11 +479,7 @@ LIMIT $15
 
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING subject, content, alt_hash")
-            .bind(tenant)
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING subject, content, alt_hash").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
         let Some(row) = row else { return Ok(false) };
         let subject: String = row.try_get("subject")?;
         let content: String = row.try_get("content")?;
@@ -552,12 +534,7 @@ LIMIT $15
             .execute(&mut *tx)
             .await?;
         }
-        let n = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND subject = $2")
-            .bind(tenant)
-            .bind(subject)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let n = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND subject = $2").bind(tenant).bind(subject).execute(&mut *tx).await?.rows_affected();
         if purge_cache {
             sqlx::query(
                 "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND subject = $2 RETURNING cache_key) \
@@ -568,11 +545,7 @@ LIMIT $15
             .execute(&mut *tx)
             .await?;
         } else {
-            sqlx::query("DELETE FROM mh_enrich_job WHERE tenant = $1 AND subject = $2")
-                .bind(tenant)
-                .bind(subject)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query("DELETE FROM mh_enrich_job WHERE tenant = $1 AND subject = $2").bind(tenant).bind(subject).execute(&mut *tx).await?;
         }
         sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, scope, actor) VALUES ($1, $2, $4, $3)")
             .bind(tenant)
@@ -662,11 +635,7 @@ LIMIT $15
         if hashes.is_empty() {
             return Ok(vec![]);
         }
-        let rows = sqlx::query("SELECT hash, embedding FROM mh_embed_cache WHERE model = $1 AND hash = ANY($2)")
-            .bind(model)
-            .bind(hashes)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query("SELECT hash, embedding FROM mh_embed_cache WHERE model = $1 AND hash = ANY($2)").bind(model).bind(hashes).fetch_all(&self.pool).await?;
         rows.iter().map(|r| Ok((r.try_get("hash")?, r.try_get("embedding")?))).collect()
     }
 
@@ -687,35 +656,27 @@ LIMIT $15
         let at = Utc::now().trunc_subsecs(6);
         let mut tx = self.pool.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock(7270001)").execute(&mut *tx).await?;
-        let prev: Option<String> = sqlx::query_scalar("SELECT hash FROM mh_audit ORDER BY id DESC LIMIT 1")
-            .fetch_optional(&mut *tx)
-            .await?;
+        let prev: Option<String> = sqlx::query_scalar("SELECT hash FROM mh_audit ORDER BY id DESC LIMIT 1").fetch_optional(&mut *tx).await?;
         let prev = prev.unwrap_or_else(|| "genesis".into());
         let hash = audit_hash(&prev, &at, actor, action, tenant, subject, memory_id, &detail);
-        sqlx::query(
-            "INSERT INTO mh_audit (at, actor, action, tenant, subject, memory_id, detail, prev_hash, hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-        )
-        .bind(at)
-        .bind(actor)
-        .bind(action)
-        .bind(tenant)
-        .bind(subject)
-        .bind(memory_id)
-        .bind(&detail)
-        .bind(&prev)
-        .bind(&hash)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("INSERT INTO mh_audit (at, actor, action, tenant, subject, memory_id, detail, prev_hash, hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+            .bind(at)
+            .bind(actor)
+            .bind(action)
+            .bind(tenant)
+            .bind(subject)
+            .bind(memory_id)
+            .bind(&detail)
+            .bind(&prev)
+            .bind(&hash)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
 
     async fn audit_log(&self, tenant: &str, limit: usize) -> anyhow::Result<Vec<AuditEvent>> {
-        let rows = sqlx::query("SELECT * FROM mh_audit WHERE tenant = $1 ORDER BY id DESC LIMIT $2")
-            .bind(tenant)
-            .bind(limit as i64)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query("SELECT * FROM mh_audit WHERE tenant = $1 ORDER BY id DESC LIMIT $2").bind(tenant).bind(limit as i64).fetch_all(&self.pool).await?;
         rows.iter()
             .map(|r| {
                 let detail: String = r.try_get("detail")?;
@@ -790,21 +751,15 @@ LIMIT $15
     }
 
     async fn subjects(&self, tenant: &str, limit: usize) -> anyhow::Result<Vec<(String, i64)>> {
-        Ok(sqlx::query_as(
-            "SELECT subject, count(*) FROM mh_memory WHERE tenant = $1 AND status = 'committed' GROUP BY subject ORDER BY max(created_at) DESC LIMIT $2",
-        )
-        .bind(tenant)
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?)
+        Ok(sqlx::query_as("SELECT subject, count(*) FROM mh_memory WHERE tenant = $1 AND status = 'committed' GROUP BY subject ORDER BY max(created_at) DESC LIMIT $2")
+            .bind(tenant)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?)
     }
 
     async fn get_many(&self, tenant: &str, ids: &[Uuid]) -> anyhow::Result<Vec<Memory>> {
-        let rows = sqlx::query(&format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = ANY($2)"))
-            .bind(tenant)
-            .bind(ids)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(&format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = ANY($2)")).bind(tenant).bind(ids).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_memory).collect()
     }
 
@@ -874,13 +829,11 @@ LIMIT $15
     }
 
     async fn enrich_status(&self, tenant: &str, subject: Option<&str>) -> anyhow::Result<EnrichStatus> {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT status, count(*) FROM mh_enrich_job WHERE tenant = $1 AND ($2::text IS NULL OR subject = $2) GROUP BY status",
-        )
-        .bind(tenant)
-        .bind(subject)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows: Vec<(String, i64)> = sqlx::query_as("SELECT status, count(*) FROM mh_enrich_job WHERE tenant = $1 AND ($2::text IS NULL OR subject = $2) GROUP BY status")
+            .bind(tenant)
+            .bind(subject)
+            .fetch_all(&self.pool)
+            .await?;
         let mut st = EnrichStatus::default();
         for (s, n) in rows {
             match s.as_str() {
@@ -894,12 +847,11 @@ LIMIT $15
     }
 
     async fn enrich_outcomes(&self, tenant: &str, subject: &str) -> anyhow::Result<Vec<EnrichOutcome>> {
-        let rows: Vec<(serde_json::Value,)> =
-            sqlx::query_as("SELECT outcome FROM mh_enrich_job WHERE tenant = $1 AND subject = $2 AND status = 'done' AND outcome IS NOT NULL")
-                .bind(tenant)
-                .bind(subject)
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as("SELECT outcome FROM mh_enrich_job WHERE tenant = $1 AND subject = $2 AND status = 'done' AND outcome IS NOT NULL")
+            .bind(tenant)
+            .bind(subject)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().filter_map(|(v,)| serde_json::from_value(v).ok()).collect())
     }
 

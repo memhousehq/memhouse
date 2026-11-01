@@ -197,15 +197,8 @@ fn answer_prompt(q: &Question, hits: &[Hit], k: usize, n_facts: usize, version: 
     if version >= 2 {
         // The dates recall resolved for the question's time phrases ("last Saturday", "three
         // weeks ago"), so the answer model does not have to redo that arithmetic.
-        let times: Vec<String> = plan
-            .map(|p| {
-                p.windows
-                    .iter()
-                    .filter(|w| !w.meaning.is_empty())
-                    .map(|w| format!("\"{}\" = {}", w.phrase, w.meaning))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let times: Vec<String> =
+            plan.map(|p| p.windows.iter().filter(|w| !w.meaning.is_empty()).map(|w| format!("\"{}\" = {}", w.phrase, w.meaning)).collect()).unwrap_or_default();
         let times = if times.is_empty() { String::new() } else { format!("Time references in the question: {}\n", times.join("; ")) };
         let user = format!(
             "Retrieved memories (oldest first):\n\n{}\n\nToday's date: {today}\n{times}Question: {}\n\nWork it out briefly, then end with a line \"Answer: <final answer>\".",
@@ -261,11 +254,7 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
     let t0 = Instant::now();
     let mut rounds = 0;
     for s in &item.sessions {
-        let messages = s
-            .turns
-            .iter()
-            .map(|t| Message { role: t.role.clone(), content: t.content.clone(), timestamp: s.date, id: Some(t.ref_id.clone()) })
-            .collect();
+        let messages = s.turns.iter().map(|t| Message { role: t.role.clone(), content: t.content.clone(), timestamp: s.date, id: Some(t.ref_id.clone()) }).collect();
         let r = engine
             .ingest(IngestRequest {
                 subject: Some(subject.clone()),
@@ -289,7 +278,14 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
         let mut during = None;
         if let (true, Some(q)) = (pending > 0, item.questions.first()) {
             let r = engine
-                .recall(RecallRequest { subject: Some(subject.clone()), query: q.question.clone(), k: Some(FETCH_K), reference_time: q.date, actor: Some("bench".into()), ..Default::default() })
+                .recall(RecallRequest {
+                    subject: Some(subject.clone()),
+                    query: q.question.clone(),
+                    k: Some(FETCH_K),
+                    reference_time: q.date,
+                    actor: Some("bench".into()),
+                    ..Default::default()
+                })
                 .await?;
             during = Some(r.took_ms);
         }
@@ -297,7 +293,14 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
         let st = engine.enrich_wait(None, &subject, std::time::Duration::from_secs(3600)).await?;
         let jobs = engine.store.enrich_outcomes(&tenant, &subject).await?;
         let facts = jobs.iter().map(|j| j.facts).sum();
-        Some(ItemEnrich { jobs, failed: st.failed + st.pending + st.running, wait_ms: t1.elapsed().as_secs_f64() * 1000.0, recall_during_ms: during, pending_at_recall: pending, facts })
+        Some(ItemEnrich {
+            jobs,
+            failed: st.failed + st.pending + st.running,
+            wait_ms: t1.elapsed().as_secs_f64() * 1000.0,
+            recall_during_ms: during,
+            pending_at_recall: pending,
+            facts,
+        })
     } else {
         None
     };
@@ -580,10 +583,7 @@ pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> 
         questions: qs.len(),
         scored: qs.iter().filter(|q| !q.metrics.is_empty()).count(),
         retrieval: per_metric.iter().map(|(k, v)| (k.clone(), metrics::bootstrap(v, 2000))).collect(),
-        by_type: per_type
-            .iter()
-            .map(|(t, ms)| (t.clone(), ms.iter().map(|(k, v)| (k.clone(), metrics::bootstrap(v, 1000))).collect()))
-            .collect(),
+        by_type: per_type.iter().map(|(t, ms)| (t.clone(), ms.iter().map(|(k, v)| (k.clone(), metrics::bootstrap(v, 1000))).collect())).collect(),
         qa_accuracy: if qa_all.is_empty() { None } else { Some(metrics::bootstrap(&qa_all, 2000)) },
         qa_by_type: qa_type.iter().map(|(k, v)| (k.clone(), metrics::bootstrap(v, 1000))).collect(),
         recall_latency: metrics::latency(&lat),

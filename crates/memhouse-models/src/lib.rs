@@ -37,10 +37,7 @@ pub mod local {
     }
 
     pub fn list_embedding_models() -> Vec<(String, usize, String)> {
-        TextEmbedding::list_supported_models()
-            .into_iter()
-            .map(|m| (m.model_code, m.dim, m.description))
-            .collect()
+        TextEmbedding::list_supported_models().into_iter().map(|m| (m.model_code, m.dim, m.description)).collect()
     }
 
     /// A fixed set of model sessions. A few sessions with a few threads each use a CPU far better
@@ -136,13 +133,7 @@ pub mod local {
                     .with_show_download_progress(show_progress && i == 0);
                 items.push(TextEmbedding::try_new(opts).with_context(|| format!("loading local embedding model {code}"))?);
             }
-            Ok(LocalEmbedder {
-                id: format!("local:{code}"),
-                dim,
-                batch: cfg.batch_size.max(1),
-                max_len: cfg.max_length,
-                pool: Arc::new(Pool::new(items)),
-            })
+            Ok(LocalEmbedder { id: format!("local:{code}"), dim, batch: cfg.batch_size.max(1), max_len: cfg.max_length, pool: Arc::new(Pool::new(items)) })
         }
     }
 
@@ -174,9 +165,7 @@ pub mod local {
                                     let j = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                                     let Some(b) = batches.get(j) else { break };
                                     let chunk: Vec<&str> = b.iter().map(|&i| texts[i].as_str()).collect();
-                                    let vecs = pool
-                                        .with(|m| m.embed(&chunk, Some(chunk.len())))?
-                                        .map_err(|e| anyhow::anyhow!("embedding failed: {e}"))?;
+                                    let vecs = pool.with(|m| m.embed(&chunk, Some(chunk.len())))?.map_err(|e| anyhow::anyhow!("embedding failed: {e}"))?;
                                     done.extend(b.iter().copied().zip(vecs));
                                 }
                                 Ok(done)
@@ -211,13 +200,7 @@ pub mod local {
                 .iter()
                 .find(|m| m.model_code.to_ascii_lowercase().ends_with(&format!("/{want}")))
                 .or_else(|| models.iter().find(|m| m.model_code.to_ascii_lowercase().contains(&want)))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "unknown reranker '{}'. Available: {}",
-                        cfg.model,
-                        models.iter().map(|m| m.model_code.clone()).collect::<Vec<_>>().join(", ")
-                    )
-                })?;
+                .ok_or_else(|| anyhow::anyhow!("unknown reranker '{}'. Available: {}", cfg.model, models.iter().map(|m| m.model_code.clone()).collect::<Vec<_>>().join(", ")))?;
             let model: RerankerModel = pick.model.clone();
             let opts = RerankInitOptions::new(model)
                 .with_max_length(cfg.max_length)
@@ -377,12 +360,7 @@ pub struct Llm {
 
 impl Llm {
     pub fn new(cfg: &LlmConfig) -> anyhow::Result<Llm> {
-        Ok(Llm {
-            cfg: cfg.clone(),
-            key: api_key(&cfg.api_key_env),
-            http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build()?,
-            price: None,
-        })
+        Ok(Llm { cfg: cfg.clone(), key: api_key(&cfg.api_key_env), http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build()?, price: None })
     }
 
     pub fn with_price(mut self, price: Option<(f64, f64)>) -> Llm {
@@ -451,11 +429,7 @@ impl Llm {
         }
         let mut req = self.http.post(&url).json(&body);
         if let Some(k) = &self.key {
-            req = if self.cfg.provider == "anthropic" {
-                req.header("x-api-key", k).header("anthropic-version", "2023-06-01")
-            } else {
-                req.bearer_auth(k)
-            };
+            req = if self.cfg.provider == "anthropic" { req.header("x-api-key", k).header("anthropic-version", "2023-06-01") } else { req.bearer_auth(k) };
         }
         let resp = req.send().await.with_context(|| format!("calling {url}"))?;
         let status = resp.status();
@@ -473,10 +447,7 @@ impl Llm {
         let (prompt_tokens, completion_tokens) = (tok("prompt_tokens", "input_tokens"), tok("completion_tokens", "output_tokens"));
         let reported = u["cost"].as_f64();
         let cost_usd = reported.or_else(|| self.price.map(|(pi, po)| (prompt_tokens as f64 * pi + completion_tokens as f64 * po) / 1e6));
-        Ok(Completion {
-            text,
-            usage: LlmUsage { prompt_tokens, completion_tokens, cost_usd, cost_reported: reported.is_some(), ms: 0.0, attempts: 1 },
-        })
+        Ok(Completion { text, usage: LlmUsage { prompt_tokens, completion_tokens, cost_usd, cost_reported: reported.is_some(), ms: 0.0, attempts: 1 } })
     }
 }
 

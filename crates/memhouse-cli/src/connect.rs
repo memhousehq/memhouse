@@ -227,17 +227,18 @@ pub fn connect(o: &ConnectOpts) -> anyhow::Result<()> {
         }
         "codex" => {
             if o.print_only {
-                println!("~/.codex/config.toml:\n[mcp_servers.memhouse]\ncommand = {}\nargs = [{}]", toml_str(&l.command), l.args.iter().map(|a| toml_str(a)).collect::<Vec<_>>().join(", "));
+                println!(
+                    "~/.codex/config.toml:\n[mcp_servers.memhouse]\ncommand = {}\nargs = [{}]",
+                    toml_str(&l.command),
+                    l.args.iter().map(|a| toml_str(a)).collect::<Vec<_>>().join(", ")
+                );
                 return Ok(());
             }
             let f = write_codex(l)?;
             println!("✓ Codex: wrote {}", f.display());
         }
         "zed" => {
-            print(
-                "Add to ~/.config/zed/settings.json",
-                json!({"context_servers": {"memhouse": {"command": l.command, "args": l.args, "env": l.env_json()}}}),
-            )?;
+            print("Add to ~/.config/zed/settings.json", json!({"context_servers": {"memhouse": {"command": l.command, "args": l.args, "env": l.env_json()}}}))?;
         }
         "goose" => {
             println!(
@@ -257,10 +258,7 @@ pub fn connect(o: &ConnectOpts) -> anyhow::Result<()> {
             )?;
             println!("\nREST: POST {}/v1/recall  {{\"subject\":\"user:alice\",\"query\":\"...\"}}", o.http_url);
         }
-        other => anyhow::bail!(
-            "unknown agent '{other}'. Supported: {}",
-            AGENTS.iter().map(|a| a.name).collect::<Vec<_>>().join(", ")
-        ),
+        other => anyhow::bail!("unknown agent '{other}'. Supported: {}", AGENTS.iter().map(|a| a.name).collect::<Vec<_>>().join(", ")),
     }
     Ok(())
 }

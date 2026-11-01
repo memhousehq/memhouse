@@ -20,12 +20,7 @@ use uuid::Uuid;
 pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<Engine> {
     let embedder = memhouse_models::build_embedder(&cfg, show_progress)?;
     if embedder.dim() != cfg.embedding.dim {
-        anyhow::bail!(
-            "embedding model {} produces {} dimensions but embedding.dim is {}",
-            embedder.id(),
-            embedder.dim(),
-            cfg.embedding.dim
-        );
+        anyhow::bail!("embedding model {} produces {} dimensions but embedding.dim is {}", embedder.id(), embedder.dim(), cfg.embedding.dim);
     }
     let reranker = memhouse_models::build_reranker(&cfg, show_progress)?;
     let store = PgStore::connect(&cfg.database.url, cfg.database.max_connections, cfg.embedding.passage_prefix.as_deref().unwrap_or("")).await?;
@@ -65,11 +60,7 @@ struct AppState {
 }
 
 fn actor_from(headers: &HeaderMap) -> String {
-    headers
-        .get("x-memhouse-actor")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.chars().take(80).collect())
-        .unwrap_or_else(|| "rest".into())
+    headers.get("x-memhouse-actor").and_then(|v| v.to_str().ok()).map(|s| s.chars().take(80).collect()).unwrap_or_else(|| "rest".into())
 }
 
 async fn auth(State(st): State<AppState>, req: Request, next: Next) -> Response {
@@ -127,10 +118,11 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     } else {
         vec![]
     };
-    axum::serve(listener, router(engine)).with_graceful_shutdown(async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
-    .await?;
+    axum::serve(listener, router(engine))
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     for w in workers {
         let _ = w.await;
@@ -230,7 +222,11 @@ async fn mcp_http(State(st): State<AppState>, headers: HeaderMap, Json(msg): Jso
                     v.push(r);
                 }
             }
-            if v.is_empty() { None } else { Some(serde_json::Value::Array(v)) }
+            if v.is_empty() {
+                None
+            } else {
+                Some(serde_json::Value::Array(v))
+            }
         }
         m => mcp::handle(&st.engine, m, &actor).await,
     };
