@@ -28,6 +28,9 @@ enum Cmd {
     Up {
         #[arg(long, default_value_t = 54329)]
         port: u16,
+        /// Docker container name (run several isolated instances side by side)
+        #[arg(long, default_value = up::CONTAINER)]
+        name: String,
         /// Use-case template: personal, coding, support, sales, success
         #[arg(long)]
         template: Option<String>,
@@ -216,19 +219,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let cfg_path = cli.config.clone();
     let path_or_default = cfg_path.clone().unwrap_or_else(default_config_path);
     match cli.cmd {
-        Cmd::Up { port, template } => {
+        Cmd::Up { port, name, template } => {
             let mut cfg = if path_or_default.exists() { Config::load(Some(&path_or_default))? } else { Config::default() };
             let fresh = !path_or_default.exists();
-            if fresh || up::managed(&cfg) {
+            if fresh || up::managed(&cfg).is_some() {
                 let password = if fresh {
                     random_token(24)
                 } else {
                     cfg.database.url.split(':').nth(2).and_then(|s| s.split('@').next()).unwrap_or("memhouse").to_string()
                 };
-                let url = up::start(port, &password)?;
+                let container = if fresh { name.clone() } else { up::managed(&cfg).unwrap_or(up::CONTAINER).to_string() };
+                let url = up::start(&container, port, &password, fresh)?;
                 if fresh {
                     cfg.database.url = url.clone();
-                    cfg.database.container = Some(up::CONTAINER.into());
+                    cfg.database.container = Some(container);
                     cfg.server.api_keys = vec![format!("mh_{}", random_token(32))];
                 }
                 eprintln!("Waiting for Postgres ...");
@@ -247,7 +251,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("✓ Postgres ready, schema migrated, {} memories stored", st.committed);
             print_next_steps(&path);
         }
-        Cmd::Down => up::stop()?,
+        Cmd::Down => {
+            let cfg = Config::load(cfg_path.as_deref())?;
+            up::stop(up::managed(&cfg).unwrap_or(up::CONTAINER))?
+        }
         Cmd::Init { database_url, template, embedding, model, dim, base_url, api_key_env, force } => {
             if path_or_default.exists() && !force {
                 anyhow::bail!("{} already exists (use --force to overwrite)", path_or_default.display());
@@ -539,11 +546,11 @@ async fn doctor(cfg_path: &Option<PathBuf>) -> anyhow::Result<()> {
         return Ok(());
     }
     let cfg = Config::load(Some(&path))?;
-    if up::managed(&cfg) {
-        match up::container_state() {
-            Some(s) if s == "running" => ok(&format!("container {} running", up::CONTAINER)),
-            Some(s) => bad(&format!("container {} is {s} — run `memhouse up`", up::CONTAINER)),
-            None => bad(&format!("container {} missing — run `memhouse up`", up::CONTAINER)),
+    if let Some(name) = up::managed(&cfg) {
+        match up::container_state(name) {
+            Some(s) if s == "running" => ok(&format!("container {name} running")),
+            Some(s) => bad(&format!("container {name} is {s} — run `memhouse up`")),
+            None => bad(&format!("container {name} missing — run `memhouse up`")),
         }
     }
     let t = std::time::Instant::now();

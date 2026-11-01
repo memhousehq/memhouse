@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = ["local"]
-local = ["dep:fastembed"]
+local = ["dep:fastembed", "dep:ort"]
 
 [dependencies]
 memhouse-core.workspace = true
@@ -18,3 +18,9 @@ serde_json.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
 fastembed = { workspace = true, optional = true }
+# Same version fastembed uses; needed to pin the CPU execution provider.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std"], optional = true }
+
+[dev-dependencies]
+fastembed = { workspace = true }
+tokio = { workspace = true }

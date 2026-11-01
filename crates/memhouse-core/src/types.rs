@@ -256,6 +256,13 @@ pub struct Hit {
 pub struct RecallResult {
     pub hits: Vec<Hit>,
     pub took_ms: f64,
+    /// Time spent embedding the query, in the SQL statement, and reranking.
+    #[serde(default)]
+    pub embed_ms: f64,
+    #[serde(default)]
+    pub search_ms: f64,
+    #[serde(default)]
+    pub rerank_ms: f64,
     pub candidates: usize,
     pub reranked: bool,
 }

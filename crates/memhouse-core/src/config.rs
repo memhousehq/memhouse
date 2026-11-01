@@ -64,6 +64,10 @@ pub struct EmbeddingConfig {
     /// Max tokens the local model reads per text.
     pub max_length: usize,
     pub batch_size: usize,
+    /// Parallel local model sessions (0 = auto: half the cores, at most 4).
+    pub sessions: usize,
+    /// CPU threads per local model session (0 = auto: cores / sessions).
+    pub threads: usize,
     pub cache_dir: Option<PathBuf>,
     /// Prefix added to queries (some models need one, e.g. "search_query: ").
     pub query_prefix: Option<String>,
@@ -79,7 +83,9 @@ impl Default for EmbeddingConfig {
             base_url: None,
             api_key_env: None,
             max_length: 512,
-            batch_size: 64,
+            batch_size: 1,
+            sessions: 0,
+            threads: 0,
             cache_dir: None,
             query_prefix: Some("Represent this sentence for searching relevant passages: ".into()),
             passage_prefix: None,

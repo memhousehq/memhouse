@@ -1592,6 +1592,7 @@ dependencies = [
  "async-trait",
  "fastembed",
  "memhouse-core",
+ "ort",
  "reqwest",
  "serde",
  "serde_json",

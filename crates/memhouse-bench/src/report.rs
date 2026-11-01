@@ -113,6 +113,10 @@ pub fn markdown(s: &Summary) -> String {
         let _ = writeln!(o, "## Latency and throughput\n");
         let _ = writeln!(o, "| Metric | Value |\n|---|---|");
         let _ = writeln!(o, "| Recall (end to end: query embedding + one SQL statement{}) | p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms · n={} |", if c.reranker.is_some() { " + rerank" } else { "" }, l.p50_ms, l.p95_ms, l.p99_ms, l.n);
+        let sl = &a.search_latency;
+        let el = &a.query_embed_latency;
+        let _ = writeln!(o, "| — of which SQL hybrid search (Postgres) | p50 {:.1} ms · p95 {:.1} ms · p99 {:.1} ms |", sl.p50_ms, sl.p95_ms, sl.p99_ms);
+        let _ = writeln!(o, "| — of which query embedding (CPU, shared with concurrent ingest) | p50 {:.1} ms · p95 {:.1} ms |", el.p50_ms, el.p95_ms);
         let _ = writeln!(o, "| Ingest | {} rounds, {:.0} rounds/s with {} workers (includes embedding on CPU, cache hits for repeated sessions) |\n", a.ingest_rounds, a.rounds_per_second, c.concurrency);
 
         let refs: Vec<_> = baselines::RETRIEVAL.iter().filter(|_| s.dataset.starts_with("longmemeval")).collect();

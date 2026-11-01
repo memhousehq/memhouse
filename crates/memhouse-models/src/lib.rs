@@ -43,22 +43,106 @@ pub mod local {
             .collect()
     }
 
+    /// A fixed set of model sessions. A few sessions with a few threads each use a CPU far better
+    /// than one session with every core for the small batches memory workloads produce.
+    pub(crate) struct Pool<T> {
+        items: Mutex<Vec<T>>,
+        ready: std::sync::Condvar,
+        pub(crate) size: usize,
+    }
+
+    impl<T> Pool<T> {
+        pub(crate) fn new(items: Vec<T>) -> Pool<T> {
+            let size = items.len();
+            Pool { items: Mutex::new(items), ready: std::sync::Condvar::new(), size }
+        }
+
+        pub(crate) fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> anyhow::Result<R> {
+            let mut item = {
+                let mut g = self.items.lock().map_err(|_| anyhow::anyhow!("model pool poisoned"))?;
+                loop {
+                    if let Some(it) = g.pop() {
+                        break it;
+                    }
+                    g = self.ready.wait(g).map_err(|_| anyhow::anyhow!("model pool poisoned"))?;
+                }
+            };
+            let r = f(&mut item);
+            self.items.lock().map_err(|_| anyhow::anyhow!("model pool poisoned"))?.push(item);
+            self.ready.notify_one();
+            Ok(r)
+        }
+    }
+
+    /// Sessions and threads per session for this machine (or the configured values).
+    pub(crate) fn pool_shape(sessions: usize, threads: usize) -> (usize, usize) {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let s = if sessions > 0 { sessions } else { (cores / 2).clamp(1, 4) };
+        let t = if threads > 0 { threads } else { (cores / s).max(1) };
+        (s, t)
+    }
+
     pub struct LocalEmbedder {
         id: String,
         dim: usize,
         batch: usize,
-        model: Arc<Mutex<TextEmbedding>>,
+        max_len: usize,
+        pool: Arc<Pool<TextEmbedding>>,
+    }
+
+    /// Plain CPU execution without the growing memory arena. The default provider set on macOS can
+    /// route through CoreML, which recompiles for every new input shape (very slow, many GB of RAM).
+    pub(crate) fn cpu_provider() -> Vec<fastembed::ExecutionProviderDispatch> {
+        vec![ort::ep::CPU::default().with_arena_allocator(false).build()]
+    }
+
+    /// Approximate tokens per padded batch. Batches are padded to their longest text, so texts are
+    /// sorted by length and grouped until this budget is reached; memory stays flat (~100s of MB).
+    const BATCH_TOKEN_BUDGET: usize = 8192;
+
+    pub(crate) fn plan_batches(texts: &[String], max_batch: usize, max_len: usize) -> Vec<Vec<usize>> {
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(texts[i].len()));
+        let mut batches = vec![];
+        let mut cur: Vec<usize> = vec![];
+        let mut cur_max = 0usize;
+        for i in order {
+            let toks = (texts[i].len() / 4 + 2).min(max_len).max(1);
+            let new_max = cur_max.max(toks);
+            if !cur.is_empty() && (cur.len() >= max_batch || new_max * (cur.len() + 1) > BATCH_TOKEN_BUDGET) {
+                batches.push(std::mem::take(&mut cur));
+                cur_max = 0;
+            }
+            cur_max = cur_max.max(toks);
+            cur.push(i);
+        }
+        if !cur.is_empty() {
+            batches.push(cur);
+        }
+        batches
     }
 
     impl LocalEmbedder {
         pub fn new(cfg: &EmbeddingConfig, show_progress: bool) -> anyhow::Result<LocalEmbedder> {
             let (model, dim, code) = resolve_embedding(&cfg.model)?;
-            let opts = TextInitOptions::new(model)
-                .with_max_length(cfg.max_length)
-                .with_cache_dir(model_cache_dir(&cfg.cache_dir))
-                .with_show_download_progress(show_progress);
-            let te = TextEmbedding::try_new(opts).with_context(|| format!("loading local embedding model {code}"))?;
-            Ok(LocalEmbedder { id: format!("local:{code}"), dim, batch: cfg.batch_size.max(1), model: Arc::new(Mutex::new(te)) })
+            let (sessions, threads) = pool_shape(cfg.sessions, cfg.threads);
+            let mut items = Vec::with_capacity(sessions);
+            for i in 0..sessions {
+                let opts = TextInitOptions::new(model.clone())
+                    .with_max_length(cfg.max_length)
+                    .with_cache_dir(model_cache_dir(&cfg.cache_dir))
+                    .with_execution_providers(cpu_provider())
+                    .with_intra_threads(threads)
+                    .with_show_download_progress(show_progress && i == 0);
+                items.push(TextEmbedding::try_new(opts).with_context(|| format!("loading local embedding model {code}"))?);
+            }
+            Ok(LocalEmbedder {
+                id: format!("local:{code}"),
+                dim,
+                batch: cfg.batch_size.max(1),
+                max_len: cfg.max_length,
+                pool: Arc::new(Pool::new(items)),
+            })
         }
     }
 
@@ -74,12 +158,40 @@ pub mod local {
             if texts.is_empty() {
                 return Ok(vec![]);
             }
-            let model = self.model.clone();
+            let pool = self.pool.clone();
             let texts = texts.to_vec();
-            let batch = self.batch;
+            let batches = plan_batches(&texts, self.batch, self.max_len);
             tokio::task::spawn_blocking(move || {
-                let mut m = model.lock().map_err(|_| anyhow::anyhow!("embedding model lock poisoned"))?;
-                m.embed(&texts, Some(batch)).map_err(|e| anyhow::anyhow!("embedding failed: {e}"))
+                // Spread the batches of one call over the pool; each worker holds one session at a time.
+                let next = std::sync::atomic::AtomicUsize::new(0);
+                let workers = pool.size.min(batches.len()).max(1);
+                let results: Vec<anyhow::Result<Vec<(usize, Vec<f32>)>>> = std::thread::scope(|s| {
+                    let handles: Vec<_> = (0..workers)
+                        .map(|_| {
+                            s.spawn(|| -> anyhow::Result<Vec<(usize, Vec<f32>)>> {
+                                let mut done = vec![];
+                                loop {
+                                    let j = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                    let Some(b) = batches.get(j) else { break };
+                                    let chunk: Vec<&str> = b.iter().map(|&i| texts[i].as_str()).collect();
+                                    let vecs = pool
+                                        .with(|m| m.embed(&chunk, Some(chunk.len())))?
+                                        .map_err(|e| anyhow::anyhow!("embedding failed: {e}"))?;
+                                    done.extend(b.iter().copied().zip(vecs));
+                                }
+                                Ok(done)
+                            })
+                        })
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("embedding thread panicked")))).collect()
+                });
+                let mut out: Vec<Vec<f32>> = vec![vec![]; texts.len()];
+                for r in results {
+                    for (i, v) in r? {
+                        out[i] = v;
+                    }
+                }
+                Ok(out)
             })
             .await?
         }
@@ -109,6 +221,7 @@ pub mod local {
             let opts = RerankInitOptions::new(model)
                 .with_max_length(cfg.max_length)
                 .with_cache_dir(model_cache_dir(cache_dir))
+                .with_execution_providers(cpu_provider())
                 .with_show_download_progress(show_progress);
             let rr = TextRerank::try_new(opts).with_context(|| format!("loading reranker {}", pick.model_code))?;
             Ok(LocalReranker { id: format!("local:{}", pick.model_code), model: Arc::new(Mutex::new(rr)) })
@@ -313,5 +426,24 @@ impl Llm {
             v["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string()
         };
         Ok(text)
+    }
+}
+
+#[cfg(all(test, feature = "local"))]
+mod tests {
+    use super::local::plan_batches;
+
+    #[test]
+    fn batches_respect_token_budget_and_cover_all() {
+        let texts: Vec<String> = (0..100).map(|i| "x".repeat(40 * (i % 50) + 4)).collect();
+        let b = plan_batches(&texts, 32, 512);
+        let mut seen: Vec<usize> = b.iter().flatten().copied().collect();
+        seen.sort();
+        assert_eq!(seen, (0..100).collect::<Vec<_>>());
+        for batch in &b {
+            let max = batch.iter().map(|&i| (texts[i].len() / 4 + 2).min(512)).max().unwrap();
+            assert!(batch.len() == 1 || max * batch.len() <= 8192);
+            assert!(batch.len() <= 32);
+        }
     }
 }

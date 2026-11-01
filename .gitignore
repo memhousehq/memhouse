@@ -3,3 +3,4 @@
 /bench-data/
 /bench-results/*/items.jsonl
 .fastembed_cache/
+/.dev-home/

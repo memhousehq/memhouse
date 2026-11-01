@@ -338,6 +338,7 @@ impl Engine {
         let mode = req.mode.unwrap_or_default();
         let use_rerank = req.rerank.unwrap_or(self.cfg.rerank.enabled) && self.reranker.is_some();
         let embedding = if mode == RetrievalMode::Keyword { None } else { Some(self.embed_query(&req.query).await?) };
+        let embed_ms = start.elapsed().as_secs_f64() * 1000.0;
         let fused_limit = if use_rerank { self.cfg.rerank.candidates.max(k) } else { k };
         let rerank_n = self.cfg.rerank.candidates.max(1);
         let q = SearchQuery {
@@ -357,7 +358,10 @@ impl Engine {
             keyword_weight: self.cfg.memory.keyword_weight,
             vector_weight: self.cfg.memory.vector_weight,
         };
+        let t_search = Instant::now();
         let mut hits = self.store.search(&q).await?;
+        let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;
+        let t_rerank = Instant::now();
         let candidates = hits.len();
 
         if use_rerank && hits.len() > 1 {
@@ -415,6 +419,9 @@ impl Engine {
         Ok(RecallResult {
             hits,
             took_ms: start.elapsed().as_secs_f64() * 1000.0,
+            embed_ms,
+            search_ms,
+            rerank_ms: if use_rerank { t_rerank.elapsed().as_secs_f64() * 1000.0 } else { 0.0 },
             candidates,
             reranked: use_rerank,
         })

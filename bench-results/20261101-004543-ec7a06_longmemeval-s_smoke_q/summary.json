@@ -1,0 +1,1314 @@
+{
+  "run_id": "20261101-004543-ec7a06",
+  "label": "smoke-q",
+  "dataset": "longmemeval-s",
+  "created_at": "2026-11-01T00:45:43.913219Z",
+  "wall_seconds": 347.529768542,
+  "config": {
+    "memhouse_version": "0.1.0",
+    "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
+    "reranker": null,
+    "mode": "hybrid",
+    "candidates_per_retriever": 100,
+    "rrf_k": 60.0,
+    "keyword_weight": 1.0,
+    "vector_weight": 1.0,
+    "concurrency": 4,
+    "selection": "limit=all stride=25 offset=0 types=all",
+    "answer_model": null,
+    "judge_model": null,
+    "answer_k": null,
+    "host": "macos aarch64 · 8 CPU threads · embeddings on CPU"
+  },
+  "results": {
+    "questions": 20,
+    "scored": 20,
+    "retrieval": {
+      "round/ndcg@1": {
+        "mean": 0.5,
+        "lo": 0.3,
+        "hi": 0.7,
+        "n": 20
+      },
+      "round/ndcg@10": {
+        "mean": 0.6126266768093988,
+        "lo": 0.473824515761278,
+        "hi": 0.7593823234311818,
+        "n": 20
+      },
+      "round/ndcg@3": {
+        "mean": 0.4767507344925024,
+        "lo": 0.3042286313362309,
+        "hi": 0.6462007102510496,
+        "n": 20
+      },
+      "round/ndcg@30": {
+        "mean": 0.6359433750453583,
+        "lo": 0.497058545368235,
+        "hi": 0.7697116826007924,
+        "n": 20
+      },
+      "round/ndcg@5": {
+        "mean": 0.5807970090108853,
+        "lo": 0.43704856544625265,
+        "hi": 0.7257338799266083,
+        "n": 20
+      },
+      "round/ndcg@50": {
+        "mean": 0.6449449413781929,
+        "lo": 0.5136433377323735,
+        "hi": 0.775978291837158,
+        "n": 20
+      },
+      "round/recall_all@1": {
+        "mean": 0.25,
+        "lo": 0.05,
+        "hi": 0.45,
+        "n": 20
+      },
+      "round/recall_all@10": {
+        "mean": 0.7,
+        "lo": 0.5,
+        "hi": 0.9,
+        "n": 20
+      },
+      "round/recall_all@3": {
+        "mean": 0.35,
+        "lo": 0.15,
+        "hi": 0.55,
+        "n": 20
+      },
+      "round/recall_all@30": {
+        "mean": 0.85,
+        "lo": 0.7,
+        "hi": 1.0,
+        "n": 20
+      },
+      "round/recall_all@5": {
+        "mean": 0.55,
+        "lo": 0.35,
+        "hi": 0.75,
+        "n": 20
+      },
+      "round/recall_all@50": {
+        "mean": 0.9,
+        "lo": 0.75,
+        "hi": 1.0,
+        "n": 20
+      },
+      "round/recall_any@1": {
+        "mean": 0.5,
+        "lo": 0.3,
+        "hi": 0.7,
+        "n": 20
+      },
+      "round/recall_any@10": {
+        "mean": 0.9,
+        "lo": 0.75,
+        "hi": 1.0,
+        "n": 20
+      },
+      "round/recall_any@3": {
+        "mean": 0.7,
+        "lo": 0.5,
+        "hi": 0.9,
+        "n": 20
+      },
+      "round/recall_any@30": {
+        "mean": 0.9,
+        "lo": 0.75,
+        "hi": 1.0,
+        "n": 20
+      },
+      "round/recall_any@5": {
+        "mean": 0.9,
+        "lo": 0.75,
+        "hi": 1.0,
+        "n": 20
+      },
+      "round/recall_any@50": {
+        "mean": 0.95,
+        "lo": 0.85,
+        "hi": 1.0,
+        "n": 20
+      },
+      "session/ndcg@1": {
+        "mean": 0.8,
+        "lo": 0.6,
+        "hi": 0.95,
+        "n": 20
+      },
+      "session/ndcg@10": {
+        "mean": 0.8451557820205542,
+        "lo": 0.7124292862148547,
+        "hi": 0.9587967029287178,
+        "n": 20
+      },
+      "session/ndcg@3": {
+        "mean": 0.8065991927831391,
+        "lo": 0.6631983855662783,
+        "hi": 0.9346713201808633,
+        "n": 20
+      },
+      "session/ndcg@5": {
+        "mean": 0.8298864320466011,
+        "lo": 0.6860474851121905,
+        "hi": 0.9527561377937429,
+        "n": 20
+      },
+      "session/recall_all@1": {
+        "mean": 0.25,
+        "lo": 0.05,
+        "hi": 0.45,
+        "n": 20
+      },
+      "session/recall_all@10": {
+        "mean": 0.85,
+        "lo": 0.7,
+        "hi": 1.0,
+        "n": 20
+      },
+      "session/recall_all@3": {
+        "mean": 0.75,
+        "lo": 0.55,
+        "hi": 0.95,
+        "n": 20
+      },
+      "session/recall_all@5": {
+        "mean": 0.8,
+        "lo": 0.6,
+        "hi": 0.95,
+        "n": 20
+      },
+      "session/recall_any@1": {
+        "mean": 0.8,
+        "lo": 0.6,
+        "hi": 0.95,
+        "n": 20
+      },
+      "session/recall_any@10": {
+        "mean": 0.95,
+        "lo": 0.85,
+        "hi": 1.0,
+        "n": 20
+      },
+      "session/recall_any@3": {
+        "mean": 0.9,
+        "lo": 0.75,
+        "hi": 1.0,
+        "n": 20
+      },
+      "session/recall_any@5": {
+        "mean": 0.9,
+        "lo": 0.75,
+        "hi": 1.0,
+        "n": 20
+      }
+    },
+    "by_type": {
+      "knowledge-update": {
+        "round/ndcg@1": {
+          "mean": 0.6666666666666666,
+          "lo": 0.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/ndcg@10": {
+          "mean": 0.7891926078138524,
+          "lo": 0.5706417189553201,
+          "hi": 0.9197207891481876,
+          "n": 3
+        },
+        "round/ndcg@3": {
+          "mean": 0.6131471927654584,
+          "lo": 0.3065735963827292,
+          "hi": 0.9197207891481876,
+          "n": 3
+        },
+        "round/ndcg@30": {
+          "mean": 0.7891926078138524,
+          "lo": 0.5706417189553201,
+          "hi": 0.9197207891481876,
+          "n": 3
+        },
+        "round/ndcg@5": {
+          "mean": 0.7891926078138524,
+          "lo": 0.5706417189553201,
+          "hi": 0.9197207891481876,
+          "n": 3
+        },
+        "round/ndcg@50": {
+          "mean": 0.7891926078138524,
+          "lo": 0.5706417189553201,
+          "hi": 0.9197207891481876,
+          "n": 3
+        },
+        "round/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 3
+        },
+        "round/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@3": {
+          "mean": 0.3333333333333333,
+          "lo": 0.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@1": {
+          "mean": 0.6666666666666666,
+          "lo": 0.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/ndcg@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/ndcg@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/ndcg@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 3
+        },
+        "session/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        }
+      },
+      "multi-session": {
+        "round/ndcg@1": {
+          "mean": 0.3333333333333333,
+          "lo": 0.0,
+          "hi": 0.6666666666666666,
+          "n": 6
+        },
+        "round/ndcg@10": {
+          "mean": 0.5674047327534328,
+          "lo": 0.37063244945735124,
+          "hi": 0.7516679050092114,
+          "n": 6
+        },
+        "round/ndcg@3": {
+          "mean": 0.37104906425515277,
+          "lo": 0.11557106726954514,
+          "hi": 0.6131471927654584,
+          "n": 6
+        },
+        "round/ndcg@30": {
+          "mean": 0.6175110992457594,
+          "lo": 0.46931923533495284,
+          "hi": 0.7657029631565657,
+          "n": 6
+        },
+        "round/ndcg@5": {
+          "mean": 0.4848503355683594,
+          "lo": 0.289886269428536,
+          "hi": 0.6678772345753731,
+          "n": 6
+        },
+        "round/ndcg@50": {
+          "mean": 0.6175110992457594,
+          "lo": 0.46931923533495284,
+          "hi": 0.7657029631565657,
+          "n": 6
+        },
+        "round/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 6
+        },
+        "round/recall_all@10": {
+          "mean": 0.6666666666666666,
+          "lo": 0.3333333333333333,
+          "hi": 1.0,
+          "n": 6
+        },
+        "round/recall_all@3": {
+          "mean": 0.16666666666666666,
+          "lo": 0.0,
+          "hi": 0.5,
+          "n": 6
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "round/recall_all@5": {
+          "mean": 0.3333333333333333,
+          "lo": 0.0,
+          "hi": 0.6666666666666666,
+          "n": 6
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "round/recall_any@1": {
+          "mean": 0.3333333333333333,
+          "lo": 0.0,
+          "hi": 0.6666666666666666,
+          "n": 6
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "round/recall_any@3": {
+          "mean": 0.6666666666666666,
+          "lo": 0.3333333333333333,
+          "hi": 1.0,
+          "n": 6
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "session/ndcg@1": {
+          "mean": 0.8333333333333334,
+          "lo": 0.5,
+          "hi": 1.0,
+          "n": 6
+        },
+        "session/ndcg@10": {
+          "mean": 0.9279532375119012,
+          "lo": 0.8311840414694632,
+          "hi": 0.9945779972481948,
+          "n": 6
+        },
+        "session/ndcg@3": {
+          "mean": 0.8604508549400046,
+          "lo": 0.7497678457228242,
+          "hi": 0.9608934394981036,
+          "n": 6
+        },
+        "session/ndcg@5": {
+          "mean": 0.9078180203953187,
+          "lo": 0.8056268216010757,
+          "hi": 0.9945779972481948,
+          "n": 6
+        },
+        "session/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 6
+        },
+        "session/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "session/recall_all@3": {
+          "mean": 0.6666666666666666,
+          "lo": 0.3333333333333333,
+          "hi": 1.0,
+          "n": 6
+        },
+        "session/recall_all@5": {
+          "mean": 0.8333333333333334,
+          "lo": 0.5,
+          "hi": 1.0,
+          "n": 6
+        },
+        "session/recall_any@1": {
+          "mean": 0.8333333333333334,
+          "lo": 0.5,
+          "hi": 1.0,
+          "n": 6
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 6
+        }
+      },
+      "single-session-assistant": {
+        "round/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/ndcg@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/ndcg@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/ndcg@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_all@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        }
+      },
+      "single-session-preference": {
+        "round/ndcg@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/ndcg@10": {
+          "mean": 0.43067655807339306,
+          "lo": 0.43067655807339306,
+          "hi": 0.43067655807339306,
+          "n": 1
+        },
+        "round/ndcg@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/ndcg@30": {
+          "mean": 0.43067655807339306,
+          "lo": 0.43067655807339306,
+          "hi": 0.43067655807339306,
+          "n": 1
+        },
+        "round/ndcg@5": {
+          "mean": 0.43067655807339306,
+          "lo": 0.43067655807339306,
+          "hi": 0.43067655807339306,
+          "n": 1
+        },
+        "round/ndcg@50": {
+          "mean": 0.43067655807339306,
+          "lo": 0.43067655807339306,
+          "hi": 0.43067655807339306,
+          "n": 1
+        },
+        "round/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "session/ndcg@10": {
+          "mean": 0.5,
+          "lo": 0.5,
+          "hi": 0.5,
+          "n": 1
+        },
+        "session/ndcg@3": {
+          "mean": 0.5,
+          "lo": 0.5,
+          "hi": 0.5,
+          "n": 1
+        },
+        "session/ndcg@5": {
+          "mean": 0.5,
+          "lo": 0.5,
+          "hi": 0.5,
+          "n": 1
+        },
+        "session/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "session/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        }
+      },
+      "single-session-user": {
+        "round/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/ndcg@10": {
+          "mean": 0.8710490642551528,
+          "lo": 0.6131471927654584,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/ndcg@3": {
+          "mean": 0.8710490642551528,
+          "lo": 0.6131471927654584,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/ndcg@30": {
+          "mean": 0.8710490642551528,
+          "lo": 0.6131471927654584,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/ndcg@5": {
+          "mean": 0.8710490642551528,
+          "lo": 0.6131471927654584,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/ndcg@50": {
+          "mean": 0.8710490642551528,
+          "lo": 0.6131471927654584,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/ndcg@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/ndcg@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/ndcg@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_all@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 3
+        }
+      },
+      "temporal-reasoning": {
+        "round/ndcg@1": {
+          "mean": 0.2,
+          "lo": 0.0,
+          "hi": 0.6,
+          "n": 5
+        },
+        "round/ndcg@10": {
+          "mean": 0.2873407130773941,
+          "lo": 0.047439542553859244,
+          "hi": 0.5649623886767882,
+          "n": 5
+        },
+        "round/ndcg@3": {
+          "mean": 0.1712263066514596,
+          "lo": 0.0,
+          "hi": 0.35893779706056217,
+          "n": 5
+        },
+        "round/ndcg@30": {
+          "mean": 0.3204798662304401,
+          "lo": 0.047439542553859244,
+          "hi": 0.5981015418298341,
+          "n": 5
+        },
+        "round/ndcg@5": {
+          "mean": 0.2590873185054284,
+          "lo": 0.047439542553859244,
+          "hi": 0.48020220496089083,
+          "n": 5
+        },
+        "round/ndcg@50": {
+          "mean": 0.3564861315617786,
+          "lo": 0.11945207321653631,
+          "hi": 0.6341078071611725,
+          "n": 5
+        },
+        "round/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 5
+        },
+        "round/recall_all@10": {
+          "mean": 0.2,
+          "lo": 0.0,
+          "hi": 0.6,
+          "n": 5
+        },
+        "round/recall_all@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 5
+        },
+        "round/recall_all@30": {
+          "mean": 0.4,
+          "lo": 0.0,
+          "hi": 0.8,
+          "n": 5
+        },
+        "round/recall_all@5": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 5
+        },
+        "round/recall_all@50": {
+          "mean": 0.6,
+          "lo": 0.2,
+          "hi": 1.0,
+          "n": 5
+        },
+        "round/recall_any@1": {
+          "mean": 0.2,
+          "lo": 0.0,
+          "hi": 0.6,
+          "n": 5
+        },
+        "round/recall_any@10": {
+          "mean": 0.6,
+          "lo": 0.2,
+          "hi": 1.0,
+          "n": 5
+        },
+        "round/recall_any@3": {
+          "mean": 0.4,
+          "lo": 0.0,
+          "hi": 0.8,
+          "n": 5
+        },
+        "round/recall_any@30": {
+          "mean": 0.6,
+          "lo": 0.2,
+          "hi": 1.0,
+          "n": 5
+        },
+        "round/recall_any@5": {
+          "mean": 0.6,
+          "lo": 0.2,
+          "hi": 1.0,
+          "n": 5
+        },
+        "round/recall_any@50": {
+          "mean": 0.8,
+          "lo": 0.4,
+          "hi": 1.0,
+          "n": 5
+        },
+        "session/ndcg@1": {
+          "mean": 0.6,
+          "lo": 0.2,
+          "hi": 1.0,
+          "n": 5
+        },
+        "session/ndcg@10": {
+          "mean": 0.5670792430679354,
+          "lo": 0.2039943824238491,
+          "hi": 0.9301641037120219,
+          "n": 5
+        },
+        "session/ndcg@3": {
+          "mean": 0.49385574520455133,
+          "lo": 0.09385574520455128,
+          "hi": 0.8938557452045514,
+          "n": 5
+        },
+        "session/ndcg@5": {
+          "mean": 0.5301641037120218,
+          "lo": 0.13016410371202183,
+          "hi": 0.9301641037120219,
+          "n": 5
+        },
+        "session/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 5
+        },
+        "session/recall_all@10": {
+          "mean": 0.4,
+          "lo": 0.0,
+          "hi": 0.8,
+          "n": 5
+        },
+        "session/recall_all@3": {
+          "mean": 0.4,
+          "lo": 0.0,
+          "hi": 0.8,
+          "n": 5
+        },
+        "session/recall_all@5": {
+          "mean": 0.4,
+          "lo": 0.0,
+          "hi": 0.8,
+          "n": 5
+        },
+        "session/recall_any@1": {
+          "mean": 0.6,
+          "lo": 0.2,
+          "hi": 1.0,
+          "n": 5
+        },
+        "session/recall_any@10": {
+          "mean": 0.8,
+          "lo": 0.4,
+          "hi": 1.0,
+          "n": 5
+        },
+        "session/recall_any@3": {
+          "mean": 0.6,
+          "lo": 0.2,
+          "hi": 1.0,
+          "n": 5
+        },
+        "session/recall_any@5": {
+          "mean": 0.6,
+          "lo": 0.2,
+          "hi": 1.0,
+          "n": 5
+        }
+      }
+    },
+    "recall_latency": {
+      "n": 20,
+      "mean_ms": 859.3441269499999,
+      "p50_ms": 951.7447500000001,
+      "p95_ms": 1245.5445,
+      "p99_ms": 1290.1123750000002,
+      "max_ms": 1290.1123750000002
+    },
+    "ingest_rounds": 4992,
+    "ingest_ms_total": 1346466.374086,
+    "rounds_per_second": 14.829928458892672
+  }
+}

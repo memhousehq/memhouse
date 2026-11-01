@@ -32,6 +32,10 @@ pub struct QuestionResult {
     /// Retrieval metrics; empty when the question has no evidence to score against.
     pub metrics: BTreeMap<String, f64>,
     pub recall_ms: f64,
+    #[serde(default)]
+    pub search_ms: f64,
+    #[serde(default)]
+    pub embed_ms: f64,
     pub top_sessions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qa: Option<QaResult>,
@@ -216,6 +220,8 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
             abstention: q.abstention,
             metrics,
             recall_ms: r.took_ms,
+            search_ms: r.search_ms,
+            embed_ms: r.embed_ms,
             top_sessions: unique_in_order(r.hits.iter().filter_map(|h| h.memory.session_id.clone())).into_iter().take(10).collect(),
             qa,
         });
@@ -314,6 +320,10 @@ pub struct Aggregate {
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub qa_by_type: BTreeMap<String, Estimate>,
     pub recall_latency: Latency,
+    #[serde(default)]
+    pub search_latency: Latency,
+    #[serde(default)]
+    pub query_embed_latency: Latency,
     pub ingest_rounds: usize,
     pub ingest_ms_total: f64,
     pub rounds_per_second: f64,
@@ -352,6 +362,8 @@ pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> 
         qa_accuracy: if qa_all.is_empty() { None } else { Some(metrics::bootstrap(&qa_all, 2000)) },
         qa_by_type: qa_type.iter().map(|(k, v)| (k.clone(), metrics::bootstrap(v, 1000))).collect(),
         recall_latency: metrics::latency(&lat),
+        search_latency: metrics::latency(&qs.iter().map(|q| q.search_ms).collect::<Vec<_>>()),
+        query_embed_latency: metrics::latency(&qs.iter().map(|q| q.embed_ms).collect::<Vec<_>>()),
         ingest_rounds: rounds,
         ingest_ms_total: ingest_ms,
         // Ingest runs on `concurrency` workers at once; per-worker time × workers ≈ wall time.
