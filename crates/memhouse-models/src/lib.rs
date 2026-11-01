@@ -358,12 +358,34 @@ pub fn build_reranker(cfg: &Config, show_progress: bool) -> anyhow::Result<Optio
     }
 }
 
+/// Tokens, cost and wall time of one logical LLM call (retries included).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct LlmUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// USD: as reported by the provider (OpenRouter), else from the configured price.
+    pub cost_usd: Option<f64>,
+    /// True when `cost_usd` came from the provider rather than a price table.
+    #[serde(default)]
+    pub cost_reported: bool,
+    /// Wall time including retries and backoff.
+    pub ms: f64,
+    pub attempts: u32,
+}
+
+pub struct Completion {
+    pub text: String,
+    pub usage: LlmUsage,
+}
+
 /// Minimal chat client (OpenAI-compatible chat completions or Anthropic messages).
 #[derive(Clone)]
 pub struct Llm {
     cfg: LlmConfig,
     key: Option<String>,
     http: reqwest::Client,
+    /// USD per million (prompt, completion) tokens, used when the provider reports no cost.
+    price: Option<(f64, f64)>,
 }
 
 impl Llm {
@@ -372,7 +394,13 @@ impl Llm {
             cfg: cfg.clone(),
             key: api_key(&cfg.api_key_env),
             http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(300)).build()?,
+            price: None,
         })
+    }
+
+    pub fn with_price(mut self, price: Option<(f64, f64)>) -> Llm {
+        self.price = price;
+        self
     }
 
     pub fn id(&self) -> String {
@@ -380,11 +408,22 @@ impl Llm {
     }
 
     pub async fn complete(&self, system: &str, user: &str) -> anyhow::Result<String> {
+        Ok(self.complete_with_usage(system, user).await?.text)
+    }
+
+    /// Like `complete`, plus token counts, cost and wall time. Tokens and cost cover every
+    /// attempt that returned a response.
+    pub async fn complete_with_usage(&self, system: &str, user: &str) -> anyhow::Result<Completion> {
+        let start = std::time::Instant::now();
         let mut attempt = 0;
         loop {
             attempt += 1;
             match self.complete_once(system, user).await {
-                Ok(s) => return Ok(s),
+                Ok(mut c) => {
+                    c.usage.ms = start.elapsed().as_secs_f64() * 1000.0;
+                    c.usage.attempts = attempt;
+                    return Ok(c);
+                }
                 Err(e) if attempt < 5 => {
                     tracing::warn!("llm call failed (attempt {attempt}): {e:#}");
                     tokio::time::sleep(std::time::Duration::from_millis(500 * 2u64.pow(attempt))).await;
@@ -394,7 +433,7 @@ impl Llm {
         }
     }
 
-    async fn complete_once(&self, system: &str, user: &str) -> anyhow::Result<String> {
+    async fn complete_once(&self, system: &str, user: &str) -> anyhow::Result<Completion> {
         let base = self.cfg.base_url.trim_end_matches('/');
         let (url, body) = if self.cfg.provider == "anthropic" {
             (
@@ -413,6 +452,11 @@ impl Llm {
                 }),
             )
         };
+        let mut body = body;
+        if base.contains("openrouter.ai") {
+            // Ask OpenRouter to report the exact charged cost in `usage.cost`.
+            body["usage"] = json!({"include": true});
+        }
         let mut req = self.http.post(&url).json(&body);
         if let Some(k) = &self.key {
             req = if self.cfg.provider == "anthropic" {
@@ -432,7 +476,15 @@ impl Llm {
         } else {
             v["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string()
         };
-        Ok(text)
+        let u = &v["usage"];
+        let tok = |a: &str, b: &str| u[a].as_u64().or_else(|| u[b].as_u64()).unwrap_or(0);
+        let (prompt_tokens, completion_tokens) = (tok("prompt_tokens", "input_tokens"), tok("completion_tokens", "output_tokens"));
+        let reported = u["cost"].as_f64();
+        let cost_usd = reported.or_else(|| self.price.map(|(pi, po)| (prompt_tokens as f64 * pi + completion_tokens as f64 * po) / 1e6));
+        Ok(Completion {
+            text,
+            usage: LlmUsage { prompt_tokens, completion_tokens, cost_usd, cost_reported: reported.is_some(), ms: 0.0, attempts: 1 },
+        })
     }
 }
 

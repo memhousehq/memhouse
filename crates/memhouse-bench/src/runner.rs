@@ -6,7 +6,7 @@ use crate::datasets::{self, Item, Question, Selection};
 use crate::metrics::{self, eval_ranking, unique_in_order, Estimate, Latency};
 use memhouse_core::types::*;
 use memhouse_core::Engine;
-use memhouse_models::Llm;
+use memhouse_models::{Llm, LlmUsage};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,6 +22,10 @@ pub struct QaResult {
     pub answer: String,
     pub judgement: String,
     pub correct: bool,
+    #[serde(default)]
+    pub answer_usage: LlmUsage,
+    #[serde(default)]
+    pub judge_usage: LlmUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +59,23 @@ pub struct QaSetup {
     pub answer: Llm,
     pub judge: Llm,
     pub answer_k: usize,
+    /// Stop the run once this much has been spent (USD); costs without a known price count as 0.
+    pub max_cost_usd: Option<f64>,
+    /// Spend so far in micro-dollars, shared by all workers.
+    pub spent_micro_usd: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl QaSetup {
+    fn charge(&self, u: &LlmUsage) -> anyhow::Result<()> {
+        let add = (u.cost_usd.unwrap_or(0.0) * 1e6).round() as u64;
+        let total = self.spent_micro_usd.fetch_add(add, Ordering::Relaxed) + add;
+        if let Some(max) = self.max_cost_usd {
+            if total as f64 / 1e6 > max {
+                anyhow::bail!("QA spend ${:.4} passed --max-cost-usd {max}; stopping", total as f64 / 1e6);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -211,10 +232,12 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
             None => None,
             Some(setup) => {
                 let (sys, user) = answer_prompt(q, &r.hits, setup.answer_k);
-                let answer = setup.answer.complete(&sys, &user).await?;
-                let judgement = setup.judge.complete("You are a careful, impartial grader.", &judge_prompt(&spec.dataset, q, &answer)).await?;
-                let correct = parse_judgement(&spec.dataset, &judgement);
-                Some(QaResult { answer, judgement, correct })
+                let a = setup.answer.complete_with_usage(&sys, &user).await?;
+                setup.charge(&a.usage)?;
+                let j = setup.judge.complete_with_usage("You are a careful, impartial grader.", &judge_prompt(&spec.dataset, q, &a.text)).await?;
+                setup.charge(&j.usage)?;
+                let correct = parse_judgement(&spec.dataset, &j.text);
+                Some(QaResult { answer: a.text, judgement: j.text, correct, answer_usage: a.usage, judge_usage: j.usage })
             }
         };
         out.push(QuestionResult {
@@ -330,6 +353,45 @@ pub struct Aggregate {
     pub ingest_rounds: usize,
     pub ingest_ms_total: f64,
     pub rounds_per_second: f64,
+    /// QA runs only: what the LLM calls cost and how long they took.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub llm: Option<LlmTally>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RoleTally {
+    pub calls: usize,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cost_usd: f64,
+    /// Calls whose cost the provider reported; the rest are priced from the table or unknown.
+    pub cost_reported_calls: usize,
+    pub cost_unknown_calls: usize,
+    pub retries: u64,
+    pub latency: Latency,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmTally {
+    pub answer: RoleTally,
+    pub judge: RoleTally,
+    pub total_cost_usd: f64,
+    /// What an agent sees: memory recall plus the answer model's call. The judge is benchmark-only.
+    pub recall_plus_answer_latency: Latency,
+}
+
+fn role_tally<'a>(us: impl Iterator<Item = &'a LlmUsage>) -> RoleTally {
+    let us: Vec<&LlmUsage> = us.collect();
+    RoleTally {
+        calls: us.len(),
+        prompt_tokens: us.iter().map(|u| u.prompt_tokens).sum(),
+        completion_tokens: us.iter().map(|u| u.completion_tokens).sum(),
+        cost_usd: us.iter().filter_map(|u| u.cost_usd).sum(),
+        cost_reported_calls: us.iter().filter(|u| u.cost_reported).count(),
+        cost_unknown_calls: us.iter().filter(|u| u.cost_usd.is_none()).count(),
+        retries: us.iter().map(|u| u.attempts.saturating_sub(1) as u64).sum(),
+        latency: metrics::latency(&us.iter().map(|u| u.ms).collect::<Vec<_>>()),
+    }
 }
 
 pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> Aggregate {
@@ -351,6 +413,17 @@ pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> 
         }
     }
     let lat: Vec<f64> = qs.iter().map(|q| q.recall_ms).collect();
+    let qa_qs: Vec<(&QuestionResult, &QaResult)> = qs.iter().filter_map(|q| q.qa.as_ref().map(|a| (*q, a))).collect();
+    let llm = (!qa_qs.is_empty()).then(|| {
+        let answer = role_tally(qa_qs.iter().map(|(_, a)| &a.answer_usage));
+        let judge = role_tally(qa_qs.iter().map(|(_, a)| &a.judge_usage));
+        LlmTally {
+            total_cost_usd: answer.cost_usd + judge.cost_usd,
+            recall_plus_answer_latency: metrics::latency(&qa_qs.iter().map(|(q, a)| q.recall_ms + a.answer_usage.ms).collect::<Vec<_>>()),
+            answer,
+            judge,
+        }
+    });
     let rounds: usize = results.iter().map(|r| r.rounds).sum();
     let ingest_ms: f64 = results.iter().map(|r| r.ingest_ms).sum();
     let _ = wall_secs;
@@ -371,5 +444,6 @@ pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> 
         ingest_ms_total: ingest_ms,
         // Ingest runs on `concurrency` workers at once; per-worker time × workers ≈ wall time.
         rounds_per_second: if ingest_ms > 0.0 { rounds as f64 / (ingest_ms / 1000.0 / concurrency.max(1) as f64) } else { 0.0 },
+        llm,
     }
 }

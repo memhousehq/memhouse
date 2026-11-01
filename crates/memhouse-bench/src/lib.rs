@@ -97,6 +97,16 @@ pub struct RunArgs {
     /// Environment variable holding the LLM API key
     #[arg(long, default_value = "OPENAI_API_KEY")]
     pub llm_key_env: String,
+    /// Answer-model price in USD per million tokens, "prompt,completion" (used when the provider
+    /// reports no cost; OpenRouter reports it)
+    #[arg(long)]
+    pub answer_price: Option<String>,
+    /// Judge-model price in USD per million tokens, "prompt,completion"
+    #[arg(long)]
+    pub judge_price: Option<String>,
+    /// Stop the QA run once LLM spend passes this many USD
+    #[arg(long)]
+    pub max_cost_usd: Option<f64>,
     /// Memories given to the answer model
     #[arg(long, default_value_t = 10)]
     pub answer_k: usize,
@@ -251,9 +261,11 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
         let base = args.llm_base_url.clone().unwrap_or_else(|| if args.llm_provider == "anthropic" { "https://api.anthropic.com/v1".into() } else { "https://api.openai.com/v1".into() });
         let mk = |model: &str, max_tokens: u32| LlmConfig { provider: args.llm_provider.clone(), base_url: base.clone(), model: model.to_string(), api_key_env: Some(args.llm_key_env.clone()), max_tokens, temperature: 0.0 };
         Some(runner::QaSetup {
-            answer: memhouse_models::Llm::new(&mk(&args.answer_model, 600))?,
-            judge: memhouse_models::Llm::new(&mk(&args.judge_model, 10))?,
+            answer: memhouse_models::Llm::new(&mk(&args.answer_model, 600))?.with_price(price(args.answer_price.as_deref(), &args.answer_model)?),
+            judge: memhouse_models::Llm::new(&mk(&args.judge_model, 10))?.with_price(price(args.judge_price.as_deref(), &args.judge_model)?),
             answer_k: args.answer_k,
+            max_cost_usd: args.max_cost_usd,
+            spent_micro_usd: Default::default(),
         })
     } else {
         None
@@ -343,4 +355,22 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// USD per million (prompt, completion) tokens: the explicit flag, else list prices for common
+/// models (by model name, with or without an OpenRouter `vendor/` prefix), else unknown.
+fn price(flag: Option<&str>, model: &str) -> anyhow::Result<Option<(f64, f64)>> {
+    if let Some(f) = flag {
+        let (a, b) = f.split_once(',').context("price must be \"prompt,completion\" USD per 1M tokens")?;
+        return Ok(Some((a.trim().parse()?, b.trim().parse()?)));
+    }
+    let name = model.rsplit('/').next().unwrap_or(model);
+    Ok(match name {
+        "gpt-4o-mini" => Some((0.15, 0.60)),
+        "gpt-4o" => Some((2.50, 10.00)),
+        "gpt-4.1" => Some((2.00, 8.00)),
+        "gpt-4.1-mini" => Some((0.40, 1.60)),
+        "gpt-4.1-nano" => Some((0.10, 0.40)),
+        _ => None,
+    })
 }

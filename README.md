@@ -129,13 +129,14 @@ memhouse bench run --dataset longmemeval-s                  # retrieval quality 
 memhouse bench run --dataset longmemeval-s --stride 10      # 50-question stratified sample
 memhouse bench run --dataset locomo --mode keyword          # ablations: hybrid | dense | keyword, --rerank
 memhouse bench run --dataset longmemeval-s --qa \
-  --answer-model gpt-4o-mini --judge-model gpt-4o           # end-to-end QA accuracy with an LLM judge
+  --answer-model gpt-4o-mini --judge-model gpt-4o \
+  --max-cost-usd 5                                         # end-to-end QA accuracy with an LLM judge; records tokens and cost
 memhouse bench report bench-results/*                       # compare runs side by side
 ```
 
 - **Retrieval metrics** follow the LongMemEval reference code exactly: `recall_any@k`, `recall_all@k` and `nDCG@k`, at session level and at round level. Abstention and adversarial questions aren't scored for retrieval.
 - **Every metric has a 95% bootstrap confidence interval** with a fixed seed.
-- **QA mode** works with any OpenAI-compatible endpoint (OpenAI, Ollama, vLLM, LM Studio, OpenRouter) or Anthropic. The judge prompts follow each benchmark's published protocol, per question type.
+- **QA mode** works with any OpenAI-compatible endpoint (OpenAI, Ollama, vLLM, LM Studio, OpenRouter) or Anthropic. The judge prompts follow each benchmark's published protocol, per question type. Each QA report records tokens and cost per role (the provider's reported cost on OpenRouter, else list price × tokens), LLM call latency, and latency with and without the external call; `--max-cost-usd` stops a run that overspends.
 - **Isolation:** benchmark data goes to its own database per embedding model (`memhouse_bench_*`) and never mixes with your memories.
 - **Governance gates:** injection persistence, false quarantine rate, PII and secret redaction (random canaries), subject and tenant isolation, deletion (record + cached vector + recall + audit), subject erasure, stale-fact rate after updates, validity windows, dedup, audit-chain integrity and embedding determinism.
 
@@ -147,6 +148,8 @@ Current results on a laptop CPU, no LLM in the loop (details and baselines in [d
 | LoCoMo (1,536 scored) | 78.8 | 87.5 | 78.6 | 35 / 42 ms |
 
 On the harder 500-session LongMemEval_M split (50-question sample) MemHouse scores 79.2 / 89.6 / 82.6, against 76.2 / 86.2 / 65.8 for the best retriever in the LongMemEval paper (Contriever + LLM-extracted keys).
+
+End-to-end answer accuracy with an LLM judge: **77.0** on LongMemEval_S with GPT-4o (Zep 71.2, Supermemory 81.6, Mastra 84.2) and **68.4** on LoCoMo with GPT-4o-mini (Mem0 66.9, Letta 74.0), for $4.52 and $0.19. Every QA report records tokens, cost and latency with and without the LLM call.
 
 ## Configuration
 

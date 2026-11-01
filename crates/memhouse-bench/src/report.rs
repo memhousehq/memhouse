@@ -112,6 +112,35 @@ pub fn markdown(s: &Summary) -> String {
             let _ = writeln!(o, "## Answer accuracy (LLM judge)\n");
             let _ = writeln!(o, "**{}** over {} questions, judged by `{}` with the benchmark's judging protocol.\n", pct(qa), qa.n, c.judge_model.clone().unwrap_or_default());
         }
+        if let Some(t) = &a.llm {
+            let _ = writeln!(o, "## LLM usage and cost\n");
+            let _ = writeln!(o, "| Role | Model | Calls | Prompt tokens | Completion tokens | Cost (USD) | Cost source | Retries | Call latency p50 / p95 / p99 |\n|---|---|---|---|---|---|---|---|---|");
+            for (role, model, r) in [("answer", &c.answer_model, &t.answer), ("judge", &c.judge_model, &t.judge)] {
+                let src = if r.cost_unknown_calls == r.calls && r.calls > 0 {
+                    "unknown (no price; pass --answer-price / --judge-price)".to_string()
+                } else if r.cost_reported_calls == r.calls {
+                    "reported by provider".to_string()
+                } else if r.cost_reported_calls == 0 && r.cost_unknown_calls == 0 {
+                    "list price × tokens".to_string()
+                } else {
+                    format!("{} reported, {} from price table, {} unknown", r.cost_reported_calls, r.calls - r.cost_reported_calls - r.cost_unknown_calls, r.cost_unknown_calls)
+                };
+                let _ = writeln!(
+                    o,
+                    "| {role} | `{}` | {} | {} | {} | {:.4} | {src} | {} | {:.0} / {:.0} / {:.0} ms |",
+                    model.clone().unwrap_or_default(), r.calls, r.prompt_tokens, r.completion_tokens, r.cost_usd, r.retries, r.latency.p50_ms, r.latency.p95_ms, r.latency.p99_ms
+                );
+            }
+            let n = t.answer.calls.max(1) as f64;
+            let _ = writeln!(o, "| **total** | | {} | {} | {} | **{:.4}** | | | |\n", t.answer.calls + t.judge.calls, t.answer.prompt_tokens + t.judge.prompt_tokens, t.answer.completion_tokens + t.judge.completion_tokens, t.total_cost_usd);
+            let _ = writeln!(o, "Per question: {:.0} prompt + {:.0} completion tokens to the answer model, ${:.5} in all.\n", t.answer.prompt_tokens as f64 / n, t.answer.completion_tokens as f64 / n, t.total_cost_usd / n);
+            let (r, ra, al) = (&a.recall_latency, &t.recall_plus_answer_latency, &t.answer.latency);
+            let _ = writeln!(o, "**Latency with and without the external LLM call** (the judge is benchmark-only and excluded):\n");
+            let _ = writeln!(o, "| | p50 | p95 | p99 |\n|---|---|---|---|");
+            let _ = writeln!(o, "| Memory recall only (local, no external call) | {:.0} ms | {:.0} ms | {:.0} ms |", r.p50_ms, r.p95_ms, r.p99_ms);
+            let _ = writeln!(o, "| Answer-model call alone (network + provider) | {:.0} ms | {:.0} ms | {:.0} ms |", al.p50_ms, al.p95_ms, al.p99_ms);
+            let _ = writeln!(o, "| Recall + answer (what an agent waits for) | {:.0} ms | {:.0} ms | {:.0} ms |\n", ra.p50_ms, ra.p95_ms, ra.p99_ms);
+        }
 
         let l = &a.recall_latency;
         let _ = writeln!(o, "## Latency and throughput\n");
@@ -191,7 +220,7 @@ pub fn compare(runs: &[Summary]) -> String {
         let _ = writeln!(
             o,
             " {} | {:.1} / {:.1} |",
-            a.qa_accuracy.as_ref().map(|e| format!("{:.1}", e.mean * 100.0)).unwrap_or_else(|| "–".into()),
+            a.qa_accuracy.as_ref().map(|e| format!("{:.1}{}", e.mean * 100.0, a.llm.as_ref().map(|t| format!(" (${:.2})", t.total_cost_usd)).unwrap_or_default())).unwrap_or_else(|| "–".into()),
             a.recall_latency.p50_ms,
             a.recall_latency.p95_ms
         );

@@ -1,0 +1,1044 @@
+{
+  "run_id": "20261101-103053-9cbf50",
+  "label": "qa-smoke",
+  "dataset": "longmemeval-s",
+  "created_at": "2026-11-01T10:30:53.371396Z",
+  "wall_seconds": 4.902809959,
+  "config": {
+    "memhouse_version": "0.1.0",
+    "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
+    "reranker": null,
+    "mode": "hybrid",
+    "candidates_per_retriever": 100,
+    "rrf_k": 60.0,
+    "keyword_weight": 1.0,
+    "vector_weight": 1.0,
+    "query_analysis": "window w=0.15, top 3 +1, sub-query w=0",
+    "concurrency": 4,
+    "selection": "limit=all stride=100 offset=0 types=all",
+    "answer_model": "openai:openai/gpt-4o-mini",
+    "judge_model": "openai:openai/gpt-4o-mini",
+    "answer_k": 10,
+    "host": "macos aarch64 · 8 CPU threads · embeddings on CPU"
+  },
+  "results": {
+    "questions": 5,
+    "scored": 5,
+    "retrieval": {
+      "round/ndcg@1": {
+        "mean": 0.6,
+        "lo": 0.2,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/ndcg@10": {
+        "mean": 0.6838299379148998,
+        "lo": 0.5048924750628062,
+        "hi": 0.8627674007669934,
+        "n": 5
+      },
+      "round/ndcg@3": {
+        "mean": 0.5065735963827291,
+        "lo": 0.24525887710618335,
+        "hi": 0.7839441578296376,
+        "n": 5
+      },
+      "round/ndcg@30": {
+        "mean": 0.6838299379148998,
+        "lo": 0.5048924750628062,
+        "hi": 0.8627674007669934,
+        "n": 5
+      },
+      "round/ndcg@5": {
+        "mean": 0.640148450551267,
+        "lo": 0.4175295003355406,
+        "hi": 0.8627674007669934,
+        "n": 5
+      },
+      "round/ndcg@50": {
+        "mean": 0.6838299379148998,
+        "lo": 0.5048924750628062,
+        "hi": 0.8627674007669934,
+        "n": 5
+      },
+      "round/recall_all@1": {
+        "mean": 0.2,
+        "lo": 0.0,
+        "hi": 0.6,
+        "n": 5
+      },
+      "round/recall_all@10": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_all@3": {
+        "mean": 0.4,
+        "lo": 0.0,
+        "hi": 0.8,
+        "n": 5
+      },
+      "round/recall_all@30": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_all@5": {
+        "mean": 0.8,
+        "lo": 0.4,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_all@50": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_any@1": {
+        "mean": 0.6,
+        "lo": 0.2,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_any@10": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_any@3": {
+        "mean": 0.8,
+        "lo": 0.4,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_any@30": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_any@5": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "round/recall_any@50": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/ndcg@1": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/ndcg@10": {
+        "mean": 0.9226294385530917,
+        "lo": 0.7678883156592751,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/ndcg@3": {
+        "mean": 0.9226294385530917,
+        "lo": 0.7678883156592751,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/ndcg@5": {
+        "mean": 0.9226294385530917,
+        "lo": 0.7678883156592751,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/recall_all@1": {
+        "mean": 0.2,
+        "lo": 0.0,
+        "hi": 0.6,
+        "n": 5
+      },
+      "session/recall_all@10": {
+        "mean": 0.8,
+        "lo": 0.4,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/recall_all@3": {
+        "mean": 0.8,
+        "lo": 0.4,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/recall_all@5": {
+        "mean": 0.8,
+        "lo": 0.4,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/recall_any@1": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/recall_any@10": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/recall_any@3": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      },
+      "session/recall_any@5": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 5
+      }
+    },
+    "by_type": {
+      "knowledge-update": {
+        "round/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/ndcg@10": {
+          "mean": 0.8503449055347546,
+          "lo": 0.8503449055347546,
+          "hi": 0.8503449055347546,
+          "n": 1
+        },
+        "round/ndcg@3": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "round/ndcg@30": {
+          "mean": 0.8503449055347546,
+          "lo": 0.8503449055347546,
+          "hi": 0.8503449055347546,
+          "n": 1
+        },
+        "round/ndcg@5": {
+          "mean": 0.8503449055347546,
+          "lo": 0.8503449055347546,
+          "hi": 0.8503449055347546,
+          "n": 1
+        },
+        "round/ndcg@50": {
+          "mean": 0.8503449055347546,
+          "lo": 0.8503449055347546,
+          "hi": 0.8503449055347546,
+          "n": 1
+        },
+        "round/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "session/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        }
+      },
+      "multi-session": {
+        "round/ndcg@1": {
+          "mean": 0.5,
+          "lo": 0.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@10": {
+          "mean": 0.7624905166004466,
+          "lo": 0.5249810332008933,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@3": {
+          "mean": 0.6532867981913646,
+          "lo": 0.3065735963827292,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@30": {
+          "mean": 0.7624905166004466,
+          "lo": 0.5249810332008933,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@5": {
+          "mean": 0.6532867981913646,
+          "lo": 0.3065735963827292,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/ndcg@50": {
+          "mean": 0.7624905166004466,
+          "lo": 0.5249810332008933,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 2
+        },
+        "round/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@3": {
+          "mean": 0.5,
+          "lo": 0.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@5": {
+          "mean": 0.5,
+          "lo": 0.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@1": {
+          "mean": 0.5,
+          "lo": 0.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/ndcg@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/ndcg@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/ndcg@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 2
+        },
+        "session/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 2
+        }
+      },
+      "single-session-user": {
+        "round/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/ndcg@10": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "round/ndcg@3": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "round/ndcg@30": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "round/ndcg@5": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "round/ndcg@50": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "round/recall_all@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        }
+      },
+      "temporal-reasoning": {
+        "round/ndcg@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/ndcg@10": {
+          "mean": 0.43067655807339306,
+          "lo": 0.43067655807339306,
+          "hi": 0.43067655807339306,
+          "n": 1
+        },
+        "round/ndcg@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/ndcg@30": {
+          "mean": 0.43067655807339306,
+          "lo": 0.43067655807339306,
+          "hi": 0.43067655807339306,
+          "n": 1
+        },
+        "round/ndcg@5": {
+          "mean": 0.43067655807339306,
+          "lo": 0.43067655807339306,
+          "hi": 0.43067655807339306,
+          "n": 1
+        },
+        "round/ndcg@50": {
+          "mean": 0.43067655807339306,
+          "lo": 0.43067655807339306,
+          "hi": 0.43067655807339306,
+          "n": 1
+        },
+        "round/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_all@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_all@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_all@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "round/recall_any@30": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "round/recall_any@50": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/ndcg@10": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "session/ndcg@3": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "session/ndcg@5": {
+          "mean": 0.6131471927654584,
+          "lo": 0.6131471927654584,
+          "hi": 0.6131471927654584,
+          "n": 1
+        },
+        "session/recall_all@1": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "session/recall_all@10": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "session/recall_all@3": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "session/recall_all@5": {
+          "mean": 0.0,
+          "lo": 0.0,
+          "hi": 0.0,
+          "n": 1
+        },
+        "session/recall_any@1": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@10": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@3": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        },
+        "session/recall_any@5": {
+          "mean": 1.0,
+          "lo": 1.0,
+          "hi": 1.0,
+          "n": 1
+        }
+      }
+    },
+    "qa_accuracy": {
+      "mean": 1.0,
+      "lo": 1.0,
+      "hi": 1.0,
+      "n": 5
+    },
+    "qa_by_type": {
+      "knowledge-update": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 1
+      },
+      "multi-session": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 2
+      },
+      "single-session-user": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 1
+      },
+      "temporal-reasoning": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 1
+      }
+    },
+    "recall_latency": {
+      "n": 5,
+      "mean_ms": 32.0112502,
+      "p50_ms": 31.724165999999997,
+      "p95_ms": 37.5865,
+      "p99_ms": 37.5865,
+      "max_ms": 37.5865
+    },
+    "search_latency": {
+      "n": 5,
+      "mean_ms": 9.563591599999999,
+      "p50_ms": 9.397667,
+      "p95_ms": 11.583625,
+      "p99_ms": 11.583625,
+      "max_ms": 11.583625
+    },
+    "query_embed_latency": {
+      "n": 5,
+      "mean_ms": 22.445941599999998,
+      "p50_ms": 21.44625,
+      "p95_ms": 26.567500000000003,
+      "p99_ms": 26.567500000000003,
+      "max_ms": 26.567500000000003
+    },
+    "ingest_rounds": 1232,
+    "ingest_ms_total": 1864.769208,
+    "rounds_per_second": 2642.6862792770867,
+    "llm": {
+      "answer": {
+        "calls": 5,
+        "prompt_tokens": 15680,
+        "completion_tokens": 188,
+        "cost_usd": 0.0024648,
+        "cost_reported_calls": 5,
+        "cost_unknown_calls": 0,
+        "retries": 0,
+        "latency": {
+          "n": 5,
+          "mean_ms": 1214.0464668,
+          "p50_ms": 929.59775,
+          "p95_ms": 1910.3025420000001,
+          "p99_ms": 1910.3025420000001,
+          "max_ms": 1910.3025420000001
+        }
+      },
+      "judge": {
+        "calls": 5,
+        "prompt_tokens": 796,
+        "completion_tokens": 5,
+        "cost_usd": 0.0001224,
+        "cost_reported_calls": 5,
+        "cost_unknown_calls": 0,
+        "retries": 0,
+        "latency": {
+          "n": 5,
+          "mean_ms": 848.7156417999998,
+          "p50_ms": 651.600959,
+          "p95_ms": 1339.540333,
+          "p99_ms": 1339.540333,
+          "max_ms": 1339.540333
+        }
+      },
+      "total_cost_usd": 0.0025872,
+      "recall_plus_answer_latency": {
+        "n": 5,
+        "mean_ms": 1246.0577170000001,
+        "p50_ms": 959.064042,
+        "p95_ms": 1942.026708,
+        "p99_ms": 1942.026708,
+        "max_ms": 1942.026708
+      }
+    }
+  }
+}
