@@ -419,8 +419,13 @@ impl Engine {
             let main = self.store.search(&q);
             let rest = futures::future::try_join_all(probes.iter().map(|(p, _)| self.store.search(p)));
             let (main, rest) = futures::future::try_join(main, rest).await?;
-            let lists: Vec<(Vec<Hit>, f32)> =
-                std::iter::once((main, 1.0)).chain(rest.into_iter().zip(probes.iter().map(|(_, w)| *w))).collect();
+            let (top, top_w) = (self.cfg.memory.window_top, self.cfg.memory.window_top_weight);
+            let bonus = (top > 0 && top_w > 0.0 && plan.as_ref().is_some_and(|p| !p.windows.is_empty()))
+                .then(|| (rest[0].iter().take(top).cloned().collect::<Vec<Hit>>(), top_w));
+            let lists: Vec<(Vec<Hit>, f32)> = std::iter::once((main, 1.0))
+                .chain(rest.into_iter().zip(probes.iter().map(|(_, w)| *w)))
+                .chain(bonus)
+                .collect();
             fuse(lists, self.cfg.memory.rrf_k, fused_limit)
         };
         let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;

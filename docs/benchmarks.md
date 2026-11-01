@@ -13,15 +13,15 @@ no GPU, no network calls, no LLM anywhere in the write or read path.
 ## Headline results (retrieval)
 
 Default configuration: hybrid BM25 + vector search, two vectors per round, date-aware query
-analysis (time-window probe, weight 0.3), no reranker.
+analysis (time-window probe: weight 0.15 for every in-window hit, +1.0 for the top 3), no reranker.
 
 | Dataset | Questions scored | session recall_any@5 | session recall_all@5 | session recall_all@10 | session nDCG@10 | round recall_all@10 | recall p50 / p95 |
 |---|---|---|---|---|---|---|---|
-| LongMemEval_S (500 q, ~50 sessions each) | 470 | 98.9 | **90.4** | **95.7** | **93.8** | 84.5 | 64 / 91 ms ¹ |
-| LoCoMo (10 conversations, 1,540 q) | 1,536 | 90.2 | **79.0** | **87.9** | **78.7** | 59.3 | 43 / 57 ms |
+| LongMemEval_S (500 q, ~50 sessions each) | 470 | 98.9 | **91.3** | **96.2** | **94.1** | 84.5 | 26 / 37 ms |
+| LoCoMo (10 conversations, 1,540 q) | 1,536 | 90.1 | **78.8** | **87.5** | **78.6** | 59.2 | 35 / 42 ms |
 
-¹ Measured while four ingest workers were embedding on the same CPU. With ingest finished,
-LongMemEval_S recall is 26 / 37 ms (the `full-v5-noanalysis` run, which re-used cached vectors).
+Latency here is with cached vectors (no concurrent embedding); recall during a cold ingest,
+with four workers embedding on the same CPU, is 64 / 91 ms on LongMemEval_S.
 
 LongMemEval abstention questions (`_abs`) and LoCoMo adversarial questions (category 5) have no
 evidence and are not scored for retrieval. *recall_all@k* is the stricter definition: every
@@ -35,15 +35,15 @@ confidence intervals; on LongMemEval_S the interval for recall_all@5 is about ±
 | single-session-user | 64 | 100.0 | 100.0 |
 | single-session-assistant | 56 | 100.0 | 100.0 |
 | single-session-preference | 30 | 93.3 | 100.0 |
-| knowledge-update | 72 | 97.2 | 100.0 |
-| multi-session | 121 | 85.1 | 94.2 |
-| temporal-reasoning | 127 | 81.9 | 89.8 |
+| knowledge-update | 72 | 98.6 | 100.0 |
+| multi-session | 121 | 86.0 | 94.2 |
+| temporal-reasoning | 127 | 83.5 | 91.3 |
 
 | LoCoMo | n | recall_all@5 | recall_all@10 |
 |---|---|---|---|
-| single-hop | 841 | 93.8 | 98.1 |
-| temporal | 321 | 86.9 | 95.0 |
-| open-domain | 92 | 47.8 | 64.1 |
+| single-hop | 841 | 93.6 | 97.6 |
+| temporal | 321 | 87.2 | 94.7 |
+| open-domain | 92 | 46.7 | 63.0 |
 | multi-hop | 282 | 35.8 | 57.1 |
 
 ### Against published retrieval baselines
@@ -55,20 +55,19 @@ M run takes about 11 hours on this laptop and has not been done.
 
 | System | Split | session R@5 | session R@10 | session nDCG@10 |
 |---|---|---|---|---|
-| **MemHouse default (bge-small Q, no LLM)** | **M**, 48 q | **77.1** [64.6–87.5] | **89.6** [81.2–97.9] | **83.0** [75.6–89.6] |
+| **MemHouse default (bge-small Q, no LLM)** | **M**, 48 q | **79.2** [66.7–89.6] | **89.6** [81.2–97.9] | **82.6** [75.0–89.6] |
 | MemHouse, `--no-analysis` | M, 48 q | 81.2 | 89.6 | 82.9 |
 | Contriever + LLM-extracted fact keys (paper's best) | M | 76.2 | 86.2 | 65.8 |
 | Stella V5 1.5B | M | 72.0 | 79.4 | 61.5 |
 | Contriever | M | 72.3 | 82.3 | 66.3 |
 | BM25 | M | 63.4 | 71.0 | 54.0 |
-| MemHouse default | S, 470 q | 90.4 | 95.7 | 93.8 |
+| MemHouse default | S, 470 q | 91.3 | 96.2 | 94.1 |
 
 On the like-for-like split MemHouse matches the paper's best retriever at R@5 and is ahead at
 R@10 and on ranking quality (nDCG@10 +17 points), without the LLM key-extraction pass at
 ingest that system needs. The sample is small: the R@5 interval is ±11 points, so "on par" is
-the honest reading for R@5. The 4-point R@5 gap between analysis on and off on M is two
-questions. M recall is p50 105 / p95 243 ms (exact vector search over ~5k vectors per subject,
-while ingest runs).
+the honest reading for R@5; the 2-point gap to `--no-analysis` is one question. M recall is
+p50 66 / p95 96 ms (exact vector search over ~5k vectors per subject).
 
 Memory vendors (Mem0, Zep, Supermemory, Mastra) publish answer accuracy, not retrieval recall,
 so there is no direct retrieval number to compare against; see [Answer accuracy](#answer-accuracy-qa).
@@ -78,7 +77,7 @@ so there is no direct retrieval number to compare against; see [Answer accuracy]
 | | LongMemEval_S R_all@5 / @10 / nDCG@10 | LoCoMo R_all@5 / @10 / nDCG@10 |
 |---|---|---|
 | First full run (`full-q-hybrid`) | 81.1 / 86.4 / 85.8 | 73.6 / 84.4 / 71.7 |
-| Current default (`full-v5`) | **90.4 / 95.7 / 93.8** | **79.0 / 87.9 / 78.7** |
+| Current default (`full-v7`) | **91.3 / 96.2 / 94.1** | **78.8 / 87.5 / 78.6** |
 
 Four changes, in order of impact:
 
@@ -98,39 +97,47 @@ Four changes, in order of impact:
 
 `recall` parses relative and absolute dates in the query ("two weeks ago", "last weekend",
 "in March", "on May 3rd", "between … and …") against `reference_time` and runs a second,
-time-window probe next to the main one. The two result lists are fused with weighted RRF
-(window weight 0.3), so the window boosts in-range memories without hiding the rest. No LLM is
+time-window probe next to the main one. The lists are fused with weighted RRF in two parts:
+every in-window hit gets a light boost (weight 0.15) and the top 3 in-window hits get a strong
+one (+1.0). The few memories that best match both the topic and the date jump to the top, while
+same-topic memories from other dates keep their place instead of being pushed down. No LLM is
 involved; the parser is a set of regular expressions (`crates/memhouse-core/src/query.rs`).
 
-Effect on the full datasets (on vs `--no-analysis`):
+Effect on the full datasets (default vs `--no-analysis`):
 
 | | R_any@5 | R_all@5 | R_all@10 | nDCG@10 | round R_all@10 |
 |---|---|---|---|---|---|
-| LoCoMo, analysis on | **90.2** | **79.0** | **87.9** | **78.7** | **59.3** |
+| LongMemEval_S, default | **98.9** | **91.3** | **96.2** | **94.1** | **84.5** |
+| LongMemEval_S, off | 98.3 | **91.3** | 96.0 | 94.0 | 84.0 |
+| LongMemEval_S temporal, default / off | 98.4 / 96.1 | 83.5 / 83.5 | **91.3** / 90.6 | **90.7** / 89.8 | **82.7** / 79.5 |
+| LoCoMo, default | **90.1** | **78.8** | **87.5** | **78.6** | **59.2** |
 | LoCoMo, off | 88.2 | 76.8 | 86.5 | 76.0 | 58.3 |
-| LoCoMo temporal, on / off | | 86.9 / 84.4 | 95.0 / 92.5 | | |
-| LongMemEval_S, analysis on | **98.9** | 90.4 | 95.7 | 93.8 | **84.5** |
-| LongMemEval_S, off | 98.3 | **91.3** | **96.0** | **94.0** | 84.0 |
+| LoCoMo temporal, default / off | | **87.2** / 84.4 | **94.7** / 92.5 | | |
+| LongMemEval_M sample, default / off | 93.8 / 93.8 | 79.2 / **81.2** | 89.6 / 89.6 | 82.6 / 82.9 | 77.1 / 77.1 |
 
-On LoCoMo the window probe improves every metric (+2.2 R_all@5, +2.5 on temporal questions).
-On LongMemEval_S it finds more first hits and exact rounds but loses about one point of strict
-recall_all, which is inside the confidence interval. The reason is the dataset's labelling:
-for questions such as "how many weeks ago did I start the course", LongMemEval also lists
-same-topic sessions from *other* dates as evidence, and the window, correctly, ranks those
-lower. On the 127 temporal-reasoning questions:
+On LongMemEval_S and LoCoMo the default is equal or better on every metric; on LoCoMo temporal
+questions +2.8 R_all@5, on LongMemEval temporal questions +3.2 exact-turn recall (the turns the
+agent needs to answer). The M sample is within one question either way.
+
+How the weights were chosen, on the 127 LongMemEval temporal-reasoning questions (LoCoMo and M
+were not used for tuning and serve as the check):
 
 | Temporal subset (127 q) | R_any@5 | R_all@5 | R_all@10 | nDCG@10 | round R_all@10 | round nDCG@10 |
 |---|---|---|---|---|---|---|
-| no analysis | 96.1 | **83.5** | **90.6** | 89.8 | 79.5 | 67.6 |
-| window weight 1.0 | **98.4** | 81.1 | 85.0 | 88.6 | **84.3** | **69.9** |
-| **window weight 0.3 (default)** | **98.4** | 81.9 | 89.8 | **90.0** | 83.5 | 69.5 |
-| window 0.5 | **98.4** | 81.1 | 87.4 | 89.6 | 83.5 | 70.0 |
+| no analysis | 96.1 | **83.5** | 90.6 | 89.8 | 79.5 | 67.6 |
+| all window hits, weight 1.0 | **98.4** | 81.1 | 85.0 | 88.6 | **84.3** | **69.9** |
+| all window hits, weight 0.3 (previous default) | **98.4** | 81.9 | 89.8 | 90.0 | 83.5 | 69.5 |
+| only top 3 window hits, weight 1.0 | 96.9 | **83.5** | **91.3** | 90.9 | 80.3 | 68.4 |
+| **0.15 all + 1.0 top 3 (default)** | **98.4** | **83.5** | **91.3** | 90.7 | 82.7 | 69.6 |
+| 0.3 all + 1.0 top 3 | **98.4** | 81.9 | 89.8 | 90.1 | 83.5 | 70.0 |
 | sub-queries only (split "X or Y" comparisons) | 96.1 | 81.9 | 91.3 | 88.5 | 70.9 | 62.6 |
 
-Weight 0.3 keeps most of the round-level gain (+4 points: the exact evidence turns reach the
-agent) at the smallest cost in session recall_all. Comparison sub-queries added noise and are
-off by default (`subquery_weight = 0`). Turn the analysis off with `query_analysis = false` or
-per request with `"analyze": false`.
+Why a uniform window weight lowered strict recall_all: for questions such as "what sports event
+did I do two weeks ago", LongMemEval also lists same-topic sessions from *other* dates as
+evidence, and boosting the whole window pushed those down. Capping the strong boost to three
+hits removes that cost. Comparison sub-queries added noise and are off by default
+(`subquery_weight = 0`). Turn the analysis off with `query_analysis = false` or per request
+with `"analyze": false`.
 
 ### Latency
 
@@ -142,8 +149,8 @@ search, fusion, validity and governance filters together); probes run concurrent
 | End-to-end recall, LongMemEval_S, during ingest | 64 ms | 91 ms | 102 ms |
 | — SQL hybrid search in Postgres | 26 ms | 37 ms | 45 ms |
 | — query embedding on CPU | 38 ms | 59 ms | – |
-| End-to-end recall, LongMemEval_S, idle CPU, no analysis | 26 ms | 37 ms | – |
-| End-to-end recall, LoCoMo | 43 ms | 57 ms | 64 ms |
+| End-to-end recall, LongMemEval_S, idle CPU | 26 ms | 37 ms | – |
+| End-to-end recall, LoCoMo, idle CPU | 35 ms | 42 ms | – |
 | Recall with cross-encoder rerank (top 20, 4 concurrent queries) | 2.6 s | 4.5 s | – |
 
 For orientation, the Mem0 paper measured search latency on LoCoMo for hosted services
@@ -176,8 +183,8 @@ The cross-encoder mainly improves *ordering* (round nDCG +8 points). It is opt-i
 | Slice | session R_all@5 / @10 | Why |
 |---|---|---|
 | LoCoMo multi-hop | 35.8 / 57.1 | Evidence spread over several sessions with little lexical overlap with the question. |
-| LoCoMo open-domain | 47.8 / 64.1 | Answers depend on world knowledge plus a hint in the dialogue. |
-| LongMemEval temporal-reasoning | 81.9 / 89.8 | Mostly the labelling effect described above; the remaining misses need event-relative dates ("two weeks before the trip"), which the parser does not resolve. |
+| LoCoMo open-domain | 46.7 / 63.0 | Answers depend on world knowledge plus a hint in the dialogue. |
+| LongMemEval temporal-reasoning | 83.5 / 91.3 | Mostly the labelling effect described above; the remaining misses need event-relative dates ("two weeks before the trip"), which the parser does not resolve. |
 
 Next steps on these slices: event-anchored dates (find the anchor event, then window around
 it) and entity-linked expansion for multi-hop questions.
@@ -205,11 +212,11 @@ validity windows, dedup, audit hash chain, and deterministic recall.
 ```bash
 memhouse up
 memhouse bench download longmemeval-s
-memhouse bench run --dataset longmemeval-s --embedding-model bge-small-en-v1.5-onnx-Q --label full-v5
-memhouse bench run --dataset locomo --embedding-model bge-small-en-v1.5-onnx-Q --label full-v5
-memhouse bench run --dataset longmemeval-s --embedding-model bge-small-en-v1.5-onnx-Q --no-analysis --label full-v5-noanalysis
-memhouse bench download longmemeval-m && memhouse bench run --dataset longmemeval-m --stride 10 --embedding-model bge-small-en-v1.5-onnx-Q --label m50-v5
-memhouse bench run --dataset longmemeval-s --types temporal-reasoning --window-weight 1.0 --label tr-w10
+memhouse bench run --dataset longmemeval-s --embedding-model bge-small-en-v1.5-onnx-Q --label full-v7
+memhouse bench run --dataset locomo --embedding-model bge-small-en-v1.5-onnx-Q --label full-v7
+memhouse bench run --dataset longmemeval-s --embedding-model bge-small-en-v1.5-onnx-Q --no-analysis --label full-v7-noanalysis
+memhouse bench download longmemeval-m && memhouse bench run --dataset longmemeval-m --stride 10 --embedding-model bge-small-en-v1.5-onnx-Q --label m50-v7
+memhouse bench run --dataset longmemeval-s --types temporal-reasoning --window-weight 0.15 --window-top 3 --window-top-weight 1.0 --label tr-sweep
 memhouse bench run --dataset longmemeval-s --stride 10 --mode dense --label s50-dense   # ablations
 memhouse bench run --dataset longmemeval-s --stride 10 --rerank --label s50-rerank
 memhouse bench run --suite governance

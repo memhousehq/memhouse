@@ -143,10 +143,10 @@ Current results on a laptop CPU, no LLM in the loop (details and baselines in [d
 
 | Dataset | session recall_all@5 | session recall_all@10 | session nDCG@10 | recall p50 / p95 |
 |---|---|---|---|---|
-| LongMemEval_S (470 scored) | 90.4 | 95.7 | 93.8 | 64 / 91 ms |
-| LoCoMo (1,536 scored) | 79.0 | 87.9 | 78.7 | 43 / 57 ms |
+| LongMemEval_S (470 scored) | 91.3 | 96.2 | 94.1 | 26 / 37 ms |
+| LoCoMo (1,536 scored) | 78.8 | 87.5 | 78.6 | 35 / 42 ms |
 
-On the harder 500-session LongMemEval_M split (50-question sample) MemHouse scores 77.1 / 89.6 / 83.0, against 76.2 / 86.2 / 65.8 for the best retriever in the LongMemEval paper (Contriever + LLM-extracted keys).
+On the harder 500-session LongMemEval_M split (50-question sample) MemHouse scores 79.2 / 89.6 / 82.6, against 76.2 / 86.2 / 65.8 for the best retriever in the LongMemEval paper (Contriever + LLM-extracted keys).
 
 ## Configuration
 
@@ -161,7 +161,7 @@ enabled = false                  # cross-encoder reranking (jina-reranker-v1-tur
 [memory]
 template = "support"             # personal | coding | support | sales | success
 default_subject = "customer:unknown"
-query_analysis = true            # date-aware recall: time-window probe (window_weight = 0.3)
+query_analysis = true            # date-aware recall: time-window probe (window_weight = 0.15, window_top = 3, window_top_weight = 1.0)
 [governance]
 redact = ["secret", "card", "ssn", "iban"]   # also: email, phone, ip
 quarantine_injection = true

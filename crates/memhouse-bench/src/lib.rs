@@ -112,6 +112,11 @@ pub struct RunArgs {
     pub no_analysis: bool,
     #[arg(long)]
     pub window_weight: Option<f32>,
+    /// Extra weight for the top N hits of the time-window probe: --window-top N --window-top-weight W
+    #[arg(long)]
+    pub window_top: Option<usize>,
+    #[arg(long)]
+    pub window_top_weight: Option<f32>,
     #[arg(long)]
     pub subquery_weight: Option<f32>,
 }
@@ -208,6 +213,12 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
     if let Some(w) = args.window_weight {
         cfg.memory.window_weight = w;
     }
+    if let Some(n) = args.window_top {
+        cfg.memory.window_top = n;
+    }
+    if let Some(w) = args.window_top_weight {
+        cfg.memory.window_top_weight = w;
+    }
     if let Some(w) = args.subquery_weight {
         cfg.memory.subquery_weight = w;
     }
@@ -264,7 +275,7 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
             rrf_k: cfg.memory.rrf_k,
             keyword_weight: cfg.memory.keyword_weight,
             vector_weight: cfg.memory.vector_weight,
-            query_analysis: cfg.memory.query_analysis.then(|| format!("window w={}, sub-query w={}", cfg.memory.window_weight, cfg.memory.subquery_weight)),
+            query_analysis: cfg.memory.query_analysis.then(|| format!("window w={}, top {} +{}, sub-query w={}", cfg.memory.window_weight, cfg.memory.window_top, cfg.memory.window_top_weight, cfg.memory.subquery_weight)),
             concurrency: args.concurrency,
             selection: format!(
                 "limit={} stride={} offset={} types={}",

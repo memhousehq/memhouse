@@ -51,7 +51,7 @@ Run `20261101-072953-ce4211` · 2026-11-01 07:29 UTC · 4124 s wall time
 
 | Metric | Value |
 |---|---|
-| Recall (end to end: query embedding + one SQL statement) | p50 64.5 ms · p95 90.8 ms · p99 102.4 ms · n=500 |
+| Recall (end to end: query embedding + one SQL statement per probe) | p50 64.5 ms · p95 90.8 ms · p99 102.4 ms · n=500 |
 | — of which SQL hybrid search (Postgres) | p50 25.6 ms · p95 37.4 ms · p99 44.8 ms |
 | — of which query embedding (CPU, shared with concurrent ingest) | p50 38.1 ms · p95 58.6 ms |
 | Ingest | 124286 rounds, 30 rounds/s with 4 workers (includes embedding on CPU, cache hits for repeated sessions) |

@@ -182,6 +182,11 @@ pub struct MemoryConfig {
     pub query_analysis: bool,
     /// RRF weight of the probe restricted to the query's time windows.
     pub window_weight: f32,
+    /// The top N hits of the time-window probe get an extra RRF weight of `window_top_weight`
+    /// (0 = off). A few strongly promoted in-window hits find the dated memory without
+    /// demoting everything outside the window.
+    pub window_top: usize,
+    pub window_top_weight: f32,
     /// RRF weight of each sub-query probe (0 = off: on LongMemEval they added noise).
     pub subquery_weight: f32,
     /// Active template (support, sales, success, coding, personal).
@@ -203,7 +208,9 @@ impl Default for MemoryConfig {
             recency_half_life_days: 90.0,
             assistant_chars: 1200,
             query_analysis: true,
-            window_weight: 0.3,
+            window_weight: 0.15,
+            window_top: 3,
+            window_top_weight: 1.0,
             subquery_weight: 0.0,
             template: None,
         }

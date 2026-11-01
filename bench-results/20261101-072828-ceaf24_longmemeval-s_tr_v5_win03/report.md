@@ -46,7 +46,7 @@ Run `20261101-072828-ceaf24` · 2026-11-01 07:28 UTC · 17 s wall time
 
 | Metric | Value |
 |---|---|
-| Recall (end to end: query embedding + one SQL statement) | p50 27.6 ms · p95 39.5 ms · p99 52.8 ms · n=133 |
+| Recall (end to end: query embedding + one SQL statement per probe) | p50 27.6 ms · p95 39.5 ms · p99 52.8 ms · n=133 |
 | — of which SQL hybrid search (Postgres) | p50 7.5 ms · p95 12.2 ms · p99 15.3 ms |
 | — of which query embedding (CPU, shared with concurrent ingest) | p50 19.7 ms · p95 29.6 ms |
 | Ingest | 33017 rounds, 2140 rounds/s with 4 workers (includes embedding on CPU, cache hits for repeated sessions) |

@@ -39,7 +39,7 @@ Supporting tables:
 1. **Filter:** tenant, subject, `status = committed`, kinds and tags, denied labels, validity at `as_of` (or now), event time ≤ `as_of`, and for the window probe, event time inside a window.
 2. **Keyword candidates:** BM25 (k1 = 1.2, b = 0.75) computed in SQL from the stored `tsvector`: term frequencies from lexeme positions, document frequencies from the matched rows.
 3. **Vector candidates:** exact cosine distance with pgvector, the better of the round vector and the user-only vector.
-4. **Fusion:** weighted reciprocal rank fusion (`k = 60`) inside each statement, then across probes (window probe weight 0.3).
+4. **Fusion:** weighted reciprocal rank fusion (`k = 60`) inside each statement, then across probes (window probe: 0.15 for every in-window hit, +1.0 for its top 3).
 5. **Engine side (optional):** cross-encoder reranking of the top candidates blended with the fused rank, a recency bonus, and token-budget packing.
 
 The query embedding and the SQL statement are the whole hot path. On a laptop, p50 recall is a few milliseconds plus query embedding.
