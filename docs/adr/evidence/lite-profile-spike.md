@@ -46,6 +46,19 @@ sandbox-exec -p "(version 1) (allow default) (deny network*)" $X run --no-model
 | Written memory recallable (enqueue → indexed), 20 writes/s | ≤ 2 s (PROF-07) | p50 4 ms, p95 8 ms over 300 writes | yes |
 | Peak resident memory of the process | ≤ 256 MB (PROF-06) | 16 MB (at start 9 MB; after start-up 9 MB; after the recall run 15 MB) | yes |
 
+## Thread-count check (option b of ADR 0002)
+
+One model session, networking denied, same store:
+
+| Threads per session | Recall p95 | Peak resident memory |
+|---|---|---|
+| 1 | 45.9 ms | 384 MB (158 MB after loading the model, 325 MB after the recall run) |
+| 2 | 27.7 ms | 379 MB (158 MB after loading the model, 321 MB after the recall run) |
+
+Fewer threads don't reduce memory and cost latency. The growth after loading happens inside the
+inference runtime's allocations; reducing it needs session-level settings that the embedding
+library doesn't expose today, so option (b) is work for G16, not a configuration change.
+
 ## Reading
 
 - **PROF-07 is met in every configuration**: recall p95 26–29 ms with the local model (14 ms store only) at 10,000 memories per subject; durable acknowledgement p95 3.3 ms even with power-loss-safe `fullfsync`; a written memory is recallable in 23–26 ms p95.

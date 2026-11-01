@@ -159,6 +159,8 @@ fn config() -> anyhow::Result<Config> {
     cfg.embedding.max_length = 64;
     // Parallel model sessions (each holds a copy of the model); 0 = the default (half the cores, at most 4).
     cfg.embedding.sessions = std::env::var("SPIKE_SESSIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    // CPU threads per session; 0 = the default (cores / sessions).
+    cfg.embedding.threads = std::env::var("SPIKE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     Ok(cfg)
 }
 
@@ -321,7 +323,8 @@ async fn run(local_model: bool) -> anyhow::Result<()> {
     db.execute("DELETE FROM memory WHERE rid > ?1", [n])?;
     let rss_end = rss_mb();
 
-    let sessions = std::env::var("SPIKE_SESSIONS").unwrap_or_else(|_| "default (up to 4)".into());
+    let sessions = std::env::var("SPIKE_SESSIONS").unwrap_or_else(|_| "default (up to 4)".into())
+        + &std::env::var("SPIKE_THREADS").map(|t| format!(", threads per session: {t}")).unwrap_or_default();
     let mode = if local_model {
         format!("with the local embedding model (bge-small-en-v1.5 quantised, 384 dims), model sessions: {sessions}")
     } else {

@@ -63,7 +63,7 @@ embedding model doesn't fit in 256 MB on its own (157 MB per session at load, gr
 inference). Options: (a) read PROF-06 as excluding the optional local model, as its binary-size
 clause already does, and give the model its own budget; (b) default Lite to one session and work on
 the runtime's memory (fixed input shapes, memory-pattern settings) to bring the total under 256 MB;
-(c) ship a smaller default model. Lite defaults to one model session either way.
+(c) ship a smaller default model. Lite defaults to one model session either way. Fewer inference threads were tried and don't help (379–384 MB peak with one or two threads).
 
 ## Still to verify (G16)
 
