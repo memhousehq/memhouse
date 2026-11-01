@@ -30,6 +30,17 @@ pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<En
     Ok(Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat))
 }
 
+/// An engine on the configured embedder without the start-up identity check, for
+/// `memhouse reembed`, which exists to move a database from its old embedder to this one.
+pub async fn build_reembed_engine(cfg: Config, show_progress: bool) -> anyhow::Result<Engine> {
+    let embedder = memhouse_models::build_embedder(&cfg, show_progress)?;
+    if embedder.dim() != cfg.embedding.dim {
+        anyhow::bail!("embedding model {} produces {} dimensions but embedding.dim is {}", embedder.id(), embedder.dim(), cfg.embedding.dim);
+    }
+    let store = PgStore::connect(&cfg.database.url, cfg.database.max_connections, cfg.embedding.passage_prefix.as_deref().unwrap_or("")).await?;
+    Ok(Engine::new(Arc::new(store), embedder, None, cfg))
+}
+
 pub struct ApiError(anyhow::Error);
 
 impl IntoResponse for ApiError {

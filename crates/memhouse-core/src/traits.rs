@@ -87,4 +87,34 @@ pub trait Store: Send + Sync {
     /// Content-addressed cache of extraction answers (purged with the subject on erasure).
     async fn llm_cache_get(&self, key: &str) -> anyhow::Result<Option<String>>;
     async fn llm_cache_put(&self, key: &str, model: &str, text: &str) -> anyhow::Result<()>;
+
+    // Re-embedding to another model in place (see `reembed`). Stores that can't do it say so.
+    /// The identity the stored vectors were made with, and the target of an unfinished re-embedding.
+    async fn embedding_identity(&self) -> anyhow::Result<(Option<EmbeddingIdentity>, Option<EmbeddingIdentity>)> {
+        anyhow::bail!("this store can't re-embed in place; export, then import into a new database")
+    }
+    /// How much there is to re-embed (no changes made).
+    async fn reembed_estimate(&self) -> anyhow::Result<ReembedEstimate> {
+        anyhow::bail!("this store can't re-embed in place")
+    }
+    /// Prepare space for vectors of `target` next to the current ones, and record the target.
+    async fn reembed_begin(&self, _target: &EmbeddingIdentity) -> anyhow::Result<()> {
+        anyhow::bail!("this store can't re-embed in place")
+    }
+    /// Records with a vector but none yet for the target, in id order after `after`.
+    async fn reembed_pending(&self, _after: Option<Uuid>, _limit: usize) -> anyhow::Result<Vec<ReembedRow>> {
+        anyhow::bail!("this store can't re-embed in place")
+    }
+    async fn reembed_write(&self, _target: &EmbeddingIdentity, _rows: &[ReembedVectors]) -> anyhow::Result<()> {
+        anyhow::bail!("this store can't re-embed in place")
+    }
+    /// Switch to the target atomically if nothing is pending (writers are blocked meanwhile, readers
+    /// are not). Returns the number still pending when it couldn't switch.
+    async fn reembed_cutover(&self, _target: &EmbeddingIdentity) -> anyhow::Result<Option<u64>> {
+        anyhow::bail!("this store can't re-embed in place")
+    }
+    /// Drop the target's vectors and forget the target; the current vectors are untouched.
+    async fn reembed_abort(&self) -> anyhow::Result<bool> {
+        anyhow::bail!("this store can't re-embed in place")
+    }
 }

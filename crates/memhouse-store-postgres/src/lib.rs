@@ -18,7 +18,21 @@ pub struct PgStore {
     pub pool: PgPool,
     /// Prefix the engine adds to passages before embedding; needed to purge cache entries on deletion.
     passage_prefix: String,
+    /// The embedder this process writes with (set by `migrate`), stamped on every row so the
+    /// database refuses vectors from a process left on the old model after a re-embedding.
+    embedder: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// When the database's embedder was last compared with ours (recall checks every 5 s).
+    checked: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    recheck: std::time::Duration,
 }
+
+fn drop_next_columns() -> String {
+    let cols: Vec<String> = NEXT_COLS.iter().map(|(next, _)| format!("DROP COLUMN IF EXISTS {next}")).collect();
+    format!("ALTER TABLE mh_memory {}", cols.join(", "))
+}
+
+/// Columns that hold vectors for the re-embedding target until the switch.
+const NEXT_COLS: [(&str, &str); 4] = [("embedding_next", "embedding"), ("embedding_alt_next", "embedding_alt"), ("alt_hash_next", "alt_hash"), ("embedder_next", "embedder")];
 
 const COLS: &str = "m.id, m.tenant, m.subject, m.kind, m.status, m.content, m.session_id, m.turn_ref, \
     m.occurred_at, m.valid_from, m.valid_to, m.supersedes, m.labels, m.tags, m.source, m.confidence, \
@@ -99,7 +113,7 @@ impl PgStore {
             .connect(url)
             .await
             .map_err(|e| anyhow::anyhow!("cannot connect to Postgres at {}: {e}", redact_url(url)))?;
-        Ok(PgStore { pool, passage_prefix: passage_prefix.to_string() })
+        Ok(PgStore { pool, passage_prefix: passage_prefix.to_string(), embedder: Default::default(), checked: Default::default(), recheck: std::time::Duration::from_secs(5) })
     }
 
     pub async fn meta(&self, key: &str) -> anyhow::Result<Option<String>> {
@@ -108,6 +122,45 @@ impl PgStore {
             return Ok(None);
         }
         Ok(sqlx::query_scalar("SELECT value FROM mh_meta WHERE key = $1").bind(key).fetch_optional(&self.pool).await?)
+    }
+
+    /// How often recall compares the database's embedder with this process's (default 5 s).
+    pub fn with_identity_recheck(mut self, every: std::time::Duration) -> PgStore {
+        self.recheck = every;
+        self
+    }
+
+    /// Fail recall in a process whose model is no longer the database's (after `memhouse reembed`).
+    /// Writes are refused by the database itself; this covers reads, checked every `recheck`.
+    async fn ensure_current(&self) -> anyhow::Result<()> {
+        let Some(mine) = self.embedder.lock().unwrap().clone() else { return Ok(()) };
+        {
+            let mut at = self.checked.lock().unwrap();
+            if at.is_some_and(|t| t.elapsed() < self.recheck) {
+                return Ok(());
+            }
+            *at = Some(std::time::Instant::now());
+        }
+        match self.meta("embedder").await? {
+            Some(db) if db != mine => anyhow::bail!("this database is now embedded with {db}, not {mine}; restart with the new [embedding] configuration"),
+            _ => Ok(()),
+        }
+    }
+
+    async fn has_next_columns(&self) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'mh_memory' AND column_name = 'embedding_next')",
+        )
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    async fn identity_of(&self, prefix: &str) -> anyhow::Result<Option<EmbeddingIdentity>> {
+        let (Some(embedder), Some(dim)) = (self.meta(&format!("{prefix}embedder")).await?, self.meta(&format!("{prefix}embedding_dim")).await?) else {
+            return Ok(None);
+        };
+        let passage_prefix = self.meta(&format!("{prefix}passage_prefix")).await?.unwrap_or_default();
+        Ok(Some(EmbeddingIdentity { embedder, dim: dim.parse()?, passage_prefix }))
     }
 }
 
@@ -229,19 +282,20 @@ fn search_query<'a>(
 #[async_trait]
 impl Store for PgStore {
     async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()> {
-        if let Some(existing) = self.meta("embedding_dim").await? {
-            if existing != dim.to_string() {
+        let mine = EmbeddingIdentity { embedder: embedder_id.to_string(), dim, passage_prefix: self.passage_prefix.clone() };
+        if let Some(db) = self.identity_of("").await? {
+            // Databases from before the prefix was recorded take the configured one.
+            let prefix_known = self.meta("passage_prefix").await?.is_some();
+            let same = db.embedder == mine.embedder && db.dim == mine.dim && (!prefix_known || db.passage_prefix == mine.passage_prefix);
+            if !same {
+                let unfinished = self.identity_of("reembed_target_").await?.is_some_and(|t| t == mine);
                 anyhow::bail!(
-                    "this database stores {existing}-dimensional embeddings but the configured model produces {dim}. \
-                     Use the model it was created with, or a new database (re-embedding is not automatic yet)."
-                );
-            }
-        }
-        if let Some(existing) = self.meta("embedder").await? {
-            if existing != embedder_id {
-                anyhow::bail!(
-                    "this database was embedded with {existing} but the configured embedder is {embedder_id}; \
-                     vectors from different models can't be compared. Use the model it was created with, or a new database."
+                    "this database's memories are embedded with {db}, but the configuration says {mine}. {}",
+                    if unfinished {
+                        "A re-embedding to it is unfinished: run `memhouse reembed` to complete it."
+                    } else {
+                        "Run `memhouse reembed` to re-embed every memory with the configured model, or go back to the previous [embedding] settings."
+                    }
                 );
             }
         }
@@ -349,12 +403,30 @@ CREATE TABLE IF NOT EXISTS mh_llm_cache (
   response   text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Every row carries the embedder that wrote it; after a re-embedding, a process still on the old
+-- model can't add vectors that would be compared with the new ones.
+CREATE OR REPLACE FUNCTION mh_memory_embedder_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE current text := (SELECT value FROM mh_meta WHERE key = 'embedder');
+BEGIN
+  IF NEW.embedder IS NOT NULL AND NEW.embedder IS DISTINCT FROM current THEN
+    RAISE EXCEPTION 'this database is now embedded with %, not %; restart with the new [embedding] configuration', current, NEW.embedder;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE TRIGGER mh_memory_embedder_guard BEFORE INSERT ON mh_memory FOR EACH ROW EXECUTE FUNCTION mh_memory_embedder_guard();
 "#
         );
         sqlx::raw_sql(&ddl).execute(&self.pool).await?;
-        for (k, v) in [("schema_version", SCHEMA_VERSION.to_string()), ("embedding_dim", dim.to_string()), ("embedder", embedder_id.to_string())] {
+        for (k, v) in [
+            ("schema_version", SCHEMA_VERSION.to_string()),
+            ("embedding_dim", dim.to_string()),
+            ("embedder", embedder_id.to_string()),
+            ("passage_prefix", self.passage_prefix.clone()),
+        ] {
             sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING").bind(k).bind(v).execute(&self.pool).await?;
         }
+        *self.embedder.lock().unwrap() = Some(embedder_id.to_string());
         Ok(())
     }
 
@@ -362,6 +434,7 @@ CREATE TABLE IF NOT EXISTS mh_llm_cache (
         if records.is_empty() {
             return Ok(());
         }
+        let embedder = self.embedder.lock().unwrap().clone();
         let mut tx = self.pool.begin().await?;
         for chunk in records.chunks(500) {
             let mut qb = sqlx::QueryBuilder::new(
@@ -382,7 +455,7 @@ CREATE TABLE IF NOT EXISTS mh_llm_cache (
                     .push_bind(r.alt.as_ref().map(|(_, v)| vec_literal(v)))
                     .push_unseparated("::vector")
                     .push_bind(r.alt.as_ref().map(|(h, _)| h.clone()))
-                    .push_bind(Option::<String>::None)
+                    .push_bind(r.embedding.as_ref().and(embedder.clone()))
                     .push_bind(&m.session_id)
                     .push_bind(&m.turn_ref)
                     .push_bind(m.occurred_at)
@@ -403,6 +476,7 @@ CREATE TABLE IF NOT EXISTS mh_llm_cache (
     }
 
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
+        self.ensure_current().await?;
         let use_kw = q.mode != RetrievalMode::Dense;
         let use_vec = q.mode != RetrievalMode::Keyword && q.embedding.is_some();
         let tsq = if use_kw { or_query(&q.text) } else { String::new() };
@@ -911,6 +985,120 @@ CREATE TABLE IF NOT EXISTS mh_llm_cache (
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn embedding_identity(&self) -> anyhow::Result<(Option<EmbeddingIdentity>, Option<EmbeddingIdentity>)> {
+        Ok((self.identity_of("").await?, self.identity_of("reembed_target_").await?))
+    }
+
+    async fn reembed_estimate(&self) -> anyhow::Result<ReembedEstimate> {
+        let (records, second_vectors, characters): (i64, i64, i64) =
+            sqlx::query_as("SELECT count(*), count(alt_hash), coalesce(sum(length(content)), 0)::bigint FROM mh_memory WHERE embedding IS NOT NULL").fetch_one(&self.pool).await?;
+        let done: i64 = if self.has_next_columns().await? && self.meta("reembed_target_embedder").await?.is_some() {
+            sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE embedding IS NOT NULL AND embedding_next IS NOT NULL").fetch_one(&self.pool).await?
+        } else {
+            0
+        };
+        Ok(ReembedEstimate { records: records as u64, second_vectors: second_vectors as u64, characters: characters as u64, done: done as u64 })
+    }
+
+    async fn reembed_begin(&self, target: &EmbeddingIdentity) -> anyhow::Result<()> {
+        match self.identity_of("reembed_target_").await? {
+            Some(t) if t == *target => return Ok(()),
+            Some(t) => anyhow::bail!("an unfinished re-embedding to {t} exists; abort it first"),
+            None => {}
+        }
+        let mut tx = self.pool.begin().await?;
+        // Leftovers of a run that crashed before recording its target.
+        sqlx::query(&drop_next_columns()).execute(&mut *tx).await?;
+        let dim = target.dim;
+        sqlx::query(&format!(
+            "ALTER TABLE mh_memory ADD COLUMN embedding_next vector({dim}), ADD COLUMN embedding_alt_next vector({dim}), \
+             ADD COLUMN alt_hash_next text, ADD COLUMN embedder_next text"
+        ))
+        .execute(&mut *tx)
+        .await?;
+        for (k, v) in [
+            ("reembed_target_embedder", target.embedder.clone()),
+            ("reembed_target_embedding_dim", dim.to_string()),
+            ("reembed_target_passage_prefix", target.passage_prefix.clone()),
+        ] {
+            sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").bind(k).bind(v).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn reembed_pending(&self, after: Option<Uuid>, limit: usize) -> anyhow::Result<Vec<ReembedRow>> {
+        let rows = sqlx::query(
+            "SELECT id, content, alt_hash FROM mh_memory WHERE embedding IS NOT NULL AND embedding_next IS NULL \
+             AND ($1::uuid IS NULL OR id > $1) ORDER BY id LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(|r| Ok(ReembedRow { id: r.try_get("id")?, content: r.try_get("content")?, alt_hash: r.try_get("alt_hash")? })).collect()
+    }
+
+    async fn reembed_write(&self, target: &EmbeddingIdentity, rows: &[ReembedVectors]) -> anyhow::Result<()> {
+        if rows.iter().any(|r| r.embedding.len() != target.dim || r.alt.as_ref().is_some_and(|(_, v)| v.len() != target.dim)) {
+            anyhow::bail!("re-embedding produced vectors that are not {}-dimensional", target.dim);
+        }
+        let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+        let emb: Vec<String> = rows.iter().map(|r| vec_literal(&r.embedding)).collect();
+        let alt: Vec<Option<String>> = rows.iter().map(|r| r.alt.as_ref().map(|(_, v)| vec_literal(v))).collect();
+        let hash: Vec<Option<String>> = rows.iter().map(|r| r.alt.as_ref().map(|(h, _)| h.clone())).collect();
+        sqlx::query(
+            "UPDATE mh_memory m SET embedding_next = u.e::vector, embedding_alt_next = u.a::vector, alt_hash_next = u.h, embedder_next = $5 \
+             FROM unnest($1::uuid[], $2::text[], $3::text[], $4::text[]) AS u(id, e, a, h) WHERE m.id = u.id",
+        )
+        .bind(&ids)
+        .bind(&emb)
+        .bind(&alt)
+        .bind(&hash)
+        .bind(&target.embedder)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn reembed_cutover(&self, target: &EmbeddingIdentity) -> anyhow::Result<Option<u64>> {
+        let mut tx = self.pool.begin().await?;
+        // Blocks writers (and other re-embedders) but not readers, until commit.
+        sqlx::query("LOCK TABLE mh_memory IN SHARE ROW EXCLUSIVE MODE").execute(&mut *tx).await?;
+        let recorded: Option<String> = sqlx::query_scalar("SELECT value FROM mh_meta WHERE key = 'reembed_target_embedder'").fetch_optional(&mut *tx).await?;
+        anyhow::ensure!(recorded.as_deref() == Some(target.embedder.as_str()), "no re-embedding to {} is in progress", target.embedder);
+        let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE embedding IS NOT NULL AND embedding_next IS NULL").fetch_one(&mut *tx).await?;
+        if pending > 0 {
+            tx.rollback().await?;
+            return Ok(Some(pending as u64));
+        }
+        let old: Option<String> = sqlx::query_scalar("SELECT value FROM mh_meta WHERE key = 'embedder'").fetch_optional(&mut *tx).await?;
+        let drops: Vec<String> = NEXT_COLS.iter().map(|(_, cur)| format!("DROP COLUMN {cur}")).collect();
+        sqlx::query(&format!("ALTER TABLE mh_memory {}", drops.join(", "))).execute(&mut *tx).await?;
+        for (next, cur) in NEXT_COLS {
+            sqlx::query(&format!("ALTER TABLE mh_memory RENAME COLUMN {next} TO {cur}")).execute(&mut *tx).await?;
+        }
+        for (k, v) in [("embedder", target.embedder.clone()), ("embedding_dim", target.dim.to_string()), ("passage_prefix", target.passage_prefix.clone())] {
+            sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").bind(k).bind(v).execute(&mut *tx).await?;
+        }
+        sqlx::query("DELETE FROM mh_meta WHERE key LIKE 'reembed_target_%'").execute(&mut *tx).await?;
+        // The old model's cached vectors are copies of content under a model no longer used; they
+        // go, so deletions never have to chase them (TR-WF-01).
+        if let Some(old) = old {
+            sqlx::query("DELETE FROM mh_embed_cache WHERE model = $1").bind(old).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(None)
+    }
+
+    async fn reembed_abort(&self) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(&drop_next_columns()).execute(&mut *tx).await?;
+        let removed = sqlx::query("DELETE FROM mh_meta WHERE key LIKE 'reembed_target_%'").execute(&mut *tx).await?.rows_affected();
+        tx.commit().await?;
+        Ok(removed > 0)
     }
 }
 

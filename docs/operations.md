@@ -16,6 +16,7 @@ backups, upgrades, enrichment workers, monitoring and troubleshooting.
 - [Enrichment workers](#enrichment-workers)
 - [Backup and restore](#backup-and-restore)
 - [Upgrades](#upgrades)
+- [Changing the embedding model](#changing-the-embedding-model)
 - [Monitoring](#monitoring)
 - [Routine maintenance](#routine-maintenance)
 - [Troubleshooting](#troubleshooting)
@@ -432,8 +433,51 @@ is planned (TR-WF-03).
 4. `memhouse doctor`.
 
 Rolling restarts work: old and new processes can share the database while the changes are additive.
-Changing the embedding model is **not** an in-place upgrade. Use a new database and
-`export` / `import`.
+Changing the embedding model is different: see [Changing the embedding model](#changing-the-embedding-model).
+
+## Changing the embedding model
+
+Vectors from different models (or the same model with a different passage prefix) can't be
+compared, so a database holds one embedder at a time. `memhouse reembed` moves every stored
+memory to the model now in `[embedding]`, in place, while the server keeps answering:
+
+```bash
+# 1. Edit [embedding] in the config (model, dim, provider, passage_prefix …). Nothing else changes yet:
+#    the running server keeps its old model; a new process refuses to start and points here.
+memhouse reembed --dry-run    # from / to, records, characters ≈ tokens (for a paid API)
+memhouse reembed              # asks first; --yes to skip the question
+# 2. Restart `memhouse serve`, workers and MCP clients so they load the new model.
+```
+
+How it works:
+
+1. New vectors are written into staging columns next to the current ones, in batches
+   (`--batch`, default 256). Recall and writes keep using the old model meanwhile.
+2. Records written during the run by processes still on the old model are picked up by another
+   pass.
+3. One transaction blocks writes (not reads), checks nothing is pending, swaps the columns,
+   records the new embedder, dimension and prefix, deletes the old model's cached vectors and
+   writes an `embedding.reembed` audit event. A dimension change is fine (384 → 1536, say).
+4. From then on the database refuses writes from a process on the old model, and such a process's
+   recall fails within 5 seconds with "restart with the new [embedding] configuration".
+
+Rounds that also have a vector of the user's words alone get it rebuilt too; the text is recovered
+from the round and checked against its stored hash. A round where that fails keeps only its main
+vector, and the report counts them.
+
+**Interrupted?** Run `memhouse reembed` again with the same config: it resumes. **Changed your
+mind before the switch?** `memhouse reembed --abort` drops the staging columns; the current
+vectors were never touched. After the switch there is no undo, apart from re-embedding back
+(or restoring a backup), so take one first.
+
+Plan for it:
+
+| | |
+|---|---|
+| Time | about as long as embedding the same records took at ingest (`--dry-run` shows the count; the run prints records per second). A remote API is limited by its rate limits. For a remote API set `batch_size` to 64 or more in `[embedding]`, so each request carries many texts. |
+| Cost | a paid API charges for the characters `--dry-run` shows (≈ 4 per token), once per record and once per second vector. |
+| Disk | the staging columns double the vector storage until the switch; dropped columns are reclaimed as autovacuum reuses the space, or at once by `VACUUM FULL mh_memory` in a maintenance window. |
+| Writers | writes go on during the run; they wait only for the switch itself (well under a second plus the last few records). If records keep arriving from old-model writers through 10 passes, the run stops and asks you to stop them; progress is kept. |
 
 ## Monitoring
 

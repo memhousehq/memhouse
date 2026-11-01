@@ -4,7 +4,6 @@
 mod connect;
 mod up;
 
-use anyhow::Context;
 use clap::{Parser, Subcommand};
 use memhouse_core::config::default_config_path;
 use memhouse_core::types::*;
@@ -153,6 +152,20 @@ enum Cmd {
     },
     /// Import a JSONL export (ids, timestamps and provenance are preserved)
     Import { file: PathBuf },
+    /// Re-embed every stored memory with the model now in [embedding] (after changing it)
+    Reembed {
+        /// Show what would be re-embedded and stop
+        #[arg(long)]
+        dry_run: bool,
+        /// Drop an unfinished re-embedding; the current vectors are untouched
+        #[arg(long)]
+        abort: bool,
+        /// Records per embedding call and database write
+        #[arg(long, default_value_t = 256)]
+        batch: usize,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Audit log: show recent events or verify the hash chain
     Audit {
         #[arg(long)]
@@ -192,7 +205,10 @@ fn self_launch(cfg_path: &Option<PathBuf>, subject: &Option<String>) -> anyhow::
 }
 
 async fn engine(cfg: Config) -> anyhow::Result<memhouse_core::Engine> {
-    memhouse_server::build_engine(cfg, true).await.context("starting the memory engine (is Postgres running? try `memhouse up` or `memhouse doctor`)")
+    memhouse_server::build_engine(cfg, true).await.map_err(|e| {
+        let hint = if format!("{e:#}").contains("cannot connect") { " (is Postgres running? try `memhouse up` or `memhouse doctor`)" } else { "" };
+        e.context(format!("starting the memory engine{hint}"))
+    })
 }
 
 fn print_next_steps(path: &std::path::Path) {
@@ -477,6 +493,63 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 .audit("cli", "memory.import", &eng.cfg.memory.tenant, None, None, serde_json::json!({"added": added, "skipped": skipped, "file": file.display().to_string()}))
                 .await?;
             println!("imported {added} memories ({skipped} already present)");
+        }
+        Cmd::Reembed { dry_run, abort, batch, yes } => {
+            use memhouse_core::reembed;
+            let cfg = Config::load(cfg_path.as_deref())?;
+            if abort {
+                let store = memhouse_store_postgres::PgStore::connect(&cfg.database.url, 2, "").await?;
+                let had = memhouse_core::Store::reembed_abort(&store).await?;
+                println!("{}", if had { "✓ unfinished re-embedding dropped; the current vectors are unchanged" } else { "nothing to abort" });
+                return Ok(());
+            }
+            let eng = memhouse_server::build_reembed_engine(cfg, true).await?;
+            let to = reembed::target(&eng);
+            let (from, unfinished) = eng.store.embedding_identity().await?;
+            let from = from.ok_or_else(|| anyhow::anyhow!("this database has no memories yet (run `memhouse init` first)"))?;
+            if from == to && unfinished.is_none() {
+                println!("✓ every memory is already embedded with {to}");
+                return Ok(());
+            }
+            let est = eng.store.reembed_estimate().await?;
+            println!("from:    {from}");
+            println!("to:      {to}");
+            println!("records: {} ({} with a second vector), {} characters ≈ {} tokens to embed", est.records, est.second_vectors, est.characters, est.characters / 4);
+            if est.done > 0 {
+                println!("resumes: {} already done by an earlier run", est.done);
+            }
+            if let Some(u) = unfinished.as_ref().filter(|u| **u != to) {
+                anyhow::bail!("an unfinished re-embedding to {u} exists; finish it with that configuration, or run `memhouse reembed --abort`");
+            }
+            if dry_run {
+                return Ok(());
+            }
+            if !yes {
+                eprint!("Re-embed {} memories? The old vectors are replaced at the end. [y/N] ", est.records);
+                std::io::stderr().flush()?;
+                let mut a = String::new();
+                std::io::stdin().lock().read_line(&mut a)?;
+                if !a.trim().eq_ignore_ascii_case("y") {
+                    return Ok(());
+                }
+            }
+            let started = std::time::Instant::now();
+            let outcome = reembed::run(&eng, "cli", batch, |done, total| {
+                let rate = done as f64 / started.elapsed().as_secs_f64().max(0.001);
+                eprint!("\r  {done}/{total} records ({rate:.0}/s)   ");
+            })
+            .await?;
+            eprintln!();
+            match outcome {
+                reembed::Outcome::Current(id) => println!("✓ every memory is already embedded with {id}"),
+                reembed::Outcome::Done(r) => {
+                    println!("✓ {} records re-embedded with {} in {:.1}s ({} passes)", r.records, r.to, r.seconds, r.passes);
+                    if r.second_vectors_dropped > 0 {
+                        println!("  {} rounds kept only their main vector (their user-only text could not be recovered exactly)", r.second_vectors_dropped);
+                    }
+                    println!("  Restart `memhouse serve` and MCP clients so they use the new model; processes on the old one now refuse to read or write.");
+                }
+            }
         }
         Cmd::Audit { verify, limit } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;

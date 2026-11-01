@@ -115,6 +115,53 @@ pub struct NewMemory {
     pub alt: Option<(String, Vec<f32>)>,
 }
 
+/// What a database's vectors were made with. Vectors are only comparable within one identity, so
+/// a store refuses another one until `memhouse reembed` has moved every record (TR-MS-04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddingIdentity {
+    pub embedder: String,
+    pub dim: usize,
+    /// Prefix added to passages before embedding (part of the text the model saw).
+    pub passage_prefix: String,
+}
+
+impl std::fmt::Display for EmbeddingIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({} dims", self.embedder, self.dim)?;
+        if !self.passage_prefix.is_empty() {
+            write!(f, ", passage prefix {:?}", self.passage_prefix)?;
+        }
+        write!(f, ")")
+    }
+}
+
+/// A record still to be re-embedded.
+#[derive(Debug, Clone)]
+pub struct ReembedRow {
+    pub id: Uuid,
+    pub content: String,
+    /// Cache key of the record's second (user-only) vector, when it has one.
+    pub alt_hash: Option<String>,
+}
+
+/// A record's vectors under the new identity.
+#[derive(Debug, Clone)]
+pub struct ReembedVectors {
+    pub id: Uuid,
+    pub embedding: Vec<f32>,
+    pub alt: Option<(String, Vec<f32>)>,
+}
+
+/// Size of a re-embedding before it starts.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ReembedEstimate {
+    pub records: u64,
+    pub second_vectors: u64,
+    pub characters: u64,
+    /// Records already done by an interrupted run to the same target.
+    pub done: u64,
+}
+
 /// One message of a conversation handed to `ingest`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {

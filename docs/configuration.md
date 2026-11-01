@@ -206,9 +206,10 @@ Each text is then sent to that endpoint, so choose one your data is allowed to g
 
 **One embedder per database.** The database records which embedder wrote it
 (`local:<model>`, or `openai:<model>`, plus `?dimensions=N` when shortened) and its dimension.
-Starting with a different one fails instead of mixing vectors that can't be compared. Moving the
-same model to another URL is fine; changing the model needs a new database (staged re-embedding is
-planned, G25).
+Starting with a different one, or with another `passage_prefix`, fails instead of mixing vectors
+that can't be compared. Moving the same model to another URL is fine. To change the model, edit
+`[embedding]` and run `memhouse reembed`, which re-embeds every stored memory in place while the
+server keeps answering ([operations](operations.md#changing-the-embedding-model)).
 
 The environment variables `MEMHOUSE_EMBEDDING_PROVIDER`, `MEMHOUSE_EMBEDDING_MODEL`,
 `MEMHOUSE_EMBEDDING_DIM`, `MEMHOUSE_EMBEDDING_BASE_URL` and `MEMHOUSE_EMBEDDING_API_KEY_ENV`

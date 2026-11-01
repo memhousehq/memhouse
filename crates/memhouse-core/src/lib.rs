@@ -6,6 +6,7 @@ pub mod engine;
 pub mod enrich;
 pub mod gate;
 pub mod query;
+pub mod reembed;
 pub mod templates;
 pub mod traits;
 pub mod types;

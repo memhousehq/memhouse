@@ -964,6 +964,12 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         engine.forget_subject(Some(tenant.clone()), &subj, Some("bench".into())).await?;
     }
 
+    // 19. Re-embedding to another model and dimension (TR-MS-04), in a scratch database.
+    checks.push(match reembed_check(engine).await {
+        Ok(c) => c,
+        Err(e) => check("reembed", "TR-MS-04", "Re-embedding moves every memory to the new model", false, "error".into(), "pass", format!("{e:#}")),
+    });
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;
@@ -1031,6 +1037,160 @@ fn plan_violations(plan: &serde_json::Value) -> Vec<String> {
         walk(&p["Plan"], &mut out);
     }
     out
+}
+
+/// Deterministic stand-in embedder: hashed bag of words, so recall by shared words works and
+/// two instances with different names and sizes produce incomparable vectors.
+struct StubEmbedder {
+    id: String,
+    dim: usize,
+}
+
+#[async_trait::async_trait]
+impl memhouse_core::Embedder for StubEmbedder {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    async fn embed(&self, texts: &[String], _kind: EmbedKind) -> anyhow::Result<Vec<Vec<f32>>> {
+        Ok(texts
+            .iter()
+            .map(|t| {
+                let mut v = vec![0f32; self.dim];
+                for w in t.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() > 2) {
+                    let h = memhouse_core::engine::content_hash(&format!("{}{w}", self.id));
+                    v[usize::from_str_radix(&h[..8], 16).unwrap() % self.dim] += 1.0;
+                }
+                let n = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-6);
+                v.iter().map(|x| x / n).collect()
+            })
+            .collect())
+    }
+}
+
+async fn stub_engine(base: &Engine, url: &str, id: &str, dim: usize, prefix: &str, migrate: bool) -> anyhow::Result<Engine> {
+    let mut cfg = (*base.cfg).clone();
+    cfg.database.url = url.to_string();
+    cfg.embedding.passage_prefix = Some(prefix.to_string()).filter(|p| !p.is_empty());
+    cfg.embedding.query_prefix = None;
+    cfg.rerank.enabled = false;
+    cfg.enrich.enabled = false;
+    let store = memhouse_store_postgres::PgStore::connect(url, 4, prefix).await?.with_identity_recheck(std::time::Duration::ZERO);
+    if migrate {
+        memhouse_core::Store::migrate(&store, dim, id).await?;
+    }
+    Ok(Engine::new(Arc::new(store), Arc::new(StubEmbedder { id: id.into(), dim }), None, cfg))
+}
+
+/// Model A writes, model B (another size and passage prefix) takes over with `reembed`, with a
+/// write arriving mid-run and an aborted attempt to a third model; A must then be refused.
+async fn reembed_check(engine: &Engine) -> anyhow::Result<Check> {
+    let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&engine.cfg.database.url).await?;
+    let db: String = sqlx::query_scalar("SELECT current_database() || '_reembed'").fetch_one(&admin).await?;
+    sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)")).execute(&admin).await?;
+    sqlx::raw_sql(&format!("CREATE DATABASE \"{db}\"")).execute(&admin).await?;
+    let (head, tail) = engine.cfg.database.url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;
+    let query = tail.split_once('?').map(|(_, q)| format!("?{q}")).unwrap_or_default();
+    let url = format!("{head}/{db}{query}");
+    let result = reembed_scenario(engine, &url).await;
+    sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)")).execute(&admin).await?;
+    let (passed, value, detail) = result?;
+    Ok(check("reembed", "TR-MS-04", "Re-embedding moves every memory to the new model; the old one is refused afterwards", passed, value, "all", detail))
+}
+
+async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, String, String)> {
+    use memhouse_core::reembed;
+    let subj = "gov:reembed".to_string();
+    let a = stub_engine(base, url, "stub:a", 8, "", true).await?;
+    for t in ["Acme renews on 2027-03-01", "Acme prefers email over phone", "Biscuit is a greyhound"] {
+        a.remember(RememberRequest { subject: Some(subj.clone()), content: t.into(), actor: Some("bench".into()), ..Default::default() }).await?;
+    }
+    let msgs: Vec<Message> = [
+        ("user", "I adopted a greyhound called Biscuit.\nShe is three years old."),
+        ("assistant", "Congratulations, greyhounds are gentle."),
+        ("user", "What should I feed a retired racing dog?"),
+        ("assistant", "High-protein kibble."),
+    ]
+    .iter()
+    .map(|(r, c)| Message { role: r.to_string(), content: c.to_string(), timestamp: None, id: None })
+    .collect();
+    a.ingest(IngestRequest { subject: Some(subj.clone()), session_id: Some("s1".into()), messages: msgs, actor: Some("bench".into()), ..Default::default() }).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(url).await?;
+    let counts = |pool: sqlx::PgPool| async move {
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT count(*) FILTER (WHERE embedding IS NOT NULL), count(*) FILTER (WHERE embedding_alt IS NOT NULL), coalesce(min(vector_dims(embedding)), 0)::bigint FROM mh_memory",
+        )
+        .fetch_one(&pool)
+        .await
+    };
+    let (rows_before, alts_before, _) = counts(pool.clone()).await?;
+    let mut problems = vec![];
+
+    // B is refused at start-up until the database is re-embedded.
+    let refused_start = stub_engine(base, url, "stub:b", 12, "doc: ", true).await.err().is_some_and(|e| e.to_string().contains("memhouse reembed"));
+    if !refused_start {
+        problems.push("B started on A's database".to_string());
+    }
+
+    // An attempt to a third model, aborted: A's vectors are untouched and it keeps working.
+    let c = stub_engine(base, url, "stub:c", 4, "", false).await?;
+    c.store.reembed_begin(&reembed::target(&c)).await?;
+    c.store.reembed_abort().await?;
+    let next_cols: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM information_schema.columns WHERE table_name = 'mh_memory' AND column_name LIKE '%\\_next'").fetch_one(&pool).await?;
+    if next_cols != 0 {
+        problems.push(format!("{next_cols} staging columns left after abort"));
+    }
+
+    // B: start, then A writes during the run, then B finishes (resuming the same target).
+    let b = stub_engine(base, url, "stub:b", 12, "doc: ", false).await?;
+    b.store.reembed_begin(&reembed::target(&b)).await?;
+    a.remember(RememberRequest { subject: Some(subj.clone()), content: "Written during the re-embedding".into(), actor: Some("bench".into()), ..Default::default() }).await?;
+    let report = match reembed::run(&b, "bench", 2, |_, _| {}).await? {
+        reembed::Outcome::Done(r) => r,
+        reembed::Outcome::Current(_) => anyhow::bail!("re-embedding did nothing"),
+    };
+    let (rows_after, alts_after, dims) = counts(pool.clone()).await?;
+    if rows_after != rows_before + 1 || dims != 12 {
+        problems.push(format!("{rows_after} rows at {dims} dims after, {} expected at 12", rows_before + 1));
+    }
+    if alts_after != alts_before || report.second_vectors_dropped > 0 {
+        problems.push(format!("second vectors {alts_before} → {alts_after} ({} dropped)", report.second_vectors_dropped));
+    }
+    let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE embedding IS NOT NULL AND embedder IS DISTINCT FROM 'stub:b'").fetch_one(&pool).await?;
+    let old_cache: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_embed_cache WHERE model = 'stub:a'").fetch_one(&pool).await?;
+    if stale + old_cache > 0 {
+        problems.push(format!("{stale} rows not stamped with the new model, {old_cache} cached vectors of the old one"));
+    }
+
+    // B now starts and recalls; A can neither write nor read.
+    let b = stub_engine(base, url, "stub:b", 12, "doc: ", true).await?;
+    let hits = b.recall(RecallRequest { subject: Some(subj.clone()), query: "when does Acme renew".into(), k: Some(3), ..Default::default() }).await?.hits;
+    let found = hits.iter().any(|h| h.memory.content.contains("2027-03-01"));
+    if !found {
+        problems.push("B's recall misses the renewal date".into());
+    }
+    let a_write =
+        a.remember(RememberRequest { subject: Some(subj.clone()), content: "Old model write after the switch".into(), actor: Some("bench".into()), ..Default::default() }).await;
+    let a_read = a.recall(RecallRequest { subject: Some(subj.clone()), query: "Acme".into(), ..Default::default() }).await;
+    if a_write.is_ok() {
+        problems.push("A wrote after the switch".into());
+    }
+    if a_read.is_ok() {
+        problems.push("A recalled after the switch".into());
+    }
+    let audited: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_audit WHERE action = 'embedding.reembed'").fetch_one(&pool).await?;
+    if audited != 1 {
+        problems.push(format!("{audited} audit events for the re-embedding"));
+    }
+    pool.close().await;
+    Ok((
+        problems.is_empty(),
+        format!("{rows_after} records 8 → 12 dims in {} passes, {alts_after}/{alts_before} second vectors, old model refused", report.passes),
+        if problems.is_empty() { "a write during the run was picked up; an aborted attempt left nothing behind".into() } else { problems.join("; ") },
+    ))
 }
 
 #[cfg(test)]
