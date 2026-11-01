@@ -4,3 +4,4 @@
 /bench-results/*/items.jsonl
 .fastembed_cache/
 /.dev-home/
+bench-results/logs/

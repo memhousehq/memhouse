@@ -9,6 +9,13 @@ PORT=${PORT:-7097}
 
 step() { printf '\n== %s\n' "$*"; }
 
+SERVER=
+cleanup() {
+  [ -n "$SERVER" ] && kill $SERVER 2>/dev/null || true
+  if [ "${KEEP:-0}" != 1 ]; then docker rm -f "${CONTAINER:-memhouse-e2e}" >/dev/null 2>&1; docker volume rm "${CONTAINER:-memhouse-e2e}-data" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
+
 step "up"
 "$BIN" up --name "${CONTAINER:-memhouse-e2e}" --port "${PG_PORT:-54339}" >/dev/null
 
@@ -20,11 +27,6 @@ step "remember / recall"
 step "REST"
 MEMHOUSE_BIND=127.0.0.1:$PORT "$BIN" serve >/dev/null 2>&1 &
 SERVER=$!
-cleanup() {
-  kill $SERVER 2>/dev/null || true
-  if [ "${KEEP:-0}" != 1 ]; then docker rm -f "${CONTAINER:-memhouse-e2e}" >/dev/null 2>&1; docker volume rm "${CONTAINER:-memhouse-e2e}-data" >/dev/null 2>&1 || true; fi
-}
-trap cleanup EXIT
 until curl -sf "http://127.0.0.1:$PORT/health" >/dev/null; do sleep 0.3; done
 KEY=$("$BIN" key)
 curl -sf "http://127.0.0.1:$PORT/v1/recall" -H "authorization: Bearer $KEY" -H "content-type: application/json" \

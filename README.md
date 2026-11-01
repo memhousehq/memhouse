@@ -141,7 +141,7 @@ See [docs/benchmarks.md](docs/benchmarks.md) for current results and how they co
 provider = "local"               # or "openai" for any OpenAI-compatible /embeddings endpoint (OpenAI, Ollama, vLLM)
 model = "bge-small-en-v1.5"      # dimension is fixed per database
 [rerank]
-enabled = false                  # cross-encoder reranking (bge-reranker-base), higher quality, slower
+enabled = false                  # cross-encoder reranking (jina-reranker-v1-turbo-en, top 20): better ordering, ~+0.9 s per recall on CPU
 [memory]
 template = "support"             # personal | coding | support | sales | success
 default_subject = "customer:unknown"

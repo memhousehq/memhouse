@@ -199,6 +199,7 @@ pub mod local {
 
     pub struct LocalReranker {
         id: String,
+        max_length: usize,
         model: Arc<Mutex<TextRerank>>,
     }
 
@@ -222,9 +223,10 @@ pub mod local {
                 .with_max_length(cfg.max_length)
                 .with_cache_dir(model_cache_dir(cache_dir))
                 .with_execution_providers(cpu_provider())
+                .with_intra_threads(std::env::var("MEMHOUSE_RERANK_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| pool_shape(0, 0).1.max(2)))
                 .with_show_download_progress(show_progress);
             let rr = TextRerank::try_new(opts).with_context(|| format!("loading reranker {}", pick.model_code))?;
-            Ok(LocalReranker { id: format!("local:{}", pick.model_code), model: Arc::new(Mutex::new(rr)) })
+            Ok(LocalReranker { id: format!("local:{}", pick.model_code), max_length: cfg.max_length, model: Arc::new(Mutex::new(rr)) })
         }
     }
 
@@ -238,13 +240,18 @@ pub mod local {
             let q = query.to_string();
             let d = docs.to_vec();
             let n = d.len();
+            let max_len = self.max_length;
             tokio::task::spawn_blocking(move || {
                 let mut m = model.lock().map_err(|_| anyhow::anyhow!("reranker lock poisoned"))?;
-                let refs: Vec<&str> = d.iter().map(|s| s.as_str()).collect();
-                let res = m.rerank(q.as_str(), refs, false, Some(16)).map_err(|e| anyhow::anyhow!("rerank failed: {e}"))?;
+                // Same length-sorted token-budget batching as the embedder: padding a batch to its
+                // longest pair is what makes cross-encoders slow on mixed-length memories.
                 let mut scores = vec![f32::MIN; n];
-                for r in res {
-                    scores[r.index] = r.score;
+                for batch in plan_batches(&d, 8, max_len) {
+                    let refs: Vec<&str> = batch.iter().map(|&i| d[i].as_str()).collect();
+                    let res = m.rerank(q.as_str(), refs, false, Some(batch.len())).map_err(|e| anyhow::anyhow!("rerank failed: {e}"))?;
+                    for r in res {
+                        scores[batch[r.index]] = r.score;
+                    }
                 }
                 Ok(scores)
             })

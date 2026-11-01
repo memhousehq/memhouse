@@ -110,9 +110,9 @@ impl Default for RerankConfig {
     fn default() -> Self {
         RerankConfig {
             enabled: false,
-            model: "bge-reranker-base".into(),
-            candidates: 40,
-            max_length: 512,
+            model: "jina-reranker-v1-turbo-en".into(),
+            candidates: 20,
+            max_length: 256,
             fused_weight: 0.15,
         }
     }
