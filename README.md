@@ -130,7 +130,12 @@ memhouse bench report bench-results/*                       # compare runs side 
 - **Isolation:** benchmark data goes to its own database per embedding model (`memhouse_bench_*`) and never mixes with your memories.
 - **Governance gates:** injection persistence, false quarantine rate, PII and secret redaction (random canaries), subject and tenant isolation, deletion (record + cached vector + recall + audit), subject erasure, stale-fact rate after updates, validity windows, dedup, audit-chain integrity and embedding determinism.
 
-See [docs/benchmarks.md](docs/benchmarks.md) for current results and how they compare with published systems.
+Current results on a laptop CPU, no LLM in the loop (details and baselines in [docs/benchmarks.md](docs/benchmarks.md)):
+
+| Dataset | session recall_all@5 | session recall_all@10 | recall p50 / p95 |
+|---|---|---|---|
+| LongMemEval_S (470 scored) | 81.1 | 86.4 | 56 / 82 ms |
+| LoCoMo (1,536 scored) | 73.6 | 84.4 | 55 / 76 ms |
 
 ## Configuration
 
