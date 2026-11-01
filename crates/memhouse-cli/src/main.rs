@@ -55,6 +55,9 @@ enum Cmd {
         base_url: Option<String>,
         #[arg(long)]
         api_key_env: Option<String>,
+        /// Ask the API for `--dim` dimensions (models that can shorten vectors, e.g. text-embedding-3-*)
+        #[arg(long)]
+        request_dimensions: bool,
         /// Overwrite an existing config file
         #[arg(long)]
         force: bool,
@@ -252,7 +255,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let cfg = Config::load(cfg_path.as_deref())?;
             up::stop(up::managed(&cfg).unwrap_or(up::CONTAINER))?
         }
-        Cmd::Init { database_url, template, embedding, model, dim, base_url, api_key_env, force } => {
+        Cmd::Init { database_url, template, embedding, model, dim, base_url, api_key_env, request_dimensions, force } => {
             if path_or_default.exists() && !force {
                 anyhow::bail!("{} already exists (use --force to overwrite)", path_or_default.display());
             }
@@ -266,6 +269,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 cfg.embedding.dim = dim.unwrap_or(1536);
                 cfg.embedding.base_url = base_url;
                 cfg.embedding.api_key_env = api_key_env.or_else(|| Some("OPENAI_API_KEY".into()));
+                cfg.embedding.request_dimensions = request_dimensions;
             } else if let Some(m) = model {
                 let (_, d, _) = memhouse_models::local::resolve_embedding(&m)?;
                 cfg.embedding.model = m;

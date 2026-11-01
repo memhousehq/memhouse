@@ -3,7 +3,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed — pending the user's review** (spike G03) ; load-tested in G30 |
+| Status | **Accepted** by the user, 1 November 2026 (spike G03) ; load-tested in G30 |
 | Date | 1 November 2026 |
 | Requirements | TR-GW-03, TR-GW-05, PERF-08, SCALE-01 |
 | Evidence | [evidence/spike-acceptance.md](evidence/spike-acceptance.md) (section 6.10 coverage), [evidence/postgres-spike.md](evidence/postgres-spike.md) |

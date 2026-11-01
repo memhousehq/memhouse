@@ -3,7 +3,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed — pending the user's review** (spike G03) ; seam in G06, ReBAC in G27 |
+| Status | **Accepted** by the user, 1 November 2026 (spike G03) ; seam in G06, ReBAC in G27 |
 | Date | 1 November 2026 |
 | Requirements | TD-07, ACC-01 to ACC-04, ACC-09, TR-AZ-01 to TR-AZ-05, TR-GW-04, GOV-14 |
 | Evidence | [evidence/spike-acceptance.md](evidence/spike-acceptance.md) (section 6.10 coverage), [evidence/postgres-spike.md](evidence/postgres-spike.md) (`scripts/spike/authz_*.sql`) |

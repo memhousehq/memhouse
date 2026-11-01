@@ -59,6 +59,9 @@ query_prefix = "Represent this sentence for searching relevant passages: "
 # passage_prefix = ""
 # base_url = "http://localhost:11434/v1"   # for provider = openai
 # api_key_env = "OPENAI_API_KEY"           # the NAME of the variable, never the key
+request_dimensions = false           # provider = openai: send dimensions = dim
+timeout_secs = 60                    # provider = openai: per request
+max_retries = 3                      # provider = openai: after 429, 5xx or connection errors
 # cache_dir = "/var/lib/memhouse/models"
 
 [rerank]
@@ -143,7 +146,10 @@ database and use `memhouse export` / `memhouse import`, which re-embeds everythi
 | `model` | `bge-small-en-v1.5` | Local: a fastembed model name (e.g. `bge-small-en-v1.5`, `bge-small-en-v1.5-onnx-Q` quantised, `bge-base-en-v1.5`, `nomic-embed-text-v1.5`); an unknown name fails with the full list. Remote: the provider's model id. |
 | `dim` | 384 | Must match the model. |
 | `base_url` | none | Remote providers only. |
-| `api_key_env` | none | The *name* of the environment variable that holds the key. Keys never go in the file. |
+| `api_key_env` | none | The *name* of the environment variable that holds the key. Keys never go in the file. If it names a variable that isn't set, start-up fails with that name. |
+| `request_dimensions` | false | Remote only: send `dimensions = dim`, for models that can shorten their vectors (OpenAI `text-embedding-3-*`). Smaller vectors, smaller index, a little less quality. |
+| `timeout_secs` | 60 | Remote only: one request is abandoned after this long. |
+| `max_retries` | 3 | Remote only: retries after a 429, a 5xx or a connection error, waiting `Retry-After` when the endpoint sends it, otherwise 0.5 s, 1 s, 2 s … (at most 8 s). Other errors (a bad key, an unknown model) fail at once. |
 | `max_length` | 512 | Tokens per text for the local model. 256 is faster with little loss on chat data. |
 | `batch_size` | 1 | Texts per local model call. 32–64 is faster for bulk ingest. |
 | `sessions`, `threads` | 0 (auto) | Parallel ONNX sessions and threads per session. |
@@ -173,6 +179,40 @@ dim = 1536
 api_key_env = "OPENAI_API_KEY"
 query_prefix = ""
 ```
+
+Example: OpenAI embeddings shortened to 512 dimensions.
+
+```toml
+[embedding]
+provider = "openai"
+model = "text-embedding-3-small"
+dim = 512
+request_dimensions = true
+api_key_env = "OPENAI_API_KEY"
+query_prefix = ""
+```
+
+Or from the command line:
+
+```bash
+memhouse init --database-url postgres://… --embedding openai --model text-embedding-3-small --dim 512 --request-dimensions
+```
+
+**Local or remote?** The local model needs no network and no account, but it is the biggest
+part of MemHouse's memory: about 160 MB per model session at load, 380–610 MB at peak while
+embedding (the store itself stays near 16 MB in the Lite spike, ADR 0002). On a small machine,
+point `[embedding]` at an API (or an Ollama on another host) and MemHouse loads no model at all.
+Each text is then sent to that endpoint, so choose one your data is allowed to go to.
+
+**One embedder per database.** The database records which embedder wrote it
+(`local:<model>`, or `openai:<model>`, plus `?dimensions=N` when shortened) and its dimension.
+Starting with a different one fails instead of mixing vectors that can't be compared. Moving the
+same model to another URL is fine; changing the model needs a new database (staged re-embedding is
+planned, G25).
+
+The environment variables `MEMHOUSE_EMBEDDING_PROVIDER`, `MEMHOUSE_EMBEDDING_MODEL`,
+`MEMHOUSE_EMBEDDING_DIM`, `MEMHOUSE_EMBEDDING_BASE_URL` and `MEMHOUSE_EMBEDDING_API_KEY_ENV`
+override the file.
 
 ## `[rerank]`
 
@@ -295,7 +335,7 @@ See [governance.md](governance.md) for what each control does and how to prove i
 | `MEMHOUSE_SUBJECT` | `memory.default_subject` |
 | `MEMHOUSE_BIND` | `server.bind` |
 | `MEMHOUSE_API_KEY` | adds a key to `server.api_keys` |
-| `MEMHOUSE_EMBEDDING_PROVIDER`, `_MODEL`, `_DIM`, `_BASE_URL` | `embedding.*` |
+| `MEMHOUSE_EMBEDDING_PROVIDER`, `_MODEL`, `_DIM`, `_BASE_URL`, `_API_KEY_ENV` | `embedding.*` |
 | `MEMHOUSE_RERANK` | `rerank.enabled` (`1` or `true`) |
 | `MEMHOUSE_ENRICH` | `enrich.enabled` (`1` or `true`) |
 | `MEMHOUSE_ENRICH_MODEL` | `enrich.llm.model` |

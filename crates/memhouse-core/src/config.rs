@@ -46,6 +46,13 @@ pub struct EmbeddingConfig {
     pub base_url: Option<String>,
     /// Name of the environment variable that holds the API key (never the key itself).
     pub api_key_env: Option<String>,
+    /// API providers: send `dimensions = dim` with each request, for models that can shorten
+    /// their vectors (OpenAI `text-embedding-3-*`). Changes the embedder identity.
+    pub request_dimensions: bool,
+    /// API providers: seconds before one request is abandoned.
+    pub timeout_secs: u64,
+    /// API providers: retries after a 429, a 5xx or a connection error, with backoff.
+    pub max_retries: u32,
     /// Max tokens the local model reads per text.
     pub max_length: usize,
     pub batch_size: usize,
@@ -67,6 +74,9 @@ impl Default for EmbeddingConfig {
             dim: 384,
             base_url: None,
             api_key_env: None,
+            request_dimensions: false,
+            timeout_secs: 60,
+            max_retries: 3,
             max_length: 512,
             batch_size: 1,
             sessions: 0,
@@ -342,6 +352,9 @@ impl Config {
         }
         if let Some(v) = var("MEMHOUSE_EMBEDDING_BASE_URL") {
             self.embedding.base_url = Some(v);
+        }
+        if let Some(v) = var("MEMHOUSE_EMBEDDING_API_KEY_ENV") {
+            self.embedding.api_key_env = Some(v);
         }
         if let Some(v) = var("MEMHOUSE_RERANK").map(|v| v == "1" || v == "true") {
             self.rerank.enabled = v;

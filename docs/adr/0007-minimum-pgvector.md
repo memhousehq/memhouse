@@ -3,7 +3,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed — pending the user's review** (spike G03) ; enforced at start-up from G04 |
+| Status | **Accepted** by the user, 1 November 2026 (spike G03) ; enforced at start-up from G04 |
 | Date | 1 November 2026 |
 | Requirements | TR-DB-02, SCALE-05, SCALE-06, DEP-01, TD-02 |
 

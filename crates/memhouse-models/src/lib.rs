@@ -248,7 +248,9 @@ fn api_key(env: &Option<String>) -> Option<String> {
     env.as_ref().and_then(|k| std::env::var(k).ok()).filter(|k| !k.is_empty())
 }
 
-/// Embeddings over the OpenAI `/embeddings` API shape.
+/// Embeddings over the OpenAI `/embeddings` API shape: OpenAI, Azure-compatible gateways,
+/// OpenRouter, Ollama, vLLM, LM Studio. Nothing runs in process, so this is also how a small
+/// deployment keeps its memory footprint low (PROF-06, ADR 0002).
 pub struct OpenAiEmbedder {
     id: String,
     dim: usize,
@@ -256,21 +258,67 @@ pub struct OpenAiEmbedder {
     model: String,
     key: Option<String>,
     batch: usize,
+    request_dimensions: bool,
+    max_retries: u32,
     http: reqwest::Client,
 }
 
 impl OpenAiEmbedder {
     pub fn new(cfg: &EmbeddingConfig) -> anyhow::Result<OpenAiEmbedder> {
         let base = cfg.base_url.clone().unwrap_or_else(|| "https://api.openai.com/v1".into());
+        let key = api_key(&cfg.api_key_env);
+        if let (Some(name), None) = (&cfg.api_key_env, &key) {
+            anyhow::bail!("embedding.api_key_env names {name}, but that environment variable is not set");
+        }
+        // The identity is stored with the database, so a different model (or a shortened one)
+        // can't silently mix with existing vectors. The host is left out: the same model behind
+        // another URL produces the same vectors.
+        let id = if cfg.request_dimensions { format!("openai:{}?dimensions={}", cfg.model, cfg.dim) } else { format!("openai:{}", cfg.model) };
         Ok(OpenAiEmbedder {
-            id: format!("openai:{}@{}", cfg.model, base),
+            id,
             dim: cfg.dim,
             url: format!("{}/embeddings", base.trim_end_matches('/')),
             model: cfg.model.clone(),
-            key: api_key(&cfg.api_key_env),
+            key,
             batch: cfg.batch_size.max(1),
-            http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build()?,
+            request_dimensions: cfg.request_dimensions,
+            max_retries: cfg.max_retries,
+            http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(cfg.timeout_secs.max(1))).build()?,
         })
+    }
+
+    /// One request, retried after rate limits, server errors and connection failures.
+    async fn call(&self, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let mut attempt = 0;
+        loop {
+            let mut req = self.http.post(&self.url).json(body);
+            if let Some(k) = &self.key {
+                req = req.bearer_auth(k);
+            }
+            let (retry_after, err) = match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let wait = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
+                    if status.is_success() {
+                        return Ok(resp.json().await?);
+                    }
+                    let text = resp.text().await.unwrap_or_default();
+                    let err = anyhow::anyhow!("embedding endpoint returned {status}: {}", text.chars().take(500).collect::<String>());
+                    if status.as_u16() != 429 && !status.is_server_error() {
+                        return Err(err);
+                    }
+                    (wait, err)
+                }
+                Err(e) => (None, anyhow::Error::new(e).context(format!("calling {}", self.url))),
+            };
+            if attempt >= self.max_retries {
+                return Err(err.context(format!("after {} attempts", attempt + 1)));
+            }
+            let delay = retry_after.map(|s| s.min(30) * 1000).unwrap_or_else(|| (500u64 << attempt).min(8000));
+            tracing::warn!("embedding request failed, retrying in {delay} ms: {err:#}");
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            attempt += 1;
+        }
     }
 }
 
@@ -285,16 +333,11 @@ impl Embedder for OpenAiEmbedder {
     async fn embed(&self, texts: &[String], _kind: EmbedKind) -> anyhow::Result<Vec<Vec<f32>>> {
         let mut out = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(self.batch) {
-            let mut req = self.http.post(&self.url).json(&json!({ "model": self.model, "input": chunk }));
-            if let Some(k) = &self.key {
-                req = req.bearer_auth(k);
+            let mut body = json!({ "model": self.model, "input": chunk });
+            if self.request_dimensions {
+                body["dimensions"] = json!(self.dim);
             }
-            let resp = req.send().await.with_context(|| format!("calling {}", self.url))?;
-            let status = resp.status();
-            let body: serde_json::Value = resp.json().await?;
-            if !status.is_success() {
-                anyhow::bail!("embedding endpoint returned {status}: {body}");
-            }
+            let body = self.call(&body).await?;
             let mut data: Vec<(usize, Vec<f32>)> = body["data"]
                 .as_array()
                 .ok_or_else(|| anyhow::anyhow!("embedding response has no data: {body}"))?
@@ -306,6 +349,9 @@ impl Embedder for OpenAiEmbedder {
                     (idx, v)
                 })
                 .collect();
+            if data.len() != chunk.len() {
+                anyhow::bail!("embedding endpoint returned {} vectors for {} texts", data.len(), chunk.len());
+            }
             data.sort_by_key(|(i, _)| *i);
             for (_, v) in data {
                 if v.len() != self.dim {
@@ -490,5 +536,109 @@ mod tests {
             assert!(batch.len() == 1 || max * batch.len() <= 8192);
             assert!(batch.len() <= 32);
         }
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A local HTTP endpoint that answers each request with the next scripted (status, body)
+    /// and records the requests it saw.
+    async fn scripted(replies: Vec<(u16, String)>) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            for (status, body) in replies {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = sock.read(&mut chunk).await.unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(head_end) = text.find("\r\n\r\n") {
+                        let len =
+                            text[..head_end].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                        if buf.len() >= head_end + 4 + len {
+                            log.lock().unwrap().push(text);
+                            break;
+                        }
+                    }
+                }
+                let resp = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\nretry-after: 0\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                sock.write_all(resp.as_bytes()).await.unwrap();
+            }
+        });
+        (url, seen)
+    }
+
+    fn cfg(url: &str, dim: usize) -> EmbeddingConfig {
+        EmbeddingConfig { provider: "openai".into(), model: "test-embed".into(), dim, base_url: Some(url.into()), ..Default::default() }
+    }
+
+    fn texts(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("text {i}")).collect()
+    }
+
+    #[tokio::test]
+    async fn orders_by_index_sends_dimensions_and_key() {
+        let body = json!({"data": [{"index": 1, "embedding": [0.0, 1.0]}, {"index": 0, "embedding": [1.0, 0.0]}]}).to_string();
+        let (url, seen) = scripted(vec![(200, body)]).await;
+        let mut c = cfg(&url, 2);
+        c.request_dimensions = true;
+        c.batch_size = 8;
+        let mut e = OpenAiEmbedder::new(&c).unwrap();
+        e.key = Some("sk-test".into());
+        assert_eq!(e.id(), "openai:test-embed?dimensions=2");
+        let v = e.embed(&texts(2), EmbedKind::Passage).await.unwrap();
+        assert_eq!(v, vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+        let req = seen.lock().unwrap()[0].clone();
+        assert!(req.starts_with("POST /v1/embeddings"));
+        assert!(req.to_ascii_lowercase().contains("authorization: bearer sk-test"));
+        assert!(req.contains("\"dimensions\":2"));
+    }
+
+    #[tokio::test]
+    async fn retries_rate_limits_and_server_errors() {
+        let ok = json!({"data": [{"index": 0, "embedding": [0.5, 0.5]}]}).to_string();
+        let (url, seen) = scripted(vec![(429, "{}".into()), (503, "{}".into()), (200, ok)]).await;
+        let e = OpenAiEmbedder::new(&cfg(&url, 2)).unwrap();
+        assert_eq!(e.id(), "openai:test-embed");
+        let v = e.embed(&texts(1), EmbedKind::Query).await.unwrap();
+        assert_eq!(v, vec![vec![0.5, 0.5]]);
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        assert!(!seen.lock().unwrap()[0].contains("dimensions"));
+    }
+
+    #[tokio::test]
+    async fn gives_up_on_client_errors_and_wrong_shapes() {
+        let (url, seen) = scripted(vec![(401, r#"{"error":"bad key"}"#.into())]).await;
+        let err = OpenAiEmbedder::new(&cfg(&url, 2)).unwrap().embed(&texts(1), EmbedKind::Query).await.unwrap_err();
+        assert!(format!("{err:#}").contains("401"), "{err:#}");
+        assert_eq!(seen.lock().unwrap().len(), 1, "a 401 is not retried");
+
+        let wrong_dim = json!({"data": [{"index": 0, "embedding": [1.0, 0.0, 0.0]}]}).to_string();
+        let (url, _) = scripted(vec![(200, wrong_dim)]).await;
+        let err = OpenAiEmbedder::new(&cfg(&url, 2)).unwrap().embed(&texts(1), EmbedKind::Query).await.unwrap_err();
+        assert!(err.to_string().contains("3 dimensions"), "{err}");
+
+        let short = json!({"data": [{"index": 0, "embedding": [1.0, 0.0]}]}).to_string();
+        let (url, _) = scripted(vec![(200, short)]).await;
+        let mut c = cfg(&url, 2);
+        c.batch_size = 8;
+        let err = OpenAiEmbedder::new(&c).unwrap().embed(&texts(2), EmbedKind::Query).await.unwrap_err();
+        assert!(err.to_string().contains("1 vectors for 2 texts"), "{err}");
+    }
+
+    #[test]
+    fn a_named_but_unset_key_variable_fails_early() {
+        let mut c = cfg("http://127.0.0.1:9/v1", 2);
+        c.api_key_env = Some("MEMHOUSE_TEST_UNSET_EMBEDDING_KEY".into());
+        let err = OpenAiEmbedder::new(&c).err().unwrap();
+        assert!(err.to_string().contains("MEMHOUSE_TEST_UNSET_EMBEDDING_KEY"), "{err}");
     }
 }

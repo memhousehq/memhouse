@@ -237,6 +237,14 @@ impl Store for PgStore {
                 );
             }
         }
+        if let Some(existing) = self.meta("embedder").await? {
+            if existing != embedder_id {
+                anyhow::bail!(
+                    "this database was embedded with {existing} but the configured embedder is {embedder_id}; \
+                     vectors from different models can't be compared. Use the model it was created with, or a new database."
+                );
+            }
+        }
         let ddl = format!(
             r#"
 CREATE EXTENSION IF NOT EXISTS vector;

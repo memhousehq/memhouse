@@ -18,11 +18,12 @@ compares it with the share of that load each candidate must carry.
 | Acceptance tests at 25% of the national profile | n/a (Lite has its own targets) | extrapolated ✓ (sizes); load blocked | measured: Postgres queue ✗ for 25% → log required; log itself blocked | extrapolated ✓ with 2 nodes or a cache; load blocked | blocked | n/a |
 | Customer's database: self-hosted and ≥ 1 managed service | self-hosted ✓ (file) | self-hosted ✓; managed **blocked** | self-hosted ✓; managed **blocked** | self-hosted ✓; managed **blocked** | self-hosted ✓; managed **blocked** | self-hosted ✓; managed from documentation only, Cloud SQL unconfirmed |
 | Sovereign: no external dependencies | ✓ measured, network denied | ✓ (pgvector only) | ✓ Postgres; Apache Kafka self-hostable | ✓ in-database, no service | ✓ self-hosted PgBouncer | ✓ |
-| Lite: PROF-04, PROF-06, PROF-07 on the reference laptop | PROF-04 ✓, PROF-07 ✓, PROF-06 ✓ store only / **✗ with the bundled local model** | — | — | — | — | — |
+| Lite: PROF-04, PROF-06, PROF-07 on the reference laptop | PROF-04 ✓, PROF-07 ✓, PROF-06 ✓ store only; the bundled local model has its own budget (user decision) | — | — | — | — | — |
 
-**Blocked items need**: a managed Postgres instance (RDS, Cloud SQL or Azure) for the managed-service
-runs, and a production-like cluster for the 25% load tests (roadmap G30, G31). They are listed in
-each ADR under "Still to verify" and are not claimed here.
+**Not run here, moved by the user's decision (1 November 2026):** the managed-service runs go to
+G30 ("keep managed Postgres for later") and the 25% load tests to G27, G30 and G31, which have a
+production-like cluster. They are listed in each ADR under "Still to verify" and in those goals'
+deliverables, and are not claimed here.
 
 ## Lite store (ADR 0002) — measured
 
@@ -35,7 +36,7 @@ process, all networking denied:
 | PROF-07 write acknowledgement p95 | ≤ 20 ms | 3.34 ms with power-loss-safe `fullfsync` ✓ |
 | PROF-07 gated memory recallable | ≤ 2 s | 23–26 ms p95 ✓ |
 | PROF-06 binary | ≤ 100 MB without models | 45.9 MB ✓ |
-| PROF-06 resident memory with 100,000 memories | ≤ 256 MB | store only 16 MB ✓; with the local model 394 MB (1 session) / 610 MB (default 4 sessions) ✗ |
+| PROF-06 resident memory with 100,000 memories | ≤ 256 MB | store only 16 MB ✓; the local model 394 MB (1 session) / 610 MB (4 sessions) is outside the budget by the user's decision; a remote embedding API loads no model |
 | PROF-04 single process, embedded store, in-process jobs, no external service | — | ✓ (network denied for the whole run) |
 
 ## Vector format (ADR 0003) — extrapolated sizes at 25%

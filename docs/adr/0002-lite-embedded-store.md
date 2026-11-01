@@ -3,7 +3,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Proposed — pending the user's review** (spike G03) ; built in G16 |
+| Status | **Accepted** by the user, 1 November 2026 (spike G03) ; built in G16 |
 | Date | 1 November 2026 |
 | Requirements | TR-LT-02, TR-LT-03, TR-LT-04, TR-LT-05, PROF-04, PROF-06, PROF-07, TD-12 |
 | Evidence | [evidence/spike-acceptance.md](evidence/spike-acceptance.md) (section 6.10 coverage), [evidence/storage-spike.md](evidence/storage-spike.md) (`crates/memhouse-bench/examples/spike_storage.rs`) |
@@ -55,19 +55,24 @@ the 50 ms p95 (query embedding excluded, as the requirement says).
 | PROF-07 recall p95 ≤ 50 ms | 25.9 ms with local query embedding (1 model session); 13.8 ms store only |
 | PROF-07 write acknowledgement p95 ≤ 20 ms | 3.34 ms, durable against power loss (`synchronous = FULL`, `fullfsync`) |
 | PROF-07 written memory recallable ≤ 2 s | 23 ms p95 |
-| PROF-06 resident memory ≤ 256 MB | **store: 16 MB peak.** With the bundled local model: 394 MB (1 session), 610 MB (default 4 sessions) |
+| PROF-06 resident memory ≤ 256 MB | **store: 16 MB peak** ✓. The bundled local model is budgeted separately (decision below): 394 MB (1 session), 610 MB (4 sessions) |
 | PROF-04 one process, no external service | yes, with the network denied |
 
-**Open decision for the user (G16):** the store meets PROF-06 easily, but the bundled local
-embedding model doesn't fit in 256 MB on its own (157 MB per session at load, growing during
-inference). Options: (a) read PROF-06 as excluding the optional local model, as its binary-size
-clause already does, and give the model its own budget; (b) default Lite to one session and work on
-the runtime's memory (fixed input shapes, memory-pattern settings) to bring the total under 256 MB;
-(c) ship a smaller default model. Lite defaults to one model session either way. Fewer inference threads were tried and don't help (379–384 MB peak with one or two threads).
+**PROF-06 decision (the user, 1 November 2026): option (a).** The 256 MB limit applies to MemHouse
+and its store; the optional local embedding model has its own budget, as PROF-06's binary-size
+clause already excludes models. The store measured 16 MB. The local model measured 157 MB per
+session at load and 379–394 MB at peak with one session, whatever the thread count, so Lite
+defaults to one session. For machines where that is too much, `[embedding] provider = "openai"`
+sends embedding to any OpenAI-compatible API (OpenAI, OpenRouter, Ollama on another host, vLLM)
+and loads no model. It has a timeout, retries with backoff after rate limits and server errors,
+an optional `dimensions` request for models that can shorten vectors, and the database refuses a
+different embedder than the one that wrote it ([configuration](../configuration.md#embedding)).
+The options not taken were (b), working on the runtime's memory to fit under 256 MB, and (c), a
+smaller default model.
 
 ## Still to verify (G16)
 
-- PROF-06 with the final Lite binary and the option chosen above.
+- PROF-06 with the final Lite binary: the store within 256 MB, the local model reported separately, and a run with a remote embedding API.
 - PROF-07 again through the real engine path (gate, audit, fusion), not the spike's direct SQL.
 - Kill-and-restart durability of the job table (TR-LT-05), file encryption (TR-LT-08), and the
   conformance kits of G15.
