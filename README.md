@@ -153,8 +153,8 @@ End-to-end answer accuracy with an LLM judge, with asynchronous enrichment on:
 
 | Benchmark | Answer model | MemHouse | Published (same answer model) | Enrichment cost |
 |---|---|---|---|---|
-| LongMemEval_S, 500 q | GPT-4o | **83.2** | Mastra 84.2, Supermemory 81.6, Emergence 81.3, Zep 71.2 | $1.54 for 21k sessions |
-| LoCoMo, 1,540 q | GPT-4o-mini | **84.5** | Hindsight 83.2 (other models), MemOS 75.8, Zep 75.1, Letta 74.0, Mem0 66.9 | $0.03 |
+| LongMemEval_S, 500 q | GPT-4o | **86.0** | Mastra 84.2, Supermemory 81.6, Emergence 81.3, Zep 71.2 | $1.54 for 21k sessions |
+| LoCoMo, 1,540 q | GPT-4o-mini | **83.7** | Hindsight 83.2 (other models), MemOS 75.8, Zep 75.1, Letta 74.0, Mem0 66.9 | $0.03 |
 
 Enrichment is optional and asynchronous: ingest stores rounds and queues a job; background workers ask a small model (`qwen/qwen3.7-flash`, ~$0.00007 per session) for dated facts, which pass the same write gate. Recall never waits for it. Every QA report records tokens, cost and latency with and without the LLM call.
 

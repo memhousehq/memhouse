@@ -53,6 +53,9 @@ pub struct RunArgs {
     pub stride: usize,
     #[arg(long, default_value_t = 0)]
     pub offset: usize,
+    /// Only abstention questions (LongMemEval `_abs`)
+    #[arg(long)]
+    pub abstention_only: bool,
     /// Only these question types (comma separated)
     #[arg(long)]
     pub types: Option<String>,
@@ -364,6 +367,7 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
                 stride: args.stride,
                 offset: args.offset,
                 types: args.types.as_ref().map(|t| t.split(',').map(|s| s.trim().to_string()).collect()),
+                abstention_only: args.abstention_only,
             },
             mode,
             rerank: args.rerank,

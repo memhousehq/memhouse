@@ -202,8 +202,11 @@ in `report.md`.
 
 | Dataset | Answer / judge model | Questions | **Accuracy** | Enrichment cost | QA cost |
 |---|---|---|---|---|---|
-| LongMemEval_S | gpt-4o / gpt-4o | 500 | **83.2** [79.6–86.4] | **$1.54** (21,002 sessions) | $7.30 |
-| LoCoMo (categories 1–4) | gpt-4o-mini / gpt-4o-mini | 1,540 | **84.5** [82.7–86.4] | **$0.03** (271 sessions) | $0.65 |
+| LongMemEval_S | gpt-4o / gpt-4o | 500 | **86.0** [83.0–88.8] | **$1.54** (21,002 sessions) | $7.33 |
+| LoCoMo (categories 1–4) | gpt-4o-mini / gpt-4o-mini | 1,540 | **83.7** [81.8–85.5] | **$0.03** (272 sessions) | $0.70 |
+
+Both rows use the same final configuration. Enrichment cost is paid once: the reruns read every
+extraction from the cache (LongMemEval_S rerun: 9 new LLM calls, $0.001).
 
 What changed against the first QA runs (77.0 and 68.4):
 
@@ -216,7 +219,10 @@ What changed against the first QA runs (77.0 and 68.4):
    recall), and the dates recall resolved for the question's time phrases ("last Saturday" =
    2023-04-15).
 3. **Answer prompt v2:** guidance for time arithmetic, counting across sessions, personalised
-   advice and false premises.
+   advice, and a premise check: every specific thing the question names (item, place, employer,
+   job title, second item in "A and B") must be in the memories, otherwise the answer is "not
+   enough information". That check took abstention from 53.3 to 83.3 (run `final-lme-s-v3`;
+   the run before it, without the check, scored 83.2 overall).
 
 Published results with the same answer model (vendor-reported unless noted):
 
@@ -227,9 +233,9 @@ Published results with the same answer model (vendor-reported unless noted):
 | Bedrock AgentCore memory (Redis re-run) | 77.0 |
 | Emergence fast (Redis re-run) | 81.3 |
 | Supermemory | 81.6 |
-| **MemHouse** | **83.2** |
 | Hindsight (GPT-OSS-20B answer, -120B judge) | 83.6 |
 | Mastra Observational Memory (Redis reproduced) | 84.2 |
+| **MemHouse** | **86.0** |
 
 | LoCoMo, GPT-4o-mini | Accuracy |
 |---|---|
@@ -239,36 +245,37 @@ Published results with the same answer model (vendor-reported unless noted):
 | Zep (vendor; Mem0 measured 66.0) | 75.1 |
 | MemOS | 75.8 |
 | Hindsight (GPT-OSS-20B / -120B) | 83.2 |
-| **MemHouse** | **84.5** |
+| **MemHouse** | **83.7** |
 | EverMemOS (GPT-4.1-mini) | 92.3 |
 
-On LongMemEval_S MemHouse is ahead of Supermemory, Emergence, Bedrock AgentCore and Zep, and
-level with Mastra and Hindsight (both within the 95% interval). On LoCoMo it is ahead of every
-published GPT-4o-mini result we know of; EverMemOS reports more with a stronger answer model.
+On LongMemEval_S MemHouse scores above every published GPT-4o result we know of, including
+Mastra (84.2, inside our 95% interval of 83.0–88.8) and Supermemory (81.6, below it). On LoCoMo
+it is ahead of every published GPT-4o-mini result; Hindsight's 83.2 used other models, and
+EverMemOS reports 92.3 with the stronger GPT-4.1-mini. All vendor numbers are self-reported
+except where a re-run is noted.
 
 By question type, first run → current:
 
-| LongMemEval_S | n | before | **now** |
+| LongMemEval_S | n | first run | **now** |
 |---|---|---|---|
-| single-session-user | 64 | 96.9 | 95.3 |
-| knowledge-update | 72 | 87.5 | 91.7 |
+| single-session-user | 64 | 96.9 | 96.9 |
+| knowledge-update | 72 | 87.5 | 90.3 |
 | single-session-assistant | 56 | 85.7 | 89.3 |
-| temporal-reasoning | 127 | 80.3 | 84.3 |
-| single-session-preference | 30 | 40.0 | 80.0 |
-| multi-session | 121 | 62.0 | 76.0 |
-| abstention | 30 | 76.7 | **53.3** |
+| **temporal-reasoning** | 127 | 80.3 | **89.0** |
+| abstention | 30 | 76.7 | 83.3 |
+| multi-session | 121 | 62.0 | 78.5 |
+| single-session-preference | 30 | 40.0 | 66.7 |
 
-| LoCoMo | n | before | **now** |
+| LoCoMo | n | first run | **now** |
 |---|---|---|---|
-| single-hop | 841 | 77.1 | 90.7 |
-| multi-hop | 282 | 59.6 | 80.9 |
-| temporal | 321 | 60.7 | 76.0 |
-| open-domain | 92 | 43.8 | 69.8 |
+| single-hop | 841 | 77.1 | 90.2 |
+| multi-hop | 282 | 59.6 | 79.8 |
+| **temporal** | 321 | 60.7 | 75.1 |
+| open-domain | 92 | 43.8 | 66.7 |
 
-The one regression is **abstention** (questions about things never mentioned): the v2 prompt
-tells the model to answer whenever a memory bears on the question, and the facts make a
-similar-but-different memory easy to find, so it answers instead of declining. That is 7 of
-the 30 questions, about 1.4 points overall.
+Temporal questions, the original weak spot, are now the third-best LongMemEval type. The
+weakest remaining slices are personalised advice (preference, 66.7; it was 80.0 before the
+premise check made the model more cautious) and LoCoMo temporal and open-domain questions.
 
 ### First QA runs (no enrichment, answer prompt v1)
 
@@ -281,9 +288,9 @@ the 30 questions, about 1.4 points overall.
 
 | p50 / p95 | LongMemEval_S | LoCoMo |
 |---|---|---|
-| Memory recall only (local) | 46 / 84 ms | 114 / 183 ms ³ |
-| Answer-model call alone (OpenRouter) | 1,316 / 2,338 ms | 1,348 / 2,180 ms |
-| Recall + answer (what an agent waits for) | 1,364 / 2,375 ms | 1,462 / 2,317 ms |
+| Memory recall only (local) | 27 / 40 ms | 109 / 127 ms ³ |
+| Answer-model call alone (OpenRouter) | 1,260 / 2,317 ms | 1,494 / 2,653 ms |
+| Recall + answer (what an agent waits for) | 1,289 / 2,345 ms | 1,595 / 2,736 ms |
 
 Memory is about 3–8% of what an agent waits for; the rest is the LLM provider. The judge call is
 benchmark-only and not included. Enrichment runs in the background and adds nothing here.

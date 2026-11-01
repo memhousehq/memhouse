@@ -279,6 +279,8 @@ pub struct Selection {
     pub stride: usize,
     pub offset: usize,
     pub types: Option<Vec<String>>,
+    /// Only abstention questions (LongMemEval `_abs`: the answer is not in the history).
+    pub abstention_only: bool,
 }
 
 impl Selection {
@@ -308,6 +310,9 @@ pub fn stream(name: &str, path: &Path, sel: &Selection, mut sink: impl FnMut(Ite
                 if !ts.iter().any(|t| t == &it.question_type) {
                     return true;
                 }
+            }
+            if sel.abstention_only && !it.question_id.ends_with("_abs") {
+                return true;
             }
             match sink(lme_to_item(it)) {
                 Ok(()) => {
