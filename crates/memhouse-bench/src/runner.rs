@@ -52,6 +52,23 @@ pub struct ItemResult {
     pub rounds: usize,
     pub ingest_ms: f64,
     pub questions: Vec<QuestionResult>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enrich: Option<ItemEnrich>,
+}
+
+/// Background enrichment of one benchmark item (all of its sessions).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemEnrich {
+    pub jobs: Vec<memhouse_core::types::EnrichOutcome>,
+    pub failed: i64,
+    /// Time from the end of ingest until every job had finished.
+    pub wait_ms: f64,
+    /// A recall run right after ingest, while jobs were still queued or running: it shows that
+    /// recall does not wait for enrichment.
+    pub recall_during_ms: Option<f64>,
+    pub pending_at_recall: i64,
+    /// Derived facts stored for the item.
+    pub facts: usize,
 }
 
 #[derive(Clone)]
@@ -59,6 +76,10 @@ pub struct QaSetup {
     pub answer: Llm,
     pub judge: Llm,
     pub answer_k: usize,
+    /// Derived facts given to the answer model, besides the `answer_k` rounds.
+    pub answer_facts: usize,
+    /// Answer prompt: 1 = short direct answer, 2 = per-question-type guidance and an "Answer:" line.
+    pub prompt_version: u8,
     /// Stop the run once this much has been spent (USD); costs without a known price count as 0.
     pub max_cost_usd: Option<f64>,
     /// Spend so far in micro-dollars, shared by all workers.
@@ -88,6 +109,8 @@ pub struct RunSpec {
     pub keep: bool,
     pub run_id: String,
     pub qa: Option<QaSetup>,
+    /// Wait for background enrichment of each item before asking its questions.
+    pub enrich: bool,
 }
 
 fn round_relevant(refs: &[String], evidence: &HashSet<String>) -> bool {
@@ -132,16 +155,65 @@ pub fn score(q: &Question, hits: &[Hit]) -> BTreeMap<String, f64> {
     m
 }
 
-fn answer_prompt(q: &Question, hits: &[Hit], k: usize) -> (String, String) {
-    let mut ctx: Vec<&Hit> = hits.iter().take(k).collect();
+fn is_fact(h: &Hit) -> bool {
+    h.memory.metadata["derived"].as_bool().unwrap_or(false)
+}
+
+const ANSWER_SYSTEM_V2: &str = "You are a helpful assistant with long-term memory of your past conversations with the user. Answer using the retrieved memories: facts extracted from the conversations and conversation excerpts, all dated.
+- Read every memory before answering; the answer is often in a conversation excerpt rather than in the facts.
+- If the question asks about something the memories never mention at all, say so instead of substituting something similar (a baseball is not a football). If a memory does refer to it, answer from that memory.
+- When something changed over time, the most recent statement is current.
+- For time questions (when, how long ago, how many days, weeks or months between, which came first), find the date of each event in the memories and compute from those dates and today's date.
+- For counting or listing questions (how many, which ones, in total), list each candidate with its date and source, keep only those that match every condition in the question (type, time period, status), merge duplicates (a fact and an excerpt often describe the same thing), then give the total.
+- If the question asks for advice, recommendations or ideas, build the answer around the user's own details from the memories (what they own, did, liked or disliked, their situation) rather than generic tips.
+- If the question asks what someone would likely do, think or prefer, infer it from what the memories say about them.
+- Answer at the granularity the question implies (\"three months\", not \"3 months and 9 days\"; a place, not a sentence about it).
+- Say that you don't know only when no memory bears on the question.";
+
+fn answer_prompt(q: &Question, hits: &[Hit], k: usize, n_facts: usize, version: u8, plan: Option<&memhouse_core::query::QueryPlan>) -> (String, String) {
+    let mut ctx: Vec<&Hit> = hits.iter().filter(|h| !is_fact(h)).take(k).collect();
     ctx.sort_by_key(|h| h.memory.occurred_at);
+    let mut facts: Vec<&Hit> = hits.iter().filter(|h| is_fact(h)).take(n_facts).collect();
+    facts.sort_by_key(|h| h.memory.occurred_at);
     let mut lines = vec![];
+    if !facts.is_empty() {
+        let fl: Vec<String> = facts
+            .iter()
+            .map(|h| {
+                let when = h.memory.occurred_at.map(|t| t.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "undated".into());
+                let said = h.memory.metadata["observed_at"].as_str().and_then(|s| s.get(..10)).map(|d| format!(", mentioned {d}")).unwrap_or_default();
+                format!("- [{when}{said}] {}", h.memory.content)
+            })
+            .collect();
+        lines.push(format!("Facts extracted from the conversations:\n{}", fl.join("\n")));
+        lines.push("Conversation excerpts:".to_string());
+    }
     for h in ctx {
         let when = h.memory.occurred_at.map(|t| t.format("%Y-%m-%d %H:%M (%a)").to_string()).unwrap_or_else(|| "unknown date".into());
         lines.push(format!("[{when}]\n{}", h.memory.content));
     }
     let today = q.date.map(|d| d.format("%Y-%m-%d (%a)").to_string()).unwrap_or_else(|| "unknown".into());
     let system = "You are a helpful assistant with long-term memory. Answer the user's question using the memories retrieved from earlier conversations. Each memory is dated; when facts changed over time, the most recent one is current. Work out dates and durations carefully. If the memories do not contain the answer, say that you don't know.".to_string();
+    if version >= 2 {
+        // The dates recall resolved for the question's time phrases ("last Saturday", "three
+        // weeks ago"), so the answer model does not have to redo that arithmetic.
+        let times: Vec<String> = plan
+            .map(|p| {
+                p.windows
+                    .iter()
+                    .filter(|w| !w.meaning.is_empty())
+                    .map(|w| format!("\"{}\" = {}", w.phrase, w.meaning))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let times = if times.is_empty() { String::new() } else { format!("Time references in the question: {}\n", times.join("; ")) };
+        let user = format!(
+            "Retrieved memories (oldest first):\n\n{}\n\nToday's date: {today}\n{times}Question: {}\n\nWork it out briefly, then end with a line \"Answer: <final answer>\".",
+            lines.join("\n\n"),
+            q.question
+        );
+        return (ANSWER_SYSTEM_V2.to_string(), user);
+    }
     let user = format!(
         "Retrieved memories (oldest first):\n\n{}\n\nToday's date: {today}\nQuestion: {}\n\nThink briefly, then give a short, direct final answer.",
         lines.join("\n\n"),
@@ -210,6 +282,26 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
     }
     let ingest_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
+    let enrich = if spec.enrich {
+        let tenant = engine.cfg.memory.tenant.clone();
+        let st = engine.store.enrich_status(&tenant, Some(&subject)).await?;
+        let pending = st.pending + st.running;
+        let mut during = None;
+        if let (true, Some(q)) = (pending > 0, item.questions.first()) {
+            let r = engine
+                .recall(RecallRequest { subject: Some(subject.clone()), query: q.question.clone(), k: Some(FETCH_K), reference_time: q.date, actor: Some("bench".into()), ..Default::default() })
+                .await?;
+            during = Some(r.took_ms);
+        }
+        let t1 = Instant::now();
+        let st = engine.enrich_wait(None, &subject, std::time::Duration::from_secs(3600)).await?;
+        let jobs = engine.store.enrich_outcomes(&tenant, &subject).await?;
+        let facts = jobs.iter().map(|j| j.facts).sum();
+        Some(ItemEnrich { jobs, failed: st.failed + st.pending + st.running, wait_ms: t1.elapsed().as_secs_f64() * 1000.0, recall_during_ms: during, pending_at_recall: pending, facts })
+    } else {
+        None
+    };
+
     let mut out = vec![];
     for q in &item.questions {
         let r = engine
@@ -231,7 +323,26 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
         let qa = match &spec.qa {
             None => None,
             Some(setup) => {
-                let (sys, user) = answer_prompt(q, &r.hits, setup.answer_k);
+                // Facts are short, so the answer model gets many of them from a facts-only
+                // recall (close to the subject's whole fact log), next to the top rounds.
+                let mut hits = r.hits.clone();
+                if setup.answer_facts > 0 {
+                    let f = engine
+                        .recall(RecallRequest {
+                            subject: Some(subject.clone()),
+                            query: q.question.clone(),
+                            k: Some(setup.answer_facts),
+                            kinds: Some(vec![MemoryKind::Semantic, MemoryKind::Preference, MemoryKind::Commitment]),
+                            reference_time: q.date,
+                            mode: Some(spec.mode),
+                            actor: Some("bench".into()),
+                            ..Default::default()
+                        })
+                        .await?;
+                    hits.retain(|h| !is_fact(h));
+                    hits.extend(f.hits);
+                }
+                let (sys, user) = answer_prompt(q, &hits, setup.answer_k, setup.answer_facts, setup.prompt_version, r.plan.as_ref());
                 let a = setup.answer.complete_with_usage(&sys, &user).await?;
                 setup.charge(&a.usage)?;
                 let j = setup.judge.complete_with_usage("You are a careful, impartial grader.", &judge_prompt(&spec.dataset, q, &a.text)).await?;
@@ -255,7 +366,7 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
     if !spec.keep {
         engine.reset_subject(None, &subject, Some("bench".into())).await?;
     }
-    Ok(ItemResult { conv_id: item.conv_id, sessions: item.sessions.len(), rounds, ingest_ms, questions: out })
+    Ok(ItemResult { conv_id: item.conv_id, sessions: item.sessions.len(), rounds, ingest_ms, questions: out, enrich })
 }
 
 /// Stream the dataset through `concurrency` workers. Progress goes to stderr; results to `sink`.
@@ -353,9 +464,29 @@ pub struct Aggregate {
     pub ingest_rounds: usize,
     pub ingest_ms_total: f64,
     pub rounds_per_second: f64,
+    /// Enrichment runs only: background extraction cost, volume and lag.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enrich: Option<EnrichTally>,
     /// QA runs only: what the LLM calls cost and how long they took.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub llm: Option<LlmTally>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrichTally {
+    pub model: String,
+    pub jobs: usize,
+    pub llm_calls: usize,
+    pub cached: usize,
+    pub skipped: usize,
+    pub failed: i64,
+    pub facts: usize,
+    pub calls: RoleTally,
+    /// Enqueue to facts committed, per job (includes queueing behind other jobs).
+    pub lag: Latency,
+    /// Recall latency measured while that item's jobs were still pending.
+    pub recall_during: Latency,
+    pub recall_during_pending_jobs: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -414,6 +545,24 @@ pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> 
     }
     let lat: Vec<f64> = qs.iter().map(|q| q.recall_ms).collect();
     let qa_qs: Vec<(&QuestionResult, &QaResult)> = qs.iter().filter_map(|q| q.qa.as_ref().map(|a| (*q, a))).collect();
+    let ens: Vec<&ItemEnrich> = results.iter().filter_map(|r| r.enrich.as_ref()).collect();
+    let enrich = (!ens.is_empty()).then(|| {
+        let jobs: Vec<&memhouse_core::types::EnrichOutcome> = ens.iter().flat_map(|e| e.jobs.iter()).collect();
+        let called: Vec<&memhouse_core::types::EnrichOutcome> = jobs.iter().copied().filter(|j| !j.cached && !j.skipped).collect();
+        EnrichTally {
+            model: jobs.iter().find(|j| !j.model.is_empty()).map(|j| j.model.clone()).unwrap_or_default(),
+            jobs: jobs.len(),
+            llm_calls: called.len(),
+            cached: jobs.iter().filter(|j| j.cached).count(),
+            skipped: jobs.iter().filter(|j| j.skipped).count(),
+            failed: ens.iter().map(|e| e.failed).sum(),
+            facts: ens.iter().map(|e| e.facts).sum(),
+            calls: role_tally(called.iter().map(|j| &j.usage)),
+            lag: metrics::latency(&jobs.iter().map(|j| j.lag_ms).collect::<Vec<_>>()),
+            recall_during: metrics::latency(&ens.iter().filter_map(|e| e.recall_during_ms).collect::<Vec<_>>()),
+            recall_during_pending_jobs: ens.iter().filter(|e| e.recall_during_ms.is_some()).map(|e| e.pending_at_recall).sum(),
+        }
+    });
     let llm = (!qa_qs.is_empty()).then(|| {
         let answer = role_tally(qa_qs.iter().map(|(_, a)| &a.answer_usage));
         let judge = role_tally(qa_qs.iter().map(|(_, a)| &a.judge_usage));
@@ -445,5 +594,6 @@ pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> 
         // Ingest runs on `concurrency` workers at once; per-worker time × workers ≈ wall time.
         rounds_per_second: if ingest_ms > 0.0 { rounds as f64 / (ingest_ms / 1000.0 / concurrency.max(1) as f64) } else { 0.0 },
         llm,
+        enrich,
     }
 }

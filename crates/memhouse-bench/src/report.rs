@@ -25,6 +25,10 @@ pub struct RunConfig {
     pub answer_model: Option<String>,
     pub judge_model: Option<String>,
     pub answer_k: Option<usize>,
+    #[serde(default)]
+    pub answer_prompt: Option<u8>,
+    #[serde(default)]
+    pub enrich_model: Option<String>,
     pub host: String,
 }
 
@@ -67,7 +71,7 @@ pub fn markdown(s: &Summary) -> String {
     let _ = writeln!(o, "| Query analysis | {} |", c.query_analysis.as_deref().unwrap_or("off"));
     let _ = writeln!(o, "| Selection | {} |", c.selection);
     if let Some(m) = &c.answer_model {
-        let _ = writeln!(o, "| Answer model | `{m}` (top {} memories) |", c.answer_k.unwrap_or(0));
+        let _ = writeln!(o, "| Answer model | `{m}` (top {} rounds{}, answer prompt v{}) |", c.answer_k.unwrap_or(0), c.enrich_model.as_ref().map(|e| format!(" + facts from `{e}`")).unwrap_or_default(), c.answer_prompt.unwrap_or(1));
         let _ = writeln!(o, "| Judge model | `{}` |", c.judge_model.clone().unwrap_or_default());
     }
     let _ = writeln!(o, "| Host | {} |\n", c.host);
@@ -111,6 +115,21 @@ pub fn markdown(s: &Summary) -> String {
         if let Some(qa) = &a.qa_accuracy {
             let _ = writeln!(o, "## Answer accuracy (LLM judge)\n");
             let _ = writeln!(o, "**{}** over {} questions, judged by `{}` with the benchmark's judging protocol.\n", pct(qa), qa.n, c.judge_model.clone().unwrap_or_default());
+        }
+        if let Some(e) = &a.enrich {
+            let _ = writeln!(o, "## Background enrichment (async LLM fact extraction)\n");
+            let _ = writeln!(o, "| Metric | Value |\n|---|---|");
+            let _ = writeln!(o, "| Model | `{}` |", e.model);
+            let _ = writeln!(o, "| Jobs (one per ingested session) | {} ({} LLM calls, {} from cache, {} skipped as too short, {} failed) |", e.jobs, e.llm_calls, e.cached, e.skipped, e.failed);
+            let _ = writeln!(o, "| Facts stored | {} |", e.facts);
+            let _ = writeln!(o, "| Tokens | {} prompt + {} completion |", e.calls.prompt_tokens, e.calls.completion_tokens);
+            let _ = writeln!(o, "| **Cost** | **${:.4}** (${:.6} per LLM call; {} of {} calls priced by the provider) |", e.calls.cost_usd.max(0.0), e.calls.cost_usd.max(0.0) / e.llm_calls.max(1) as f64, e.calls.cost_reported_calls, e.calls.calls);
+            let _ = writeln!(o, "| LLM call latency | p50 {:.0} · p95 {:.0} · p99 {:.0} ms |", e.calls.latency.p50_ms, e.calls.latency.p95_ms, e.calls.latency.p99_ms);
+            let _ = writeln!(o, "| Lag, ingest to facts searchable | p50 {:.1} s · p95 {:.1} s |", e.lag.p50_ms / 1000.0, e.lag.p95_ms / 1000.0);
+            if e.recall_during.n > 0 {
+                let _ = writeln!(o, "| Recall while jobs were still pending (does not wait) | p50 {:.0} · p95 {:.0} ms over {} recalls, {} jobs pending |", e.recall_during.p50_ms, e.recall_during.p95_ms, e.recall_during.n, e.recall_during_pending_jobs);
+            }
+            let _ = writeln!(o);
         }
         if let Some(t) = &a.llm {
             let _ = writeln!(o, "## LLM usage and cost\n");

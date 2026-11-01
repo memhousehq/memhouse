@@ -204,6 +204,36 @@ CREATE TABLE IF NOT EXISTS mh_deletion_ledger (
   scope        text NOT NULL,
   actor        text NOT NULL
 );
+
+-- Enrichment queue: one job per ingested session, claimed by workers with SKIP LOCKED.
+CREATE TABLE IF NOT EXISTS mh_enrich_job (
+  id           bigserial PRIMARY KEY,
+  tenant       text NOT NULL,
+  subject      text NOT NULL,
+  session_id   text NOT NULL,
+  round_ids    uuid[] NOT NULL,
+  status       text NOT NULL DEFAULT 'pending',
+  attempts     int NOT NULL DEFAULT 0,
+  run_after    timestamptz NOT NULL DEFAULT now(),
+  locked_until timestamptz,
+  enqueued_at  timestamptz NOT NULL DEFAULT now(),
+  finished_at  timestamptz,
+  cache_key    text,
+  outcome      jsonb,
+  error        text
+);
+CREATE INDEX IF NOT EXISTS mh_enrich_job_queue_idx ON mh_enrich_job (status, run_after) WHERE status IN ('pending', 'running');
+CREATE INDEX IF NOT EXISTS mh_enrich_job_subject_idx ON mh_enrich_job (tenant, subject);
+CREATE INDEX IF NOT EXISTS mh_enrich_job_rounds_idx ON mh_enrich_job USING gin (round_ids);
+CREATE INDEX IF NOT EXISTS mh_memory_sources_idx ON mh_memory USING gin ((metadata -> 'source_ids'));
+
+-- Extraction answers keyed by model + prompt version + input, so a repeated session is free.
+CREATE TABLE IF NOT EXISTS mh_llm_cache (
+  key        text PRIMARY KEY,
+  model      text NOT NULL,
+  response   text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 "#
         );
         sqlx::raw_sql(&ddl).execute(&self.pool).await?;
@@ -479,6 +509,25 @@ LIMIT $15
             .bind(alt_hash)
             .execute(&mut *tx)
             .await?;
+        // Facts derived from this record go with it, with their cached vectors, and so does the
+        // cached extraction of every session job that read it.
+        sqlx::query(
+            "WITH d AS (DELETE FROM mh_memory WHERE tenant = $1 AND metadata -> 'source_ids' ? $2 RETURNING content) \
+             DELETE FROM mh_embed_cache c USING d WHERE c.hash = encode(sha256(convert_to($3 || d.content, 'UTF8')), 'hex')",
+        )
+        .bind(tenant)
+        .bind(id.to_string())
+        .bind(&self.passage_prefix)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND round_ids @> ARRAY[$2]::uuid[] RETURNING cache_key) \
+             DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key",
+        )
+        .bind(tenant)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) VALUES ($1, $2, $3, 'memory', $4)")
             .bind(tenant)
             .bind(&subject)
@@ -509,6 +558,22 @@ LIMIT $15
             .execute(&mut *tx)
             .await?
             .rows_affected();
+        if purge_cache {
+            sqlx::query(
+                "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND subject = $2 RETURNING cache_key) \
+                 DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key",
+            )
+            .bind(tenant)
+            .bind(subject)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM mh_enrich_job WHERE tenant = $1 AND subject = $2")
+                .bind(tenant)
+                .bind(subject)
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, scope, actor) VALUES ($1, $2, $4, $3)")
             .bind(tenant)
             .bind(subject)
@@ -671,6 +736,124 @@ LIMIT $15
         .bind(limit as i64)
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    async fn get_many(&self, tenant: &str, ids: &[Uuid]) -> anyhow::Result<Vec<Memory>> {
+        let rows = sqlx::query(&format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = ANY($2)"))
+            .bind(tenant)
+            .bind(ids)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_memory).collect()
+    }
+
+    async fn enrich_enqueue(&self, tenant: &str, subject: &str, session_id: &str, round_ids: &[Uuid]) -> anyhow::Result<i64> {
+        Ok(sqlx::query_scalar("INSERT INTO mh_enrich_job (tenant, subject, session_id, round_ids) VALUES ($1, $2, $3, $4) RETURNING id")
+            .bind(tenant)
+            .bind(subject)
+            .bind(session_id)
+            .bind(round_ids)
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
+    async fn enrich_claim(&self, limit: usize, lease_secs: i64) -> anyhow::Result<Vec<EnrichJob>> {
+        let rows = sqlx::query(
+            "UPDATE mh_enrich_job j SET status = 'running', attempts = j.attempts + 1, \
+               locked_until = now() + make_interval(secs => $2) \
+             WHERE j.id IN (SELECT id FROM mh_enrich_job \
+               WHERE (status = 'pending' AND run_after <= now()) OR (status = 'running' AND locked_until < now()) \
+               ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED) \
+             RETURNING j.id, j.tenant, j.subject, j.session_id, j.round_ids, j.attempts",
+        )
+        .bind(limit as i64)
+        .bind(lease_secs as f64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(EnrichJob {
+                    id: r.try_get("id")?,
+                    tenant: r.try_get("tenant")?,
+                    subject: r.try_get("subject")?,
+                    session_id: r.try_get("session_id")?,
+                    round_ids: r.try_get("round_ids")?,
+                    attempts: r.try_get("attempts")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn enrich_finish(&self, id: i64, cache_key: Option<&str>, outcome: &EnrichOutcome) -> anyhow::Result<()> {
+        // The lag is measured in the database so it is not skewed by the worker's clock.
+        sqlx::query(
+            "UPDATE mh_enrich_job SET status = 'done', finished_at = now(), locked_until = NULL, cache_key = $2, \
+             outcome = jsonb_set($3::jsonb, '{lag_ms}', to_jsonb(extract(epoch FROM now() - enqueued_at) * 1000)) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(cache_key)
+        .bind(serde_json::to_value(outcome)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn enrich_fail(&self, id: i64, error: &str, max_attempts: i32) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE mh_enrich_job SET error = $2, locked_until = NULL, \
+               status = CASE WHEN attempts >= $3 THEN 'failed' ELSE 'pending' END, \
+               run_after = now() + make_interval(secs => 2 ^ attempts) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(error)
+        .bind(max_attempts)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn enrich_status(&self, tenant: &str, subject: Option<&str>) -> anyhow::Result<EnrichStatus> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT status, count(*) FROM mh_enrich_job WHERE tenant = $1 AND ($2::text IS NULL OR subject = $2) GROUP BY status",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut st = EnrichStatus::default();
+        for (s, n) in rows {
+            match s.as_str() {
+                "pending" => st.pending = n,
+                "running" => st.running = n,
+                "done" => st.done = n,
+                _ => st.failed += n,
+            }
+        }
+        Ok(st)
+    }
+
+    async fn enrich_outcomes(&self, tenant: &str, subject: &str) -> anyhow::Result<Vec<EnrichOutcome>> {
+        let rows: Vec<(serde_json::Value,)> =
+            sqlx::query_as("SELECT outcome FROM mh_enrich_job WHERE tenant = $1 AND subject = $2 AND status = 'done' AND outcome IS NOT NULL")
+                .bind(tenant)
+                .bind(subject)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().filter_map(|(v,)| serde_json::from_value(v).ok()).collect())
+    }
+
+    async fn llm_cache_get(&self, key: &str) -> anyhow::Result<Option<String>> {
+        Ok(sqlx::query_scalar("SELECT response FROM mh_llm_cache WHERE key = $1").bind(key).fetch_optional(&self.pool).await?)
+    }
+
+    async fn llm_cache_put(&self, key: &str, model: &str, text: &str) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO mh_llm_cache (key, model, response) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING")
+            .bind(key)
+            .bind(model)
+            .bind(text)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

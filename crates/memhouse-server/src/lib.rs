@@ -30,7 +30,8 @@ pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<En
     let reranker = memhouse_models::build_reranker(&cfg, show_progress)?;
     let store = PgStore::connect(&cfg.database.url, cfg.database.max_connections, cfg.embedding.passage_prefix.as_deref().unwrap_or("")).await?;
     store.migrate(embedder.dim(), embedder.id()).await?;
-    Ok(Engine::new(Arc::new(store), embedder, reranker, cfg))
+    let chat = memhouse_models::enrich_chat(&cfg, None)?;
+    Ok(Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat))
 }
 
 pub struct ApiError(anyhow::Error);
@@ -102,6 +103,7 @@ pub fn router(engine: Engine) -> Router {
         .route("/v1/subjects", get(subjects))
         .route("/v1/subjects/{subject}", axum::routing::delete(erase_subject))
         .route("/v1/stats", get(stats))
+        .route("/v1/enrich/status", get(enrich_status))
         .route("/v1/audit", get(audit))
         .route("/mcp", post(mcp_http))
         .layer(middleware::from_fn_with_state(st.clone(), auth));
@@ -118,11 +120,27 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&bind).await.map_err(|e| anyhow::anyhow!("cannot listen on {bind}: {e}"))?;
     tracing::info!("MemHouse listening on http://{bind}");
     eprintln!("MemHouse is running on http://{bind}  (Memory Browser: http://{bind}/ , MCP: http://{bind}/mcp)");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let workers = if engine.cfg.enrich.enabled && engine.chat.is_some() && engine.cfg.enrich.workers > 0 {
+        eprintln!("Enrichment: {} workers, model {}", engine.cfg.enrich.workers, engine.cfg.enrich.llm.model);
+        engine.spawn_enrichment(engine.cfg.enrich.workers, stop.clone(), Default::default())
+    } else {
+        vec![]
+    };
     axum::serve(listener, router(engine)).with_graceful_shutdown(async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await?;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for w in workers {
+        let _ = w.await;
+    }
     Ok(())
+}
+
+async fn enrich_status(State(st): State<AppState>) -> ApiResult<EnrichStatus> {
+    let t = st.engine.cfg.memory.tenant.clone();
+    Ok(Json(st.engine.store.enrich_status(&t, None).await?))
 }
 
 async fn remember(State(st): State<AppState>, headers: HeaderMap, Json(mut req): Json<RememberRequest>) -> ApiResult<RememberResult> {

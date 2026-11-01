@@ -11,6 +11,8 @@ pub struct Config {
     pub embedding: EmbeddingConfig,
     pub rerank: RerankConfig,
     pub llm: Option<LlmConfig>,
+    /// Asynchronous LLM enrichment: facts extracted from stored conversations.
+    pub enrich: EnrichConfig,
     pub server: ServerConfig,
     pub memory: MemoryConfig,
     pub governance: GovernanceConfig,
@@ -23,6 +25,7 @@ impl Default for Config {
             embedding: EmbeddingConfig::default(),
             rerank: RerankConfig::default(),
             llm: None,
+            enrich: EnrichConfig::default(),
             server: ServerConfig::default(),
             memory: MemoryConfig::default(),
             governance: GovernanceConfig::default(),
@@ -129,6 +132,8 @@ pub struct LlmConfig {
     pub api_key_env: Option<String>,
     pub max_tokens: u32,
     pub temperature: f32,
+    /// Extra JSON merged into every request body (e.g. `{"reasoning": {"enabled": false}}`).
+    pub extra: Option<serde_json::Value>,
 }
 
 impl Default for LlmConfig {
@@ -140,6 +145,47 @@ impl Default for LlmConfig {
             api_key_env: Some("OPENAI_API_KEY".into()),
             max_tokens: 512,
             temperature: 0.0,
+            extra: None,
+        }
+    }
+}
+
+/// Background fact extraction. Ingest stores rounds at once and queues a job per session;
+/// workers call a small LLM, and the facts it returns go through the write gate like any
+/// other memory. Recall never waits for it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnrichConfig {
+    /// Queue a job for every ingested session.
+    pub enabled: bool,
+    /// Run workers in this process (`memhouse serve`, `memhouse bench`).
+    pub workers: usize,
+    pub llm: LlmConfig,
+    /// Characters of each assistant reply shown to the extractor (user text is sent in full).
+    pub assistant_chars: usize,
+    /// Sessions whose user text is shorter than this are skipped without an LLM call.
+    pub min_user_chars: usize,
+    pub max_attempts: i32,
+    /// Stop calling the LLM once this process has spent this much (USD); 0 = no limit.
+    pub max_cost_usd: f64,
+}
+
+impl Default for EnrichConfig {
+    fn default() -> Self {
+        EnrichConfig {
+            enabled: false,
+            workers: 8,
+            llm: LlmConfig {
+                base_url: "https://openrouter.ai/api/v1".into(),
+                model: "qwen/qwen3.7-flash".into(),
+                max_tokens: 3000,
+                extra: Some(serde_json::json!({ "reasoning": { "enabled": false } })),
+                ..LlmConfig::default()
+            },
+            assistant_chars: 300,
+            min_user_chars: 40,
+            max_attempts: 4,
+            max_cost_usd: 0.0,
         }
     }
 }
@@ -323,6 +369,12 @@ impl Config {
         }
         if let Some(v) = var("MEMHOUSE_RERANK").map(|v| v == "1" || v == "true") {
             self.rerank.enabled = v;
+        }
+        if let Some(v) = var("MEMHOUSE_ENRICH").map(|v| v == "1" || v == "true") {
+            self.enrich.enabled = v;
+        }
+        if let Some(v) = var("MEMHOUSE_ENRICH_MODEL") {
+            self.enrich.llm.model = v;
         }
     }
 }

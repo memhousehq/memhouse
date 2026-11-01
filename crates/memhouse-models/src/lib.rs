@@ -5,7 +5,7 @@
 use anyhow::Context;
 use async_trait::async_trait;
 use memhouse_core::config::{Config, EmbeddingConfig, LlmConfig, RerankConfig};
-use memhouse_core::{EmbedKind, Embedder, Reranker};
+use memhouse_core::{ChatModel, EmbedKind, Embedder, Reranker};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -358,20 +358,7 @@ pub fn build_reranker(cfg: &Config, show_progress: bool) -> anyhow::Result<Optio
     }
 }
 
-/// Tokens, cost and wall time of one logical LLM call (retries included).
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct LlmUsage {
-    pub prompt_tokens: u64,
-    pub completion_tokens: u64,
-    /// USD: as reported by the provider (OpenRouter), else from the configured price.
-    pub cost_usd: Option<f64>,
-    /// True when `cost_usd` came from the provider rather than a price table.
-    #[serde(default)]
-    pub cost_reported: bool,
-    /// Wall time including retries and backoff.
-    pub ms: f64,
-    pub attempts: u32,
-}
+pub use memhouse_core::types::LlmUsage;
 
 pub struct Completion {
     pub text: String,
@@ -453,6 +440,11 @@ impl Llm {
             )
         };
         let mut body = body;
+        if let (Some(extra), Some(obj)) = (self.cfg.extra.as_ref().and_then(|e| e.as_object()), body.as_object_mut()) {
+            for (k, v) in extra {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
         if base.contains("openrouter.ai") {
             // Ask OpenRouter to report the exact charged cost in `usage.cost`.
             body["usage"] = json!({"include": true});
@@ -486,6 +478,28 @@ impl Llm {
             usage: LlmUsage { prompt_tokens, completion_tokens, cost_usd, cost_reported: reported.is_some(), ms: 0.0, attempts: 1 },
         })
     }
+}
+
+#[async_trait]
+impl ChatModel for Llm {
+    /// Provider, model and endpoint host: the endpoint is part of the extraction-cache key, so
+    /// answers from a local mock or another provider never stand in for the real model.
+    fn id(&self) -> String {
+        let host = self.cfg.base_url.split("://").nth(1).unwrap_or(&self.cfg.base_url).split('/').next().unwrap_or("");
+        format!("{}@{host}", Llm::id(self))
+    }
+    async fn chat(&self, system: &str, user: &str) -> anyhow::Result<(String, LlmUsage)> {
+        let c = self.complete_with_usage(system, user).await?;
+        Ok((c.text, c.usage))
+    }
+}
+
+/// The enrichment LLM from config, priced from `price` when the provider reports no cost.
+pub fn enrich_chat(cfg: &Config, price: Option<(f64, f64)>) -> anyhow::Result<Option<Arc<dyn ChatModel>>> {
+    if !cfg.enrich.enabled {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(Llm::new(&cfg.enrich.llm)?.with_price(price))))
 }
 
 #[cfg(all(test, feature = "local"))]

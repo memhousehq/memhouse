@@ -25,6 +25,13 @@ pub trait Reranker: Send + Sync {
     async fn rerank(&self, query: &str, docs: &[String]) -> anyhow::Result<Vec<f32>>;
 }
 
+/// A chat model used by background enrichment.
+#[async_trait]
+pub trait ChatModel: Send + Sync {
+    fn id(&self) -> String;
+    async fn chat(&self, system: &str, user: &str) -> anyhow::Result<(String, LlmUsage)>;
+}
+
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()>;
@@ -69,4 +76,20 @@ pub trait Store: Send + Sync {
     async fn audit_verify(&self) -> anyhow::Result<(u64, Option<i64>)>;
     async fn stats(&self, tenant: &str) -> anyhow::Result<Stats>;
     async fn subjects(&self, tenant: &str, limit: usize) -> anyhow::Result<Vec<(String, i64)>>;
+    /// Records by id, in any order (missing ids are skipped).
+    async fn get_many(&self, tenant: &str, ids: &[Uuid]) -> anyhow::Result<Vec<Memory>>;
+
+    // Enrichment queue (one row per ingested session), claimed with SKIP LOCKED.
+    async fn enrich_enqueue(&self, tenant: &str, subject: &str, session_id: &str, round_ids: &[Uuid]) -> anyhow::Result<i64>;
+    /// Claim up to `limit` pending jobs (or running ones whose lease expired).
+    async fn enrich_claim(&self, limit: usize, lease_secs: i64) -> anyhow::Result<Vec<EnrichJob>>;
+    async fn enrich_finish(&self, id: i64, cache_key: Option<&str>, outcome: &EnrichOutcome) -> anyhow::Result<()>;
+    /// Retry later, or mark failed after `max_attempts`.
+    async fn enrich_fail(&self, id: i64, error: &str, max_attempts: i32) -> anyhow::Result<()>;
+    async fn enrich_status(&self, tenant: &str, subject: Option<&str>) -> anyhow::Result<EnrichStatus>;
+    /// Outcomes of finished jobs (for cost and lag reports).
+    async fn enrich_outcomes(&self, tenant: &str, subject: &str) -> anyhow::Result<Vec<EnrichOutcome>>;
+    /// Content-addressed cache of extraction answers (purged with the subject on erasure).
+    async fn llm_cache_get(&self, key: &str) -> anyhow::Result<Option<String>>;
+    async fn llm_cache_put(&self, key: &str, model: &str, text: &str) -> anyhow::Result<()>;
 }

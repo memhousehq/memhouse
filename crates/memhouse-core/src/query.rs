@@ -16,6 +16,9 @@ pub struct TimeWindow {
     pub end: DateTime<Utc>,
     /// The phrase the window was read from.
     pub phrase: String,
+    /// What the phrase resolves to, for people and answer models ("2023-04-15 (Sat)").
+    #[serde(default)]
+    pub meaning: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -115,9 +118,10 @@ static ISO_DATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(\d{4})[-/](\d{1,2})[
 pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
     let t = text.to_lowercase();
     let mut out: Vec<TimeWindow> = vec![];
-    let mut push = |start: DateTime<Utc>, end: DateTime<Utc>, phrase: &str| {
+    let fmt = |d: NaiveDate| d.format("%Y-%m-%d (%a)").to_string();
+    let mut push = |start: DateTime<Utc>, end: DateTime<Utc>, phrase: &str, meaning: String| {
         if start < end && !out.iter().any(|w| w.start == start && w.end == end) {
-            out.push(TimeWindow { start, end, phrase: phrase.to_string() });
+            out.push(TimeWindow { start, end, phrase: phrase.to_string(), meaning });
         }
     };
     for c in AGO.captures_iter(&t) {
@@ -125,7 +129,7 @@ pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
         let centre = back(now, n, unit);
         let slack_days = (n as f64 * unit_days(unit) * 0.35).max(if unit == "day" { 1.5 } else { 4.0 });
         let slack = Duration::seconds((slack_days * 86_400.0) as i64);
-        push(centre - slack, (centre + slack).min(now + Duration::days(1)), &c[0]);
+        push(centre - slack, (centre + slack).min(now + Duration::days(1)), &c[0], format!("about {}", fmt(centre.date_naive())));
     }
     for c in PAST.captures_iter(&t) {
         let unit = &c[2];
@@ -140,11 +144,12 @@ pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
                 (NaiveDate::from_ymd_opt(today.year() - 1, 1, 1).unwrap(), NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap())
             };
             let pad = Duration::days(if unit == "month" { 7 } else { 30 });
-            push(day_start(s) - pad, (day_start(e) + pad).min(now + Duration::days(1)), &c[0]);
+            let meaning = if unit == "month" { s.format("%B %Y").to_string() } else { s.format("%Y").to_string() };
+            push(day_start(s) - pad, (day_start(e) + pad).min(now + Duration::days(1)), &c[0], meaning);
             continue;
         }
         let pad = Duration::days(if unit == "day" { 1 } else { 3 });
-        push(back(now, n, unit) - pad, now + Duration::days(1), &c[0]);
+        push(back(now, n, unit) - pad, now + Duration::days(1), &c[0], format!("since {}", fmt(back(now, n, unit).date_naive())));
     }
     for c in LAST_WEEKDAY.captures_iter(&t) {
         let wd = weekday(&c[2]).unwrap();
@@ -157,18 +162,18 @@ pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
         if &c[1] != "last" && today.weekday() == wd {
             d = today;
         }
-        push(day_start(d) - Duration::days(1), day_start(d) + Duration::days(3), &c[0]);
+        push(day_start(d) - Duration::days(1), day_start(d) + Duration::days(3), &c[0], fmt(d));
     }
     for c in LAST_WEEKEND.captures_iter(&t) {
         let mut d = now.date_naive() - Duration::days(1);
         while d.weekday() != Weekday::Sat {
             d -= Duration::days(1);
         }
-        push(day_start(d) - Duration::days(1), day_start(d) + Duration::days(4), &c[0]);
+        push(day_start(d) - Duration::days(1), day_start(d) + Duration::days(4), &c[0], format!("{} to {}", fmt(d), fmt(d + Duration::days(1))));
     }
     for c in YESTERDAY.captures_iter(&t) {
         let d = now.date_naive() - Duration::days(1);
-        push(day_start(d) - Duration::days(1), now + Duration::days(1), &c[0]);
+        push(day_start(d) - Duration::days(1), now + Duration::days(1), &c[0], fmt(d));
     }
     for c in THIS.captures_iter(&t) {
         let today = now.date_naive();
@@ -177,7 +182,7 @@ pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
             "month" => today.with_day(1).unwrap(),
             _ => NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap(),
         };
-        push(day_start(s) - Duration::days(2), now + Duration::days(1), &c[0]);
+        push(day_start(s) - Duration::days(2), now + Duration::days(1), &c[0], format!("since {}", fmt(s)));
     }
     for c in MONTH.captures_iter(&t) {
         let word = c[1].split_whitespace().find(|w| MONTHS.contains(w)).unwrap_or("may");
@@ -185,13 +190,13 @@ pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
         let (s, e) = month_range(m, now);
         let day = c.get(2).and_then(|d| d.as_str().parse::<u32>().ok()).filter(|d| (1..=31).contains(d));
         match day.and_then(|d| NaiveDate::from_ymd_opt(s.year(), m, d)) {
-            Some(d) => push(day_start(d) - Duration::days(2), day_start(d) + Duration::days(5), &c[0]),
-            None => push(s - Duration::days(3), e + Duration::days(7), &c[0]),
+            Some(d) => push(day_start(d) - Duration::days(2), day_start(d) + Duration::days(5), &c[0], fmt(d)),
+            None => push(s - Duration::days(3), e + Duration::days(7), &c[0], s.format("%B %Y").to_string()),
         }
     }
     for c in ISO_DATE.captures_iter(&t) {
         if let Some(d) = NaiveDate::from_ymd_opt(c[1].parse().unwrap_or(0), c[2].parse().unwrap_or(0), c[3].parse().unwrap_or(0)) {
-            push(day_start(d) - Duration::days(2), day_start(d) + Duration::days(5), &c[0]);
+            push(day_start(d) - Duration::days(2), day_start(d) + Duration::days(5), &c[0], fmt(d));
         }
     }
     out

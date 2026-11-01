@@ -50,6 +50,37 @@ The query embedding and the SQL statement are the whole hot path. On a laptop, p
 
 `ingest`: messages grouped into rounds (a user message plus the replies to it; assistant text trimmed to `assistant_chars`), or one record per message for multi-party chats → batch dedup by hash → batch embedding of each round and, separately, of the user's words in it (`embedding_alt`, cache key in `alt_hash` so deletion purges it too) → one multi-row insert → one audit event.
 
+## Enrichment: asynchronous LLM fact extraction (optional)
+
+With `[enrich] enabled = true`, `ingest` also writes one row to `mh_enrich_job` per session and
+returns at once; nothing on the write or read path waits for an LLM.
+
+1. **Workers** (`[enrich] workers`, default 8, in `memhouse serve` and `memhouse bench`) claim
+   jobs with `FOR UPDATE SKIP LOCKED` and a 5-minute lease, so several processes can share the
+   queue and a crashed worker's job is picked up again. Failures back off (2^attempt seconds) and
+   are marked `failed` after `max_attempts`.
+2. **Extraction:** the session's committed rounds go to a small chat model (default
+   `qwen/qwen3.7-flash` on OpenRouter, about $0.00007 per session; any OpenAI-compatible endpoint
+   works, including a local Ollama). User text is sent in full and assistant replies are cut to
+   `assistant_chars` (300). Sessions with less than `min_user_chars` of user text are skipped
+   without a call. The model returns short, self-contained facts (events, facts, preferences,
+   plans) with relative dates resolved to absolute ones and the rounds they came from.
+3. **Cache:** answers are stored in `mh_llm_cache` under
+   sha256(prompt version, model, endpoint, prompt), so a repeated session is never paid for twice.
+4. **Same gate as every write:** each fact is redacted and screened for injection, deduplicated
+   per session, embedded and inserted as a `semantic`, `preference` or `commitment` memory with
+   `metadata.derived = true`, `source_ids` (the rounds it came from), `observed_at` (the session
+   date) and `occurred_at` (the event date). Its `session_id` and `turn_ref` are the source
+   rounds', so retrieval metrics and citations still point at the conversation.
+5. **Recall** finds facts and rounds in the same hybrid search. Facts become searchable when
+   their job finishes (p50 a few seconds); until then recall serves the raw rounds.
+
+Deletion covers the derived path: forgetting a round deletes facts whose `source_ids` contain it,
+their cached vectors, the jobs that read it and their cached extraction; erasing a subject
+removes its jobs and cached extractions too. Two governance checks (`enrich_async_gate`,
+`enrich_deletion`) verify this with a deterministic stub model. `max_cost_usd` stops LLM calls
+once a process has spent that much; `GET /v1/enrich/status` shows the queue.
+
 ## Governance defaults
 
 | Control | Default |
@@ -65,7 +96,6 @@ The query embedding and the SQL statement are the whole hot path. On a laptop, p
 - Relationship-based authorizer and access-policy decision register (ACC, D-01..D-07)
 - Plain-language policy compiler
 - Plugin system for context providers (HubSpot, Salesforce, Shopify, Zendesk)
-- Optional LLM fact extraction at write time
 - Embedded store for the Lite profile
 - Sharded Scale profile and Temporal workflows
 

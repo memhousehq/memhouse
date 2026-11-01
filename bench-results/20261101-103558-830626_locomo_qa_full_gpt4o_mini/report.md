@@ -10,7 +10,7 @@ Run `20261101-103558-830626` · 2026-11-01 10:35 UTC · 831 s wall time
 | Retrieval | hybrid (RRF k=60, keyword w=1, vector w=1, 100 candidates per retriever) |
 | Query analysis | window w=0.15, top 3 +1, sub-query w=0 |
 | Selection | limit=all stride=1 offset=0 types=all |
-| Answer model | `openai:openai/gpt-4o-mini` (top 10 memories) |
+| Answer model | `openai:openai/gpt-4o-mini` (top 10 rounds, answer prompt v1) |
 | Judge model | `openai:openai/gpt-4o-mini` |
 | Host | macos aarch64 · 8 CPU threads · embeddings on CPU |
 

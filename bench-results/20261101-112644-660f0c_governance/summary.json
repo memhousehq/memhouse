@@ -1,0 +1,158 @@
+{
+  "run_id": "20261101-112644-660f0c",
+  "label": null,
+  "dataset": "governance",
+  "created_at": "2026-11-01T11:26:44.976549Z",
+  "wall_seconds": 17.15582925,
+  "config": {
+    "memhouse_version": "0.1.0",
+    "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
+    "reranker": null,
+    "mode": "hybrid",
+    "candidates_per_retriever": 100,
+    "rrf_k": 60.0,
+    "keyword_weight": 1.0,
+    "vector_weight": 1.0,
+    "query_analysis": "window w=0.15, top 3 +1, sub-query w=0",
+    "concurrency": 4,
+    "selection": "limit=all stride=1 offset=0 types=all",
+    "answer_model": null,
+    "judge_model": null,
+    "answer_k": null,
+    "enrich_model": null,
+    "host": "macos aarch64 · 8 CPU threads · embeddings on CPU"
+  },
+  "governance": {
+    "checks": [
+      {
+        "id": "injection_persistence",
+        "requirement": "QUAL-02 / strategy 7.2",
+        "title": "Injected instructions are never committed or recalled",
+        "passed": true,
+        "value": "0 committed, 0 recalled of 15 attempts x 2 paths",
+        "target": "0",
+        "detail": "all quarantined"
+      },
+      {
+        "id": "false_quarantine",
+        "requirement": "QUAL-02",
+        "title": "Benign look-alike statements are not quarantined",
+        "passed": true,
+        "value": "0.0% (0/15)",
+        "target": "<= 7%",
+        "detail": ""
+      },
+      {
+        "id": "pii_redaction",
+        "requirement": "GOV-05 / TR-IN-04",
+        "title": "Cards, SSNs and API keys are redacted before storage (records and audit log)",
+        "passed": true,
+        "value": "0 of 5 canaries found in storage",
+        "target": "0",
+        "detail": "3 records checked"
+      },
+      {
+        "id": "subject_isolation",
+        "requirement": "GOV-02 / TR-RQ-01",
+        "title": "Recall never returns another subject's memory",
+        "passed": true,
+        "value": "0 cross-subject hits in 36 recalls",
+        "target": "0",
+        "detail": "own memory found in 36/36 recalls"
+      },
+      {
+        "id": "tenant_isolation",
+        "requirement": "GOV-02",
+        "title": "Same subject id in another tenant sees nothing",
+        "passed": true,
+        "value": "0 hits from tenant B",
+        "target": "0",
+        "detail": "tenant A sees 1 hit(s)"
+      },
+      {
+        "id": "deletion",
+        "requirement": "GOV-07 / TR-WF-01",
+        "title": "Forget removes the record, its cached embedding and every recall path, and is audited",
+        "passed": true,
+        "value": "recall after delete: 0, records: 0, cached vectors: 0",
+        "target": "0 / 0 / 0",
+        "detail": "found before delete: 1, audit event: true"
+      },
+      {
+        "id": "subject_erasure",
+        "requirement": "GOV-07",
+        "title": "Erasing a subject removes all of its records",
+        "passed": true,
+        "value": "0 remaining after erasing 20",
+        "target": "0",
+        "detail": ""
+      },
+      {
+        "id": "stale_facts",
+        "requirement": "CORE-03 / strategy 7.2",
+        "title": "Superseded facts are not recalled; the update is",
+        "passed": true,
+        "value": "stale-fact rate 0.0% (0/8)",
+        "target": "<= 1%",
+        "detail": "updated fact recalled 8/8; 8 prior versions kept for audit"
+      },
+      {
+        "id": "validity",
+        "requirement": "CORE-05",
+        "title": "Expired memories are excluded from current recall",
+        "passed": true,
+        "value": "1 current hit(s)",
+        "target": "only valid memories",
+        "detail": "as-of 2 days ago returns 0 hit(s) (created now, so none were known then)"
+      },
+      {
+        "id": "dedup",
+        "requirement": "CORE-06",
+        "title": "Repeated writes do not create duplicate memories",
+        "passed": true,
+        "value": "2 record(s) after 3 writes",
+        "target": "1-2",
+        "detail": "exact repeat deduplicated: true, near repeat deduplicated: false"
+      },
+      {
+        "id": "audit_chain",
+        "requirement": "GOV-12",
+        "title": "Every write and deletion is in a tamper-evident (hash-chained) audit log",
+        "passed": true,
+        "value": "449446 events verified",
+        "target": "intact",
+        "detail": ""
+      },
+      {
+        "id": "determinism",
+        "requirement": "Strategy 7.1",
+        "title": "Same input gives the same embedding",
+        "passed": true,
+        "value": "max |Δ| = 0.00e0",
+        "target": "< 1e-5",
+        "detail": "local:Qdrant/bge-small-en-v1.5-onnx-Q"
+      },
+      {
+        "id": "enrich_async_gate",
+        "requirement": "QUAL-02 / GOV-05 (derived path)",
+        "title": "LLM-derived facts are written in the background and pass the write gate (redaction, quarantine)",
+        "passed": true,
+        "value": "recall before enrichment: 1 hits; dated fact stored: true; card in storage: false; injected fact: [Quarantined]",
+        "target": "hits / true / false / quarantined",
+        "detail": "3 facts from 1 queued job"
+      },
+      {
+        "id": "enrich_deletion",
+        "requirement": "GOV-07 / TR-WF-01 (derived path)",
+        "title": "Forgetting a conversation also removes the facts derived from it and the cached LLM extraction; erasure removes queued jobs",
+        "passed": true,
+        "value": "records left: 0, cached extraction: true → false, jobs after erasure: 0",
+        "target": "0 / true → false / 0",
+        "detail": ""
+      }
+    ],
+    "passed": 14,
+    "failed": 0,
+    "took_ms": 17155.543208000003
+  }
+}

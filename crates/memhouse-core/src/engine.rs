@@ -4,7 +4,7 @@
 use crate::config::Config;
 use crate::gate;
 use crate::query;
-use crate::traits::{EmbedKind, Embedder, Reranker, Store};
+use crate::traits::{ChatModel, EmbedKind, Embedder, Reranker, Store};
 use crate::types::*;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -18,6 +18,8 @@ pub struct Engine {
     pub store: Arc<dyn Store>,
     pub embedder: Arc<dyn Embedder>,
     pub reranker: Option<Arc<dyn Reranker>>,
+    /// LLM for background enrichment (only workers use it; ingest just queues jobs).
+    pub chat: Option<Arc<dyn ChatModel>>,
     pub cfg: Arc<Config>,
 }
 
@@ -44,7 +46,12 @@ impl Engine {
         reranker: Option<Arc<dyn Reranker>>,
         cfg: Config,
     ) -> Engine {
-        Engine { store, embedder, reranker, cfg: Arc::new(cfg) }
+        Engine { store, embedder, reranker, chat: None, cfg: Arc::new(cfg) }
+    }
+
+    pub fn with_chat(mut self, chat: Option<Arc<dyn ChatModel>>) -> Engine {
+        self.chat = chat;
+        self
     }
 
     fn tenant(&self, t: &Option<String>) -> String {
@@ -101,7 +108,7 @@ impl Engine {
         Ok(v)
     }
 
-    fn screen(&self, content: &str) -> anyhow::Result<gate::GateOutcome> {
+    pub(crate) fn screen(&self, content: &str) -> anyhow::Result<gate::GateOutcome> {
         let g = &self.cfg.governance;
         if content.trim().is_empty() {
             anyhow::bail!("content is empty");
@@ -331,6 +338,10 @@ impl Engine {
         self.store.insert(&recs).await?;
         out.ids = recs.iter().map(|r| r.memory.id).collect();
         out.stored = recs.len() - out.quarantined;
+        if self.cfg.enrich.enabled && out.stored > 0 {
+            let committed: Vec<Uuid> = recs.iter().filter(|r| r.memory.status == MemoryStatus::Committed).map(|r| r.memory.id).collect();
+            self.store.enrich_enqueue(&tenant, &subject, &session, &committed).await?;
+        }
         self.store
             .audit(
                 &actor,

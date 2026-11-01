@@ -49,25 +49,26 @@ confidence intervals; on LongMemEval_S the interval for recall_all@5 is about ±
 ### Against published retrieval baselines
 
 The LongMemEval paper (Table 9) reports retrievers on **LongMemEval_M**, where each question
-has about 500 sessions (~1.5M tokens) of history instead of ~50. MemHouse on M is from a
-stratified 50-question sample (`--stride 10`, 48 scored, ~2,450 rounds per question); a full
-M run takes about 11 hours on this laptop and has not been done.
+has about 500 sessions (~1.5M tokens, ~2,450 rounds) of history instead of ~50. MemHouse ran
+all 500 M questions (470 scored) with the default retrieval, no LLM anywhere:
 
-| System | Split | session R@5 | session R@10 | session nDCG@10 |
-|---|---|---|---|---|
-| **MemHouse default (bge-small Q, no LLM)** | **M**, 48 q | **79.2** [66.7–89.6] | **89.6** [81.2–97.9] | **82.6** [75.0–89.6] |
-| MemHouse, `--no-analysis` | M, 48 q | 81.2 | 89.6 | 82.9 |
-| Contriever + LLM-extracted fact keys (paper's best) | M | 76.2 | 86.2 | 65.8 |
-| Stella V5 1.5B | M | 72.0 | 79.4 | 61.5 |
-| Contriever | M | 72.3 | 82.3 | 66.3 |
-| BM25 | M | 63.4 | 71.0 | 54.0 |
-| MemHouse default | S, 470 q | 91.3 | 96.2 | 94.1 |
+| System | Split | session R@5 | session R@10 | session nDCG@10 | round R@5 | round R@10 |
+|---|---|---|---|---|---|---|
+| **MemHouse default (bge-small Q, no LLM)** | **M**, 470 q | 74.5 [70.4–78.3] | 84.7 [81.3–87.9] | **80.2** | 55.1 | 69.1 |
+| Contriever + LLM-extracted fact keys (paper's best) | M | **76.2** | **86.2** | 65.8 | – | – |
+| Stella V5 1.5B | M | 72.0 | 79.4 | 61.5 | **66.0** | **78.4** |
+| Contriever | M | 72.3 | 82.3 | 66.3 | 58.9 | 74.7 |
+| BM25 | M | 63.4 | 71.0 | 54.0 | 47.2 | 53.8 |
+| MemHouse default | S, 470 q | 91.3 | 96.2 | 94.1 | 84.5 ⁴ | |
 
-On the like-for-like split MemHouse matches the paper's best retriever at R@5 and is ahead at
-R@10 and on ranking quality (nDCG@10 +17 points), without the LLM key-extraction pass at
-ingest that system needs. The sample is small: the R@5 interval is ±11 points, so "on par" is
-the honest reading for R@5; the 2-point gap to `--no-analysis` is one question. M recall is
-p50 66 / p95 96 ms (exact vector search over ~5k vectors per subject).
+On the like-for-like split MemHouse's session recall is on par with the paper's best retriever
+(1.5 points lower, inside the confidence interval) without its LLM key-extraction pass, and its
+ranking is much better (nDCG@10 +14). At round level it trails the 1.5B-parameter Stella model
+by 9–11 points; MemHouse uses a 33M-parameter quantized embedder on CPU. (An earlier 48-question
+sample read 79.2 / 89.6 and overstated this.) M recall is p50 234 / p95 342 ms with about 5,000
+vectors per subject, exact search.
+
+⁴ round recall_all@10.
 
 Memory vendors (Mem0, Zep, Supermemory, Mastra) publish answer accuracy, not retrieval recall,
 so there is no direct retrieval number to compare against; see [Answer accuracy](#answer-accuracy-qa) for the end-to-end comparison.
@@ -182,8 +183,9 @@ The cross-encoder mainly improves *ordering* (round nDCG +8 points). It is opt-i
 
 | Slice | session R_all@5 / @10 | Why |
 |---|---|---|
-| LoCoMo multi-hop | 35.8 / 57.1 | Evidence spread over several sessions with little lexical overlap with the question. |
-| LoCoMo open-domain | 46.7 / 63.0 | Answers depend on world knowledge plus a hint in the dialogue. |
+| LoCoMo multi-hop | 35.8 / 57.1 | Raw-round retrieval; with enrichment, QA on these is 80.9 (facts carry the links). |
+| LoCoMo open-domain | 46.7 / 63.0 | Answers depend on world knowledge plus a hint in the dialogue (QA 69.8 with enrichment). |
+| LongMemEval_M round level | 55.1 / 69.1 | 33M-parameter embedder vs 1.5B for the best published retriever. |
 | LongMemEval temporal-reasoning | 83.5 / 91.3 | Mostly the labelling effect described above; the remaining misses need event-relative dates ("two weeks before the trip"), which the parser does not resolve. |
 
 Next steps on these slices: event-anchored dates (find the anchor event, then window around
@@ -191,15 +193,30 @@ it) and entity-linked expansion for multi-hop questions.
 
 ## Answer accuracy (QA)
 
-End-to-end protocol: MemHouse recalls the top 10 rounds, an LLM answers from them, and an LLM
-judge grades the answer with each benchmark's published judging prompt. Models were called
-through OpenRouter; tokens and cost are the provider's own figures, recorded per call in the
-run's `items.jsonl` and totalled in `report.md`. One run each, no tuning on the paid API.
+End-to-end protocol: MemHouse recalls memories, an LLM answers from them, and an LLM judge grades
+the answer with each benchmark's published judging prompt. Models are called through OpenRouter;
+tokens and cost are the provider's own figures, recorded per call in `items.jsonl` and totalled
+in `report.md`.
 
-| Dataset | Answer / judge model | Questions | **Accuracy** | Tokens (prompt + completion) | **Cost** |
+### Current results: async enrichment + answer prompt v2
+
+| Dataset | Answer / judge model | Questions | **Accuracy** | Enrichment cost | QA cost |
 |---|---|---|---|---|---|
-| LongMemEval_S | gpt-4o / gpt-4o | 500 | **77.0** [73.4–80.8] | 1.72M + 22k | **$4.52** |
-| LoCoMo (categories 1–4) | gpt-4o-mini / gpt-4o-mini | 1,540 | **68.4** [66.0–70.8] | 1.16M + 34k | **$0.19** |
+| LongMemEval_S | gpt-4o / gpt-4o | 500 | **83.2** [79.6–86.4] | **$1.54** (21,002 sessions) | $7.30 |
+| LoCoMo (categories 1–4) | gpt-4o-mini / gpt-4o-mini | 1,540 | **84.5** [82.7–86.4] | **$0.03** (271 sessions) | $0.65 |
+
+What changed against the first QA runs (77.0 and 68.4):
+
+1. **Asynchronous enrichment** ([architecture](architecture.md#enrichment-asynchronous-llm-fact-extraction-optional)):
+   every ingested session is queued; `qwen/qwen3.7-flash` extracts short, dated facts in the
+   background (**$0.000073 per session**, 2,341 ms p50 per call, facts searchable p50 18 s after
+   ingest). 110k facts for LongMemEval_S. Recall never waits: 500 recalls made while 23,768 jobs
+   were still queued took 42 ms p50.
+2. **Answer context:** the 10 best conversation rounds plus the 50 best facts (a facts-only
+   recall), and the dates recall resolved for the question's time phrases ("last Saturday" =
+   2023-04-15).
+3. **Answer prompt v2:** guidance for time arithmetic, counting across sessions, personalised
+   advice and false premises.
 
 Published results with the same answer model (vendor-reported unless noted):
 
@@ -207,88 +224,91 @@ Published results with the same answer model (vendor-reported unless noted):
 |---|---|
 | Full context, no memory system (Zep paper) | 60.2 |
 | Zep | 71.2 |
-| **MemHouse** | **77.0** |
 | Bedrock AgentCore memory (Redis re-run) | 77.0 |
 | Emergence fast (Redis re-run) | 81.3 |
 | Supermemory | 81.6 |
+| **MemHouse** | **83.2** |
+| Hindsight (GPT-OSS-20B answer, -120B judge) | 83.6 |
 | Mastra Observational Memory (Redis reproduced) | 84.2 |
 
 | LoCoMo, GPT-4o-mini | Accuracy |
 |---|---|
-| OpenAI memory (Mem0 paper) | 52.9 |
-| LangMem (Mem0 paper) | 58.1 |
-| Best plain RAG (Mem0 paper) | 61.0 |
 | Mem0 (2025 paper) | 66.9 |
-| **MemHouse** | **68.4** |
 | Full context (Mem0 paper) | 72.9 |
 | Letta filesystem | 74.0 |
 | Zep (vendor; Mem0 measured 66.0) | 75.1 |
+| MemOS | 75.8 |
+| Hindsight (GPT-OSS-20B / -120B) | 83.2 |
+| **MemHouse** | **84.5** |
+| EverMemOS (GPT-4.1-mini) | 92.3 |
 
-MemHouse is ahead of Zep and Mem0 and level with Bedrock AgentCore, without an LLM anywhere in
-its write path, but 4–7 points behind the leaders on LongMemEval (Emergence, Supermemory,
-Mastra) and 6–7 behind Letta and Zep on LoCoMo. Those systems spend LLM calls at ingest
-(fact extraction, observations, summaries) and give the answer model more context.
+On LongMemEval_S MemHouse is ahead of Supermemory, Emergence, Bedrock AgentCore and Zep, and
+level with Mastra and Hindsight (both within the 95% interval). On LoCoMo it is ahead of every
+published GPT-4o-mini result we know of; EverMemOS reports more with a stronger answer model.
 
-By question type:
+By question type, first run → current:
 
-| LongMemEval_S | n | retrieval R_all@10 | **QA accuracy** |
+| LongMemEval_S | n | before | **now** |
 |---|---|---|---|
-| single-session-user | 64 | 100.0 | 96.9 |
-| knowledge-update | 72 | 100.0 | 87.5 |
-| single-session-assistant | 56 | 100.0 | 85.7 |
-| temporal-reasoning | 127 | 91.3 | 80.3 |
-| abstention | 30 | – | 76.7 |
-| multi-session | 121 | 94.2 | 62.0 |
-| single-session-preference | 30 | 100.0 | 40.0 |
+| single-session-user | 64 | 96.9 | 95.3 |
+| knowledge-update | 72 | 87.5 | 91.7 |
+| single-session-assistant | 56 | 85.7 | 89.3 |
+| temporal-reasoning | 127 | 80.3 | 84.3 |
+| single-session-preference | 30 | 40.0 | 80.0 |
+| multi-session | 121 | 62.0 | 76.0 |
+| abstention | 30 | 76.7 | **53.3** |
 
-| LoCoMo | n | retrieval R_all@10 | **QA accuracy** |
+| LoCoMo | n | before | **now** |
 |---|---|---|---|
-| single-hop | 841 | 97.6 | 77.1 |
-| temporal | 321 | 94.7 | 60.7 |
-| multi-hop | 282 | 57.1 | 59.6 |
-| open-domain | 92 | 63.0 | 43.8 |
+| single-hop | 841 | 77.1 | 90.7 |
+| multi-hop | 282 | 59.6 | 80.9 |
+| temporal | 321 | 60.7 | 76.0 |
+| open-domain | 92 | 43.8 | 69.8 |
 
-The gap between retrieval and answer accuracy shows where the remaining points are. Temporal
-questions are retrieved well (91–95%), so the losses there are in the answer step:
-- **Preference (40%)** needs a personalised suggestion, not a fact; the answer prompt asks for
-  a short direct answer.
-- **Multi-session (62%)** is counting and aggregation across sessions, and 10 rounds of
-  context is often too little.
-- **LoCoMo temporal (61%)** expects absolute dates ("7 May 2023") for relative phrases in the
-  dialogue ("yesterday"); the answer model sees each memory's date but often does not resolve
-  it.
-- **LoCoMo context is small:** 599 prompt tokens per question, against 3,264 on LongMemEval.
+The one regression is **abstention** (questions about things never mentioned): the v2 prompt
+tells the model to answer whenever a memory bears on the question, and the facts make a
+similar-but-different memory easy to find, so it answers instead of declining. That is 7 of
+the 30 questions, about 1.4 points overall.
+
+### First QA runs (no enrichment, answer prompt v1)
+
+| Dataset | Answer / judge model | Accuracy | Tokens (prompt + completion) | Cost |
+|---|---|---|---|---|
+| LongMemEval_S | gpt-4o / gpt-4o | 77.0 [73.4–80.8] | 1.72M + 22k | $4.52 |
+| LoCoMo | gpt-4o-mini / gpt-4o-mini | 68.4 [66.0–70.8] | 1.16M + 34k | $0.19 |
 
 ### Latency with and without the external LLM call
 
-| | LongMemEval_S p50 / p95 | LoCoMo p50 / p95 |
+| p50 / p95 | LongMemEval_S | LoCoMo |
 |---|---|---|
-| Memory recall only (local) | 27 / 41 ms | 96 / 109 ms ³ |
-| Answer-model call alone (OpenRouter) | 1,028 / 1,622 ms | 930 / 1,504 ms |
-| Recall + answer (what an agent waits for) | 1,057 / 1,653 ms | 1,020 / 1,597 ms |
+| Memory recall only (local) | 46 / 84 ms | 114 / 183 ms ³ |
+| Answer-model call alone (OpenRouter) | 1,316 / 2,338 ms | 1,348 / 2,180 ms |
+| Recall + answer (what an agent waits for) | 1,364 / 2,375 ms | 1,462 / 2,317 ms |
 
-Memory adds about 3% to the time an agent waits for its answer; the rest is the LLM provider.
-The judge call (708 / 780 ms p50) is benchmark-only and not included.
+Memory is about 3–8% of what an agent waits for; the rest is the LLM provider. The judge call is
+benchmark-only and not included. Enrichment runs in the background and adds nothing here.
 
-³ Higher than the retrieval-only LoCoMo run (35 ms) because four workers were waiting on
-network calls while sharing the CPU with ingest.
+³ Recall during the QA run shares the CPU with ingest, fact embedding and 16 enrichment workers;
+on an idle machine LoCoMo recall is 35 ms.
 
 Reproduce (needs an OpenAI-compatible key; `--max-cost-usd` stops a run that overspends):
 
 ```bash
-memhouse bench run --dataset longmemeval-s --qa --llm-base-url https://openrouter.ai/api/v1 \
-  --answer-model openai/gpt-4o --judge-model openai/gpt-4o --max-cost-usd 10
-memhouse bench run --dataset locomo --qa --llm-base-url https://openrouter.ai/api/v1 \
-  --answer-model openai/gpt-4o-mini --judge-model openai/gpt-4o-mini --max-cost-usd 3
+memhouse bench run --dataset longmemeval-s --qa --enrich --llm-base-url https://openrouter.ai/api/v1 \
+  --answer-model openai/gpt-4o --judge-model openai/gpt-4o --enrich-max-cost-usd 2.5 --max-cost-usd 12
+memhouse bench run --dataset locomo --qa --enrich --llm-base-url https://openrouter.ai/api/v1 \
+  --answer-model openai/gpt-4o-mini --judge-model openai/gpt-4o-mini --enrich-max-cost-usd 0.3 --max-cost-usd 2
 ```
 
 ## Governance suite
 
-`memhouse bench run --suite governance` runs 12 checks; all pass:
+`memhouse bench run --suite governance` runs 14 checks; all pass:
 prompt-injection persistence (0 of 15 attempts committed or recalled), false quarantine (0%),
 PII canaries in storage (0 of 5), subject and tenant isolation (0 cross hits), deletion and
 subject erasure (0 remaining, including both cached vectors per round), stale facts (0%),
-validity windows, dedup, audit hash chain, and deterministic recall.
+validity windows, dedup, audit hash chain, deterministic recall, and two checks on the
+enrichment path with a stub model: recall works before enrichment, derived facts are redacted
+and quarantined like any write, and deleting a round removes its facts and cached extraction.
 
 ## Reproduce
 

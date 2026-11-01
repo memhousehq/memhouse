@@ -107,6 +107,25 @@ pub struct RunArgs {
     /// Stop the QA run once LLM spend passes this many USD
     #[arg(long)]
     pub max_cost_usd: Option<f64>,
+    /// Extract facts with a small LLM in the background (async pipeline) before asking questions
+    #[arg(long)]
+    pub enrich: bool,
+    #[arg(long, default_value = "qwen/qwen3.7-flash")]
+    pub enrich_model: String,
+    #[arg(long, default_value_t = 8)]
+    pub enrich_workers: usize,
+    /// Stop enrichment LLM calls once they have cost this much (USD)
+    #[arg(long, default_value_t = 2.0)]
+    pub enrich_max_cost_usd: f64,
+    /// Enrichment-model price in USD per million tokens, "prompt,completion"
+    #[arg(long)]
+    pub enrich_price: Option<String>,
+    /// Answer prompt version (1 = short direct answer, 2 = guidance per question type)
+    #[arg(long, default_value_t = 2)]
+    pub answer_prompt: u8,
+    /// Derived facts given to the answer model, besides --answer-k rounds
+    #[arg(long, default_value_t = 50)]
+    pub answer_facts: usize,
     /// Memories given to the answer model
     #[arg(long, default_value_t = 10)]
     pub answer_k: usize,
@@ -232,6 +251,16 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
     if let Some(w) = args.subquery_weight {
         cfg.memory.subquery_weight = w;
     }
+    if args.enrich {
+        cfg.enrich.enabled = true;
+        cfg.enrich.llm.model = args.enrich_model.clone();
+        cfg.enrich.llm.api_key_env = Some(args.llm_key_env.clone());
+        if let Some(b) = &args.llm_base_url {
+            cfg.enrich.llm.base_url = b.clone();
+        }
+        cfg.enrich.workers = args.enrich_workers;
+        cfg.enrich.max_cost_usd = args.enrich_max_cost_usd;
+    }
     cfg.memory.tenant = "bench".into();
     cfg.memory.recency_weight = 0.0;
     cfg.governance.audit_reads = false;
@@ -248,6 +277,12 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
     };
     eprintln!("Benchmark database: {}", memhouse_store_postgres::redact_url(&cfg.database.url));
     let engine = memhouse_server::build_engine(cfg.clone(), true).await?;
+    let engine = if args.enrich {
+        let chat = memhouse_models::enrich_chat(&cfg, price(args.enrich_price.as_deref(), &args.enrich_model)?)?;
+        engine.with_chat(chat)
+    } else {
+        engine
+    };
     let run_id = format!("{}-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"), &uuid::Uuid::new_v4().to_string()[..6]);
     let name = args.dataset.clone().unwrap_or_else(|| args.suite.clone().unwrap_or_default());
     let out_dir = args
@@ -259,11 +294,13 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
 
     let qa = if args.qa {
         let base = args.llm_base_url.clone().unwrap_or_else(|| if args.llm_provider == "anthropic" { "https://api.anthropic.com/v1".into() } else { "https://api.openai.com/v1".into() });
-        let mk = |model: &str, max_tokens: u32| LlmConfig { provider: args.llm_provider.clone(), base_url: base.clone(), model: model.to_string(), api_key_env: Some(args.llm_key_env.clone()), max_tokens, temperature: 0.0 };
+        let mk = |model: &str, max_tokens: u32| LlmConfig { provider: args.llm_provider.clone(), base_url: base.clone(), model: model.to_string(), api_key_env: Some(args.llm_key_env.clone()), max_tokens, temperature: 0.0, extra: None };
         Some(runner::QaSetup {
-            answer: memhouse_models::Llm::new(&mk(&args.answer_model, 600))?.with_price(price(args.answer_price.as_deref(), &args.answer_model)?),
+            answer: memhouse_models::Llm::new(&mk(&args.answer_model, if args.answer_prompt >= 2 { 1000 } else { 600 }))?.with_price(price(args.answer_price.as_deref(), &args.answer_model)?),
             judge: memhouse_models::Llm::new(&mk(&args.judge_model, 10))?.with_price(price(args.judge_price.as_deref(), &args.judge_model)?),
             answer_k: args.answer_k,
+            answer_facts: if args.enrich { args.answer_facts } else { 0 },
+            prompt_version: args.answer_prompt,
             max_cost_usd: args.max_cost_usd,
             spent_micro_usd: Default::default(),
         })
@@ -299,6 +336,8 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
             answer_model: qa.as_ref().map(|q| q.answer.id()),
             judge_model: qa.as_ref().map(|q| q.judge.id()),
             answer_k: qa.as_ref().map(|q| q.answer_k),
+            answer_prompt: qa.as_ref().map(|q| q.prompt_version),
+            enrich_model: args.enrich.then(|| args.enrich_model.clone()),
             host: host_info(),
         },
         results: None,
@@ -332,13 +371,21 @@ async fn run(args: RunArgs, mut cfg: Config) -> anyhow::Result<()> {
             keep: args.keep,
             run_id: run_id.clone(),
             qa,
+            enrich: args.enrich,
         };
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let workers = if args.enrich { engine.spawn_enrichment(args.enrich_workers, stop.clone(), Default::default()) } else { vec![] };
         let mut items_file = std::io::BufWriter::new(std::fs::File::create(out_dir.join("items.jsonl"))?);
         let results = runner::run(engine.clone(), spec, |r| {
             writeln!(items_file, "{}", serde_json::to_string(r)?)?;
             Ok(())
         })
-        .await?;
+        .await;
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for w in workers {
+            let _ = w.await;
+        }
+        let results = results?;
         items_file.flush()?;
         summary.results = Some(runner::aggregate(&results, started.elapsed().as_secs_f64(), args.concurrency));
     }

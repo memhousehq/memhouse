@@ -338,3 +338,52 @@ pub struct Stats {
     pub audit_events: i64,
     pub by_kind: Vec<(String, i64)>,
 }
+
+/// Tokens, cost and wall time of one logical LLM call (retries included).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// USD: as reported by the provider (OpenRouter), else from the configured price.
+    pub cost_usd: Option<f64>,
+    /// True when `cost_usd` came from the provider rather than a price table.
+    #[serde(default)]
+    pub cost_reported: bool,
+    /// Wall time including retries and backoff.
+    pub ms: f64,
+    pub attempts: u32,
+}
+
+/// A queued enrichment job: one ingested session of one subject.
+#[derive(Debug, Clone)]
+pub struct EnrichJob {
+    pub id: i64,
+    pub tenant: String,
+    pub subject: String,
+    pub session_id: String,
+    pub round_ids: Vec<Uuid>,
+    pub attempts: i32,
+}
+
+/// What a finished job did, kept on the job row for cost and lag accounting.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnrichOutcome {
+    pub facts: usize,
+    /// Answer served from the extraction cache (no LLM call, no cost).
+    pub cached: bool,
+    /// Skipped without an LLM call (too little user text).
+    pub skipped: bool,
+    pub usage: LlmUsage,
+    pub model: String,
+    /// Milliseconds from enqueue to facts committed.
+    #[serde(default)]
+    pub lag_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnrichStatus {
+    pub pending: i64,
+    pub running: i64,
+    pub done: i64,
+    pub failed: i64,
+}

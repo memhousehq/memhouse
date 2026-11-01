@@ -147,9 +147,16 @@ Current results on a laptop CPU, no LLM in the loop (details and baselines in [d
 | LongMemEval_S (470 scored) | 91.3 | 96.2 | 94.1 | 26 / 37 ms |
 | LoCoMo (1,536 scored) | 78.8 | 87.5 | 78.6 | 35 / 42 ms |
 
-On the harder 500-session LongMemEval_M split (50-question sample) MemHouse scores 79.2 / 89.6 / 82.6, against 76.2 / 86.2 / 65.8 for the best retriever in the LongMemEval paper (Contriever + LLM-extracted keys).
+On the harder 500-session LongMemEval_M split (all 500 questions) MemHouse scores 74.5 / 84.7 / 80.2, against 76.2 / 86.2 / 65.8 for the best retriever in the LongMemEval paper (Contriever + LLM-extracted keys): on par for recall, ahead on ranking.
 
-End-to-end answer accuracy with an LLM judge: **77.0** on LongMemEval_S with GPT-4o (Zep 71.2, Supermemory 81.6, Mastra 84.2) and **68.4** on LoCoMo with GPT-4o-mini (Mem0 66.9, Letta 74.0), for $4.52 and $0.19. Every QA report records tokens, cost and latency with and without the LLM call.
+End-to-end answer accuracy with an LLM judge, with asynchronous enrichment on:
+
+| Benchmark | Answer model | MemHouse | Published (same answer model) | Enrichment cost |
+|---|---|---|---|---|
+| LongMemEval_S, 500 q | GPT-4o | **83.2** | Mastra 84.2, Supermemory 81.6, Emergence 81.3, Zep 71.2 | $1.54 for 21k sessions |
+| LoCoMo, 1,540 q | GPT-4o-mini | **84.5** | Hindsight 83.2 (other models), MemOS 75.8, Zep 75.1, Letta 74.0, Mem0 66.9 | $0.03 |
+
+Enrichment is optional and asynchronous: ingest stores rounds and queues a job; background workers ask a small model (`qwen/qwen3.7-flash`, ~$0.00007 per session) for dated facts, which pass the same write gate. Recall never waits for it. Every QA report records tokens, cost and latency with and without the LLM call.
 
 ## Configuration
 
@@ -165,6 +172,11 @@ enabled = false                  # cross-encoder reranking (jina-reranker-v1-tur
 template = "support"             # personal | coding | support | sales | success
 default_subject = "customer:unknown"
 query_analysis = true            # date-aware recall: time-window probe (window_weight = 0.15, window_top = 3, window_top_weight = 1.0)
+[enrich]
+enabled = false                  # async LLM fact extraction: ingest queues a job, workers add dated facts (~$0.00007 per session)
+workers = 8
+llm = { base_url = "https://openrouter.ai/api/v1", model = "qwen/qwen3.7-flash", api_key_env = "OPENAI_API_KEY" }
+max_cost_usd = 0.0               # stop calling the LLM after this much spend per process (0 = no limit)
 [governance]
 redact = ["secret", "card", "ssn", "iban"]   # also: email, phone, ip
 quarantine_injection = true
