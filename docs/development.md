@@ -102,6 +102,12 @@ It takes about 5 minutes on a laptop. Options: `--tier 2` (adds LoCoMo with cach
 about $0.01), `--fix` (apply rustfmt and add missing SPDX headers), `--skip-e2e` (no Docker), `--skip-guard` (no benchmark
 database). `scripts/ci.sh` is the same command.
 
+Hosted CI (`.github/workflows/ci.yml`) runs every step on each pull request except the benchmark
+guard: the e2e step there includes the governance suite. Benchmarks need the public datasets
+(LoCoMo is licensed for non-commercial use only) and, for paid tiers, an LLM key, so they run on a
+maintainer's machine, on demand, and their results are published with the commands that produced
+them ([benchmarks.md](benchmarks.md#where-benchmarks-run)).
+
 Install the hooks once per clone:
 
 ```bash

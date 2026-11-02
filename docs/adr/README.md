@@ -3,7 +3,7 @@
 
 | ADR | Decision | Status |
 |---|---|---|
-| [0001](0001-licence.md) | Apache-2.0 for code, CC BY 4.0 for docs | accepted for development; counsel confirms before G09 |
+| [0001](0001-licence.md) | Apache-2.0 for code, CC BY 4.0 for docs | accepted |
 | [0002](0002-lite-embedded-store.md) | Lite store: SQLite + FTS5, in-process vector scoring | accepted |
 | [0003](0003-vector-storage-format.md) | Half-precision vectors, exact scan; binary prefilter optional | accepted |
 | [0004](0004-intake-queue-and-log.md) | Store-backed intake queue; Kafka-protocol log for Scale | accepted; Scale confirmed at load in G31 |

@@ -663,7 +663,7 @@ enrichment queue depth, lag, tokens and spend. See
 ### `GET /health` and `GET /v1/openapi.json` (no auth)
 
 ```json
-{"status":"ok","version":"0.1.0","api_version":"1.0.0"}
+{"status":"ok","version":"2.0.0","api_version":"1.2.0"}
 ```
 
 ---

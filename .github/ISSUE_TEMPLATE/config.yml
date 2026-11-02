@@ -2,8 +2,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/memhouse/memhouse/security/advisories/new
+    url: https://github.com/memhousehq/memhouse/security/advisories/new
     about: Privately, please. See SECURITY.md.
   - name: Ask a question
-    url: https://github.com/memhouse/memhouse/discussions
+    url: https://github.com/memhousehq/memhouse/discussions
     about: Usage questions and ideas

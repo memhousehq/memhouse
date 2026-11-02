@@ -3,7 +3,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Accepted for development; final confirmation by counsel before publication (roadmap G09)** |
+| Status | **Accepted** (confirmed by the founder for publication, 2 November 2026) |
 | Date | 1 November 2026 |
 | Goal | G02 |
 
@@ -25,9 +25,7 @@ recorded exception.
   code depends on. It is what `Cargo.toml` has declared since the first commit.
 - **CC BY 4.0 for documentation**: lets others reuse and translate the docs with attribution.
 
-## Alternative still open
+## Alternative considered
 
-AGPLv3 for the core. It would deter hosted forks but also some
-enterprise adopters. The founder confirms the choice with counsel before the first public push;
-if it changes, `LICENSE`, the SPDX identifiers (`cargo xtask spdx --fix` after changing the rule in
-`xtask/src/spdx.rs`) and `deny.toml` change together, while the history is still private.
+AGPLv3 for the core. It would deter hosted forks but also many companies that embed or self-host
+infrastructure. Not chosen.

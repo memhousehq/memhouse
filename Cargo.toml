@@ -3,18 +3,18 @@ resolver = "2"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/memhouse/memhouse"
+repository = "https://github.com/memhousehq/memhouse"
 rust-version = "1.85"
 
 [workspace.dependencies]
-memhouse-core = { path = "crates/memhouse-core", version = "0.1.0" }
-memhouse-store-postgres = { path = "crates/memhouse-store-postgres", version = "0.1.0" }
-memhouse-models = { path = "crates/memhouse-models", version = "0.1.0" }
-memhouse-server = { path = "crates/memhouse-server", version = "0.1.0" }
-memhouse-bench = { path = "crates/memhouse-bench", version = "0.1.0" }
+memhouse-core = { path = "crates/memhouse-core", version = "2.0.0" }
+memhouse-store-postgres = { path = "crates/memhouse-store-postgres", version = "2.0.0" }
+memhouse-models = { path = "crates/memhouse-models", version = "2.0.0" }
+memhouse-server = { path = "crates/memhouse-server", version = "2.0.0" }
+memhouse-bench = { path = "crates/memhouse-bench", version = "2.0.0" }
 
 anyhow = "1"
 thiserror = "2"

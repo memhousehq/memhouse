@@ -1414,7 +1414,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memhouse-bench"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "memhouse-cli"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1468,7 +1468,7 @@ dependencies = [
 
 [[package]]
 name = "memhouse-core"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "memhouse-models"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "memhouse-server"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1532,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "memhouse-store-postgres"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

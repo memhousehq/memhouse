@@ -17,4 +17,5 @@
 | [Threat model](threat-model.md) and [security baseline](security/baseline.md) | review threats, controls and the AP-10 baseline every profile must keep |
 | [Decision records](adr/README.md) | see why the stores, formats, queue, authorization, pooler and gRPC were chosen, with evidence |
 
-Design documents written before the code are in [`design/`](design/).
+Requirement IDs in the code and docs (`CORE-06`, `PR-3`, `TR-MS-01`) refer to the design
+requirements the project was planned from; the [roadmap](roadmap.md) says which goal covers each.

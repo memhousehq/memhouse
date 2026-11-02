@@ -21,8 +21,7 @@ git commit -s -m "Explain what changed and why"
 ```
 
 This adds a `Signed-off-by: Your Name <you@example.com>` line, matching your `git config user.name`
-and `user.email`. Commits without it are rejected by the `commit-msg` hook (below), and by the hosted CI once the
-repository is published.
+and `user.email`. Commits without it are rejected by the `commit-msg` hook (below), and by CI on the pull request.
 Forgot it? `git commit --amend -s` fixes the last commit; `git rebase --signoff main` fixes a branch.
 
 ## Set up

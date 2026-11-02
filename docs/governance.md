@@ -468,7 +468,7 @@ Run it in CI and keep the reports: they are audit evidence for every release.
 
 ## Known gaps
 
-These are tracked against the requirements in [`docs/design/`](design/) and stated here so
+These are tracked against the requirements (the IDs in brackets) and stated here so
 reviewers don't have to find them:
 
 - **Access is by role and attributes, not relationships.** A principal may use the subjects its

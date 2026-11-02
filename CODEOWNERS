@@ -1,17 +1,17 @@
-# Owners review changes to their paths: the maintainers team of the forge organisation.
+# Owners review changes to their paths: the lead maintainer (GOVERNANCE.md).
 
-*                                        @memhouse/maintainers
+*                                        @aleksei-s-popov
 
 # Safety-critical paths need an owner's review even for small changes.
-/crates/memhouse-core/src/gate.rs        @memhouse/maintainers
-/crates/memhouse-core/src/access.rs      @memhouse/maintainers
-/crates/memhouse-core/src/identity.rs    @memhouse/maintainers
-/crates/memhouse-store-postgres/         @memhouse/maintainers
-/crates/memhouse-bench/src/governance.rs @memhouse/maintainers
-/bench/baselines.json                    @memhouse/maintainers
-/deny.toml                               @memhouse/maintainers
-/.secret-scan-allow                      @memhouse/maintainers
-/.github/                                @memhouse/maintainers
-/LICENSE                                 @memhouse/maintainers
-/api/baseline/                           @memhouse/maintainers
+/crates/memhouse-core/src/gate.rs        @aleksei-s-popov
+/crates/memhouse-core/src/access.rs      @aleksei-s-popov
+/crates/memhouse-core/src/identity.rs    @aleksei-s-popov
+/crates/memhouse-store-postgres/         @aleksei-s-popov
+/crates/memhouse-bench/src/governance.rs @aleksei-s-popov
+/bench/baselines.json                    @aleksei-s-popov
+/deny.toml                               @aleksei-s-popov
+/.secret-scan-allow                      @aleksei-s-popov
+/.github/                                @aleksei-s-popov
+/LICENSE                                 @aleksei-s-popov
+/api/baseline/                           @aleksei-s-popov
 

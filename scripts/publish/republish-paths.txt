@@ -1,0 +1,3 @@
+# Paths whose earlier versions held private planning material: removed from every commit,
+# then added back as they are at HEAD in one last commit (prepare.sh).
+docs/roadmap.md

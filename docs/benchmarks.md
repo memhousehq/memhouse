@@ -299,7 +299,8 @@ benchmark-only and not included. Enrichment runs in the background and adds noth
 ³ Recall during the QA run shares the CPU with ingest, fact embedding and 16 enrichment workers;
 on an idle machine LoCoMo recall is 35 ms.
 
-Reproduce (needs an OpenAI-compatible key; `--max-cost-usd` stops a run that overspends):
+Reproduce (needs an OpenAI-compatible key, given for the run as shown in
+[where benchmarks run](#where-benchmarks-run); `--max-cost-usd` stops a run that overspends):
 
 ```bash
 memhouse bench run --dataset longmemeval-s --qa --enrich --llm-base-url https://openrouter.ai/api/v1 \
@@ -351,10 +352,30 @@ metrics only: no conversation, question or answer text.
 | Asset | Source | Licence | Used for |
 |---|---|---|---|
 | LongMemEval (`longmemeval-s`, `-m`, oracle; cleaned release) | [xiaowu0162/longmemeval-cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) on Hugging Face; paper and code at [xiaowu0162/LongMemEval](https://github.com/xiaowu0162/LongMemEval) | MIT | retrieval and QA benchmarks, the T1 guard |
-| LoCoMo (`locomo10.json`) | [snap-research/locomo](https://github.com/snap-research/locomo) | CC BY-NC 4.0 (non-commercial) | retrieval and QA benchmarks, the T1 guard |
+| LoCoMo (`locomo10.json`) | [snap-research/locomo](https://github.com/snap-research/locomo) | CC BY-NC 4.0 (non-commercial) | retrieval and QA benchmarks, the local T1 guard |
 | bge-small-en-v1.5 (default embedding model) | [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5), ONNX build [Xenova/bge-small-en-v1.5](https://huggingface.co/Xenova/bge-small-en-v1.5), run with fastembed | MIT | embeddings |
 | jina-reranker-v1-turbo-en (optional reranker) | [jinaai/jina-reranker-v1-turbo-en](https://huggingface.co/jinaai/jina-reranker-v1-turbo-en), downloaded on first use of `--rerank` | Apache-2.0 | reranking ablations |
 
 LoCoMo's licence allows non-commercial use only. Download it yourself and make sure your use
 complies; MemHouse never redistributes it. Its role in the project's own benchmarking is reviewed
 with counsel before publication (roadmap G09).
+
+## Where benchmarks run
+
+On a maintainer's machine, on demand. Hosted CI runs none: it holds no datasets and no keys (its
+end-to-end job runs the governance suite, which uses synthetic data). Every published number
+comes with the command that produced it and its `bench-results/` directory, so anyone can rerun it.
+
+Paid tiers need an OpenAI-compatible key for that one run. Give it as the environment variable the
+run names (`--llm-key-env`, default `OPENAI_API_KEY`), never as a command-line argument, which
+would land in the shell history and the process list:
+
+```bash
+read -rs OPENAI_API_KEY && export OPENAI_API_KEY   # typed, not echoed
+memhouse bench guard --tier 2
+unset OPENAI_API_KEY
+# or, from a password manager:
+op run --env-file=.env.example -- memhouse bench run --dataset locomo --qa --max-cost-usd 2
+```
+
+Always pass `--max-cost-usd` to runs that call a paid model.

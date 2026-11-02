@@ -16,11 +16,7 @@ pub fn expected(path: &str) -> Option<&'static str> {
     if !covered || generated {
         return None;
     }
-    Some(if path.starts_with("docs/") {
-        "CC-BY-4.0"
-    } else {
-        "Apache-2.0"
-    })
+    Some(if path.starts_with("docs/") { "CC-BY-4.0" } else { "Apache-2.0" })
 }
 
 fn header(path: &str, licence: &str) -> String {

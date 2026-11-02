@@ -9,11 +9,13 @@ How credentials are handled in development and in CI.
    hold the *names* of secrets (`api_key_env = "OPENAI_API_KEY"`), never the values.
 2. **Prefer no long-lived secrets.** CI reaches cloud providers and package registries through
    OIDC federation (trusted publishing on crates.io, PyPI and npm); community release artefacts are
-   signed keylessly with Sigstore. Stored keys only where a requirement demands one (release signing for deployments that need a stored key, SC-02, in an HSM).
+   signed keylessly with Sigstore. Stored keys only where a requirement demands one (release
+   signing for deployments that need a stored key, SC-02, in an HSM).
 3. **One credential per environment and purpose**, with least privilege. Paid LLM keys carry a
    spend cap set at the provider.
-4. **Fork safety.** Workflows triggered from forks never receive secrets. Paid benchmark tiers
-   (T2–T4) run only on protected branches or by manual dispatch with a required reviewer.
+4. **No paid calls in hosted CI.** CI holds no secrets at all, so workflows triggered from forks
+   have nothing to leak. Benchmarks, paid tiers (T2–T4) included, run on a maintainer's machine on
+   demand, with the key given for that one run.
 5. **Detection.** `cargo xtask secrets` runs before every commit (pre-commit hook), in
    `cargo xtask ci`, and over the whole history before publication. The forge's secret scanning
    and push protection are on from the first public push.
@@ -24,7 +26,7 @@ How credentials are handled in development and in CI.
 
 | Secret | Used by | Lives in | Rotation | Introduced |
 |---|---|---|---|---|
-| LLM key (OpenRouter) for paid benchmarks and dev enrichment | developers; CI tiers T2–T4 | dev: `.env` (ignored) or a password manager; CI: forge environment `benchmarks` with a required reviewer; provider spend cap | 90 days; on staff change | G02 (dev), G09 (CI) |
+| LLM key (OpenRouter) for paid benchmarks and dev enrichment | developers, on demand | given for one run (environment variable), from a password manager or an ignored `.env`; provider spend cap; never in CI | 90 days | G02 |
 | Local Postgres passwords | `memhouse up` | generated into the config file (mode 0600) | on demand (`memhouse down`, remove the volume, `memhouse up`) | exists |
 | MemHouse API keys | deployments | config file 0600 or `MEMHOUSE_API_KEY`; hashed per principal from G06; cloud: secret manager | per key; on staff or client change | exists, G06 |
 | Community release signing | release pipeline | keyless Sigstore through CI OIDC; nothing stored | n/a | G21 |

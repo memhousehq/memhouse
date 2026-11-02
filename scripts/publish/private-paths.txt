@@ -1,1 +1,3 @@
+# Paths removed from every commit of the public history (prepare.sh).
 draft_plan/
+docs/design/

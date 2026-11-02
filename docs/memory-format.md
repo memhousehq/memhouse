@@ -38,7 +38,7 @@ naming a `memory_id` comes after that record. Writers use the order above.
 | `format` | `"memhouse.memory"` | required |
 | `version` | `2` | the format version; a reader refuses a version it doesn't know |
 | `schema_version` | integer | the [logical schema](schema.md) version of the writer |
-| `producer` | text | e.g. `memhouse 0.1.0` |
+| `producer` | text | e.g. `memhouse 2.0.0` |
 | `exported_at` | RFC 3339 | |
 | `tenant` | text | the tenant exported |
 | `subject` | text | present when the file holds one subject |

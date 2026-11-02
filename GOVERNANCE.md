@@ -3,17 +3,24 @@
 
 How decisions about MemHouse are made, and by whom.
 
+## Author
+
+MemHouse is created by **Aleksei Popov** ([@aleksei-s-popov](https://github.com/aleksei-s-popov)),
+who holds its copyright (see [`NOTICE`](NOTICE)) and leads the project. Contributors keep the
+copyright in their own contributions and license them under the project's licences by signing
+off their commits ([DCO](CONTRIBUTING.md#developer-certificate-of-origin-dco)).
+
 ## Roles
 
 | Role | Who | Can |
 |---|---|---|
-| Contributor | anyone who opens an issue or a pull request | propose changes; every commit is signed off under the [DCO](CONTRIBUTING.md#developer-certificate-of-origin-dco) |
-| Maintainer | listed in [`CODEOWNERS`](CODEOWNERS) and the `maintainers` team | review and merge, triage, run the paid benchmark workflow, cut releases |
-| Lead maintainer | the founder of the MemHouse project | final say when maintainers disagree; appoints and removes maintainers; owns the roadmap and the trademarks |
+| Contributor | anyone who opens an issue or a pull request | propose changes; every commit is signed off under the DCO |
+| Maintainer | listed in [`CODEOWNERS`](CODEOWNERS) | review and merge, triage, cut releases |
+| Lead maintainer | Aleksei Popov | final say when maintainers disagree; appoints and removes maintainers; owns the roadmap |
 
-The project starts with a single lead maintainer. Maintainers are added from contributors who
-have made sustained, high-quality contributions and reviews; the lead maintainer proposes them and
-the existing maintainers agree.
+The project starts with a single maintainer, its author. Maintainers are added from contributors
+who have made sustained, high-quality contributions and reviews; the lead maintainer proposes them
+and the existing maintainers agree.
 
 ## How decisions are made
 
@@ -41,13 +48,12 @@ the existing maintainers agree.
 
 ## Licences
 
-Code is Apache-2.0 and documentation is CC BY 4.0. See ADR 0001.
+Code is Apache-2.0 and documentation is CC BY 4.0 ([ADR 0001](docs/adr/0001-licence.md)).
 
-## Security, conduct and trademarks
+## Security and conduct
 
 - Vulnerabilities: [SECURITY.md](SECURITY.md) (privately, never in public issues).
 - Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md); maintainers enforce it.
-- Name and logo: [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Changing this document
 

@@ -231,7 +231,7 @@ memhouse down                    # stop the container; data stays in the Docker 
 [Governance and compliance](docs/governance.md) · [Development](docs/development.md) ·
 [Architecture](docs/architecture.md) · [Benchmarks](docs/benchmarks.md)
 
-Design documents are in [`docs/design/`](docs/design/) and the plan of record is [`docs/roadmap.md`](docs/roadmap.md).
+The plan of record is [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Licence
 
