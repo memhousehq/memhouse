@@ -8,8 +8,9 @@ BIN=${BIN:-./target/release/memhouse}
 export MEMHOUSE_HOME=${MEMHOUSE_HOME:-$(mktemp -d)/memhouse}
 PORT=${PORT:-7097}
 # Reuse already-downloaded embedding models instead of fetching them into the throwaway home.
+# The cache may not exist yet (a first CI run): create it, or the link would dangle.
 if [ -n "${MEMHOUSE_MODEL_CACHE:-}" ] && [ ! -e "$MEMHOUSE_HOME/models" ]; then
-  mkdir -p "$MEMHOUSE_HOME" && ln -s "$MEMHOUSE_MODEL_CACHE" "$MEMHOUSE_HOME/models"
+  mkdir -p "$MEMHOUSE_HOME" "$MEMHOUSE_MODEL_CACHE" && ln -s "$MEMHOUSE_MODEL_CACHE" "$MEMHOUSE_HOME/models"
 fi
 
 step() { printf '\n== %s\n' "$*"; }
