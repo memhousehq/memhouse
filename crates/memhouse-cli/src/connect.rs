@@ -46,16 +46,16 @@ impl Launch {
 }
 
 fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+    memhouse_core::config::user_home().unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn claude_desktop_path() -> PathBuf {
     if cfg!(target_os = "macos") {
         home().join("Library/Application Support/Claude/claude_desktop_config.json")
     } else if cfg!(target_os = "windows") {
-        dirs::config_dir().unwrap_or_else(home).join("Claude/claude_desktop_config.json")
+        memhouse_core::config::user_config_dir().unwrap_or_else(home).join("Claude/claude_desktop_config.json")
     } else {
-        dirs::config_dir().unwrap_or_else(|| home().join(".config")).join("Claude/claude_desktop_config.json")
+        memhouse_core::config::user_config_dir().unwrap_or_else(|| home().join(".config")).join("Claude/claude_desktop_config.json")
     }
 }
 

@@ -612,12 +612,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn detected_agents() -> Vec<String> {
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = memhouse_core::config::user_home().unwrap_or_default();
     let mut v = vec![];
     if connect::which("claude").is_some() {
         v.push("claude-code".into());
     }
-    let desktop = if cfg!(target_os = "macos") { home.join("Library/Application Support/Claude") } else { dirs::config_dir().unwrap_or_default().join("Claude") };
+    let desktop =
+        if cfg!(target_os = "macos") { home.join("Library/Application Support/Claude") } else { memhouse_core::config::user_config_dir().unwrap_or_default().join("Claude") };
     if desktop.exists() {
         v.push("claude-desktop".into());
     }

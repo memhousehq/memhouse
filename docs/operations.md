@@ -154,7 +154,9 @@ ENTRYPOINT ["memhouse"]
 CMD ["serve"]
 ```
 
-Mount `/data` (or set `[embedding] cache_dir`) so the model download survives restarts. Pass the
+The image needs `ca-certificates`: MemHouse verifies TLS (Postgres, model downloads, LLM and OTLP
+endpoints) against the operating system's certificate store, not a bundled list, so a private CA
+added to that store is trusted too. Mount `/data` (or set `[embedding] cache_dir`) so the model download survives restarts. Pass the
 database URL and API key as environment variables, as in
 [configuration.md](configuration.md#environment-variables).
 
@@ -605,7 +607,8 @@ like the memories themselves.
 | An agent says "MEMHOUSE_MCP_KEY was refused" or "needs the agent's key" | Run `memhouse connect <agent>` again: it creates the agent's principal and a fresh key and writes it into the agent's MCP config. |
 | An agent's memories stay `candidate` | `[access] admission = "review"`: commit them with `POST /v1/review`, or grant the agent direct commits with `memhouse principal add agent:<name> --commit`. |
 | `cannot listen on 127.0.0.1:7077` | The port is in use. Set `--bind` or `MEMHOUSE_BIND`. |
-| The model download hangs or fails | It needs `huggingface.co` once. Pre-seed `cache_dir` from a machine that has access for air-gapped installs. |
+| The model download hangs or fails | It needs `huggingface.co` once (or a mirror in `HF_ENDPOINT`). Pre-seed `cache_dir` from a machine that has access for air-gapped installs. |
+| `invalid peer certificate: UnknownIssuer` | The operating system has no CA certificates (install `ca-certificates`), or a proxy re-signs TLS: add its CA to the system store. |
 | Enrichment `pending` grows and `done` doesn't | No workers (`workers = 0` everywhere) or `enabled = false` in the worker process. |
 | Enrichment jobs `failed` | Look at `error` in `mh_enrich_job` (query above). Common causes are a missing API key variable, 401s from the LLM endpoint, model names the provider doesn't serve, and `reached max_cost_usd`. |
 | Recall misses something you know is stored | Check the subject (`GET /v1/subjects`), the status (`?all=true` shows superseded and quarantined records), `valid_to`, and `as_of`. Try `"mode":"keyword"` for exact identifiers. |

@@ -15,7 +15,7 @@ async-trait.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
 tracing.workspace = true
 fastembed = { workspace = true, optional = true }
 # Same version fastembed uses; needed to pin the CPU execution provider.

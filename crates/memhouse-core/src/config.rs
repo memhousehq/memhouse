@@ -351,7 +351,26 @@ pub fn home_dir() -> PathBuf {
     if let Ok(h) = std::env::var("MEMHOUSE_HOME") {
         return PathBuf::from(h);
     }
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".memhouse")
+    user_home().unwrap_or_else(|| PathBuf::from(".")).join(".memhouse")
+}
+
+/// The user's home directory: `HOME`, or `USERPROFILE` on Windows.
+pub fn user_home() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The per-user configuration directory: `%APPDATA%` on Windows, `~/Library/Application Support`
+/// on macOS, `$XDG_CONFIG_HOME` or `~/.config` elsewhere.
+pub fn user_config_dir() -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if cfg!(windows) {
+        env("APPDATA")
+    } else if cfg!(target_os = "macos") {
+        user_home().map(|h| h.join("Library/Application Support"))
+    } else {
+        env("XDG_CONFIG_HOME").filter(|p| p.is_absolute()).or_else(|| user_home().map(|h| h.join(".config")))
+    }
 }
 
 pub fn default_config_path() -> PathBuf {

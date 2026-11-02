@@ -11,13 +11,40 @@ use serde_json::json;
 use std::sync::Arc;
 
 #[cfg(feature = "local")]
+pub mod hub;
+
+#[cfg(feature = "local")]
 pub mod local {
     use super::*;
-    use fastembed::{EmbeddingModel, RerankInitOptions, RerankerModel, TextEmbedding, TextInitOptions, TextRerank};
+    use fastembed::{
+        EmbeddingModel, InitOptionsUserDefined, RerankInitOptionsUserDefined, TextEmbedding, TextRerank, TokenizerFiles, UserDefinedEmbeddingModel, UserDefinedRerankingModel,
+    };
     use std::sync::Mutex;
 
     fn model_cache_dir(cfg_dir: &Option<std::path::PathBuf>) -> std::path::PathBuf {
         cfg_dir.clone().unwrap_or_else(|| memhouse_core::config::home_dir().join("models"))
+    }
+
+    /// The model file, its external data files (name, path) and the tokenizer of a hub model.
+    struct ModelFiles {
+        onnx: std::path::PathBuf,
+        extra: Vec<(String, std::path::PathBuf)>,
+        tokenizer: TokenizerFiles,
+    }
+
+    fn model_files(code: &str, model_file: &str, additional: &[String], cache_dir: &Option<std::path::PathBuf>, show_progress: bool) -> anyhow::Result<ModelFiles> {
+        const TOKENIZER: [&str; 4] = ["tokenizer.json", "config.json", "special_tokens_map.json", "tokenizer_config.json"];
+        let mut want: Vec<&str> = vec![model_file];
+        want.extend(additional.iter().map(String::as_str));
+        want.extend(TOKENIZER);
+        let paths = hub::Repo::new(code, model_cache_dir(cache_dir), show_progress).get(&want)?;
+        let read = |i: usize| std::fs::read(&paths[i]).with_context(|| format!("reading {}", paths[i].display()));
+        let t = 1 + additional.len();
+        Ok(ModelFiles {
+            onnx: paths[0].clone(),
+            extra: additional.iter().zip(&paths[1..t]).map(|(f, p)| (f.rsplit('/').next().unwrap_or(f).to_string(), p.clone())).collect(),
+            tokenizer: TokenizerFiles { tokenizer_file: read(t)?, config_file: read(t + 1)?, special_tokens_map_file: read(t + 2)?, tokenizer_config_file: read(t + 3)? },
+        })
     }
 
     pub fn resolve_embedding(name: &str) -> anyhow::Result<(EmbeddingModel, usize, String)> {
@@ -123,16 +150,19 @@ pub mod local {
     impl LocalEmbedder {
         pub fn new(cfg: &EmbeddingConfig, show_progress: bool) -> anyhow::Result<LocalEmbedder> {
             let (model, dim, code) = resolve_embedding(&cfg.model)?;
+            let info = TextEmbedding::get_model_info(&model)?;
+            let files = model_files(&code, &info.model_file, &info.additional_files, &cfg.cache_dir, show_progress)?;
+            let mut def = UserDefinedEmbeddingModel::new(std::fs::read(&files.onnx)?, files.tokenizer).with_quantization(TextEmbedding::get_quantization_mode(&model));
+            def.pooling = TextEmbedding::get_default_pooling_method(&model);
+            def.output_key = info.output_key.clone();
+            for (name, path) in &files.extra {
+                def = def.with_external_initializer(name.clone(), std::fs::read(path)?);
+            }
             let (sessions, threads) = pool_shape(cfg.sessions, cfg.threads);
             let mut items = Vec::with_capacity(sessions);
-            for i in 0..sessions {
-                let opts = TextInitOptions::new(model.clone())
-                    .with_max_length(cfg.max_length)
-                    .with_cache_dir(model_cache_dir(&cfg.cache_dir))
-                    .with_execution_providers(cpu_provider())
-                    .with_intra_threads(threads)
-                    .with_show_download_progress(show_progress && i == 0);
-                items.push(TextEmbedding::try_new(opts).with_context(|| format!("loading local embedding model {code}"))?);
+            for _ in 0..sessions {
+                let opts = InitOptionsUserDefined::new().with_max_length(cfg.max_length).with_execution_providers(cpu_provider()).with_intra_threads(threads);
+                items.push(TextEmbedding::try_new_from_user_defined(def.clone(), opts).with_context(|| format!("loading local embedding model {code}"))?);
             }
             Ok(LocalEmbedder { id: format!("local:{code}"), dim, batch: cfg.batch_size.max(1), max_len: cfg.max_length, pool: Arc::new(Pool::new(items)) })
         }
@@ -202,14 +232,14 @@ pub mod local {
                 .find(|m| m.model_code.to_ascii_lowercase().ends_with(&format!("/{want}")))
                 .or_else(|| models.iter().find(|m| m.model_code.to_ascii_lowercase().contains(&want)))
                 .ok_or_else(|| anyhow::anyhow!("unknown reranker '{}'. Available: {}", cfg.model, models.iter().map(|m| m.model_code.clone()).collect::<Vec<_>>().join(", ")))?;
-            let model: RerankerModel = pick.model.clone();
-            let opts = RerankInitOptions::new(model)
+            // Loaded from its file, so external data files (downloaded beside it) are found by ONNX Runtime.
+            let files = model_files(&pick.model_code, &pick.model_file, &pick.additional_files, cache_dir, show_progress)?;
+            let opts = RerankInitOptionsUserDefined::new()
                 .with_max_length(cfg.max_length)
-                .with_cache_dir(model_cache_dir(cache_dir))
                 .with_execution_providers(cpu_provider())
-                .with_intra_threads(std::env::var("MEMHOUSE_RERANK_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| pool_shape(0, 0).1.max(2)))
-                .with_show_download_progress(show_progress);
-            let rr = TextRerank::try_new(opts).with_context(|| format!("loading reranker {}", pick.model_code))?;
+                .with_intra_threads(std::env::var("MEMHOUSE_RERANK_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| pool_shape(0, 0).1.max(2)));
+            let rr = TextRerank::try_new_from_user_defined(UserDefinedRerankingModel::new(files.onnx, files.tokenizer), opts)
+                .with_context(|| format!("loading reranker {}", pick.model_code))?;
             Ok(LocalReranker { id: format!("local:{}", pick.model_code), max_length: cfg.max_length, model: Arc::new(Mutex::new(rr)) })
         }
     }
@@ -536,6 +566,29 @@ mod tests {
             assert!(batch.len() == 1 || max * batch.len() <= 8192);
             assert!(batch.len() <= 32);
         }
+    }
+
+    /// Downloads the default embedder and reranker into an empty cache (network, ~180 MB), and
+    /// checks the vectors equal those from the cache under `MEMHOUSE_HOME`. Run with `--ignored`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn fresh_download_matches_the_existing_cache() {
+        use memhouse_core::config::{EmbeddingConfig, RerankConfig};
+        use memhouse_core::{EmbedKind, Embedder, Reranker};
+        let fresh = std::env::temp_dir().join(format!("mh-fresh-models-{}", std::process::id()));
+        let texts = vec!["Alice moved to Lisbon in 2021.".to_string(), "The invoice is due on Friday.".to_string()];
+        let cfg = EmbeddingConfig { cache_dir: Some(fresh.clone()), sessions: 1, ..Default::default() };
+        let new = super::local::LocalEmbedder::new(&cfg, true).unwrap().embed(&texts, EmbedKind::Passage).await.unwrap();
+        assert_eq!(new[0].len(), 384);
+        let rr = RerankConfig { enabled: true, ..Default::default() };
+        let scores = super::local::LocalReranker::new(&rr, &Some(fresh.clone()), true).unwrap().rerank("where does Alice live", &texts).await.unwrap();
+        assert!(scores[0] > scores[1], "{scores:?}");
+        let old_cfg = EmbeddingConfig { sessions: 1, ..Default::default() };
+        if memhouse_core::config::home_dir().join("models").exists() {
+            let old = super::local::LocalEmbedder::new(&old_cfg, false).unwrap().embed(&texts, EmbedKind::Passage).await.unwrap();
+            assert_eq!(old, new);
+        }
+        let _ = std::fs::remove_dir_all(fresh);
     }
 }
 

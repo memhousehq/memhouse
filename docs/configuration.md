@@ -391,6 +391,7 @@ metrics and setting up a backend.
 | `MEMHOUSE_ENRICH` | `enrich.enabled` (`1` or `true`) |
 | `MEMHOUSE_ENRICH_MODEL` | `enrich.llm.model` |
 | whatever `api_key_env` names | the key for remote embeddings or the LLM |
+| `HF_HOME`, `HF_ENDPOINT`, `HF_TOKEN` | local models: cache directory (instead of `embedding.cache_dir`), hub mirror, hub token |
 | `RUST_LOG` | log level, e.g. `info,memhouse=debug` |
 
 Empty variables are ignored. Every other key is set in the file.

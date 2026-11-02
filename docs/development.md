@@ -91,7 +91,7 @@ cargo xtask ci
 | fmt | `cargo fmt --all -- --check` (settings in `rustfmt.toml`) | — |
 | spdx headers | `cargo xtask spdx`: every source and doc file carries the licence its path requires | — |
 | secret scan | `cargo xtask secrets`: no credentials or credential files in the tree ([secrets.md](security/secrets.md)) | — |
-| dependency policy | `cargo deny check`: permissive licences only, no known vulnerabilities, crates.io only (`deny.toml`) | `cargo install cargo-deny --locked` |
+| dependency policy | `cargo deny check -D unmatched-wrapper`: permissive licences only, no known vulnerabilities, crates.io only, no bundled CA lists (`deny.toml`) | `cargo install cargo-deny --locked` |
 | clippy | `cargo clippy --workspace --all-targets --release -- -D warnings` (MSRV in `clippy.toml`) | — |
 | unit tests | `cargo test --workspace --release`: gate (including `proptest` properties), query analysis, enrichment parsing, metrics, batching, SQL quoting, plan checker | — |
 | release build | `cargo build --release -p memhouse-cli` | — |

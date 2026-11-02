@@ -118,7 +118,8 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
             eprintln!("\n== dependency policy\ncargo-deny is not installed: `cargo install cargo-deny --locked`");
             record("dependency policy", Instant::now(), false)?;
         }
-        run("dependency policy", cargo(&["deny", "--all-features", "check"]), &mut record)?;
+        // A banned crate reached through anything but its listed wrapper is an error (deny.toml).
+        run("dependency policy", cargo(&["deny", "--all-features", "check", "-D", "unmatched-wrapper"]), &mut record)?;
         // Release profile throughout, so clippy, tests and the binary share one build.
         run("clippy", cargo(&["clippy", "--workspace", "--all-targets", "--release", "--", "-D", "warnings"]), &mut record)?;
         run("unit tests", cargo(&["test", "--workspace", "--release"]), &mut record)?;
