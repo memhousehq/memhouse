@@ -62,11 +62,13 @@ settings() {
   api -X PUT "repos/$ORG/$r/actions/permissions/selected-actions" --input - <<'JSON'
 {"github_owned_allowed": true, "verified_allowed": false, "patterns_allowed": ["dtolnay/rust-toolchain@*", "taiki-e/install-action@*"]}
 JSON
-  api -X PUT "repos/$ORG/$r/actions/permissions/fork-pr-contributor-approval" -f approval_policy=first_time_contributors
 }
 
+# Public repositories only (on the free plan): first-time fork contributors wait for approval,
+# Dependabot, private vulnerability reporting, secret scanning with push protection.
 security() {
   local r="$1"
+  api -X PUT "repos/$ORG/$r/actions/permissions/fork-pr-contributor-approval" -f approval_policy=first_time_contributors
   api -X PUT "repos/$ORG/$r/vulnerability-alerts"
   api -X PUT "repos/$ORG/$r/automated-security-fixes"
   api -X PUT "repos/$ORG/$r/private-vulnerability-reporting"
