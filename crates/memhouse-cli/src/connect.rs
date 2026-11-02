@@ -293,7 +293,7 @@ pub fn verify(launch: &Launch) -> anyhow::Result<String> {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"memhouse-verify","version":"1"}}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"memhouse connection check","k":1}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"recall","arguments":{"query":"memhouse connection check","k":1}}}),
     ];
     for m in &msgs {
         writeln!(stdin, "{m}")?;

@@ -3,6 +3,7 @@
 //! shared by every transport (REST, MCP, CLI, benchmark).
 
 use crate::config::Config;
+use crate::error;
 use crate::gate;
 use crate::query;
 use crate::traits::{ChatModel, EmbedKind, Embedder, Reranker, Store};
@@ -51,6 +52,37 @@ fn request_hash(request: &impl serde::Serialize) -> String {
     content_hash(&v.to_string())
 }
 
+fn encode_cursor(at: chrono::DateTime<Utc>, id: Uuid) -> String {
+    hex::encode(format!("{}.{id}", at.timestamp_micros()))
+}
+
+fn decode_cursor(c: &str) -> anyhow::Result<(chrono::DateTime<Utc>, Uuid)> {
+    let bad = || error::invalid("cursor is not one this API returned");
+    let text = String::from_utf8(hex::decode(c).map_err(|_| bad())?).map_err(|_| bad())?;
+    let (micros, id) = text.split_once('.').ok_or_else(bad)?;
+    let at = chrono::DateTime::from_timestamp_micros(micros.parse().map_err(|_| bad())?).ok_or_else(bad)?;
+    Ok((at, Uuid::parse_str(id).map_err(|_| bad())?))
+}
+
+/// Recall hits as a model-neutral text block (INT-04): one line per memory with its id, kind,
+/// date and tags, most relevant first. MCP returns it as the tool's text content.
+pub fn render(subject: &str, hits: &[Hit]) -> String {
+    if hits.is_empty() {
+        return format!("No relevant memories found for {subject}.");
+    }
+    let lines: Vec<String> = hits
+        .iter()
+        .map(|h| {
+            let m = &h.memory;
+            let when = m.occurred_at.unwrap_or(m.created_at).format("%Y-%m-%d");
+            let tags = if m.tags.is_empty() { String::new() } else { format!(" #{}", m.tags.join(" #")) };
+            format!("- [{}] ({}, {when}{tags}) {}", m.id, m.kind, m.content.replace('\n', "\n  "))
+        })
+        .collect();
+    let noun = if hits.len() == 1 { "memory" } else { "memories" };
+    format!("{} {noun} of {subject} (most relevant first):\n{}", hits.len(), lines.join("\n"))
+}
+
 /// Rough token estimate (4 characters per token) used for context packing.
 pub fn approx_tokens(s: &str) -> usize {
     s.len().div_ceil(4)
@@ -89,8 +121,13 @@ impl Engine {
     /// was used for a different request. `None` means go ahead.
     async fn replay<T: serde::de::DeserializeOwned>(&self, tenant: &str, key: &Option<String>, request: &impl serde::Serialize) -> anyhow::Result<Option<T>> {
         let Some(key) = key else { return Ok(None) };
+        if key.is_empty() || key.len() > 255 || key.chars().any(char::is_control) {
+            return Err(error::invalid("request_key must be 1 to 255 characters without control characters"));
+        }
         let Some((hash, response)) = self.store.request_get(tenant, key).await? else { return Ok(None) };
-        anyhow::ensure!(hash == request_hash(request), "request key '{key}' was already used for a different request");
+        if hash != request_hash(request) {
+            return Err(error::conflict(format!("request key '{key}' was already used for a different request")));
+        }
         Ok(Some(serde_json::from_value(response)?))
     }
 
@@ -182,10 +219,10 @@ impl Engine {
     pub(crate) fn screen(&self, content: &str) -> anyhow::Result<gate::GateOutcome> {
         let g = &self.cfg.governance;
         if content.trim().is_empty() {
-            anyhow::bail!("content is empty");
+            return Err(error::invalid("content is empty"));
         }
         if content.chars().count() > g.max_content_chars {
-            anyhow::bail!("content is {} characters; the limit is {} (governance.max_content_chars)", content.chars().count(), g.max_content_chars);
+            return Err(error::invalid(format!("content is {} characters; the limit is {} (governance.max_content_chars)", content.chars().count(), g.max_content_chars)));
         }
         Ok(gate::screen(content, &g.redact, g.quarantine_injection))
     }
@@ -207,7 +244,9 @@ impl Engine {
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
         if let Some(st) = &req.structured {
-            anyhow::ensure!(!st.record_type.trim().is_empty() && st.attrs.is_object(), "structured needs a record_type and an attrs object");
+            if st.record_type.trim().is_empty() || !st.attrs.is_object() {
+                return Err(error::invalid("structured needs a record_type and an attrs object"));
+            }
         }
         let gated = self.screen(&req.content)?;
         let hash = content_hash(&format!("{}\u{1f}{}", kind.as_str(), gated.content));
@@ -487,6 +526,7 @@ impl Engine {
             keyword_weight: self.cfg.memory.keyword_weight,
             vector_weight: self.cfg.memory.vector_weight,
             windows: vec![],
+            scope: req.scope.clone().unwrap_or_default(),
         };
         // Extra probes: the same query inside the time windows it mentions, and one per sub-query.
         let mut probes: Vec<(SearchQuery, f32)> = vec![];
@@ -571,7 +611,9 @@ impl Engine {
                 )
                 .await?;
         }
+        let rendered = req.render.then(|| render(&subject, &hits));
         Ok(RecallResult {
+            rendered,
             hits,
             took_ms: start.elapsed().as_secs_f64() * 1000.0,
             embed_ms,
@@ -585,19 +627,51 @@ impl Engine {
 
     /// Replace a memory with new content; the old version stays for audit but is no longer recalled.
     pub async fn update(&self, tenant: Option<String>, id: Uuid, content: String, actor: Option<String>) -> anyhow::Result<RememberResult> {
-        let t = self.tenant(&tenant);
-        let old = self.store.get(&t, id).await?.ok_or_else(|| anyhow::anyhow!("memory {id} not found"))?;
-        self.remember(RememberRequest {
-            tenant: Some(t),
-            subject: Some(old.subject),
-            content,
-            kind: Some(old.kind),
-            tags: old.tags,
-            supersedes: Some(id),
-            actor,
-            ..Default::default()
-        })
-        .await
+        self.revise(ReviseRequest { tenant, id, content, actor, ..Default::default() }).await
+    }
+
+    /// A new version of a memory that supersedes the current one (CORE-04). Fields the request
+    /// leaves out are taken from the current version.
+    pub async fn revise(&self, req: ReviseRequest) -> anyhow::Result<RememberResult> {
+        let tenant = self.tenant(&req.tenant);
+        let actor = req.actor.clone().unwrap_or_else(|| "api".into());
+        if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
+            return Ok(done);
+        }
+        let old = self.store.get(&tenant, req.id).await?.ok_or_else(|| error::not_found(format!("memory {} not found", req.id)))?;
+        if old.status != MemoryStatus::Committed {
+            return Err(error::conflict(format!("memory {} is {}; only the current, committed version can be revised", req.id, old.status.as_str())));
+        }
+        let (structured, code_refs) = if req.structured.is_some() && req.code_refs.is_some() {
+            (req.structured.clone(), req.code_refs.clone().unwrap_or_default())
+        } else {
+            let (s, c) = self.store.representations(&tenant, req.id).await?;
+            (req.structured.clone().or(s), req.code_refs.clone().unwrap_or(c))
+        };
+        let inherited_metadata = Some(old.metadata.clone()).filter(|m| m.as_object().is_some_and(|o| !o.is_empty()));
+        let write = RememberRequest {
+            tenant: Some(tenant.clone()),
+            subject: Some(old.subject.clone()),
+            content: req.content.clone(),
+            kind: Some(req.kind.unwrap_or(old.kind)),
+            tags: req.tags.clone().unwrap_or(old.tags),
+            occurred_at: req.occurred_at,
+            valid_to: req.valid_to.or(old.valid_to),
+            supersedes: Some(req.id),
+            source: req.source.clone(),
+            metadata: req.metadata.clone().or(inherited_metadata),
+            actor: Some(actor.clone()),
+            labels: req.labels.clone().unwrap_or(old.labels),
+            scope: Some(req.scope.clone().unwrap_or(old.scope)),
+            user: req.user.clone(),
+            request_key: req.request_key.clone(),
+            expires_at: req.expires_at.or(old.expires_at),
+            structured,
+            code_refs,
+        };
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor).await?;
+        self.remember_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await?;
+        Ok(result)
     }
 
     pub async fn forget(&self, tenant: Option<String>, id: Uuid, actor: Option<String>) -> anyhow::Result<bool> {
@@ -609,6 +683,84 @@ impl Engine {
             self.store.audit(&actor, "memory.delete", &t, mem.as_ref().map(|m| m.subject.as_str()), Some(id), serde_json::json!({})).await?;
         }
         Ok(ok)
+    }
+
+    /// `forget` by record, subject, user, agent, source or the whole tenant (CORE-05), with one
+    /// audit event for the call.
+    pub async fn forget_by(&self, req: ForgetRequest) -> anyhow::Result<ForgetResult> {
+        let tenant = self.tenant(&req.tenant);
+        let actor = req.actor.clone().unwrap_or_else(|| "api".into());
+        let mut named: Vec<(ForgetScope, String)> = vec![];
+        if let Some(id) = req.id {
+            named.push((ForgetScope::Record, id.to_string()));
+        }
+        for (scope, v) in [(ForgetScope::Subject, &req.subject), (ForgetScope::User, &req.user), (ForgetScope::Agent, &req.agent), (ForgetScope::Source, &req.source)] {
+            if let Some(v) = v {
+                if v.trim().is_empty() {
+                    return Err(error::invalid(format!("{} is empty", scope.as_str())));
+                }
+                named.push((scope, v.clone()));
+            }
+        }
+        if req.all {
+            named.push((ForgetScope::Tenant, tenant.clone()));
+        }
+        let [(scope, value)] = named.as_slice() else {
+            return Err(error::invalid("forget needs exactly one of id, subject, user, agent, source or all"));
+        };
+        let (scope, value) = (*scope, value.clone());
+        if scope == ForgetScope::Tenant && req.confirm.as_deref() != Some(tenant.as_str()) {
+            return Err(error::invalid(format!("forgetting the whole tenant needs confirm set to the tenant's name ('{tenant}')")));
+        }
+        if let Some(done) = self.replay::<ForgetResult>(&tenant, &req.request_key, &req).await? {
+            return Ok(done);
+        }
+        // The idempotency key is kept with the subject it is about, so erasing it removes the key.
+        let mut key_subject = match scope {
+            ForgetScope::Subject => value.clone(),
+            _ => String::new(),
+        };
+        let deleted = match scope {
+            ForgetScope::Record => {
+                let id = req.id.expect("named");
+                let mem = self.store.get(&tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
+                key_subject = mem.subject;
+                if !req.dry_run && !self.forget(Some(tenant.clone()), id, Some(actor.clone())).await? {
+                    return Err(error::not_found(format!("memory {id} not found")));
+                }
+                1
+            }
+            _ if req.dry_run => self.store.forget_count(&tenant, scope, &value).await?,
+            ForgetScope::Subject => self.forget_subject(Some(tenant.clone()), &value, Some(actor.clone())).await?,
+            ForgetScope::Tenant => {
+                let n = self.store.delete_tenant(&tenant, &actor).await?;
+                self.store.audit(&actor, "tenant.erase", &tenant, None, None, serde_json::json!({ "records": n })).await?;
+                n
+            }
+            ForgetScope::User | ForgetScope::Agent | ForgetScope::Source => {
+                let before = self.store.forget_count(&tenant, scope, &value).await?;
+                // Each record goes with its full cascade (derived facts, cached vectors, jobs,
+                // ledger row). Facts derived from a match may match too and are then gone already.
+                for _ in 0..=before / 500 + 10 {
+                    let ids = self.store.forget_matches(&tenant, scope, &value, 500).await?;
+                    if ids.is_empty() {
+                        break;
+                    }
+                    for id in ids {
+                        self.store.delete(&tenant, id, &actor).await?;
+                    }
+                }
+                let left = self.store.forget_count(&tenant, scope, &value).await?;
+                anyhow::ensure!(left == 0, "forget by {}: {left} records still match", scope.as_str());
+                self.store.audit(&actor, "memory.forget", &tenant, None, None, serde_json::json!({ "by": scope.as_str(), "value": value, "records": before })).await?;
+                before
+            }
+        };
+        let result = ForgetResult { scope, value, deleted, dry_run: req.dry_run };
+        if !req.dry_run {
+            self.remember_key(&tenant, &key_subject, "forget", &req.request_key, &req, &result).await?;
+        }
+        Ok(result)
     }
 
     pub async fn forget_subject(&self, tenant: Option<String>, subject: &str, actor: Option<String>) -> anyhow::Result<u64> {
@@ -638,7 +790,29 @@ impl Engine {
         offset: usize,
         include_inactive: bool,
     ) -> anyhow::Result<Vec<Memory>> {
-        self.store.list(&ListQuery { tenant: self.tenant(&tenant), subject, kinds, include_inactive, limit: limit.clamp(1, 1000), offset }).await
+        self.store.list(&ListQuery { tenant: self.tenant(&tenant), subject, kinds, include_inactive, limit: limit.clamp(1, 1000), offset, before: None }).await
+    }
+
+    /// One page of a subject's memories, newest first, with keyset paging.
+    pub async fn list_page(
+        &self,
+        tenant: Option<String>,
+        subject: String,
+        kinds: Option<Vec<MemoryKind>>,
+        include_inactive: bool,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> anyhow::Result<MemoryPage> {
+        let limit = limit.clamp(1, 1000);
+        let before = cursor.map(decode_cursor).transpose()?;
+        let mut items = self.store.list(&ListQuery { tenant: self.tenant(&tenant), subject: Some(subject), kinds, include_inactive, limit: limit + 1, offset: 0, before }).await?;
+        let next_cursor = if items.len() > limit {
+            items.truncate(limit);
+            items.last().map(|m| encode_cursor(m.created_at, m.id))
+        } else {
+            None
+        };
+        Ok(MemoryPage { items, next_cursor })
     }
 
     /// Apply retention rules (episodic purge). Returns records removed.

@@ -350,6 +350,7 @@ async fn main() -> anyhow::Result<()> {
             keyword_weight: 1.0,
             vector_weight: 1.0,
             windows: vec![],
+            scope: Default::default(),
         };
         let pgk = store.search(&sq).await?;
         let session_of: HashMap<&str, &str> = rounds.iter().map(|r| (r.id.as_str(), r.session.as_str())).collect();

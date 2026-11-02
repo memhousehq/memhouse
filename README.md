@@ -58,12 +58,14 @@ Tools exposed to the agent:
 
 | Tool | Purpose |
 |---|---|
-| `memory_recall` | Hybrid search over a subject's memory (filters: kinds, tags, `as_of`) |
-| `memory_remember` | Store one durable fact, preference, procedure, decision or commitment |
-| `memory_update` | Supersede a memory that changed; the old version is kept for audit, not recalled |
-| `memory_forget` | Delete a memory permanently |
-| `memory_log_conversation` | Save conversation turns as episodic memory |
-| `memory_list` | Most recent memories of a subject |
+| `recall` | Hybrid search over a subject's memory (filters: kinds, tags, scope, `as_of`, token budget); returns a text block plus structured hits |
+| `remember` | Store one durable fact, preference, procedure, decision or commitment; returns its id and state |
+| `revise` | Supersede a memory that changed; the old version is kept for audit and as-of recall, not recalled |
+| `forget` | Delete permanently: one memory, or everything about a subject, user, agent or source |
+| `ingest` | Save conversation turns as episodic memory |
+| `list_memories` | Most recent memories of a subject |
+
+The pre-v1 names (`memory_recall`, …) still work until 2027-11-02 ([deprecations](docs/api.md#deprecated-routes-and-tool-names)).
 
 The MCP `instructions` field tells the agent how to use memory for the active template.
 
@@ -72,22 +74,27 @@ The MCP `instructions` field tells the agent how to use memory for the active te
 ```bash
 memhouse serve                                   # http://127.0.0.1:7077, Memory Browser at /
 KEY=$(memhouse key)
-curl -s localhost:7077/v1/memories -H "authorization: Bearer $KEY" -H "content-type: application/json" \
+curl -s localhost:7077/v1/remember -H "authorization: Bearer $KEY" -H "content-type: application/json" \
   -d '{"subject":"customer:acme","content":"Acme is on the Enterprise plan; renewal due 2027-03-01","kind":"semantic","tags":["plan"]}'
 curl -s localhost:7077/v1/recall -H "authorization: Bearer $KEY" -H "content-type: application/json" \
   -d '{"subject":"customer:acme","query":"when does Acme renew?"}'
 ```
 
+API v1 ([reference](docs/api.md), OpenAPI 3.1 at `/v1/openapi.json`, [stability policy](docs/api-stability.md)):
+
 | Method | Path | |
 |---|---|---|
-| POST | `/v1/memories` | remember |
-| GET | `/v1/memories?subject=&kind=&limit=&all=` | list |
-| GET / PATCH / DELETE | `/v1/memories/{id}` | get, supersede with new content, delete |
+| POST | `/v1/remember` | propose a memory; returns its id and state |
+| POST | `/v1/recall` | hybrid recall (`query, k, kinds, tags, scope, as_of, token_budget, render, …`) |
+| POST | `/v1/revise` | supersede a memory with a new version |
+| POST | `/v1/forget` | delete by `id`, `subject`, `user`, `agent`, `source` or the whole tenant |
 | POST | `/v1/ingest` | store a conversation (`messages: [{role, content, timestamp?}]`) |
-| POST | `/v1/recall` | hybrid recall (`query, k, kinds, tags, as_of, reference_time, mode, rerank, analyze, token_budget`) |
-| GET | `/v1/subjects`, `/v1/stats`, `/v1/audit` | browse and operate |
-| DELETE | `/v1/subjects/{subject}` | erase everything about a subject |
+| GET | `/v1/memories/{id}` | one memory and its state |
+| GET | `/v1/subjects/{subject}/memories` | list, keyset-paged |
+| GET | `/v1/subjects`, `/v1/stats`, `/v1/audit` | browse and operate (preview) |
 | POST | `/mcp` | MCP over streamable HTTP |
+
+Every write takes an `Idempotency-Key` header: a retry returns the first result and stores nothing more.
 
 ## How it works
 
@@ -116,7 +123,7 @@ agent ──MCP/REST──▶ memhouse (Rust)
 - **Memory kinds:** `episodic` (conversation rounds), `semantic`, `preference`, `procedural`, `commitment`, `document`.
 - **Subjects** partition memory (a user, customer, account or repository). Recall never crosses subjects or tenants. The governance suite checks this on every run.
 - **Time:** every record has an event time (`occurred_at`) and a validity window. `as_of` recall answers "what did we know then"; expired memories drop out of recall automatically.
-- **Supersession:** `memory_update` replaces a fact without losing history.
+- **Supersession:** `revise` replaces a fact without losing history; as-of recall still finds the old version for the time it was true.
 
 ## Benchmark and validate (`memhouse bench`)
 

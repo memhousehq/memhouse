@@ -718,12 +718,15 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             keyword_weight: 1.0,
             vector_weight: 1.0,
             windows,
+            scope: Default::default(),
         };
+        let scoped = SearchQuery { scope: Scope { team: Some("support".into()), user: Some("ana".into()), ..Default::default() }, ..probe(RetrievalMode::Hybrid, vec![], None) };
         let variants = [
             ("hybrid", probe(RetrievalMode::Hybrid, vec![], None)),
             ("dense", probe(RetrievalMode::Dense, vec![], None)),
             ("keyword", probe(RetrievalMode::Keyword, vec![], None)),
             ("window+kinds", probe(RetrievalMode::Hybrid, vec![(now - chrono::Duration::days(30), now)], Some(vec![MemoryKind::Episodic]))),
+            ("scoped", scoped),
         ];
         let mut checked = 0;
         let mut violations = vec![];
@@ -814,6 +817,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 keyword_weight: 1.0,
                 vector_weight: 1.0,
                 windows: vec![],
+                scope: Default::default(),
             };
             let hits = engine.store.search(&q).await?;
             let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();
@@ -972,6 +976,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
 
     // 20–24. Schema v2: idempotency, lifecycle, representations, the format and the upgrade.
     checks.extend(crate::schema_checks::run(engine, run_id).await);
+
+    // 25–28. API v1 over HTTP: the contract, idempotent retries, revisions and forget scopes.
+    checks.extend(crate::api_checks::run(engine).await);
 
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {

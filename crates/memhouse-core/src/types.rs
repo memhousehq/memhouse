@@ -2,11 +2,12 @@
 //! Public data types shared by the engine, the store adapters, the API and the benchmark.
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Kinds of memory (requirements MEM-01..MEM-06).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryKind {
     /// Short-lived task context for one session; expires (MEM-01).
@@ -60,7 +61,7 @@ impl std::fmt::Display for MemoryKind {
 ///     │  └► rejected │
 ///     └──► quarantined ◄┘ ──► rejected   (quarantined ──► committed on release)
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryStatus {
     /// Proposed, waiting for its gate (asynchronous admission, G10).
@@ -114,7 +115,7 @@ impl MemoryStatus {
 
 /// Narrower visibility inside a subject (MEM-04). All empty means the whole subject; resolution
 /// order (user over team over org) is applied by recall from G11.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Scope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -137,7 +138,7 @@ impl Scope {
 
 /// Who and what admitted a record (GOV-03), and which model derived it (TR-MS-02). The source
 /// turn is the record's `session_id` and `turn_ref`; its confidence is `confidence`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Provenance {
     /// The writing agent (principal).
@@ -166,7 +167,7 @@ impl Provenance {
 }
 
 /// The queryable form of a structured record (HYB-02), under the same id as its text.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Structured {
     pub record_type: String,
@@ -175,7 +176,7 @@ pub struct Structured {
 }
 
 /// A file a memory is about (TR-TPL-02): stale when the file's content hash changes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodeRef {
     pub path: String,
@@ -184,7 +185,7 @@ pub struct CodeRef {
 
 /// A reference from one subject to another (ACC-06), stored with the subject that holds it.
 /// Following it also needs a relationship with the linked subject (enforced from G27).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Link {
     pub tenant: String,
@@ -199,32 +200,44 @@ pub struct Link {
 }
 
 /// A stored memory record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Memory {
     pub id: Uuid,
     pub tenant: String,
+    /// Whose memory it is.
     pub subject: String,
     pub kind: MemoryKind,
+    /// Lifecycle state; only `committed` records are recalled.
     pub status: MemoryStatus,
+    /// The text, after redaction.
     pub content: String,
+    /// The conversation it came from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The messages it came from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_ref: Option<String>,
     /// When the remembered thing happened (event time), if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<DateTime<Utc>>,
+    /// When the memory became true.
     pub valid_from: DateTime<Utc>,
+    /// When it stopped being true; set when it is superseded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<DateTime<Utc>>,
+    /// The previous version, which this record replaced.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<Uuid>,
+    /// Sensitivity labels.
     #[serde(default)]
     pub labels: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Source label: the writer by default, `enrich:<model>` for extracted facts.
     pub source: String,
+    /// 0 to 1.
     pub confidence: f32,
+    /// Free-form JSON object.
     #[serde(default)]
     pub metadata: serde_json::Value,
     pub created_at: DateTime<Utc>,
@@ -318,10 +331,12 @@ pub struct ReembedEstimate {
 }
 
 /// One message of a conversation handed to `ingest`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Message {
+    /// `user`, `assistant`, or a participant's name in a multi-party conversation.
     pub role: String,
     pub content: String,
+    /// When the message was sent; defaults to the request's `session_time`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
     /// Caller's own reference for the message (for provenance and evaluation).
@@ -329,70 +344,221 @@ pub struct Message {
     pub id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Propose one memory (`remember`, CORE-01).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct RememberRequest {
+    /// The tenant; defaults to the configured one.
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Whose memory it is, e.g. `user:alice`, `customer:42`, `repo:api`. Defaults to the configured subject.
     #[serde(default)]
     pub subject: Option<String>,
+    /// The memory, written so it stands alone (who, what, when), ideally one fact.
     pub content: String,
+    /// Defaults to `semantic`.
     #[serde(default)]
     pub kind: Option<MemoryKind>,
+    /// Free tags, usable as recall filters.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// When the remembered thing happened; defaults to now.
     #[serde(default)]
     pub occurred_at: Option<DateTime<Utc>>,
+    /// When it stops being true (a due date, an expiry).
     #[serde(default)]
     pub valid_to: Option<DateTime<Utc>>,
-    /// Replace an existing memory with this one (supersession, CORE-03).
+    /// Replace an existing memory with this one; prefer `revise`.
     #[serde(default)]
     pub supersedes: Option<Uuid>,
+    /// Source label; defaults to the actor.
     #[serde(default)]
     pub source: Option<String>,
+    /// Free-form JSON object, stored as given.
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+    /// Who makes the change, for the audit log; defaults to the `x-memhouse-actor` header. From
+    /// API keys per principal (G06) the authenticated principal is used instead.
     #[serde(default)]
     pub actor: Option<String>,
-    /// Sensitivity labels (ACC-04); recall can exclude them.
+    /// Sensitivity labels (ACC-04); `governance.denied_labels` keeps them out of recall.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Narrower visibility inside the subject (MEM-04).
     #[serde(default)]
     pub scope: Option<Scope>,
     /// The user the calling agent acts for (provenance).
     #[serde(default)]
     pub user: Option<String>,
-    /// Idempotency key: a repeat with the same key and request returns the first result (CORE-06).
+    /// Idempotency key (or the `Idempotency-Key` header): a repeat with the same key and request
+    /// returns the first result; the same key with another request is a conflict (CORE-06).
     #[serde(default)]
     pub request_key: Option<String>,
-    /// Working memory and other short-lived records; working memory defaults to `memory.working_ttl_secs`.
+    /// When it stops being recalled; `working` memory defaults to now + `memory.working_ttl_secs`.
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    /// The queryable form of the record (an order, a ticket), under the same id.
     #[serde(default)]
     pub structured: Option<Structured>,
+    /// Files the memory is about, for staleness checks.
     #[serde(default)]
     pub code_refs: Vec<CodeRef>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// What a write did. The id is returned at once; `status` says the record's state, which can
+/// also be read later with `GET /v1/memories/{id}` (CORE-02).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RememberResult {
+    /// The record's id. For a deduplicated write, the id of the memory already stored.
     pub id: Uuid,
+    /// `committed` or `quarantined` today; `candidate` once admission is asynchronous (G10).
+    /// Clients must not assume a write is committed.
     pub status: MemoryStatus,
     /// True when an equivalent memory already existed and nothing new was written.
     pub deduplicated: bool,
+    /// Kinds of sensitive data redacted from the text (`card`, `secret`, ...).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redactions: Vec<String>,
+    /// The record this write superseded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded: Option<Uuid>,
+    /// Why the write was deduplicated or quarantined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Correct a memory (`revise`, CORE-04): a new version that supersedes the current one. Fields
+/// left out are taken from the current version (kind, tags, labels, scope, metadata, validity,
+/// structured form, code references).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+pub struct ReviseRequest {
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// The memory to revise; it must be the current (`committed`) version.
+    pub id: Uuid,
+    /// The corrected memory.
+    pub content: String,
+    #[serde(default)]
+    pub kind: Option<MemoryKind>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
+    #[serde(default)]
+    pub occurred_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub valid_to: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub scope: Option<Scope>,
+    #[serde(default)]
+    pub structured: Option<Structured>,
+    #[serde(default)]
+    pub code_refs: Option<Vec<CodeRef>>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Idempotency key, as for `remember`.
+    #[serde(default)]
+    pub request_key: Option<String>,
+}
+
+/// Delete memories (`forget`, CORE-05). Name exactly one of `id`, `subject`, `user`, `agent`,
+/// `source` or `all`. Deletion is permanent and includes every derived representation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+pub struct ForgetRequest {
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// One record (and the facts derived from it).
+    #[serde(default)]
+    pub id: Option<Uuid>,
+    /// Everything held about a subject (right to erasure).
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Records the user wrote through an agent or that are scoped to the user, in any subject.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Records written by the agent or scoped to it, in any subject.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Records with this source label, in any subject.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The whole tenant. Needs `confirm` set to the tenant's name.
+    #[serde(default)]
+    pub all: bool,
+    /// The tenant's name, when `all` is set.
+    #[serde(default)]
+    pub confirm: Option<String>,
+    /// Count what would be deleted, delete nothing.
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub actor: Option<String>,
+    /// Idempotency key: a repeat returns the first result instead of `not_found`.
+    #[serde(default)]
+    pub request_key: Option<String>,
+}
+
+/// What a `forget` matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgetScope {
+    Record,
+    Subject,
+    User,
+    Agent,
+    Source,
+    Tenant,
+}
+
+impl ForgetScope {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ForgetScope::Record => "record",
+            ForgetScope::Subject => "subject",
+            ForgetScope::User => "user",
+            ForgetScope::Agent => "agent",
+            ForgetScope::Source => "source",
+            ForgetScope::Tenant => "tenant",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ForgetResult {
+    pub scope: ForgetScope,
+    /// The id, subject, user, agent, source or tenant named.
+    pub value: String,
+    /// Records deleted (or, with `dry_run`, that would be). Facts derived from them are deleted
+    /// too and are not counted unless they match themselves.
+    pub deleted: u64,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// One page of a list. Pass `next_cursor` back as `cursor` for the next page; it is absent on the
+/// last page. Cursors are opaque.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryPage {
+    pub items: Vec<Memory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Store a conversation as episodic memory, one record per user/assistant round.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct IngestRequest {
     #[serde(default)]
     pub tenant: Option<String>,
     #[serde(default)]
     pub subject: Option<String>,
+    /// Groups the rounds; also the unit of background enrichment. Defaults to a new id.
     #[serde(default)]
     pub session_id: Option<String>,
     /// Session start time; used for messages without their own timestamp.
@@ -411,19 +577,24 @@ pub struct IngestRequest {
     pub scope: Option<Scope>,
     #[serde(default)]
     pub user: Option<String>,
+    /// Idempotency key, as for `remember`.
     #[serde(default)]
     pub request_key: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct IngestResult {
+    /// Rounds stored.
     pub stored: usize,
+    /// Rounds stored as quarantined (never recalled).
     pub quarantined: usize,
+    /// Rounds already stored, skipped.
     pub deduplicated: usize,
+    /// Ids of the rounds stored.
     pub ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RetrievalMode {
     #[default]
@@ -432,20 +603,30 @@ pub enum RetrievalMode {
     Keyword,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Retrieve memories for a context (`recall`, CORE-03).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct RecallRequest {
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Whose memory to search. Recall never crosses subjects.
     #[serde(default)]
     pub subject: Option<String>,
+    /// What you need to know, in natural language.
     pub query: String,
+    /// Number of memories to return (default `memory.default_k`, at most 200).
     #[serde(default)]
     pub k: Option<usize>,
+    /// Only these kinds.
     #[serde(default)]
     pub kinds: Option<Vec<MemoryKind>>,
+    /// Only memories with at least one of these tags.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
-    /// Recall the state of memory as of this time (validity and event-time filter).
+    /// Only memories visible in this scope: each scope field the request sets matches records
+    /// with the same value or none. Unset fields don't filter.
+    #[serde(default)]
+    pub scope: Option<Scope>,
+    /// Recall what was true at this time (validity and event-time filter).
     #[serde(default)]
     pub as_of: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -453,7 +634,7 @@ pub struct RecallRequest {
     /// Override the configured reranker on/off.
     #[serde(default)]
     pub rerank: Option<bool>,
-    /// Approximate token budget for the returned context.
+    /// Approximate token budget for the returned memories.
     #[serde(default)]
     pub token_budget: Option<usize>,
     /// Override query analysis (time windows and sub-queries) on/off.
@@ -463,26 +644,32 @@ pub struct RecallRequest {
     /// the current time. Unlike `as_of` it filters nothing.
     #[serde(default)]
     pub reference_time: Option<DateTime<Utc>>,
+    /// Also return the memories as a text block ready for a prompt (`rendered`, INT-04).
+    #[serde(default)]
+    pub render: bool,
     #[serde(default)]
     pub actor: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Hit {
     pub memory: Memory,
+    /// Fused score; compare it only within one response.
     pub score: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keyword_rank: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vector_rank: Option<i32>,
+    /// Cosine similarity of the best vector.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub similarity: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank_score: Option<f32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RecallResult {
+    /// Ranked memories, most relevant first, each with its id and provenance.
     pub hits: Vec<Hit>,
     pub took_ms: f64,
     /// Time spent embedding the query, in the SQL statement, and reranking.
@@ -497,6 +684,9 @@ pub struct RecallResult {
     /// How the query was read: time windows and sub-queries that got their own retrieval probe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<crate::query::QueryPlan>,
+    /// The hits as a model-neutral text block, when the request set `render`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<String>,
 }
 
 /// Parameters passed from the engine to a store's single-statement hybrid search.
@@ -522,6 +712,8 @@ pub struct SearchQuery {
     pub vector_weight: f32,
     /// Only memories whose event time falls in one of these `[start, end)` windows (empty = any time).
     pub windows: Vec<(DateTime<Utc>, DateTime<Utc>)>,
+    /// Only records visible in this scope (see `RecallRequest::scope`).
+    pub scope: Scope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -532,9 +724,12 @@ pub struct ListQuery {
     pub include_inactive: bool,
     pub limit: usize,
     pub offset: usize,
+    /// Keyset paging: only records ordered after this (created_at, id), newest first.
+    #[serde(default)]
+    pub before: Option<(DateTime<Utc>, Uuid)>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuditEvent {
     pub id: i64,
     pub at: DateTime<Utc>,
@@ -548,7 +743,7 @@ pub struct AuditEvent {
     pub hash: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct Stats {
     pub memories: i64,
     pub committed: i64,
@@ -600,7 +795,7 @@ pub struct EnrichOutcome {
     pub lag_ms: f64,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct EnrichStatus {
     pub pending: i64,
     pub running: i64,

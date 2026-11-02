@@ -11,7 +11,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TimeWindow {
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
@@ -22,7 +22,7 @@ pub struct TimeWindow {
     pub meaning: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QueryPlan {
     pub windows: Vec<TimeWindow>,
     pub subqueries: Vec<String>,

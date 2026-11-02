@@ -70,13 +70,13 @@ async function load(){
 }
 function pick(s){SUBJECT=s;document.getElementById('q').value='';load()}
 async function showList(){if(!SUBJECT)return;const k=document.getElementById('kind').value;const all=document.getElementById('all').checked;
-  const ms=await api(`/v1/memories?subject=${encodeURIComponent(SUBJECT)}&limit=200${k?'&kind='+k:''}${all?'&all=true':''}`);
+  const ms=(await api(`/v1/subjects/${encodeURIComponent(SUBJECT)}/memories?limit=200${k?'&kinds='+k:''}${all?'&include_inactive=true':''}`)).items;
   document.getElementById('list').innerHTML=`<p class="muted">${ms.length} most recent memories of <span class="mono">${esc(SUBJECT)}</span></p>`+ms.map(m=>card(m)).join('')}
 async function search(){const q=document.getElementById('q').value.trim();if(!q)return showList();const k=document.getElementById('kind').value;
   const r=await api('/v1/recall',{method:'POST',body:JSON.stringify({subject:SUBJECT,query:q,k:20,kinds:k?[k]:null})});
   document.getElementById('list').innerHTML=`<p class="muted">${r.hits.length} results in ${r.took_ms.toFixed(1)} ms${r.reranked?' (reranked)':''}</p>`+r.hits.map(h=>card(h.memory,`<span class="chip">score ${h.score.toFixed(3)}${h.keyword_rank?` · kw #${h.keyword_rank}`:''}${h.vector_rank?` · vec #${h.vector_rank}`:''}</span>`)).join('')}
-async function add(){const c=document.getElementById('new').value.trim();if(!c)return;const r=await api('/v1/memories',{method:'POST',body:JSON.stringify({subject:SUBJECT,content:c})});document.getElementById('new').value='';if(r.note)alert(r.note);load()}
-async function del(id){if(!confirm('Permanently delete this memory?'))return;await api('/v1/memories/'+id,{method:'DELETE'});load()}
+async function add(){const c=document.getElementById('new').value.trim();if(!c)return;const r=await api('/v1/remember',{method:'POST',body:JSON.stringify({subject:SUBJECT,content:c})});document.getElementById('new').value='';if(r.note)alert(r.note);load()}
+async function del(id){if(!confirm('Permanently delete this memory?'))return;await api('/v1/forget',{method:'POST',body:JSON.stringify({id})});load()}
 load();
 </script>
 </body>

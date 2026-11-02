@@ -85,7 +85,7 @@ tested.
 | `ip` (opt-in) | IPv4 addresses | `[REDACTED:ip]` |
 
 ```bash
-curl -s localhost:7077/v1/memories -H "authorization: Bearer $KEY" -H "content-type: application/json" \
+curl -s localhost:7077/v1/remember -H "authorization: Bearer $KEY" -H "content-type: application/json" \
   -d '{"subject":"customer:acme","content":"Card on file is 4111 1111 1111 1111, contact via ticket only"}'
 # {"id":"…","status":"committed","deduplicated":false,"redactions":["card"]}
 # stored content: "Card on file is [REDACTED:card], contact via ticket only"
@@ -153,21 +153,34 @@ flowchart LR
     A["A: 'Enterprise plan'<br/>status = superseded<br/>superseded_by = B"] --> B["B: 'Enterprise Plus since 2026-10-20'<br/>status = committed<br/>supersedes = A"]
 ```
 
-- Recall returns only B. `GET /v1/memories?all=true`, `memhouse list --all` and the export show both.
+- Recall returns only B. `GET /v1/subjects/{subject}/memories?include_inactive=true`, `memhouse
+  list --all` and the export show both. `POST /v1/revise` (MCP `revise`, `memhouse revise`) only
+  revises the current version, so two corrections can't fork the history.
 - `valid_to` gives a memory an expiry: an offer that ends, a temporary address. After that time it
   drops out of recall but stays in the store.
 - `as_of` recall reconstructs what the system knew at a point in time, which is useful for dispute
-  handling ("what did the agent know when it said that?").
+  handling ("what did the agent know when it said that?"). It returns A for times before B was
+  written: A's validity ends exactly when B's starts.
 
 ## Deletion and the right to erasure
 
-Two operations exist, and both are hard deletes, not soft-delete flags.
+`forget` (CORE-05) has six scopes, and every one is a hard delete, not a soft-delete flag. Each
+call writes one audit event; each record deleted gets a deletion-ledger row.
 
-| Request | API | CLI |
-|---|---|---|
-| Forget one memory | `DELETE /v1/memories/{id}` | `memhouse forget <id>` |
-| Erase a data subject | `DELETE /v1/subjects/{subject}` | `memhouse forget --subject customer:acme` |
-| Agent-initiated | MCP `memory_forget` | |
+| Request | API (`POST /v1/forget`) | CLI | Audit event |
+|---|---|---|---|
+| Forget one memory | `{"id": "…"}` | `memhouse forget <id>` | `memory.delete` |
+| Erase a data subject | `{"subject": "customer:acme"}` | `memhouse forget --subject customer:acme` | `subject.erase` |
+| Everything a user wrote through agents, or scoped to the user, in every subject | `{"user": "user:ana"}` | `memhouse forget --user user:ana` | `memory.forget` |
+| Everything an agent wrote, or scoped to it | `{"agent": "support-bot"}` | `memhouse forget --agent support-bot` | `memory.forget` |
+| Everything from one source (an import, a connector) | `{"source": "crm-import"}` | `memhouse forget --source crm-import` | `memory.forget` |
+| A whole tenant | `{"all": true, "confirm": "<tenant>"}` | | `tenant.erase` |
+| Agent-initiated | MCP `forget` (every scope but the tenant) | | as above |
+
+Add `"dry_run": true` (`--dry-run`) to count first. The CLI asks before a bulk deletion unless
+given `--yes`. The governance check `forget_scopes` runs every mode on seeded data and finds no
+matching record, cached vector, structured row or code reference left, and one audit event per
+call.
 
 What is removed:
 
@@ -349,7 +362,7 @@ Run it in CI and keep the reports: they are audit evidence for every release.
 | Data minimisation | GDPR Art. 5(1)(c) | redaction before storage; templates tell agents what to store; `min_user_chars` |
 | Right of access / portability | GDPR Art. 15, 20 | `memhouse export --subject` (JSONL) |
 | Right to erasure | GDPR Art. 17, CCPA | subject erasure incl. derived data and caches; deletion ledger for backups |
-| Rectification | GDPR Art. 16 | `PATCH` / `memory_update` with history kept |
+| Rectification | GDPR Art. 16 | `POST /v1/revise` / MCP `revise`, with history kept |
 | Storage limitation | GDPR Art. 5(1)(e) | `episodic_retention_days` (cascades to derived facts), `valid_to` |
 | Records of processing / accountability | GDPR Art. 30, SOC 2 CC7 | hash-chained audit log with actors |
 | Integrity of records | SOX, SEC 17a-4 (supporting), HIPAA §164.312(c) | tamper-evident chain plus external anchoring |

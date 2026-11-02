@@ -3,7 +3,8 @@
 
 | Guide | Read it when you want to… |
 |---|---|
-| [API reference](api.md) | call MemHouse from code or an agent: REST, MCP, request and response examples, client snippets |
+| [API reference](api.md) | call MemHouse from code or an agent: REST, MCP, request and response examples, client snippets, deprecations |
+| [API stability policy](api-stability.md) | know what can change in API v1 and what can't, how deprecation works, and how compatibility is checked |
 | [Configuration reference](configuration.md) | change a setting: every key, its default, its environment variable, templates, recipes |
 | [Operations guide](operations.md) | run it on a server or in the cloud: deployment, TLS, sizing, enrichment workers, backups, upgrades, monitoring, troubleshooting |
 | [Governance and compliance](governance.md) | answer a security or privacy review: data flows, redaction, quarantine, erasure, audit chain, control mapping, known gaps |

@@ -314,15 +314,17 @@ API. That way imported records pass the same gate and audit as everything else.
 ```mermaid
 flowchart LR
     CRM[(CRM / helpdesk)] -->|"changed records<br/>since cursor"| J[sync job]
-    J -->|"POST /v1/memories<br/>supersedes = previous id"| MH[MemHouse]
+    J -->|"POST /v1/remember, or /v1/revise<br/>of the previous id"| MH[MemHouse]
     J <-->|"external id → memory id<br/>+ cursor"| KV[(small state file / table)]
 ```
 
 The rules that keep it correct:
 
 - **One subject per external entity** (`account:<crm-id>`).
-- **Supersede, don't append.** Keep a map from external field to memory id, and send `supersedes`
+- **Revise, don't append.** Keep a map from external field to memory id, and `revise` that id
   when a value changes, so recall never sees two plans for one account.
+- **Send an idempotency key** made of the external id, the field and its change time, so a job
+  that crashes and runs again writes nothing twice.
 - **Set `source`** to the system (`hubspot`) and `actor` to the job, so audits show where a fact came from.
 - **Set `occurred_at`** to the record's change time, not the sync time.
 - **Propagate deletions:** when the CRM deletes a contact, erase the subject.
@@ -347,12 +349,16 @@ for deal in fetch_changed_deals(since=state["cursor"]):          # your CRM clie
     subject = f"account:{deal['account_id']}"
     for field, text in facts(deal):
         key = f"{deal['id']}:{field}"
-        body = {"subject": subject, "content": text, "kind": "semantic", "tags": ["deal", field],
-                "source": "hubspot", "occurred_at": deal["updated_at"]}
-        if key in state["ids"]:
-            body["supersedes"] = state["ids"][key]
-        r = MH.post("/v1/memories", json=body).raise_for_status().json()
-        state["ids"][key] = r["id"]       # unchanged text is deduplicated and keeps its id
+        prev = state["ids"].get(key)
+        if prev and prev["text"] == text:
+            continue                      # unchanged: nothing to write
+        body = {"content": text, "tags": ["deal", field], "source": "hubspot", "occurred_at": deal["updated_at"]}
+        retry_safe = {"idempotency-key": f"hubspot:{key}:{deal['updated_at']}"}
+        if prev:
+            r = MH.post("/v1/revise", json={"id": prev["id"], **body}, headers=retry_safe)
+        else:
+            r = MH.post("/v1/remember", json={"subject": subject, "kind": "semantic", **body}, headers=retry_safe)
+        state["ids"][key] = {"id": r.raise_for_status().json()["id"], "text": text}
     state["cursor"] = deal["updated_at"]
     STATE.write_text(json.dumps(state))
 ```
@@ -360,6 +366,28 @@ for deal in fetch_changed_deals(since=state["cursor"]):          # your CRM clie
 The planned plugin interface will move this loop into the server: a `ContextProvider` adapter
 with cursor-based `pull`, an id map kept in Postgres, and a scheduler. The rules above are the
 contract it will follow, so sync jobs written now will port across directly.
+
+## Change the API
+
+API v1 is frozen ([stability policy](api-stability.md)). Within v1 a change may only add.
+
+1. Change the request or response type in `memhouse-core/src/types.rs`. Doc comments become the
+   field descriptions in the OpenAPI document and in the MCP tool schemas, so write them for API
+   users.
+2. For a new route, add the handler in `memhouse-server/src/lib.rs` and the operation in
+   `openapi::ops`. For a new MCP tool, add it in `mcp::build_tools` with the REST body's
+   properties it offers.
+3. Regenerate the published document: `MEMHOUSE_WRITE_OPENAPI=1 cargo test -p memhouse-server
+   openapi`. Commit `api/openapi.json` with the change.
+4. `cargo test -p memhouse-server` fails on any breaking change against
+   `api/baseline/openapi-1.0.0.json`. If it fails, the change needs a new field or route, not an
+   edit to the old one.
+5. Cover the behaviour in the governance check `api_contract` (`crates/memhouse-bench/src/api_checks.rs`).
+   It fails if a documented operation is never called.
+
+Deprecating a route: add it to `openapi::DEPRECATED` with its successor. The server then sends
+the deprecation headers, and the document marks it. List it in the deprecation table of the
+stability policy.
 
 ## Change the schema
 

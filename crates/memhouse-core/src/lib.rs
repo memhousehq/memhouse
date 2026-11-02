@@ -4,6 +4,7 @@
 pub mod config;
 pub mod engine;
 pub mod enrich;
+pub mod error;
 pub mod format;
 pub mod gate;
 pub mod query;

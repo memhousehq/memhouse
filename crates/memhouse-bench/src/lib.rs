@@ -3,6 +3,7 @@
 //! benchmarks (LongMemEval, LoCoMo) and the governance/safety gates against a real engine, and
 //! writes reproducible reports.
 
+mod api_checks;
 pub mod baselines;
 pub mod datasets;
 pub mod governance;

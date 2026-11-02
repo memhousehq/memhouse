@@ -108,6 +108,24 @@ pub trait Store: Send + Sync {
     async fn expire_due(&self, tenant: &str) -> anyhow::Result<u64>;
     /// Structured records of a subject by type, matched exactly on attributes (HYB-02).
     async fn structured_query(&self, tenant: &str, subject: &str, record_type: &str, attrs: &serde_json::Value) -> anyhow::Result<Vec<(Uuid, serde_json::Value)>>;
+    /// The structured form and code references stored under a record's id.
+    async fn representations(&self, _tenant: &str, _id: Uuid) -> anyhow::Result<(Option<Structured>, Vec<CodeRef>)> {
+        Ok((None, vec![]))
+    }
+    /// Ids of records matched by a `forget` by user, agent or source (CORE-05), in any state and
+    /// any subject: `user` matches the acting user or the user scope, `agent` the writing agent
+    /// or the agent scope, `source` the source label.
+    async fn forget_matches(&self, _tenant: &str, _scope: ForgetScope, _value: &str, _limit: usize) -> anyhow::Result<Vec<Uuid>> {
+        anyhow::bail!("this store can't forget by user, agent or source")
+    }
+    /// How many records a `forget` would delete, for every scope but `record`.
+    async fn forget_count(&self, _tenant: &str, _scope: ForgetScope, _value: &str) -> anyhow::Result<u64> {
+        anyhow::bail!("this store can't count records to forget")
+    }
+    /// Erase a whole tenant: every subject with the cascade of `delete_subject`. Returns records removed.
+    async fn delete_tenant(&self, _tenant: &str, _actor: &str) -> anyhow::Result<u64> {
+        anyhow::bail!("this store can't erase a tenant")
+    }
     /// Code references of a subject (a repository) whose stored hash differs from the given one.
     async fn stale_code_refs(&self, tenant: &str, subject: &str, path: &str, blob_hash: &str) -> anyhow::Result<Vec<Uuid>>;
 

@@ -1,0 +1,2872 @@
+{
+  "components": {
+    "parameters": {
+      "Actor": {
+        "description": "Who makes the change, for the audit log (up to 80 characters). Replaced by the authenticated principal from G06.",
+        "in": "header",
+        "name": "x-memhouse-actor",
+        "required": false,
+        "schema": {
+          "maxLength": 80,
+          "type": "string"
+        }
+      },
+      "IdempotencyKey": {
+        "description": "1 to 255 characters. A repeat with the same key and request returns the first response; the same key with another request is a 409. Same as the body's `request_key`.",
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": false,
+        "schema": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "AuditEvent": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "detail": true,
+          "hash": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "memory_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prev_hash": {
+            "type": "string"
+          },
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "actor",
+          "action",
+          "tenant",
+          "detail",
+          "prev_hash",
+          "hash"
+        ],
+        "type": "object"
+      },
+      "CodeRef": {
+        "additionalProperties": false,
+        "description": "A file a memory is about (TR-TPL-02): stale when the file's content hash changes.",
+        "properties": {
+          "blob_hash": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "blob_hash"
+        ],
+        "type": "object"
+      },
+      "EnrichStatus": {
+        "properties": {
+          "done": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "failed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pending": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "running": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "running",
+          "done",
+          "failed"
+        ],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "description": "The body of every error response.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "error": {
+            "description": "What went wrong, for people. The wording may change between releases.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "code"
+        ],
+        "type": "object"
+      },
+      "ErrorCode": {
+        "description": "Stable machine-readable error codes. Clients branch on these, never on the message text.",
+        "oneOf": [
+          {
+            "const": "invalid_request",
+            "description": "The request is malformed or fails validation (400).",
+            "type": "string"
+          },
+          {
+            "const": "unauthorized",
+            "description": "Missing or wrong API key (401).",
+            "type": "string"
+          },
+          {
+            "const": "not_found",
+            "description": "The record (or route) doesn't exist (404).",
+            "type": "string"
+          },
+          {
+            "const": "conflict",
+            "description": "The request conflicts with the stored state: an idempotency key reused for another\nrequest, or a revision of a record that is no longer the current version (409).",
+            "type": "string"
+          },
+          {
+            "const": "internal",
+            "description": "A failure inside MemHouse or its database or models (500).",
+            "type": "string"
+          }
+        ]
+      },
+      "ForgetRequest": {
+        "description": "Delete memories (`forget`, CORE-05). Name exactly one of `id`, `subject`, `user`, `agent`,\n`source` or `all`. Deletion is permanent and includes every derived representation.",
+        "properties": {
+          "actor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent": {
+            "default": null,
+            "description": "Records written by the agent or scoped to it, in any subject.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "all": {
+            "default": false,
+            "description": "The whole tenant. Needs `confirm` set to the tenant's name.",
+            "type": "boolean"
+          },
+          "confirm": {
+            "default": null,
+            "description": "The tenant's name, when `all` is set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dry_run": {
+            "default": false,
+            "description": "Count what would be deleted, delete nothing.",
+            "type": "boolean"
+          },
+          "id": {
+            "default": null,
+            "description": "One record (and the facts derived from it).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_key": {
+            "default": null,
+            "description": "Idempotency key: a repeat returns the first result instead of `not_found`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "default": null,
+            "description": "Records with this source label, in any subject.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "default": null,
+            "description": "Everything held about a subject (right to erasure).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "Records the user wrote through an agent or that are scoped to the user, in any subject.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "ForgetResult": {
+        "properties": {
+          "deleted": {
+            "description": "Records deleted (or, with `dry_run`, that would be). Facts derived from them are deleted\ntoo and are not counted unless they match themselves.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ForgetScope"
+          },
+          "value": {
+            "description": "The id, subject, user, agent, source or tenant named.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "value",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "ForgetScope": {
+        "description": "What a `forget` matched.",
+        "enum": [
+          "record",
+          "subject",
+          "user",
+          "agent",
+          "source",
+          "tenant"
+        ],
+        "type": "string"
+      },
+      "Health": {
+        "description": "Health check body.",
+        "properties": {
+          "api_version": {
+            "description": "The API version (`API_VERSION`).",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "description": "The server version.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version",
+          "api_version"
+        ],
+        "type": "object"
+      },
+      "Hit": {
+        "properties": {
+          "keyword_rank": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "memory": {
+            "$ref": "#/components/schemas/Memory"
+          },
+          "rerank_score": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "score": {
+            "description": "Fused score; compare it only within one response.",
+            "format": "float",
+            "type": "number"
+          },
+          "similarity": {
+            "description": "Cosine similarity of the best vector.",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "vector_rank": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "memory",
+          "score"
+        ],
+        "type": "object"
+      },
+      "IngestRequest": {
+        "description": "Store a conversation as episodic memory, one record per user/assistant round.",
+        "properties": {
+          "actor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "type": "array"
+          },
+          "per_message": {
+            "default": false,
+            "description": "Store every message as its own record instead of grouping user/assistant rounds\n(use for multi-party conversations without a \"user\" role).",
+            "type": "boolean"
+          },
+          "request_key": {
+            "default": null,
+            "description": "Idempotency key, as for `remember`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "session_id": {
+            "default": null,
+            "description": "Groups the rounds; also the unit of background enrichment. Defaults to a new id.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_time": {
+            "default": null,
+            "description": "Session start time; used for messages without their own timestamp.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "type": "object"
+      },
+      "IngestResult": {
+        "properties": {
+          "deduplicated": {
+            "description": "Rounds already stored, skipped.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ids": {
+            "description": "Ids of the rounds stored.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "quarantined": {
+            "description": "Rounds stored as quarantined (never recalled).",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stored": {
+            "description": "Rounds stored.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stored",
+          "quarantined",
+          "deduplicated",
+          "ids"
+        ],
+        "type": "object"
+      },
+      "LegacyDeleted": {
+        "description": "The pre-v1 delete response.",
+        "properties": {
+          "deleted": true,
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "Memory": {
+        "description": "A stored memory record.",
+        "properties": {
+          "confidence": {
+            "description": "0 to 1.",
+            "format": "float",
+            "type": "number"
+          },
+          "content": {
+            "description": "The text, after redaction.",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "After this the record is no longer recalled (working memory, MEM-01).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind"
+          },
+          "labels": {
+            "default": [],
+            "description": "Sensitivity labels.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "metadata": {
+            "default": null,
+            "description": "Free-form JSON object."
+          },
+          "occurred_at": {
+            "description": "When the remembered thing happened (event time), if known.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/Provenance"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "session_id": {
+            "description": "The conversation it came from.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "Source label: the writer by default, `enrich:<model>` for extracted facts.",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoryStatus",
+            "description": "Lifecycle state; only `committed` records are recalled."
+          },
+          "subject": {
+            "description": "Whose memory it is.",
+            "type": "string"
+          },
+          "supersedes": {
+            "description": "The previous version, which this record replaced.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "turn_ref": {
+            "description": "The messages it came from.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_from": {
+            "description": "When the memory became true.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "valid_to": {
+            "description": "When it stopped being true; set when it is superseded.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "tenant",
+          "subject",
+          "kind",
+          "status",
+          "content",
+          "valid_from",
+          "source",
+          "confidence",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "MemoryKind": {
+        "description": "Kinds of memory (requirements MEM-01..MEM-06).",
+        "oneOf": [
+          {
+            "const": "working",
+            "description": "Short-lived task context for one session; expires (MEM-01).",
+            "type": "string"
+          },
+          {
+            "const": "episodic",
+            "description": "Raw conversation history: a user/assistant round.",
+            "type": "string"
+          },
+          {
+            "const": "semantic",
+            "description": "Durable facts about the subject.",
+            "type": "string"
+          },
+          {
+            "const": "preference",
+            "description": "Likes, dislikes, ways of working.",
+            "type": "string"
+          },
+          {
+            "const": "procedural",
+            "description": "How-to knowledge, conventions, procedures.",
+            "type": "string"
+          },
+          {
+            "const": "commitment",
+            "description": "Promises, follow-ups, open items with a due date.",
+            "type": "string"
+          },
+          {
+            "const": "document",
+            "description": "Reference documents or snippets.",
+            "type": "string"
+          }
+        ]
+      },
+      "MemoryPage": {
+        "description": "One page of a list. Pass `next_cursor` back as `cursor` for the next page; it is absent on the\nlast page. Cursors are opaque.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Memory"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "MemoryStatus": {
+        "description": "Lifecycle of a record (CORE-02). Only `committed` records are recalled.\n\n```text\ncandidate ──► committed ──► superseded\n    │  │          │  └────► expired\n    │  └► rejected │\n    └──► quarantined ◄┘ ──► rejected   (quarantined ──► committed on release)\n```",
+        "oneOf": [
+          {
+            "enum": [
+              "committed"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "candidate",
+            "description": "Proposed, waiting for its gate (asynchronous admission, G10).",
+            "type": "string"
+          },
+          {
+            "const": "superseded",
+            "description": "Replaced by a newer version (`superseded_by`).",
+            "type": "string"
+          },
+          {
+            "const": "quarantined",
+            "description": "Held back by the gate (for example an injected instruction).",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "Refused by the gate or a reviewer.",
+            "type": "string"
+          },
+          {
+            "const": "expired",
+            "description": "Past `expires_at` (working memory, commitments).",
+            "type": "string"
+          }
+        ]
+      },
+      "Message": {
+        "description": "One message of a conversation handed to `ingest`.",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "id": {
+            "description": "Caller's own reference for the message (for provenance and evaluation).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "description": "`user`, `assistant`, or a participant's name in a multi-party conversation.",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "When the message was sent; defaults to the request's `session_time`.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "type": "object"
+      },
+      "Provenance": {
+        "additionalProperties": false,
+        "description": "Who and what admitted a record (GOV-03), and which model derived it (TR-MS-02). The source\nturn is the record's `session_id` and `turn_ref`; its confidence is `confidence`.",
+        "properties": {
+          "agent": {
+            "description": "The writing agent (principal).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extractor": {
+            "description": "For derived records: the model that extracted it, and its prompt and configuration.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extractor_config": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policy_version": {
+            "description": "The compiled policy that admitted the record (`mh_policy`; `legacy-v1` before schema v2).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_key": {
+            "description": "The client's idempotency key for the request that wrote it (CORE-06).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "description": "The user the agent acted for, when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "QueryPlan": {
+        "properties": {
+          "subqueries": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/TimeWindow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "windows",
+          "subqueries"
+        ],
+        "type": "object"
+      },
+      "RecallRequest": {
+        "description": "Retrieve memories for a context (`recall`, CORE-03).",
+        "properties": {
+          "actor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "analyze": {
+            "default": null,
+            "description": "Override query analysis (time windows and sub-queries) on/off.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "as_of": {
+            "default": null,
+            "description": "Recall what was true at this time (validity and event-time filter).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "k": {
+            "default": null,
+            "description": "Number of memories to return (default `memory.default_k`, at most 200).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kinds": {
+            "default": null,
+            "description": "Only these kinds.",
+            "items": {
+              "$ref": "#/components/schemas/MemoryKind"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetrievalMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "query": {
+            "description": "What you need to know, in natural language.",
+            "type": "string"
+          },
+          "reference_time": {
+            "default": null,
+            "description": "\"Now\" for reading relative time in the query (\"two weeks ago\"). Defaults to `as_of`, then\nthe current time. Unlike `as_of` it filters nothing.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "render": {
+            "default": false,
+            "description": "Also return the memories as a text block ready for a prompt (`rendered`, INT-04).",
+            "type": "boolean"
+          },
+          "rerank": {
+            "default": null,
+            "description": "Override the configured reranker on/off.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only memories visible in this scope: each scope field the request sets matches records\nwith the same value or none. Unset fields don't filter."
+          },
+          "subject": {
+            "default": null,
+            "description": "Whose memory to search. Recall never crosses subjects.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "default": null,
+            "description": "Only memories with at least one of these tags.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tenant": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_budget": {
+            "default": null,
+            "description": "Approximate token budget for the returned memories.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "RecallResult": {
+        "properties": {
+          "candidates": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "embed_ms": {
+            "default": 0.0,
+            "description": "Time spent embedding the query, in the SQL statement, and reranking.",
+            "format": "double",
+            "type": "number"
+          },
+          "hits": {
+            "description": "Ranked memories, most relevant first, each with its id and provenance.",
+            "items": {
+              "$ref": "#/components/schemas/Hit"
+            },
+            "type": "array"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueryPlan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the query was read: time windows and sub-queries that got their own retrieval probe."
+          },
+          "rendered": {
+            "description": "The hits as a model-neutral text block, when the request set `render`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rerank_ms": {
+            "default": 0.0,
+            "format": "double",
+            "type": "number"
+          },
+          "reranked": {
+            "type": "boolean"
+          },
+          "search_ms": {
+            "default": 0.0,
+            "format": "double",
+            "type": "number"
+          },
+          "took_ms": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "hits",
+          "took_ms",
+          "candidates",
+          "reranked"
+        ],
+        "type": "object"
+      },
+      "RememberRequest": {
+        "description": "Propose one memory (`remember`, CORE-01).",
+        "properties": {
+          "actor": {
+            "default": null,
+            "description": "Who makes the change, for the audit log; defaults to the `x-memhouse-actor` header. From\nAPI keys per principal (G06) the authenticated principal is used instead.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_refs": {
+            "default": [],
+            "description": "Files the memory is about, for staleness checks.",
+            "items": {
+              "$ref": "#/components/schemas/CodeRef"
+            },
+            "type": "array"
+          },
+          "content": {
+            "description": "The memory, written so it stands alone (who, what, when), ideally one fact.",
+            "type": "string"
+          },
+          "expires_at": {
+            "default": null,
+            "description": "When it stops being recalled; `working` memory defaults to now + `memory.working_ttl_secs`.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MemoryKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Defaults to `semantic`."
+          },
+          "labels": {
+            "default": [],
+            "description": "Sensitivity labels (ACC-04); `governance.denied_labels` keeps them out of recall.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "metadata": {
+            "default": null,
+            "description": "Free-form JSON object, stored as given."
+          },
+          "occurred_at": {
+            "default": null,
+            "description": "When the remembered thing happened; defaults to now.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_key": {
+            "default": null,
+            "description": "Idempotency key (or the `Idempotency-Key` header): a repeat with the same key and request\nreturns the first result; the same key with another request is a conflict (CORE-06).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Narrower visibility inside the subject (MEM-04)."
+          },
+          "source": {
+            "default": null,
+            "description": "Source label; defaults to the actor.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "structured": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Structured"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The queryable form of the record (an order, a ticket), under the same id."
+          },
+          "subject": {
+            "default": null,
+            "description": "Whose memory it is, e.g. `user:alice`, `customer:42`, `repo:api`. Defaults to the configured subject.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersedes": {
+            "default": null,
+            "description": "Replace an existing memory with this one; prefer `revise`.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "default": [],
+            "description": "Free tags, usable as recall filters.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenant": {
+            "default": null,
+            "description": "The tenant; defaults to the configured one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "The user the calling agent acts for (provenance).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "default": null,
+            "description": "When it stops being true (a due date, an expiry).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "type": "object"
+      },
+      "RememberResult": {
+        "description": "What a write did. The id is returned at once; `status` says the record's state, which can\nalso be read later with `GET /v1/memories/{id}` (CORE-02).",
+        "properties": {
+          "deduplicated": {
+            "description": "True when an equivalent memory already existed and nothing new was written.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "The record's id. For a deduplicated write, the id of the memory already stored.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "note": {
+            "description": "Why the write was deduplicated or quarantined.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redactions": {
+            "description": "Kinds of sensitive data redacted from the text (`card`, `secret`, ...).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoryStatus",
+            "description": "`committed` or `quarantined` today; `candidate` once admission is asynchronous (G10).\nClients must not assume a write is committed."
+          },
+          "superseded": {
+            "description": "The record this write superseded.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "deduplicated"
+        ],
+        "type": "object"
+      },
+      "RetrievalMode": {
+        "enum": [
+          "hybrid",
+          "dense",
+          "keyword"
+        ],
+        "type": "string"
+      },
+      "ReviseRequest": {
+        "description": "Correct a memory (`revise`, CORE-04): a new version that supersedes the current one. Fields\nleft out are taken from the current version (kind, tags, labels, scope, metadata, validity,\nstructured form, code references).",
+        "properties": {
+          "actor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_refs": {
+            "default": null,
+            "items": {
+              "$ref": "#/components/schemas/CodeRef"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "content": {
+            "description": "The corrected memory.",
+            "type": "string"
+          },
+          "expires_at": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The memory to revise; it must be the current (`committed`) version.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MemoryKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "labels": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "metadata": {
+            "default": null
+          },
+          "occurred_at": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_key": {
+            "default": null,
+            "description": "Idempotency key, as for `remember`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "source": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "structured": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Structured"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tags": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tenant": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "content"
+        ],
+        "type": "object"
+      },
+      "Scope": {
+        "additionalProperties": false,
+        "description": "Narrower visibility inside a subject (MEM-04). All empty means the whole subject; resolution\norder (user over team over org) is applied by recall from G11.",
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "org": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "team": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "Stats": {
+        "properties": {
+          "audit_events": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "by_kind": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "committed": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "memories": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "quarantined": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "subjects": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "superseded": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "memories",
+          "committed",
+          "quarantined",
+          "superseded",
+          "subjects",
+          "audit_events",
+          "by_kind"
+        ],
+        "type": "object"
+      },
+      "Structured": {
+        "additionalProperties": false,
+        "description": "The queryable form of a structured record (HYB-02), under the same id as its text.",
+        "properties": {
+          "attrs": {
+            "description": "A JSON object of attributes, queried exactly, never by similarity."
+          },
+          "record_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_type",
+          "attrs"
+        ],
+        "type": "object"
+      },
+      "SubjectCount": {
+        "description": "A subject and its number of committed memories.",
+        "properties": {
+          "memories": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "memories"
+        ],
+        "type": "object"
+      },
+      "TimeWindow": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "meaning": {
+            "default": "",
+            "description": "What the phrase resolves to, for people and answer models (\"2023-04-15 (Sat)\").",
+            "type": "string"
+          },
+          "phrase": {
+            "description": "The phrase the window was read from.",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "phrase"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "apiKey": {
+        "in": "header",
+        "name": "x-api-key",
+        "type": "apiKey"
+      },
+      "bearer": {
+        "description": "`Authorization: Bearer <key>`; `memhouse key` prints one.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "API v1. Stability policy: docs/api-stability.md. Operations marked `x-stability: preview` may change in a minor release; `stable` ones only gain optional fields and new operations within v1.",
+    "license": {
+      "identifier": "Apache-2.0",
+      "name": "Apache-2.0"
+    },
+    "summary": "Governed long-term memory for AI agents.",
+    "title": "MemHouse API",
+    "version": "1.0.0"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "description": "No authentication.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [],
+        "summary": "Liveness and versions",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/audit": {
+      "get": {
+        "description": "Preview: becomes an admin route with G06.",
+        "operationId": "audit",
+        "parameters": [
+          {
+            "description": "1 to 1000 (default 100).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AuditEvent"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Newest audit events",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
+      }
+    },
+    "/v1/enrich/status": {
+      "get": {
+        "description": "Preview.",
+        "operationId": "enrichStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrichStatus"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Background enrichment queue",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
+      }
+    },
+    "/v1/forget": {
+      "post": {
+        "description": "Permanent deletion with every derived representation (vectors, extracted facts, cached extractions) and a deletion-ledger row; one audit event per call.",
+        "operationId": "forget",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForgetResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Delete memories by record, subject, user, agent, source or tenant",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/ingest": {
+      "post": {
+        "description": "One record per user/assistant round; queues background enrichment when it is on.",
+        "operationId": "ingest",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Store a conversation as episodic memory",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/memories": {
+      "get": {
+        "deprecated": true,
+        "description": "Offset paging over every subject; returns a bare array.",
+        "operationId": "listMemoriesLegacy",
+        "parameters": [
+          {
+            "description": "",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "One kind.",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Also inactive records.",
+            "in": "query",
+            "name": "all",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Memory"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Deprecated: use GET /v1/subjects/{subject}/memories",
+        "tags": [
+          "deprecated"
+        ],
+        "x-stability": "deprecated",
+        "x-successor": "/v1/subjects/{subject}/memories",
+        "x-sunset": "2027-11-02"
+      },
+      "post": {
+        "deprecated": true,
+        "description": "Same body and response as `remember`.",
+        "operationId": "rememberLegacy",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RememberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RememberResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Deprecated: use POST /v1/remember",
+        "tags": [
+          "deprecated"
+        ],
+        "x-stability": "deprecated",
+        "x-successor": "/v1/remember",
+        "x-sunset": "2027-11-02"
+      }
+    },
+    "/v1/memories/{id}": {
+      "delete": {
+        "deprecated": true,
+        "description": "Returns `{deleted: <id>}`.",
+        "operationId": "forgetLegacy",
+        "parameters": [
+          {
+            "description": "A memory id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyDeleted"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Deprecated: use POST /v1/forget with `id`",
+        "tags": [
+          "deprecated"
+        ],
+        "x-stability": "deprecated",
+        "x-successor": "/v1/forget",
+        "x-sunset": "2027-11-02"
+      },
+      "get": {
+        "description": "Any state, including superseded and quarantined.",
+        "operationId": "getMemory",
+        "parameters": [
+          {
+            "description": "A memory id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Memory"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Read one memory and its state",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      },
+      "patch": {
+        "deprecated": true,
+        "description": "Body `{content}`.",
+        "operationId": "reviseLegacy",
+        "parameters": [
+          {
+            "description": "A memory id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "content"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RememberResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Deprecated: use POST /v1/revise",
+        "tags": [
+          "deprecated"
+        ],
+        "x-stability": "deprecated",
+        "x-successor": "/v1/revise",
+        "x-sunset": "2027-11-02"
+      }
+    },
+    "/v1/openapi.json": {
+      "get": {
+        "description": "No authentication.",
+        "operationId": "openapi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [],
+        "summary": "This document",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/recall": {
+      "post": {
+        "description": "Ranked memories of one subject with ids and provenance, filtered by scope, kind, tags and as-of time, cut to a token budget; with `render` also as a text block for a prompt.",
+        "operationId": "recall",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecallResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Retrieve memories for a context",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/remember": {
+      "post": {
+        "description": "Runs the write gate (redaction, injection screen, deduplication) and returns the record's id and state at once. The state is `committed` or `quarantined` today and may be `candidate` from G10; read it with `GET /v1/memories/{id}`.",
+        "operationId": "remember",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RememberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RememberResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Propose a memory",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/revise": {
+      "post": {
+        "description": "The current version becomes `superseded` and stays for audit and as-of recall; the new version records `supersedes`. Revising a version that is not `committed` is a conflict.",
+        "operationId": "revise",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RememberResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Supersede a memory with a new version",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/stats": {
+      "get": {
+        "description": "Preview.",
+        "operationId": "stats",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Stats"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Counts for the configured tenant",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
+      }
+    },
+    "/v1/subjects": {
+      "get": {
+        "description": "Preview: paging and per-principal filtering arrive with G06 and G20.",
+        "operationId": "listSubjects",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SubjectCount"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Subjects with committed memories (up to 500)",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
+      }
+    },
+    "/v1/subjects/{subject}": {
+      "delete": {
+        "deprecated": true,
+        "description": "Returns `{subject, deleted: <count>}`.",
+        "operationId": "eraseSubjectLegacy",
+        "parameters": [
+          {
+            "description": "A subject, e.g. `customer:acme` (URL-encoded).",
+            "in": "path",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LegacyDeleted"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Deprecated: use POST /v1/forget with `subject`",
+        "tags": [
+          "deprecated"
+        ],
+        "x-stability": "deprecated",
+        "x-successor": "/v1/forget",
+        "x-sunset": "2027-11-02"
+      }
+    },
+    "/v1/subjects/{subject}/memories": {
+      "get": {
+        "description": "Keyset-paged: pass `next_cursor` back as `cursor`.",
+        "operationId": "listMemories",
+        "parameters": [
+          {
+            "description": "A subject, e.g. `customer:acme` (URL-encoded).",
+            "in": "path",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated kinds.",
+            "in": "query",
+            "name": "kinds",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Also superseded, quarantined, rejected and expired records.",
+            "in": "query",
+            "name": "include_inactive",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "1 to 1000 (default 50).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`next_cursor` of the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryPage"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing or wrong API key (`unauthorized`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "List a subject's memories, newest first",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    },
+    {
+      "apiKey": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "default `memhouse serve`",
+      "url": "http://127.0.0.1:7077"
+    }
+  ],
+  "tags": [
+    {
+      "description": "The core operations (CORE-01).",
+      "name": "memory"
+    },
+    {
+      "description": "Health, counts and audit.",
+      "name": "operations"
+    },
+    {
+      "description": "Routes from before v1, deprecated on 2026-11-02, removed no earlier than 2027-11-02.",
+      "name": "deprecated"
+    }
+  ]
+}

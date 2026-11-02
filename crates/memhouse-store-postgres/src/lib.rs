@@ -339,12 +339,19 @@ WITH q AS (
 base AS (
   SELECT m.id, m.tsv, m.embedding, m.embedding_alt
   FROM mh_memory m
-  WHERE m.tenant = $1 AND m.subject = $2 AND m.status = 'committed'
+  WHERE m.tenant = $1 AND m.subject = $2
+    -- As-of recall also sees versions superseded since; validity below keeps the one true then.
+    AND (m.status = 'committed' OR ($7::timestamptz IS NOT NULL AND m.status = 'superseded'))
     AND ($4::text[] IS NULL OR m.kind = ANY($4))
     AND ($5::text[] IS NULL OR m.tags && $5)
     AND NOT (m.labels && $6::text[])
     AND m.valid_from <= $16 AND (m.valid_to IS NULL OR m.valid_to > $16)
     AND (m.expires_at IS NULL OR m.expires_at > $16)
+    AND ($20::text IS NULL OR m.scope_org IS NULL OR m.scope_org = $20)
+    AND ($21::text IS NULL OR m.scope_team IS NULL OR m.scope_team = $21)
+    AND ($22::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $22)
+    AND ($23::text IS NULL OR m.scope_user IS NULL OR m.scope_user = $23)
+    AND ($24::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $24)
     AND ($7::timestamptz IS NULL OR m.occurred_at IS NULL OR m.occurred_at <= $7)
     AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
       SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
@@ -407,6 +414,16 @@ ORDER BY f.score DESC, f.sim DESC NULLS LAST
     )
 }
 
+/// The rows a `forget` by user, agent or source matches (`$2` is the value).
+fn forget_condition(scope: ForgetScope) -> anyhow::Result<&'static str> {
+    Ok(match scope {
+        ForgetScope::User => "(prov_user = $2 OR scope_user = $2)",
+        ForgetScope::Agent => "(prov_agent = $2 OR scope_agent = $2)",
+        ForgetScope::Source => "source = $2",
+        s => anyhow::bail!("no row condition for forget by {}", s.as_str()),
+    })
+}
+
 /// Bind a `SearchQuery` to `sql` (the recall statement, or an EXPLAIN of it).
 fn search_query<'a>(
     sql: &'a str,
@@ -436,6 +453,11 @@ fn search_query<'a>(
         .bind(&q.text)
         .bind(q.windows.iter().map(|w| w.0).collect::<Vec<_>>())
         .bind(q.windows.iter().map(|w| w.1).collect::<Vec<_>>())
+        .bind(&q.scope.org)
+        .bind(&q.scope.team)
+        .bind(&q.scope.agent)
+        .bind(&q.scope.user)
+        .bind(&q.scope.session)
 }
 
 /// The schema as it was at version 1, kept verbatim: `migrate` runs it, then the v2 additions,
@@ -855,6 +877,7 @@ impl Store for PgStore {
         let rows = sqlx::query(&format!(
             "SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND ($2::text IS NULL OR m.subject = $2) \
              AND ($3::text[] IS NULL OR m.kind = ANY($3)) AND ($4 OR m.status = 'committed') \
+             AND ($7::timestamptz IS NULL OR (m.created_at, m.id) < ($7, $8)) \
              ORDER BY m.created_at DESC, m.id DESC LIMIT $5 OFFSET $6"
         ))
         .bind(&q.tenant)
@@ -863,6 +886,8 @@ impl Store for PgStore {
         .bind(q.include_inactive)
         .bind(q.limit as i64)
         .bind(q.offset as i64)
+        .bind(q.before.map(|b| b.0))
+        .bind(q.before.map(|b| b.1))
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_memory).collect()
@@ -909,8 +934,13 @@ impl Store for PgStore {
     }
 
     async fn set_superseded(&self, tenant: &str, id: Uuid, by: Uuid) -> anyhow::Result<bool> {
+        // A version stops being true when its successor starts (even if it had a later end of its
+        // own), so as-of recall finds exactly one version at any time. The successor's time comes
+        // from the same clock as the version's own, not the database's.
         let r = sqlx::query(
-            "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, valid_to = COALESCE(valid_to, greatest(now(), valid_from)), updated_at = greatest(now(), created_at) \
+            "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, \
+             valid_to = least(COALESCE(valid_to, 'infinity'), greatest(COALESCE((SELECT n.valid_from FROM mh_memory n WHERE n.tenant = $1 AND n.id = $3), now()), valid_from)), \
+             updated_at = greatest(now(), created_at) \
              WHERE tenant = $1 AND id = $2 AND status = 'committed'",
         )
         .bind(tenant)
@@ -1217,6 +1247,73 @@ impl Store for PgStore {
             .bind(limit as i64)
             .fetch_all(&self.pool)
             .await?)
+    }
+
+    async fn representations(&self, tenant: &str, id: Uuid) -> anyhow::Result<(Option<Structured>, Vec<CodeRef>)> {
+        let structured = sqlx::query("SELECT s.record_type, s.attrs FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id WHERE m.tenant = $1 AND s.memory_id = $2")
+            .bind(tenant)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|r| -> anyhow::Result<Structured> { Ok(Structured { record_type: r.try_get("record_type")?, attrs: r.try_get("attrs")? }) })
+            .transpose()?;
+        let code_refs =
+            sqlx::query("SELECT c.path, c.blob_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = $1 AND c.memory_id = $2 ORDER BY c.path")
+                .bind(tenant)
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(|r| Ok(CodeRef { path: r.try_get("path")?, blob_hash: r.try_get("blob_hash")? }))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok((structured, code_refs))
+    }
+
+    async fn forget_matches(&self, tenant: &str, scope: ForgetScope, value: &str, limit: usize) -> anyhow::Result<Vec<Uuid>> {
+        let cond = forget_condition(scope)?;
+        Ok(sqlx::query_scalar(&format!("SELECT id FROM mh_memory WHERE tenant = $1 AND {cond} ORDER BY id LIMIT $3"))
+            .bind(tenant)
+            .bind(value)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
+    async fn forget_count(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
+        let cond = match scope {
+            ForgetScope::Tenant => "true",
+            ForgetScope::Subject => "subject = $2",
+            s => forget_condition(s)?,
+        };
+        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM mh_memory WHERE tenant = $1 AND ($2::text IS NOT NULL) AND {cond}"))
+            .bind(tenant)
+            .bind(value)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(n as u64)
+    }
+
+    async fn delete_tenant(&self, tenant: &str, actor: &str) -> anyhow::Result<u64> {
+        let mut total = 0;
+        loop {
+            // Every subject, in any state (`subjects` lists only those with committed records).
+            let subjects: Vec<String> = sqlx::query_scalar("SELECT DISTINCT subject FROM mh_memory WHERE tenant = $1 LIMIT 500").bind(tenant).fetch_all(&self.pool).await?;
+            if subjects.is_empty() {
+                break;
+            }
+            for s in subjects {
+                total += self.delete_subject(tenant, &s, actor, true).await?;
+            }
+        }
+        // What is left without a record: links, remembered responses, queued jobs.
+        sqlx::query("DELETE FROM mh_link WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
+        sqlx::query("WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 RETURNING cache_key) DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key")
+            .bind(tenant)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("INSERT INTO mh_deletion_ledger (tenant, scope, actor) VALUES ($1, 'tenant', $2)").bind(tenant).bind(actor).execute(&self.pool).await?;
+        Ok(total)
     }
 
     async fn get_many(&self, tenant: &str, ids: &[Uuid]) -> anyhow::Result<Vec<Memory>> {

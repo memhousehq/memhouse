@@ -128,14 +128,30 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
-    /// Delete one memory, or everything about a subject (--subject)
+    /// Replace a memory with a corrected version (the old one is kept as superseded)
+    Revise { id: String, content: String },
+    /// Delete one memory, or everything about a subject, user, agent or source
     Forget {
         id: Option<String>,
         #[arg(long)]
         subject: Option<String>,
+        /// Records the user wrote through an agent or that are scoped to the user
+        #[arg(long)]
+        user: Option<String>,
+        /// Records the agent wrote or that are scoped to it
+        #[arg(long)]
+        agent: Option<String>,
+        /// Records with this source label
+        #[arg(long)]
+        source: Option<String>,
+        /// Count what would be deleted, delete nothing
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         yes: bool,
     },
+    /// Print the OpenAPI 3.1 document of the REST API
+    Openapi,
     /// Ingest a conversation (JSON array of {role, content[, timestamp]}) as episodic memory
     Ingest {
         file: PathBuf,
@@ -409,28 +425,36 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{}  {:<11} {:<10} {}  {}", m.id, m.kind.as_str(), m.status.as_str(), m.created_at.format("%Y-%m-%d"), m.content.replace('\n', " "));
             }
         }
-        Cmd::Forget { id, subject, yes } => {
+        Cmd::Revise { id, content } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
-            match (id, subject) {
-                (Some(id), _) => {
-                    let id = uuid::Uuid::parse_str(&id)?;
-                    println!("{}", if eng.forget(None, id, Some("cli".into())).await? { "deleted" } else { "not found" });
-                }
-                (None, Some(s)) => {
-                    if !yes {
-                        eprint!("Permanently erase every memory of subject '{s}'? [y/N] ");
-                        std::io::stderr().flush()?;
-                        let mut a = String::new();
-                        std::io::stdin().lock().read_line(&mut a)?;
-                        if !a.trim().eq_ignore_ascii_case("y") {
-                            return Ok(());
-                        }
-                    }
-                    println!("erased {} memories of {s}", eng.forget_subject(None, &s, Some("cli".into())).await?);
-                }
-                _ => anyhow::bail!("give a memory id or --subject"),
+            let r = eng.revise(ReviseRequest { id: uuid::Uuid::parse_str(&id)?, content, actor: Some("cli".into()), ..Default::default() }).await?;
+            match r.superseded {
+                Some(old) => println!("{} now replaces {old}", r.id),
+                None => println!("stored {} ({}); {id} was not superseded{}", r.id, r.status.as_str(), r.note.map(|n| format!(": {n}")).unwrap_or_default()),
             }
         }
+        Cmd::Forget { id, subject, user, agent, source, dry_run, yes } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            let id = id.map(|i| uuid::Uuid::parse_str(&i)).transpose()?;
+            let req = ForgetRequest { id, subject, user, agent, source, dry_run, actor: Some("cli".into()), ..Default::default() };
+            if id.is_none() && !dry_run && !yes {
+                let preview = eng.forget_by(ForgetRequest { dry_run: true, ..req.clone() }).await?;
+                eprint!("Permanently delete {} memories ({} {})? [y/N] ", preview.deleted, preview.scope.as_str(), preview.value);
+                std::io::stderr().flush()?;
+                let mut a = String::new();
+                std::io::stdin().lock().read_line(&mut a)?;
+                if !a.trim().eq_ignore_ascii_case("y") {
+                    return Ok(());
+                }
+            }
+            match eng.forget_by(req).await {
+                Ok(r) if r.dry_run => println!("would delete {} memories ({} {})", r.deleted, r.scope.as_str(), r.value),
+                Ok(r) => println!("deleted {} memories ({} {})", r.deleted, r.scope.as_str(), r.value),
+                Err(e) if memhouse_core::error::code_of(&e) == memhouse_core::error::ErrorCode::NotFound => println!("not found"),
+                Err(e) => return Err(e),
+            }
+        }
+        Cmd::Openapi => println!("{}", serde_json::to_string_pretty(&memhouse_server::openapi::spec())?),
         Cmd::Ingest { file, subject, session } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let messages: Vec<Message> = serde_json::from_str(&std::fs::read_to_string(&file)?)?;

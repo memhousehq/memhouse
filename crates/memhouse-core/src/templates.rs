@@ -35,7 +35,7 @@ pub const TEMPLATES: &[Template] = &[
         redact: &["secret", "card", "ssn", "iban"],
         recency_weight: 0.0,
         tags: &["convention", "decision", "gotcha", "command", "architecture"],
-        guidance: "The subject is the repository. Remember conventions, build and test commands, architecture decisions and gotchas as `procedural` or `semantic` with tags. When a remembered fact turns out to be wrong, call memory_update instead of storing a contradicting memory. Recall at the start of a task and before editing an unfamiliar area.",
+        guidance: "The subject is the repository. Remember conventions, build and test commands, architecture decisions and gotchas as `procedural` or `semantic` with tags. When a remembered fact turns out to be wrong, call revise instead of storing a contradicting memory. Recall at the start of a task and before editing an unfamiliar area.",
     },
     Template {
         name: "support",
@@ -45,7 +45,7 @@ pub const TEMPLATES: &[Template] = &[
         redact: &["secret", "card", "ssn", "iban"],
         recency_weight: 0.05,
         tags: &["issue", "resolution", "plan", "sentiment", "environment", "escalation"],
-        guidance: "The subject is the customer. Recall before replying. Remember the customer's environment and plan as `semantic`, communication preferences as `preference`, every promise made to the customer as `commitment` (with the due date in the text), and issue/resolution pairs tagged `issue` and `resolution`. Never store payment details or passwords. When an issue is resolved or a plan changes, supersede the old memory with memory_update.",
+        guidance: "The subject is the customer. Recall before replying. Remember the customer's environment and plan as `semantic`, communication preferences as `preference`, every promise made to the customer as `commitment` (with the due date in the text), and issue/resolution pairs tagged `issue` and `resolution`. Never store payment details or passwords. When an issue is resolved or a plan changes, supersede the old memory with revise.",
     },
     Template {
         name: "sales",
@@ -85,7 +85,7 @@ pub fn guidance(cfg: &Config) -> String {
     let t = cfg.memory.template.as_deref().and_then(find).unwrap_or(&TEMPLATES[0]);
     let tags = if t.tags.is_empty() { String::new() } else { format!(" Suggested tags: {}.", t.tags.join(", ")) };
     format!(
-        "MemHouse is long-term memory shared across sessions and agents. Template: {} . Subjects look like `{}`; the default subject is `{}`. {}{} Use memory_recall before answering questions that may depend on the past, memory_remember for durable facts (one fact per call, written so it makes sense on its own, with dates when known), memory_update to correct a fact, memory_forget when asked to forget.",
+        "MemHouse is long-term memory shared across sessions and agents. Template: {} . Subjects look like `{}`; the default subject is `{}`. {}{} Use recall before answering questions that may depend on the past, remember for durable facts (one fact per call, written so it makes sense on its own, with dates when known), revise to correct a fact, forget when asked to forget.",
         t.title, t.subject_hint, cfg.memory.default_subject, t.guidance, tags
     )
 }
