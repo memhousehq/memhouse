@@ -13,6 +13,8 @@ pub enum ErrorCode {
     InvalidRequest,
     /// Missing or wrong API key (401).
     Unauthorized,
+    /// The caller is known but may not do this (403).
+    Forbidden,
     /// The record (or route) doesn't exist (404).
     NotFound,
     /// The request conflicts with the stored state: an idempotency key reused for another
@@ -27,6 +29,7 @@ impl ErrorCode {
         match self {
             ErrorCode::InvalidRequest => "invalid_request",
             ErrorCode::Unauthorized => "unauthorized",
+            ErrorCode::Forbidden => "forbidden",
             ErrorCode::NotFound => "not_found",
             ErrorCode::Conflict => "conflict",
             ErrorCode::Internal => "internal",
@@ -37,6 +40,7 @@ impl ErrorCode {
         match self {
             ErrorCode::InvalidRequest => 400,
             ErrorCode::Unauthorized => 401,
+            ErrorCode::Forbidden => 403,
             ErrorCode::NotFound => 404,
             ErrorCode::Conflict => 409,
             ErrorCode::Internal => 500,
@@ -66,6 +70,14 @@ pub fn invalid(message: impl Into<String>) -> anyhow::Error {
 
 pub fn not_found(message: impl Into<String>) -> anyhow::Error {
     Coded { code: ErrorCode::NotFound, message: message.into() }.into()
+}
+
+pub fn forbidden(message: impl Into<String>) -> anyhow::Error {
+    Coded { code: ErrorCode::Forbidden, message: message.into() }.into()
+}
+
+pub fn unauthorized(message: impl Into<String>) -> anyhow::Error {
+    Coded { code: ErrorCode::Unauthorized, message: message.into() }.into()
 }
 
 pub fn conflict(message: impl Into<String>) -> anyhow::Error {

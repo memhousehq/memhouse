@@ -511,7 +511,9 @@ A cron job that checks integrity and alerts on failure:
 | Audit chain check | daily | `memhouse audit --verify` |
 | Backups | daily, plus WAL | `pg_dump` / PITR |
 | Vacuum | autovacuum is enough; after bulk erasures run `VACUUM (ANALYZE) mh_memory;` | |
-| Rotate API keys | when staff or clients change | add the new key to `api_keys`, restart, move clients, remove the old key, restart |
+| Rotate API keys | when staff or clients change, and on a schedule | `memhouse key rotate <id> --grace 24h` prints the replacement; move the client; the old key stops at the end of the grace period. `memhouse key revoke <id>` ends a key at once (and its tokens within 5 s) |
+| Review principals | monthly | `memhouse principal list`, `memhouse key list`; `memhouse principal disable <id>` for leavers |
+| Remove bootstrap keys | after set-up | delete `[server] api_keys` once every client has its own principal's key |
 | Trim old enrichment jobs | monthly | `DELETE FROM mh_enrich_job WHERE status = 'done' AND finished_at < now() - interval '90 days';` |
 
 ## Troubleshooting
@@ -523,7 +525,10 @@ A cron job that checks integrity and alerts on failure:
 | `this database has schema version N, newer than this build` | A newer MemHouse already upgraded the database. Run that version (or newer). |
 | `pgvector … is too old` | `ALTER EXTENSION vector UPDATE;` (0.5 at least, 0.8 recommended); on a managed service, upgrade the extension from its console. |
 | `extension "vector" is not available` | Install pgvector on the database server (`postgresql-17-pgvector`), or use the `pgvector/pgvector` image. |
-| `401 missing or invalid API key` | Run `memhouse key` and send `Authorization: Bearer <key>`. If the message says no keys are configured, run `memhouse init`. |
+| `401 … (send Authorization: Bearer <key or token>)` | The message names the reason: `no credential`, `unknown key`, `revoked key`, `expired key`, `expired token`, `disabled principal`. Use the client's own key (`memhouse key create <principal>`), or the bootstrap key from `memhouse key`. Every refusal is in the audit log as `auth.failed`. |
+| `403 forbidden` | The credential is valid but may not do this: the message says which rule (permission, tenant, subject, label, user, scope). `GET /v1/whoami` shows what the key may do. |
+| An agent says "MEMHOUSE_MCP_KEY was refused" or "needs the agent's key" | Run `memhouse connect <agent>` again: it creates the agent's principal and a fresh key and writes it into the agent's MCP config. |
+| An agent's memories stay `candidate` | `[access] admission = "review"`: commit them with `POST /v1/review`, or grant the agent direct commits with `memhouse principal add agent:<name> --commit`. |
 | `cannot listen on 127.0.0.1:7077` | The port is in use. Set `--bind` or `MEMHOUSE_BIND`. |
 | The model download hangs or fails | It needs `huggingface.co` once. Pre-seed `cache_dir` from a machine that has access for air-gapped installs. |
 | Enrichment `pending` grows and `done` doesn't | No workers (`workers = 0` everywhere) or `enabled = false` in the worker process. |

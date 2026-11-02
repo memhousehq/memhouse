@@ -47,6 +47,20 @@ api /v1/forget -d '{"source":"e2e"}' | grep -q '"deleted":2'
 # Pre-v1 routes still answer, marked deprecated.
 curl -si "http://127.0.0.1:$PORT/v1/memories?subject=customer:acme" -H "authorization: Bearer $KEY" | grep -i '^deprecation: @' >/dev/null
 
+step "principals, keys and agent tokens"
+"$BIN" principal add agent:e2e --subject 'customer:*' >/dev/null
+AGENT=$("$BIN" key create agent:e2e 2>/dev/null)
+as_agent() { curl -s "http://127.0.0.1:$PORT$1" -H "authorization: Bearer $AGENT" -H "content-type: application/json" "${@:2}"; }
+as_agent /v1/whoami | grep -q '"propose_only":true'
+as_agent /v1/remember -d '{"subject":"customer:acme","content":"Acme prefers calls on Tuesdays"}' | grep -q '"status":"committed"'
+"$BIN" audit --limit 5 | grep memory.admit >/dev/null      # proposed by agent:e2e, admitted by the engine
+test "$(as_agent /v1/recall -o /dev/null -w '%{http_code}' -d '{"subject":"user:dana","query":"x"}')" = 403
+TOKEN=$(api /v1/tokens -d '{"agent":"agent:e2e","user":"user:dana","ttl_secs":60}' | sed 's/.*"token":"\([^"]*\)".*/\1/')
+curl -sf "http://127.0.0.1:$PORT/v1/whoami" -H "authorization: Bearer $TOKEN" | grep -q '"user":"user:dana"'
+"$BIN" key revoke "$(echo "$AGENT" | cut -d_ -f2)" >/dev/null
+sleep 6  # credentials are cached for at most 5 s
+test "$(as_agent /v1/whoami -o /dev/null -w '%{http_code}')" = 401
+
 step "MCP over HTTP"
 api /mcp -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall","arguments":{"subject":"customer:acme","query":"renewal"}}}' | grep -q "2027-03-01"
 api /mcp -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_recall","arguments":{"subject":"customer:acme","query":"renewal"}}}' | grep -q "2027-03-01"

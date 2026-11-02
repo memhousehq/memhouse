@@ -980,6 +980,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // 25–28. API v1 over HTTP: the contract, idempotent retries, revisions and forget scopes.
     checks.extend(crate::api_checks::run(engine).await);
 
+    // 29–33. Identity and authorization (G06).
+    checks.extend(crate::identity_checks::run(engine).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;

@@ -7,9 +7,9 @@
 //! return the REST response as `structuredContent` plus a rendered text block (INT-04). The
 //! pre-v1 names (`memory_recall`, ...) stay callable with their old behaviour until the sunset.
 
+use memhouse_core::caller::Caller;
 use memhouse_core::error;
 use memhouse_core::types::*;
-use memhouse_core::Engine;
 use schemars::generate::SchemaSettings;
 use schemars::JsonSchema;
 use serde_json::{json, Map, Value};
@@ -184,30 +184,26 @@ fn request<T: serde::de::DeserializeOwned>(name: &str, args: &Value) -> anyhow::
     serde_json::from_value(Value::Object(picked)).map_err(|e| error::invalid(format!("{name}: {e}")))
 }
 
-async fn call_v1(engine: &Engine, name: &str, args: &Value, actor: &str) -> anyhow::Result<Option<(String, Value)>> {
-    let actor = Some(format!("mcp:{actor}"));
+async fn call_v1(c: &Caller, name: &str, args: &Value) -> anyhow::Result<Option<(String, Value)>> {
     Ok(Some(match name {
         "recall" => {
             let mut req: RecallRequest = request(name, args)?;
-            req.actor = actor;
             req.render = true;
-            let subject = req.subject.clone().unwrap_or_else(|| engine.cfg.memory.default_subject.clone());
-            let mut r = engine.recall(req).await?;
+            let subject = req.subject.clone().unwrap_or_else(|| c.engine.cfg.memory.default_subject.clone());
+            let mut r = c.recall(req).await?;
             let text = r.rendered.take().unwrap_or_else(|| memhouse_core::engine::render(&subject, &r.hits));
             (text, serde_json::to_value(&r)?)
         }
         "remember" => {
             let mut req: RememberRequest = request(name, args)?;
-            req.actor = actor;
             req.source = Some("mcp".into());
-            let r = engine.remember(req).await?;
+            let r = c.remember(req).await?;
             (remembered_text(&r), serde_json::to_value(&r)?)
         }
         "revise" => {
-            let mut req: ReviseRequest = request(name, args)?;
-            req.actor = actor;
+            let req: ReviseRequest = request(name, args)?;
             let old = req.id;
-            let r = engine.revise(req).await?;
+            let r = c.revise(req).await?;
             let text = match (r.superseded, &r.note) {
                 (Some(_), _) => format!("Revised: {} now replaces {old}", r.id),
                 (None, Some(n)) => format!("Not revised: {n} (id {})", r.id),
@@ -216,9 +212,8 @@ async fn call_v1(engine: &Engine, name: &str, args: &Value, actor: &str) -> anyh
             (text, serde_json::to_value(&r)?)
         }
         "forget" => {
-            let mut req: ForgetRequest = request(name, args)?;
-            req.actor = actor;
-            let r = engine.forget_by(req).await?;
+            let req: ForgetRequest = request(name, args)?;
+            let r = c.forget(req).await?;
             let text = if r.dry_run {
                 format!("Would delete {} memories ({} {})", r.deleted, r.scope.as_str(), r.value)
             } else {
@@ -228,15 +223,14 @@ async fn call_v1(engine: &Engine, name: &str, args: &Value, actor: &str) -> anyh
         }
         "ingest" => {
             let mut req: IngestRequest = request(name, args)?;
-            req.actor = actor;
             req.source = Some("mcp".into());
-            let r = engine.ingest(req).await?;
+            let r = c.ingest(req).await?;
             (format!("Saved {} rounds ({} quarantined, {} already stored)", r.stored, r.quarantined, r.deduplicated), serde_json::to_value(&r)?)
         }
         "list_memories" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).clamp(1, 100) as usize;
-            let subject = arg_str(args, "subject").unwrap_or_else(|| engine.cfg.memory.default_subject.clone());
-            let page = engine.list_page(None, subject, arg_kinds(args, "kinds")?, false, limit, arg_str(args, "cursor").as_deref()).await?;
+            let subject = arg_str(args, "subject").unwrap_or_else(|| c.engine.cfg.memory.default_subject.clone());
+            let page = c.list(subject, arg_kinds(args, "kinds")?, false, limit, arg_str(args, "cursor").as_deref()).await?;
             let text = if page.items.is_empty() {
                 "No memories yet.".into()
             } else {
@@ -385,19 +379,18 @@ fn arg_tags(args: &Value) -> Vec<String> {
     args.get("tags").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect()).unwrap_or_default()
 }
 
-async fn call_tool(engine: &Engine, name: &str, args: &Value, actor: &str) -> anyhow::Result<(String, Value)> {
-    if let Some(done) = call_v1(engine, name, args, actor).await? {
+async fn call_tool(c: &Caller, name: &str, args: &Value) -> anyhow::Result<(String, Value)> {
+    if let Some(done) = call_v1(c, name, args).await? {
         return Ok(done);
     }
-    call_legacy(engine, name, args, actor).await
+    call_legacy(c, name, args).await
 }
 
-async fn call_legacy(engine: &Engine, name: &str, args: &Value, actor: &str) -> anyhow::Result<(String, Value)> {
-    let actor = Some(format!("mcp:{actor}"));
+async fn call_legacy(c: &Caller, name: &str, args: &Value) -> anyhow::Result<(String, Value)> {
     match name {
         "memory_recall" => {
             let query = arg_str(args, "query").ok_or_else(|| anyhow::anyhow!("query is required"))?;
-            let r = engine
+            let r = c
                 .recall(RecallRequest {
                     subject: arg_str(args, "subject"),
                     query,
@@ -405,7 +398,6 @@ async fn call_legacy(engine: &Engine, name: &str, args: &Value, actor: &str) -> 
                     kinds: arg_kinds(args, "kinds")?,
                     tags: args.get("tags").map(|_| arg_tags(args)),
                     as_of: arg_time(args, "as_of")?,
-                    actor,
                     ..Default::default()
                 })
                 .await?;
@@ -428,7 +420,7 @@ async fn call_legacy(engine: &Engine, name: &str, args: &Value, actor: &str) -> 
                 Some(k) => Some(MemoryKind::parse(&k).ok_or_else(|| anyhow::anyhow!("unknown kind '{k}'"))?),
                 None => None,
             };
-            let r = engine
+            let r = c
                 .remember(RememberRequest {
                     subject: arg_str(args, "subject"),
                     content,
@@ -437,7 +429,6 @@ async fn call_legacy(engine: &Engine, name: &str, args: &Value, actor: &str) -> 
                     occurred_at: arg_time(args, "occurred_at")?,
                     valid_to: arg_time(args, "valid_to")?,
                     source: Some("mcp".into()),
-                    actor,
                     ..Default::default()
                 })
                 .await?;
@@ -447,33 +438,30 @@ async fn call_legacy(engine: &Engine, name: &str, args: &Value, actor: &str) -> 
             let id = arg_str(args, "id").ok_or_else(|| anyhow::anyhow!("id is required"))?;
             let id = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("id must be a memory id from memory_recall"))?;
             let content = arg_str(args, "content").ok_or_else(|| anyhow::anyhow!("content is required"))?;
-            let r = engine.update(None, id, content, actor).await?;
+            let r = c.revise(ReviseRequest { id, content, ..Default::default() }).await?;
             Ok((format!("Updated: {} now replaces {}", r.id, id), serde_json::to_value(&r)?))
         }
         "memory_forget" => {
             let id = arg_str(args, "id").ok_or_else(|| anyhow::anyhow!("id is required"))?;
             let id = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("id must be a memory id"))?;
-            let ok = engine.forget(None, id, actor).await?;
+            let ok = match c.forget(ForgetRequest { id: Some(id), ..Default::default() }).await {
+                Ok(_) => true,
+                Err(e) if error::code_of(&e) == error::ErrorCode::NotFound => false,
+                Err(e) => return Err(e),
+            };
             Ok((if ok { format!("Deleted {id}") } else { format!("No memory {id}") }, json!({ "deleted": ok })))
         }
         "memory_log_conversation" => {
             let messages: Vec<Message> = serde_json::from_value(args.get("messages").cloned().unwrap_or(json!([])))?;
-            let r = engine
-                .ingest(IngestRequest {
-                    subject: arg_str(args, "subject"),
-                    session_id: arg_str(args, "session_id"),
-                    messages,
-                    source: Some("mcp".into()),
-                    actor,
-                    ..Default::default()
-                })
+            let r = c
+                .ingest(IngestRequest { subject: arg_str(args, "subject"), session_id: arg_str(args, "session_id"), messages, source: Some("mcp".into()), ..Default::default() })
                 .await?;
             Ok((format!("Saved {} rounds ({} quarantined, {} already stored)", r.stored, r.quarantined, r.deduplicated), serde_json::to_value(&r)?))
         }
         "memory_list" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            let subject = arg_str(args, "subject").or_else(|| Some(engine.cfg.memory.default_subject.clone()));
-            let ms = engine.list(None, subject, arg_kinds(args, "kinds")?, limit, 0, false).await?;
+            let subject = arg_str(args, "subject").or_else(|| Some(c.engine.cfg.memory.default_subject.clone()));
+            let ms = c.list_offset(subject, arg_kinds(args, "kinds")?, false, limit.clamp(1, 100), 0).await?;
             let text = if ms.is_empty() {
                 "No memories yet.".into()
             } else {
@@ -485,8 +473,8 @@ async fn call_legacy(engine: &Engine, name: &str, args: &Value, actor: &str) -> 
     }
 }
 
-/// Handle one JSON-RPC message. Returns `None` for notifications.
-pub async fn handle(engine: &Engine, msg: Value, actor: &str) -> Option<Value> {
+/// Handle one JSON-RPC message from a verified caller. Returns `None` for notifications.
+pub async fn handle(c: &Caller, msg: Value) -> Option<Value> {
     let id = msg.get("id").cloned();
     let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = msg.get("params").cloned().unwrap_or(json!({}));
@@ -500,13 +488,13 @@ pub async fn handle(engine: &Engine, msg: Value, actor: &str) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": "memhouse", "title": "MemHouse memory", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": memhouse_core::templates::guidance(&engine.cfg)
+                "instructions": memhouse_core::templates::guidance(&c.engine.cfg)
             }))
         }
         "ping" => Ok(json!({})),
         "tools/list" => {
             let mut list = tools().as_array().cloned().unwrap_or_default();
-            if engine.cfg.server.mcp_legacy_tools {
+            if c.engine.cfg.server.mcp_legacy_tools {
                 list.extend(legacy_tools().as_array().cloned().unwrap_or_default());
             }
             Ok(json!({ "tools": list }))
@@ -517,7 +505,7 @@ pub async fn handle(engine: &Engine, msg: Value, actor: &str) -> Option<Value> {
         "tools/call" => {
             let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            match call_tool(engine, name, &args, actor).await {
+            match call_tool(c, name, &args).await {
                 Ok((text, structured)) => Ok(json!({
                     "content": [{ "type": "text", "text": text }],
                     "structuredContent": structured,
@@ -535,7 +523,7 @@ pub async fn handle(engine: &Engine, msg: Value, actor: &str) -> Option<Value> {
 }
 
 /// Serve MCP over stdin/stdout, one JSON message per line. Logs go to stderr.
-pub async fn serve_stdio(engine: Engine, actor: String) -> anyhow::Result<()> {
+pub async fn serve_stdio(c: Caller) -> anyhow::Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut stdout = tokio::io::stdout();
     let mut lines = stdin.lines();
@@ -548,13 +536,13 @@ pub async fn serve_stdio(engine: Engine, actor: String) -> anyhow::Result<()> {
             Ok(Value::Array(batch)) => {
                 let mut out = vec![];
                 for m in batch {
-                    if let Some(r) = handle(&engine, m, &actor).await {
+                    if let Some(r) = handle(&c, m).await {
                         out.push(r);
                     }
                 }
                 out
             }
-            Ok(m) => handle(&engine, m, &actor).await.into_iter().collect(),
+            Ok(m) => handle(&c, m).await.into_iter().collect(),
             Err(e) => vec![json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("parse error: {e}")}})],
         };
         for r in responses {

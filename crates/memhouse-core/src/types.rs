@@ -580,6 +580,9 @@ pub struct IngestRequest {
     /// Idempotency key, as for `remember`.
     #[serde(default)]
     pub request_key: Option<String>,
+    /// Sensitivity labels for every round.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -727,6 +730,12 @@ pub struct ListQuery {
     /// Keyset paging: only records ordered after this (created_at, id), newest first.
     #[serde(default)]
     pub before: Option<(DateTime<Utc>, Uuid)>,
+    /// Records with any of these labels are left out (inside the statement).
+    #[serde(default)]
+    pub denied_labels: Vec<String>,
+    /// Only records visible in this scope (see `RecallRequest::scope`).
+    #[serde(default)]
+    pub scope: Scope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -801,4 +810,79 @@ pub struct EnrichStatus {
     pub running: i64,
     pub done: i64,
     pub failed: i64,
+}
+
+/// Commit or reject a candidate (`POST /v1/review`, GOV-08, GOV-11).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewRequest {
+    pub id: Uuid,
+    pub action: ReviewAction,
+    /// Why, for the audit log (a rejection's reason).
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewAction {
+    Commit,
+    Reject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewResult {
+    pub id: Uuid,
+    /// `committed`, or `rejected` (also when a revision's predecessor is no longer current).
+    pub status: MemoryStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded: Option<Uuid>,
+}
+
+/// Replace a record's sensitivity labels (`POST /v1/labels`, ACC-04). No new version and no
+/// re-embedding.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RelabelRequest {
+    pub id: Uuid,
+    /// The complete new set of labels.
+    pub labels: Vec<String>,
+}
+
+/// Ask for a short-lived agent token (`POST /v1/tokens`, GOV-13).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TokenRequest {
+    /// The agent principal the token acts as. Required when a user or an admin asks; an agent
+    /// gets a token for itself.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The user the token acts for. A user's token always acts for that user; an admin or an
+    /// agent trusted to act for users (`act_as`) may name one.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// At most `access.token_ttl_secs` (default and maximum 900 unless configured, never above 3600).
+    #[serde(default)]
+    pub ttl_secs: Option<u64>,
+    /// Narrower permissions than the caller's; defaults to all the caller may pass on.
+    #[serde(default)]
+    pub scopes: Option<Vec<String>>,
+}
+
+/// Who the API sees (`GET /v1/whoami`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WhoAmI {
+    pub principal: String,
+    /// `agent`, `user` or `admin`.
+    pub kind: String,
+    pub tenant: String,
+    /// The verified user the calls act for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    pub scopes: Vec<String>,
+    pub subjects: Vec<String>,
+    pub denied_labels: Vec<String>,
+    /// Writes enter as candidates (GOV-08).
+    pub propose_only: bool,
+    /// `key`, `token`, `bootstrap` or `operator`.
+    pub via: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
 }

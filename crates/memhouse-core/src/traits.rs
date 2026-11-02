@@ -126,6 +126,50 @@ pub trait Store: Send + Sync {
     async fn delete_tenant(&self, _tenant: &str, _actor: &str) -> anyhow::Result<u64> {
         anyhow::bail!("this store can't erase a tenant")
     }
+    /// Replace a record's sensitivity labels (no re-embedding, ACC-04). False if it doesn't exist.
+    async fn set_labels(&self, _tenant: &str, _id: Uuid, _labels: &[String]) -> anyhow::Result<bool> {
+        anyhow::bail!("this store can't relabel")
+    }
+    /// Move records in a state that may become `status` to it; returns how many moved.
+    async fn set_status_many(&self, tenant: &str, ids: &[Uuid], status: MemoryStatus) -> anyhow::Result<u64> {
+        let mut n = 0;
+        for id in ids {
+            n += self.set_status(tenant, *id, status).await? as u64;
+        }
+        Ok(n)
+    }
+
+    // Principals and credentials (G06).
+    async fn principal_get(&self, _id: &str) -> anyhow::Result<Option<crate::identity::Principal>> {
+        anyhow::bail!("this store has no principals")
+    }
+    /// Create or replace a principal.
+    async fn principal_put(&self, _p: &crate::identity::Principal) -> anyhow::Result<()> {
+        anyhow::bail!("this store has no principals")
+    }
+    async fn principals(&self, _tenant: Option<&str>) -> anyhow::Result<Vec<crate::identity::Principal>> {
+        anyhow::bail!("this store has no principals")
+    }
+    async fn api_key_get(&self, _id: &str) -> anyhow::Result<Option<crate::identity::ApiKey>> {
+        anyhow::bail!("this store has no API keys")
+    }
+    async fn api_key_put(&self, _k: &crate::identity::ApiKey) -> anyhow::Result<()> {
+        anyhow::bail!("this store has no API keys")
+    }
+    /// Revoke now (`expire_at` = None) or let the key expire at a time (rotation grace).
+    async fn api_key_end(&self, _id: &str, _expire_at: Option<chrono::DateTime<chrono::Utc>>) -> anyhow::Result<bool> {
+        anyhow::bail!("this store has no API keys")
+    }
+    async fn api_keys(&self, _principal: Option<&str>) -> anyhow::Result<Vec<crate::identity::ApiKey>> {
+        anyhow::bail!("this store has no API keys")
+    }
+    /// A token signing secret by id, and the current one (created on first use).
+    async fn signing_key(&self, _kid: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        anyhow::bail!("this store can't sign tokens")
+    }
+    async fn signing_key_current(&self) -> anyhow::Result<(String, Vec<u8>)> {
+        anyhow::bail!("this store can't sign tokens")
+    }
     /// Code references of a subject (a repository) whose stored hash differs from the given one.
     async fn stale_code_refs(&self, tenant: &str, subject: &str, path: &str, blob_hash: &str) -> anyhow::Result<Vec<Uuid>>;
 

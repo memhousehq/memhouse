@@ -10,7 +10,9 @@ use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use memhouse_core::caller::Caller;
 use memhouse_core::error::{self, ErrorBody, ErrorCode};
+use memhouse_core::identity::Identity;
 use memhouse_core::types::*;
 use memhouse_core::{Config, Engine, Store};
 use memhouse_store_postgres::PgStore;
@@ -21,6 +23,7 @@ use uuid::Uuid;
 
 /// Connect to Postgres, load models, run migrations: everything a transport needs.
 pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<Engine> {
+    cfg.check_floor()?;
     let embedder = memhouse_models::build_embedder(&cfg, show_progress)?;
     if embedder.dim() != cfg.embedding.dim {
         anyhow::bail!("embedding model {} produces {} dimensions but embedding.dim is {}", embedder.id(), embedder.dim(), cfg.embedding.dim);
@@ -104,11 +107,19 @@ impl<S: Send + Sync, T: serde::de::DeserializeOwned> FromRequestParts<S> for Que
 #[derive(Clone)]
 struct AppState {
     engine: Engine,
-    keys: Arc<Vec<String>>,
 }
 
-fn actor_from(headers: &HeaderMap) -> String {
-    headers.get("x-memhouse-actor").and_then(|v| v.to_str().ok()).map(|s| s.chars().take(80).collect()).unwrap_or_else(|| "rest".into())
+/// The verified caller of a request. Handlers reach the engine only through it, so every
+/// operation is authorized (security baseline rule 1).
+pub struct Who(pub Caller);
+
+impl FromRequestParts<AppState> for Who {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut axum::http::request::Parts, st: &AppState) -> Result<Self, Self::Rejection> {
+        let id = parts.extensions.get::<Identity>().cloned().ok_or_else(|| ApiError(error::unauthorized("not authenticated")))?;
+        Ok(Who(st.engine.caller(id)))
+    }
 }
 
 /// The `Idempotency-Key` header as the request's `request_key` (CORE-06). Both may be sent only
@@ -129,25 +140,38 @@ fn unauthorized(msg: &str) -> Response {
     (StatusCode::UNAUTHORIZED, Json(ErrorBody { error: msg.into(), code: ErrorCode::Unauthorized })).into_response()
 }
 
-async fn auth(State(st): State<AppState>, req: Request, next: Next) -> Response {
-    if st.keys.is_empty() {
-        return unauthorized("no API keys configured; run `memhouse init`");
-    }
-    let given = req
-        .headers()
+/// The credential of a request: `Authorization: Bearer <key or token>` or `x-api-key`.
+pub fn credential(headers: &HeaderMap) -> Option<String> {
+    headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|s| s.trim().to_string())
-        .or_else(|| req.headers().get("x-api-key").and_then(|v| v.to_str().ok()).map(String::from));
-    match given {
-        Some(k) if st.keys.iter().any(|x| constant_time_eq(x.as_bytes(), k.as_bytes())) => next.run(req).await,
-        _ => unauthorized("missing or invalid API key (Authorization: Bearer <key>)"),
-    }
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()).map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+/// Authenticate every request (GOV-01): a key or token verified against the store, and the user
+/// it states (`x-memhouse-user`). A failure is audited (`auth.failed`) and nothing else runs.
+async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
+    let asserted = req.headers().get("x-memhouse-user").and_then(|v| v.to_str().ok()).map(String::from);
+    let route = req.extensions().get::<MatchedPath>().map(|p| p.as_str().to_string()).unwrap_or_default();
+    let failure = match credential(req.headers()) {
+        None => memhouse_core::identity::AuthFailure { reason: "no credential", key_id: None, principal: None },
+        Some(c) => match st.engine.auth.authenticate(&c, asserted.as_deref()).await {
+            Ok(id) => {
+                req.extensions_mut().insert(id);
+                return next.run(req).await;
+            }
+            Err(f) => f,
+        },
+    };
+    let detail = json!({ "reason": failure.reason, "key": failure.key_id, "route": route });
+    let actor = failure.principal.clone().unwrap_or_else(|| "anonymous".into());
+    if let Err(e) = st.engine.store.audit(&actor, "auth.failed", &st.engine.cfg.memory.tenant, None, None, detail).await {
+        tracing::error!("audit of a failed authentication: {e:#}");
+    }
+    unauthorized(&format!("{} (send Authorization: Bearer <key or token>)", failure.reason))
 }
 
 /// Mark the pre-v1 routes: `Deprecation` (RFC 9745), `Sunset` (RFC 8594) and a `Link` to the
@@ -172,7 +196,7 @@ async fn deprecation(req: Request, next: Next) -> Response {
 }
 
 pub fn router(engine: Engine) -> Router {
-    let st = AppState { keys: Arc::new(engine.cfg.server.api_keys.clone()), engine };
+    let st = AppState { engine };
     let api = Router::new()
         // API v1
         .route("/v1/remember", post(remember))
@@ -182,6 +206,10 @@ pub fn router(engine: Engine) -> Router {
         .route("/v1/ingest", post(ingest))
         .route("/v1/memories/{id}", get(get_memory).patch(update).delete(forget_legacy))
         .route("/v1/subjects/{subject}/memories", get(list_page))
+        .route("/v1/labels", post(relabel))
+        .route("/v1/review", post(review))
+        .route("/v1/tokens", post(issue_token))
+        .route("/v1/whoami", get(whoami))
         // Preview (may change in a minor release)
         .route("/v1/subjects", get(subjects))
         .route("/v1/stats", get(stats))
@@ -237,38 +265,48 @@ async fn health() -> Json<openapi::Health> {
     Json(openapi::Health { status: "ok".into(), version: env!("CARGO_PKG_VERSION").into(), api_version: openapi::API_VERSION.into() })
 }
 
-async fn enrich_status(State(st): State<AppState>) -> ApiResult<EnrichStatus> {
-    let t = st.engine.cfg.memory.tenant.clone();
-    Ok(Json(st.engine.store.enrich_status(&t, None).await?))
+async fn enrich_status(Who(c): Who) -> ApiResult<EnrichStatus> {
+    Ok(Json(c.enrich_status().await?))
 }
 
-async fn remember(State(st): State<AppState>, headers: HeaderMap, Body(mut req): Body<RememberRequest>) -> ApiResult<RememberResult> {
-    req.actor.get_or_insert_with(|| actor_from(&headers));
+async fn remember(Who(c): Who, headers: HeaderMap, Body(mut req): Body<RememberRequest>) -> ApiResult<RememberResult> {
     request_key(&headers, &mut req.request_key)?;
-    Ok(Json(st.engine.remember(req).await?))
+    Ok(Json(c.remember(req).await?))
 }
 
-async fn revise(State(st): State<AppState>, headers: HeaderMap, Body(mut req): Body<ReviseRequest>) -> ApiResult<RememberResult> {
-    req.actor.get_or_insert_with(|| actor_from(&headers));
+async fn revise(Who(c): Who, headers: HeaderMap, Body(mut req): Body<ReviseRequest>) -> ApiResult<RememberResult> {
     request_key(&headers, &mut req.request_key)?;
-    Ok(Json(st.engine.revise(req).await?))
+    Ok(Json(c.revise(req).await?))
 }
 
-async fn forget(State(st): State<AppState>, headers: HeaderMap, Body(mut req): Body<ForgetRequest>) -> ApiResult<ForgetResult> {
-    req.actor.get_or_insert_with(|| actor_from(&headers));
+async fn forget(Who(c): Who, headers: HeaderMap, Body(mut req): Body<ForgetRequest>) -> ApiResult<ForgetResult> {
     request_key(&headers, &mut req.request_key)?;
-    Ok(Json(st.engine.forget_by(req).await?))
+    Ok(Json(c.forget(req).await?))
 }
 
-async fn ingest(State(st): State<AppState>, headers: HeaderMap, Body(mut req): Body<IngestRequest>) -> ApiResult<IngestResult> {
-    req.actor.get_or_insert_with(|| actor_from(&headers));
+async fn ingest(Who(c): Who, headers: HeaderMap, Body(mut req): Body<IngestRequest>) -> ApiResult<IngestResult> {
     request_key(&headers, &mut req.request_key)?;
-    Ok(Json(st.engine.ingest(req).await?))
+    Ok(Json(c.ingest(req).await?))
 }
 
-async fn recall(State(st): State<AppState>, headers: HeaderMap, Body(mut req): Body<RecallRequest>) -> ApiResult<RecallResult> {
-    req.actor.get_or_insert_with(|| actor_from(&headers));
-    Ok(Json(st.engine.recall(req).await?))
+async fn recall(Who(c): Who, Body(req): Body<RecallRequest>) -> ApiResult<RecallResult> {
+    Ok(Json(c.recall(req).await?))
+}
+
+async fn relabel(Who(c): Who, Body(req): Body<RelabelRequest>) -> ApiResult<Memory> {
+    Ok(Json(c.relabel(req).await?))
+}
+
+async fn review(Who(c): Who, Body(req): Body<ReviewRequest>) -> ApiResult<ReviewResult> {
+    Ok(Json(c.review(req).await?))
+}
+
+async fn issue_token(Who(c): Who, Body(req): Body<TokenRequest>) -> ApiResult<memhouse_core::identity::TokenResponse> {
+    Ok(Json(c.issue_token(req).await?))
+}
+
+async fn whoami(Who(c): Who) -> ApiResult<WhoAmI> {
+    Ok(Json(c.whoami().await?))
 }
 
 fn parse_kinds(list: &str) -> Result<Vec<MemoryKind>, ApiError> {
@@ -283,9 +321,9 @@ struct PageParams {
     cursor: Option<String>,
 }
 
-async fn list_page(State(st): State<AppState>, PathParam(subject): PathParam<String>, QueryParams(p): QueryParams<PageParams>) -> ApiResult<MemoryPage> {
+async fn list_page(Who(c): Who, PathParam(subject): PathParam<String>, QueryParams(p): QueryParams<PageParams>) -> ApiResult<MemoryPage> {
     let kinds = p.kinds.as_deref().map(parse_kinds).transpose()?;
-    Ok(Json(st.engine.list_page(None, subject, kinds, p.include_inactive.unwrap_or(false), p.limit.unwrap_or(50), p.cursor.as_deref()).await?))
+    Ok(Json(c.list(subject, kinds, p.include_inactive.unwrap_or(false), p.limit.unwrap_or(50), p.cursor.as_deref()).await?))
 }
 
 #[derive(Deserialize)]
@@ -297,14 +335,14 @@ struct ListParams {
     all: Option<bool>,
 }
 
-async fn list(State(st): State<AppState>, QueryParams(p): QueryParams<ListParams>) -> ApiResult<Vec<Memory>> {
+/// The pre-v1 list: offset paging, optionally over every subject the caller may use.
+async fn list(Who(c): Who, QueryParams(p): QueryParams<ListParams>) -> ApiResult<Vec<Memory>> {
     let kinds = p.kind.as_deref().and_then(MemoryKind::parse).map(|k| vec![k]);
-    Ok(Json(st.engine.list(None, p.subject, kinds, p.limit.unwrap_or(50), p.offset.unwrap_or(0), p.all.unwrap_or(false)).await?))
+    Ok(Json(c.list_offset(p.subject, kinds, p.all.unwrap_or(false), p.limit.unwrap_or(50), p.offset.unwrap_or(0)).await?))
 }
 
-async fn get_memory(State(st): State<AppState>, PathParam(id): PathParam<Uuid>) -> ApiResult<Memory> {
-    let t = st.engine.cfg.memory.tenant.clone();
-    st.engine.store.get(&t, id).await?.map(Json).ok_or_else(|| ApiError(error::not_found(format!("memory {id} not found"))))
+async fn get_memory(Who(c): Who, PathParam(id): PathParam<Uuid>) -> ApiResult<Memory> {
+    Ok(Json(c.get(id).await?))
 }
 
 #[derive(Deserialize)]
@@ -312,35 +350,28 @@ struct UpdateBody {
     content: String,
 }
 
-async fn update(State(st): State<AppState>, headers: HeaderMap, PathParam(id): PathParam<Uuid>, Body(b): Body<UpdateBody>) -> ApiResult<RememberResult> {
+async fn update(Who(c): Who, headers: HeaderMap, PathParam(id): PathParam<Uuid>, Body(b): Body<UpdateBody>) -> ApiResult<RememberResult> {
     let mut key = None;
     request_key(&headers, &mut key)?;
-    let req = ReviseRequest { id, content: b.content, actor: Some(actor_from(&headers)), request_key: key, ..Default::default() };
-    Ok(Json(st.engine.revise(req).await?))
+    Ok(Json(c.revise(ReviseRequest { id, content: b.content, request_key: key, ..Default::default() }).await?))
 }
 
-async fn forget_legacy(State(st): State<AppState>, headers: HeaderMap, PathParam(id): PathParam<Uuid>) -> ApiResult<serde_json::Value> {
-    let ok = st.engine.forget(None, id, Some(actor_from(&headers))).await?;
-    if !ok {
-        return Err(ApiError(error::not_found(format!("memory {id} not found"))));
-    }
+async fn forget_legacy(Who(c): Who, PathParam(id): PathParam<Uuid>) -> ApiResult<serde_json::Value> {
+    c.forget(ForgetRequest { id: Some(id), ..Default::default() }).await?;
     Ok(Json(json!({ "deleted": id })))
 }
 
-async fn erase_subject(State(st): State<AppState>, headers: HeaderMap, PathParam(subject): PathParam<String>) -> ApiResult<serde_json::Value> {
-    let n = st.engine.forget_subject(None, &subject, Some(actor_from(&headers))).await?;
-    Ok(Json(json!({ "subject": subject, "deleted": n })))
+async fn erase_subject(Who(c): Who, PathParam(subject): PathParam<String>) -> ApiResult<serde_json::Value> {
+    let r = c.forget(ForgetRequest { subject: Some(subject.clone()), ..Default::default() }).await?;
+    Ok(Json(json!({ "subject": subject, "deleted": r.deleted })))
 }
 
-async fn subjects(State(st): State<AppState>) -> ApiResult<Vec<openapi::SubjectCount>> {
-    let t = st.engine.cfg.memory.tenant.clone();
-    let s = st.engine.store.subjects(&t, 500).await?;
-    Ok(Json(s.into_iter().map(|(subject, memories)| openapi::SubjectCount { subject, memories }).collect()))
+async fn subjects(Who(c): Who) -> ApiResult<Vec<openapi::SubjectCount>> {
+    Ok(Json(c.subjects().await?.into_iter().map(|(subject, memories)| openapi::SubjectCount { subject, memories }).collect()))
 }
 
-async fn stats(State(st): State<AppState>) -> ApiResult<Stats> {
-    let t = st.engine.cfg.memory.tenant.clone();
-    Ok(Json(st.engine.store.stats(&t).await?))
+async fn stats(Who(c): Who) -> ApiResult<Stats> {
+    Ok(Json(c.stats().await?))
 }
 
 #[derive(Deserialize)]
@@ -348,18 +379,16 @@ struct AuditParams {
     limit: Option<usize>,
 }
 
-async fn audit(State(st): State<AppState>, QueryParams(p): QueryParams<AuditParams>) -> ApiResult<Vec<AuditEvent>> {
-    let t = st.engine.cfg.memory.tenant.clone();
-    Ok(Json(st.engine.store.audit_log(&t, p.limit.unwrap_or(100).clamp(1, 1000)).await?))
+async fn audit(Who(c): Who, QueryParams(p): QueryParams<AuditParams>) -> ApiResult<Vec<AuditEvent>> {
+    Ok(Json(c.audit_log(p.limit.unwrap_or(100).clamp(1, 1000)).await?))
 }
 
-async fn mcp_http(State(st): State<AppState>, headers: HeaderMap, Body(msg): Body<serde_json::Value>) -> Response {
-    let actor = actor_from(&headers);
+async fn mcp_http(Who(c): Who, Body(msg): Body<serde_json::Value>) -> Response {
     let out = match msg {
         serde_json::Value::Array(batch) => {
             let mut v = vec![];
             for m in batch {
-                if let Some(r) = mcp::handle(&st.engine, m, &actor).await {
+                if let Some(r) = mcp::handle(&c, m).await {
                     v.push(r);
                 }
             }
@@ -369,7 +398,7 @@ async fn mcp_http(State(st): State<AppState>, headers: HeaderMap, Body(msg): Bod
                 Some(serde_json::Value::Array(v))
             }
         }
-        m => mcp::handle(&st.engine, m, &actor).await,
+        m => mcp::handle(&c, m).await,
     };
     match out {
         Some(v) => Json(v).into_response(),

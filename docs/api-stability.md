@@ -6,8 +6,10 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1** (`1.0.0`), frozen on 2026-11-02. Its contract is
-[`api/openapi.json`](../api/openapi.json), served at `/v1/openapi.json`.
+The current version is **v1**, `1.1.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
+`forbidden` error code. Its contract is [`api/openapi.json`](../api/openapi.json), served at
+`/v1/openapi.json`.
 
 ## Versions
 
@@ -64,8 +66,8 @@ here so clients are ready for them:
 
 | When | Change | What a client should do now |
 |---|---|---|
-| G06 | API keys belong to principals; the authenticated principal sets `actor`, `tenant` and the default `scope`. A body naming another tenant is refused (`403`, a new code `forbidden`). | Send `tenant` only if you mean it; handle `403`. |
-| G06 | Agent keys can be propose-only: their writes stay `candidate` until committed. | Don't assume `status: committed` after `remember`. |
+| G06 (done, 1.1) | API keys belong to principals; the authenticated principal sets the actor, `tenant` and the scope filter. A body naming another tenant or user is refused (`403 forbidden`). | Send `tenant` and `user` only if you mean them; handle `403`. |
+| G06 (done, 1.1) | Agents' writes are proposals: committed by the engine at once by default, or `candidate` until reviewed with `admission = "review"`. | Don't assume `status: committed` after `remember`. |
 | G10 | Admission becomes asynchronous: `remember` returns `status: candidate` and the record becomes `committed` or `rejected` shortly after. | Read the state with `GET /v1/memories/{id}` when it matters. |
 | G11 | Scopes are resolved by precedence in ranking (user over team over org). | Nothing: the filter rule stays. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
@@ -89,6 +91,7 @@ A deprecated route, field or tool:
 | `DELETE /v1/memories/{id}` | `POST /v1/forget` (`id`) | 2026-11-02 | 2027-11-02 |
 | `DELETE /v1/subjects/{subject}` | `POST /v1/forget` (`subject`) | 2026-11-02 | 2027-11-02 |
 | MCP `memory_recall`, `memory_remember`, `memory_update`, `memory_forget`, `memory_log_conversation`, `memory_list` | `recall`, `remember`, `revise`, `forget`, `ingest`, `list_memories` | 2026-11-02 | 2027-11-02 |
+| `x-memhouse-actor` header, the bodies' `actor` field | ignored since 1.1: the authenticated principal is the actor | 2026-11-02 | 2027-11-02 |
 
 The pre-v1 routes predate this policy. They keep their old responses. Only two things about them
 changed when v1 was frozen: a malformed body or path gives a JSON `400` instead of a plain-text

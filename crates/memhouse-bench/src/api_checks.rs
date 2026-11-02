@@ -9,9 +9,8 @@ use memhouse_core::Engine;
 use memhouse_server::openapi;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
-const KEY: &str = "gov-api-key";
+pub(crate) const KEY: &str = "gov-api-key";
 
 pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
     let checks: [(&str, &str, &str); 4] = [
@@ -35,18 +34,19 @@ fn verdict(problems: Vec<String>, value: String, ok: &str) -> Outcome {
 async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     let scratch = Scratch::create(base, "api1").await?;
     let result = async {
-        let mut e = stub_engine(base, &scratch.url, "stub:a", 16, "", true).await?;
+        let e = stub_engine(base, &scratch.url, "stub:a", 16, "", true).await?;
         let mut cfg = (*e.cfg).clone();
         cfg.server.api_keys = vec![KEY.into()];
         cfg.server.mcp_legacy_tools = false;
         cfg.governance.audit_reads = false;
-        e.cfg = Arc::new(cfg);
+        let e = e.reconfigure(cfg);
+        e.store.principal_put(&memhouse_core::identity::Principal::new("agent:gov-api", "default", memhouse_core::identity::PrincipalKind::Agent, "bench")).await?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base_url = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(memhouse_server::serve_listener(listener, e.clone()));
         let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
         let mut api = Api::new(base_url);
-        let out = vec![contract(&mut api).await?, idempotency(&mut api, &pool).await?, revisions(&mut api).await?, forget(&mut api, &pool).await?];
+        let out = vec![contract(&mut api).await?, idempotency(&mut api, &pool).await?, revisions(&mut api).await?, forget(&mut api, &pool, &e).await?];
         // Every documented operation was called by one of the checks above.
         let missing = api.uncovered();
         let mut out = out;
@@ -68,35 +68,38 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
 }
 
 /// An HTTP client that checks every response against the spec and records what it called.
-struct Api {
+pub(crate) struct Api {
     http: reqwest::Client,
     base: String,
-    spec: Value,
+    pub(crate) spec: Value,
     covered: BTreeSet<String>,
     calls: usize,
     /// Responses that don't match the spec.
-    problems: Vec<String>,
+    pub(crate) problems: Vec<String>,
 }
 
-struct Reply {
-    status: u16,
-    headers: reqwest::header::HeaderMap,
-    body: Value,
+pub(crate) struct Reply {
+    pub(crate) status: u16,
+    pub(crate) headers: reqwest::header::HeaderMap,
+    pub(crate) body: Value,
 }
 
 impl Api {
-    fn new(base: String) -> Api {
+    pub(crate) fn new(base: String) -> Api {
         Api { http: reqwest::Client::new(), base, spec: openapi::spec(), covered: BTreeSet::new(), calls: 0, problems: vec![] }
     }
 
     /// `template` is the documented path (`/v1/memories/{id}`), `path` the one requested.
-    async fn call(&mut self, method: &str, template: &str, path: &str, body: Option<Value>, headers: &[(&str, &str)]) -> anyhow::Result<Reply> {
+    /// Calls with the bootstrap key unless `headers` has an `authorization` (empty: none).
+    pub(crate) async fn call(&mut self, method: &str, template: &str, path: &str, body: Option<Value>, headers: &[(&str, &str)]) -> anyhow::Result<Reply> {
         let mut req = self.http.request(method.parse()?, format!("{}{path}", self.base));
         let mut authed = true;
         for (k, v) in headers {
-            if *k == "authorization" && v.is_empty() {
+            if *k == "authorization" {
                 authed = false;
-                continue;
+                if v.is_empty() {
+                    continue;
+                }
             }
             req = req.header(*k, *v);
         }
@@ -132,17 +135,21 @@ impl Api {
         Ok(Reply { status, headers, body })
     }
 
-    async fn post(&mut self, path: &str, body: Value) -> anyhow::Result<Reply> {
+    pub(crate) async fn post(&mut self, path: &str, body: Value) -> anyhow::Result<Reply> {
         self.call("POST", path, path, Some(body), &[]).await
     }
 
-    async fn mcp(&mut self, method: &str, params: Value) -> anyhow::Result<Value> {
-        let r = self.call("POST", "-", "/mcp", Some(json!({"jsonrpc": "2.0", "id": self.calls, "method": method, "params": params})), &[]).await?;
+    pub(crate) async fn mcp(&mut self, method: &str, params: Value) -> anyhow::Result<Value> {
+        self.mcp_as(method, params, &[]).await
+    }
+
+    pub(crate) async fn mcp_as(&mut self, method: &str, params: Value, headers: &[(&str, &str)]) -> anyhow::Result<Value> {
+        let r = self.call("POST", "-", "/mcp", Some(json!({"jsonrpc": "2.0", "id": self.calls, "method": method, "params": params})), headers).await?;
         anyhow::ensure!(r.status == 200, "MCP {method} answered {}", r.status);
         Ok(r.body["result"].clone())
     }
 
-    fn uncovered(&self) -> Vec<String> {
+    pub(crate) fn uncovered(&self) -> Vec<String> {
         let mut out = vec![];
         for (path, methods) in self.spec["paths"].as_object().into_iter().flatten() {
             for m in methods.as_object().into_iter().flatten().map(|(m, _)| m.to_uppercase()) {
@@ -274,6 +281,32 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     expect(p.body["items"].as_array().map(|a| a.len()) == Some(1), "list with kinds=commitment".into());
     let p = api.call("GET", "/v1/subjects/{subject}/memories", &format!("/v1/subjects/{subj}/memories?cursor=zz"), None, &[]).await?;
     expect(p.status == 400, format!("list with a forged cursor: {}", p.status));
+
+    // Identity, labels and review (API 1.1).
+    let w = api.call("GET", "/v1/whoami", "/v1/whoami", None, &[]).await?;
+    expect(w.body["principal"] == "admin:bootstrap" && w.body["via"] == "bootstrap", format!("whoami: {}", w.body));
+    let t = api.post("/v1/tokens", json!({"agent": "agent:gov-api", "ttl_secs": 60})).await?;
+    let token = t.body["token"].as_str().unwrap_or_default().to_string();
+    expect(t.status == 200 && token.starts_with("mht."), format!("token: {} {}", t.status, t.body));
+    let bearer = format!("Bearer {token}");
+    let w = api.call("GET", "/v1/whoami", "/v1/whoami", None, &[("authorization", bearer.as_str())]).await?;
+    expect(w.body["principal"] == "agent:gov-api" && w.body["via"] == "token" && w.body["propose_only"] == true, format!("whoami with a token: {}", w.body));
+    for (bad, why, status) in [
+        (json!({"agent": "agent:nobody"}), "unknown agent", 404),
+        (json!({}), "no agent", 400),
+        (json!({"agent": "agent:gov-api", "scopes": ["memory:erase"]}), "a permission agents can't hold", 403),
+    ] {
+        let r = api.post("/v1/tokens", bad).await?;
+        expect(r.status == status, format!("token with {why}: {} (expected {status})", r.status));
+    }
+    let l = api.post("/v1/labels", json!({"id": a_id, "labels": ["commercial"]})).await?;
+    expect(l.status == 200 && l.body["labels"] == json!(["commercial"]), format!("relabel: {}", l.body));
+    let l = api.post("/v1/labels", json!({"id": uuid::Uuid::now_v7(), "labels": []})).await?;
+    expect(l.status == 404, format!("relabel of a missing record: {}", l.status));
+    let r = api.post("/v1/review", json!({"id": a_id, "action": "commit"})).await?;
+    expect(r.status == 409, format!("review of a committed record: {}", r.status));
+    let r = api.post("/v1/review", json!({"id": a_id, "action": "approve"})).await?;
+    expect(r.status == 400, format!("review with an unknown action: {}", r.status));
 
     // Operations, open routes and unknown routes.
     for path in ["/v1/subjects", "/v1/stats", "/v1/audit", "/v1/enrich/status"] {
@@ -508,7 +541,7 @@ async fn revisions(api: &mut Api) -> anyhow::Result<Outcome> {
 
 /// CORE-05: each forget mode on seeded data; nothing that matched remains, in any
 /// representation, and everything else does; one audit event per call.
-async fn forget(api: &mut Api, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn forget(api: &mut Api, pool: &sqlx::PgPool, engine: &Engine) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let count = |sql: &'static str, arg: String| {
         let pool = pool.clone();
@@ -535,16 +568,24 @@ async fn forget(api: &mut Api, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
         seed("gov:fs-3", "Imported: Initech churned in 2025", "importer", json!({"source": "crm-import"})),
         seed("gov:fs-4", "Unrelated fact kept by everyone", "bot-c", json!({})),
     ];
+    // Seeded as the operator, so each record names its own writing agent.
     for (body, actor) in &rows {
-        let r = api.call("POST", "/v1/remember", "/v1/remember", Some(body.clone()), &[("x-memhouse-actor", actor.as_str())]).await?;
-        if r.status != 200 {
-            problems.push(format!("seeding: {}", r.body));
-        }
+        let mut req: memhouse_core::types::RememberRequest = serde_json::from_value(body.clone())?;
+        req.actor = Some(actor.clone());
+        engine.remember(req).await?;
     }
     // A second tenant, erased whole at the end.
     for c in ["Other tenant fact one", "Other tenant fact two"] {
-        api.post("/v1/remember", json!({"tenant": "gov-api-t2", "subject": "gov:fs-t2", "content": c})).await?;
+        engine
+            .remember(memhouse_core::types::RememberRequest { tenant: Some("gov-api-t2".into()), subject: Some("gov:fs-t2".into()), content: c.into(), ..Default::default() })
+            .await?;
     }
+    // Only an admin of that tenant may erase it.
+    let t2_admin = memhouse_core::identity::Principal::new("admin:gov-t2", "gov-api-t2", memhouse_core::identity::PrincipalKind::Admin, "bench");
+    engine.store.principal_put(&t2_admin).await?;
+    let (k, full) = memhouse_core::identity::new_key("admin:gov-t2", memhouse_core::identity::PrincipalKind::Admin.permissions(), None, "bench");
+    engine.store.api_key_put(&k).await?;
+    let t2_auth = format!("Bearer {full}");
     let cases = [
         (json!({"user": "fs-ana"}), 3, "memory.forget", "user"),
         (json!({"agent": "bot-a"}), 1, "memory.forget", "agent"),
@@ -593,12 +634,16 @@ async fn forget(api: &mut Api, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
         problems.push(format!("forget by subject: {} ({left} left)", r.body));
     }
     // The tenant: wrong confirmation refused, then everything of it gone, the other tenant intact.
-    let r = api.post("/v1/forget", json!({"tenant": "gov-api-t2", "all": true, "confirm": "default"})).await?;
+    let r = api.post("/v1/forget", json!({"tenant": "gov-api-t2", "all": true, "confirm": "gov-api-t2"})).await?;
+    if r.status != 403 {
+        problems.push(format!("tenant erase by another tenant's admin: {}", r.status));
+    }
+    let r = api.call("POST", "/v1/forget", "/v1/forget", Some(json!({"all": true, "confirm": "default"})), &[("authorization", t2_auth.as_str())]).await?;
     if r.status != 400 {
         problems.push(format!("tenant erase with the wrong confirmation: {}", r.status));
     }
     let others = count("SELECT count(*) FROM mh_memory WHERE tenant <> $1", "gov-api-t2".into()).await?;
-    let r = api.post("/v1/forget", json!({"tenant": "gov-api-t2", "all": true, "confirm": "gov-api-t2"})).await?;
+    let r = api.call("POST", "/v1/forget", "/v1/forget", Some(json!({"all": true, "confirm": "gov-api-t2"})), &[("authorization", t2_auth.as_str())]).await?;
     let t2 = count("SELECT count(*) FROM mh_memory WHERE tenant = $1", "gov-api-t2".into()).await?;
     let t2_audit = count("SELECT count(*) FROM mh_audit WHERE tenant = $1 AND action = 'tenant.erase'", "gov-api-t2".into()).await?;
     if r.body["deleted"] != 2 || t2 != 0 || t2_audit != 1 || count("SELECT count(*) FROM mh_memory WHERE tenant <> $1", "gov-api-t2".into()).await? != others {

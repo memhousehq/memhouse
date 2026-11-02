@@ -8,6 +8,7 @@ pub mod baselines;
 pub mod datasets;
 pub mod governance;
 pub mod guard;
+mod identity_checks;
 pub mod metrics;
 pub mod report;
 pub mod runner;

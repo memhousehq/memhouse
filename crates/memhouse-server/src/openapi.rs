@@ -10,7 +10,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{json, Map, Value};
 
 /// The API version, separate from the crate version. Minor and patch releases only add.
-pub const API_VERSION: &str = "1.0.0";
+pub const API_VERSION: &str = "1.1.0";
 
 /// Routes kept from before v1, with the route that replaces each. They answer as before and add
 /// `Deprecation`, `Sunset` and `Link` headers; they are removed no earlier than [`SUNSET`].
@@ -118,6 +118,12 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
     let audit = s(g.subschema_for::<Vec<AuditEvent>>());
     let enrich = s(g.subschema_for::<EnrichStatus>());
     let legacy_deleted = s(g.subschema_for::<LegacyDeleted>());
+    let relabel_req = s(g.subschema_for::<RelabelRequest>());
+    let review_req = s(g.subschema_for::<ReviewRequest>());
+    let review_res = s(g.subschema_for::<ReviewResult>());
+    let token_req = s(g.subschema_for::<TokenRequest>());
+    let token_res = s(g.subschema_for::<memhouse_core::identity::TokenResponse>());
+    let whoami = s(g.subschema_for::<WhoAmI>());
     s(g.subschema_for::<ErrorBody>());
     let id_param = || path_param("id", "A memory id.");
     let subject_param = || path_param("subject", "A subject, e.g. `customer:acme` (URL-encoded).");
@@ -207,7 +213,7 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             tag: "memory",
             stability: Stable,
             body: None,
-            ok: memory,
+            ok: memory.clone(),
             params: vec![id_param()],
             idempotent: false,
             errors: &[400, 401, 404, 500],
@@ -232,6 +238,66 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             ],
             idempotent: false,
             errors: &[400, 401, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/labels",
+            id: "relabel",
+            summary: "Set a memory's sensitivity labels",
+            description: "Replaces the labels of the current record: no new version, no re-embedding (ACC-04). Needs `memory:label`; labels denied to the caller can't be set.",
+            tag: "memory",
+            stability: Stable,
+            body: Some(relabel_req),
+            ok: memory.clone(),
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/review",
+            id: "review",
+            summary: "Commit or reject a candidate",
+            description: "For proposals that wait for review (`access.admission = \"review\"`). Needs `memory:review`. A revision whose predecessor is no longer current is rejected instead of committed.",
+            tag: "memory",
+            stability: Stable,
+            body: Some(review_req),
+            ok: review_res,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 404, 409, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/tokens",
+            id: "issueToken",
+            summary: "Issue a short-lived agent token",
+            description: "A signed token for an agent principal, with the verified user it acts for and narrower permissions; at most an hour (GOV-13). Revoking the issuing key revokes it. Needs `token:issue`.",
+            tag: "identity",
+            stability: Stable,
+            body: Some(token_req),
+            ok: token_res,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/whoami",
+            id: "whoami",
+            summary: "The verified identity of this credential",
+            description: "Principal, tenant, acting user, permissions, subjects and denied labels; needs no permission.",
+            tag: "identity",
+            stability: Stable,
+            body: None,
+            ok: whoami,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 500],
             open: false,
         },
         Op {
@@ -411,7 +477,8 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
 fn error_response(code: u16) -> Value {
     let what = match code {
         400 => "Invalid request (`invalid_request`).",
-        401 => "Missing or wrong API key (`unauthorized`).",
+        401 => "Missing, wrong, expired or revoked key or token (`unauthorized`).",
+        403 => "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope.",
         404 => "Not found (`not_found`).",
         409 => "Conflict with the stored state (`conflict`).",
         _ => "Internal failure (`internal`).",
@@ -433,6 +500,9 @@ pub fn spec() -> Value {
             "x-stability": match op.stability { Stability::Stable => "stable", Stability::Preview => "preview", Stability::Deprecated => "deprecated" },
         });
         let mut params = op.params.clone();
+        if !op.open {
+            params.push(json!({"$ref": "#/components/parameters/User"}));
+        }
         if op.idempotent {
             params.push(json!({"$ref": "#/components/parameters/IdempotencyKey"}));
         }
@@ -449,6 +519,9 @@ pub fn spec() -> Value {
         responses.insert("200".into(), json!({"description": "OK", "content": {"application/json": {"schema": op.ok}}}));
         for c in op.errors {
             responses.insert(c.to_string(), error_response(*c));
+        }
+        if !op.open {
+            responses.insert("403".into(), error_response(403));
         }
         o["responses"] = Value::Object(responses);
         if op.open {
@@ -476,6 +549,7 @@ pub fn spec() -> Value {
         "security": [{"bearer": []}, {"apiKey": []}],
         "tags": [
             {"name": "memory", "description": "The core operations (CORE-01)."},
+            {"name": "identity", "description": "Who is calling: tokens and the verified identity (GOV-01, GOV-13)."},
             {"name": "operations", "description": "Health, counts and audit."},
             {"name": "deprecated", "description": format!("Routes from before v1, deprecated on {DEPRECATED_ON}, removed no earlier than {SUNSET}.")}
         ],
@@ -484,10 +558,11 @@ pub fn spec() -> Value {
             "schemas": g.take_definitions(true),
             "parameters": {
                 "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": false, "description": "1 to 255 characters. A repeat with the same key and request returns the first response; the same key with another request is a 409. Same as the body's `request_key`.", "schema": {"type": "string", "minLength": 1, "maxLength": 255}},
-                "Actor": {"name": "x-memhouse-actor", "in": "header", "required": false, "description": "Who makes the change, for the audit log (up to 80 characters). Replaced by the authenticated principal from G06.", "schema": {"type": "string", "maxLength": 80}}
+                "Actor": {"name": "x-memhouse-actor", "in": "header", "required": false, "deprecated": true, "description": "Ignored since 1.1: the audit actor and `provenance.agent` are the authenticated principal.", "schema": {"type": "string", "maxLength": 80}},
+                "User": {"name": "x-memhouse-user", "in": "header", "required": false, "description": "The user the call acts for. Accepted only from admins and from agents trusted to act for users (`act_as`); a user's key always acts for that user, a token for its own user.", "schema": {"type": "string"}}
             },
             "securitySchemes": {
-                "bearer": {"type": "http", "scheme": "bearer", "description": "`Authorization: Bearer <key>`; `memhouse key` prints one."},
+                "bearer": {"type": "http", "scheme": "bearer", "description": "`Authorization: Bearer <key or token>`: a principal's API key (`mh_…`, from `memhouse key create`), a short-lived agent token (`mht.…`, from `POST /v1/tokens`), or a bootstrap key from `[server] api_keys`."},
                 "apiKey": {"type": "apiKey", "in": "header", "name": "x-api-key"}
             }
         }
@@ -870,6 +945,73 @@ mod tests {
         let err = status_schema(&s, "post", "/v1/remember", 400).unwrap();
         validate(&s, err, &json!({"error": "content is empty", "code": "invalid_request"})).unwrap();
         assert!(validate(&s, err, &json!({"error": "x", "code": "teapot"})).is_err());
+    }
+
+    /// ADR 0008: what stable operations use maps to protobuf: no tuples, no untagged unions of
+    /// object shapes, type unions only with null.
+    #[test]
+    fn stable_types_map_to_protobuf() {
+        let s = spec();
+        let mut todo: Vec<String> = vec![];
+        let refs = |v: &Value, todo: &mut Vec<String>| {
+            let mut stack = vec![v.clone()];
+            while let Some(x) = stack.pop() {
+                match x {
+                    Value::Object(o) => {
+                        if let Some(r) = o.get("$ref").and_then(Value::as_str) {
+                            todo.push(r.trim_start_matches("#/components/schemas/").to_string());
+                        }
+                        stack.extend(o.into_iter().map(|(_, v)| v));
+                    }
+                    Value::Array(a) => stack.extend(a),
+                    _ => {}
+                }
+            }
+        };
+        for methods in s["paths"].as_object().unwrap().values() {
+            for op in methods.as_object().unwrap().values() {
+                if op["x-stability"] == "stable" {
+                    refs(&op["requestBody"], &mut todo);
+                    refs(&op["responses"]["200"], &mut todo);
+                }
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut problems = vec![];
+        while let Some(name) = todo.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let schema = component(&s, &name).unwrap_or_else(|| panic!("{name}")).clone();
+            let text = schema.to_string();
+            if text.contains("prefixItems") {
+                problems.push(format!("{name}: a tuple"));
+            }
+            let mut stack = vec![schema.clone()];
+            while let Some(x) = stack.pop() {
+                if let Value::Object(o) = &x {
+                    if let Some(Value::Array(ts)) = o.get("type") {
+                        if ts.len() != 2 || !ts.contains(&json!("null")) {
+                            problems.push(format!("{name}: type union {ts:?}"));
+                        }
+                    }
+                    for key in ["oneOf", "anyOf"] {
+                        if let Some(Value::Array(alts)) = o.get(key) {
+                            let shapes = alts.iter().filter(|a| a.get("const").is_none() && a.get("type") != Some(&json!("null"))).count();
+                            if shapes > 1 {
+                                problems.push(format!("{name}: {key} of {shapes} shapes"));
+                            }
+                        }
+                    }
+                    stack.extend(o.values().cloned());
+                } else if let Value::Array(a) = x {
+                    stack.extend(a);
+                }
+            }
+            refs(&schema, &mut todo);
+        }
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(seen.contains("Memory") && seen.contains("WhoAmI"), "{seen:?}");
     }
 
     #[test]

@@ -65,7 +65,10 @@ flowchart LR
 | Hash-chained audit log of writes and deletions | always on | — | `audit_chain` check, `memhouse audit --verify` |
 | Audit of reads | off | `audit_reads` | `memory.recall` events |
 | Episodic retention, including derived data | off (keep) | `episodic_retention_days` | `retention_cascade` check, `retention.purge` events |
-| API authentication | always on | `[server] api_keys` | 401 without a key |
+| Authentication: per-principal keys, short-lived agent tokens | always on | `memhouse principal`, `memhouse key` | `authentication` check: 401 and an `auth.failed` event for every bad credential |
+| Authorization of every operation (role, tenant, subject, kind, label, user, scope) | always on | principals' attributes, `[access]` | `route_authorization`, `label_filter` checks; `access.denied` events |
+| Agents propose, the engine or a reviewer commits | on | `[access] admission`, `--commit` grant | `propose_only` check; `memory.propose` / `memory.admit` events |
+| Baseline floor (`secret` redaction, injection screen) | can't be turned off | — | start-up refuses a weaker config |
 | Content size limit | 20,000 chars | `max_content_chars` | 400 response |
 
 ## Redaction
@@ -296,12 +299,73 @@ somewhere they can't reach, for example a daily job that writes the `head` value
 
 ## Access control
 
-- REST and HTTP MCP require a bearer key from `[server] api_keys`. Keys are compared in constant
-  time. There is no unauthenticated mode.
-- All keys have the same rights. Give each integration its own key and `x-memhouse-actor` so you
-  can revoke and trace them separately.
-- stdio MCP (`memhouse mcp`) runs as the local OS user and inherits their access to the config file
-  (mode 0600).
+Every call carries a verified identity (GOV-01), and every operation is decided by the
+authorizer before anything else runs (GOV-02, [security baseline](security/baseline.md)).
+
+```mermaid
+flowchart LR
+    C[credential<br/>key · token] --> AU{authenticate<br/>hash · signature · expiry ·<br/>revocation · principal enabled}
+    AU -- no --> F[401 + auth.failed]
+    AU -- yes --> I[identity<br/>principal · tenant · verified user · permissions]
+    I --> AZ{authorize<br/>permission · tenant · subject ·<br/>kind · label · user · scope}
+    AZ -- no --> D[403 + access.denied]
+    AZ -- yes --> E[engine, with tenant, scope<br/>and denied labels injected]
+```
+
+**Principals.** An agent, a user or an admin, bound to one tenant, with the subjects it may use
+(`customer:*`), the memory kinds, labels it may never read or write, and its org and team.
+`memhouse principal add agent:support-bot --subject 'customer:*' --deny-label hr`.
+
+**Keys.** `memhouse key create <principal>` prints a key once; only a hash of its secret is
+stored. A key carries permissions (`memory:read`, `memory:write`, `memory:forget`,
+`memory:erase`, `memory:label`, `memory:review`, `token:issue`, `ops:read`, `audit:read`) within
+what the principal's kind allows. A key without permissions is refused everywhere. `memhouse key
+rotate` issues a replacement and lets the old key work for a grace period; `memhouse key revoke`
+ends it. Revocations and disabled principals take effect within 5 seconds.
+
+**Agent tokens (GOV-13).** `POST /v1/tokens` issues a signed token that lasts at most an hour
+(`[access] token_ttl_secs`, 15 minutes by default), with narrower permissions than the key that
+asked. When a user's key asks, the token acts for that user: the user is verified, not asserted.
+An admin, or an agent trusted to act for users (`act_as`), may name the user. Revoking the issuing
+key revokes its tokens.
+
+**What is checked on every call.**
+
+| Rule | Denied when |
+|---|---|
+| permission | the credential doesn't carry what the operation needs |
+| tenant | the request names another tenant (the tenant always comes from the principal) |
+| subject | the subject is outside the principal's patterns |
+| kind | the principal is limited to other memory kinds |
+| label | a write carries a label denied to the caller; reads never return such records |
+| user | the request names a user other than the verified one |
+| scope | the request points `scope` at another user, agent, team or org |
+
+Reads are filtered by the caller's own scope. A user sees their own records and unscoped ones,
+never another user's. An agent sees records scoped to it and unscoped ones. A caller without a
+team or org sees no team- or org-scoped records. Denied labels are filtered inside the recall
+statement, before ranking, so `k` results are still returned (TR-RQ-03). A record the caller may
+not see answers `404`, as if it didn't exist.
+
+**Agents only propose (GOV-08).** An agent's writes enter as `candidate`. With `[access]
+admission = "auto"` (the default) the engine commits each one as soon as it passes the write gate.
+With `"review"` they wait for a principal with `memory:review` (`POST /v1/review`). An agent
+can't commit its own proposal, and an attempt is refused and audited. A direct-commit grant
+(`memhouse principal add agent:x --commit`) is explicit and recorded. Conversation rounds
+(`ingest`) are always admitted by the engine. The audit trail shows `memory.propose` by the agent
+and `memory.admit` by the engine or the reviewer.
+
+**Audit.** The actor of every event is the principal id. Failed authentications are recorded as
+`auth.failed`, denials as `access.denied` (identifiers and reasons, never content).
+
+**The operator.** The CLI and `memhouse bench` hold the database credentials, so they act as the
+operator (`admin:cli`, or `cli` in the audit log). Keys in `[server] api_keys` are bootstrap keys
+of `admin:bootstrap`. Use them to set up principals, then remove them from the config.
+`memhouse mcp` needs the agent's own key (`MEMHOUSE_MCP_KEY`), which `memhouse connect` writes for
+each agent it connects.
+
+**The floor.** `secret` redaction and the injection screen can't be configured off. Start-up
+refuses a configuration that tries (TR-CORE-05).
 - The database credentials grant full access. Protect them as you would any production database
   credential, and use TLS to the database (`sslmode=require`).
 - Put TLS in front of `memhouse serve`. It speaks plain HTTP and allows any CORS origin (see
@@ -376,10 +440,11 @@ Run it in CI and keep the reports: they are audit evidence for every release.
 These are tracked against the requirements in [`docs/design/`](design/) and stated here so
 reviewers don't have to find them:
 
-- **No per-key scopes or roles.** Any valid key can read and erase any subject in the tenant. The
-  relationship-based authorizer (ACC, D-01..D-07) is designed, not built.
-- **Labels can't be set through the API.** `denied_labels` works on recall, but labels arrive only
-  through import.
+- **Access is by role and attributes, not relationships.** A principal may use the subjects its
+  patterns match. Relationship-based access (who is this clinician's patient, ACC-01..ACC-06,
+  D-01..D-07) arrives in G27, behind the same `Authorizer` seam.
+- **No SSO or SCIM yet** (GOV-13 for people). Users are principals with keys; OIDC and SAML arrive
+  in G29.
 - **Retention is by write time** (`created_at`), not event time. An imported or backfilled
   conversation is kept for the full period from when it was imported.
 - **Ledger re-application after a restore is a manual SQL procedure.**

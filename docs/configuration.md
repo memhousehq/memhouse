@@ -33,6 +33,7 @@ memhouse doctor          # shows which config file was loaded and checks every p
 - [`[enrich]`](#enrich): asynchronous LLM fact extraction
 - [`[governance]`](#governance)
 - [`[server]`](#server)
+- [`[access]`](#access): admission of agent proposals, token lifetime, labels per role
 - [Environment variables](#environment-variables)
 - [Templates](#templates)
 - [Recipes](#recipes)
@@ -327,8 +328,33 @@ See [governance.md](governance.md) for what each control does and how to prove i
 | Key | Default | Notes |
 |---|---|---|
 | `bind` | `127.0.0.1:7077` | Use `0.0.0.0:7077` only behind a TLS reverse proxy (see [operations.md](operations.md#reverse-proxy-and-tls)). |
-| `api_keys` | generated | Every key is equal. Add a key per client so you can rotate them one at a time. |
+| `api_keys` | generated | **Bootstrap** keys: they act as `admin:bootstrap` with every permission. Use one to set up principals (`memhouse principal add`, `memhouse key create`), give every client its own principal's key, then remove these. |
 | `mcp_legacy_tools` | false | also list the pre-v1 MCP tool names (`memory_recall`, …) in `tools/list`, for agents configured with them. They are callable either way until 2027-11-02 ([deprecations](api.md#deprecated-routes-and-tool-names)). |
+
+## `[access]`
+
+Principals and their keys live in the database (`memhouse principal`, `memhouse key`; see
+[governance.md](governance.md#access-control)). The configuration sets how they are treated.
+
+| Key | Default | Notes |
+|---|---|---|
+| `admission` | `auto` | how agents' proposals are committed (GOV-08). `auto`: the engine commits each one once it has passed the write gate. `review`: they stay `candidate` until a principal with `memory:review` calls `POST /v1/review`. Conversation rounds are always admitted by the engine. |
+| `token_ttl_secs` | 900 | lifetime of agent tokens from `POST /v1/tokens`; 1 to 3600 |
+| `denied_labels.agent`, `.user`, `.admin` | `[]` | labels every principal of that kind may never read or write, on top of `[governance] denied_labels` and the principal's own |
+
+```toml
+[access]
+admission = "review"
+token_ttl_secs = 600
+
+[access.denied_labels]
+agent = ["hr", "health"]
+```
+
+**The baseline floor.** Some settings can only be made stricter (TR-CORE-05). Start-up refuses a
+configuration where `[governance] redact` lacks `secret`, where `quarantine_injection = false`, or
+where `token_ttl_secs` is above 3600. An empty file is secure: authentication, `secret`, card, SSN
+and IBAN redaction, the injection screen and the audit log are all on (PROF-12).
 
 ## Environment variables
 
@@ -340,7 +366,8 @@ See [governance.md](governance.md) for what each control does and how to prove i
 | `MEMHOUSE_TENANT` | `memory.tenant` |
 | `MEMHOUSE_SUBJECT` | `memory.default_subject` |
 | `MEMHOUSE_BIND` | `server.bind` |
-| `MEMHOUSE_API_KEY` | adds a key to `server.api_keys` |
+| `MEMHOUSE_API_KEY` | adds a bootstrap key to `server.api_keys` |
+| `MEMHOUSE_MCP_KEY` | the agent's key or token for `memhouse mcp` (written into the agent's config by `memhouse connect`) |
 | `MEMHOUSE_EMBEDDING_PROVIDER`, `_MODEL`, `_DIM`, `_BASE_URL`, `_API_KEY_ENV` | `embedding.*` |
 | `MEMHOUSE_RERANK` | `rerank.enabled` (`1` or `true`) |
 | `MEMHOUSE_ENRICH` | `enrich.enabled` (`1` or `true`) |

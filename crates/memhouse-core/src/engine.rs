@@ -18,6 +18,10 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Engine {
     pub store: Arc<dyn Store>,
+    /// Verifies credentials (keys, tokens) and issues tokens.
+    pub auth: Arc<crate::identity::Authenticator>,
+    /// Decides every operation a `Caller` makes.
+    pub authorizer: Arc<dyn crate::access::Authorizer>,
     pub embedder: Arc<dyn Embedder>,
     pub reranker: Option<Arc<dyn Reranker>>,
     /// LLM for background enrichment (only workers use it; ingest just queues jobs).
@@ -50,6 +54,26 @@ fn request_hash(request: &impl serde::Serialize) -> String {
         o.remove("actor");
     }
     content_hash(&v.to_string())
+}
+
+/// How a write enters the lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Entry {
+    /// Committed at once (operators, agents with a commit grant, users, admins).
+    Commit,
+    /// A candidate the engine admits as soon as it has passed the gate.
+    ProposeAdmit,
+    /// A candidate that waits for a reviewer (`access.admission = "review"`).
+    Propose,
+}
+
+/// What a list may return.
+pub(crate) struct Page {
+    pub kinds: Option<Vec<MemoryKind>>,
+    pub include_inactive: bool,
+    pub limit: usize,
+    pub denied_labels: Vec<String>,
+    pub scope: Scope,
 }
 
 fn encode_cursor(at: chrono::DateTime<Utc>, id: Uuid) -> String {
@@ -98,7 +122,10 @@ fn truncate_chars(s: &str, n: usize) -> &str {
 impl Engine {
     pub fn new(store: Arc<dyn Store>, embedder: Arc<dyn Embedder>, reranker: Option<Arc<dyn Reranker>>, cfg: Config) -> Engine {
         let policy_version = policy_version(&cfg);
-        Engine { store, embedder, reranker, chat: None, cfg: Arc::new(cfg), policy_version }
+        let authorizer = Arc::new(crate::access::ScopeAuthorizer::new(&cfg));
+        let cfg = Arc::new(cfg);
+        let auth = Arc::new(crate::identity::Authenticator::new(store.clone(), cfg.clone()));
+        Engine { store, auth, authorizer, embedder, reranker, chat: None, cfg, policy_version }
     }
 
     /// The compiled policy this engine writes under, as stored in `mh_policy`.
@@ -164,16 +191,39 @@ impl Engine {
         Ok(link)
     }
 
+    /// The same engine under another configuration (policy, authenticator and authorizer rebuilt).
+    pub fn reconfigure(self, cfg: Config) -> Engine {
+        let chat = self.chat.clone();
+        Engine::new(self.store, self.embedder, self.reranker, cfg).with_chat(chat)
+    }
+
+    /// Replace the authorizer (ReBAC in G27; tests).
+    pub fn with_authorizer(mut self, a: Arc<dyn crate::access::Authorizer>) -> Engine {
+        self.authorizer = a;
+        self
+    }
+
+    /// Replace the authenticator (tests shorten its cache).
+    pub fn with_authenticator(mut self, a: crate::identity::Authenticator) -> Engine {
+        self.auth = Arc::new(a);
+        self
+    }
+
+    /// Act as a verified caller: every operation is authorized first.
+    pub fn caller(&self, who: crate::identity::Identity) -> crate::caller::Caller {
+        crate::caller::Caller { engine: self.clone(), who }
+    }
+
     pub fn with_chat(mut self, chat: Option<Arc<dyn ChatModel>>) -> Engine {
         self.chat = chat;
         self
     }
 
-    fn tenant(&self, t: &Option<String>) -> String {
+    pub(crate) fn tenant(&self, t: &Option<String>) -> String {
         t.clone().unwrap_or_else(|| self.cfg.memory.tenant.clone())
     }
 
-    fn subject(&self, s: &Option<String>) -> String {
+    pub(crate) fn subject(&self, s: &Option<String>) -> String {
         s.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| self.cfg.memory.default_subject.clone())
     }
 
@@ -224,23 +274,32 @@ impl Engine {
         if content.chars().count() > g.max_content_chars {
             return Err(error::invalid(format!("content is {} characters; the limit is {} (governance.max_content_chars)", content.chars().count(), g.max_content_chars)));
         }
-        Ok(gate::screen(content, &g.redact, g.quarantine_injection))
+        // The floor holds even for a configuration built in code without `Config::check_floor`.
+        let mut redact = g.redact.clone();
+        if !redact.iter().any(|r| r == "secret") {
+            redact.push("secret".into());
+        }
+        Ok(gate::screen(content, &redact, true))
     }
 
     /// Store one explicit memory (a fact, preference, procedure, commitment...).
     pub async fn remember(&self, req: RememberRequest) -> anyhow::Result<RememberResult> {
+        self.remember_with(req, Entry::Commit).await
+    }
+
+    pub(crate) async fn remember_with(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.remember_once(&req, &tenant, &subject, &actor).await?;
+        let result = self.remember_once(&req, &tenant, &subject, &actor, entry).await?;
         self.remember_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await?;
         Ok(result)
     }
 
-    async fn remember_once(&self, req: &RememberRequest, tenant: &str, subject: &str, actor: &str) -> anyhow::Result<RememberResult> {
+    async fn remember_once(&self, req: &RememberRequest, tenant: &str, subject: &str, actor: &str, entry: Entry) -> anyhow::Result<RememberResult> {
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
         if let Some(st) = &req.structured {
@@ -253,9 +312,10 @@ impl Engine {
 
         if req.supersedes.is_none() {
             if let Some(existing) = self.store.find_by_hash(&tenant, &subject, &hash).await? {
+                let status = self.store.get(&tenant, existing).await?.map(|m| m.status).unwrap_or(MemoryStatus::Committed);
                 return Ok(RememberResult {
                     id: existing,
-                    status: MemoryStatus::Committed,
+                    status,
                     deduplicated: true,
                     redactions: gated.redactions,
                     superseded: None,
@@ -265,9 +325,15 @@ impl Engine {
         }
 
         let embedding = self.embed_passages(std::slice::from_ref(&gated.content)).await?.pop();
-        let status = if gated.quarantine() { MemoryStatus::Quarantined } else { MemoryStatus::Committed };
+        let status = if gated.quarantine() {
+            MemoryStatus::Quarantined
+        } else if entry == Entry::Commit {
+            MemoryStatus::Committed
+        } else {
+            MemoryStatus::Candidate
+        };
 
-        if req.supersedes.is_none() && status == MemoryStatus::Committed {
+        if req.supersedes.is_none() && status != MemoryStatus::Quarantined {
             if let Some(emb) = &embedding {
                 if let Some((id, sim)) = self.store.nearest(&tenant, &subject, kind, emb).await? {
                     if sim >= self.cfg.memory.dedup_threshold {
@@ -325,10 +391,15 @@ impl Engine {
                 superseded = Some(old);
             }
         }
+        let action = match (status, superseded) {
+            (MemoryStatus::Candidate, _) => "memory.propose",
+            (_, Some(_)) => "memory.supersede",
+            _ => "memory.write",
+        };
         self.store
             .audit(
                 &actor,
-                if superseded.is_some() { "memory.supersede" } else { "memory.write" },
+                action,
                 &tenant,
                 Some(&subject),
                 Some(id),
@@ -341,6 +412,7 @@ impl Engine {
                 }),
             )
             .await?;
+        let (status, superseded) = if status == MemoryStatus::Candidate && entry == Entry::ProposeAdmit { self.admit(&tenant, id, "engine").await? } else { (status, superseded) };
         Ok(RememberResult {
             id,
             status,
@@ -353,18 +425,22 @@ impl Engine {
 
     /// Store a conversation as episodic memory, one record per user/assistant round.
     pub async fn ingest(&self, req: IngestRequest) -> anyhow::Result<IngestResult> {
+        self.ingest_with(req, Entry::Commit).await
+    }
+
+    pub(crate) async fn ingest_with(&self, req: IngestRequest, entry: Entry) -> anyhow::Result<IngestResult> {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<IngestResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.ingest_once(&req, &tenant, &subject, &actor).await?;
+        let result = self.ingest_once(&req, &tenant, &subject, &actor, entry).await?;
         self.remember_key(&tenant, &subject, "ingest", &req.request_key, &req, &result).await?;
         Ok(result)
     }
 
-    async fn ingest_once(&self, req: &IngestRequest, tenant: &str, subject: &str, actor: &str) -> anyhow::Result<IngestResult> {
+    async fn ingest_once(&self, req: &IngestRequest, tenant: &str, subject: &str, actor: &str, entry: Entry) -> anyhow::Result<IngestResult> {
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let session = req.session_id.clone().unwrap_or_else(|| Uuid::now_v7().to_string());
         let rounds = if req.per_message {
@@ -403,7 +479,13 @@ impl Engine {
                 out.deduplicated += 1;
                 continue;
             }
-            let status = if gated.quarantine() { MemoryStatus::Quarantined } else { MemoryStatus::Committed };
+            let status = if gated.quarantine() {
+                MemoryStatus::Quarantined
+            } else if entry == Entry::Commit {
+                MemoryStatus::Committed
+            } else {
+                MemoryStatus::Candidate
+            };
             if status == MemoryStatus::Quarantined {
                 out.quarantined += 1;
             }
@@ -434,7 +516,7 @@ impl Engine {
                     valid_from: ts.unwrap_or(now),
                     valid_to: None,
                     supersedes: None,
-                    labels: vec![],
+                    labels: req.labels.clone(),
                     tags: vec![],
                     source: req.source.clone().unwrap_or_else(|| actor.clone()),
                     confidence: 1.0,
@@ -463,6 +545,17 @@ impl Engine {
         }
         self.store.insert(&recs).await?;
         out.ids = recs.iter().map(|r| r.memory.id).collect();
+        // Proposed rounds are admitted by the engine at once: a conversation is a record of what
+        // was said, not a claim to review.
+        let proposed: Vec<Uuid> = recs.iter().filter(|r| r.memory.status == MemoryStatus::Candidate).map(|r| r.memory.id).collect();
+        if !proposed.is_empty() {
+            self.store.audit(&actor, "memory.propose", &tenant, Some(&subject), None, serde_json::json!({ "records": proposed.len() })).await?;
+            let n = self.store.set_status_many(&tenant, &proposed, MemoryStatus::Committed).await?;
+            self.store.audit("engine", "memory.admit", &tenant, Some(&subject), None, serde_json::json!({ "records": n })).await?;
+            for r in recs.iter_mut().filter(|r| r.memory.status == MemoryStatus::Candidate) {
+                r.memory.status = MemoryStatus::Committed;
+            }
+        }
         out.stored = recs.len() - out.quarantined;
         if self.cfg.enrich.enabled && out.stored > 0 {
             let committed: Vec<Uuid> = recs.iter().filter(|r| r.memory.status == MemoryStatus::Committed).map(|r| r.memory.id).collect();
@@ -479,6 +572,12 @@ impl Engine {
     /// are fused by weighted RRF, then optional cross-encoder reranking, recency weighting and
     /// token-budget packing.
     pub async fn recall(&self, req: RecallRequest) -> anyhow::Result<RecallResult> {
+        let denied = self.cfg.governance.denied_labels.clone();
+        self.recall_with(req, denied).await
+    }
+
+    /// Recall with the labels a caller may not read filtered inside the statement (TR-RQ-03).
+    pub(crate) async fn recall_with(&self, req: RecallRequest, denied_labels: Vec<String>) -> anyhow::Result<RecallResult> {
         let start = Instant::now();
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
@@ -516,7 +615,7 @@ impl Engine {
             embedding: embeddings[0].take(),
             kinds: req.kinds.clone(),
             tags: req.tags.clone(),
-            denied_labels: self.cfg.governance.denied_labels.clone(),
+            denied_labels,
             as_of: req.as_of,
             valid_at: req.as_of.unwrap_or_else(Utc::now),
             mode,
@@ -633,6 +732,10 @@ impl Engine {
     /// A new version of a memory that supersedes the current one (CORE-04). Fields the request
     /// leaves out are taken from the current version.
     pub async fn revise(&self, req: ReviseRequest) -> anyhow::Result<RememberResult> {
+        self.revise_with(req, Entry::Commit).await
+    }
+
+    pub(crate) async fn revise_with(&self, req: ReviseRequest, entry: Entry) -> anyhow::Result<RememberResult> {
         let tenant = self.tenant(&req.tenant);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
@@ -669,9 +772,38 @@ impl Engine {
             structured,
             code_refs,
         };
-        let result = self.remember_once(&write, &tenant, &old.subject, &actor).await?;
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor, entry).await?;
         self.remember_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await?;
         Ok(result)
+    }
+
+    /// Commit a candidate (GOV-08): by the engine at once, or by a reviewer. A revision whose
+    /// predecessor is no longer current is rejected instead, so history never forks.
+    pub(crate) async fn admit(&self, tenant: &str, id: Uuid, by: &str) -> anyhow::Result<(MemoryStatus, Option<Uuid>)> {
+        let m = self.store.get(tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
+        if m.status != MemoryStatus::Candidate {
+            return Err(error::conflict(format!("memory {id} is {}; only candidates are admitted", m.status.as_str())));
+        }
+        if let Some(old) = m.supersedes {
+            if !self.store.set_superseded(tenant, old, id).await? {
+                self.store.set_status(tenant, id, MemoryStatus::Rejected).await?;
+                self.store.audit(by, "memory.reject", tenant, Some(&m.subject), Some(id), serde_json::json!({ "reason": "the version it revises is no longer current" })).await?;
+                return Ok((MemoryStatus::Rejected, None));
+            }
+        }
+        self.store.set_status(tenant, id, MemoryStatus::Committed).await?;
+        self.store.audit(by, "memory.admit", tenant, Some(&m.subject), Some(id), serde_json::json!({ "supersedes": m.supersedes })).await?;
+        Ok((MemoryStatus::Committed, m.supersedes))
+    }
+
+    /// Refuse a candidate.
+    pub(crate) async fn reject(&self, tenant: &str, id: Uuid, by: &str, reason: &str) -> anyhow::Result<MemoryStatus> {
+        let m = self.store.get(tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
+        if !self.store.set_status(tenant, id, MemoryStatus::Rejected).await? {
+            return Err(error::conflict(format!("memory {id} is {}; it can't be rejected", m.status.as_str())));
+        }
+        self.store.audit(by, "memory.reject", tenant, Some(&m.subject), Some(id), serde_json::json!({ "reason": reason })).await?;
+        Ok(MemoryStatus::Rejected)
     }
 
     pub async fn forget(&self, tenant: Option<String>, id: Uuid, actor: Option<String>) -> anyhow::Result<bool> {
@@ -790,7 +922,19 @@ impl Engine {
         offset: usize,
         include_inactive: bool,
     ) -> anyhow::Result<Vec<Memory>> {
-        self.store.list(&ListQuery { tenant: self.tenant(&tenant), subject, kinds, include_inactive, limit: limit.clamp(1, 1000), offset, before: None }).await
+        self.store
+            .list(&ListQuery {
+                tenant: self.tenant(&tenant),
+                subject,
+                kinds,
+                include_inactive,
+                limit: limit.clamp(1, 1000),
+                offset,
+                before: None,
+                denied_labels: self.cfg.governance.denied_labels.clone(),
+                scope: Scope::default(),
+            })
+            .await
     }
 
     /// One page of a subject's memories, newest first, with keyset paging.
@@ -803,9 +947,25 @@ impl Engine {
         limit: usize,
         cursor: Option<&str>,
     ) -> anyhow::Result<MemoryPage> {
-        let limit = limit.clamp(1, 1000);
+        let page = Page { kinds, include_inactive, limit, denied_labels: self.cfg.governance.denied_labels.clone(), scope: Scope::default() };
+        self.list_page_with(tenant, subject, page, cursor).await
+    }
+
+    pub(crate) async fn list_page_with(&self, tenant: Option<String>, subject: String, page: Page, cursor: Option<&str>) -> anyhow::Result<MemoryPage> {
+        let limit = page.limit.clamp(1, 1000);
         let before = cursor.map(decode_cursor).transpose()?;
-        let mut items = self.store.list(&ListQuery { tenant: self.tenant(&tenant), subject: Some(subject), kinds, include_inactive, limit: limit + 1, offset: 0, before }).await?;
+        let q = ListQuery {
+            tenant: self.tenant(&tenant),
+            subject: Some(subject),
+            kinds: page.kinds,
+            include_inactive: page.include_inactive,
+            limit: limit + 1,
+            offset: 0,
+            before,
+            denied_labels: page.denied_labels,
+            scope: page.scope,
+        };
+        let mut items = self.store.list(&q).await?;
         let next_cursor = if items.len() > limit {
             items.truncate(limit);
             items.last().map(|m| encode_cursor(m.created_at, m.id))

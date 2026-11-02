@@ -2,7 +2,8 @@
   "components": {
     "parameters": {
       "Actor": {
-        "description": "Who makes the change, for the audit log (up to 80 characters). Replaced by the authenticated principal from G06.",
+        "deprecated": true,
+        "description": "Ignored since 1.1: the audit actor and `provenance.agent` are the authenticated principal.",
         "in": "header",
         "name": "x-memhouse-actor",
         "required": false,
@@ -19,6 +20,15 @@
         "schema": {
           "maxLength": 255,
           "minLength": 1,
+          "type": "string"
+        }
+      },
+      "User": {
+        "description": "The user the call acts for. Accepted only from admins and from agents trusted to act for users (`act_as`); a user's key always acts for that user, a token for its own user.",
+        "in": "header",
+        "name": "x-memhouse-user",
+        "required": false,
+        "schema": {
           "type": "string"
         }
       }
@@ -148,6 +158,11 @@
           {
             "const": "unauthorized",
             "description": "Missing or wrong API key (401).",
+            "type": "string"
+          },
+          {
+            "const": "forbidden",
+            "description": "The caller is known but may not do this (403).",
             "type": "string"
           },
           {
@@ -370,6 +385,14 @@
               "string",
               "null"
             ]
+          },
+          "labels": {
+            "default": [],
+            "description": "Sensitivity labels for every round.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "messages": {
             "items": {
@@ -1035,6 +1058,27 @@
         ],
         "type": "object"
       },
+      "RelabelRequest": {
+        "description": "Replace a record's sensitivity labels (`POST /v1/labels`, ACC-04). No new version and no\nre-embedding.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "labels": {
+            "description": "The complete new set of labels.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "labels"
+        ],
+        "type": "object"
+      },
       "RememberRequest": {
         "description": "Propose one memory (`remember`, CORE-01).",
         "properties": {
@@ -1249,6 +1293,62 @@
           "keyword"
         ],
         "type": "string"
+      },
+      "ReviewAction": {
+        "enum": [
+          "commit",
+          "reject"
+        ],
+        "type": "string"
+      },
+      "ReviewRequest": {
+        "description": "Commit or reject a candidate (`POST /v1/review`, GOV-08, GOV-11).",
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/ReviewAction"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "default": null,
+            "description": "Why, for the audit log (a rejection's reason).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "action"
+        ],
+        "type": "object"
+      },
+      "ReviewResult": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MemoryStatus",
+            "description": "`committed`, or `rejected` (also when a revision's predecessor is no longer current)."
+          },
+          "superseded": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "type": "object"
       },
       "ReviseRequest": {
         "description": "Correct a memory (`revise`, CORE-04): a new version that supersedes the current one. Fields\nleft out are taken from the current version (kind, tags, labels, scope, metadata, validity,\nstructured form, code references).",
@@ -1547,6 +1647,152 @@
           "phrase"
         ],
         "type": "object"
+      },
+      "TokenRequest": {
+        "description": "Ask for a short-lived agent token (`POST /v1/tokens`, GOV-13).",
+        "properties": {
+          "agent": {
+            "default": null,
+            "description": "The agent principal the token acts as. Required when a user or an admin asks; an agent\ngets a token for itself.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scopes": {
+            "default": null,
+            "description": "Narrower permissions than the caller's; defaults to all the caller may pass on.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "ttl_secs": {
+            "default": null,
+            "description": "At most `access.token_ttl_secs` (default and maximum 900 unless configured, never above 3600).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "description": "The user the token acts for. A user's token always acts for that user; an admin or an\nagent trusted to act for users (`act_as`) may name one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "TokenResponse": {
+        "description": "What `issue_token` returns.",
+        "properties": {
+          "agent": {
+            "description": "The agent principal the token acts as.",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "token": {
+            "description": "Send as `Authorization: Bearer <token>`.",
+            "type": "string"
+          },
+          "user": {
+            "description": "The user it acts for, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "token",
+          "expires_at",
+          "agent",
+          "scopes"
+        ],
+        "type": "object"
+      },
+      "WhoAmI": {
+        "description": "Who the API sees (`GET /v1/whoami`).",
+        "properties": {
+          "denied_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "`agent`, `user` or `admin`.",
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "propose_only": {
+            "description": "Writes enter as candidates (GOV-08).",
+            "type": "boolean"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "subjects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "user": {
+            "description": "The verified user the calls act for.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "via": {
+            "description": "`key`, `token`, `bootstrap` or `operator`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "kind",
+          "tenant",
+          "scopes",
+          "subjects",
+          "denied_labels",
+          "propose_only",
+          "via"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -1556,7 +1802,7 @@
         "type": "apiKey"
       },
       "bearer": {
-        "description": "`Authorization: Bearer <key>`; `memhouse key` prints one.",
+        "description": "`Authorization: Bearer <key or token>`: a principal's API key (`mh_…`, from `memhouse key create`), a short-lived agent token (`mht.…`, from `POST /v1/tokens`), or a bootstrap key from `[server] api_keys`.",
         "scheme": "bearer",
         "type": "http"
       }
@@ -1570,7 +1816,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -1614,6 +1860,9 @@
               "minimum": 1,
               "type": "integer"
             }
+          },
+          {
+            "$ref": "#/components/parameters/User"
           }
         ],
         "responses": {
@@ -1638,7 +1887,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "500": {
             "content": {
@@ -1662,6 +1921,11 @@
       "get": {
         "description": "Preview.",
         "operationId": "enrichStatus",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1681,7 +1945,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "500": {
             "content": {
@@ -1706,6 +1980,9 @@
         "description": "Permanent deletion with every derived representation (vectors, extracted facts, cached extractions) and a deletion-ledger row; one audit event per call.",
         "operationId": "forget",
         "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
           },
@@ -1752,7 +2029,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "404": {
             "content": {
@@ -1797,6 +2084,9 @@
         "description": "One record per user/assistant round; queues background enrichment when it is on.",
         "operationId": "ingest",
         "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
           },
@@ -1843,7 +2133,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "409": {
             "content": {
@@ -1867,6 +2167,97 @@
           }
         },
         "summary": "Store a conversation as episodic memory",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/labels": {
+      "post": {
+        "description": "Replaces the labels of the current record: no new version, no re-embedding (ACC-04). Needs `memory:label`; labels denied to the caller can't be set.",
+        "operationId": "relabel",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelabelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Memory"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Set a memory's sensitivity labels",
         "tags": [
           "memory"
         ],
@@ -1926,6 +2317,9 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "$ref": "#/components/parameters/User"
           }
         ],
         "responses": {
@@ -1960,7 +2354,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "500": {
             "content": {
@@ -1986,6 +2390,9 @@
         "description": "Same body and response as `remember`.",
         "operationId": "rememberLegacy",
         "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
           },
@@ -2032,7 +2439,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "409": {
             "content": {
@@ -2080,6 +2497,9 @@
             }
           },
           {
+            "$ref": "#/components/parameters/User"
+          },
+          {
             "$ref": "#/components/parameters/Actor"
           }
         ],
@@ -2112,7 +2532,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "404": {
             "content": {
@@ -2155,6 +2585,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/User"
           }
         ],
         "responses": {
@@ -2186,7 +2619,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "404": {
             "content": {
@@ -2228,6 +2671,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/User"
           },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
@@ -2283,7 +2729,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "404": {
             "content": {
@@ -2355,6 +2811,9 @@
         "operationId": "recall",
         "parameters": [
           {
+            "$ref": "#/components/parameters/User"
+          },
+          {
             "$ref": "#/components/parameters/Actor"
           }
         ],
@@ -2397,7 +2856,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "500": {
             "content": {
@@ -2422,6 +2891,9 @@
         "description": "Runs the write gate (redaction, injection screen, deduplication) and returns the record's id and state at once. The state is `committed` or `quarantined` today and may be `candidate` from G10; read it with `GET /v1/memories/{id}`.",
         "operationId": "remember",
         "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
           },
@@ -2468,7 +2940,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "409": {
             "content": {
@@ -2498,11 +2980,115 @@
         "x-stability": "stable"
       }
     },
+    "/v1/review": {
+      "post": {
+        "description": "For proposals that wait for review (`access.admission = \"review\"`). Needs `memory:review`. A revision whose predecessor is no longer current is rejected instead of committed.",
+        "operationId": "review",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Commit or reject a candidate",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
     "/v1/revise": {
       "post": {
         "description": "The current version becomes `superseded` and stays for audit and as-of recall; the new version records `supersedes`. Revising a version that is not `committed` is a conflict.",
         "operationId": "revise",
         "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
           {
             "$ref": "#/components/parameters/IdempotencyKey"
           },
@@ -2549,7 +3135,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "404": {
             "content": {
@@ -2593,6 +3189,11 @@
       "get": {
         "description": "Preview.",
         "operationId": "stats",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2612,7 +3213,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "500": {
             "content": {
@@ -2636,6 +3247,11 @@
       "get": {
         "description": "Preview: paging and per-principal filtering arrive with G06 and G20.",
         "operationId": "listSubjects",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2658,7 +3274,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "500": {
             "content": {
@@ -2694,6 +3320,9 @@
             }
           },
           {
+            "$ref": "#/components/parameters/User"
+          },
+          {
             "$ref": "#/components/parameters/Actor"
           }
         ],
@@ -2716,7 +3345,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "500": {
             "content": {
@@ -2789,6 +3428,9 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "$ref": "#/components/parameters/User"
           }
         ],
         "responses": {
@@ -2820,7 +3462,17 @@
                 }
               }
             },
-            "description": "Missing or wrong API key (`unauthorized`)."
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
           },
           "500": {
             "content": {
@@ -2836,6 +3488,155 @@
         "summary": "List a subject's memories, newest first",
         "tags": [
           "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/tokens": {
+      "post": {
+        "description": "A signed token for an agent principal, with the verified user it acts for and narrower permissions; at most an hour (GOV-13). Revoking the issuing key revokes it. Needs `token:issue`.",
+        "operationId": "issueToken",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Issue a short-lived agent token",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/whoami": {
+      "get": {
+        "description": "Principal, tenant, acting user, permissions, subjects and denied labels; needs no permission.",
+        "operationId": "whoami",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhoAmI"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "The verified identity of this credential",
+        "tags": [
+          "identity"
         ],
         "x-stability": "stable"
       }
@@ -2859,6 +3660,10 @@
     {
       "description": "The core operations (CORE-01).",
       "name": "memory"
+    },
+    {
+      "description": "Who is calling: tokens and the verified identity (GOV-01, GOV-13).",
+      "name": "identity"
     },
     {
       "description": "Health, counts and audit.",

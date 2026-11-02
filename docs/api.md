@@ -20,7 +20,7 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.0.0`. The machine-readable contract is the OpenAPI 3.1 document at
+This is **API v1**, version `1.1.0` (1.1 added principals, agent tokens, review and labels). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -35,6 +35,8 @@ run to run.
 - [The four operations](#the-four-operations): [remember](#post-v1remember-propose-a-memory), [recall](#post-v1recall-retrieve-memories-for-a-context), [revise](#post-v1revise-supersede-a-memory), [forget](#post-v1forget-delete-memories)
 - [Conversations](#conversations): ingest
 - [Reading records](#reading-records): get, list
+- [Labels and review](#labels-and-review): relabel, commit or reject a candidate
+- [Identity](#identity): who am I, agent tokens
 - [Operations](#operations): subjects, stats, audit, enrichment status, health
 - [MCP](#mcp)
 - [Deprecated routes and tool names](#deprecated-routes-and-tool-names)
@@ -45,24 +47,38 @@ run to run.
 
 **Base URL.** `http://127.0.0.1:7077` by default. Set it with `[server] bind` or `MEMHOUSE_BIND`.
 
-**Authentication.** Every `/v1/*` route and `/mcp` needs one of the keys in `[server] api_keys`,
-except `/v1/openapi.json`. `memhouse key` prints the key.
+**Authentication (GOV-01).** Every `/v1/*` route and `/mcp` needs a credential, sent as
+`Authorization: Bearer <credential>` or `x-api-key: <credential>`:
+
+| Credential | Looks like | Comes from | Acts as |
+|---|---|---|---|
+| a principal's API key | `mh_<id>_<secret>` | `memhouse key create <principal>` | that agent, user or admin |
+| an agent token | `mht.<claims>.<signature>` | `POST /v1/tokens`, at most an hour | an agent, for a verified user, with narrower permissions |
+| a bootstrap key | from `[server] api_keys` | `memhouse init`; `memhouse key` prints it | `admin:bootstrap`, for setting up principals |
 
 ```bash
-KEY=$(memhouse key)
-curl -s localhost:7077/v1/stats -H "authorization: Bearer $KEY"
-# or
-curl -s localhost:7077/v1/stats -H "x-api-key: $KEY"
+KEY=$(memhouse key)            # the bootstrap key
+curl -s localhost:7077/v1/whoami -H "authorization: Bearer $KEY"
+# {"principal":"admin:bootstrap","kind":"admin","tenant":"default","scopes":[…],"via":"bootstrap",…}
 ```
 
-If no key is configured, the server refuses every request. There is no unauthenticated mode.
-`/health`, `/v1/openapi.json` and `/` (the Memory Browser page, which asks for the key) are the
-only open routes.
+There is no unauthenticated mode. `/health`, `/v1/openapi.json` and `/` (the Memory Browser page,
+which asks for a key) are the only open routes. A refused credential gets `401` with the reason
+(`unknown key`, `revoked key`, `expired token`, …), and the attempt is audited as `auth.failed`.
 
-**Actor.** Send `x-memhouse-actor: <name>`, up to 80 characters, to record who made the change.
-It becomes the record's `provenance.agent` and the audit log's actor. Without it the actor is
-`rest`. Bodies that take an `actor` field use that field first. From G06, API keys belong to
-principals and the authenticated principal replaces both.
+**Authorization (GOV-02).** Every operation is decided before it runs: the credential must carry
+the permission (`memory:read` for recall, get and list; `memory:write` for remember, revise and
+ingest; `memory:forget`; `memory:erase` for forgetting a subject, source, someone else's records
+or the tenant; `memory:label`; `memory:review`; `token:issue`; `ops:read`; `audit:read`). The
+subject must match the principal's subjects, and the kinds and labels must be allowed. A refusal
+is `403 forbidden` with the rule that refused it, audited as `access.denied`. A record the caller
+may not see answers `404`. See [governance.md](governance.md#access-control) for the full rules.
+
+**Who wrote it.** The audit actor and the record's `provenance.agent` are the authenticated
+principal. `provenance.user` is the verified user. The `x-memhouse-actor` header and the bodies'
+`actor` field are ignored since 1.1. An admin, or an agent trusted to act for users (`act_as`),
+may name the user with `x-memhouse-user`; a user's key always acts for that user, and a token for
+its own user. A body naming another `user` is refused.
 
 **Idempotency keys (CORE-06).** Every write (`remember`, `revise`, `forget`, `ingest`) takes an
 `Idempotency-Key` header or a `request_key` field (1 to 255 characters). Send both only if they
@@ -85,18 +101,17 @@ returns the existing id), but a revise or a forget repeated after a timeout is n
 
 **Subjects and tenants.** A *subject* is whose memory it is, for example `user:alice`,
 `customer:42`, `account:acme` or `repo:api`. Recall never crosses subjects. If a call names no
-subject, the configured `default_subject` is used. A *tenant* is the top-level partition and
-comes from `[memory] tenant`. Request bodies accept `tenant`; get, list, stats and audit use the
-configured tenant. From G06 the tenant comes from the API key and a body naming another one is
-refused.
+subject, the configured `default_subject` is used. A *tenant* is the top-level partition. It
+always comes from the credential's principal. A body may repeat it, but a body naming another
+tenant is refused.
 
-**Scopes.** A record can carry a `scope`: `{org, team, agent, user, session}`, any of them. A
-recall with a `scope` only returns records visible in it: for each field the request sets, a
-record matches if it has the same value or none. So `{"user": "ana"}` returns Ana's records and
-the unscoped ones, not Bob's. Fields the request leaves out don't filter, and a recall without
-`scope` sees every record of the subject. In v1 the scope is a filter the caller chooses. From
-G06 and G11 the authenticated principal sets it, and precedence (user over team over org) is
-applied in ranking.
+**Scopes.** A record can carry a `scope`: `{org, team, agent, user, session}`, any of them. Every
+read is filtered by the caller's own scope, which the server injects. A user sees records scoped
+to them and records that set no user, never another user's. An agent sees its own agent-scoped
+records. A caller without a team or org sees no team- or org-scoped records. Admins see
+everything. A request may narrow its scope (a `session`), but it can't point it at someone else:
+`{"user": "user:bob"}` from Ana is a `403`. Precedence in ranking (user over team over org) comes
+in G11.
 
 **Times.** ISO-8601 / RFC 3339 in UTC, for example `2026-10-14T15:00:00Z`. MCP tools also
 accept a plain date (`2026-10-14`).
@@ -502,6 +517,64 @@ record. URL-encode subjects that contain `/`.
 
 ---
 
+## Labels and review
+
+### `POST /v1/labels`: set a memory's sensitivity labels
+
+`{"id": "…", "labels": ["hr"]}` replaces the labels of the record. It creates no new version and
+doesn't re-embed (ACC-04). Needs `memory:label`; a label denied to the caller can't be set.
+Returns the Memory. Labels in `[governance] denied_labels`, `[access.denied_labels]` for the
+caller's kind, or the caller's own `denied_labels` are filtered inside the recall statement, before
+ranking (TR-RQ-03), so a recall still returns `k` hits.
+
+### `POST /v1/review`: commit or reject a candidate
+
+`{"id": "…", "action": "commit" | "reject", "reason": "…"}`. Writes by agents without a
+commit grant enter as `candidate` (GOV-08). With `[access] admission = "auto"` (the default) the
+engine commits them as soon as they pass the write gate. With `"review"` they wait for this call,
+by a principal with `memory:review`. A revision whose predecessor is no longer current is
+rejected instead of committed.
+
+```json
+{"id":"01a19b27-…","status":"committed"}
+```
+
+---
+
+## Identity
+
+### `GET /v1/whoami`
+
+What the credential is: principal, kind, tenant, verified user, permissions, subjects, denied
+labels, whether writes are proposals, and how it authenticated. Needs no permission.
+
+```json
+{"principal":"agent:support-bot","kind":"agent","tenant":"default","user":"user:ana",
+ "scopes":["memory:read","memory:write","memory:forget"],"subjects":["customer:*"],
+ "denied_labels":["hr"],"propose_only":true,"via":"token","expires_at":"2026-11-02T09:15:00Z"}
+```
+
+### `POST /v1/tokens`: a short-lived agent token (GOV-13)
+
+| Field | Notes |
+|---|---|
+| `agent` | the agent principal; required unless the caller is that agent |
+| `user` | the user it acts for: a user's token always acts for that user; admins and `act_as` agents may name one |
+| `ttl_secs` | at most `[access] token_ttl_secs` (900 by default, never above 3600) |
+| `scopes` | narrower permissions; at most what the caller has and the agent's kind allows, never `token:issue` |
+
+```bash
+# A user hands their agent a 15-minute token that acts for them.
+curl -s localhost:7077/v1/tokens -H "authorization: Bearer $ANA_KEY" -H "content-type: application/json" \
+  -d '{"agent":"agent:support-bot","ttl_secs":900}'
+# {"token":"mht.eyJr…","expires_at":"2026-11-02T09:15:00Z","agent":"agent:support-bot","user":"user:ana",
+#  "scopes":["memory:read","memory:write","memory:forget"]}
+```
+
+Revoking the key that issued a token, or disabling the agent, ends the token within 5 seconds.
+
+---
+
 ## Operations
 
 These routes are **preview**: they work, but may change in a minor release (paging and
@@ -571,6 +644,11 @@ also accepted. Notifications (messages without an `id`) get `202 Accepted` and n
 \* required. The input schemas are generated from the REST request types, so a tool's argument
 means exactly what the REST field means. Arguments a tool doesn't list are ignored, whatever the
 model sends: an agent can't pick another tenant, and can't erase a whole tenant over MCP.
+
+MCP is authenticated like REST: `/mcp` takes the same credentials, and `memhouse mcp` (stdio)
+reads the agent's key or token from `MEMHOUSE_MCP_KEY`. `memhouse connect <agent>` creates the
+agent's principal and key and writes it into the agent's config. Every tool call goes through the
+same authorizer as the REST route.
 
 ```bash
 curl -s localhost:7077/mcp -H "authorization: Bearer $KEY" -H "content-type: application/json" -d '{
@@ -714,7 +792,8 @@ Every error is JSON with a stable `code` and a message for people:
 | Status | `code` | When |
 |---|---|---|
 | 400 | `invalid_request` | a malformed body or path, a missing required field, an unknown kind, content over the size limit, a bad date or cursor, an unusable idempotency key |
-| 401 | `unauthorized` | missing or wrong API key, or no keys configured |
+| 401 | `unauthorized` | missing, unknown, wrong, expired or revoked key or token; a disabled principal |
+| 403 | `forbidden` | the caller may not do this: a missing permission, another tenant, a subject, kind or label it may not use, another user or scope |
 | 404 | `not_found` | the memory doesn't exist, or the route doesn't |
 | 409 | `conflict` | an idempotency key reused for a different request; revising a version that is no longer current |
 | 500 | `internal` | database or model failure; the message says which |

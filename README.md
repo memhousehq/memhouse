@@ -52,7 +52,7 @@ Docker is needed only for `memhouse up`. With your own Postgres, use `memhouse i
 | Zed, Goose | `memhouse connect zed` / `goose` | prints the snippet |
 | Any HTTP MCP client (OpenAI Agents SDK, LangGraph, n8n…) | `memhouse connect http` | prints URL + bearer key for `memhouse serve` |
 
-Existing config files are backed up (`*.memhouse.bak`) before they are changed. Files that aren't plain JSON are never modified; the snippet is printed instead. Add `--print` to see what would be written, and `--subject repo:myapp` to give an agent its own default subject.
+Each connected agent gets its own principal (`agent:cursor`, …) and key, written into its MCP config as `MEMHOUSE_MCP_KEY`. Its writes are proposals that the engine admits after the write gate, and every change it makes is audited under its name. Running `connect` again replaces the key. Existing config files are backed up (`*.memhouse.bak`) before they are changed. Files that aren't plain JSON are never modified; the snippet is printed instead. Add `--print` to see what would be written, and `--subject repo:myapp` to give an agent its own default subject.
 
 Tools exposed to the agent:
 
@@ -95,6 +95,17 @@ API v1 ([reference](docs/api.md), OpenAPI 3.1 at `/v1/openapi.json`, [stability 
 | POST | `/mcp` | MCP over streamable HTTP |
 
 Every write takes an `Idempotency-Key` header: a retry returns the first result and stores nothing more.
+
+`memhouse key` prints the bootstrap admin key. For your services, create principals with their own keys and permissions, and let agents use short-lived tokens:
+
+```bash
+memhouse principal add agent:support-bot --subject 'customer:*' --deny-label hr
+memhouse key create agent:support-bot            # printed once; only its hash is stored
+curl -s localhost:7077/v1/tokens -H "authorization: Bearer <a user's key>" -H "content-type: application/json" \
+  -d '{"agent":"agent:support-bot","ttl_secs":900}'   # a token that acts for that user
+```
+
+Every call is authenticated and authorized: tenant, subject, memory kind, labels, user and scope are checked by the server, never trusted from the request ([access control](docs/governance.md#access-control)).
 
 ## How it works
 

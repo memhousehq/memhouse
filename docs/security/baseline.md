@@ -34,7 +34,7 @@ obligations below.
 | Control | Code today | Guarantee | Verified by |
 |---|---|---|---|
 | Partitioning by subject | every `Store` method takes tenant and subject; `Engine` derives them from the request | no read or write crosses a subject or tenant | `subject_isolation`, `tenant_isolation`, `recall_plan_scoped`, `invariants` |
-| Access check on every call | bearer-key middleware in `memhouse-server` | no unauthenticated call | REST tests, e2e (401 check) |
+| Access check on every call | `identity::Authenticator` (keys, tokens) then `access::Authorizer` (`ScopeAuthorizer`) through `caller::Caller`, the only way transports reach the engine | no unauthenticated call; every operation decided, with tenant, scope and denied labels injected | `authentication`, `route_authorization`, `label_filter`, `propose_only`, `authz_latency` |
 | Audit | `Store::audit` called by the engine for every write, revision, deletion, erasure, import, retention purge and enrichment batch; hash chain | every change is recorded, tamper-evident | `audit_chain`, `memhouse audit --verify`, `scripts/verify_audit.py` |
 | Deletion across representations | `Store::delete`, `delete_subject`, `purge_episodic_older_than` | record, both vectors, derived facts, jobs, LLM cache, ledger row, in one transaction | `deletion`, `subject_erasure`, `enrich_deletion`, `retention_cascade` |
 | PII redaction | `gate::screen` on every write path, before embedding | configured categories never reach storage, vectors or the LLM | `pii_redaction`, gate property tests |
@@ -68,8 +68,8 @@ obligations below.
 
 | Gap | Today | Goal |
 |---|---|---|
-| Access check is authentication only; all keys equal | any key can act on any subject | G06 |
-| Redaction and quarantine can be configured off | `redact = []` and `quarantine_injection = false` are accepted | G06 |
+| Access by role and attributes only | subject patterns, not relationships | G27 (ReBAC) |
+| Operator paths (CLI, benchmark) bypass the authorizer | they hold the database credentials anyway | G22 (row-level security as a second line) |
 | Reads are not audited by default | `audit_reads = false` | G07 (recall explanations, retained per policy) |
 | No content-free test for logs and traces | not verified | G07 |
 | No second line of defence in the database | direct SQL bypasses everything | G22 (row-level security) |

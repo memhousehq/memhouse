@@ -17,6 +17,44 @@ pub struct Config {
     pub server: ServerConfig,
     pub memory: MemoryConfig,
     pub governance: GovernanceConfig,
+    /// Principals, credentials and authorization (G06).
+    pub access: AccessConfig,
+}
+
+/// How proposals from agents without a commit grant are admitted (GOV-08).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Admission {
+    /// The engine commits a proposal as soon as it passes the write gate.
+    #[default]
+    Auto,
+    /// Proposals stay `candidate` until a principal with `memory:review` commits or rejects them.
+    /// Conversation rounds (`ingest`) are always admitted by the engine.
+    Review,
+}
+
+/// Labels denied to every principal of a kind, on top of `governance.denied_labels`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoleLabels {
+    pub agent: Vec<String>,
+    pub user: Vec<String>,
+    pub admin: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccessConfig {
+    pub admission: Admission,
+    /// Lifetime of agent tokens issued by `POST /v1/tokens` (at most 3600).
+    pub token_ttl_secs: u64,
+    pub denied_labels: RoleLabels,
+}
+
+impl Default for AccessConfig {
+    fn default() -> Self {
+        AccessConfig { admission: Admission::Auto, token_ttl_secs: 900, denied_labels: RoleLabels::default() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,7 +349,23 @@ impl Config {
             Config::default()
         };
         cfg.apply_env();
+        cfg.check_floor().map_err(|e| anyhow::anyhow!("{e} (config {})", path.display()))?;
         Ok(cfg)
+    }
+
+    /// The security baseline configuration can't lower (TR-CORE-05, AP-10): `secret` is always
+    /// redacted, the injection screen is always on, tokens are short-lived.
+    pub fn check_floor(&self) -> anyhow::Result<()> {
+        if !self.governance.redact.iter().any(|r| r == "secret") {
+            anyhow::bail!("governance.redact must include \"secret\": credentials are always redacted (security baseline)");
+        }
+        if !self.governance.quarantine_injection {
+            anyhow::bail!("governance.quarantine_injection can't be turned off: the injection screen is part of the security baseline");
+        }
+        if self.access.token_ttl_secs == 0 || self.access.token_ttl_secs > 3600 {
+            anyhow::bail!("access.token_ttl_secs must be between 1 and 3600 (agent tokens are short-lived)");
+        }
+        Ok(())
     }
 
     pub fn save(&self, path: Option<&Path>) -> anyhow::Result<PathBuf> {
@@ -371,5 +425,33 @@ impl Config {
         if let Some(v) = var("MEMHOUSE_ENRICH_MODEL") {
             self.enrich.llm.model = v;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PROF-12: an empty file starts with authentication, redaction and the injection screen on.
+    #[test]
+    fn empty_file_is_secure() {
+        let cfg: Config = toml::from_str("").unwrap();
+        cfg.check_floor().unwrap();
+        assert!(cfg.governance.redact.iter().any(|r| r == "secret") && cfg.governance.quarantine_injection);
+        // No bootstrap key: nothing authenticates until a key exists (there is no open mode).
+        assert!(cfg.server.api_keys.is_empty());
+        assert_eq!(cfg.access.admission, Admission::Auto);
+        assert!(cfg.access.token_ttl_secs <= 3600);
+    }
+
+    /// TR-CORE-05: the baseline can't be configured off.
+    #[test]
+    fn floor_rejects_weaker_settings() {
+        for bad in ["[governance]\nredact = [\"card\"]", "[governance]\nquarantine_injection = false", "[access]\ntoken_ttl_secs = 86400"] {
+            let cfg: Config = toml::from_str(bad).unwrap();
+            assert!(cfg.check_floor().is_err(), "{bad}");
+        }
+        let stricter: Config = toml::from_str("[governance]\nredact = [\"secret\", \"email\"]\n[access]\nadmission = \"review\"").unwrap();
+        stricter.check_floor().unwrap();
     }
 }

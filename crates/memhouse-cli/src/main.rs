@@ -2,6 +2,7 @@
 //! `memhouse`: one binary to run, connect, operate and benchmark MemHouse.
 
 mod connect;
+mod principals;
 mod up;
 
 use anyhow::Context;
@@ -67,14 +68,17 @@ enum Cmd {
         #[arg(long)]
         bind: Option<String>,
     },
-    /// Run the MCP server over stdio (what agents launch)
+    /// Run the MCP server over stdio (what agents launch). Needs the agent's key or token
     Mcp {
         /// Default subject for this agent (e.g. repo:myapp, user:alice)
         #[arg(long)]
         subject: Option<String>,
-        /// Name recorded as the actor in the audit log
-        #[arg(long, default_value = "agent")]
-        actor: String,
+        /// The agent's API key or token (`memhouse connect` writes it into the agent's config)
+        #[arg(long, env = "MEMHOUSE_MCP_KEY", hide_env_values = true)]
+        key: Option<String>,
+        /// Ignored: the audit actor is the key's principal
+        #[arg(long, hide = true)]
+        actor: Option<String>,
     },
     /// Connect an agent: writes its MCP config and verifies a recall
     Connect {
@@ -95,8 +99,16 @@ enum Cmd {
     Agents,
     /// Check configuration, database, model and MCP round-trip
     Doctor,
-    /// Print the API key for the REST/HTTP endpoints
-    Key,
+    /// Print the bootstrap API key, or manage principals' keys (create, list, revoke, rotate)
+    Key {
+        #[command(subcommand)]
+        cmd: Option<principals::KeyCmd>,
+    },
+    /// Manage principals: agents, users and admins
+    Principal {
+        #[command(subcommand)]
+        cmd: principals::PrincipalCmd,
+    },
     /// Store a memory
     Remember {
         content: String,
@@ -224,6 +236,12 @@ fn self_launch(cfg_path: &Option<PathBuf>, subject: &Option<String>) -> anyhow::
     Ok(connect::Launch { command: exe.display().to_string(), args, env })
 }
 
+fn self_launch_with_key(cfg_path: &Option<PathBuf>, subject: &Option<String>, key: &str) -> anyhow::Result<connect::Launch> {
+    let mut l = self_launch(cfg_path, subject)?;
+    l.env.push(("MEMHOUSE_MCP_KEY".into(), key.to_string()));
+    Ok(l)
+}
+
 async fn engine(cfg: Config) -> anyhow::Result<memhouse_core::Engine> {
     memhouse_server::build_engine(cfg, true).await.map_err(|e| {
         let hint = if format!("{e:#}").contains("cannot connect") { " (is Postgres running? try `memhouse up` or `memhouse doctor`)" } else { "" };
@@ -341,35 +359,48 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             });
             memhouse_server::serve(eng).await?;
         }
-        Cmd::Mcp { subject, actor } => {
+        Cmd::Mcp { subject, key, actor: _ } => {
             let mut cfg = Config::load(cfg_path.as_deref())?;
             if let Some(s) = subject {
                 cfg.memory.default_subject = s;
             }
+            let key =
+                key.ok_or_else(|| anyhow::anyhow!("`memhouse mcp` needs the agent's key in MEMHOUSE_MCP_KEY; run `memhouse connect <agent>` to write it into the agent's config"))?;
             let eng = memhouse_server::build_engine(cfg, false).await?;
-            memhouse_server::mcp::serve_stdio(eng, actor).await?;
+            let who =
+                eng.auth.authenticate(&key, None).await.map_err(|f| anyhow::anyhow!("MEMHOUSE_MCP_KEY was refused: {f}; run `memhouse connect <agent>` again for a new key"))?;
+            memhouse_server::mcp::serve_stdio(eng.caller(who)).await?;
         }
         Cmd::Connect { agent, subject, print, project, no_verify } => {
             let cfg = Config::load(cfg_path.as_deref())?;
             if !path_or_default.exists() && !print {
                 anyhow::bail!("no config at {}; run `memhouse up` first", path_or_default.display());
             }
-            let launch = self_launch(&cfg_path, &subject)?;
             let agents: Vec<String> = if agent == "all" { detected_agents() } else { vec![agent] };
             if agents.is_empty() {
                 println!("No supported agents detected. Use e.g. `memhouse connect cursor --print`.");
             }
+            // Each agent gets its own propose-only principal and key (GOV-01, GOV-08).
+            let eng = engine(cfg.clone()).await?;
+            let mut verify_with = None;
             for a in &agents {
+                let key = principals::agent_key(&eng, a).await?;
+                let mut launch = self_launch(&cfg_path, &subject)?;
+                launch.env.push(("MEMHOUSE_MCP_KEY".into(), key.clone()));
+                if a != "http" && a != "zed" && a != "goose" {
+                    verify_with = Some(self_launch_with_key(&cfg_path, &subject, &key)?);
+                }
                 connect::connect(&connect::ConnectOpts {
                     agent: a.clone(),
-                    launch: self_launch(&cfg_path, &subject)?,
+                    launch,
                     print_only: print,
                     project,
                     http_url: format!("http://{}", cfg.server.bind),
-                    api_key: cfg.server.api_keys.first().cloned(),
+                    api_key: Some(key),
                 })?;
+                println!("  {a} acts as agent:{a} (propose-only; `memhouse principal add agent:{a} --commit` grants direct commits)");
             }
-            if !print && !no_verify && agents.iter().any(|a| a != "http" && a != "zed" && a != "goose") {
+            if let (false, false, Some(launch)) = (print, no_verify, verify_with) {
                 match connect::verify(&launch) {
                     Ok(msg) => println!("✓ Verified the MCP server the agent will launch: {msg}"),
                     Err(e) => println!("✗ MCP check failed: {e:#}\n  Run `memhouse doctor` for details."),
@@ -387,13 +418,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Cmd::Doctor => doctor(&cfg_path).await?,
-        Cmd::Key => {
+        Cmd::Key { cmd: None } => {
             let cfg = Config::load(cfg_path.as_deref())?;
             match cfg.server.api_keys.first() {
                 Some(k) => println!("{k}"),
-                None => anyhow::bail!("no API key configured; run `memhouse up` or `memhouse init`"),
+                None => anyhow::bail!("no bootstrap API key configured; run `memhouse up` or `memhouse init`, or create a principal's key with `memhouse key create`"),
             }
         }
+        Cmd::Key { cmd: Some(c) } => principals::key(&engine(Config::load(cfg_path.as_deref())?).await?, c).await?,
+        Cmd::Principal { cmd } => principals::principal(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
         Cmd::Remember { content, subject, kind, tags } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;
@@ -631,9 +664,13 @@ async fn doctor(cfg_path: &Option<PathBuf>) -> anyhow::Result<()> {
             return Ok(());
         }
     }
-    match connect::verify(&self_launch(cfg_path, &None)?) {
-        Ok(m) => ok(&format!("MCP stdio round-trip: {m}")),
-        Err(e) => bad(&format!("MCP stdio round-trip: {e:#}")),
+    // The round trip authenticates like an agent would, with the bootstrap key.
+    match cfg.server.api_keys.first() {
+        Some(k) => match connect::verify(&self_launch_with_key(cfg_path, &None, k)?) {
+            Ok(m) => ok(&format!("MCP stdio round-trip: {m}")),
+            Err(e) => bad(&format!("MCP stdio round-trip: {e:#}")),
+        },
+        None => bad("MCP stdio round-trip skipped: no bootstrap key to authenticate with"),
     }
     if cfg.server.api_keys.is_empty() {
         bad("no API key for the HTTP server (run `memhouse init --force` or set MEMHOUSE_API_KEY)");

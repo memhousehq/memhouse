@@ -236,6 +236,84 @@ CREATE TABLE IF NOT EXISTS mh_policy (
 );
 "#;
 
+/// The v3 additions (G06): principals, their API keys and the token signing keys. Identity is not
+/// memory: these tables are not exported in the Memory Format.
+const SCHEMA_V3_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS mh_principal (
+  id            text PRIMARY KEY,
+  tenant        text NOT NULL,
+  kind          text NOT NULL CHECK (kind IN ('agent', 'user', 'admin')),
+  name          text,
+  subjects      text[] NOT NULL DEFAULT '{*}',
+  kinds         text[] NOT NULL DEFAULT '{}',
+  denied_labels text[] NOT NULL DEFAULT '{}',
+  org           text,
+  team          text,
+  can_commit    boolean NOT NULL DEFAULT false,
+  act_as        boolean NOT NULL DEFAULT false,
+  disabled_at   timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  created_by    text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mh_principal_tenant_idx ON mh_principal (tenant);
+
+-- Only the sha256 of a key's secret is kept; the key id is public.
+CREATE TABLE IF NOT EXISTS mh_api_key (
+  id           text PRIMARY KEY,
+  principal_id text NOT NULL REFERENCES mh_principal (id),
+  hash         text NOT NULL,
+  scopes       text[] NOT NULL,
+  expires_at   timestamptz,
+  revoked_at   timestamptz,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  created_by   text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mh_api_key_principal_idx ON mh_api_key (principal_id);
+
+-- Secrets that sign agent tokens; the newest unretired one signs, any listed one verifies.
+CREATE TABLE IF NOT EXISTS mh_signing_key (
+  id         text PRIMARY KEY,
+  secret     bytea NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  retired_at timestamptz
+);
+"#;
+
+fn row_to_principal(r: &PgRow) -> anyhow::Result<memhouse_core::identity::Principal> {
+    use memhouse_core::identity::{Principal, PrincipalKind};
+    let kind: String = r.try_get("kind")?;
+    let kinds: Vec<String> = r.try_get("kinds")?;
+    Ok(Principal {
+        id: r.try_get("id")?,
+        tenant: r.try_get("tenant")?,
+        kind: PrincipalKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown principal kind {kind}"))?,
+        name: r.try_get("name")?,
+        subjects: r.try_get("subjects")?,
+        kinds: kinds.iter().map(|k| MemoryKind::parse(k).ok_or_else(|| anyhow::anyhow!("unknown kind {k}"))).collect::<anyhow::Result<_>>()?,
+        denied_labels: r.try_get("denied_labels")?,
+        org: r.try_get("org")?,
+        team: r.try_get("team")?,
+        can_commit: r.try_get("can_commit")?,
+        act_as: r.try_get("act_as")?,
+        disabled_at: r.try_get("disabled_at")?,
+        created_at: r.try_get("created_at")?,
+        created_by: r.try_get("created_by")?,
+    })
+}
+
+fn row_to_key(r: &PgRow) -> anyhow::Result<memhouse_core::identity::ApiKey> {
+    Ok(memhouse_core::identity::ApiKey {
+        id: r.try_get("id")?,
+        principal_id: r.try_get("principal_id")?,
+        hash: r.try_get("hash")?,
+        scopes: r.try_get("scopes")?,
+        expires_at: r.try_get("expires_at")?,
+        revoked_at: r.try_get("revoked_at")?,
+        created_at: r.try_get("created_at")?,
+        created_by: r.try_get("created_by")?,
+    })
+}
+
 // One argument per hashed field, in hash order; a struct would hide that order.
 #[allow(clippy::too_many_arguments)]
 fn audit_hash(prev: &str, at: &DateTime<Utc>, actor: &str, action: &str, tenant: &str, subject: Option<&str>, memory_id: Option<Uuid>, detail: &str) -> String {
@@ -768,6 +846,7 @@ impl Store for PgStore {
         sqlx::raw_sql(&schema_v1_ddl(dim)).execute(&self.pool).await?;
         check_pgvector(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V2_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V3_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -780,6 +859,12 @@ impl Store for PgStore {
         if stored_version.is_some_and(|v| v < 2) {
             self.backfill_v2(embedder_id, &config).await?;
         }
+        // v3 only adds tables.
+        sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
+            .bind(SCHEMA_VERSION.to_string())
+            .bind(SCHEMA_VERSION as i32)
+            .execute(&self.pool)
+            .await?;
         *self.embedder.lock().unwrap() = Some(embedder_id.to_string());
         *self.embedder_config.lock().unwrap() = Some(config);
         Ok(())
@@ -878,6 +963,12 @@ impl Store for PgStore {
             "SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND ($2::text IS NULL OR m.subject = $2) \
              AND ($3::text[] IS NULL OR m.kind = ANY($3)) AND ($4 OR m.status = 'committed') \
              AND ($7::timestamptz IS NULL OR (m.created_at, m.id) < ($7, $8)) \
+             AND NOT (m.labels && $9::text[]) \
+             AND ($10::text IS NULL OR m.scope_org IS NULL OR m.scope_org = $10) \
+             AND ($11::text IS NULL OR m.scope_team IS NULL OR m.scope_team = $11) \
+             AND ($12::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $12) \
+             AND ($13::text IS NULL OR m.scope_user IS NULL OR m.scope_user = $13) \
+             AND ($14::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $14) \
              ORDER BY m.created_at DESC, m.id DESC LIMIT $5 OFFSET $6"
         ))
         .bind(&q.tenant)
@@ -888,6 +979,12 @@ impl Store for PgStore {
         .bind(q.offset as i64)
         .bind(q.before.map(|b| b.0))
         .bind(q.before.map(|b| b.1))
+        .bind(&q.denied_labels)
+        .bind(&q.scope.org)
+        .bind(&q.scope.team)
+        .bind(&q.scope.agent)
+        .bind(&q.scope.user)
+        .bind(&q.scope.session)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_memory).collect()
@@ -1267,6 +1364,120 @@ impl Store for PgStore {
                 .map(|r| Ok(CodeRef { path: r.try_get("path")?, blob_hash: r.try_get("blob_hash")? }))
                 .collect::<anyhow::Result<Vec<_>>>()?;
         Ok((structured, code_refs))
+    }
+
+    async fn set_labels(&self, tenant: &str, id: Uuid, labels: &[String]) -> anyhow::Result<bool> {
+        let r = sqlx::query("UPDATE mh_memory SET labels = $3, updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2")
+            .bind(tenant)
+            .bind(id)
+            .bind(labels)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected() > 0)
+    }
+
+    async fn set_status_many(&self, tenant: &str, ids: &[Uuid], status: MemoryStatus) -> anyhow::Result<u64> {
+        let from: Vec<&str> = MemoryStatus::sources_of(status).iter().map(|s| s.as_str()).collect();
+        let r = sqlx::query("UPDATE mh_memory SET status = $3, updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = ANY($2) AND status = ANY($4)")
+            .bind(tenant)
+            .bind(ids)
+            .bind(status.as_str())
+            .bind(&from)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
+    async fn principal_get(&self, id: &str) -> anyhow::Result<Option<memhouse_core::identity::Principal>> {
+        sqlx::query("SELECT * FROM mh_principal WHERE id = $1").bind(id).fetch_optional(&self.pool).await?.as_ref().map(row_to_principal).transpose()
+    }
+
+    async fn principal_put(&self, p: &memhouse_core::identity::Principal) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO mh_principal (id, tenant, kind, name, subjects, kinds, denied_labels, org, team, can_commit, act_as, disabled_at, created_at, created_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+             ON CONFLICT (id) DO UPDATE SET name = $4, subjects = $5, kinds = $6, denied_labels = $7, org = $8, team = $9, can_commit = $10, act_as = $11, disabled_at = $12 \
+             WHERE mh_principal.tenant = $2 AND mh_principal.kind = $3",
+        )
+        .bind(&p.id)
+        .bind(&p.tenant)
+        .bind(p.kind.as_str())
+        .bind(&p.name)
+        .bind(&p.subjects)
+        .bind(p.kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>())
+        .bind(&p.denied_labels)
+        .bind(&p.org)
+        .bind(&p.team)
+        .bind(p.can_commit)
+        .bind(p.act_as)
+        .bind(p.disabled_at)
+        .bind(p.created_at)
+        .bind(&p.created_by)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn principals(&self, tenant: Option<&str>) -> anyhow::Result<Vec<memhouse_core::identity::Principal>> {
+        sqlx::query("SELECT * FROM mh_principal WHERE $1::text IS NULL OR tenant = $1 ORDER BY id").bind(tenant).fetch_all(&self.pool).await?.iter().map(row_to_principal).collect()
+    }
+
+    async fn api_key_get(&self, id: &str) -> anyhow::Result<Option<memhouse_core::identity::ApiKey>> {
+        sqlx::query("SELECT * FROM mh_api_key WHERE id = $1").bind(id).fetch_optional(&self.pool).await?.as_ref().map(row_to_key).transpose()
+    }
+
+    async fn api_key_put(&self, k: &memhouse_core::identity::ApiKey) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO mh_api_key (id, principal_id, hash, scopes, expires_at, revoked_at, created_at, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
+            .bind(&k.id)
+            .bind(&k.principal_id)
+            .bind(&k.hash)
+            .bind(&k.scopes)
+            .bind(k.expires_at)
+            .bind(k.revoked_at)
+            .bind(k.created_at)
+            .bind(&k.created_by)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn api_key_end(&self, id: &str, expire_at: Option<chrono::DateTime<chrono::Utc>>) -> anyhow::Result<bool> {
+        let r = match expire_at {
+            None => sqlx::query("UPDATE mh_api_key SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL").bind(id).execute(&self.pool).await?,
+            Some(at) => {
+                sqlx::query("UPDATE mh_api_key SET expires_at = least(COALESCE(expires_at, 'infinity'), $2) WHERE id = $1 AND revoked_at IS NULL")
+                    .bind(id)
+                    .bind(at)
+                    .execute(&self.pool)
+                    .await?
+            }
+        };
+        Ok(r.rows_affected() > 0)
+    }
+
+    async fn api_keys(&self, principal: Option<&str>) -> anyhow::Result<Vec<memhouse_core::identity::ApiKey>> {
+        sqlx::query("SELECT * FROM mh_api_key WHERE $1::text IS NULL OR principal_id = $1 ORDER BY principal_id, created_at")
+            .bind(principal)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(row_to_key)
+            .collect()
+    }
+
+    async fn signing_key(&self, kid: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(sqlx::query_scalar("SELECT secret FROM mh_signing_key WHERE id = $1").bind(kid).fetch_optional(&self.pool).await?)
+    }
+
+    async fn signing_key_current(&self) -> anyhow::Result<(String, Vec<u8>)> {
+        let q = "SELECT id, secret FROM mh_signing_key WHERE retired_at IS NULL ORDER BY created_at, id LIMIT 1";
+        if let Some(r) = sqlx::query_as::<_, (String, Vec<u8>)>(q).fetch_optional(&self.pool).await? {
+            return Ok(r);
+        }
+        let (id, secret) = memhouse_core::identity::new_signing_secret();
+        // Two processes may race here; both keys stay valid, the oldest wins from then on.
+        sqlx::query("INSERT INTO mh_signing_key (id, secret) VALUES ($1, $2) ON CONFLICT DO NOTHING").bind(&id).bind(&secret).execute(&self.pool).await?;
+        Ok(sqlx::query_as::<_, (String, Vec<u8>)>("SELECT id, secret FROM mh_signing_key WHERE retired_at IS NULL ORDER BY created_at, id LIMIT 1").fetch_one(&self.pool).await?)
     }
 
     async fn forget_matches(&self, tenant: &str, scope: ForgetScope, value: &str, limit: usize) -> anyhow::Result<Vec<Uuid>> {
