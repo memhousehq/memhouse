@@ -7,8 +7,9 @@ REST and MCP API has its own version and stability policy ([docs/api-stability.m
 ## 2.0.0 (unreleased)
 
 A new implementation in Rust on Postgres + pgvector. It replaces the Elixir implementation
-(0.x), whose code, history and tags remain on the `legacy/elixir` branch; there is no upgrade path
-from 0.x data other than export and import.
+(0.x), which is archived, with its history, releases and issues, at
+[memhousehq/archive-memhouse](https://github.com/memhousehq/archive-memhouse); there is no upgrade
+path from 0.x data other than export and import.
 
 - Write gate with redaction and injection quarantine, deduplication, supersession, validity
   windows and `as_of` recall.
