@@ -35,12 +35,15 @@ if [ "${PUBLIC:-0}" = 1 ]; then
   exit 0
 fi
 
-command -v gh >/dev/null || { echo "the GitHub CLI (gh) is not installed"; exit 1; }
-[ "$DRY_RUN" = 0 ] && gh auth status
+if [ "$DRY_RUN" = 0 ]; then
+  command -v gh >/dev/null || { echo "the GitHub CLI (gh) is not installed"; exit 1; }
+  gh auth status
+fi
 
 echo "== team"
 api -X POST "orgs/$ORG/teams" -f name=maintainers -f privacy=closed -f description="MemHouse maintainers" || true
-api -X PUT "orgs/$ORG/teams/maintainers/memberships/$(gh api user -q .login 2>/dev/null || echo FOUNDER)" -f role=maintainer
+me=$( [ "$DRY_RUN" = 0 ] && gh api user -q .login || echo YOUR_LOGIN )
+api -X PUT "orgs/$ORG/teams/maintainers/memberships/$me" -f role=maintainer
 
 configure() {
   local r="$1" desc="$2" checks="$3"
@@ -104,7 +107,7 @@ for line in open(sys.argv[1]):
 PY
 
 echo "== the reviewer-gated environment for paid benchmarks ($REPO)"
-team_id=$(gh api "orgs/$ORG/teams/maintainers" -q .id 2>/dev/null || echo TEAM_ID)
+team_id=$( [ "$DRY_RUN" = 0 ] && gh api "orgs/$ORG/teams/maintainers" -q .id || echo 0 )
 api -X PUT "repos/$ORG/$REPO/environments/benchmarks" --input - <<JSON
 {"wait_timer": 0, "prevent_self_review": false,
  "reviewers": [{"type": "Team", "id": $team_id}],
