@@ -64,6 +64,7 @@ flowchart LR
 | Deletion ledger | always on | — | `mh_deletion_ledger` |
 | Hash-chained audit log of writes and deletions | always on | — | `audit_chain` check, `memhouse audit --verify` |
 | Audit of reads | off | `audit_reads` | `memory.recall` events |
+| Recall explanations: results with ranking signals, exclusions with reasons | always on, kept 30 days | `[telemetry] explanation_retention_days` | `recall_explanation` check; `GET /v1/recalls/{id}/explanation` |
 | Episodic retention, including derived data | off (keep) | `episodic_retention_days` | `retention_cascade` check, `retention.purge` events |
 | Authentication: per-principal keys, short-lived agent tokens | always on | `memhouse principal`, `memhouse key` | `authentication` check: 401 and an `auth.failed` event for every bad credential |
 | Authorization of every operation (role, tenant, subject, kind, label, user, scope) | always on | principals' attributes, `[access]` | `route_authorization`, `label_filter` checks; `access.denied` events |
@@ -224,6 +225,36 @@ your privacy notice, as most regulators expect.
 ```bash
 memhouse export --subject customer:acme -o acme-dsar.jsonl
 ```
+
+## Recall explanations
+
+Every recall is kept with its explanation (GOV-04). What an agent was shown, and what it wasn't
+shown and why, can be answered after the fact: "why did the agent not know about the escalation?"
+
+```bash
+curl -s localhost:7077/v1/recalls/01a19b40-…/explanation -H "authorization: Bearer $AUDITOR_KEY"
+```
+
+| Reason | The record matched the query but |
+|---|---|
+| `status` | was not recallable: quarantined, candidate, rejected, expired, or superseded |
+| `access` | is scoped to another user, agent, team or org than the caller |
+| `label` | carries a label denied to the caller |
+| `validity` | was not valid at the recall's time (`valid_to`, `expires_at`, or after `as_of`) |
+| `filter` | is outside the request's kinds or tags |
+| `budget` | was cut by the token budget |
+| `rank` | ranked below the `k` returned |
+
+The explanation also holds the principal, the verified user, the policy version, the denied
+labels and scope applied, the parameters, and the time per stage. The principal that recalled may
+read its own explanations, but records excluded for status, access or labels are only counted
+there, never listed, so an explanation can't reveal what the caller may not see. Principals with
+`audit:read` see every id. The budget and rank cuts are recorded as they happened. The other
+reasons are recomputed when the explanation is read (`replayed_at`), from the stored query against
+the subject's records as they are then.
+
+Explanations hold the query text. They are erased with their subject or tenant, and by a `forget`
+by user for that user's recalls. Retention purges them after `explanation_retention_days`.
 
 ## Retention
 

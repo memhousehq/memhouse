@@ -25,8 +25,13 @@ impl Caller {
     }
 
     /// Ask the authorizer; audit and refuse a denial.
+    #[tracing::instrument(name = "memhouse.authorize", skip_all, fields(memhouse.principal = %self.who.id(), memhouse.op = tracing::field::Empty, memhouse.rule = tracing::field::Empty, memhouse.allowed = tracing::field::Empty))]
     pub async fn decide(&self, req: &AccessRequest) -> anyhow::Result<Decision> {
         let d = self.engine.authorizer.authorize(&self.who, req).await;
+        let span = tracing::Span::current();
+        span.record("memhouse.op", req.op.map(|o| o.name()).unwrap_or_default().as_str());
+        span.record("memhouse.rule", d.rule.as_str());
+        span.record("memhouse.allowed", d.allowed);
         if !d.allowed {
             self.denied(req, &d).await;
             return Err(error::forbidden(d.reasons.join("; ")));
@@ -35,6 +40,7 @@ impl Caller {
     }
 
     async fn denied(&self, req: &AccessRequest, d: &Decision) {
+        crate::metrics::inc("memhouse_refused_total", &[("kind", "access"), ("reason", d.rule.as_str())], 1.0);
         let detail = json!({ "op": req.op.map(|o| o.name()), "rule": d.rule, "reasons": d.reasons, "key": self.who.key_id, "authorizer": self.engine.authorizer.name() });
         if let Err(e) = self.engine.store.audit(self.who.id(), "access.denied", self.tenant(), req.subject.as_deref(), None, detail).await {
             tracing::error!("audit of a denial failed: {e:#}");
@@ -133,7 +139,26 @@ impl Caller {
             req.kinds = Some(d.kinds.clone());
         }
         req.actor = Some(self.who.id().into());
-        self.engine.recall_with(req, d.denied_labels).await
+        let ctx = crate::engine::RecallContext {
+            principal: self.who.id().into(),
+            user: self.who.user.clone(),
+            denied_labels: d.denied_labels,
+            authorizer: self.engine.authorizer.name().into(),
+        };
+        self.engine.recall_with(req, ctx).await
+    }
+
+    /// A recall's explanation (GOV-04), for the principal that recalled or an auditor. Others get
+    /// `not_found`; exclusions for state, access and labels are listed by id only to auditors.
+    pub async fn explain(&self, id: Uuid) -> anyhow::Result<RecallExplanation> {
+        self.decide(&AccessRequest::new(Operation::Explain)).await?;
+        let auditor = self.who.has(perm::AUDIT);
+        let missing = || error::not_found(format!("recall {id} not found"));
+        let record = self.engine.recall_record(self.tenant(), id).await?.ok_or_else(missing)?;
+        if record.principal != self.who.id() && !auditor {
+            return Err(missing());
+        }
+        self.engine.explain(record, auditor).await
     }
 
     pub async fn get(&self, id: Uuid) -> anyhow::Result<Memory> {

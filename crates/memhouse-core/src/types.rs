@@ -690,6 +690,9 @@ pub struct RecallResult {
     /// The hits as a model-neutral text block, when the request set `render`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rendered: Option<String>,
+    /// Id of this recall's explanation (`GET /v1/recalls/{id}/explanation`, GOV-04).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_id: Option<Uuid>,
 }
 
 /// Parameters passed from the engine to a store's single-statement hybrid search.
@@ -810,6 +813,9 @@ pub struct EnrichStatus {
     pub running: i64,
     pub done: i64,
     pub failed: i64,
+    /// Age of the oldest pending job, in seconds (queue lag).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_pending_secs: Option<f64>,
 }
 
 /// Commit or reject a candidate (`POST /v1/review`, GOV-08, GOV-11).
@@ -885,4 +891,140 @@ pub struct WhoAmI {
     pub via: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Why a record that matched a recall's query is not among its results (GOV-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExclusionReason {
+    /// Not recallable in its state: quarantined, candidate, rejected, expired, or superseded.
+    Status,
+    /// Scoped to another user, agent, team or org than the caller.
+    Access,
+    /// Carries a label denied to the caller.
+    Label,
+    /// Not valid at the recall's time: before `valid_from`, after `valid_to` or `expires_at`, or
+    /// happened after `as_of`.
+    Validity,
+    /// Outside the request's own filters: kinds, tags or time window.
+    Filter,
+    /// Cut by the token budget.
+    Budget,
+    /// Ranked below the `k` returned.
+    Rank,
+}
+
+impl ExclusionReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExclusionReason::Status => "status",
+            ExclusionReason::Access => "access",
+            ExclusionReason::Label => "label",
+            ExclusionReason::Validity => "validity",
+            ExclusionReason::Filter => "filter",
+            ExclusionReason::Budget => "budget",
+            ExclusionReason::Rank => "rank",
+        }
+    }
+}
+
+/// A record a recall returned, with its ranking signals.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReturnedRecord {
+    pub id: Uuid,
+    /// 1 is the most relevant.
+    pub rank: usize,
+    pub score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyword_rank: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_rank: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score: Option<f32>,
+    /// Approximate tokens of its content.
+    pub tokens: usize,
+}
+
+/// A record left out of a recall, and why.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExcludedRecord {
+    pub id: Uuid,
+    pub reason: ExclusionReason,
+    /// Identifiers and values only, never content (e.g. `label hr`, `valid_to 2026-10-01T00:00:00Z`).
+    pub detail: String,
+}
+
+/// Time spent per stage of a recall.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RecallStages {
+    pub embed_ms: f64,
+    pub search_ms: f64,
+    pub rerank_ms: f64,
+    pub total_ms: f64,
+    /// Database round trips on the synchronous path (PERF-02).
+    pub statements: usize,
+    /// Probes run in that statement: the query, plus a time window or sub-queries it mentions.
+    pub probes: usize,
+    /// Time the recall spent on its own instrumentation: metrics and this record (the row itself is
+    /// written off the request path).
+    pub instrument_ms: f64,
+}
+
+/// What a recall was asked, how it was authorized and what it returned, kept for its explanation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RecallRecord {
+    pub recall_id: Uuid,
+    pub at: DateTime<Utc>,
+    pub tenant: String,
+    pub subject: String,
+    /// The principal that recalled.
+    pub principal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    pub policy_version: String,
+    /// The authorizer that decided (`scope`; `rebac` from G27).
+    pub authorizer: String,
+    pub query: String,
+    pub k: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kinds: Option<Vec<MemoryKind>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    /// The scope filter applied (the caller's own, merged with the request's).
+    #[serde(default, skip_serializing_if = "Scope::is_empty")]
+    pub scope: Scope,
+    pub denied_labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of: Option<DateTime<Utc>>,
+    /// The time validity was checked at.
+    pub valid_at: DateTime<Utc>,
+    pub mode: RetrievalMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<usize>,
+    pub reranked: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<crate::query::TimeWindow>,
+    pub returned: Vec<ReturnedRecord>,
+    /// Records the recall itself cut (budget, rank); the explanation adds the rest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cut: Vec<ExcludedRecord>,
+    pub stages: RecallStages,
+}
+
+/// A recall's explanation (`GET /v1/recalls/{id}/explanation`, GOV-04): what it returned and why,
+/// and the records that matched the query but were left out, each with its reason. Exclusions for
+/// access, labels and state are recomputed from the store when the explanation is read
+/// (`replayed_at`); budget and rank cuts are as recorded.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RecallExplanation {
+    pub recall: RecallRecord,
+    /// Most relevant first, by reason order (status, access, label, validity, filter, budget, rank).
+    pub excluded: Vec<ExcludedRecord>,
+    /// Excluded records this viewer may not know about, counted by reason (ids are shown only to
+    /// principals with `audit:read`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub hidden: std::collections::BTreeMap<String, u64>,
+    pub replayed_at: DateTime<Utc>,
 }

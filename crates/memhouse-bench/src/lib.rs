@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod report;
 pub mod runner;
 mod schema_checks;
+mod telemetry_checks;
 
 use anyhow::Context;
 use clap::{Args, Subcommand};

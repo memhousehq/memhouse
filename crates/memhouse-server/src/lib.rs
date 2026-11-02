@@ -3,6 +3,7 @@
 
 pub mod mcp;
 pub mod openapi;
+pub mod telemetry;
 
 use axum::extract::{FromRequest, FromRequestParts, MatchedPath, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -166,6 +167,7 @@ async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Respo
             Err(f) => f,
         },
     };
+    memhouse_core::metrics::inc("memhouse_refused_total", &[("kind", "auth"), ("reason", failure.reason)], 1.0);
     let detail = json!({ "reason": failure.reason, "key": failure.key_id, "route": route });
     let actor = failure.principal.clone().unwrap_or_else(|| "anonymous".into());
     if let Err(e) = st.engine.store.audit(&actor, "auth.failed", &st.engine.cfg.memory.tenant, None, None, detail).await {
@@ -210,6 +212,8 @@ pub fn router(engine: Engine) -> Router {
         .route("/v1/review", post(review))
         .route("/v1/tokens", post(issue_token))
         .route("/v1/whoami", get(whoami))
+        .route("/v1/recalls/{id}/explanation", get(explanation))
+        .route("/metrics", get(metrics))
         // Preview (may change in a minor release)
         .route("/v1/subjects", get(subjects))
         .route("/v1/stats", get(stats))
@@ -228,6 +232,12 @@ pub fn router(engine: Engine) -> Router {
         .merge(api)
         .fallback(|| async { ApiError(error::not_found("no such route")) })
         .with_state(st)
+        .layer(middleware::from_fn(http_metrics))
+        .layer(tower_http::trace::TraceLayer::new_for_http().make_span_with(|req: &Request| {
+            // The route template, never the concrete path: subjects and ids stay out of span names.
+            let route = req.extensions().get::<MatchedPath>().map(|p| p.as_str().to_string()).unwrap_or_else(|| "unmatched".into());
+            tracing::info_span!("http.request", http.request.method = %req.method(), http.route = %route, otel.name = %format!("{} {route}", req.method()))
+        }))
         .layer(tower_http::cors::CorsLayer::permissive())
 }
 
@@ -259,6 +269,36 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
         let _ = w.await;
     }
     Ok(())
+}
+
+/// Count and time every request by route template and status.
+async fn http_metrics(req: Request, next: Next) -> Response {
+    let start = std::time::Instant::now();
+    let method = req.method().as_str().to_string();
+    let route = req.extensions().get::<MatchedPath>().map(|p| p.as_str().to_string()).unwrap_or_else(|| "unmatched".into());
+    let resp = next.run(req).await;
+    let status = resp.status().as_u16().to_string();
+    memhouse_core::metrics::inc("memhouse_http_requests_total", &[("method", &method), ("route", &route), ("status", &status)], 1.0);
+    memhouse_core::metrics::observe("memhouse_http_request_duration_seconds", &[("route", &route)], start.elapsed().as_secs_f64());
+    resp
+}
+
+/// Prometheus metrics (needs `ops:read`): the process registry, plus gauges read at scrape time.
+async fn metrics(Who(c): Who) -> Result<Response, ApiError> {
+    c.decide(&memhouse_core::access::AccessRequest::new(memhouse_core::access::Operation::Metrics)).await?;
+    use memhouse_core::metrics::set;
+    let q = c.engine.store.enrich_status(&c.who.principal.tenant, None).await?;
+    for (state, n) in [("pending", q.pending), ("running", q.running), ("done", q.done), ("failed", q.failed)] {
+        set("memhouse_enrich_jobs", &[("state", state)], n as f64);
+    }
+    set("memhouse_enrich_queue_lag_seconds", &[], q.oldest_pending_secs.unwrap_or(0.0));
+    set("memhouse_build_info", &[("version", env!("CARGO_PKG_VERSION")), ("api_version", openapi::API_VERSION)], 1.0);
+    let body = memhouse_core::metrics::render();
+    Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], body).into_response())
+}
+
+async fn explanation(Who(c): Who, PathParam(id): PathParam<Uuid>) -> ApiResult<RecallExplanation> {
+    Ok(Json(c.explain(id).await?))
 }
 
 async fn health() -> Json<openapi::Health> {

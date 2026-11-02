@@ -39,6 +39,19 @@ pub trait Store: Send + Sync {
     async fn insert(&self, records: &[NewMemory]) -> anyhow::Result<()>;
     /// One hybrid statement per subject: keyword + vector candidates fused by RRF.
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>>;
+    /// Several probes of one recall. Stores that can run them as one statement do (PERF-02).
+    async fn search_many(&self, qs: &[SearchQuery]) -> anyhow::Result<Vec<Vec<Hit>>> {
+        futures::future::try_join_all(qs.iter().map(|q| self.search(q))).await
+    }
+    /// Database round trips a recall with this many probes makes.
+    fn statements_per_recall(&self, probes: usize) -> usize {
+        probes
+    }
+    /// `search` without any filter but tenant and subject: the candidates a recall explanation
+    /// classifies (GOV-04).
+    async fn search_unfiltered(&self, _q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
+        anyhow::bail!("this store can't explain recalls")
+    }
     /// The query plan of `search` for these parameters (stores with a planner), so tests can check
     /// that recall never scans outside the subject (TR-RQ-01).
     async fn search_plan(&self, _q: &SearchQuery) -> anyhow::Result<Option<serde_json::Value>> {
@@ -125,6 +138,17 @@ pub trait Store: Send + Sync {
     /// Erase a whole tenant: every subject with the cascade of `delete_subject`. Returns records removed.
     async fn delete_tenant(&self, _tenant: &str, _actor: &str) -> anyhow::Result<u64> {
         anyhow::bail!("this store can't erase a tenant")
+    }
+    /// Keep a recall's record for its explanation (GOV-04).
+    async fn recall_put(&self, _r: &RecallRecord) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn recall_get(&self, _tenant: &str, _id: Uuid) -> anyhow::Result<Option<RecallRecord>> {
+        Ok(None)
+    }
+    /// Delete recall records of a tenant: all, or one acting user's, or those older than `days`.
+    async fn recalls_delete(&self, _tenant: &str, _user: Option<&str>, _older_than_days: Option<u32>) -> anyhow::Result<u64> {
+        Ok(0)
     }
     /// Replace a record's sensitivity labels (no re-embedding, ACC-04). False if it doesn't exist.
     async fn set_labels(&self, _tenant: &str, _id: Uuid, _labels: &[String]) -> anyhow::Result<bool> {

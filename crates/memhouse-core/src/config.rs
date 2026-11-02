@@ -19,6 +19,30 @@ pub struct Config {
     pub governance: GovernanceConfig,
     /// Principals, credentials and authorization (G06).
     pub access: AccessConfig,
+    /// Traces, metrics and recall explanations (G07).
+    pub telemetry: TelemetryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    /// OTLP/HTTP endpoint for traces, e.g. `http://localhost:4318` (an OpenTelemetry collector,
+    /// Jaeger, Tempo) or `https://cloud.langfuse.com/api/public/otel`. Empty: tracing export off.
+    pub otlp_endpoint: String,
+    /// Extra headers for the exporter (non-secret ones; put credentials in
+    /// `OTEL_EXPORTER_OTLP_HEADERS`).
+    pub otlp_headers: std::collections::BTreeMap<String, String>,
+    pub service_name: String,
+    /// Share of traces exported, 0 to 1.
+    pub sample_ratio: f64,
+    /// Days a recall explanation is kept (GOV-04); 0 keeps them until their subject is erased.
+    pub explanation_retention_days: u32,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        TelemetryConfig { otlp_endpoint: String::new(), otlp_headers: Default::default(), service_name: "memhouse".into(), sample_ratio: 1.0, explanation_retention_days: 30 }
+    }
 }
 
 /// How proposals from agents without a commit grant are admitted (GOV-08).
@@ -421,6 +445,12 @@ impl Config {
         }
         if let Some(v) = var("MEMHOUSE_ENRICH").map(|v| v == "1" || v == "true") {
             self.enrich.enabled = v;
+        }
+        if let Some(v) = var("MEMHOUSE_OTLP_ENDPOINT").or_else(|| var("OTEL_EXPORTER_OTLP_ENDPOINT")) {
+            self.telemetry.otlp_endpoint = v;
+        }
+        if let Some(v) = var("OTEL_SERVICE_NAME") {
+            self.telemetry.service_name = v;
         }
         if let Some(v) = var("MEMHOUSE_ENRICH_MODEL") {
             self.enrich.llm.model = v;

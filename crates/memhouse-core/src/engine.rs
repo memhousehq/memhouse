@@ -5,6 +5,7 @@
 use crate::config::Config;
 use crate::error;
 use crate::gate;
+use crate::metrics;
 use crate::query;
 use crate::traits::{ChatModel, EmbedKind, Embedder, Reranker, Store};
 use crate::types::*;
@@ -13,6 +14,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -29,6 +31,18 @@ pub struct Engine {
     pub cfg: Arc<Config>,
     /// Version of the compiled policy every write records (provenance; see `policy`).
     pub policy_version: String,
+    /// Record an explanation for every recall (GOV-04). Off only to measure what it costs.
+    pub explain_recalls: bool,
+    /// The latest recall records, so an explanation can be read before its row is written.
+    recent: Arc<std::sync::Mutex<std::collections::VecDeque<RecallRecord>>>,
+}
+
+/// Who recalls, and the read constraints of their authorization decision.
+pub(crate) struct RecallContext {
+    pub principal: String,
+    pub user: Option<String>,
+    pub denied_labels: Vec<String>,
+    pub authorizer: String,
 }
 
 pub fn content_hash(text: &str) -> String {
@@ -125,7 +139,7 @@ impl Engine {
         let authorizer = Arc::new(crate::access::ScopeAuthorizer::new(&cfg));
         let cfg = Arc::new(cfg);
         let auth = Arc::new(crate::identity::Authenticator::new(store.clone(), cfg.clone()));
-        Engine { store, auth, authorizer, embedder, reranker, chat: None, cfg, policy_version }
+        Engine { store, auth, authorizer, embedder, reranker, chat: None, cfg, policy_version, explain_recalls: true, recent: Default::default() }
     }
 
     /// The compiled policy this engine writes under, as stored in `mh_policy`.
@@ -195,6 +209,61 @@ impl Engine {
     pub fn reconfigure(self, cfg: Config) -> Engine {
         let chat = self.chat.clone();
         Engine::new(self.store, self.embedder, self.reranker, cfg).with_chat(chat)
+    }
+
+    /// The span of a write: who, which subject, under which policy; the record ids and outcome
+    /// are recorded on it as they become known (QUAL-07).
+    fn write_span(&self, name: &'static str, actor: &Option<String>, subject: &Option<String>) -> tracing::Span {
+        let principal = actor.clone().unwrap_or_else(|| "api".into());
+        let subject = subject.clone().unwrap_or_default();
+        match name {
+            "memhouse.remember" => {
+                tracing::info_span!("memhouse.remember", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %self.policy_version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
+            }
+            "memhouse.revise" => {
+                tracing::info_span!("memhouse.revise", memhouse.principal = %principal, memhouse.policy_version = %self.policy_version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
+            }
+            "memhouse.ingest" => {
+                tracing::info_span!("memhouse.ingest", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %self.policy_version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
+            }
+            _ => {
+                tracing::info_span!("memhouse.forget", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %self.policy_version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
+            }
+        }
+    }
+
+    /// Run an operation in its span and count it, with its outcome, in the metrics.
+    async fn traced<T>(&self, op: &'static str, span: tracing::Span, fut: impl std::future::Future<Output = anyhow::Result<T>>) -> anyhow::Result<T> {
+        let start = Instant::now();
+        let r = fut.instrument(span.clone()).await;
+        let outcome = match &r {
+            Ok(_) => "ok",
+            Err(e) => {
+                span.record("otel.status_code", "ERROR");
+                error::code_of(e).as_str()
+            }
+        };
+        metrics::inc("memhouse_operations_total", &[("op", op), ("outcome", outcome)], 1.0);
+        metrics::observe("memhouse_operation_duration_seconds", &[("op", op)], start.elapsed().as_secs_f64());
+        r
+    }
+
+    fn keep_recent(&self, r: RecallRecord) {
+        if let Ok(mut q) = self.recent.lock() {
+            if q.len() >= 256 {
+                q.pop_front();
+            }
+            q.push_back(r);
+        }
+    }
+
+    /// A recall's record: from memory if it was recent, else from the store.
+    pub async fn recall_record(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<RecallRecord>> {
+        let recent = self.recent.lock().ok().and_then(|q| q.iter().find(|r| r.recall_id == id && r.tenant == tenant).cloned());
+        match recent {
+            Some(r) => Ok(Some(r)),
+            None => self.store.recall_get(tenant, id).await,
+        }
     }
 
     /// Replace the authorizer (ReBAC in G27; tests).
@@ -288,6 +357,11 @@ impl Engine {
     }
 
     pub(crate) async fn remember_with(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
+        let span = self.write_span("memhouse.remember", &req.actor, &req.subject);
+        self.traced("remember", span, self.remember_untraced(req, entry)).await
+    }
+
+    async fn remember_untraced(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
@@ -319,7 +393,10 @@ impl Engine {
                     deduplicated: true,
                     redactions: gated.redactions,
                     superseded: None,
-                    note: Some("identical memory already stored".into()),
+                    note: {
+                        metrics::inc("memhouse_writes_total", &[("status", "deduplicated")], 1.0);
+                        Some("identical memory already stored".into())
+                    },
                 });
             }
         }
@@ -413,6 +490,10 @@ impl Engine {
             )
             .await?;
         let (status, superseded) = if status == MemoryStatus::Candidate && entry == Entry::ProposeAdmit { self.admit(&tenant, id, "engine").await? } else { (status, superseded) };
+        let span = tracing::Span::current();
+        span.record("memhouse.record_ids", id.to_string().as_str());
+        span.record("memhouse.status", status.as_str());
+        metrics::inc("memhouse_writes_total", &[("status", status.as_str())], 1.0);
         Ok(RememberResult {
             id,
             status,
@@ -429,6 +510,11 @@ impl Engine {
     }
 
     pub(crate) async fn ingest_with(&self, req: IngestRequest, entry: Entry) -> anyhow::Result<IngestResult> {
+        let span = self.write_span("memhouse.ingest", &req.actor, &req.subject);
+        self.traced("ingest", span, self.ingest_untraced(req, entry)).await
+    }
+
+    async fn ingest_untraced(&self, req: IngestRequest, entry: Entry) -> anyhow::Result<IngestResult> {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
@@ -557,6 +643,11 @@ impl Engine {
             }
         }
         out.stored = recs.len() - out.quarantined;
+        let span = tracing::Span::current();
+        span.record("memhouse.record_ids", out.ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",").as_str());
+        span.record("memhouse.status", format!("{} stored, {} quarantined", out.stored, out.quarantined).as_str());
+        metrics::inc("memhouse_writes_total", &[("status", "committed")], out.stored as f64);
+        metrics::inc("memhouse_writes_total", &[("status", "quarantined")], out.quarantined as f64);
         if self.cfg.enrich.enabled && out.stored > 0 {
             let committed: Vec<Uuid> = recs.iter().filter(|r| r.memory.status == MemoryStatus::Committed).map(|r| r.memory.id).collect();
             self.store.enrich_enqueue(&tenant, &subject, &session, &committed).await?;
@@ -568,16 +659,50 @@ impl Engine {
     }
 
     /// Hybrid recall: keyword (BM25) + exact per-subject vector search fused by RRF in one SQL
-    /// statement per probe. Query analysis adds a time-window probe for dated questions; probes
+    /// statement for all probes (PERF-02). Query analysis adds a time-window probe for dated questions; probes
     /// are fused by weighted RRF, then optional cross-encoder reranking, recency weighting and
     /// token-budget packing.
     pub async fn recall(&self, req: RecallRequest) -> anyhow::Result<RecallResult> {
-        let denied = self.cfg.governance.denied_labels.clone();
-        self.recall_with(req, denied).await
+        let ctx = RecallContext {
+            principal: req.actor.clone().unwrap_or_else(|| "api".into()),
+            user: None,
+            denied_labels: self.cfg.governance.denied_labels.clone(),
+            authorizer: "operator".into(),
+        };
+        self.recall_with(req, ctx).await
     }
 
-    /// Recall with the labels a caller may not read filtered inside the statement (TR-RQ-03).
-    pub(crate) async fn recall_with(&self, req: RecallRequest, denied_labels: Vec<String>) -> anyhow::Result<RecallResult> {
+    /// Recall with the labels a caller may not read filtered inside the statement (TR-RQ-03),
+    /// traced (QUAL-07), measured, and recorded for its explanation (GOV-04).
+    pub(crate) async fn recall_with(&self, req: RecallRequest, ctx: RecallContext) -> anyhow::Result<RecallResult> {
+        let recall_id = Uuid::now_v7();
+        let span = tracing::info_span!(
+            "memhouse.recall",
+            memhouse.recall_id = %recall_id,
+            memhouse.principal = %ctx.principal,
+            memhouse.policy_version = %self.policy_version,
+            memhouse.subject = tracing::field::Empty,
+            memhouse.returned = tracing::field::Empty,
+            memhouse.record_ids = tracing::field::Empty,
+            db.statements = tracing::field::Empty,
+            otel.status_code = tracing::field::Empty,
+        );
+        let start = Instant::now();
+        let r = self.recall_inner(req, ctx, recall_id).instrument(span.clone()).await;
+        let outcome = match &r {
+            Ok(_) => "ok",
+            Err(e) => {
+                span.record("otel.status_code", "ERROR");
+                error::code_of(e).as_str()
+            }
+        };
+        metrics::inc("memhouse_operations_total", &[("op", "recall"), ("outcome", outcome)], 1.0);
+        metrics::observe("memhouse_operation_duration_seconds", &[("op", "recall")], start.elapsed().as_secs_f64());
+        r
+    }
+
+    async fn recall_inner(&self, req: RecallRequest, ctx: RecallContext, recall_id: Uuid) -> anyhow::Result<RecallResult> {
+        let denied_labels = ctx.denied_labels.clone();
         let start = Instant::now();
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
@@ -603,9 +728,10 @@ impl Engine {
             vec![None; 1 + subqueries.len()]
         } else {
             let texts: Vec<String> = std::iter::once(&req.query).chain(subqueries).cloned().collect();
-            self.embed_queries(&texts).await?.into_iter().map(Some).collect()
+            self.embed_queries(&texts).instrument(tracing::info_span!("recall.embed", texts = texts.len())).await?.into_iter().map(Some).collect()
         };
         let embed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let now_valid = req.as_of.unwrap_or_else(Utc::now);
         let fused_limit = if use_rerank { self.cfg.rerank.candidates.max(k) } else { k };
         let rerank_n = self.cfg.rerank.candidates.max(1);
         let q = SearchQuery {
@@ -617,7 +743,7 @@ impl Engine {
             tags: req.tags.clone(),
             denied_labels,
             as_of: req.as_of,
-            valid_at: req.as_of.unwrap_or_else(Utc::now),
+            valid_at: now_valid,
             mode,
             per_retriever: self.cfg.memory.candidates.max(fused_limit),
             limit: fused_limit,
@@ -643,12 +769,15 @@ impl Engine {
             }
         }
         let t_search = Instant::now();
+        let n_probes = 1 + probes.len();
+        let statements = self.store.statements_per_recall(n_probes);
+        let all: Vec<SearchQuery> = std::iter::once(q.clone()).chain(probes.iter().map(|(p, _)| p.clone())).collect();
+        let mut lists = self.store.search_many(&all).instrument(tracing::info_span!("recall.search", probes = n_probes, db.statements = statements)).await?;
         let mut hits = if probes.is_empty() {
-            self.store.search(&q).await?
+            lists.pop().unwrap_or_default()
         } else {
-            let main = self.store.search(&q);
-            let rest = futures::future::try_join_all(probes.iter().map(|(p, _)| self.store.search(p)));
-            let (main, rest) = futures::future::try_join(main, rest).await?;
+            let rest = lists.split_off(1);
+            let main = lists.pop().unwrap_or_default();
             let (top, top_w) = (self.cfg.memory.window_top, self.cfg.memory.window_top_weight);
             let bonus = (top > 0 && top_w > 0.0 && plan.as_ref().is_some_and(|p| !p.windows.is_empty())).then(|| (rest[0].iter().take(top).cloned().collect::<Vec<Hit>>(), top_w));
             let lists: Vec<(Vec<Hit>, f32)> = std::iter::once((main, 1.0)).chain(rest.into_iter().zip(probes.iter().map(|(_, w)| *w))).chain(bonus).collect();
@@ -663,7 +792,7 @@ impl Engine {
             let rr = self.reranker.as_ref().unwrap();
             let n = hits.len().min(rerank_n);
             let docs: Vec<String> = hits[..n].iter().map(|h| h.memory.content.clone()).collect();
-            let scores = rr.rerank(&req.query, &docs).await?;
+            let scores = rr.rerank(&req.query, &docs).instrument(tracing::info_span!("recall.rerank", docs = n)).await?;
             // Blend the cross-encoder with the fused rank so a good keyword/vector agreement still counts.
             for (i, (h, s)) in hits[..n].iter_mut().zip(scores).enumerate() {
                 let fused_prior = 1.0 - i as f32 / n as f32;
@@ -685,7 +814,16 @@ impl Engine {
             hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         }
 
-        hits.truncate(k);
+        // What the recall itself leaves out, for the explanation: below k, then over the budget.
+        let mut cut: Vec<ExcludedRecord> = if hits.len() > k {
+            hits.split_off(k)
+                .iter()
+                .enumerate()
+                .map(|(i, h)| ExcludedRecord { id: h.memory.id, reason: ExclusionReason::Rank, detail: format!("rank {} of {} candidates; k = {k}", k + i + 1, candidates) })
+                .collect()
+        } else {
+            vec![]
+        };
         if let Some(budget) = req.token_budget {
             let mut used = 0;
             hits.retain(|h| {
@@ -694,6 +832,7 @@ impl Engine {
                     used += t;
                     true
                 } else {
+                    cut.push(ExcludedRecord { id: h.memory.id, reason: ExclusionReason::Budget, detail: format!("~{t} tokens over the {budget}-token budget ({used} used)") });
                     false
                 }
             });
@@ -711,15 +850,78 @@ impl Engine {
                 .await?;
         }
         let rendered = req.render.then(|| render(&subject, &hits));
+        let rerank_ms = if use_rerank { t_rerank.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
+        let total_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let span = tracing::Span::current();
+        span.record("memhouse.subject", subject.as_str());
+        span.record("memhouse.returned", hits.len());
+        span.record("memhouse.record_ids", hits.iter().map(|h| h.memory.id.to_string()).collect::<Vec<_>>().join(",").as_str());
+        span.record("db.statements", statements);
+        if self.explain_recalls {
+            let t_instrument = Instant::now();
+            for (stage, ms) in [("embed", embed_ms), ("search", search_ms), ("rerank", rerank_ms), ("total", total_ms)] {
+                metrics::observe("memhouse_recall_stage_duration_seconds", &[("stage", stage)], ms / 1000.0);
+            }
+            metrics::observe("memhouse_recall_statements", &[], statements as f64);
+            let record = RecallRecord {
+                recall_id,
+                at: Utc::now(),
+                tenant: tenant.clone(),
+                subject: subject.clone(),
+                principal: ctx.principal,
+                user: ctx.user,
+                policy_version: self.policy_version.clone(),
+                authorizer: ctx.authorizer,
+                query: req.query.clone(),
+                k,
+                kinds: req.kinds.clone(),
+                tags: req.tags.clone(),
+                scope: req.scope.clone().unwrap_or_default(),
+                denied_labels: ctx.denied_labels,
+                as_of: req.as_of,
+                valid_at: req.as_of.unwrap_or(now_valid),
+                mode,
+                token_budget: req.token_budget,
+                reranked: use_rerank,
+                windows: plan.as_ref().map(|p| p.windows.clone()).unwrap_or_default(),
+                returned: hits
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| ReturnedRecord {
+                        id: h.memory.id,
+                        rank: i + 1,
+                        score: h.score,
+                        keyword_rank: h.keyword_rank,
+                        vector_rank: h.vector_rank,
+                        similarity: h.similarity,
+                        rerank_score: h.rerank_score,
+                        tokens: approx_tokens(&h.memory.content),
+                    })
+                    .collect(),
+                cut,
+                stages: RecallStages { embed_ms, search_ms, rerank_ms, total_ms, statements, probes: n_probes, instrument_ms: 0.0 },
+            };
+            let mut record = record;
+            record.stages.instrument_ms = t_instrument.elapsed().as_secs_f64() * 1000.0;
+            self.keep_recent(record.clone());
+            // Written off the request path: the explanation is retrievable from memory meanwhile.
+            let store = self.store.clone();
+            tokio::spawn(async move {
+                if let Err(e) = store.recall_put(&record).await {
+                    tracing::warn!("recall explanation {} not stored: {e:#}", record.recall_id);
+                }
+            });
+        }
         Ok(RecallResult {
             rendered,
             hits,
             took_ms: start.elapsed().as_secs_f64() * 1000.0,
             embed_ms,
             search_ms,
-            rerank_ms: if use_rerank { t_rerank.elapsed().as_secs_f64() * 1000.0 } else { 0.0 },
+            rerank_ms,
             candidates,
             reranked: use_rerank,
+            recall_id: self.explain_recalls.then_some(recall_id),
             plan,
         })
     }
@@ -736,6 +938,11 @@ impl Engine {
     }
 
     pub(crate) async fn revise_with(&self, req: ReviseRequest, entry: Entry) -> anyhow::Result<RememberResult> {
+        let span = self.write_span("memhouse.revise", &req.actor, &None);
+        self.traced("revise", span, self.revise_untraced(req, entry)).await
+    }
+
+    async fn revise_untraced(&self, req: ReviseRequest, entry: Entry) -> anyhow::Result<RememberResult> {
         let tenant = self.tenant(&req.tenant);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
@@ -820,6 +1027,11 @@ impl Engine {
     /// `forget` by record, subject, user, agent, source or the whole tenant (CORE-05), with one
     /// audit event for the call.
     pub async fn forget_by(&self, req: ForgetRequest) -> anyhow::Result<ForgetResult> {
+        let span = self.write_span("memhouse.forget", &req.actor, &req.subject);
+        self.traced("forget", span, self.forget_untraced(req)).await
+    }
+
+    async fn forget_untraced(&self, req: ForgetRequest) -> anyhow::Result<ForgetResult> {
         let tenant = self.tenant(&req.tenant);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         let mut named: Vec<(ForgetScope, String)> = vec![];
@@ -882,6 +1094,10 @@ impl Engine {
                         self.store.delete(&tenant, id, &actor).await?;
                     }
                 }
+                if scope == ForgetScope::User {
+                    // Explanations hold the user's queries.
+                    self.store.recalls_delete(&tenant, Some(&value), None).await?;
+                }
                 let left = self.store.forget_count(&tenant, scope, &value).await?;
                 anyhow::ensure!(left == 0, "forget by {}: {left} records still match", scope.as_str());
                 self.store.audit(&actor, "memory.forget", &tenant, None, None, serde_json::json!({ "by": scope.as_str(), "value": value, "records": before })).await?;
@@ -889,6 +1105,11 @@ impl Engine {
             }
         };
         let result = ForgetResult { scope, value, deleted, dry_run: req.dry_run };
+        let span = tracing::Span::current();
+        if scope == ForgetScope::Record {
+            span.record("memhouse.record_ids", result.value.as_str());
+        }
+        span.record("memhouse.status", format!("{} {}: {} deleted", scope.as_str(), if req.dry_run { "dry run" } else { "forgotten" }, deleted).as_str());
         if !req.dry_run {
             self.remember_key(&tenant, &key_subject, "forget", &req.request_key, &req, &result).await?;
         }
@@ -977,6 +1198,10 @@ impl Engine {
 
     /// Apply retention rules (episodic purge). Returns records removed.
     pub async fn apply_retention(&self) -> anyhow::Result<u64> {
+        let days = self.cfg.telemetry.explanation_retention_days;
+        if days > 0 {
+            self.store.recalls_delete(&self.cfg.memory.tenant, None, Some(days)).await?;
+        }
         let expired = self.store.expire_due(&self.cfg.memory.tenant).await?;
         if expired > 0 {
             self.store.audit("system", "retention.expire", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": expired })).await?;

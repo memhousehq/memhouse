@@ -14,6 +14,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// Bump when the prompt or output format changes: it is part of the cache key.
@@ -189,9 +190,16 @@ impl Engine {
     /// Claim and process one job. Returns false when the queue is empty.
     pub async fn enrich_once(&self, spend: &Spend) -> anyhow::Result<bool> {
         let Some(job) = self.store.enrich_claim(1, 300).await?.pop() else { return Ok(false) };
-        match self.enrich_job(&job, spend).await {
-            Ok((key, outcome)) => self.store.enrich_finish(job.id, key.as_deref(), &outcome).await?,
+        let span = tracing::info_span!("memhouse.enrich", memhouse.enrich_job = job.id, memhouse.subject = %job.subject, memhouse.facts = tracing::field::Empty, otel.status_code = tracing::field::Empty);
+        match self.enrich_job(&job, spend).instrument(span.clone()).await {
+            Ok((key, outcome)) => {
+                span.record("memhouse.facts", outcome.facts);
+                crate::metrics::inc("memhouse_operations_total", &[("op", "enrich"), ("outcome", "ok")], 1.0);
+                self.store.enrich_finish(job.id, key.as_deref(), &outcome).await?
+            }
             Err(e) => {
+                span.record("otel.status_code", "ERROR");
+                crate::metrics::inc("memhouse_operations_total", &[("op", "enrich"), ("outcome", "error")], 1.0);
                 tracing::warn!("enrichment job {} failed (attempt {}): {e:#}", job.id, job.attempts);
                 self.store.enrich_fail(job.id, &format!("{e:#}"), self.cfg.enrich.max_attempts).await?;
             }
@@ -229,7 +237,24 @@ impl Engine {
                 if cfg.max_cost_usd > 0.0 && spend.usd() >= cfg.max_cost_usd {
                     anyhow::bail!("enrichment spend ${:.4} reached max_cost_usd {}", spend.usd(), cfg.max_cost_usd);
                 }
-                let (a, usage) = chat.chat(SYSTEM, &prompt).await?;
+                // An LLM call in the GenAI conventions, so LLM-observability tools show it (TR-OPS-06).
+                let span = tracing::info_span!(
+                    "gen_ai.chat",
+                    gen_ai.operation.name = "chat",
+                    gen_ai.system = "openai",
+                    gen_ai.request.model = %model,
+                    gen_ai.usage.input_tokens = tracing::field::Empty,
+                    gen_ai.usage.output_tokens = tracing::field::Empty,
+                    memhouse.cost_usd = tracing::field::Empty,
+                    memhouse.enrich_job = job.id,
+                );
+                let (a, usage) = chat.chat(SYSTEM, &prompt).instrument(span.clone()).await?;
+                span.record("gen_ai.usage.input_tokens", usage.prompt_tokens);
+                span.record("gen_ai.usage.output_tokens", usage.completion_tokens);
+                span.record("memhouse.cost_usd", usage.cost_usd.unwrap_or(0.0));
+                crate::metrics::inc("memhouse_enrich_cost_usd_total", &[], usage.cost_usd.unwrap_or(0.0));
+                crate::metrics::inc("memhouse_enrich_tokens_total", &[("type", "prompt")], usage.prompt_tokens as f64);
+                crate::metrics::inc("memhouse_enrich_tokens_total", &[("type", "completion")], usage.completion_tokens as f64);
                 spend.add(usage.cost_usd.unwrap_or(0.0));
                 outcome.usage = usage;
                 // Cache only answers that parse, so a malformed one is retried next time.

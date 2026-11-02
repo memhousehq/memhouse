@@ -5,9 +5,10 @@ This is the data model every MemHouse store holds, independent of how a store la
 (TR-CORE-04). The Postgres store maps it to the tables at the end; the Lite store (G16) will map
 the same model to SQLite. Exports carry exactly this model ([Memory Format v2](memory-format.md)).
 
-Schema version **3** (`mh_meta.schema_version`). Version 1 and 2 databases upgrade in place on
-start-up; see [Upgrading from v1](#upgrading-from-v1). Version 3 only adds the identity tables
-(principals, API keys, token signing keys); identity is not memory, so they are not exported.
+Schema version **4** (`mh_meta.schema_version`). Version 1 to 3 databases upgrade in place on
+start-up; see [Upgrading from v1](#upgrading-from-v1). Version 3 added the identity tables
+(principals, API keys, token signing keys) and version 4 the recall explanations; neither is
+memory, so neither is exported.
 
 ## Entities
 
@@ -145,6 +146,7 @@ key arrives with the intake queue (G10).
 | Request key | `mh_request_key` |
 | Store metadata | `mh_meta`: `schema_version`, `embedder`, `embedding_dim`, `passage_prefix`, re-embedding state |
 | Not exported | `mh_embed_cache`, `mh_llm_cache`, `mh_enrich_job`, `mh_audit`, `mh_deletion_ledger` |
+| Recall explanations (v4, not exported) | `mh_recall` (id, tenant, subject, principal, acting user, time, the recall record as JSON); erased with the subject, tenant or user, purged after `explanation_retention_days` |
 | Identity (v3, not exported) | `mh_principal` (kind, tenant, subjects, kinds, denied labels, org, team, `can_commit`, `act_as`), `mh_api_key` (sha256 of the secret, permissions, expiry, revocation), `mh_signing_key` (token signing secrets) |
 
 ## Changing the schema

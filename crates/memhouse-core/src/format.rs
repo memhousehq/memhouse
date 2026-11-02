@@ -18,7 +18,7 @@ pub const FORMAT: &str = "memhouse.memory";
 /// The format version this build writes. Version 1 files (before schema v2) are still read.
 pub const VERSION: u32 = 2;
 /// The logical schema version (TR-CORE-04, `docs/schema.md`), recorded by every store.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 /// Policy version given to records written before policies were recorded.
 pub const LEGACY_POLICY: &str = "legacy-v1";
 

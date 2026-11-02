@@ -266,8 +266,18 @@ fn print_next_steps(path: &std::path::Path) {
 async fn main() {
     let cli = Cli::parse();
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "warn,memhouse=info".into());
-    tracing_subscriber::fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
-    if let Err(e) = run(cli).await {
+    // Telemetry settings come from the config file; a broken file is reported by the command.
+    let telemetry_cfg = Config::load(cli.config.as_deref()).map(|c| c.telemetry).unwrap_or_default();
+    let telemetry = match memhouse_server::telemetry::init(&telemetry_cfg, &filter) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            eprintln!("warning: tracing export not started: {e:#}");
+            None
+        }
+    };
+    let result = run(cli).await;
+    drop(telemetry); // flush spans before exiting
+    if let Err(e) = result {
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }

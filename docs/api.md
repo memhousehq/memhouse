@@ -20,7 +20,8 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.1.0` (1.1 added principals, agent tokens, review and labels). The machine-readable contract is the OpenAPI 3.1 document at
+This is **API v1**, version `1.2.0` (1.1 added principals, agent tokens, review and labels; 1.2
+added recall explanations and `/metrics`). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -32,7 +33,7 @@ run to run.
 ## Contents
 
 - [Conventions](#conventions): authentication, actor, idempotency keys, subjects, scopes, times, errors
-- [The four operations](#the-four-operations): [remember](#post-v1remember-propose-a-memory), [recall](#post-v1recall-retrieve-memories-for-a-context), [revise](#post-v1revise-supersede-a-memory), [forget](#post-v1forget-delete-memories)
+- [The four operations](#the-four-operations): [remember](#post-v1remember-propose-a-memory), [recall](#post-v1recall-retrieve-memories-for-a-context) and [its explanation](#get-v1recallsidexplanation-why-a-recall-returned-what-it-did), [revise](#post-v1revise-supersede-a-memory), [forget](#post-v1forget-delete-memories)
 - [Conversations](#conversations): ingest
 - [Reading records](#reading-records): get, list
 - [Labels and review](#labels-and-review): relabel, commit or reject a candidate
@@ -309,6 +310,8 @@ Response, with the second hit shortened:
 }
 ```
 
+Every response has a `recall_id`: the key of its [explanation](#get-v1recallsidexplanation-why-a-recall-returned-what-it-did).
+
 The response is model-neutral (INT-04). `hits` is structured JSON with each record's id and
 provenance. `rendered` is the same hits as plain text, one line per memory with its id, kind,
 date and tags, to paste into any model's prompt as it is. MCP tools return both.
@@ -357,6 +360,45 @@ flowchart TB
 # Exact identifiers (order numbers, error codes): keyword only
 -d '{"subject":"customer:acme","query":"ERR_SAML_2041","mode":"keyword"}'
 ```
+
+### `GET /v1/recalls/{id}/explanation`: why a recall returned what it did
+
+The explanation of a recall (GOV-04), by its `recall_id`. It holds:
+
+- the recall's parameters, principal, verified user, policy version, denied labels and scope;
+- the time per stage, and the database round trips (1);
+- each returned record with its ranking signals;
+- every other record of the subject that matched the query, with the reason it was left out:
+
+| `reason` | |
+|---|---|
+| `status` | quarantined, candidate, rejected, expired, or superseded |
+| `access` | scoped to another user, agent, team or org |
+| `label` | a label denied to the caller (`detail`: which) |
+| `validity` | not valid at the recall's time (`detail`: `valid_to`, `expires_at` or `occurred_at` and the time) |
+| `filter` | outside the request's kinds or tags |
+| `budget` | cut by `token_budget` |
+| `rank` | below the `k` returned |
+
+```json
+{"recall": {"recall_id": "01a19b40-…", "principal": "agent:support-bot", "user": "user:ana",
+            "policy_version": "gov-6efbc1d9b265", "query": "renewal pricing", "k": 4, "token_budget": 150,
+            "denied_labels": ["hr"], "scope": {"agent": "agent:support-bot", "user": "user:ana", "…": "…"},
+            "returned": [{"id": "01a19b40-…", "rank": 1, "score": 0.0328, "keyword_rank": 1, "vector_rank": 1,
+                          "similarity": 0.81, "tokens": 112}],
+            "stages": {"embed_ms": 21.4, "search_ms": 3.9, "rerank_ms": 0.0, "total_ms": 25.8, "statements": 1, "probes": 1}},
+ "excluded": [{"id": "01a19b40-…", "reason": "validity", "detail": "valid_to 2026-11-01T08:00:00+00:00 is not after 2026-11-02T08:00:00+00:00"},
+              {"id": "01a19b40-…", "reason": "budget", "detail": "~110 tokens over the 150-token budget (112 used)"}],
+ "hidden": {"label": 3, "access": 1, "status": 1},
+ "replayed_at": "2026-11-02T08:00:05Z"}
+```
+
+Who may read it: the principal that recalled, or one with `audit:read`. Anyone else gets `404`.
+Records excluded for status, access or labels are listed by id only to `audit:read` principals;
+the caller sees them counted in `hidden`. Budget and rank cuts are as recorded at the recall. The
+other reasons are recomputed when you read the explanation (`replayed_at`), from the stored query
+against the subject's records as they are then. Explanations are kept for `[telemetry]
+explanation_retention_days` (30 by default), and erased with their subject or tenant.
 
 ### `POST /v1/revise`: supersede a memory
 
@@ -610,6 +652,13 @@ the action names and how to verify the chain.
 ### `GET /v1/enrich/status`
 
 The background enrichment queue for the configured tenant: `{"pending":0,"running":0,"done":0,"failed":0}`.
+
+### `GET /metrics`
+
+Prometheus text format, for a key with `ops:read`: request and operation counts and latency,
+recall latency per stage, statements per recall, writes by state, refused calls by reason,
+enrichment queue depth, lag, tokens and spend. See
+[operations.md](operations.md#traces-metrics-and-recall-explanations).
 
 ### `GET /health` and `GET /v1/openapi.json` (no auth)
 

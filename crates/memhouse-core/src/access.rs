@@ -36,6 +36,10 @@ pub enum Operation {
     EnrichStatus,
     Audit,
     Whoami,
+    /// Read a recall's explanation.
+    Explain,
+    /// Read the process metrics.
+    Metrics,
 }
 
 impl Operation {
@@ -158,7 +162,7 @@ impl ScopeAuthorizer {
     pub fn permission(who: &Identity, req: &AccessRequest) -> Option<&'static str> {
         let own = |v: &Option<String>| v.is_some() && *v == req.target;
         Some(match req.op? {
-            Operation::Recall | Operation::Get | Operation::List => perm::READ,
+            Operation::Recall | Operation::Get | Operation::List | Operation::Explain => perm::READ,
             Operation::Remember | Operation::Revise | Operation::Ingest => perm::WRITE,
             Operation::Forget(ForgetScope::Record) => perm::FORGET,
             Operation::Forget(ForgetScope::User) if own(&who.user) => perm::FORGET,
@@ -167,7 +171,7 @@ impl ScopeAuthorizer {
             Operation::Relabel => perm::LABEL,
             Operation::Review => perm::REVIEW,
             Operation::IssueToken => perm::TOKEN,
-            Operation::Stats | Operation::Subjects | Operation::EnrichStatus => perm::OPS,
+            Operation::Stats | Operation::Subjects | Operation::EnrichStatus | Operation::Metrics => perm::OPS,
             Operation::Audit => perm::AUDIT,
             Operation::Whoami => return None,
         })

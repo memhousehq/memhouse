@@ -34,6 +34,7 @@ memhouse doctor          # shows which config file was loaded and checks every p
 - [`[governance]`](#governance)
 - [`[server]`](#server)
 - [`[access]`](#access): admission of agent proposals, token lifetime, labels per role
+- [`[telemetry]`](#telemetry): OTLP trace export, recall explanation retention
 - [Environment variables](#environment-variables)
 - [Templates](#templates)
 - [Recipes](#recipes)
@@ -356,6 +357,19 @@ configuration where `[governance] redact` lacks `secret`, where `quarantine_inje
 where `token_ttl_secs` is above 3600. An empty file is secure: authentication, `secret`, card, SSN
 and IBAN redaction, the injection screen and the audit log are all on (PROF-12).
 
+## `[telemetry]`
+
+| Key | Default | Notes |
+|---|---|---|
+| `otlp_endpoint` | `""` (off) | OTLP/HTTP endpoint for traces, e.g. `http://localhost:4318` or `https://cloud.langfuse.com/api/public/otel`; `/v1/traces` is appended |
+| `otlp_headers` | `{}` | non-secret exporter headers; put credentials in `OTEL_EXPORTER_OTLP_HEADERS` |
+| `service_name` | `memhouse` | the `service.name` of the spans |
+| `sample_ratio` | 1.0 | share of traces exported |
+| `explanation_retention_days` | 30 | how long recall explanations (`mh_recall`) are kept; 0 keeps them until their subject is erased |
+
+See [operations.md](operations.md#traces-metrics-and-recall-explanations) for the spans, the
+metrics and setting up a backend.
+
 ## Environment variables
 
 | Variable | Sets |
@@ -367,6 +381,10 @@ and IBAN redaction, the injection screen and the audit log are all on (PROF-12).
 | `MEMHOUSE_SUBJECT` | `memory.default_subject` |
 | `MEMHOUSE_BIND` | `server.bind` |
 | `MEMHOUSE_API_KEY` | adds a bootstrap key to `server.api_keys` |
+| `MEMHOUSE_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) | `telemetry.otlp_endpoint` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | exporter headers, `k=v,k2=v2` (credentials go here) |
+| `OTEL_SERVICE_NAME` | `telemetry.service_name` |
+| `MEMHOUSE_OTLP_FILTER` | which spans are exported, as an `RUST_LOG`-style directive (default: MemHouse's own) |
 | `MEMHOUSE_MCP_KEY` | the agent's key or token for `memhouse mcp` (written into the agent's config by `memhouse connect`) |
 | `MEMHOUSE_EMBEDDING_PROVIDER`, `_MODEL`, `_DIM`, `_BASE_URL`, `_API_KEY_ENV` | `embedding.*` |
 | `MEMHOUSE_RERANK` | `rerank.enabled` (`1` or `true`) |

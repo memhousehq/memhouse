@@ -6,9 +6,10 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.1.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.2.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
-`forbidden` error code. Its contract is [`api/openapi.json`](../api/openapi.json), served at
+`forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
+(preview). Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -56,7 +57,7 @@ Each operation in the OpenAPI document has `x-stability`:
 | Value | Meaning |
 |---|---|
 | `stable` | covered by this policy: `remember`, `recall`, `revise`, `forget`, `ingest`, get and list memories, `/health`, `/v1/openapi.json`, and the MCP tools of the same names |
-| `preview` | works and is tested, but may change in a minor release, announced in the release notes: `/v1/subjects`, `/v1/stats`, `/v1/audit`, `/v1/enrich/status`. They become stable, or are replaced by admin routes, with G06 and G20. |
+| `preview` | works and is tested, but may change in a minor release, announced in the release notes: `/v1/subjects`, `/v1/stats`, `/v1/audit`, `/v1/enrich/status`, `/metrics` (its metric names follow the Prometheus conventions and are listed in [operations.md](operations.md#traces-metrics-and-recall-explanations)). They become stable, or are replaced by admin routes, with G06 and G20. |
 | `deprecated` | still works exactly as before, with a successor; see below |
 
 ## Known changes inside v1

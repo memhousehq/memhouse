@@ -113,6 +113,14 @@
             "format": "int64",
             "type": "integer"
           },
+          "oldest_pending_secs": {
+            "description": "Age of the oldest pending job, in seconds (queue lag).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "pending": {
             "format": "int64",
             "type": "integer"
@@ -178,6 +186,68 @@
           {
             "const": "internal",
             "description": "A failure inside MemHouse or its database or models (500).",
+            "type": "string"
+          }
+        ]
+      },
+      "ExcludedRecord": {
+        "description": "A record left out of a recall, and why.",
+        "properties": {
+          "detail": {
+            "description": "Identifiers and values only, never content (e.g. `label hr`, `valid_to 2026-10-01T00:00:00Z`).",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ExclusionReason"
+          }
+        },
+        "required": [
+          "id",
+          "reason",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "ExclusionReason": {
+        "description": "Why a record that matched a recall's query is not among its results (GOV-04).",
+        "oneOf": [
+          {
+            "const": "status",
+            "description": "Not recallable in its state: quarantined, candidate, rejected, expired, or superseded.",
+            "type": "string"
+          },
+          {
+            "const": "access",
+            "description": "Scoped to another user, agent, team or org than the caller.",
+            "type": "string"
+          },
+          {
+            "const": "label",
+            "description": "Carries a label denied to the caller.",
+            "type": "string"
+          },
+          {
+            "const": "validity",
+            "description": "Not valid at the recall's time: before `valid_from`, after `valid_to` or `expires_at`, or\nhappened after `as_of`.",
+            "type": "string"
+          },
+          {
+            "const": "filter",
+            "description": "Outside the request's own filters: kinds, tags or time window.",
+            "type": "string"
+          },
+          {
+            "const": "budget",
+            "description": "Cut by the token budget.",
+            "type": "string"
+          },
+          {
+            "const": "rank",
+            "description": "Ranked below the `k` returned.",
             "type": "string"
           }
         ]
@@ -855,6 +925,178 @@
         ],
         "type": "object"
       },
+      "RecallExplanation": {
+        "description": "A recall's explanation (`GET /v1/recalls/{id}/explanation`, GOV-04): what it returned and why,\nand the records that matched the query but were left out, each with its reason. Exclusions for\naccess, labels and state are recomputed from the store when the explanation is read\n(`replayed_at`); budget and rank cuts are as recorded.",
+        "properties": {
+          "excluded": {
+            "description": "Most relevant first, by reason order (status, access, label, validity, filter, budget, rank).",
+            "items": {
+              "$ref": "#/components/schemas/ExcludedRecord"
+            },
+            "type": "array"
+          },
+          "hidden": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Excluded records this viewer may not know about, counted by reason (ids are shown only to\nprincipals with `audit:read`).",
+            "type": "object"
+          },
+          "recall": {
+            "$ref": "#/components/schemas/RecallRecord"
+          },
+          "replayed_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recall",
+          "excluded",
+          "replayed_at"
+        ],
+        "type": "object"
+      },
+      "RecallRecord": {
+        "description": "What a recall was asked, how it was authorized and what it returned, kept for its explanation.",
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "authorizer": {
+            "description": "The authorizer that decided (`scope`; `rebac` from G27).",
+            "type": "string"
+          },
+          "cut": {
+            "description": "Records the recall itself cut (budget, rank); the explanation adds the rest.",
+            "items": {
+              "$ref": "#/components/schemas/ExcludedRecord"
+            },
+            "type": "array"
+          },
+          "denied_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "k": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kinds": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryKind"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/components/schemas/RetrievalMode"
+          },
+          "policy_version": {
+            "type": "string"
+          },
+          "principal": {
+            "description": "The principal that recalled.",
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "recall_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reranked": {
+            "type": "boolean"
+          },
+          "returned": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnedRecord"
+            },
+            "type": "array"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope",
+            "description": "The scope filter applied (the caller's own, merged with the request's)."
+          },
+          "stages": {
+            "$ref": "#/components/schemas/RecallStages"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "token_budget": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_at": {
+            "description": "The time validity was checked at.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/TimeWindow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "recall_id",
+          "at",
+          "tenant",
+          "subject",
+          "principal",
+          "policy_version",
+          "authorizer",
+          "query",
+          "k",
+          "denied_labels",
+          "valid_at",
+          "mode",
+          "reranked",
+          "returned",
+          "stages"
+        ],
+        "type": "object"
+      },
       "RecallRequest": {
         "description": "Retrieve memories for a context (`recall`, CORE-03).",
         "properties": {
@@ -1025,6 +1267,14 @@
             ],
             "description": "How the query was read: time windows and sub-queries that got their own retrieval probe."
           },
+          "recall_id": {
+            "description": "Id of this recall's explanation (`GET /v1/recalls/{id}/explanation`, GOV-04).",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "rendered": {
             "description": "The hits as a model-neutral text block, when the request set `render`.",
             "type": [
@@ -1055,6 +1305,54 @@
           "took_ms",
           "candidates",
           "reranked"
+        ],
+        "type": "object"
+      },
+      "RecallStages": {
+        "description": "Time spent per stage of a recall.",
+        "properties": {
+          "embed_ms": {
+            "format": "double",
+            "type": "number"
+          },
+          "instrument_ms": {
+            "description": "Time the recall spent on its own instrumentation: metrics and this record (the row itself is\nwritten off the request path).",
+            "format": "double",
+            "type": "number"
+          },
+          "probes": {
+            "description": "Probes run in that statement: the query, plus a time window or sub-queries it mentions.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rerank_ms": {
+            "format": "double",
+            "type": "number"
+          },
+          "search_ms": {
+            "format": "double",
+            "type": "number"
+          },
+          "statements": {
+            "description": "Database round trips on the synchronous path (PERF-02).",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_ms": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "embed_ms",
+          "search_ms",
+          "rerank_ms",
+          "total_ms",
+          "statements",
+          "probes",
+          "instrument_ms"
         ],
         "type": "object"
       },
@@ -1293,6 +1591,66 @@
           "keyword"
         ],
         "type": "string"
+      },
+      "ReturnedRecord": {
+        "description": "A record a recall returned, with its ranking signals.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "keyword_rank": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rank": {
+            "description": "1 is the most relevant.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rerank_score": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "score": {
+            "format": "float",
+            "type": "number"
+          },
+          "similarity": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tokens": {
+            "description": "Approximate tokens of its content.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "vector_rank": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "rank",
+          "score",
+          "tokens"
+        ],
+        "type": "object"
       },
       "ReviewAction": {
         "enum": [
@@ -1816,7 +2174,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -1843,6 +2201,64 @@
           "operations"
         ],
         "x-stability": "stable"
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Text exposition format 0.0.4; needs `ops:read` (Prometheus: `authorization: {credentials: <key>}`). Request counts and latency by route, operation counts and latency, recall latency per stage and statements per recall, writes by state, refused calls, enrichment queue, lag, tokens and spend. Labels hold no subjects, users or content.",
+        "operationId": "metrics",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Prometheus metrics",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
       }
     },
     "/v1/audit": {
@@ -2880,6 +3296,93 @@
           }
         },
         "summary": "Retrieve memories for a context",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/recalls/{id}/explanation": {
+      "get": {
+        "description": "The returned records with their ranking signals, and the records that matched but were left out, each with its reason: status, access, label, validity, filter, budget or rank (GOV-04). For the principal that recalled, or any principal with `audit:read`; others get 404. Records excluded for status, access or labels are listed by id only to `audit:read`, otherwise counted in `hidden`. The id is `recall_id` of the recall's response.",
+        "operationId": "explainRecall",
+        "parameters": [
+          {
+            "description": "A recall id (`recall_id`).",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecallExplanation"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Why a recall returned what it did",
         "tags": [
           "memory"
         ],

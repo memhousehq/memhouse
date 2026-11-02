@@ -18,6 +18,7 @@ backups, upgrades, enrichment workers, monitoring and troubleshooting.
 - [Upgrades](#upgrades)
 - [Changing the embedding model](#changing-the-embedding-model)
 - [Monitoring](#monitoring)
+- [Traces, metrics and recall explanations](#traces-metrics-and-recall-explanations)
 - [Routine maintenance](#routine-maintenance)
 - [Troubleshooting](#troubleshooting)
 
@@ -237,7 +238,7 @@ Measured on a laptop CPU (Apple M-series, `bge-small-en-v1.5`, 384 dimensions):
 
 | Operation | Typical cost |
 |---|---|
-| Recall (embed query + one SQL statement per probe) | p50 26–35 ms, p95 ~40 ms with ~500 rounds per subject |
+| Recall (embed query + one SQL statement for all probes) | p50 26–35 ms, p95 ~40 ms with ~500 rounds per subject |
 | Recall with the cross-encoder rerank | +~0.9 s |
 | Ingest | dominated by embedding: about 2 vectors per round, batched |
 | Embedding cache | ~2.2 KB per cached vector |
@@ -493,7 +494,8 @@ Plan for it:
 | Volumes | `GET /v1/stats`: memories, quarantined, superseded, subjects, audit events |
 | Enrichment backlog | `GET /v1/enrich/status`: alert if `pending` keeps growing or `failed` > 0 |
 | Audit integrity | `memhouse audit --verify`, daily (cron) |
-| Recall latency | `took_ms`, `embed_ms` and `search_ms` in every recall response; log them client-side |
+| Recall latency | `memhouse_recall_stage_duration_seconds` (embed, search, rerank, total) on `/metrics`; also `took_ms`, `embed_ms`, `search_ms` in every response |
+| Everything else | `GET /metrics` (Prometheus) and OTLP traces: see [below](#traces-metrics-and-recall-explanations) |
 | Logs | stderr; set `RUST_LOG=info` (or `debug`) |
 
 A cron job that checks integrity and alerts on failure:
@@ -502,6 +504,79 @@ A cron job that checks integrity and alerts on failure:
 # /etc/cron.d/memhouse
 15 3 * * * memhouse MEMHOUSE_HOME=/var/lib/memhouse /usr/local/bin/memhouse audit --verify || logger -p user.err "memhouse audit chain broken"
 ```
+
+## Traces, metrics and recall explanations
+
+**Traces (QUAL-07).** Every operation is a span: `memhouse.remember`, `.revise`, `.ingest`,
+`.forget`, `.recall` and `.enrich`, with the principal, subject, policy version, record ids and
+outcome. Below them are stage spans (`recall.embed`, `recall.search`, `recall.rerank`), one span
+per database statement (`db.search`, `db.insert`, … with `db.system = postgresql`), the
+authorization decision (`memhouse.authorize`: operation, rule, allowed), the HTTP request
+(`http.request`, named by route template) and, for enrichment, the LLM call (`gen_ai.chat` with
+`gen_ai.request.model`, token counts and cost, the GenAI conventions that LLM-observability tools
+read). Spans hold identifiers, counts and timings, never memory content or queries (PR-3).
+
+Export is off until you name an OTLP/HTTP endpoint:
+
+```toml
+[telemetry]
+otlp_endpoint = "http://localhost:4318"   # an OpenTelemetry collector, Jaeger, Tempo, Honeycomb…
+sample_ratio = 1.0
+```
+
+```bash
+# Or with the standard variables:
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+# Langfuse (TR-OPS-06): its OTLP endpoint, with the project's keys as Basic auth
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20$(printf '%s' "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" | base64)"
+```
+
+A quick look without any infrastructure: `docker run -p 16686:16686 -p 4318:4318
+jaegertracing/all-in-one`, set the endpoint to `http://localhost:4318`, open `localhost:16686`.
+`MEMHOUSE_OTLP_FILTER` (an `RUST_LOG`-style directive) exports more than MemHouse's own spans,
+e.g. `info,sqlx=warn`.
+
+With export off the spans still exist in-process, and instrumentation costs a few microseconds
+per recall. The governance check `telemetry_overhead` measures it on every guard run (about
+0.002 ms of a 2.6 ms recall, 0.07%).
+
+**Metrics.** `GET /metrics` serves the Prometheus text format to a key with `ops:read`:
+
+| Metric | Labels | |
+|---|---|---|
+| `memhouse_http_requests_total`, `memhouse_http_request_duration_seconds` | method, route, status | route templates, never concrete subjects |
+| `memhouse_operations_total`, `memhouse_operation_duration_seconds` | op, outcome | outcome is `ok` or the error code |
+| `memhouse_recall_stage_duration_seconds` | stage: embed, search, rerank, total | |
+| `memhouse_recall_statements` | | database round trips per recall; 1 on Postgres (PERF-02) |
+| `memhouse_writes_total` | status: committed, candidate, quarantined, deduplicated | |
+| `memhouse_refused_total` | kind: auth, access; reason | 401s by reason, 403s by rule |
+| `memhouse_enrich_jobs`, `memhouse_enrich_queue_lag_seconds` | state | queue depth and the age of the oldest pending job |
+| `memhouse_enrich_cost_usd_total`, `memhouse_enrich_tokens_total` | type | LLM spend |
+| `memhouse_build_info` | version, api_version | |
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: memhouse
+    metrics_path: /metrics
+    authorization: {credentials: "<a key with ops:read, e.g. memhouse key create admin:prometheus --scopes ops:read>"}
+    static_configs: [{targets: ["memhouse:7077"]}]
+```
+
+Alerts worth having: `memhouse_enrich_queue_lag_seconds > 600`; a rising
+`memhouse_refused_total{kind="auth"}` (a client with a revoked key, or someone guessing);
+`histogram_quantile(0.95, rate(memhouse_recall_stage_duration_seconds_bucket{stage="total"}[5m])) > 0.2`.
+
+**Recall explanations (GOV-04).** Every recall response has a `recall_id`, and
+`GET /v1/recalls/{id}/explanation` says why it returned what it did. You get the results with
+their ranking signals, and every other record that matched the query with the reason it was left
+out: status, access, label, validity, filter, budget or rank. See the
+[API reference](api.md#get-v1recallsidexplanation-why-a-recall-returned-what-it-did). The records
+are kept in `mh_recall` for `[telemetry] explanation_retention_days` (30 by default; the hourly
+retention pass purges older ones). They are erased with their subject, their tenant and, for
+`forget` by user, the user's own recalls. The record holds the query text, so treat the table
+like the memories themselves.
 
 ## Routine maintenance
 

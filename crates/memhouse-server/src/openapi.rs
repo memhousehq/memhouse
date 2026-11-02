@@ -10,7 +10,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{json, Map, Value};
 
 /// The API version, separate from the crate version. Minor and patch releases only add.
-pub const API_VERSION: &str = "1.1.0";
+pub const API_VERSION: &str = "1.2.0";
 
 /// Routes kept from before v1, with the route that replaces each. They answer as before and add
 /// `Deprecation`, `Sunset` and `Link` headers; they are removed no earlier than [`SUNSET`].
@@ -124,6 +124,7 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
     let token_req = s(g.subschema_for::<TokenRequest>());
     let token_res = s(g.subschema_for::<memhouse_core::identity::TokenResponse>());
     let whoami = s(g.subschema_for::<WhoAmI>());
+    let explanation = s(g.subschema_for::<RecallExplanation>());
     s(g.subschema_for::<ErrorBody>());
     let id_param = || path_param("id", "A memory id.");
     let subject_param = || path_param("subject", "A subject, e.g. `customer:acme` (URL-encoded).");
@@ -295,6 +296,36 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             stability: Stable,
             body: None,
             ok: whoami,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/recalls/{id}/explanation",
+            id: "explainRecall",
+            summary: "Why a recall returned what it did",
+            description: "The returned records with their ranking signals, and the records that matched but were left out, each with its reason: status, access, label, validity, filter, budget or rank (GOV-04). For the principal that recalled, or any principal with `audit:read`; others get 404. Records excluded for status, access or labels are listed by id only to `audit:read`, otherwise counted in `hidden`. The id is `recall_id` of the recall's response.",
+            tag: "memory",
+            stability: Stable,
+            body: None,
+            ok: explanation,
+            params: vec![path_param("id", "A recall id (`recall_id`).")],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/metrics",
+            id: "metrics",
+            summary: "Prometheus metrics",
+            description: "Text exposition format 0.0.4; needs `ops:read` (Prometheus: `authorization: {credentials: <key>}`). Request counts and latency by route, operation counts and latency, recall latency per stage and statements per recall, writes by state, refused calls, enrichment queue, lag, tokens and spend. Labels hold no subjects, users or content.",
+            tag: "operations",
+            stability: Preview,
+            body: None,
+            ok: json!({"type": "string"}),
             params: vec![],
             idempotent: false,
             errors: &[401, 500],
@@ -516,7 +547,8 @@ pub fn spec() -> Value {
             o["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": b}}});
         }
         let mut responses = Map::new();
-        responses.insert("200".into(), json!({"description": "OK", "content": {"application/json": {"schema": op.ok}}}));
+        let media = if op.path == "/metrics" { "text/plain" } else { "application/json" };
+        responses.insert("200".into(), json!({"description": "OK", "content": {media: {"schema": op.ok}}}));
         for c in op.errors {
             responses.insert(c.to_string(), error_response(*c));
         }
@@ -581,7 +613,8 @@ pub fn response_schema<'a>(spec: &'a Value, method: &str, path: &str) -> Option<
 
 /// The response schema for a status of an operation (`None` when the status isn't documented).
 pub fn status_schema<'a>(spec: &'a Value, method: &str, path: &str, status: u16) -> Option<&'a Value> {
-    spec.get("paths")?.get(path)?.get(method)?.get("responses")?.get(status.to_string())?.pointer("/content/application~1json/schema")
+    let content = spec.get("paths")?.get(path)?.get(method)?.get("responses")?.get(status.to_string())?.get("content")?;
+    content.get("application/json").or_else(|| content.get("text/plain"))?.get("schema")
 }
 
 /// Validate `value` against `schema` (the JSON Schema subset the generator emits: `$ref`,

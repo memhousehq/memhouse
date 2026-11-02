@@ -70,7 +70,7 @@ obligations below.
 |---|---|---|
 | Access by role and attributes only | subject patterns, not relationships | G27 (ReBAC) |
 | Operator paths (CLI, benchmark) bypass the authorizer | they hold the database credentials anyway | G22 (row-level security as a second line) |
-| Reads are not audited by default | `audit_reads = false` | G07 (recall explanations, retained per policy) |
-| No content-free test for logs and traces | not verified | G07 |
+| Explanation retention is a setting, not policy | `explanation_retention_days` | G08 (a policy default) |
+| Logs are not checked for content | spans are (the `recall_round_trip` check finds no memory text or query in any span field, G07); log lines aren't yet | G22 |
 | No second line of defence in the database | direct SQL bypasses everything | G22 (row-level security) |
 | Baseline proven on Postgres only | one store | G15 (kits), G16 (Lite passes the same suite) |

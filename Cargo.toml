@@ -41,6 +41,10 @@ fastembed = { version = "7", default-features = false, features = ["ort-download
 rand = "0.8"
 dirs = "5"
 schemars = { version = "1.2", features = ["chrono04", "uuid1"] }
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
+tracing-opentelemetry = "0.34"
 
 [profile.release]
 lto = "thin"

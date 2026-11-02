@@ -279,6 +279,34 @@ CREATE TABLE IF NOT EXISTS mh_signing_key (
 );
 "#;
 
+/// The v4 addition (G07): recall explanations (GOV-04). Kept with their subject: erasing the
+/// subject, user or tenant erases them, and retention purges them.
+const SCHEMA_V4_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS mh_recall (
+  id          uuid PRIMARY KEY,
+  tenant      text NOT NULL,
+  subject     text NOT NULL,
+  principal   text NOT NULL,
+  acting_user text,
+  at          timestamptz NOT NULL,
+  body        jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mh_recall_subject_idx ON mh_recall (tenant, subject);
+CREATE INDEX IF NOT EXISTS mh_recall_user_idx ON mh_recall (tenant, acting_user) WHERE acting_user IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mh_recall_at_idx ON mh_recall (at);
+"#;
+
+impl PgStore {
+    /// One probe's recall statement (the `db.search` span is the caller's).
+    async fn search_one(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
+        self.ensure_current().await?;
+        let p = Probe::of(q);
+        let sql = search_sql();
+        let rows = search_query(&sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
+        rows.iter().map(row_to_hit).collect()
+    }
+}
+
 fn row_to_principal(r: &PgRow) -> anyhow::Result<memhouse_core::identity::Principal> {
     use memhouse_core::identity::{Principal, PrincipalKind};
     let kind: String = r.try_get("kind")?;
@@ -408,17 +436,7 @@ pub fn redact_url(url: &str) -> String {
 }
 
 /// The single-statement hybrid recall (keyword + vector candidates fused by RRF, section 4.5).
-fn search_sql() -> String {
-    format!(
-        r#"
-WITH q AS (
-  SELECT CASE WHEN $3 = '' THEN NULL ELSE to_tsquery('english', $3) END AS tsq
-),
-base AS (
-  SELECT m.id, m.tsv, m.embedding, m.embedding_alt
-  FROM mh_memory m
-  WHERE m.tenant = $1 AND m.subject = $2
-    -- As-of recall also sees versions superseded since; validity below keeps the one true then.
+const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions superseded since; validity below keeps the one true then.
     AND (m.status = 'committed' OR ($7::timestamptz IS NOT NULL AND m.status = 'superseded'))
     AND ($4::text[] IS NULL OR m.kind = ANY($4))
     AND ($5::text[] IS NULL OR m.tags && $5)
@@ -434,7 +452,22 @@ base AS (
     AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
       SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
       WHERE m.occurred_at >= w.s AND m.occurred_at < w.e))
+"#;
+
+/// The recall statement. `filtered = false` drops every filter but tenant and subject: the
+/// candidates a recall explanation classifies (why each was excluded).
+fn search_sql_with(filtered: bool) -> String {
+    let filters = if filtered { SEARCH_FILTERS } else { "" };
+    format!(
+        r#"
+WITH q AS (
+  SELECT CASE WHEN $3 = '' THEN NULL ELSE to_tsquery('english', $3) END AS tsq
 ),
+base AS (
+  SELECT m.id, m.tsv, m.embedding, m.embedding_alt
+  FROM mh_memory m
+  WHERE m.tenant = $1 AND m.subject = $2
+{filters}),
 -- BM25 (k1 = 1.2, b = 0.75) over the subject's memories. Term frequencies come from the stored
 -- tsvector positions, document frequencies from the matched rows (a row matches a term iff it
 -- contains it), document length is the number of distinct lexemes.
@@ -483,7 +516,7 @@ fused AS (
 top AS (
   SELECT * FROM fused ORDER BY score DESC, sim DESC NULLS LAST LIMIT $15
 )
-SELECT {COLS}, f.score, f.krk, f.vrk, f.sim
+SELECT {COLS}, f.score, f.krk, f.vrk, f.sim, 0 AS probe
 FROM top f CROSS JOIN LATERAL (
   SELECT * FROM mh_memory x WHERE x.id = f.id AND x.tenant = $1 AND x.subject = $2 LIMIT 1
 ) m
@@ -502,6 +535,44 @@ fn forget_condition(scope: ForgetScope) -> anyhow::Result<&'static str> {
     })
 }
 
+fn search_sql() -> String {
+    search_sql_with(true)
+}
+
+/// Several probes of one recall as one statement (PERF-02: one round trip): each probe's search,
+/// with its own parameters, under `UNION ALL`, rows tagged with the probe's position.
+fn multi_search_sql(n: usize) -> String {
+    let one = search_sql();
+    (0..n).map(|i| format!("({})", renumber(&one, i * SEARCH_PARAMS).replace("0 AS probe", &format!("{i} AS probe")))).collect::<Vec<_>>().join("\nUNION ALL\n")
+}
+
+/// Parameters of one recall statement.
+const SEARCH_PARAMS: usize = 24;
+
+/// Shift every `$N` in `sql` by `by`.
+fn renumber(sql: &str, by: usize) -> String {
+    if by == 0 {
+        return sql.to_string();
+    }
+    let mut out = String::with_capacity(sql.len() + 64);
+    let mut chars = sql.char_indices().peekable();
+    while let Some((_, c)) = chars.next() {
+        out.push(c);
+        if c == '$' {
+            let mut n = String::new();
+            while let Some((_, d)) = chars.peek().filter(|(_, d)| d.is_ascii_digit()) {
+                n.push(*d);
+                chars.next();
+            }
+            if n.is_empty() {
+                continue;
+            }
+            out.push_str(&(n.parse::<usize>().expect("digits") + by).to_string());
+        }
+    }
+    out
+}
+
 /// Bind a `SearchQuery` to `sql` (the recall statement, or an EXPLAIN of it).
 fn search_query<'a>(
     sql: &'a str,
@@ -511,7 +582,50 @@ fn search_query<'a>(
     use_kw: bool,
     use_vec: bool,
 ) -> sqlx::query::Query<'a, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    sqlx::query(sql)
+    bind_search(sqlx::query(sql), q, tsq, kinds, use_kw, use_vec)
+}
+
+/// The probe-dependent values of a `SearchQuery`.
+struct Probe {
+    tsq: String,
+    kinds: Option<Vec<String>>,
+    use_kw: bool,
+    use_vec: bool,
+}
+
+impl Probe {
+    fn of(q: &SearchQuery) -> Probe {
+        let use_kw = q.mode != RetrievalMode::Dense;
+        Probe {
+            tsq: if use_kw { or_query(&q.text) } else { String::new() },
+            kinds: q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect()),
+            use_kw,
+            use_vec: q.mode != RetrievalMode::Keyword && q.embedding.is_some(),
+        }
+    }
+}
+
+fn row_to_hit(r: &PgRow) -> anyhow::Result<Hit> {
+    Ok(Hit {
+        memory: row_to_memory(r)?,
+        score: r.try_get::<f64, _>("score")? as f32,
+        keyword_rank: r.try_get("krk")?,
+        vector_rank: r.try_get("vrk")?,
+        similarity: r.try_get::<Option<f64>, _>("sim")?.map(|s| s as f32),
+        rerank_score: None,
+    })
+}
+
+/// Bind one probe's parameters (`SEARCH_PARAMS` of them, in order).
+fn bind_search<'a>(
+    query: sqlx::query::Query<'a, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    q: &'a SearchQuery,
+    tsq: &'a str,
+    kinds: Option<Vec<String>>,
+    use_kw: bool,
+    use_vec: bool,
+) -> sqlx::query::Query<'a, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    query
         .bind(&q.tenant)
         .bind(&q.subject)
         .bind(tsq)
@@ -847,6 +961,7 @@ impl Store for PgStore {
         check_pgvector(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V2_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V3_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V4_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -859,7 +974,7 @@ impl Store for PgStore {
         if stored_version.is_some_and(|v| v < 2) {
             self.backfill_v2(embedder_id, &config).await?;
         }
-        // v3 only adds tables.
+        // v3 and v4 only add tables.
         sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
             .bind(SCHEMA_VERSION.to_string())
             .bind(SCHEMA_VERSION as i32)
@@ -870,6 +985,7 @@ impl Store for PgStore {
         Ok(())
     }
 
+    #[tracing::instrument(name = "db.insert", skip_all, fields(db.system = "postgresql", db.operation = "INSERT", rows = records.len()))]
     async fn insert(&self, records: &[NewMemory]) -> anyhow::Result<()> {
         if records.is_empty() {
             return Ok(());
@@ -918,26 +1034,41 @@ impl Store for PgStore {
         Ok(())
     }
 
+    #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "postgresql", db.operation = "SELECT", probes = 1))]
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
+        self.search_one(q).await
+    }
+
+    #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "postgresql", db.operation = "SELECT", probes = qs.len()))]
+    async fn search_many(&self, qs: &[SearchQuery]) -> anyhow::Result<Vec<Vec<Hit>>> {
+        if qs.len() == 1 {
+            return Ok(vec![self.search_one(&qs[0]).await?]);
+        }
         self.ensure_current().await?;
-        let use_kw = q.mode != RetrievalMode::Dense;
-        let use_vec = q.mode != RetrievalMode::Keyword && q.embedding.is_some();
-        let tsq = if use_kw { or_query(&q.text) } else { String::new() };
-        let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
-        let sql = search_sql();
-        let rows = search_query(&sql, q, &tsq, kinds, use_kw, use_vec).fetch_all(&self.pool).await?;
-        rows.iter()
-            .map(|r| {
-                Ok(Hit {
-                    memory: row_to_memory(r)?,
-                    score: r.try_get::<f64, _>("score")? as f32,
-                    keyword_rank: r.try_get("krk")?,
-                    vector_rank: r.try_get("vrk")?,
-                    similarity: r.try_get::<Option<f64>, _>("sim")?.map(|s| s as f32),
-                    rerank_score: None,
-                })
-            })
-            .collect()
+        let probes: Vec<Probe> = qs.iter().map(Probe::of).collect();
+        let sql = multi_search_sql(qs.len());
+        let mut query = sqlx::query(&sql);
+        for (q, p) in qs.iter().zip(&probes) {
+            query = bind_search(query, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec);
+        }
+        let mut out: Vec<Vec<Hit>> = vec![vec![]; qs.len()];
+        for r in query.fetch_all(&self.pool).await? {
+            let i: i32 = r.try_get("probe")?;
+            out[i as usize].push(row_to_hit(&r)?);
+        }
+        Ok(out)
+    }
+
+    fn statements_per_recall(&self, _probes: usize) -> usize {
+        1
+    }
+
+    #[tracing::instrument(name = "db.search_unfiltered", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
+    async fn search_unfiltered(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
+        let p = Probe::of(q);
+        let sql = search_sql_with(false);
+        let rows = search_query(&sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
+        rows.iter().map(row_to_hit).collect()
     }
 
     async fn search_plan(&self, q: &SearchQuery) -> anyhow::Result<Option<serde_json::Value>> {
@@ -952,11 +1083,13 @@ impl Store for PgStore {
         Ok(Some(row.try_get::<serde_json::Value, _>(0)?))
     }
 
+    #[tracing::instrument(name = "db.get", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>> {
         let row = sqlx::query(&format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = $2")).bind(tenant).bind(id).fetch_optional(&self.pool).await?;
         row.map(|r| row_to_memory(&r)).transpose()
     }
 
+    #[tracing::instrument(name = "db.list", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn list(&self, q: &ListQuery) -> anyhow::Result<Vec<Memory>> {
         let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
         let rows = sqlx::query(&format!(
@@ -990,6 +1123,7 @@ impl Store for PgStore {
         rows.iter().map(row_to_memory).collect()
     }
 
+    #[tracing::instrument(name = "db.find_by_hash", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn find_by_hash(&self, tenant: &str, subject: &str, hash: &str) -> anyhow::Result<Option<Uuid>> {
         Ok(sqlx::query_scalar("SELECT id FROM mh_memory WHERE tenant = $1 AND subject = $2 AND content_hash = $3 AND status <> 'superseded' LIMIT 1")
             .bind(tenant)
@@ -999,6 +1133,7 @@ impl Store for PgStore {
             .await?)
     }
 
+    #[tracing::instrument(name = "db.existing_hashes", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn existing_hashes(&self, tenant: &str, subject: &str, hashes: &[String]) -> anyhow::Result<std::collections::HashSet<String>> {
         if hashes.is_empty() {
             return Ok(Default::default());
@@ -1012,6 +1147,7 @@ impl Store for PgStore {
         Ok(v.into_iter().collect())
     }
 
+    #[tracing::instrument(name = "db.nearest", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn nearest(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32]) -> anyhow::Result<Option<(Uuid, f32)>> {
         let row = sqlx::query(
             "SELECT id, 1 - (embedding <=> $4::vector) AS sim FROM mh_memory \
@@ -1030,6 +1166,7 @@ impl Store for PgStore {
         })
     }
 
+    #[tracing::instrument(name = "db.set_superseded", skip_all, fields(db.system = "postgresql", db.operation = "UPDATE"))]
     async fn set_superseded(&self, tenant: &str, id: Uuid, by: Uuid) -> anyhow::Result<bool> {
         // A version stops being true when its successor starts (even if it had a later end of its
         // own), so as-of recall finds exactly one version at any time. The successor's time comes
@@ -1048,6 +1185,7 @@ impl Store for PgStore {
         Ok(r.rows_affected() > 0)
     }
 
+    #[tracing::instrument(name = "db.set_status", skip_all, fields(db.system = "postgresql", db.operation = "UPDATE"))]
     async fn set_status(&self, tenant: &str, id: Uuid, status: MemoryStatus) -> anyhow::Result<bool> {
         // Only the transitions of the lifecycle (CORE-02); anything else changes nothing.
         let from: Vec<&str> = MemoryStatus::sources_of(status).iter().map(|s| s.as_str()).collect();
@@ -1062,6 +1200,7 @@ impl Store for PgStore {
         Ok(r.rows_affected() > 0)
     }
 
+    #[tracing::instrument(name = "db.delete", skip_all, fields(db.system = "postgresql", db.operation = "DELETE"))]
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING subject, content, alt_hash").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
@@ -1106,6 +1245,7 @@ impl Store for PgStore {
         Ok(true)
     }
 
+    #[tracing::instrument(name = "db.delete_subject", skip_all, fields(db.system = "postgresql", db.operation = "DELETE"))]
     async fn delete_subject(&self, tenant: &str, subject: &str, actor: &str, purge_cache: bool) -> anyhow::Result<u64> {
         let mut tx = self.pool.begin().await?;
         if purge_cache {
@@ -1123,6 +1263,7 @@ impl Store for PgStore {
         // Links held by the subject and links to it from others, and remembered responses.
         sqlx::query("DELETE FROM mh_link WHERE tenant = $1 AND (subject = $2 OR linked_subject = $2)").bind(tenant).bind(subject).execute(&mut *tx).await?;
         sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1 AND subject = $2").bind(tenant).bind(subject).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM mh_recall WHERE tenant = $1 AND subject = $2").bind(tenant).bind(subject).execute(&mut *tx).await?;
         if purge_cache {
             sqlx::query(
                 "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND subject = $2 RETURNING cache_key) \
@@ -1219,6 +1360,7 @@ impl Store for PgStore {
         Ok(total)
     }
 
+    #[tracing::instrument(name = "db.embed_cache_get", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn embed_cache_get(&self, model: &str, hashes: &[String]) -> anyhow::Result<Vec<(String, Vec<f32>)>> {
         if hashes.is_empty() {
             return Ok(vec![]);
@@ -1227,6 +1369,7 @@ impl Store for PgStore {
         rows.iter().map(|r| Ok((r.try_get("hash")?, r.try_get("embedding")?))).collect()
     }
 
+    #[tracing::instrument(name = "db.embed_cache_put", skip_all, fields(db.system = "postgresql", db.operation = "INSERT"))]
     async fn embed_cache_put(&self, model: &str, items: &[(String, Vec<f32>)]) -> anyhow::Result<()> {
         for chunk in items.chunks(500) {
             let mut qb = sqlx::QueryBuilder::new("INSERT INTO mh_embed_cache (model, hash, embedding) ");
@@ -1239,6 +1382,7 @@ impl Store for PgStore {
         Ok(())
     }
 
+    #[tracing::instrument(name = "db.audit", skip_all, fields(db.system = "postgresql", db.operation = "INSERT"))]
     async fn audit(&self, actor: &str, action: &str, tenant: &str, subject: Option<&str>, memory_id: Option<Uuid>, detail: serde_json::Value) -> anyhow::Result<()> {
         let detail = detail.to_string();
         let at = Utc::now().trunc_subsecs(6);
@@ -1364,6 +1508,37 @@ impl Store for PgStore {
                 .map(|r| Ok(CodeRef { path: r.try_get("path")?, blob_hash: r.try_get("blob_hash")? }))
                 .collect::<anyhow::Result<Vec<_>>>()?;
         Ok((structured, code_refs))
+    }
+
+    #[tracing::instrument(name = "db.recall_put", skip_all, fields(db.system = "postgresql", db.operation = "INSERT"))]
+    async fn recall_put(&self, r: &RecallRecord) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO mh_recall (id, tenant, subject, principal, acting_user, at, body) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING")
+            .bind(r.recall_id)
+            .bind(&r.tenant)
+            .bind(&r.subject)
+            .bind(&r.principal)
+            .bind(&r.user)
+            .bind(r.at)
+            .bind(serde_json::to_value(r)?)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn recall_get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<RecallRecord>> {
+        let body: Option<serde_json::Value> =
+            sqlx::query_scalar("SELECT body FROM mh_recall WHERE tenant = $1 AND id = $2").bind(tenant).bind(id).fetch_optional(&self.pool).await?;
+        Ok(body.map(serde_json::from_value).transpose()?)
+    }
+
+    async fn recalls_delete(&self, tenant: &str, user: Option<&str>, older_than_days: Option<u32>) -> anyhow::Result<u64> {
+        let r = sqlx::query("DELETE FROM mh_recall WHERE tenant = $1 AND ($2::text IS NULL OR acting_user = $2) AND ($3::int IS NULL OR at < now() - make_interval(days => $3))")
+            .bind(tenant)
+            .bind(user)
+            .bind(older_than_days.map(|d| d as i32))
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
     }
 
     async fn set_labels(&self, tenant: &str, id: Uuid, labels: &[String]) -> anyhow::Result<bool> {
@@ -1519,6 +1694,7 @@ impl Store for PgStore {
         // What is left without a record: links, remembered responses, queued jobs.
         sqlx::query("DELETE FROM mh_link WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM mh_recall WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 RETURNING cache_key) DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key")
             .bind(tenant)
             .execute(&self.pool)
@@ -1603,7 +1779,14 @@ impl Store for PgStore {
             .bind(subject)
             .fetch_all(&self.pool)
             .await?;
-        let mut st = EnrichStatus::default();
+        let oldest: Option<f64> = sqlx::query_scalar(
+            "SELECT extract(epoch FROM now() - min(enqueued_at))::float8 FROM mh_enrich_job WHERE tenant = $1 AND ($2::text IS NULL OR subject = $2) AND status IN ('pending', 'running')",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .fetch_one(&self.pool)
+        .await?;
+        let mut st = EnrichStatus { oldest_pending_secs: oldest, ..Default::default() };
         for (s, n) in rows {
             match s.as_str() {
                 "pending" => st.pending = n,
@@ -1710,10 +1893,12 @@ impl Store for PgStore {
         self.export_links(tenant, Some(subject)).await
     }
 
+    #[tracing::instrument(name = "db.request_get", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn request_get(&self, tenant: &str, key: &str) -> anyhow::Result<Option<(String, serde_json::Value)>> {
         Ok(sqlx::query_as("SELECT request_hash, response FROM mh_request_key WHERE tenant = $1 AND key = $2").bind(tenant).bind(key).fetch_optional(&self.pool).await?)
     }
 
+    #[tracing::instrument(name = "db.request_put", skip_all, fields(db.system = "postgresql", db.operation = "INSERT"))]
     async fn request_put(&self, tenant: &str, key: &str, subject: &str, operation: &str, request_hash: &str, response: &serde_json::Value) -> anyhow::Result<()> {
         sqlx::query("INSERT INTO mh_request_key (tenant, key, subject, operation, request_hash, response) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING")
             .bind(tenant)

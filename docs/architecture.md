@@ -34,16 +34,16 @@ Supporting tables:
 - `mh_deletion_ledger`: what was deleted and when, to re-apply after a restore (TR-WF-03).
 - `mh_meta`: schema version, embedding dimension, embedder id. A dimension mismatch is refused at start-up.
 
-## Recall: one statement per probe
+## Recall: one statement for all probes
 
-0. **Query analysis** (`query.rs`, no LLM): time expressions are resolved against `reference_time` (or `as_of`, or now) into generous windows. If there are any, a second probe runs the same query restricted to them, concurrently with the main one.
+0. **Query analysis** (`query.rs`, no LLM): time expressions are resolved against `reference_time` (or `as_of`, or now) into generous windows. If there are any, a second probe runs the same query restricted to them. All probes go to Postgres as one statement (their searches under `UNION ALL`), so a recall is exactly one round trip (PERF-02, checked from the trace by `recall_round_trip`).
 1. **Filter:** tenant, subject, `status = committed`, kinds and tags, denied labels, validity at `as_of` (or now), event time ≤ `as_of`, and for the window probe, event time inside a window.
 2. **Keyword candidates:** BM25 (k1 = 1.2, b = 0.75) computed in SQL from the stored `tsvector`: term frequencies from lexeme positions, document frequencies from the matched rows.
 3. **Vector candidates:** exact cosine distance with pgvector, the better of the round vector and the user-only vector.
 4. **Fusion:** weighted reciprocal rank fusion (`k = 60`) inside each statement, then across probes (window probe: 0.15 for every in-window hit, +1.0 for its top 3). Only the top `k` fused ids are then fetched, each by primary key and still filtered on tenant and subject, so no step of the statement reads another subject's rows.
 5. **Engine side (optional):** cross-encoder reranking of the top candidates blended with the fused rank, a recency bonus, and token-budget packing.
 
-The query embedding and the SQL statement are the whole hot path. On a laptop, p50 recall is a few milliseconds plus query embedding.
+The query embedding and the SQL statement are the whole hot path. On a laptop, p50 recall is a few milliseconds plus query embedding. The recall's explanation record (`mh_recall`) is written off that path, after the response.
 
 ## Write path
 

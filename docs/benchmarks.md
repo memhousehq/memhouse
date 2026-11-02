@@ -143,8 +143,8 @@ with `"analyze": false`.
 
 ### Latency
 
-Recall is one batched query embedding plus one SQL statement per probe (keyword search, vector
-search, fusion, validity and governance filters together); probes run concurrently.
+Recall is one batched query embedding plus one SQL statement: keyword search, vector search,
+fusion, validity and governance filters, for every probe of the query together.
 
 | | p50 | p95 | p99 |
 |---|---|---|---|

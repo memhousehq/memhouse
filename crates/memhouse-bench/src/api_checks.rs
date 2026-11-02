@@ -112,8 +112,9 @@ impl Api {
         let resp = req.send().await?;
         let status = resp.status().as_u16();
         let headers = resp.headers().clone();
+        let text_plain = headers.get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|c| c.starts_with("text/plain"));
         let text = resp.text().await?;
-        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let body: Value = if text_plain { Value::String(text.clone()) } else { serde_json::from_str(&text).unwrap_or(Value::Null) };
         self.calls += 1;
         let m = method.to_lowercase();
         self.covered.insert(format!("{} {template}", method.to_uppercase()));
@@ -281,6 +282,21 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     expect(p.body["items"].as_array().map(|a| a.len()) == Some(1), "list with kinds=commitment".into());
     let p = api.call("GET", "/v1/subjects/{subject}/memories", &format!("/v1/subjects/{subj}/memories?cursor=zz"), None, &[]).await?;
     expect(p.status == 400, format!("list with a forged cursor: {}", p.status));
+
+    // Explanations and metrics (API 1.2).
+    let r = api.post("/v1/recall", json!({"subject": subj, "query": "Acme renewal", "k": 2})).await?;
+    let rid = r.body["recall_id"].as_str().unwrap_or_default().to_string();
+    let x = api.call("GET", "/v1/recalls/{id}/explanation", &format!("/v1/recalls/{rid}/explanation"), None, &[]).await?;
+    let returned: Vec<String> = x.body["recall"]["returned"].as_array().into_iter().flatten().filter_map(|r| r["id"].as_str().map(String::from)).collect();
+    expect(x.status == 200 && returned == hit_ids(&r.body), format!("explanation of {rid}: {} returned {returned:?} vs hits {:?}", x.status, hit_ids(&r.body)));
+    let x = api.call("GET", "/v1/recalls/{id}/explanation", &format!("/v1/recalls/{}/explanation", uuid::Uuid::now_v7()), None, &[]).await?;
+    expect(x.status == 404, format!("explanation of an unknown recall: {}", x.status));
+    let m = api.call("GET", "/metrics", "/metrics", None, &[]).await?;
+    let text = m.body.as_str().unwrap_or_default();
+    expect(
+        m.status == 200 && text.contains("# TYPE memhouse_http_requests_total counter") && text.contains("memhouse_recall_stage_duration_seconds_bucket"),
+        format!("metrics: {} ({} bytes)", m.status, text.len()),
+    );
 
     // Identity, labels and review (API 1.1).
     let w = api.call("GET", "/v1/whoami", "/v1/whoami", None, &[]).await?;

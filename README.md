@@ -115,7 +115,7 @@ agent ──MCP/REST──▶ memhouse (Rust)
                       │ local embedding (ONNX, CPU) with content-addressed cache
                       ▼
                    Postgres + pgvector
-                      one SQL statement per probe:
+                      one SQL statement per recall:
                       BM25 full-text       ┐
                                            ├─ reciprocal rank fusion → (optional cross-encoder rerank)
                       exact vector scan    ┘   → validity / as-of filter → token-budget packing

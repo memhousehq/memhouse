@@ -503,7 +503,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         let mut cfg = (*engine.cfg).clone();
         cfg.enrich.enabled = true;
         cfg.enrich.min_user_chars = 1;
-        let e = Engine { chat: Some(stub.clone()), cfg: Arc::new(cfg), ..engine.clone() };
+        let e = engine.clone().reconfigure(cfg).with_chat(Some(stub.clone()));
         let msgs = vec![
             Message { role: "user".into(), content: format!("We finally adopted a kitten last weekend, we called her {canary}!"), timestamp: None, id: Some("m1".into()) },
             Message { role: "assistant".into(), content: "Congratulations!".into(), timestamp: None, id: Some("m2".into()) },
@@ -604,7 +604,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         let mut cfg = (*engine.cfg).clone();
         cfg.enrich.enabled = true;
         cfg.enrich.min_user_chars = 1;
-        let e = Engine { chat: Some(stub.clone()), cfg: Arc::new(cfg), ..engine.clone() };
+        let e = engine.clone().reconfigure(cfg).with_chat(Some(stub.clone()));
         e.remember(RememberRequest {
             tenant: Some(tenant.clone()),
             subject: Some(subj.clone()),
@@ -982,6 +982,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
 
     // 29–33. Identity and authorization (G06).
     checks.extend(crate::identity_checks::run(engine).await);
+
+    // 34–36. Tracing, metrics and recall explanations (G07).
+    checks.extend(crate::telemetry_checks::run(engine).await);
 
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
