@@ -31,6 +31,19 @@ run() {
 }
 api() { run gh api -H "Accept: application/vnd.github+json" "$@"; }
 
+# Push over the protocol gh is configured for. SSH needs no extra token scope for workflow files;
+# GitHub's host keys come from its API (over HTTPS) when known_hosts doesn't have them yet.
+remote() { printf '%s' "$remote_base$1.git"; }
+remote_base="https://github.com/"
+if [ "$(gh config get git_protocol -h github.com 2>/dev/null || true)" = ssh ]; then
+  remote_base="git@github.com:"
+  if ! ssh-keygen -F github.com >/dev/null 2>&1; then
+    kh="$(mktemp)"
+    gh api meta -q '.ssh_keys[]' | sed 's/^/github.com /' > "$kh"
+    export GIT_SSH_COMMAND="ssh -o UserKnownHostsFile=$kh -o StrictHostKeyChecking=yes"
+  fi
+fi
+
 [ -d "$work/$REPO/.git" ] || { echo "$work/$REPO not found: run prepare.sh first"; exit 1; }
 if [ "$DRY_RUN" = 0 ]; then
   command -v gh >/dev/null || { echo "the GitHub CLI (gh) is not installed: brew install gh"; exit 1; }
@@ -89,7 +102,7 @@ if [ "$STEP" = rehearse ]; then
   echo "== private rehearsal repository $ORG/$r"
   run gh repo create "$ORG/$r" --private --description "Temporary: CI rehearsal before publication"
   api -X PUT "repos/$ORG/$r/actions/permissions/workflow" -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
-  run git -C "$work/$REPO" push "https://github.com/$ORG/$r.git" main
+  run git -C "$work/$REPO" push "$(remote "$ORG/$r")" main
   echo
   echo "Watch the run:   gh run watch --repo $ORG/$r"
   echo "When it passes:  gh repo delete $ORG/$r   (needs: gh auth refresh -s delete_repo)"
@@ -114,7 +127,7 @@ if [ "$DRY_RUN" = 0 ]; then
 fi
 
 echo "== $ORG/$REPO: replace main"
-run git -C "$work/$REPO" push --force-with-lease="main:$old" "https://github.com/$ORG/$REPO.git" main
+run git -C "$work/$REPO" push --force-with-lease="main:$old" "$(remote "$ORG/$REPO")" main
 api -X PATCH "repos/$ORG/$REPO" -f description="Governed long-term memory for AI agents: Rust + Postgres, REST and MCP" \
   -F has_discussions=true
 settings "$REPO"
@@ -130,7 +143,7 @@ rulesets "$REPO" '[{"context": "checks"}, {"context": "end-to-end and governance
 
 echo "== $ORG/$FORMAT_REPO"
 run gh repo create "$ORG/$FORMAT_REPO" --public --description "The MemHouse Memory Format: specification and conformance vectors"
-run git -C "$work/memory-format" push "https://github.com/$ORG/$FORMAT_REPO.git" main
+run git -C "$work/memory-format" push "$(remote "$ORG/$FORMAT_REPO")" main
 settings "$FORMAT_REPO"
 rulesets "$FORMAT_REPO" '[]'
 
