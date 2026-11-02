@@ -8,3 +8,6 @@ bench-results/logs/
 
 .env
 /bench-results/guard/
+
+# Publication settings (G09): founder decisions, kept local
+scripts/publish/publish.env

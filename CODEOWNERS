@@ -1,12 +1,17 @@
-# Owners review changes to their paths. Forge usernames replace the address at publication (G09).
-*                         3368890+aleksei-s-popov@users.noreply.github.com
+# Owners review changes to their paths: the maintainers team of the forge organisation.
+
+*                                        @memhouse/maintainers
 
 # Safety-critical paths need an owner's review even for small changes.
-/crates/memhouse-core/src/gate.rs        3368890+aleksei-s-popov@users.noreply.github.com
-/crates/memhouse-store-postgres/         3368890+aleksei-s-popov@users.noreply.github.com
-/crates/memhouse-bench/src/governance.rs 3368890+aleksei-s-popov@users.noreply.github.com
-/bench/baselines.json                    3368890+aleksei-s-popov@users.noreply.github.com
-/deny.toml                               3368890+aleksei-s-popov@users.noreply.github.com
-/.secret-scan-allow                      3368890+aleksei-s-popov@users.noreply.github.com
-/LICENSE                                 3368890+aleksei-s-popov@users.noreply.github.com
+/crates/memhouse-core/src/gate.rs        @memhouse/maintainers
+/crates/memhouse-core/src/access.rs      @memhouse/maintainers
+/crates/memhouse-core/src/identity.rs    @memhouse/maintainers
+/crates/memhouse-store-postgres/         @memhouse/maintainers
+/crates/memhouse-bench/src/governance.rs @memhouse/maintainers
+/bench/baselines.json                    @memhouse/maintainers
+/deny.toml                               @memhouse/maintainers
+/.secret-scan-allow                      @memhouse/maintainers
+/.github/                                @memhouse/maintainers
+/LICENSE                                 @memhouse/maintainers
+/api/baseline/                           @memhouse/maintainers
 

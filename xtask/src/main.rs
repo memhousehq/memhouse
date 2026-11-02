@@ -7,6 +7,7 @@
 //! `cargo xtask install-hooks` runs the secret scan before every commit, checks the DCO sign-off on
 //! every commit message, and runs the CI before every `git push`.
 
+mod links;
 mod secrets;
 mod spdx;
 
@@ -25,6 +26,8 @@ tasks:
     --skip-guard    skip the benchmark guard (no benchmark database needed)
     --skip-latency  report the guard's timings without failing on them (a machine known to be busy)
   spdx [--fix]    check (or add) SPDX licence identifiers
+  links           check relative links and #anchors in the Markdown docs
+    --external      also list the external links (not fetched)
   secrets         scan for credentials: the working tree (default), --staged changes, or the whole --history
     --repo <path>   scan another repository (e.g. ../other-repo)
   install-hooks   pre-commit secret scan, commit-msg DCO check, pre-push `cargo xtask ci`
@@ -43,6 +46,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("ci") => ci(&root, &args[1..]),
         Some("spdx") => spdx_task(&root, args[1..].iter().any(|a| a == "--fix")),
+        Some("links") => links_task(&root, args[1..].iter().any(|a| a == "--external")),
         Some("secrets") => secrets_task(&root, &args[1..]),
         Some("install-hooks") => install_hooks(&root, &args[1..]),
         _ => {
@@ -102,6 +106,10 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
         let t = Instant::now();
         let ok = spdx_task(root, fix).map_err(|e| eprintln!("{e}")).is_ok();
         record("spdx headers", t, ok)?;
+        eprintln!("\n== links");
+        let t = Instant::now();
+        let ok = links_task(root, false).map_err(|e| eprintln!("{e}")).is_ok();
+        record("links", t, ok)?;
         eprintln!("\n== secret scan");
         let t = Instant::now();
         let ok = report(secrets::scan_tree(root)?, "working tree").is_ok();
@@ -163,6 +171,24 @@ fn which(bin: &str) -> Option<PathBuf> {
 fn files(repo: &Path) -> Result<Vec<String>, String> {
     let out = Command::new("git").args(["ls-files", "-co", "--exclude-standard"]).current_dir(repo).output().map_err(|e| format!("git: {e}"))?;
     Ok(String::from_utf8_lossy(&out.stdout).lines().filter(|f| repo.join(f).is_file()).map(String::from).collect())
+}
+
+fn links_task(root: &Path, external: bool) -> Result<(), String> {
+    let (problems, ext) = links::check(root, &files(root)?);
+    for p in &problems {
+        eprintln!("  {p}");
+    }
+    if external {
+        for e in &ext {
+            println!("{e}");
+        }
+    }
+    if problems.is_empty() {
+        eprintln!("links: ok ({} external not fetched)", ext.len());
+        Ok(())
+    } else {
+        Err(format!("{} broken link(s) in the docs", problems.len()))
+    }
 }
 
 fn spdx_task(root: &Path, fix: bool) -> Result<(), String> {

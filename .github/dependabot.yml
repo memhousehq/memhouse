@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# Weekly dependency updates, grouped so a week is one pull request per ecosystem. Security updates
+# come as soon as an advisory is published (enabled in the repository's settings).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

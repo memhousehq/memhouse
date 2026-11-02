@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security problems:** please don't file them here; report them privately (see SECURITY.md).
+        Never paste API keys, tokens, or real customer or personal data into an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, requests (with ids, not content you can't share), configuration excerpts.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`memhouse --version`, or the commit"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, CPU, Postgres and pgvector versions
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or `memhouse doctor` output
+      render: text

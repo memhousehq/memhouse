@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Issue and pull-request labels; scripts/publish/forge-setup.sh creates them.
+- {name: bug, color: d73a4a, description: Something doesn't work as documented}
+- {name: enhancement, color: a2eeef, description: A new capability or an improvement}
+- {name: documentation, color: 0075ca, description: Docs only}
+- {name: security, color: b60205, description: Security hardening (report vulnerabilities privately, see SECURITY.md)}
+- {name: governance, color: 5319e7, description: Redaction, quarantine, access, deletion, audit}
+- {name: api, color: 1d76db, description: REST, MCP or the OpenAPI contract}
+- {name: memory-format, color: 006b75, description: The Memory Format and its vectors}
+- {name: benchmarks, color: fbca04, description: Retrieval quality, latency, the guard}
+- {name: breaking-change, color: e11d21, description: Needs a new major version (docs/api-stability.md)}
+- {name: good first issue, color: 7057ff, description: Small and well described}
+- {name: help wanted, color: 008672, description: Maintainers would welcome a pull request}
+- {name: needs-design, color: c5def5, description: Agree the direction in the issue before code}
+- {name: dependencies, color: 0366d6, description: Dependency updates}
+- {name: question, color: d876e3, description: Usage question}
+- {name: duplicate, color: cfd3d7, description: Already reported}
+- {name: wontfix, color: ffffff, description: Out of scope}

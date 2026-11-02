@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/memhouse/memhouse/security/advisories/new
+    about: Privately, please. See SECURITY.md.
+  - name: Ask a question
+    url: https://github.com/memhouse/memhouse/discussions
+    about: Usage questions and ideas

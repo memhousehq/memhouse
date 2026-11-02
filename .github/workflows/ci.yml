@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: Apache-2.0
+# T1 on every push to main and every pull request, forks included (roadmap G09, section 3).
+# Fork-safe by construction: `pull_request` (never `pull_request_target`), a read-only token, no
+# secrets, no paid calls, credentials never persisted in the checkout. Paid tiers are in
+# benchmarks.yml behind a reviewer. Actions are pinned to commit SHAs; Dependabot updates them.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-deny
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: checks-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: checks-${{ runner.os }}-
+      - name: DCO sign-off on every commit of the pull request
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          missing=""
+          for c in $(git rev-list "$BASE..$HEAD"); do
+            git log -1 --format=%B "$c" | grep -q '^Signed-off-by: ' || missing="$missing $c"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::commits without a Signed-off-by line:$missing (see CONTRIBUTING.md)"
+            exit 1
+          fi
+      - name: fmt, SPDX headers, links, secret scan, dependency policy, clippy, unit tests, release build
+        run: cargo xtask ci --skip-e2e --skip-guard
+      - name: secret scan of the whole history
+        run: cargo xtask secrets --history
+
+  e2e-guard:
+    name: e2e and benchmark guard (T1)
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MEMHOUSE_HOME: ${{ github.workspace }}/.ci-home
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-${{ runner.os }}-
+      # Public models and datasets, downloaded at run time (docs/benchmarks.md lists their licences).
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .ci-home/models
+            .ci-home/bench-data
+          key: bench-assets-${{ hashFiles('crates/memhouse-bench/src/datasets.rs', 'crates/memhouse-models/src/lib.rs') }}
+      - name: build
+        run: cargo build --release -p memhouse-cli
+      - name: Postgres + pgvector for the guard
+        run: ./target/release/memhouse up
+      - name: end-to-end
+        env:
+          BIN: ./target/release/memhouse
+          SKIP_GOVERNANCE: "1"
+          MEMHOUSE_MODEL_CACHE: ${{ github.workspace }}/.ci-home/models
+        run: MEMHOUSE_HOME="$RUNNER_TEMP/e2e-home" bash scripts/e2e.sh
+      # Latency limits are measured on known hardware; shared runners report them without gating.
+      - name: benchmark guard (governance suite and free retrieval runs)
+        run: ./target/release/memhouse bench guard --tier 1 --skip-latency
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: guard-report
+          path: bench-results/guard/*.md
+          if-no-files-found: ignore

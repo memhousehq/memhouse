@@ -340,3 +340,21 @@ memhouse bench report bench-results/*                                           
 
 Run directories for every number on this page are in `bench-results/` (summary and report;
 per-question `items.jsonl` files are written locally but not committed).
+
+## Datasets and models: where they come from and their licences
+
+Nothing below is committed to this repository. `memhouse bench download` (or the first run)
+fetches each dataset from its source into `$MEMHOUSE_HOME/bench-data`, and the embedding and
+reranking models into `$MEMHOUSE_HOME/models`. The result directories in `bench-results/` hold
+metrics only: no conversation, question or answer text.
+
+| Asset | Source | Licence | Used for |
+|---|---|---|---|
+| LongMemEval (`longmemeval-s`, `-m`, oracle; cleaned release) | [xiaowu0162/longmemeval-cleaned](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) on Hugging Face; paper and code at [xiaowu0162/LongMemEval](https://github.com/xiaowu0162/LongMemEval) | MIT | retrieval and QA benchmarks, the T1 guard |
+| LoCoMo (`locomo10.json`) | [snap-research/locomo](https://github.com/snap-research/locomo) | CC BY-NC 4.0 (non-commercial) | retrieval and QA benchmarks, the T1 guard |
+| bge-small-en-v1.5 (default embedding model) | [BAAI/bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5), ONNX builds via fastembed | MIT | embeddings |
+| jina-reranker-v1-turbo-en (optional reranker) | [jinaai/jina-reranker-v1-turbo-en](https://huggingface.co/jinaai/jina-reranker-v1-turbo-en), downloaded by fastembed on first use of `--rerank` | Apache-2.0 | reranking ablations |
+
+LoCoMo's licence allows non-commercial use only. Download it yourself and make sure your use
+complies; MemHouse never redistributes it. Its role in the project's own benchmarking is reviewed
+with counsel before publication (roadmap G09).

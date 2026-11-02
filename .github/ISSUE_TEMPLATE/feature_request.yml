@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Feature request
+description: A new capability or an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: Changes to the API, the Memory Format or the policy model start as a short design note here (see CONTRIBUTING.md).
+  - type: input
+    id: roadmap
+    attributes:
+      label: Related roadmap goal or requirement
+      description: e.g. G11, MEM-04 (docs/roadmap.md)
