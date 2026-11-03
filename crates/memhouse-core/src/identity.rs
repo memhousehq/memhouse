@@ -17,7 +17,7 @@ use crate::error;
 use crate::traits::Store;
 use crate::types::MemoryKind;
 use chrono::{DateTime, Utc};
-use rand::Rng;
+use rand::RngExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -162,8 +162,8 @@ pub struct ApiKey {
 const KEY_CHARS: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 fn random(n: usize) -> String {
-    let mut r = rand::thread_rng();
-    (0..n).map(|_| KEY_CHARS[r.gen_range(0..KEY_CHARS.len())] as char).collect()
+    let mut r = rand::rng();
+    (0..n).map(|_| KEY_CHARS[r.random_range(0..KEY_CHARS.len())] as char).collect()
 }
 
 fn sha256_hex(b: &[u8]) -> String {
@@ -493,8 +493,8 @@ impl Authenticator {
 
 /// A fresh random signing secret.
 pub fn new_signing_secret() -> (String, Vec<u8>) {
-    let mut r = rand::thread_rng();
-    (random(8), (0..32).map(|_| r.gen::<u8>()).collect())
+    let mut r = rand::rng();
+    (random(8), (0..32).map(|_| r.random::<u8>()).collect())
 }
 
 #[cfg(test)]
