@@ -12,6 +12,14 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use uuid::Uuid;
 
+/// A statement `format!`ted from this file's constants, numbers and fixed column names only;
+/// values from callers are always bound, never formatted in (what sqlx's `AssertSqlSafe` asserts).
+macro_rules! trusted_sql {
+    ($($t:tt)*) => {
+        sqlx::AssertSqlSafe(format!($($t)*))
+    };
+}
+
 /// The logical schema version this build migrates to (see `docs/schema.md`).
 pub const SCHEMA_VERSION: u32 = memhouse_core::format::SCHEMA_VERSION;
 
@@ -302,7 +310,7 @@ impl PgStore {
         self.ensure_current().await?;
         let p = Probe::of(q);
         let sql = search_sql();
-        let rows = search_query(&sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
+        let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
 }
@@ -575,14 +583,14 @@ fn renumber(sql: &str, by: usize) -> String {
 
 /// Bind a `SearchQuery` to `sql` (the recall statement, or an EXPLAIN of it).
 fn search_query<'a>(
-    sql: &'a str,
+    sql: String,
     q: &'a SearchQuery,
     tsq: &'a str,
     kinds: Option<Vec<String>>,
     use_kw: bool,
     use_vec: bool,
 ) -> sqlx::query::Query<'a, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    bind_search(sqlx::query(sql), q, tsq, kinds, use_kw, use_vec)
+    bind_search(sqlx::query(sqlx::AssertSqlSafe(sql)), q, tsq, kinds, use_kw, use_vec)
 }
 
 /// The probe-dependent values of a `SearchQuery`.
@@ -957,7 +965,7 @@ impl Store for PgStore {
         if let Some(v) = stored_version.filter(|v| *v > SCHEMA_VERSION) {
             anyhow::bail!("this database has schema version {v}, newer than this build ({SCHEMA_VERSION}); upgrade MemHouse");
         }
-        sqlx::raw_sql(&schema_v1_ddl(dim)).execute(&self.pool).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(schema_v1_ddl(dim))).execute(&self.pool).await?;
         check_pgvector(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V2_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V3_DDL).execute(&self.pool).await?;
@@ -1047,7 +1055,7 @@ impl Store for PgStore {
         self.ensure_current().await?;
         let probes: Vec<Probe> = qs.iter().map(Probe::of).collect();
         let sql = multi_search_sql(qs.len());
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for (q, p) in qs.iter().zip(&probes) {
             query = bind_search(query, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec);
         }
@@ -1067,7 +1075,7 @@ impl Store for PgStore {
     async fn search_unfiltered(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         let p = Probe::of(q);
         let sql = search_sql_with(false);
-        let rows = search_query(&sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
+        let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
 
@@ -1079,20 +1087,20 @@ impl Store for PgStore {
         let tsq = if use_kw { or_query(&q.text) } else { String::new() };
         let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
         let sql = format!("EXPLAIN (FORMAT JSON) {}", search_sql());
-        let row = search_query(&sql, q, &tsq, kinds, use_kw, use_vec).fetch_one(&self.pool).await?;
+        let row = search_query(sql, q, &tsq, kinds, use_kw, use_vec).fetch_one(&self.pool).await?;
         Ok(Some(row.try_get::<serde_json::Value, _>(0)?))
     }
 
     #[tracing::instrument(name = "db.get", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>> {
-        let row = sqlx::query(&format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = $2")).bind(tenant).bind(id).fetch_optional(&self.pool).await?;
+        let row = sqlx::query(trusted_sql!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = $2")).bind(tenant).bind(id).fetch_optional(&self.pool).await?;
         row.map(|r| row_to_memory(&r)).transpose()
     }
 
     #[tracing::instrument(name = "db.list", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn list(&self, q: &ListQuery) -> anyhow::Result<Vec<Memory>> {
         let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(trusted_sql!(
             "SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND ($2::text IS NULL OR m.subject = $2) \
              AND ($3::text[] IS NULL OR m.kind = ANY($3)) AND ($4 OR m.status = 'committed') \
              AND ($7::timestamptz IS NULL OR (m.created_at, m.id) < ($7, $8)) \
@@ -1657,7 +1665,7 @@ impl Store for PgStore {
 
     async fn forget_matches(&self, tenant: &str, scope: ForgetScope, value: &str, limit: usize) -> anyhow::Result<Vec<Uuid>> {
         let cond = forget_condition(scope)?;
-        Ok(sqlx::query_scalar(&format!("SELECT id FROM mh_memory WHERE tenant = $1 AND {cond} ORDER BY id LIMIT $3"))
+        Ok(sqlx::query_scalar(trusted_sql!("SELECT id FROM mh_memory WHERE tenant = $1 AND {cond} ORDER BY id LIMIT $3"))
             .bind(tenant)
             .bind(value)
             .bind(limit as i64)
@@ -1671,7 +1679,7 @@ impl Store for PgStore {
             ForgetScope::Subject => "subject = $2",
             s => forget_condition(s)?,
         };
-        let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM mh_memory WHERE tenant = $1 AND ($2::text IS NOT NULL) AND {cond}"))
+        let n: i64 = sqlx::query_scalar(trusted_sql!("SELECT count(*) FROM mh_memory WHERE tenant = $1 AND ($2::text IS NOT NULL) AND {cond}"))
             .bind(tenant)
             .bind(value)
             .fetch_one(&self.pool)
@@ -1704,7 +1712,7 @@ impl Store for PgStore {
     }
 
     async fn get_many(&self, tenant: &str, ids: &[Uuid]) -> anyhow::Result<Vec<Memory>> {
-        let rows = sqlx::query(&format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = ANY($2)")).bind(tenant).bind(ids).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(trusted_sql!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.id = ANY($2)")).bind(tenant).bind(ids).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_memory).collect()
     }
 
@@ -1822,7 +1830,7 @@ impl Store for PgStore {
     }
 
     async fn export_records(&self, tenant: &str, subject: Option<&str>, after: Option<Uuid>, limit: usize) -> anyhow::Result<Vec<RecordLine>> {
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(trusted_sql!(
             "SELECT {COLS}, m.content_hash, m.superseded_by, m.updated_at, m.alt_hash, s.record_type, s.attrs, \
                coalesce((SELECT jsonb_agg(jsonb_build_object('path', c.path, 'blob_hash', c.blob_hash) ORDER BY c.path) \
                          FROM mh_code_ref c WHERE c.memory_id = m.id), '[]'::jsonb) AS code_refs \
@@ -1976,9 +1984,9 @@ impl Store for PgStore {
         }
         let mut tx = self.pool.begin().await?;
         // Leftovers of a run that crashed before recording its target.
-        sqlx::query(&drop_next_columns()).execute(&mut *tx).await?;
+        sqlx::query(sqlx::AssertSqlSafe(drop_next_columns())).execute(&mut *tx).await?;
         let dim = target.dim;
-        sqlx::query(&format!(
+        sqlx::query(trusted_sql!(
             "ALTER TABLE mh_memory ADD COLUMN embedding_next vector({dim}), ADD COLUMN embedding_alt_next vector({dim}), \
              ADD COLUMN alt_hash_next text, ADD COLUMN embedder_next text, ADD COLUMN embedder_config_next text"
         ))
@@ -2043,9 +2051,9 @@ impl Store for PgStore {
         }
         let old: Option<String> = sqlx::query_scalar("SELECT value FROM mh_meta WHERE key = 'embedder'").fetch_optional(&mut *tx).await?;
         let drops: Vec<String> = NEXT_COLS.iter().map(|(_, cur)| format!("DROP COLUMN {cur}")).collect();
-        sqlx::query(&format!("ALTER TABLE mh_memory {}", drops.join(", "))).execute(&mut *tx).await?;
+        sqlx::query(trusted_sql!("ALTER TABLE mh_memory {}", drops.join(", "))).execute(&mut *tx).await?;
         for (next, cur) in NEXT_COLS {
-            sqlx::query(&format!("ALTER TABLE mh_memory RENAME COLUMN {next} TO {cur}")).execute(&mut *tx).await?;
+            sqlx::query(trusted_sql!("ALTER TABLE mh_memory RENAME COLUMN {next} TO {cur}")).execute(&mut *tx).await?;
         }
         for (k, v) in [("embedder", target.embedder.clone()), ("embedding_dim", target.dim.to_string()), ("passage_prefix", target.passage_prefix.clone())] {
             sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").bind(k).bind(v).execute(&mut *tx).await?;
@@ -2062,7 +2070,7 @@ impl Store for PgStore {
 
     async fn reembed_abort(&self) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query(&drop_next_columns()).execute(&mut *tx).await?;
+        sqlx::query(sqlx::AssertSqlSafe(drop_next_columns())).execute(&mut *tx).await?;
         let removed = sqlx::query("DELETE FROM mh_meta WHERE key LIKE 'reembed_target_%'").execute(&mut *tx).await?.rows_affected();
         tx.commit().await?;
         Ok(removed > 0)
