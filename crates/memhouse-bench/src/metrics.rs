@@ -3,7 +3,7 @@
 //! intervals and latency percentiles.
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -46,7 +46,7 @@ pub fn bootstrap(values: &[f64], resamples: usize) -> Estimate {
         return Estimate { mean, lo: mean, hi: mean, n };
     }
     let mut rng = StdRng::seed_from_u64(0x6d656d686f757365);
-    let mut means: Vec<f64> = (0..resamples).map(|_| (0..n).map(|_| values[rng.gen_range(0..n)]).sum::<f64>() / n as f64).collect();
+    let mut means: Vec<f64> = (0..resamples).map(|_| (0..n).map(|_| values[rng.random_range(0..n)]).sum::<f64>() / n as f64).collect();
     means.sort_by(|a, b| a.total_cmp(b));
     let lo = means[(resamples as f64 * 0.025) as usize];
     let hi = means[((resamples as f64 * 0.975) as usize).min(resamples - 1)];
