@@ -170,9 +170,12 @@ fn slug(s: &str) -> String {
 async fn bench_database(base_url: &str, model: &str) -> anyhow::Result<String> {
     let db = format!("memhouse_bench_{}", slug(model)).chars().take(60).collect::<String>();
     let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(base_url).await?;
-    let exists: bool = sqlx::query_scalar(&format!("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '{db}')")).fetch_one(&pool).await?;
+    let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '{db}')"))).fetch_one(&pool).await?;
     if !exists {
-        sqlx::raw_sql(&format!("CREATE DATABASE \"{db}\"")).execute(&pool).await.with_context(|| format!("creating benchmark database {db} (or pass --database-url)"))?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{db}\"")))
+            .execute(&pool)
+            .await
+            .with_context(|| format!("creating benchmark database {db} (or pass --database-url)"))?;
     }
     let (head, _) = base_url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;
     let tail = base_url.rsplit_once('/').map(|(_, t)| t).unwrap_or("");

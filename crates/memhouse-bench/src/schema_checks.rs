@@ -308,7 +308,7 @@ async fn upgrade_in(base: &Engine, url1: &str, url2: &str) -> Outcome {
     let mut problems = vec![];
     let (id, dim) = ("stub:a", 16);
     let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(url1).await?;
-    sqlx::raw_sql(&memhouse_store_postgres::schema_v1_ddl(dim)).execute(&pool).await?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(memhouse_store_postgres::schema_v1_ddl(dim))).execute(&pool).await?;
     for (k, v) in [("schema_version", "1".to_string()), ("embedding_dim", dim.to_string()), ("embedder", id.to_string())] {
         sqlx::query("INSERT INTO mh_meta (key, value) VALUES ($1, $2)").bind(k).bind(v).execute(&pool).await?;
     }

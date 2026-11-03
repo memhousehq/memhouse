@@ -1115,15 +1115,15 @@ impl Scratch {
     pub(crate) async fn create(engine: &Engine, suffix: &str) -> anyhow::Result<Scratch> {
         let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&engine.cfg.database.url).await?;
         let db: String = sqlx::query_scalar("SELECT current_database() || '_' || $1").bind(suffix).fetch_one(&admin).await?;
-        sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)")).execute(&admin).await?;
-        sqlx::raw_sql(&format!("CREATE DATABASE \"{db}\"")).execute(&admin).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"))).execute(&admin).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{db}\""))).execute(&admin).await?;
         let (head, tail) = engine.cfg.database.url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;
         let query = tail.split_once('?').map(|(_, q)| format!("?{q}")).unwrap_or_default();
         Ok(Scratch { url: format!("{head}/{db}{query}"), admin, db })
     }
 
     pub(crate) async fn drop(self) -> anyhow::Result<()> {
-        sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.db)).execute(&self.admin).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.db))).execute(&self.admin).await?;
         Ok(())
     }
 }
