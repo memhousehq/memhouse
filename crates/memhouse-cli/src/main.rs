@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `memhouse`: one binary to run, connect, operate and benchmark MemHouse.
 
+// Replaces `std::println!` for this crate (defined before the modules so they use it too). The std
+// macro panics when stdout is a closed pipe, as in `memhouse recall ... | head` or `| grep -q`; a
+// command-line tool should stop quietly there instead.
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        if let Err(e) = writeln!(std::io::stdout(), $($arg)*) {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            }
+            panic!("failed printing to stdout: {e}");
+        }
+    }};
+}
+
 mod connect;
 mod principals;
 mod up;
