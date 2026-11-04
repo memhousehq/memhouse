@@ -22,7 +22,7 @@ That's the whole setup. There are no API keys to obtain and no cloud account. Em
 |---|---|
 | **Easy** | One binary. `memhouse up` starts a managed Postgres in Docker, writes `~/.memhouse/config.toml`, downloads a small local embedding model and migrates the schema (about 15 seconds on a laptop). `memhouse connect <agent>` writes the agent's MCP config and verifies a real recall through it. |
 | **Governed** | Every write passes a deterministic write gate: secrets, card numbers, SSNs and IBANs are redacted before storage. Prompt-injection attempts are quarantined, never recalled. Writes, updates and deletions go into a hash-chained, tamper-evident audit log. Deletion removes the record, its cached embedding and every recall path, and is recorded in a deletion ledger. |
-| **Measurable** | `memhouse bench` runs LongMemEval and LoCoMo through the same engine your agents use, plus 18 governance checks. It reports confidence intervals, latency percentiles and published reference results side by side. |
+| **Measurable** | `memhouse bench` runs LongMemEval and LoCoMo through the same engine your agents use, plus 37 governance checks. It reports confidence intervals, latency percentiles and published reference results side by side. |
 | **Yours** | Plain Postgres (16+) with pgvector. Point it at your own database with `memhouse init --database-url ...`. Export everything as JSONL at any time. |
 | **Made for customer-facing teams** | Templates for `support`, `sales` and `success` (plus `coding` and `personal`) set how subjects are named, what gets remembered and how the agent is instructed. |
 

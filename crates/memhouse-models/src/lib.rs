@@ -332,8 +332,7 @@ impl OpenAiEmbedder {
                     if status.is_success() {
                         return Ok(resp.json().await?);
                     }
-                    let text = resp.text().await.unwrap_or_default();
-                    let err = anyhow::anyhow!("embedding endpoint returned {status}: {}", text.chars().take(500).collect::<String>());
+                    let err = provider_error("embedding endpoint", status, &resp.text().await.unwrap_or_default());
                     if status.as_u16() != 429 && !status.is_server_error() {
                         return Err(err);
                     }
@@ -370,7 +369,7 @@ impl Embedder for OpenAiEmbedder {
             let body = self.call(&body).await?;
             let mut data: Vec<(usize, Vec<f32>)> = body["data"]
                 .as_array()
-                .ok_or_else(|| anyhow::anyhow!("embedding response has no data: {body}"))?
+                .ok_or_else(|| anyhow::anyhow!("embedding response has no `data` array"))?
                 .iter()
                 .enumerate()
                 .map(|(i, d)| {
@@ -510,10 +509,10 @@ impl Llm {
         }
         let resp = req.send().await.with_context(|| format!("calling {url}"))?;
         let status = resp.status();
-        let v: serde_json::Value = resp.json().await?;
         if !status.is_success() {
-            anyhow::bail!("{url} returned {status}: {v}");
+            return Err(provider_error(&url, status, &resp.text().await.unwrap_or_default()));
         }
+        let v: serde_json::Value = resp.json().await?;
         let text = if self.cfg.provider == "anthropic" {
             v["content"].as_array().map(|a| a.iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("")).unwrap_or_default()
         } else {
@@ -589,6 +588,28 @@ mod tests {
             assert_eq!(old, new);
         }
         let _ = std::fs::remove_dir_all(fresh);
+    }
+}
+
+/// A provider's error response, reduced to its status and its machine-readable `type` and `code`.
+/// The free-text message is left out: providers quote the request in it (memory content, a query)
+/// or part of the API key, and errors reach the logs (threat model T13).
+fn provider_error(what: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let e = if v["error"].is_object() { &v["error"] } else { &v };
+    let tags: Vec<String> = ["type", "code"]
+        .iter()
+        .filter_map(|k| match &e[k] {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
+        .filter(|s| !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c)))
+        .collect();
+    if tags.is_empty() {
+        anyhow::anyhow!("{what} returned {status}")
+    } else {
+        anyhow::anyhow!("{what} returned {status} ({})", tags.join(", "))
     }
 }
 
@@ -685,6 +706,23 @@ mod api_tests {
         c.batch_size = 8;
         let err = OpenAiEmbedder::new(&c).unwrap().embed(&texts(2), EmbedKind::Query).await.unwrap_err();
         assert!(err.to_string().contains("1 vectors for 2 texts"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn provider_errors_keep_the_status_and_code_not_the_message() {
+        // OpenAI-style errors quote the input and part of the key in `message`.
+        let echo = json!({"error": {"message": "Invalid input 'secret memory text' for key sk-abc...xyz", "type": "invalid_request_error", "code": "context_length_exceeded"}})
+            .to_string();
+        let (url, _) = scripted(vec![(400, echo)]).await;
+        let err = format!("{:#}", OpenAiEmbedder::new(&cfg(&url, 2)).unwrap().embed(&texts(1), EmbedKind::Query).await.unwrap_err());
+        assert!(err.contains("400") && err.contains("invalid_request_error, context_length_exceeded"), "{err}");
+        assert!(!err.contains("secret memory text") && !err.contains("sk-abc"), "{err}");
+        // Anthropic's shape, a plain-text body, and a code that is itself free text.
+        let s = reqwest::StatusCode::BAD_REQUEST;
+        let anthropic = json!({"type": "error", "error": {"type": "invalid_request_error", "message": "prompt: secret"}}).to_string();
+        assert_eq!(provider_error("x", s, &anthropic).to_string(), "x returned 400 Bad Request (invalid_request_error)");
+        assert_eq!(provider_error("x", s, "upstream said: secret").to_string(), "x returned 400 Bad Request");
+        assert_eq!(provider_error("x", s, r#"{"error": {"code": "bad input: secret"}}"#).to_string(), "x returned 400 Bad Request");
     }
 
     #[test]

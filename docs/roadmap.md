@@ -38,7 +38,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 18 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 37 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - docs: API, configuration, operations, governance, development, architecture, benchmarks.
@@ -515,7 +515,7 @@ plain IDs are partly addressed and finished in a later goal, which is named.
   - [x] `tracing-opentelemetry` with an OTLP exporter (off by default); `/metrics`
   - [x] `recall_id` in every response; `GET /v1/recalls/{id}/explanation`
   - [x] explanations retained according to policy (a default in G08)
-  - [ ] a test that logs and traces carry identifiers and timings, never memory content or query text (threat model T13)
+  - [x] a test that logs and traces carry identifiers and timings, never memory content or query text (threat model T13)
 - **Done when:** a recall's explanation lists the records excluded by label and by budget with correct reasons (governance check); overhead with tracing off is < 2% of p50.
 - **Result (2026-11-02):** done; API 1.2.0, schema version 4.
   - **Traces:** spans for every operation (`memhouse.remember`, `.revise`, `.ingest`, `.forget`,
@@ -540,9 +540,16 @@ plain IDs are partly addressed and finished in a later goal, which is named.
     `recall_round_trip` (one `db.search` per recall with and without a window probe, complete
     operation spans, no content in any span field) and `telemetry_overhead` (0.07%: 0.002 ms of
     a 2.6 ms p50).
+  - **T13 (2026-11-04):** governance check `telemetry_no_content` (37 in all). It captures every
+    span and log event, at every level and from every crate, while the API serves writes,
+    recalls, an explanation, MCP, a refused and an invalid write, and while the embedder and the
+    LLM fail with errors that quote the request; no word sent may appear. It found that provider
+    errors carried the provider's message, which can quote the input (and part of an API key),
+    into the retry warnings and the internal-error log line: they now keep only the status and
+    the provider's `type` and `code`.
 - **Guard:** T1. **Depends on:** G06.
 
-#### G09 — Open-source publication
+#### G09 — Open-source publication ✅
 
 > `/goal Prepare and, after the founder signs off, publish the product monorepo: confirm every prerequisite in the G09 checklist, rewrite the history so no private planning document and no private author address remains, scan the whole rewritten history for secrets, split memory-format into its own repository, set up hosted CI with fork-safe workflows, protected branches and required checks, turn on push protection and dependency updates, and push to the chosen forge.`
 
@@ -576,12 +583,22 @@ plain IDs are partly addressed and finished in a later goal, which is named.
   | Claude Code | [x] history rewritten (`scripts/publish/prepare.sh`, `git filter-repo`): private paths and the roadmap's earlier drafts removed from every commit (the roadmap returns in its public form in the last commit), authors normalised, private addresses and names replaced; a fresh clone passes CI |
   | Claude Code | [x] secret scan over the full rewritten history is clean; dependency licence report reviewed; no licence exception ships: `dirs` (and MPL-2.0 `option-ext`) replaced, TLS uses the OS certificate store and models are fetched without `hf-hub`, so `webpki-roots` (CDLA-Permissive-2.0) is only in the ONNX Runtime download at build time, held there by `deny.toml` bans |
   | Claude Code | [x] no restricted data committed: datasets are downloaded at run time and their licences are listed in `docs/benchmarks.md` |
-  | Claude Code | [x] link check in `cargo xtask ci`; [ ] README and quickstart on a clean machine (the first hosted CI run, in a private rehearsal repository before the public push) |
+  | Claude Code | [x] link check in `cargo xtask ci`; [x] README and quickstart on a clean machine (the first hosted CI run, in a private rehearsal repository before the public push) |
   | Claude Code | [x] `GOVERNANCE.md`, `SECURITY.md`, issue and pull-request templates, labels |
-  | Claude Code | [ ] hosted CI on GitHub: checks, end-to-end and governance suite on every pull request, forks included, with no secrets; `main` takes pull requests only, with required checks, linear history and no force pushes; release tags protected; secret scanning, push protection and Dependabot on (workflow and `scripts/publish/forge-setup.sh` written; applied when publishing) |
+  | Claude Code | [x] hosted CI on GitHub: checks, end-to-end and governance suite on every pull request, forks included, with no secrets; `main` takes pull requests only, with required checks, linear history and no force pushes; release tags protected; secret scanning, push protection and Dependabot on (workflow and `scripts/publish/forge-setup.sh` written; applied when publishing) |
   | Claude Code | [x] `memory-format` repository built with its history (pushed when publishing) |
 - **Done when:** the first public push to `memhousehq/memhouse` and `memhousehq/memory-format` is
   made, and a fresh public clone passes `cargo xtask ci`.
+- **Result (2026-11-03):** done. Both repositories were created private, passed hosted CI (after
+  a private rehearsal repository), and were made public; then secret scanning with push
+  protection, Dependabot alerts and security updates, private vulnerability reporting, approval
+  for first-time fork contributors, and the rulesets were turned on (the free plan allows them
+  only on public repositories). An anonymous clone of the public repository passed the full
+  `cargo xtask ci`, all 36 governance checks included.
+  - `main` has been force-pushed once, on 2026-11-04, with its ruleset paused for that push: the
+    squash merge of the first pull request had taken the author's account address instead of the
+    no-reply one, and the commit was rebuilt with the same tree. Merges now set the author
+    address explicitly.
 - **Guard:** T1. **Depends on:** G07. **Milestone:** open repository public.
 
 ### Stage C — Engine completeness on Postgres
