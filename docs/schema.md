@@ -5,10 +5,10 @@ This is the data model every MemHouse store holds, independent of how a store la
 (TR-CORE-04). The Postgres store maps it to the tables at the end; the Lite store (G16) will map
 the same model to SQLite. Exports carry exactly this model ([Memory Format v2](memory-format.md)).
 
-Schema version **4** (`mh_meta.schema_version`). Version 1 to 3 databases upgrade in place on
+Schema version **5** (`mh_meta.schema_version`). Version 1 to 4 databases upgrade in place on
 start-up; see [Upgrading from v1](#upgrading-from-v1). Version 3 added the identity tables
-(principals, API keys, token signing keys) and version 4 the recall explanations; neither is
-memory, so neither is exported.
+(principals, API keys, token signing keys), version 4 the recall explanations and version 5 the
+policy specs and their activations; none of them is memory, so none is exported.
 
 ## Entities
 
@@ -122,10 +122,15 @@ deletes the link; erasing either subject deletes it.
 
 ## Policy
 
-`{version, body, created_at}`. `version` is `gov-` and a hash of the body, so equal settings give
-equal versions everywhere. The body holds the governance settings now, and the access-decision
-values (D-01 to D-07) from G08. Each record's `provenance.policy_version` names the policy that
-admitted it; records from before v2 carry `legacy-v1`.
+`{version, body, created_at}`: a compiled policy ([policy.md](policy.md)). `version` ends in a hash
+of the body, so equal policies get equal versions everywhere: `gov-<hash>` for the default policy
+(the configuration), `policy-v<n>-<hash>` for approved spec version n. The body holds every
+setting the policy decides (memory types, write gate, retention, redaction, recall, ranking) and,
+from G28, the access-decision values (D-01 to D-07). Each record's `provenance.policy_version`
+names the policy that admitted it; records from before v2 carry `legacy-v1`.
+
+The specs a compiled policy comes from, their approval and their activations are kept per tenant
+(v5) and are not exported: a spec is configuration, not memory.
 
 ## Request key
 
@@ -147,6 +152,7 @@ key arrives with the intake queue (G10).
 | Store metadata | `mh_meta`: `schema_version`, `embedder`, `embedding_dim`, `passage_prefix`, re-embedding state |
 | Not exported | `mh_embed_cache`, `mh_llm_cache`, `mh_enrich_job`, `mh_audit`, `mh_deletion_ledger` |
 | Recall explanations (v4, not exported) | `mh_recall` (id, tenant, subject, principal, acting user, time, the recall record as JSON); erased with the subject, tenant or user, purged after `explanation_retention_days` |
+| Policy specs (v5, not exported) | `mh_policy_spec` (tenant, version, spec as JSON, status `proposed` or `approved`, proposer, approver), `mh_policy_activation` (which version, or the default, runs from when, by whom; a trigger refuses a version that is not approved) |
 | Identity (v3, not exported) | `mh_principal` (kind, tenant, subjects, kinds, denied labels, org, team, `can_commit`, `act_as`), `mh_api_key` (sha256 of the secret, permissions, expiry, revocation), `mh_signing_key` (token signing secrets) |
 
 ## Changing the schema

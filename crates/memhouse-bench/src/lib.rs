@@ -10,6 +10,7 @@ pub mod governance;
 pub mod guard;
 mod identity_checks;
 pub mod metrics;
+mod policy_checks;
 pub mod report;
 pub mod runner;
 mod schema_checks;

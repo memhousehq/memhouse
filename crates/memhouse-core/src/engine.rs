@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::error;
 use crate::gate;
 use crate::metrics;
+use crate::policy::CompiledPolicy;
 use crate::query;
 use crate::traits::{ChatModel, EmbedKind, Embedder, Reranker, Store};
 use crate::types::*;
@@ -29,8 +30,10 @@ pub struct Engine {
     /// LLM for background enrichment (only workers use it; ingest just queues jobs).
     pub chat: Option<Arc<dyn ChatModel>>,
     pub cfg: Arc<Config>,
-    /// Version of the compiled policy every write records (provenance; see `policy`).
-    pub policy_version: String,
+    /// The compiled policy of each tenant (G08): read through `policy_for`.
+    pub policies: Arc<crate::policy::PolicyCache>,
+    /// Where policy specs and their activations live (the `PolicySource` seam).
+    pub policy_source: Arc<dyn crate::policy::PolicySource>,
     /// Record an explanation for every recall (GOV-04). Off only to measure what it costs.
     pub explain_recalls: bool,
     /// The latest recall records, so an explanation can be read before its row is written.
@@ -47,17 +50,6 @@ pub(crate) struct RecallContext {
 
 pub fn content_hash(text: &str) -> String {
     hex::encode(Sha256::digest(text.as_bytes()))
-}
-
-/// The policy as compiled from configuration: today the governance settings. Access-decision
-/// values (D-01…D-07) join it in G08.
-pub fn policy_body(cfg: &Config) -> serde_json::Value {
-    serde_json::json!({ "governance": cfg.governance, "decisions": {} })
-}
-
-/// `gov-` and a hash of the policy body: equal settings give equal versions on every node.
-pub fn policy_version(cfg: &Config) -> String {
-    format!("gov-{}", &content_hash(&policy_body(cfg).to_string())[..12])
 }
 
 /// Hash of a request without its key and caller, for idempotency checks.
@@ -135,23 +127,18 @@ fn truncate_chars(s: &str, n: usize) -> &str {
 
 impl Engine {
     pub fn new(store: Arc<dyn Store>, embedder: Arc<dyn Embedder>, reranker: Option<Arc<dyn Reranker>>, cfg: Config) -> Engine {
-        let policy_version = policy_version(&cfg);
         let authorizer = Arc::new(crate::access::ScopeAuthorizer::new(&cfg));
         let cfg = Arc::new(cfg);
         let auth = Arc::new(crate::identity::Authenticator::new(store.clone(), cfg.clone()));
-        Engine { store, auth, authorizer, embedder, reranker, chat: None, cfg, policy_version, explain_recalls: true, recent: Default::default() }
+        let policy_source = Arc::new(crate::policy::StorePolicies(store.clone()));
+        Engine { store, auth, authorizer, embedder, reranker, chat: None, cfg, policies: Default::default(), policy_source, explain_recalls: true, recent: Default::default() }
     }
 
-    /// The compiled policy this engine writes under, as stored in `mh_policy`.
-    pub fn policy(&self) -> crate::format::PolicyLine {
-        crate::format::PolicyLine { version: self.policy_version.clone(), body: policy_body(&self.cfg), created_at: Utc::now() }
-    }
-
-    fn provenance(&self, actor: &str, user: &Option<String>, request_key: &Option<String>) -> Provenance {
+    fn provenance(policy: &CompiledPolicy, actor: &str, user: &Option<String>, request_key: &Option<String>) -> Provenance {
         Provenance {
             agent: Some(actor.to_string()),
             user: user.clone(),
-            policy_version: Some(self.policy_version.clone()),
+            policy_version: Some(policy.version.clone()),
             request_key: request_key.clone(),
             extractor: None,
             extractor_config: None,
@@ -213,21 +200,22 @@ impl Engine {
 
     /// The span of a write: who, which subject, under which policy; the record ids and outcome
     /// are recorded on it as they become known (QUAL-07).
-    fn write_span(&self, name: &'static str, actor: &Option<String>, subject: &Option<String>) -> tracing::Span {
+    fn write_span(name: &'static str, policy: &CompiledPolicy, actor: &Option<String>, subject: &Option<String>) -> tracing::Span {
         let principal = actor.clone().unwrap_or_else(|| "api".into());
         let subject = subject.clone().unwrap_or_default();
+        let version = &policy.version;
         match name {
             "memhouse.remember" => {
-                tracing::info_span!("memhouse.remember", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %self.policy_version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
+                tracing::info_span!("memhouse.remember", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
             }
             "memhouse.revise" => {
-                tracing::info_span!("memhouse.revise", memhouse.principal = %principal, memhouse.policy_version = %self.policy_version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
+                tracing::info_span!("memhouse.revise", memhouse.principal = %principal, memhouse.policy_version = %version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
             }
             "memhouse.ingest" => {
-                tracing::info_span!("memhouse.ingest", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %self.policy_version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
+                tracing::info_span!("memhouse.ingest", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
             }
             _ => {
-                tracing::info_span!("memhouse.forget", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %self.policy_version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
+                tracing::info_span!("memhouse.forget", memhouse.principal = %principal, memhouse.subject = %subject, memhouse.policy_version = %version, memhouse.record_ids = tracing::field::Empty, memhouse.status = tracing::field::Empty, otel.status_code = tracing::field::Empty)
             }
         }
     }
@@ -335,20 +323,21 @@ impl Engine {
         Ok(v)
     }
 
-    pub(crate) fn screen(&self, content: &str) -> anyhow::Result<gate::GateOutcome> {
-        let g = &self.cfg.governance;
+    /// The write gate's screen under a policy: size limit, redaction, injection check.
+    pub(crate) fn screen(policy: &CompiledPolicy, content: &str) -> anyhow::Result<gate::GateOutcome> {
+        let max = policy.policy.write_gate.max_content_chars;
         if content.trim().is_empty() {
             return Err(error::invalid("content is empty"));
         }
-        if content.chars().count() > g.max_content_chars {
-            return Err(error::invalid(format!("content is {} characters; the limit is {} (governance.max_content_chars)", content.chars().count(), g.max_content_chars)));
+        if content.chars().count() > max {
+            return Err(error::invalid(format!(
+                "content is {} characters; the limit is {max} (write_gate.max_content_chars of policy {})",
+                content.chars().count(),
+                policy.version
+            )));
         }
-        // The floor holds even for a configuration built in code without `Config::check_floor`.
-        let mut redact = g.redact.clone();
-        if !redact.iter().any(|r| r == "secret") {
-            redact.push("secret".into());
-        }
-        Ok(gate::screen(content, &redact, true))
+        // The compiler keeps "secret" in every policy (security baseline).
+        Ok(gate::screen(content, &policy.policy.redaction.categories, true))
     }
 
     /// Store one explicit memory (a fact, preference, procedure, commitment...).
@@ -357,31 +346,35 @@ impl Engine {
     }
 
     pub(crate) async fn remember_with(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
-        let span = self.write_span("memhouse.remember", &req.actor, &req.subject);
-        self.traced("remember", span, self.remember_untraced(req, entry)).await
+        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let span = Self::write_span("memhouse.remember", &policy, &req.actor, &req.subject);
+        self.traced("remember", span, self.remember_untraced(req, entry, &policy)).await
     }
 
-    async fn remember_untraced(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
+    async fn remember_untraced(&self, req: RememberRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.remember_once(&req, &tenant, &subject, &actor, entry).await?;
+        let result = self.remember_once(&req, &tenant, &subject, &actor, entry, policy).await?;
         self.remember_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await?;
         Ok(result)
     }
 
-    async fn remember_once(&self, req: &RememberRequest, tenant: &str, subject: &str, actor: &str, entry: Entry) -> anyhow::Result<RememberResult> {
+    async fn remember_once(&self, req: &RememberRequest, tenant: &str, subject: &str, actor: &str, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
+        if !policy.allows(kind) {
+            return Err(policy.kind_refused(kind));
+        }
         if let Some(st) = &req.structured {
             if st.record_type.trim().is_empty() || !st.attrs.is_object() {
                 return Err(error::invalid("structured needs a record_type and an attrs object"));
             }
         }
-        let gated = self.screen(&req.content)?;
+        let gated = Self::screen(policy, &req.content)?;
         let hash = content_hash(&format!("{}\u{1f}{}", kind.as_str(), gated.content));
 
         if req.supersedes.is_none() {
@@ -413,7 +406,7 @@ impl Engine {
         if req.supersedes.is_none() && status != MemoryStatus::Quarantined {
             if let Some(emb) = &embedding {
                 if let Some((id, sim)) = self.store.nearest(&tenant, &subject, kind, emb).await? {
-                    if sim >= self.cfg.memory.dedup_threshold {
+                    if sim >= policy.policy.write_gate.dedup_threshold {
                         return Ok(RememberResult {
                             id,
                             status: MemoryStatus::Committed,
@@ -433,7 +426,7 @@ impl Engine {
         if !gated.injection.is_empty() {
             metadata["quarantine_reasons"] = serde_json::json!(gated.injection);
         }
-        let expires_at = req.expires_at.or_else(|| (kind == MemoryKind::Working).then(|| now + chrono::Duration::seconds(self.cfg.memory.working_ttl_secs as i64)));
+        let expires_at = req.expires_at.or_else(|| (kind == MemoryKind::Working).then(|| now + chrono::Duration::seconds(policy.policy.retention.working_ttl_secs as i64)));
         let mem = Memory {
             id,
             tenant: tenant.clone(),
@@ -455,7 +448,7 @@ impl Engine {
             created_at: now,
             expires_at,
             scope: req.scope.clone().unwrap_or_default(),
-            provenance: self.provenance(&actor, &req.user, &req.request_key),
+            provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
         };
         let mut rec = NewMemory::new(mem, hash);
         rec.embedding = embedding;
@@ -510,24 +503,28 @@ impl Engine {
     }
 
     pub(crate) async fn ingest_with(&self, req: IngestRequest, entry: Entry) -> anyhow::Result<IngestResult> {
-        let span = self.write_span("memhouse.ingest", &req.actor, &req.subject);
-        self.traced("ingest", span, self.ingest_untraced(req, entry)).await
+        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let span = Self::write_span("memhouse.ingest", &policy, &req.actor, &req.subject);
+        self.traced("ingest", span, self.ingest_untraced(req, entry, &policy)).await
     }
 
-    async fn ingest_untraced(&self, req: IngestRequest, entry: Entry) -> anyhow::Result<IngestResult> {
+    async fn ingest_untraced(&self, req: IngestRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<IngestResult> {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<IngestResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.ingest_once(&req, &tenant, &subject, &actor, entry).await?;
+        let result = self.ingest_once(&req, &tenant, &subject, &actor, entry, policy).await?;
         self.remember_key(&tenant, &subject, "ingest", &req.request_key, &req, &result).await?;
         Ok(result)
     }
 
-    async fn ingest_once(&self, req: &IngestRequest, tenant: &str, subject: &str, actor: &str, entry: Entry) -> anyhow::Result<IngestResult> {
+    async fn ingest_once(&self, req: &IngestRequest, tenant: &str, subject: &str, actor: &str, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<IngestResult> {
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
+        if !policy.allows(MemoryKind::Episodic) {
+            return Err(policy.kind_refused(MemoryKind::Episodic));
+        }
         let session = req.session_id.clone().unwrap_or_else(|| Uuid::now_v7().to_string());
         let rounds = if req.per_message {
             req.messages
@@ -552,7 +549,7 @@ impl Engine {
         let gated_rounds: Vec<(usize, gate::GateOutcome, String)> = rounds
             .iter()
             .enumerate()
-            .filter_map(|(i, r)| self.screen(truncate_chars(&r.text, self.cfg.governance.max_content_chars)).ok().map(|g| (i, g)))
+            .filter_map(|(i, r)| Self::screen(policy, truncate_chars(&r.text, policy.policy.write_gate.max_content_chars)).ok().map(|g| (i, g)))
             .map(|(i, g)| {
                 let h = content_hash(&format!("episodic\u{1f}{session}\u{1f}{i}\u{1f}{}", g.content));
                 (i, g, h)
@@ -584,7 +581,7 @@ impl Engine {
                 metadata["redactions"] = serde_json::json!(gated.redactions);
             }
             let id = Uuid::now_v7();
-            if let Some(f) = r.focus.as_deref().and_then(|f| self.screen(f).ok()) {
+            if let Some(f) = r.focus.as_deref().and_then(|f| Self::screen(policy, f).ok()) {
                 focus.push((recs.len(), f.content));
             }
             texts.push(gated.content.clone());
@@ -610,7 +607,7 @@ impl Engine {
                     created_at: now,
                     expires_at: None,
                     scope: req.scope.clone().unwrap_or_default(),
-                    provenance: self.provenance(&actor, &req.user, &req.request_key),
+                    provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
                 },
                 hash,
             ));
@@ -674,13 +671,16 @@ impl Engine {
 
     /// Recall with the labels a caller may not read filtered inside the statement (TR-RQ-03),
     /// traced (QUAL-07), measured, and recorded for its explanation (GOV-04).
-    pub(crate) async fn recall_with(&self, req: RecallRequest, ctx: RecallContext) -> anyhow::Result<RecallResult> {
+    pub(crate) async fn recall_with(&self, req: RecallRequest, mut ctx: RecallContext) -> anyhow::Result<RecallResult> {
+        // Resolved before the span opens: a refresh read is not part of the recall's statement.
+        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        ctx.denied_labels = with_policy_labels(&ctx.denied_labels, &policy);
         let recall_id = Uuid::now_v7();
         let span = tracing::info_span!(
             "memhouse.recall",
             memhouse.recall_id = %recall_id,
             memhouse.principal = %ctx.principal,
-            memhouse.policy_version = %self.policy_version,
+            memhouse.policy_version = %policy.version,
             memhouse.subject = tracing::field::Empty,
             memhouse.returned = tracing::field::Empty,
             memhouse.record_ids = tracing::field::Empty,
@@ -688,7 +688,7 @@ impl Engine {
             otel.status_code = tracing::field::Empty,
         );
         let start = Instant::now();
-        let r = self.recall_inner(req, ctx, recall_id).instrument(span.clone()).await;
+        let r = self.recall_inner(req, ctx, recall_id, &policy).instrument(span.clone()).await;
         let outcome = match &r {
             Ok(_) => "ok",
             Err(e) => {
@@ -701,22 +701,23 @@ impl Engine {
         r
     }
 
-    async fn recall_inner(&self, req: RecallRequest, ctx: RecallContext, recall_id: Uuid) -> anyhow::Result<RecallResult> {
+    async fn recall_inner(&self, req: RecallRequest, ctx: RecallContext, recall_id: Uuid, policy: &CompiledPolicy) -> anyhow::Result<RecallResult> {
+        let rank = &policy.policy.ranking;
         let denied_labels = ctx.denied_labels.clone();
         let start = Instant::now();
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
-        let k = req.k.unwrap_or(self.cfg.memory.default_k).clamp(1, 200);
+        let k = req.k.unwrap_or(rank.default_k).clamp(1, 200);
         let mode = req.mode.unwrap_or_default();
         let use_rerank = req.rerank.unwrap_or(self.cfg.rerank.enabled) && self.reranker.is_some();
         let now = req.reference_time.or(req.as_of).unwrap_or_else(Utc::now);
-        let plan = if req.analyze.unwrap_or(self.cfg.memory.query_analysis) {
+        let plan = if req.analyze.unwrap_or(rank.query_analysis) {
             let mut p = query::analyze(&req.query, now);
             // A probe with no weight is not run at all.
-            if self.cfg.memory.window_weight <= 0.0 {
+            if rank.window_weight <= 0.0 {
                 p.windows.clear();
             }
-            if self.cfg.memory.subquery_weight <= 0.0 {
+            if rank.subquery_weight <= 0.0 {
                 p.subqueries.clear();
             }
             Some(p).filter(|p| !p.windows.is_empty() || !p.subqueries.is_empty())
@@ -745,11 +746,11 @@ impl Engine {
             as_of: req.as_of,
             valid_at: now_valid,
             mode,
-            per_retriever: self.cfg.memory.candidates.max(fused_limit),
+            per_retriever: rank.candidates.max(fused_limit),
             limit: fused_limit,
-            rrf_k: self.cfg.memory.rrf_k,
-            keyword_weight: self.cfg.memory.keyword_weight,
-            vector_weight: self.cfg.memory.vector_weight,
+            rrf_k: rank.rrf_k,
+            keyword_weight: rank.keyword_weight,
+            vector_weight: rank.vector_weight,
             windows: vec![],
             scope: req.scope.clone().unwrap_or_default(),
         };
@@ -759,13 +760,13 @@ impl Engine {
             if !p.windows.is_empty() {
                 let mut w = q.clone();
                 w.windows = p.windows.iter().map(|w| (w.start, w.end)).collect();
-                probes.push((w, self.cfg.memory.window_weight));
+                probes.push((w, rank.window_weight));
             }
             for (sq, emb) in p.subqueries.iter().zip(embeddings.into_iter().skip(1)) {
                 let mut s = q.clone();
                 s.text = sq.clone();
                 s.embedding = emb;
-                probes.push((s, self.cfg.memory.subquery_weight));
+                probes.push((s, rank.subquery_weight));
             }
         }
         let t_search = Instant::now();
@@ -778,10 +779,10 @@ impl Engine {
         } else {
             let rest = lists.split_off(1);
             let main = lists.pop().unwrap_or_default();
-            let (top, top_w) = (self.cfg.memory.window_top, self.cfg.memory.window_top_weight);
+            let (top, top_w) = (rank.window_top, rank.window_top_weight);
             let bonus = (top > 0 && top_w > 0.0 && plan.as_ref().is_some_and(|p| !p.windows.is_empty())).then(|| (rest[0].iter().take(top).cloned().collect::<Vec<Hit>>(), top_w));
             let lists: Vec<(Vec<Hit>, f32)> = std::iter::once((main, 1.0)).chain(rest.into_iter().zip(probes.iter().map(|(_, w)| *w))).chain(bonus).collect();
-            fuse(lists, self.cfg.memory.rrf_k, fused_limit)
+            fuse(lists, rank.rrf_k, fused_limit)
         };
         let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;
         let t_rerank = Instant::now();
@@ -802,10 +803,10 @@ impl Engine {
             hits[..n].sort_by(|a, b| b.score.total_cmp(&a.score));
         }
 
-        let rw = self.cfg.memory.recency_weight;
+        let rw = rank.recency_weight;
         if rw > 0.0 {
             let now = req.as_of.unwrap_or_else(Utc::now);
-            let hl = self.cfg.memory.recency_half_life_days.max(1.0);
+            let hl = rank.recency_half_life_days.max(1.0);
             for h in hits.iter_mut() {
                 let t = h.memory.occurred_at.unwrap_or(h.memory.created_at);
                 let age = (now - t).num_seconds().max(0) as f32 / 86_400.0;
@@ -837,7 +838,7 @@ impl Engine {
                 }
             });
         }
-        if self.cfg.governance.audit_reads {
+        if policy.policy.recall.audit_reads {
             self.store
                 .audit(
                     req.actor.as_deref().unwrap_or("api"),
@@ -870,7 +871,7 @@ impl Engine {
                 subject: subject.clone(),
                 principal: ctx.principal,
                 user: ctx.user,
-                policy_version: self.policy_version.clone(),
+                policy_version: policy.version.clone(),
                 authorizer: ctx.authorizer,
                 query: req.query.clone(),
                 k,
@@ -938,11 +939,12 @@ impl Engine {
     }
 
     pub(crate) async fn revise_with(&self, req: ReviseRequest, entry: Entry) -> anyhow::Result<RememberResult> {
-        let span = self.write_span("memhouse.revise", &req.actor, &None);
-        self.traced("revise", span, self.revise_untraced(req, entry)).await
+        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let span = Self::write_span("memhouse.revise", &policy, &req.actor, &None);
+        self.traced("revise", span, self.revise_untraced(req, entry, &policy)).await
     }
 
-    async fn revise_untraced(&self, req: ReviseRequest, entry: Entry) -> anyhow::Result<RememberResult> {
+    async fn revise_untraced(&self, req: ReviseRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
         let tenant = self.tenant(&req.tenant);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
@@ -979,7 +981,7 @@ impl Engine {
             structured,
             code_refs,
         };
-        let result = self.remember_once(&write, &tenant, &old.subject, &actor, entry).await?;
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor, entry, policy).await?;
         self.remember_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await?;
         Ok(result)
     }
@@ -1027,7 +1029,8 @@ impl Engine {
     /// `forget` by record, subject, user, agent, source or the whole tenant (CORE-05), with one
     /// audit event for the call.
     pub async fn forget_by(&self, req: ForgetRequest) -> anyhow::Result<ForgetResult> {
-        let span = self.write_span("memhouse.forget", &req.actor, &req.subject);
+        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let span = Self::write_span("memhouse.forget", &policy, &req.actor, &req.subject);
         self.traced("forget", span, self.forget_untraced(req)).await
     }
 
@@ -1143,16 +1146,18 @@ impl Engine {
         offset: usize,
         include_inactive: bool,
     ) -> anyhow::Result<Vec<Memory>> {
+        let tenant = self.tenant(&tenant);
+        let policy = self.policy_for(&tenant).await?;
         self.store
             .list(&ListQuery {
-                tenant: self.tenant(&tenant),
+                tenant,
                 subject,
                 kinds,
                 include_inactive,
                 limit: limit.clamp(1, 1000),
                 offset,
                 before: None,
-                denied_labels: self.cfg.governance.denied_labels.clone(),
+                denied_labels: with_policy_labels(&self.cfg.governance.denied_labels, &policy),
                 scope: Scope::default(),
             })
             .await
@@ -1175,15 +1180,17 @@ impl Engine {
     pub(crate) async fn list_page_with(&self, tenant: Option<String>, subject: String, page: Page, cursor: Option<&str>) -> anyhow::Result<MemoryPage> {
         let limit = page.limit.clamp(1, 1000);
         let before = cursor.map(decode_cursor).transpose()?;
+        let tenant = self.tenant(&tenant);
+        let policy = self.policy_for(&tenant).await?;
         let q = ListQuery {
-            tenant: self.tenant(&tenant),
+            tenant,
             subject: Some(subject),
             kinds: page.kinds,
             include_inactive: page.include_inactive,
             limit: limit + 1,
             offset: 0,
             before,
-            denied_labels: page.denied_labels,
+            denied_labels: with_policy_labels(&page.denied_labels, &policy),
             scope: page.scope,
         };
         let mut items = self.store.list(&q).await?;
@@ -1206,7 +1213,7 @@ impl Engine {
         if expired > 0 {
             self.store.audit("system", "retention.expire", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": expired })).await?;
         }
-        let days = self.cfg.governance.episodic_retention_days;
+        let days = self.policy_for(&self.cfg.memory.tenant).await?.policy.retention.episodic_days;
         if days == 0 {
             return Ok(expired);
         }
@@ -1216,6 +1223,14 @@ impl Engine {
         }
         Ok(n)
     }
+}
+
+/// Labels a read may not return: the caller's, and those the tenant's policy denies.
+pub(crate) fn with_policy_labels(denied: &[String], policy: &CompiledPolicy) -> Vec<String> {
+    let mut all: Vec<String> = denied.iter().chain(&policy.policy.recall.denied_labels).cloned().collect();
+    all.sort();
+    all.dedup();
+    all
 }
 
 fn sigmoid(x: f32) -> f32 {

@@ -34,6 +34,21 @@
       }
     },
     "schemas": {
+      "Admission": {
+        "description": "How proposals from agents without a commit grant are admitted (GOV-08).",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "The engine commits a proposal as soon as it passes the write gate.",
+            "type": "string"
+          },
+          {
+            "const": "review",
+            "description": "Proposals stay `candidate` until a principal with `memory:review` commits or rejects them.\nConversation rounds (`ingest`) are always admitted by the engine.",
+            "type": "string"
+          }
+        ]
+      },
       "AuditEvent": {
         "properties": {
           "action": {
@@ -100,6 +115,74 @@
         "required": [
           "path",
           "blob_hash"
+        ],
+        "type": "object"
+      },
+      "CompiledPolicy": {
+        "description": "A compiled policy and the version records and traces are stamped with.",
+        "properties": {
+          "policy": {
+            "$ref": "#/components/schemas/CompiledPolicyBody"
+          },
+          "version": {
+            "description": "`gov-<hash>` for the default policy, `policy-v<n>-<hash>` for an approved spec,\n`draft-<hash>` for one only validated. The hash is of the body, so equal policies get\nequal versions on every node.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "policy"
+        ],
+        "type": "object"
+      },
+      "CompiledPolicyBody": {
+        "description": "Everything a policy decides, with nothing left unset: the body stored in `mh_policy`.",
+        "properties": {
+          "decisions": {
+            "description": "Access-decision values (D-01…D-07), from the decision register in G28."
+          },
+          "memory_types": {
+            "$ref": "#/components/schemas/PolicyMemoryTypes"
+          },
+          "ranking": {
+            "$ref": "#/components/schemas/PolicyRanking"
+          },
+          "recall": {
+            "$ref": "#/components/schemas/PolicyRecall"
+          },
+          "redaction": {
+            "$ref": "#/components/schemas/PolicyRedaction"
+          },
+          "retention": {
+            "$ref": "#/components/schemas/PolicyRetention"
+          },
+          "spec": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The spec it was compiled from; absent for the default policy (the configuration)."
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "write_gate": {
+            "$ref": "#/components/schemas/PolicyWriteGate"
+          }
+        },
+        "required": [
+          "tenant",
+          "memory_types",
+          "write_gate",
+          "retention",
+          "redaction",
+          "recall",
+          "ranking",
+          "decisions"
         ],
         "type": "object"
       },
@@ -853,6 +936,817 @@
         "required": [
           "role",
           "content"
+        ],
+        "type": "object"
+      },
+      "PolicyActivation": {
+        "description": "One activation: what ran from then on.",
+        "properties": {
+          "action": {
+            "description": "`approve` or `rollback`.",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "compiled": {
+            "description": "The compiled policy version records were stamped with from then on.",
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "version": {
+            "description": "The spec version activated; absent for the default policy.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "tenant",
+          "compiled",
+          "action",
+          "by",
+          "at"
+        ],
+        "type": "object"
+      },
+      "PolicyChange": {
+        "description": "One changed setting between two compiled policies.",
+        "properties": {
+          "from": true,
+          "path": {
+            "description": "e.g. `ranking.recency_weight`.",
+            "type": "string"
+          },
+          "to": true
+        },
+        "required": [
+          "path",
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "PolicyDiff": {
+        "description": "The settings that differ between two compiled policies.",
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyChange"
+            },
+            "type": "array"
+          },
+          "from": {
+            "description": "Compiled version of each side.",
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "changes"
+        ],
+        "type": "object"
+      },
+      "PolicyDiffRequest": {
+        "additionalProperties": false,
+        "description": "`POST /v1/policies/diff`: two policies to compare.",
+        "properties": {
+          "from": {
+            "description": "`default` or a version (`3`, `v3`); absent: the policy running now.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spec": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A spec to compare, compiled but not stored."
+          },
+          "to": {
+            "description": "`default` or a version; give this or `spec`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicyMemoryTypes": {
+        "properties": {
+          "allowed": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryKind"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "allowed"
+        ],
+        "type": "object"
+      },
+      "PolicyRanking": {
+        "properties": {
+          "candidates": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "default_k": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keyword_weight": {
+            "format": "float",
+            "type": "number"
+          },
+          "query_analysis": {
+            "type": "boolean"
+          },
+          "recency_half_life_days": {
+            "format": "float",
+            "type": "number"
+          },
+          "recency_weight": {
+            "format": "float",
+            "type": "number"
+          },
+          "rrf_k": {
+            "format": "float",
+            "type": "number"
+          },
+          "subquery_weight": {
+            "format": "float",
+            "type": "number"
+          },
+          "vector_weight": {
+            "format": "float",
+            "type": "number"
+          },
+          "window_top": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_top_weight": {
+            "format": "float",
+            "type": "number"
+          },
+          "window_weight": {
+            "format": "float",
+            "type": "number"
+          }
+        },
+        "required": [
+          "default_k",
+          "candidates",
+          "rrf_k",
+          "keyword_weight",
+          "vector_weight",
+          "recency_weight",
+          "recency_half_life_days",
+          "query_analysis",
+          "window_weight",
+          "window_top",
+          "window_top_weight",
+          "subquery_weight"
+        ],
+        "type": "object"
+      },
+      "PolicyRecall": {
+        "properties": {
+          "audit_reads": {
+            "type": "boolean"
+          },
+          "denied_labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "denied_labels",
+          "audit_reads"
+        ],
+        "type": "object"
+      },
+      "PolicyRedaction": {
+        "properties": {
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "categories"
+        ],
+        "type": "object"
+      },
+      "PolicyRetention": {
+        "properties": {
+          "episodic_days": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "working_ttl_secs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "episodic_days",
+          "working_ttl_secs"
+        ],
+        "type": "object"
+      },
+      "PolicySpec": {
+        "additionalProperties": false,
+        "description": "A behaviour policy as authored (TOML or JSON). Every section and field is optional: what a spec\nleaves out keeps the governance or configured value.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "format": {
+            "default": 1,
+            "description": "Spec format; 1.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "memory_types": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecMemoryTypes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "description": "A short name: letters, digits, `.`, `_` and `-`.",
+            "type": "string"
+          },
+          "ranking": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecRanking"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recall": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecRecall"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "redaction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecRedaction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecRetention"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "$ref": "#/components/schemas/PolicySpecScope"
+          },
+          "write_gate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecWriteGate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "scope"
+        ],
+        "type": "object"
+      },
+      "PolicySpecMemoryTypes": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "description": "Kinds that may be written; writes of other kinds are refused. Default: all.",
+            "items": {
+              "$ref": "#/components/schemas/MemoryKind"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicySpecRanking": {
+        "additionalProperties": false,
+        "description": "Ranking weights (the meaning of each is in `[memory]` of the configuration reference).",
+        "properties": {
+          "candidates": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "default_k": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "keyword_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "query_analysis": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "recency_half_life_days": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "recency_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "rrf_k": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "subquery_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "vector_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "window_top": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "window_top_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "window_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicySpecRecall": {
+        "additionalProperties": false,
+        "properties": {
+          "audit_reads": {
+            "description": "Audit every recall; can't be turned off where governance turns it on.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "denied_labels": {
+            "description": "Labels never read; must include every label governance denies.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicySpecRecord": {
+        "description": "A stored spec version.",
+        "properties": {
+          "approved_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "proposed_by": {
+            "type": "string"
+          },
+          "spec": true,
+          "spec_hash": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PolicySpecStatus"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "version": {
+            "description": "1, 2, 3… per tenant.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tenant",
+          "version",
+          "name",
+          "spec",
+          "spec_hash",
+          "status",
+          "proposed_by",
+          "proposed_at"
+        ],
+        "type": "object"
+      },
+      "PolicySpecRedaction": {
+        "additionalProperties": false,
+        "properties": {
+          "categories": {
+            "description": "Categories redacted before anything is stored; must include every governance category.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicySpecRef": {
+        "description": "The approved spec a compiled policy came from.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "spec_hash": {
+            "type": "string"
+          },
+          "version": {
+            "description": "The spec's version number; absent for a draft that was only validated.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "spec_hash"
+        ],
+        "type": "object"
+      },
+      "PolicySpecRequest": {
+        "additionalProperties": false,
+        "description": "`POST /v1/policies` (propose) and `POST /v1/policies/validate`.",
+        "properties": {
+          "note": {
+            "description": "Why the change is proposed (kept with the version).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spec": {
+            "$ref": "#/components/schemas/PolicySpec"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "type": "object"
+      },
+      "PolicySpecRetention": {
+        "additionalProperties": false,
+        "properties": {
+          "episodic_days": {
+            "description": "Days after which episodic memory is purged; 0 keeps it. Where governance purges, at most\nits days and never 0.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "working_ttl_secs": {
+            "description": "Lifetime of working memory written without `expires_at` (1 second to 30 days).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicySpecScope": {
+        "additionalProperties": false,
+        "description": "What the policy governs. v1: one tenant (layers by org, team and agent come in G24).",
+        "properties": {
+          "tenant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant"
+        ],
+        "type": "object"
+      },
+      "PolicySpecStatus": {
+        "oneOf": [
+          {
+            "const": "proposed",
+            "description": "Stored, not yet approved: it never executes.",
+            "type": "string"
+          },
+          {
+            "const": "approved",
+            "description": "Approved by a named approver; may be activated (and rolled back to).",
+            "type": "string"
+          }
+        ]
+      },
+      "PolicySpecWriteGate": {
+        "additionalProperties": false,
+        "properties": {
+          "admission": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Admission"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`auto` or `review`; `auto` only where governance doesn't require review."
+          },
+          "dedup_threshold": {
+            "description": "Cosine similarity at which a new memory counts as a duplicate (0.5 to 1).",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "max_content_chars": {
+            "description": "At most governance's `max_content_chars`.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "quarantine_injection": {
+            "description": "Always on (security baseline); may be stated, never turned off.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicyStatus": {
+        "description": "The active policy of a tenant, its spec versions and its activations.",
+        "properties": {
+          "active": {
+            "description": "The spec version activated last; absent while the default policy runs.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "history": {
+            "description": "Newest first.",
+            "items": {
+              "$ref": "#/components/schemas/PolicyActivation"
+            },
+            "type": "array"
+          },
+          "running": {
+            "$ref": "#/components/schemas/CompiledPolicy",
+            "description": "The compiled policy that runs now."
+          },
+          "specs": {
+            "items": {
+              "$ref": "#/components/schemas/PolicySpecRecord"
+            },
+            "type": "array"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "warning": {
+            "description": "Set when the active spec no longer compiles under the current governance, so the default\npolicy runs instead.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "tenant",
+          "running",
+          "specs",
+          "history"
+        ],
+        "type": "object"
+      },
+      "PolicyValidation": {
+        "description": "Whether a spec compiles for the caller's tenant, and to what.",
+        "properties": {
+          "compiled": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CompiledPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "violations": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyViolation"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "valid",
+          "violations"
+        ],
+        "type": "object"
+      },
+      "PolicyViolation": {
+        "description": "A setting that doesn't compile, and why.",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "description": "The spec field, e.g. `retention.episodic_days`.",
+            "type": "string"
+          },
+          "rule": {
+            "description": "`PR-1` (would loosen governance), `baseline` (the security floor), `range`, `unknown`,\n`scope` or `format`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "rule",
+          "message"
+        ],
+        "type": "object"
+      },
+      "PolicyWriteGate": {
+        "properties": {
+          "admission": {
+            "$ref": "#/components/schemas/Admission"
+          },
+          "dedup_threshold": {
+            "format": "float",
+            "type": "number"
+          },
+          "max_content_chars": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "quarantine_injection": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "admission",
+          "dedup_threshold",
+          "max_content_chars",
+          "quarantine_injection"
         ],
         "type": "object"
       },
@@ -1853,6 +2747,20 @@
         ],
         "type": "object"
       },
+      "RollbackRequest": {
+        "additionalProperties": false,
+        "description": "`POST /v1/policies/rollback`.",
+        "properties": {
+          "to": {
+            "description": "`default` or an approved version; absent: the policy active before the current one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "Scope": {
         "additionalProperties": false,
         "description": "Narrower visibility inside a subject (MEM-04). All empty means the whole subject; resolution\norder (user over team over org) is applied by recall from G11.",
@@ -2174,7 +3082,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.2.0"
+    "version": "1.3.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -3221,6 +4129,506 @@
         "x-stability": "stable"
       }
     },
+    "/v1/policies": {
+      "get": {
+        "description": "The compiled policy that runs now, every spec version with its status, proposer and approver, and the activations, newest first (POL-08). Needs `policy:read`.",
+        "operationId": "policies",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyStatus"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "The tenant's policy: running, versions and history",
+        "tags": [
+          "policy"
+        ],
+        "x-stability": "stable"
+      },
+      "post": {
+        "description": "Stores the spec as the tenant's next version, `proposed`; it runs only once approved (POL-03). A spec that would loosen governance, or is otherwise invalid, is refused with every problem listed and the refusal is audited (POL-04). Needs `policy:propose`.",
+        "operationId": "proposePolicy",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicySpecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicySpecRecord"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Propose a policy spec",
+        "tags": [
+          "policy"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/policies/diff": {
+      "post": {
+        "description": "The settings that differ between two compiled policies: the running one, the default, a stored version or an unstored spec. Needs `policy:read`.",
+        "operationId": "diffPolicies",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyDiffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyDiff"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Compare two policies",
+        "tags": [
+          "policy"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/policies/rollback": {
+      "post": {
+        "description": "Activates an approved version, the default policy, or (with no `to`) the policy active before the current one, if it compiles under the governance in force now. An unapproved version is refused and the refusal audited (POL-03). Needs `policy:approve`.",
+        "operationId": "rollbackPolicy",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompiledPolicy"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Activate an earlier policy",
+        "tags": [
+          "policy"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/policies/validate": {
+      "post": {
+        "description": "Whether the spec compiles for the caller's tenant under its governance, and the compiled policy or the violations. Needs `policy:read`.",
+        "operationId": "validatePolicy",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicySpecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyValidation"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Compile a spec without storing it",
+        "tags": [
+          "policy"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/policies/{version}/approve": {
+      "post": {
+        "description": "The caller is recorded as the named approver. The spec is compiled again under the governance in force now; engines run it within seconds, without a restart. Needs `policy:approve`.",
+        "operationId": "approvePolicy",
+        "parameters": [
+          {
+            "description": "The spec version, e.g. `3`.",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompiledPolicy"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Approve a proposed version and activate it",
+        "tags": [
+          "policy"
+        ],
+        "x-stability": "stable"
+      }
+    },
     "/v1/recall": {
       "post": {
         "description": "Ranked memories of one subject with ids and provenance, filtered by scope, kind, tags and as-of time, cut to a token budget; with `render` also as a text block for a prompt.",
@@ -4171,6 +5579,10 @@
     {
       "description": "Health, counts and audit.",
       "name": "operations"
+    },
+    {
+      "description": "Behaviour policy: structured specs, compiled under governance, approved, versioned and rolled back (POL-01, POL-03, POL-04, POL-08).",
+      "name": "policy"
     },
     {
       "description": "Routes from before v1, deprecated on 2026-11-02, removed no earlier than 2027-11-02.",

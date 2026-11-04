@@ -158,11 +158,11 @@ async fn explanation(api: &mut Api, e: &Engine, pool: &sqlx::PgPool) -> anyhow::
 
 /// A span as the capture saw it; `idx` is its position (span ids are reused once a span closes).
 #[derive(Debug, Clone)]
-struct SpanRec {
+pub(crate) struct SpanRec {
     idx: usize,
     parent: Option<usize>,
-    name: String,
-    fields: BTreeMap<String, String>,
+    pub(crate) name: String,
+    pub(crate) fields: BTreeMap<String, String>,
 }
 
 /// A log event: its level, target and fields (the message is the field `message`).
@@ -182,7 +182,7 @@ struct Spans {
 }
 
 #[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Spans>>);
+pub(crate) struct Capture(Arc<Mutex<Spans>>);
 
 struct Fields<'a>(&'a mut BTreeMap<String, String>);
 
@@ -224,7 +224,7 @@ impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
 }
 
 impl Capture {
-    fn take(&self) -> Vec<SpanRec> {
+    pub(crate) fn take(&self) -> Vec<SpanRec> {
         let mut s = self.0.lock().unwrap();
         s.live.clear();
         std::mem::take(&mut s.all)

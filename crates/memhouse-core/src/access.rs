@@ -40,6 +40,11 @@ pub enum Operation {
     Explain,
     /// Read the process metrics.
     Metrics,
+    /// Read policies; validate or diff a spec.
+    PolicyRead,
+    PolicyPropose,
+    /// Approve a spec or roll back.
+    PolicyApprove,
 }
 
 impl Operation {
@@ -173,6 +178,9 @@ impl ScopeAuthorizer {
             Operation::IssueToken => perm::TOKEN,
             Operation::Stats | Operation::Subjects | Operation::EnrichStatus | Operation::Metrics => perm::OPS,
             Operation::Audit => perm::AUDIT,
+            Operation::PolicyRead => perm::POLICY_READ,
+            Operation::PolicyPropose => perm::POLICY_PROPOSE,
+            Operation::PolicyApprove => perm::POLICY_APPROVE,
             Operation::Whoami => return None,
         })
     }

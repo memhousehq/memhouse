@@ -105,6 +105,9 @@ fn luhn_ok(s: &str) -> bool {
     sum % 10 == 0
 }
 
+/// Every redaction category `screen` knows.
+pub const CATEGORIES: [&str; 7] = ["secret", "card", "ssn", "iban", "email", "phone", "ip"];
+
 /// Redact the configured categories and screen for injection.
 pub fn screen(content: &str, redact: &[String], check_injection: bool) -> GateOutcome {
     let mut text = content.to_string();

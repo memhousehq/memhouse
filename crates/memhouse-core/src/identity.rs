@@ -36,7 +36,13 @@ pub mod perm {
     pub const TOKEN: &str = "token:issue";
     pub const OPS: &str = "ops:read";
     pub const AUDIT: &str = "audit:read";
-    pub const ALL: [&str; 9] = [READ, WRITE, FORGET, ERASE, LABEL, REVIEW, TOKEN, OPS, AUDIT];
+    /// Read the tenant's policies, validate and diff specs (G08).
+    pub const POLICY_READ: &str = "policy:read";
+    /// Propose a policy spec.
+    pub const POLICY_PROPOSE: &str = "policy:propose";
+    /// Approve a proposed spec, or roll back to an earlier one.
+    pub const POLICY_APPROVE: &str = "policy:approve";
+    pub const ALL: [&str; 12] = [READ, WRITE, FORGET, ERASE, LABEL, REVIEW, TOKEN, OPS, AUDIT, POLICY_READ, POLICY_PROPOSE, POLICY_APPROVE];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

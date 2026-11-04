@@ -46,7 +46,7 @@ impl Default for TelemetryConfig {
 }
 
 /// How proposals from agents without a commit grant are admitted (GOV-08).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Admission {
     /// The engine commits a proposal as soon as it passes the write gate.

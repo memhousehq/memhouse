@@ -10,6 +10,9 @@ use crate::config::Admission;
 use crate::engine::{Engine, Entry, Page};
 use crate::error;
 use crate::identity::{perm, Identity, PrincipalKind, TokenResponse, Via};
+use crate::policy::{
+    CompiledPolicy, PolicyDiff, PolicyDiffRequest, PolicySpec, PolicySpecRecord, PolicySpecRequest, PolicyStatus, PolicyTarget, PolicyValidation, RollbackRequest,
+};
 use crate::types::*;
 use serde_json::json;
 use uuid::Uuid;
@@ -36,7 +39,58 @@ impl Caller {
             self.denied(req, &d).await;
             return Err(error::forbidden(d.reasons.join("; ")));
         }
+        self.with_policy(req, d).await
+    }
+
+    /// The tenant's policy narrows a decision further (G08): labels it denies are neither written
+    /// nor read.
+    async fn with_policy(&self, req: &AccessRequest, mut d: Decision) -> anyhow::Result<Decision> {
+        let policy = self.engine.policy_for(&d.tenant).await?;
+        if let Some(l) = req.labels.iter().find(|l| policy.policy.recall.denied_labels.contains(l)) {
+            d.allowed = false;
+            d.rule = "policy".into();
+            d.reasons.push(format!("label {l} is denied by policy {}", policy.version));
+            tracing::Span::current().record("memhouse.rule", "policy");
+            tracing::Span::current().record("memhouse.allowed", false);
+            self.denied(req, &d).await;
+            return Err(error::forbidden(d.reasons.join("; ")));
+        }
+        d.denied_labels = crate::engine::with_policy_labels(&d.denied_labels, &policy);
         Ok(d)
+    }
+
+    /// The tenant's policies (G08).
+    pub async fn policy_status(&self) -> anyhow::Result<PolicyStatus> {
+        self.decide(&AccessRequest::new(Operation::PolicyRead)).await?;
+        self.engine.policy_status(self.tenant()).await
+    }
+
+    pub async fn policy_validate(&self, spec: &PolicySpec) -> anyhow::Result<PolicyValidation> {
+        self.decide(&AccessRequest::new(Operation::PolicyRead)).await?;
+        Ok(PolicyValidation::of(self.engine.policy_validate(self.tenant(), spec)))
+    }
+
+    pub async fn policy_diff(&self, req: &PolicyDiffRequest) -> anyhow::Result<PolicyDiff> {
+        self.decide(&AccessRequest::new(Operation::PolicyRead)).await?;
+        self.engine.policy_diff(self.tenant(), req).await
+    }
+
+    /// Propose a spec; the caller is recorded as proposer.
+    pub async fn policy_propose(&self, req: &PolicySpecRequest) -> anyhow::Result<PolicySpecRecord> {
+        self.decide(&AccessRequest::new(Operation::PolicyPropose)).await?;
+        self.engine.policy_propose(self.tenant(), &req.spec, self.who.id(), req.note.as_deref()).await
+    }
+
+    /// Approve a proposed version; the caller is the named approver.
+    pub async fn policy_approve(&self, version: u32) -> anyhow::Result<CompiledPolicy> {
+        self.decide(&AccessRequest::new(Operation::PolicyApprove)).await?;
+        self.engine.policy_approve(self.tenant(), version, self.who.id()).await
+    }
+
+    pub async fn policy_rollback(&self, req: &RollbackRequest) -> anyhow::Result<CompiledPolicy> {
+        self.decide(&AccessRequest::new(Operation::PolicyApprove)).await?;
+        let to = req.to.as_deref().map(PolicyTarget::parse).transpose()?;
+        self.engine.policy_rollback(self.tenant(), to, self.who.id()).await
     }
 
     async fn denied(&self, req: &AccessRequest, d: &Decision) {
@@ -60,18 +114,21 @@ impl Caller {
             // Missing permission is no secret; subject, label, kind and scope rules are.
             return Err(if d.rule == "permission" { error::forbidden(d.reasons.join("; ")) } else { missing() });
         }
+        let d = self.with_policy(&AccessRequest::new(op), d).await?;
         if !d.visible(&m) {
             return Err(missing());
         }
         Ok((m, d))
     }
 
-    fn entry(&self, d: &Decision) -> Entry {
-        match (d.propose_only, self.engine.cfg.access.admission) {
+    /// How a write enters: the tenant's policy decides whether proposals wait for review.
+    async fn entry(&self, d: &Decision) -> anyhow::Result<Entry> {
+        let admission = self.engine.policy_for(&d.tenant).await?.policy.write_gate.admission;
+        Ok(match (d.propose_only, admission) {
             (false, _) => Entry::Commit,
             (true, Admission::Auto) => Entry::ProposeAdmit,
             (true, Admission::Review) => Entry::Propose,
-        }
+        })
     }
 
     pub async fn remember(&self, mut req: RememberRequest) -> anyhow::Result<RememberResult> {
@@ -92,7 +149,7 @@ impl Caller {
         req.subject = Some(subject);
         req.actor = Some(self.who.id().into());
         req.user = self.who.user.clone();
-        self.engine.remember_with(req, self.entry(&d)).await
+        self.engine.remember_with(req, self.entry(&d).await?).await
     }
 
     pub async fn revise(&self, mut req: ReviseRequest) -> anyhow::Result<RememberResult> {
@@ -108,7 +165,7 @@ impl Caller {
         req.tenant = Some(d.tenant.clone());
         req.actor = Some(self.who.id().into());
         req.user = self.who.user.clone();
-        self.engine.revise_with(req, self.entry(&d)).await
+        self.engine.revise_with(req, self.entry(&d).await?).await
     }
 
     pub async fn ingest(&self, mut req: IngestRequest) -> anyhow::Result<IngestResult> {

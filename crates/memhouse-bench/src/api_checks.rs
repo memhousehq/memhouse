@@ -324,6 +324,43 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     let r = api.post("/v1/review", json!({"id": a_id, "action": "approve"})).await?;
     expect(r.status == 400, format!("review with an unknown action: {}", r.status));
 
+    // Policies (G08): validate, propose, diff, approve and roll back; refusals.
+    let spec = json!({"name": "api-check", "scope": {"tenant": "default"}, "recall": {"denied_labels": ["api-check-only"]}});
+    let v = api.post("/v1/policies/validate", json!({"spec": spec})).await?;
+    expect(v.status == 200 && v.body["valid"] == true, format!("validate: {} {}", v.status, v.body));
+    let v = api.post("/v1/policies/validate", json!({"spec": {"name": "loose", "scope": {"tenant": "default"}, "write_gate": {"quarantine_injection": false}}})).await?;
+    expect(v.status == 200 && v.body["valid"] == false && v.body["violations"][0]["rule"] == "baseline", format!("validate a loosening spec: {}", v.body));
+    let p = api.post("/v1/policies", json!({"spec": spec, "note": "contract check"})).await?;
+    expect(p.status == 200 && p.body["status"] == "proposed", format!("propose: {} {}", p.status, p.body));
+    let n = p.body["version"].as_u64().unwrap_or(0);
+    for (bad, why) in [
+        (json!({"spec": {"name": "loose", "scope": {"tenant": "default"}, "redaction": {"categories": ["card"]}}}), "a loosening spec"),
+        (json!({"spec": {"name": "typo", "scope": {"tenant": "default"}, "rankng": {}}}), "an unknown section"),
+        (json!({"spec": {"name": "other", "scope": {"tenant": "elsewhere"}}}), "another tenant's spec"),
+    ] {
+        let r = api.post("/v1/policies", bad).await?;
+        expect(r.status == 400 && r.body["code"] == "invalid_request", format!("propose {why}: {} {}", r.status, r.body));
+    }
+    let d = api.post("/v1/policies/diff", json!({"to": format!("v{n}")})).await?;
+    expect(d.status == 200 && d.body["changes"].as_array().is_some_and(|c| c.iter().any(|c| c["path"] == "recall.denied_labels")), format!("diff: {}", d.body));
+    let d = api.post("/v1/policies/diff", json!({})).await?;
+    expect(d.status == 400, format!("diff with nothing to compare: {}", d.status));
+    let d = api.post("/v1/policies/diff", json!({"to": "v999"})).await?;
+    expect(d.status == 404, format!("diff with a missing version: {}", d.status));
+    let r = api.post("/v1/policies/rollback", json!({"to": format!("v{n}")})).await?;
+    expect(r.status == 403, format!("rollback to an unapproved version: {}", r.status));
+    let approve = format!("/v1/policies/{n}/approve");
+    let a = api.call("POST", "/v1/policies/{version}/approve", &approve, None, &[]).await?;
+    expect(a.status == 200 && a.body["version"].as_str().is_some_and(|v| v.starts_with(&format!("policy-v{n}-"))), format!("approve: {} {}", a.status, a.body));
+    let a = api.call("POST", "/v1/policies/{version}/approve", &approve, None, &[]).await?;
+    expect(a.status == 409, format!("approving twice: {}", a.status));
+    let a = api.call("POST", "/v1/policies/{version}/approve", "/v1/policies/999/approve", None, &[]).await?;
+    expect(a.status == 404, format!("approving a missing version: {}", a.status));
+    let s = api.call("GET", "/v1/policies", "/v1/policies", None, &[]).await?;
+    expect(s.status == 200 && s.body["active"] == n && s.body["specs"][0]["approved_by"].is_string(), format!("policies: {} {}", s.status, s.body["active"]));
+    let r = api.post("/v1/policies/rollback", json!({"to": "default"})).await?;
+    expect(r.status == 200 && r.body["version"].as_str().is_some_and(|v| v.starts_with("gov-")), format!("rollback to the default: {} {}", r.status, r.body["version"]));
+
     // Operations, open routes and unknown routes.
     for path in ["/v1/subjects", "/v1/stats", "/v1/audit", "/v1/enrich/status"] {
         let r = api.call("GET", path, path, None, &[]).await?;

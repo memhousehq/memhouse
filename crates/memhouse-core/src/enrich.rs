@@ -270,10 +270,15 @@ impl Engine {
 
     async fn store_facts(&self, job: &EnrichJob, rounds: &[Memory], session_time: Option<DateTime<Utc>>, facts: Vec<ExtractedFact>, model: &str) -> anyhow::Result<usize> {
         let now = Utc::now();
+        let policy = self.policy_for(&job.tenant).await?;
         let mut recs: Vec<NewMemory> = vec![];
         let mut seen = std::collections::HashSet::new();
         for f in facts {
-            let Ok(gated) = self.screen(f.text.trim()) else { continue };
+            // Facts go through the same gate as any write, under the tenant's policy now.
+            if !policy.allows(kind_of(f.kind.as_deref())) {
+                continue;
+            }
+            let Ok(gated) = Engine::screen(&policy, f.text.trim()) else { continue };
             let hash = content_hash(&format!("fact\u{1f}{}\u{1f}{}", job.session_id, gated.content));
             if !seen.insert(hash.clone()) {
                 continue;
@@ -329,7 +334,7 @@ impl Engine {
                     provenance: Provenance {
                         agent: Some("enrich".into()),
                         user: src.first().and_then(|r| r.provenance.user.clone()),
-                        policy_version: Some(self.policy_version.clone()),
+                        policy_version: Some(policy.version.clone()),
                         request_key: None,
                         extractor: Some(model.to_string()),
                         extractor_config: Some(PROMPT_VERSION.to_string()),

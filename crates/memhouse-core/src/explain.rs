@@ -63,6 +63,11 @@ impl Engine {
     /// labels by id (auditors); otherwise they are only counted.
     pub async fn explain(&self, record: RecallRecord, show_hidden: bool) -> anyhow::Result<RecallExplanation> {
         let embedding = if record.mode == RetrievalMode::Keyword { None } else { Some(self.embed_query(&record.query).await?) };
+        // Replayed with the weights of the policy the recall ran under (G08).
+        let rank = match self.store.policy_body(&record.policy_version).await?.as_ref().and_then(crate::policy::Ranking::of_body) {
+            Some(r) => r,
+            None => self.policy_for(&record.tenant).await?.policy.ranking.clone(),
+        };
         let q = SearchQuery {
             tenant: record.tenant.clone(),
             subject: record.subject.clone(),
@@ -74,11 +79,11 @@ impl Engine {
             as_of: None,
             valid_at: record.valid_at,
             mode: record.mode,
-            per_retriever: self.cfg.memory.candidates.max(record.k),
+            per_retriever: rank.candidates.max(record.k),
             limit: (record.k * 5).max(50),
-            rrf_k: self.cfg.memory.rrf_k,
-            keyword_weight: self.cfg.memory.keyword_weight,
-            vector_weight: self.cfg.memory.vector_weight,
+            rrf_k: rank.rrf_k,
+            keyword_weight: rank.keyword_weight,
+            vector_weight: rank.vector_weight,
             windows: vec![],
             scope: Scope::default(),
         };

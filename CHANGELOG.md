@@ -23,6 +23,11 @@ path from 0.x data other than export and import.
 - OpenTelemetry traces and a Prometheus metrics endpoint. Logs and traces carry identifiers and
   timings, never memory content or query text; errors from embedding and LLM providers keep only
   the status and the provider's error type and code.
+- Policy engine v1: behaviour policy as a structured spec (memory types, write gate, retention,
+  redaction, denied labels, ranking weights), compiled under governance so it can only tighten it;
+  only approved, versioned specs run; diff, approve with a named approver, roll back, without a
+  restart; every record and trace carries the policy version (`memhouse policy`, `/v1/policies`,
+  API 1.3.0, schema version 5).
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early
   (`memhouse recall ... | head`).

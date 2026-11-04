@@ -19,6 +19,7 @@ macro_rules! println {
 }
 
 mod connect;
+mod policy;
 mod principals;
 mod up;
 
@@ -125,6 +126,14 @@ enum Cmd {
     Principal {
         #[command(subcommand)]
         cmd: principals::PrincipalCmd,
+    },
+    /// Behaviour policy: validate, diff, propose, approve and roll back specs
+    Policy {
+        /// Tenant (default: the configured one)
+        #[arg(long, global = true)]
+        tenant: Option<String>,
+        #[command(subcommand)]
+        cmd: policy::PolicyCmd,
     },
     /// Store a memory
     Remember {
@@ -454,6 +463,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Cmd::Key { cmd: Some(c) } => principals::key(&engine(Config::load(cfg_path.as_deref())?).await?, c).await?,
         Cmd::Principal { cmd } => principals::principal(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
+        Cmd::Policy { tenant, cmd: policy::PolicyCmd::Validate { file } } => policy::validate(&Config::load(cfg_path.as_deref())?, tenant, &file)?,
+        Cmd::Policy { tenant, cmd } => policy::run(&engine(Config::load(cfg_path.as_deref())?).await?, tenant, cmd).await?,
         Cmd::Remember { content, subject, kind, tags } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;

@@ -21,6 +21,7 @@ hosting, access management, contracts and process.
 - [Retention](#retention)
 - [Audit log](#audit-log)
 - [Access control](#access-control)
+- [Policies](#policies)
 - [LLM enrichment and data processors](#llm-enrichment-and-data-processors)
 - [Proving it: the governance suite](#proving-it-the-governance-suite)
 - [Mapping to common requirements](#mapping-to-common-requirements)
@@ -70,6 +71,7 @@ flowchart LR
 | Authorization of every operation (role, tenant, subject, kind, label, user, scope) | always on | principals' attributes, `[access]` | `route_authorization`, `label_filter` checks; `access.denied` events |
 | Agents propose, the engine or a reviewer commits | on | `[access] admission`, `--commit` grant | `propose_only` check; `memory.propose` / `memory.admit` events |
 | Baseline floor (`secret` redaction, injection screen) | can't be turned off | — | start-up refuses a weaker config |
+| Behaviour policy that can only tighten governance; approved, versioned, rolled back | the configuration (no spec) | `memhouse policy`, `/v1/policies` | `policy_precedence`, `policy_approval`, `policy_rollback` checks; `policy.*` events |
 | Content size limit | 20,000 chars | `max_content_chars` | 400 response |
 
 ## Redaction
@@ -402,6 +404,21 @@ refuses a configuration that tries (TR-CORE-05).
 - Put TLS in front of `memhouse serve`. It speaks plain HTTP and allows any CORS origin (see
   [operations.md](operations.md#reverse-proxy-and-tls)).
 
+## Policies
+
+A tenant's behaviour (allowed memory kinds, write gate, retention, redaction, denied labels,
+ranking) can be set by a [policy](policy.md): a structured spec, compiled against the
+configuration's governance. Compilation refuses a spec that would loosen governance, names the
+rule it would break, and audits the refusal (PR-1, POL-04). A spec runs only once a named person
+approves it (POL-03); the database refuses to activate any other. Every version, its proposer and
+approver, and every activation and rollback are kept and audited (`policy.propose`,
+`policy.approve`, `policy.rollback`, `policy.reject`; POL-08). Every record, every write and
+recall span, and every recall explanation names the compiled policy version that admitted or
+ranked it (GOV-03).
+
+If governance is tightened after a policy was approved, and the policy would now loosen it, the
+policy stops running and the configuration's default runs instead.
+
 ## LLM enrichment and data processors
 
 Enrichment is **off by default**. When it is on:
@@ -426,7 +443,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-18 checks pass on the current release:
+40 checks pass on the current release. The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -447,6 +464,9 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `recall_plan_scoped` | the recall statement's query plan only reads the requested subject's rows |
 | `exact_topk` | vector recall returns exactly the brute-force top 10 |
 | `invariants` | seeded random sequences of remember, repeat, revise and forget stay consistent with a reference model |
+| `policy_precedence` | 30 policies that loosen retention, redaction, labels, audit, admission, size or the injection screen fail to compile with their reason and are audited; a policy outranked by later governance stops running |
+| `policy_approval` | a proposed policy never runs, an unapproved activation is refused (also by the database), and records, explanations and spans carry the approved version |
+| `policy_rollback` | ranking weights changed by a policy change recall without a restart, also in a second process; rollback restores identical results |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 
