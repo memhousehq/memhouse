@@ -27,7 +27,7 @@ use clap::{Parser, Subcommand};
 use memhouse_core::config::default_config_path;
 use memhouse_core::types::*;
 use memhouse_core::{templates, Config};
-use rand::Rng;
+use rand::RngExt;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -235,8 +235,8 @@ enum Cmd {
 
 fn random_token(n: usize) -> String {
     const CHARS: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let mut r = rand::thread_rng();
-    (0..n).map(|_| CHARS[r.gen_range(0..CHARS.len())] as char).collect()
+    let mut r = rand::rng();
+    (0..n).map(|_| CHARS[r.random_range(0..CHARS.len())] as char).collect()
 }
 
 fn self_launch(cfg_path: &Option<PathBuf>, subject: &Option<String>) -> anyhow::Result<connect::Launch> {

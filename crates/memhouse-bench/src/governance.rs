@@ -5,7 +5,7 @@
 use memhouse_core::types::*;
 use memhouse_core::{EmbedKind, Engine};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -69,7 +69,7 @@ const BENIGN: &[&str] = &[
 fn luhn_complete(prefix: &str, len: usize, rng: &mut StdRng) -> String {
     let mut d: Vec<u32> = prefix.chars().filter_map(|c| c.to_digit(10)).collect();
     while d.len() < len - 1 {
-        d.push(rng.gen_range(0..10));
+        d.push(rng.random_range(0..10));
     }
     let sum: u32 = d
         .iter()
@@ -93,12 +93,12 @@ fn luhn_complete(prefix: &str, len: usize, rng: &mut StdRng) -> String {
 }
 
 fn rand_upper(rng: &mut StdRng, n: usize) -> String {
-    (0..n).map(|_| (b'A' + rng.gen_range(0..26)) as char).collect()
+    (0..n).map(|_| (b'A' + rng.random_range(0..26)) as char).collect()
 }
 
 fn rand_alnum(rng: &mut StdRng, n: usize) -> String {
     const C: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    (0..n).map(|_| C[rng.gen_range(0..C.len())] as char).collect()
+    (0..n).map(|_| C[rng.random_range(0..C.len())] as char).collect()
 }
 
 pub(crate) fn check(id: &str, req: &str, title: &str, passed: bool, value: String, target: &str, detail: String) -> Check {
@@ -198,7 +198,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     let card = luhn_complete("4", 16, &mut rng);
     let aws = format!("AKIA{}", rand_upper(&mut rng, 16));
     let sk = format!("sk-proj-{}", rand_alnum(&mut rng, 28));
-    let ssn = format!("{:03}-{:02}-{:04}", rng.gen_range(100..899), rng.gen_range(10..99), rng.gen_range(1000..9999));
+    let ssn = format!("{:03}-{:02}-{:04}", rng.random_range(100..899), rng.random_range(10..99), rng.random_range(1000..9999));
     let gh = format!("ghp_{}", rand_alnum(&mut rng, 36));
     let canaries = [card.clone(), aws.clone(), sk.clone(), ssn.clone(), gh.clone()];
     engine
@@ -775,9 +775,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             let content = format!(
                 "{} took up {} in {} after {} weeks of {}",
                 names[i % names.len()],
-                things[rng.gen_range(0..things.len())],
-                cities[rng.gen_range(0..cities.len())],
-                rng.gen_range(2..40),
+                things[rng.random_range(0..things.len())],
+                cities[rng.random_range(0..cities.len())],
+                rng.random_range(2..40),
                 rand_word(&mut rng, 6)
             );
             engine
@@ -862,12 +862,12 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         let pick = |rng: &mut StdRng, m: &std::collections::HashMap<Uuid, String>| -> Option<Uuid> {
             let mut ids: Vec<Uuid> = m.keys().copied().collect();
             ids.sort();
-            (!ids.is_empty()).then(|| ids[rng.gen_range(0..ids.len())])
+            (!ids.is_empty()).then(|| ids[rng.random_range(0..ids.len())])
         };
         for seq in 0..5 {
             for _ in 0..25 {
                 ops += 1;
-                let r: f64 = rng.gen();
+                let r: f64 = rng.random();
                 let req = |content: String| RememberRequest {
                     tenant: Some(tenant.clone()),
                     subject: Some(subj.clone()),
@@ -878,7 +878,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 };
                 if r < 0.45 {
                     counts[0] += 1;
-                    let res = engine.remember(req(pool[rng.gen_range(0..pool.len())].clone())).await?;
+                    let res = engine.remember(req(pool[rng.random_range(0..pool.len())].clone())).await?;
                     if res.deduplicated {
                         if !model.contains_key(&res.id) {
                             violations.push(format!("seq {seq}: dedup returned a non-committed record"));
@@ -908,7 +908,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                         }
                     }
                 } else {
-                    let target = if rng.gen_bool(0.7) { pick(&mut rng, &model) } else { pick(&mut rng, &superseded) };
+                    let target = if rng.random_bool(0.7) { pick(&mut rng, &model) } else { pick(&mut rng, &superseded) };
                     if let Some(id) = target {
                         counts[3] += 1;
                         if !engine.forget(Some(tenant.clone()), id, Some("bench".into())).await? {
@@ -1000,7 +1000,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
 
 fn rand_word(rng: &mut StdRng, n: usize) -> String {
     const C: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
-    (0..n).map(|_| C[rng.gen_range(0..C.len())] as char).collect()
+    (0..n).map(|_| C[rng.random_range(0..C.len())] as char).collect()
 }
 
 fn cosine_distance(a: &[f32], b: &[f32]) -> f64 {
@@ -1115,15 +1115,15 @@ impl Scratch {
     pub(crate) async fn create(engine: &Engine, suffix: &str) -> anyhow::Result<Scratch> {
         let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&engine.cfg.database.url).await?;
         let db: String = sqlx::query_scalar("SELECT current_database() || '_' || $1").bind(suffix).fetch_one(&admin).await?;
-        sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)")).execute(&admin).await?;
-        sqlx::raw_sql(&format!("CREATE DATABASE \"{db}\"")).execute(&admin).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"))).execute(&admin).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{db}\""))).execute(&admin).await?;
         let (head, tail) = engine.cfg.database.url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;
         let query = tail.split_once('?').map(|(_, q)| format!("?{q}")).unwrap_or_default();
         Ok(Scratch { url: format!("{head}/{db}{query}"), admin, db })
     }
 
     pub(crate) async fn drop(self) -> anyhow::Result<()> {
-        sqlx::raw_sql(&format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.db)).execute(&self.admin).await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.db))).execute(&self.admin).await?;
         Ok(())
     }
 }

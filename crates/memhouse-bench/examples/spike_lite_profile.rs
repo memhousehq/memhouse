@@ -17,7 +17,7 @@
 use half::f16;
 use memhouse_core::{Config, EmbedKind};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,17 +48,17 @@ const DAYS: &[&str] = &["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", 
 fn sentence(rng: &mut StdRng) -> String {
     format!(
         "{} said the {} {} on {} in {}, ref {}",
-        NAMES[rng.gen_range(0..NAMES.len())],
-        THINGS[rng.gen_range(0..THINGS.len())],
-        VERBS[rng.gen_range(0..VERBS.len())],
-        DAYS[rng.gen_range(0..DAYS.len())],
-        CITIES[rng.gen_range(0..CITIES.len())],
-        rng.gen_range(1000..99999)
+        NAMES[rng.random_range(0..NAMES.len())],
+        THINGS[rng.random_range(0..THINGS.len())],
+        VERBS[rng.random_range(0..VERBS.len())],
+        DAYS[rng.random_range(0..DAYS.len())],
+        CITIES[rng.random_range(0..CITIES.len())],
+        rng.random_range(1000..99999)
     )
 }
 
 fn question(rng: &mut StdRng) -> String {
-    format!("what happened with the {} in {}?", THINGS[rng.gen_range(0..THINGS.len())], CITIES[rng.gen_range(0..CITIES.len())])
+    format!("what happened with the {} in {}?", THINGS[rng.random_range(0..THINGS.len())], CITIES[rng.random_range(0..CITIES.len())])
 }
 
 fn half_blob(v: &[f32]) -> Vec<u8> {
@@ -248,7 +248,7 @@ async fn run(local_model: bool) -> anyhow::Result<()> {
         let mut st = db.prepare("INSERT INTO job (subject, content, enqueued) VALUES (?1, ?2, ?3)")?;
         let mut out = vec![];
         for _ in 0..500 {
-            let s = rng.gen_range(0..SUBJECTS) as i64;
+            let s = rng.random_range(0..SUBJECTS) as i64;
             let c = sentence(rng);
             let t = Instant::now();
             st.execute(rusqlite::params![s, c, 0.0])?;
