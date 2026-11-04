@@ -111,6 +111,32 @@ pub trait Store: Send + Sync {
     async fn import_records(&self, rows: &[ImportRow]) -> anyhow::Result<u64>;
     /// Record a compiled policy version (first write wins).
     async fn policy_put(&self, policy: &crate::format::PolicyLine) -> anyhow::Result<()>;
+    /// A compiled policy body by version (`None` if never recorded).
+    async fn policy_body(&self, version: &str) -> anyhow::Result<Option<serde_json::Value>>;
+    // Policy specs (G08): numbered versions per tenant, approval and activations.
+    /// Store a spec as the tenant's next version, `proposed`.
+    async fn policy_propose(
+        &self,
+        tenant: &str,
+        name: &str,
+        spec: &serde_json::Value,
+        spec_hash: &str,
+        by: &str,
+        note: Option<&str>,
+    ) -> anyhow::Result<crate::policy::PolicySpecRecord>;
+    async fn policy_spec(&self, tenant: &str, version: u32) -> anyhow::Result<Option<crate::policy::PolicySpecRecord>>;
+    /// Every spec version of a tenant, oldest first.
+    async fn policy_specs(&self, tenant: &str) -> anyhow::Result<Vec<crate::policy::PolicySpecRecord>>;
+    /// Mark a `proposed` version approved and activate it, in one transaction. False if it
+    /// was not `proposed`.
+    async fn policy_approve(&self, tenant: &str, version: u32, approver: &str, compiled: &str) -> anyhow::Result<bool>;
+    /// Activate an approved version, or the default policy (`None`). The store refuses a
+    /// version that is not approved.
+    async fn policy_activate(&self, tenant: &str, version: Option<u32>, compiled: &str, action: &str, by: &str) -> anyhow::Result<()>;
+    /// The spec activated last, if a spec (not the default policy) is active.
+    async fn policy_active(&self, tenant: &str) -> anyhow::Result<Option<crate::policy::PolicySpecRecord>>;
+    /// Activations, newest first.
+    async fn policy_history(&self, tenant: &str, limit: usize) -> anyhow::Result<Vec<crate::policy::PolicyActivation>>;
     /// Add a link between two subjects (an existing one is left as it is).
     async fn link_put(&self, link: &Link) -> anyhow::Result<()>;
     async fn links(&self, tenant: &str, subject: &str) -> anyhow::Result<Vec<Link>>;

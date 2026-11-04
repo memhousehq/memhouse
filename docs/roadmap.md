@@ -38,7 +38,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 37 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 40 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - docs: API, configuration, operations, governance, development, architecture, benchmarks.
@@ -603,7 +603,7 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 ### Stage C — Engine completeness on Postgres
 
-#### G08 — Policy engine v1 (structured specs, approval, versions)
+#### G08 — Policy engine v1 (structured specs, approval, versions) ✅
 
 *Moved after publication (2 November 2026): it opens stage C.*
 
@@ -615,12 +615,37 @@ plain IDs are partly addressed and finished in a later goal, which is named.
   the policy version), `PolicySource` seam (decision register in G28), CFG-07 principle
   (configuration never rewrites memory records).
 - **Deliverables:**
-  - [ ] policy schema (TOML/JSON) and compiler with precedence errors that explain themselves
-  - [ ] `memhouse policy validate / diff / propose / approve / rollback`; REST equivalents
-  - [ ] the current `[memory]` and `[governance]` settings become the default compiled policy (config stays as bootstrap)
-  - [ ] audit events for every policy change; governance check that a loosening behaviour policy is rejected
+  - [x] policy schema (TOML/JSON) and compiler with precedence errors that explain themselves
+  - [x] `memhouse policy validate / diff / propose / approve / rollback`; REST equivalents
+  - [x] the current `[memory]` and `[governance]` settings become the default compiled policy (config stays as bootstrap)
+  - [x] audit events for every policy change; governance check that a loosening behaviour policy is rejected
 - **Done when:** changing ranking weights through a policy changes recall without a restart, and rolling back restores the earlier results exactly.
 - **Guard:** T1. **Depends on:** G09. **Milestone:** policy contract frozen.
+- **Result (2026-11-04):** done; API 1.3.0, schema version 5. See [policy.md](policy.md).
+  - **Specs and compiler** (`core/src/policy.rs`): a spec covers scope (one tenant), memory
+    types, write gate, retention, redaction, recall labels and audit, and ranking weights. Fields
+    left out keep the configured value, so the configuration compiles to the default policy
+    (`gov-<hash>`). Governance is the floor: a setting that would loosen it fails with the field,
+    the governance key and the rule (PR-1, or the security baseline), and every problem is
+    reported at once. Unknown fields are errors.
+  - **Lifecycle:** versions are numbered per tenant (`mh_policy_spec`); approval names the
+    approver and activates (`mh_policy_activation`); rollback goes to the previous, a named
+    approved version or the default. A trigger refuses to activate an unapproved version.
+    Changes are audited as `policy.propose`, `policy.approve`, `policy.rollback` and
+    `policy.reject`. A spec that later governance outranks stops running, and the default runs
+    instead, with a warning in `policy status`.
+  - **Runtime:** the engine reads each tenant's compiled policy through a cache. It refreshes it
+    from the `PolicySource` seam (the database now, the decision register in G28) every 2 s, and
+    at once in the process that made the change. Records (`provenance.policy_version`), write and
+    recall spans and recall explanations carry the compiled version (`policy-v<n>-<hash>`), and
+    explanations replay with that version's weights. The compiled body is kept in `mh_policy`.
+  - **Checks:** three new governance checks (40 in all). `policy_precedence`: 30/30 loosening
+    specs refused with their rule, audited, none stored; an outranked policy stops running.
+    `policy_approval`: unapproved never runs or activates, at the engine or the database; the
+    approved version is stamped on records, the explanation and spans. `policy_rollback`: new
+    weights changed 3/3 result lists at once, and in a second engine within the refresh time;
+    rollback restored 3/3 exactly (ids and scores). The API contract check covers the five new
+    operations; e2e runs the CLI flow.
 
 #### G10 — Write pipeline v2: intake queue, candidates, classification, routing
 

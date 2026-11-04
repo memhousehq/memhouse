@@ -983,8 +983,11 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // 29–33. Identity and authorization (G06).
     checks.extend(crate::identity_checks::run(engine).await);
 
-    // 34–36. Tracing, metrics and recall explanations (G07).
+    // 34–37. Tracing, metrics, recall explanations and content-free telemetry (G07).
     checks.extend(crate::telemetry_checks::run(engine).await);
+
+    // 38–40. The policy engine: precedence, approval and rollback (G08).
+    checks.extend(crate::policy_checks::run(engine).await);
 
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {

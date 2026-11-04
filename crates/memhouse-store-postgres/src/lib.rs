@@ -304,6 +304,50 @@ CREATE INDEX IF NOT EXISTS mh_recall_user_idx ON mh_recall (tenant, acting_user)
 CREATE INDEX IF NOT EXISTS mh_recall_at_idx ON mh_recall (at);
 "#;
 
+/// The v5 additions (G08): behaviour policy specs, their approval and activations. Specs are
+/// numbered per tenant; an activation names an approved spec or, with no version, the default
+/// policy. The trigger refuses to activate anything else (POL-03).
+const SCHEMA_V5_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS mh_policy_spec (
+  tenant      text NOT NULL,
+  version     int NOT NULL CHECK (version > 0),
+  name        text NOT NULL,
+  spec        jsonb NOT NULL,
+  spec_hash   text NOT NULL,
+  status      text NOT NULL CHECK (status IN ('proposed', 'approved')),
+  note        text,
+  proposed_by text NOT NULL,
+  proposed_at timestamptz NOT NULL DEFAULT now(),
+  approved_by text,
+  approved_at timestamptz,
+  PRIMARY KEY (tenant, version),
+  CHECK ((status = 'approved') = (approved_by IS NOT NULL AND approved_at IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS mh_policy_activation (
+  id       bigserial PRIMARY KEY,
+  tenant   text NOT NULL,
+  version  int,
+  compiled text NOT NULL,
+  action   text NOT NULL,
+  by_whom  text NOT NULL,
+  at       timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (tenant, version) REFERENCES mh_policy_spec (tenant, version)
+);
+CREATE INDEX IF NOT EXISTS mh_policy_activation_tenant_idx ON mh_policy_activation (tenant, id DESC);
+
+CREATE OR REPLACE FUNCTION mh_policy_activation_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.version IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM mh_policy_spec WHERE tenant = NEW.tenant AND version = NEW.version AND status = 'approved'
+  ) THEN
+    RAISE EXCEPTION 'policy v% of tenant % is not approved; only approved policies execute', NEW.version, NEW.tenant;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE TRIGGER mh_policy_activation_guard BEFORE INSERT ON mh_policy_activation FOR EACH ROW EXECUTE FUNCTION mh_policy_activation_guard();
+"#;
+
 impl PgStore {
     /// One probe's recall statement (the `db.search` span is the caller's).
     async fn search_one(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
@@ -313,6 +357,26 @@ impl PgStore {
         let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
+}
+
+const SPEC_COLS: &str = "tenant, version, name, spec, spec_hash, status, note, proposed_by, proposed_at, approved_by, approved_at";
+
+fn row_to_spec(r: &PgRow) -> anyhow::Result<memhouse_core::policy::PolicySpecRecord> {
+    let status: String = r.try_get("status")?;
+    let version: i32 = r.try_get("version")?;
+    Ok(memhouse_core::policy::PolicySpecRecord {
+        tenant: r.try_get("tenant")?,
+        version: version as u32,
+        name: r.try_get("name")?,
+        spec: r.try_get("spec")?,
+        spec_hash: r.try_get("spec_hash")?,
+        status: memhouse_core::policy::SpecStatus::parse(&status).ok_or_else(|| anyhow::anyhow!("unknown policy status {status}"))?,
+        note: r.try_get("note")?,
+        proposed_by: r.try_get("proposed_by")?,
+        proposed_at: r.try_get("proposed_at")?,
+        approved_by: r.try_get("approved_by")?,
+        approved_at: r.try_get("approved_at")?,
+    })
 }
 
 fn row_to_principal(r: &PgRow) -> anyhow::Result<memhouse_core::identity::Principal> {
@@ -970,6 +1034,7 @@ impl Store for PgStore {
         sqlx::raw_sql(SCHEMA_V2_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V3_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V4_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V5_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -982,7 +1047,7 @@ impl Store for PgStore {
         if stored_version.is_some_and(|v| v < 2) {
             self.backfill_v2(embedder_id, &config).await?;
         }
-        // v3 and v4 only add tables.
+        // v3, v4 and v5 only add tables.
         sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
             .bind(SCHEMA_VERSION.to_string())
             .bind(SCHEMA_VERSION as i32)
@@ -1878,6 +1943,106 @@ impl Store for PgStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn policy_body(&self, version: &str) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(sqlx::query_scalar("SELECT body FROM mh_policy WHERE version = $1").bind(version).fetch_optional(&self.pool).await?)
+    }
+
+    async fn policy_propose(
+        &self,
+        tenant: &str,
+        name: &str,
+        spec: &serde_json::Value,
+        spec_hash: &str,
+        by: &str,
+        note: Option<&str>,
+    ) -> anyhow::Result<memhouse_core::policy::PolicySpecRecord> {
+        let sql = trusted_sql!(
+            "INSERT INTO mh_policy_spec (tenant, version, name, spec, spec_hash, status, note, proposed_by) \
+             SELECT $1, coalesce(max(version), 0) + 1, $2, $3, $4, 'proposed', $5, $6 FROM mh_policy_spec WHERE tenant = $1 \
+             RETURNING {SPEC_COLS}"
+        );
+        let r = sqlx::query(sql).bind(tenant).bind(name).bind(spec).bind(spec_hash).bind(note).bind(by).fetch_one(&self.pool).await?;
+        row_to_spec(&r)
+    }
+
+    async fn policy_spec(&self, tenant: &str, version: u32) -> anyhow::Result<Option<memhouse_core::policy::PolicySpecRecord>> {
+        let sql = trusted_sql!("SELECT {SPEC_COLS} FROM mh_policy_spec WHERE tenant = $1 AND version = $2");
+        let r = sqlx::query(sql).bind(tenant).bind(version as i32).fetch_optional(&self.pool).await?;
+        r.as_ref().map(row_to_spec).transpose()
+    }
+
+    async fn policy_specs(&self, tenant: &str) -> anyhow::Result<Vec<memhouse_core::policy::PolicySpecRecord>> {
+        let sql = trusted_sql!("SELECT {SPEC_COLS} FROM mh_policy_spec WHERE tenant = $1 ORDER BY version");
+        sqlx::query(sql).bind(tenant).fetch_all(&self.pool).await?.iter().map(row_to_spec).collect()
+    }
+
+    async fn policy_approve(&self, tenant: &str, version: u32, approver: &str, compiled: &str) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let n = sqlx::query("UPDATE mh_policy_spec SET status = 'approved', approved_by = $3, approved_at = now() WHERE tenant = $1 AND version = $2 AND status = 'proposed'")
+            .bind(tenant)
+            .bind(version as i32)
+            .bind(approver)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if n == 0 {
+            return Ok(false);
+        }
+        sqlx::query("INSERT INTO mh_policy_activation (tenant, version, compiled, action, by_whom) VALUES ($1, $2, $3, 'approve', $4)")
+            .bind(tenant)
+            .bind(version as i32)
+            .bind(compiled)
+            .bind(approver)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    async fn policy_activate(&self, tenant: &str, version: Option<u32>, compiled: &str, action: &str, by: &str) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO mh_policy_activation (tenant, version, compiled, action, by_whom) VALUES ($1, $2, $3, $4, $5)")
+            .bind(tenant)
+            .bind(version.map(|v| v as i32))
+            .bind(compiled)
+            .bind(action)
+            .bind(by)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn policy_active(&self, tenant: &str) -> anyhow::Result<Option<memhouse_core::policy::PolicySpecRecord>> {
+        let sql = trusted_sql!(
+            "SELECT {} FROM (SELECT version FROM mh_policy_activation WHERE tenant = $1 ORDER BY id DESC LIMIT 1) a \
+             JOIN mh_policy_spec s ON s.tenant = $1 AND s.version = a.version",
+            SPEC_COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ")
+        );
+        let r = sqlx::query(sql).bind(tenant).fetch_optional(&self.pool).await?;
+        r.as_ref().map(row_to_spec).transpose()
+    }
+
+    async fn policy_history(&self, tenant: &str, limit: usize) -> anyhow::Result<Vec<memhouse_core::policy::PolicyActivation>> {
+        let rows = sqlx::query("SELECT id, tenant, version, compiled, action, by_whom, at FROM mh_policy_activation WHERE tenant = $1 ORDER BY id DESC LIMIT $2")
+            .bind(tenant)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter()
+            .map(|r| {
+                let version: Option<i32> = r.try_get("version")?;
+                Ok(memhouse_core::policy::PolicyActivation {
+                    id: r.try_get("id")?,
+                    tenant: r.try_get("tenant")?,
+                    version: version.map(|v| v as u32),
+                    compiled: r.try_get("compiled")?,
+                    action: r.try_get("action")?,
+                    by: r.try_get("by_whom")?,
+                    at: r.try_get("at")?,
+                })
+            })
+            .collect()
     }
 
     async fn link_put(&self, l: &Link) -> anyhow::Result<()> {

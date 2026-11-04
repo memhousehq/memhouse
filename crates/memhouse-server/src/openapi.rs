@@ -10,7 +10,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{json, Map, Value};
 
 /// The API version, separate from the crate version. Minor and patch releases only add.
-pub const API_VERSION: &str = "1.2.0";
+pub const API_VERSION: &str = "1.3.0";
 
 /// Routes kept from before v1, with the route that replaces each. They answer as before and add
 /// `Deprecation`, `Sunset` and `Link` headers; they are removed no earlier than [`SUNSET`].
@@ -125,6 +125,15 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
     let token_res = s(g.subschema_for::<memhouse_core::identity::TokenResponse>());
     let whoami = s(g.subschema_for::<WhoAmI>());
     let explanation = s(g.subschema_for::<RecallExplanation>());
+    use memhouse_core::policy as pol;
+    let policy_status = s(g.subschema_for::<pol::PolicyStatus>());
+    let spec_req = s(g.subschema_for::<pol::PolicySpecRequest>());
+    let spec_rec = s(g.subschema_for::<pol::PolicySpecRecord>());
+    let validation = s(g.subschema_for::<pol::PolicyValidation>());
+    let diff_req = s(g.subschema_for::<pol::PolicyDiffRequest>());
+    let diff_res = s(g.subschema_for::<pol::PolicyDiff>());
+    let compiled = s(g.subschema_for::<pol::CompiledPolicy>());
+    let rollback_req = s(g.subschema_for::<pol::RollbackRequest>());
     s(g.subschema_for::<ErrorBody>());
     let id_param = || path_param("id", "A memory id.");
     let subject_param = || path_param("subject", "A subject, e.g. `customer:acme` (URL-encoded).");
@@ -363,6 +372,96 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
         },
         Op {
             method: "get",
+            path: "/v1/policies",
+            id: "policies",
+            summary: "The tenant's policy: running, versions and history",
+            description: "The compiled policy that runs now, every spec version with its status, proposer and approver, and the activations, newest first (POL-08). Needs `policy:read`.",
+            tag: "policy",
+            stability: Stable,
+            body: None,
+            ok: policy_status,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/policies",
+            id: "proposePolicy",
+            summary: "Propose a policy spec",
+            description: "Stores the spec as the tenant's next version, `proposed`; it runs only once approved (POL-03). A spec that would loosen governance, or is otherwise invalid, is refused with every problem listed and the refusal is audited (POL-04). Needs `policy:propose`.",
+            tag: "policy",
+            stability: Stable,
+            body: Some(spec_req.clone()),
+            ok: spec_rec,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/policies/validate",
+            id: "validatePolicy",
+            summary: "Compile a spec without storing it",
+            description: "Whether the spec compiles for the caller's tenant under its governance, and the compiled policy or the violations. Needs `policy:read`.",
+            tag: "policy",
+            stability: Stable,
+            body: Some(spec_req),
+            ok: validation,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/policies/diff",
+            id: "diffPolicies",
+            summary: "Compare two policies",
+            description: "The settings that differ between two compiled policies: the running one, the default, a stored version or an unstored spec. Needs `policy:read`.",
+            tag: "policy",
+            stability: Stable,
+            body: Some(diff_req),
+            ok: diff_res,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/policies/{version}/approve",
+            id: "approvePolicy",
+            summary: "Approve a proposed version and activate it",
+            description: "The caller is recorded as the named approver. The spec is compiled again under the governance in force now; engines run it within seconds, without a restart. Needs `policy:approve`.",
+            tag: "policy",
+            stability: Stable,
+            body: None,
+            ok: compiled.clone(),
+            params: vec![path_param("version", "The spec version, e.g. `3`.")],
+            idempotent: false,
+            errors: &[400, 401, 404, 409, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/policies/rollback",
+            id: "rollbackPolicy",
+            summary: "Activate an earlier policy",
+            description: "Activates an approved version, the default policy, or (with no `to`) the policy active before the current one, if it compiles under the governance in force now. An unapproved version is refused and the refusal audited (POL-03). Needs `policy:approve`.",
+            tag: "policy",
+            stability: Stable,
+            body: Some(rollback_req),
+            ok: compiled,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
             path: "/v1/audit",
             id: "audit",
             summary: "Newest audit events",
@@ -583,6 +682,7 @@ pub fn spec() -> Value {
             {"name": "memory", "description": "The core operations (CORE-01)."},
             {"name": "identity", "description": "Who is calling: tokens and the verified identity (GOV-01, GOV-13)."},
             {"name": "operations", "description": "Health, counts and audit."},
+            {"name": "policy", "description": "Behaviour policy: structured specs, compiled under governance, approved, versioned and rolled back (POL-01, POL-03, POL-04, POL-08)."},
             {"name": "deprecated", "description": format!("Routes from before v1, deprecated on {DEPRECATED_ON}, removed no earlier than {SUNSET}.")}
         ],
         "paths": paths,

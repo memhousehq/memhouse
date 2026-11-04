@@ -238,6 +238,9 @@ request can switch it with `"rerank": true` or `false`.
 
 These keys tune recall. The defaults are the settings behind the published benchmark results;
 change them only with a benchmark run to compare against (see [development.md](development.md#benchmark-a-change)).
+With `[governance]` and `[access]` they make up the default policy: an approved
+[policy](policy.md) can change the ranking, write-gate and retention keys per tenant without a
+restart, and can only tighten governance.
 
 | Key | Default | Effect |
 |---|---|---|
@@ -313,7 +316,10 @@ extra = {}
 
 ## `[governance]`
 
-See [governance.md](governance.md) for what each control does and how to prove it works.
+See [governance.md](governance.md) for what each control does and how to prove it works. These
+keys are the tenant governance every [policy](policy.md) is compiled against: a policy may add
+redaction categories and denied labels, shorten retention and lower `max_content_chars`, never the
+reverse.
 
 | Key | Default | Notes |
 |---|---|---|

@@ -227,6 +227,9 @@ async fn routes(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Resu
             "/v1/review" => json!({"id": id, "action": "commit"}),
             "/v1/tokens" => json!({}),
             "/v1/memories/{id}" => json!({"content": "x"}),
+            "/v1/policies" | "/v1/policies/validate" => json!({"spec": {"name": "x", "scope": {"tenant": "default"}}}),
+            "/v1/policies/diff" => json!({"to": "default"}),
+            "/v1/policies/rollback" => json!({}),
             _ => return None,
         })
     };
@@ -239,7 +242,7 @@ async fn routes(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Resu
             if op.get("security") == Some(&json!([])) || path == "/v1/whoami" {
                 continue;
             }
-            let concrete = path.replace("{id}", &id).replace("{subject}", "customer:1");
+            let concrete = path.replace("{id}", &id).replace("{subject}", "customer:1").replace("{version}", "1");
             let b = if method == "get" || method == "delete" { None } else { body(path) };
             let r = api.call(&method.to_uppercase(), path, &concrete, b, &[("authorization", none.as_str())]).await?;
             calls += 1;

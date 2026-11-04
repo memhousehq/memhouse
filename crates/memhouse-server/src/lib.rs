@@ -14,6 +14,7 @@ use axum::{Json, Router};
 use memhouse_core::caller::Caller;
 use memhouse_core::error::{self, ErrorBody, ErrorCode};
 use memhouse_core::identity::Identity;
+use memhouse_core::policy::{CompiledPolicy, PolicyDiff, PolicyDiffRequest, PolicySpecRecord, PolicySpecRequest, PolicyStatus, PolicyValidation, RollbackRequest};
 use memhouse_core::types::*;
 use memhouse_core::{Config, Engine, Store};
 use memhouse_store_postgres::PgStore;
@@ -34,8 +35,9 @@ pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<En
     store.migrate(embedder.dim(), embedder.id()).await?;
     let chat = memhouse_models::enrich_chat(&cfg, None)?;
     let engine = Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat);
-    // Records name the policy that admitted them; the policy itself is kept with them.
-    engine.store.policy_put(&engine.policy()).await?;
+    // Records name the policy that admitted them; the policy itself is kept with them (and the
+    // active policy is compiled now, so a spec that no longer compiles is reported at start).
+    engine.policy_for(&engine.cfg.memory.tenant).await?;
     Ok(engine)
 }
 
@@ -219,6 +221,11 @@ pub fn router(engine: Engine) -> Router {
         .route("/v1/stats", get(stats))
         .route("/v1/enrich/status", get(enrich_status))
         .route("/v1/audit", get(audit))
+        .route("/v1/policies", get(policies).post(policy_propose))
+        .route("/v1/policies/validate", post(policy_validate))
+        .route("/v1/policies/diff", post(policy_diff))
+        .route("/v1/policies/rollback", post(policy_rollback))
+        .route("/v1/policies/{version}/approve", post(policy_approve))
         // Pre-v1 aliases (see `openapi::DEPRECATED`)
         .route("/v1/memories", post(remember).get(list))
         .route("/v1/subjects/{subject}", axum::routing::delete(erase_subject))
@@ -347,6 +354,30 @@ async fn issue_token(Who(c): Who, Body(req): Body<TokenRequest>) -> ApiResult<me
 
 async fn whoami(Who(c): Who) -> ApiResult<WhoAmI> {
     Ok(Json(c.whoami().await?))
+}
+
+async fn policies(Who(c): Who) -> ApiResult<PolicyStatus> {
+    Ok(Json(c.policy_status().await?))
+}
+
+async fn policy_propose(Who(c): Who, Body(req): Body<PolicySpecRequest>) -> ApiResult<PolicySpecRecord> {
+    Ok(Json(c.policy_propose(&req).await?))
+}
+
+async fn policy_validate(Who(c): Who, Body(req): Body<PolicySpecRequest>) -> ApiResult<PolicyValidation> {
+    Ok(Json(c.policy_validate(&req.spec).await?))
+}
+
+async fn policy_diff(Who(c): Who, Body(req): Body<PolicyDiffRequest>) -> ApiResult<PolicyDiff> {
+    Ok(Json(c.policy_diff(&req).await?))
+}
+
+async fn policy_approve(Who(c): Who, PathParam(version): PathParam<u32>) -> ApiResult<CompiledPolicy> {
+    Ok(Json(c.policy_approve(version).await?))
+}
+
+async fn policy_rollback(Who(c): Who, Body(req): Body<RollbackRequest>) -> ApiResult<CompiledPolicy> {
+    Ok(Json(c.policy_rollback(&req).await?))
 }
 
 fn parse_kinds(list: &str) -> Result<Vec<MemoryKind>, ApiError> {

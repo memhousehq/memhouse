@@ -12,6 +12,7 @@ pub mod format;
 pub mod gate;
 pub mod identity;
 pub mod metrics;
+pub mod policy;
 pub mod query;
 pub mod reembed;
 pub mod templates;

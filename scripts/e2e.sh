@@ -68,6 +68,21 @@ step "MCP over HTTP"
 api /mcp -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall","arguments":{"subject":"customer:acme","query":"renewal"}}}' | grep "2027-03-01" >/dev/null
 api /mcp -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_recall","arguments":{"subject":"customer:acme","query":"renewal"}}}' | grep "2027-03-01" >/dev/null
 
+step "policy: validate, propose, approve, roll back"
+cat > "$MEMHOUSE_HOME/policy.toml" <<'EOF'
+name = "e2e"
+[scope]
+tenant = "default"
+[ranking]
+recency_weight = 0.5
+EOF
+"$BIN" policy validate "$MEMHOUSE_HOME/policy.toml" | grep "ranking.recency_weight: 0.0 → 0.5" >/dev/null
+V=$("$BIN" policy propose "$MEMHOUSE_HOME/policy.toml" | sed -n 's/^proposed v\([0-9]*\) .*/\1/p')
+test -n "$V"
+"$BIN" policy approve "$V" --approver "e2e operator" | grep "approved by e2e operator" >/dev/null
+api /v1/policies | grep "\"active\":$V" >/dev/null
+"$BIN" policy rollback --approver "e2e operator" | grep "rolled back to the default policy" >/dev/null
+
 step "doctor (includes MCP stdio round-trip)"
 "$BIN" doctor | tee /dev/stderr | grep "MCP stdio round-trip" >/dev/null
 
