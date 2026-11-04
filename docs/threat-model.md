@@ -77,7 +77,7 @@ flowchart LR
 | T19 | Supply chain | Tampered embedding model files | downloaded once over HTTPS from the model hub | no pinned revision or checksum → **G16** (pin model revisions and verify hashes), **G35** (offline bundles) |
 | T20 | Supply chain | Secrets committed to a repository | secret scanner in pre-commit and CI over tree and history (G02) | forge push protection arrives with publication → **G09** |
 | T21 | Spoofing | Local stdio MCP used by another local user | runs as the invoking OS user with that user's config | shared machines rely on file permissions only; documented |
-| T22 | Info disclosure | A remote embedding API receives every memory and query | off by default (local model); opt-in with `[embedding] provider = "openai"`; text is redacted by the gate before embedding; the key is read from a named variable and never logged; error messages quote at most 500 characters of the endpoint's reply | no egress policy per tenant, and query text is sent unredacted to the same endpoint → **G29** (egress control, sovereign mode refuses a non-local embedder) |
+| T22 | Info disclosure | A remote embedding API receives every memory and query | off by default (local model); opt-in with `[embedding] provider = "openai"`; text is redacted by the gate before embedding; the key is read from a named variable and never logged; errors keep only the endpoint's HTTP status and its error `type` and `code`, never its message (T13) | no egress policy per tenant, and query text is sent unredacted to the same endpoint → **G29** (egress control, sovereign mode refuses a non-local embedder) |
 
 ## Review triggers
 
