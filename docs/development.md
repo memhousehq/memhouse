@@ -53,7 +53,7 @@ replace the defaults without touching the engine.
 | `core/src/config.rs` | every config key, its default and its environment override |
 | `store-postgres/src/lib.rs` | schema, the single-statement hybrid search, the audit chain, cascading deletes |
 | `server/src/lib.rs` / `mcp.rs` | routes, auth middleware, MCP tools |
-| `bench/src/governance.rs` | the 18 governance checks |
+| `bench/src/governance.rs` | the governance suite (37 checks); the API, identity, schema and telemetry checks are in `*_checks.rs` next to it |
 
 ## Build
 

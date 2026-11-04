@@ -20,5 +20,9 @@ path from 0.x data other than export and import.
 - Principals, per-principal API keys, short-lived agent tokens, propose-only agents, labels and an
   authorizer checked on every operation.
 - Hash-chained audit log, deletion ledger, retention; Memory Format v2 export and import.
-- OpenTelemetry traces and a Prometheus metrics endpoint.
+- OpenTelemetry traces and a Prometheus metrics endpoint. Logs and traces carry identifiers and
+  timings, never memory content or query text; errors from embedding and LLM providers keep only
+  the status and the provider's error type and code.
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
+- The CLI stops quietly, with status 141, when the program reading its output exits early
+  (`memhouse recall ... | head`).
