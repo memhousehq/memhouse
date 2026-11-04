@@ -3,8 +3,9 @@
 
 | Field | Value |
 |---|---|
-| Version | 2.1 (the public edition of development plan v2) |
-| Date | 2 November 2026 |
+| Version | 2.2 (the public edition of development plan v2) |
+| Date | 4 November 2026 |
+| Progress | 9 of 34 goals done ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -41,7 +42,14 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 40 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
-- docs: API, configuration, operations, governance, development, architecture, benchmarks.
+- API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
+  schema v5 and Memory Format v2 with conformance vectors (G04);
+- principals with per-principal keys and short-lived agent tokens, an authorizer on every call,
+  propose-only agents and labels enforced inside the recall statement (G06);
+- OpenTelemetry traces, Prometheus metrics and a stored explanation for every recall (G07);
+- versioned behaviour policies, compiled under governance, approved by a named person and
+  rolled back (G08);
+- docs: API, configuration, operations, governance, policy, development, architecture, benchmarks.
 
 Published results: LongMemEval_S QA **86.0** (GPT-4o), LoCoMo QA **83.7** (GPT-4o-mini), recall
 p50 about 30 ms on a laptop.
@@ -51,10 +59,11 @@ first. Plan v2 keeps that: the Lite store comes after the logical schema, API an
 are frozen (goals G04–G15), so it is written once against the final contracts instead of being
 reworked.
 
-**What is missing from the code is everything in goals G02–G35 below.** The largest gaps are
-identity and access (GOV-01/02, ACC), a policy engine (POL), candidates and statement
-classification (CORE-02, QUAL-02), working memory and scopes (MEM-01/04), SDKs, the Lite store,
-the coding template's git-aware features, CI and release engineering, and all of Scale.
+**What is missing from the code is everything in the goals not ticked in the
+[goal tracker](#goal-tracker)** (G10 onwards, apart from the re-embedding done early in G25). The
+largest gaps are candidates and statement classification (CORE-02 behaviour, QUAL-02), working
+memory and scopes (MEM-01/04), relationship-based access (ACC), SDKs, the Lite store, the coding
+template's git-aware features, release engineering, and all of Scale.
 
 ---
 
@@ -193,7 +202,7 @@ site and the announcement come with the developer launch (G21).
 
 ## 5. How to run a goal
 
-Paste the goal's `/goal` line into Claude Code. The session should:
+Paste the goal's `/goal` line into Claude Code. Each line ends by pointing here. The session should:
 
 1. Read this plan's section for the goal, and the requirement texts it cites (the design
    requirements are kept with the project's planning documents).
@@ -201,11 +210,41 @@ Paste the goal's `/goal` line into Claude Code. The session should:
    shortcuts).
 3. Implement it with unit tests, and a governance check for every new safety property.
 4. Run the guard tier the goal names and compare against the baselines.
-5. Update the docs the goal touches (`docs/*.md`, README) and tick the goal's boxes in this file.
-6. Commit locally with a message naming the goal (e.g. `G06: identity and authorizer seam`).
+5. Update the docs the goal touches (`docs/*.md`, README).
+6. Log what was done in this file, as described below.
+7. Commit with a message naming the goal (e.g. `G06: identity and authorizer seam`), including the
+   change to this file.
 
-A goal is **done** when every box is ticked, its acceptance tests pass, the guard passes and the
-docs match the code.
+A goal is **done** when every deliverable box is ticked, its "Done when" holds, the guard passes,
+the docs match the code and the work is logged here.
+
+### Logging a goal
+
+This file is the record of what is done. Each session keeps it up to date as it works, not only at
+the end, so that the next session, or a reader on GitHub, can see where the goal stands.
+
+- **Deliverables.** Tick a box (`[x]`) in the same commit as the work that completes it. If the goal
+  needed something the plan did not list, add a box for it. Never delete a box: if a deliverable is
+  dropped, strike it through (`~~…~~`) and give the reason; if it moves, name the goal it moves to.
+- **Status.** When the goal is done, tick its **Done** box (the first line of its section) and its
+  box in the [goal tracker](#goal-tracker), each with the date, and update the progress count at
+  the top of this file. A goal with some deliverables done
+  but not all stays unticked, with a note on the **Done** line (see G25).
+- **Result.** Add a `**Result (YYYY-MM-DD):**` entry to the goal. It covers:
+  - what was built, with the names of commands, routes, tables and checks, and links to the docs;
+  - the numbers that show "Done when" holds;
+  - the guard tier, its outcome and any paid spend;
+  - what differs from the plan and why, and what moved to which later goal;
+  - what was decided by the user, and when.
+
+  A goal that takes several sessions adds a dated entry for each one, and later fixes to a done
+  goal add a dated line to its result (see G07's T13 entry).
+- **Moved work.** When part of a goal moves, add it as a box in the goal that receives it, and say so
+  in both. Work done early, in another goal, is ticked where it lives and marked "done early" with
+  the date.
+- **The rest of this file.** Update [section 1](#1-where-we-are) when a goal changes what the code
+  can do, the baselines in [section 3](#3-the-benchmark-guard) when the guard's values change, and
+  the [coverage index](#appendix-a--coverage-index) when a requirement moves between goals.
 
 ---
 
@@ -253,16 +292,82 @@ Indicative pace with Claude Code doing the implementation: a goal takes one to t
 sessions; stages A–D are about 6–8 weeks of steady work. Stages E onward have no calendar yet.
 Goal numbers are stable; a number missing from this file is a goal planned outside it.
 
+### Goal tracker
+
+One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal)).
+
+**A. Foundations**
+
+- [x] [G01 — Local CI and benchmark guard](#g01--local-ci-and-benchmark-guard) (1 November 2026)
+- [x] [G02 — Repository foundation, licence boundary and secret hygiene](#g02--repository-foundation-licence-boundary-and-secret-hygiene) (1 November 2026)
+- [x] [G03 — Technology spike, threat model and decision records](#g03--technology-spike-threat-model-and-decision-records) (1 November 2026)
+
+**B. Contracts**
+
+- [x] [G04 — Logical schema v2 and Memory Format v2](#g04--logical-schema-v2-and-memory-format-v2) (2 November 2026)
+- [x] [G05 — Public API v1 contract](#g05--public-api-v1-contract) (2 November 2026)
+- [x] [G06 — Identity, principals and the authorizer seam](#g06--identity-principals-and-the-authorizer-seam) (2 November 2026)
+- [x] [G07 — Tracing, metrics and recall explanations](#g07--tracing-metrics-and-recall-explanations) (2 November 2026)
+- [x] [G09 — Open-source publication](#g09--open-source-publication) (3 November 2026)
+
+**C. Engine**
+
+- [x] [G08 — Policy engine v1 (structured specs, approval, versions)](#g08--policy-engine-v1-structured-specs-approval-versions) (4 November 2026)
+- [ ] [G10 — Write pipeline v2: intake queue, candidates, classification, routing](#g10--write-pipeline-v2-intake-queue-candidates-classification-routing)
+- [ ] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion)
+- [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2)
+- [ ] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate)
+- [ ] [G14 — Quality iteration I: weak types and tiered extraction](#g14--quality-iteration-i-weak-types-and-tiered-extraction)
+
+**D. Lite + developer launch**
+
+- [ ] [G15 — Adapter and profile conformance kits](#g15--adapter-and-profile-conformance-kits)
+- [ ] [G16 — Lite profile: embedded store](#g16--lite-profile-embedded-store)
+- [ ] [G17 — Profile migration](#g17--profile-migration)
+- [ ] [G18 — SDKs, embedded bindings and first framework adapters](#g18--sdks-embedded-bindings-and-first-framework-adapters)
+- [ ] [G19 — Coding template v1](#g19--coding-template-v1)
+- [ ] [G20 — Memory browser v2 and admin console](#g20--memory-browser-v2-and-admin-console)
+- [ ] [G21 — Packaging and release v1 (developer launch)](#g21--packaging-and-release-v1-developer-launch)
+
+**E. Governance, connectors, templates**
+
+- [ ] [G22 — Governance II](#g22--governance-ii)
+- [ ] [G23 — Context-provider plugin system, connectors and importers](#g23--context-provider-plugin-system-connectors-and-importers)
+- [ ] [G24 — Templates as packages; policies II](#g24--templates-as-packages-policies-ii)
+- [ ] [G25 — Economics, consolidation and re-embedding](#g25--economics-consolidation-and-re-embedding) (re-embedding done early)
+- [ ] [G26 — Quality iteration II](#g26--quality-iteration-ii)
+
+**F. Regulated**
+
+- [ ] [G27 — Relationship-based access control](#g27--relationship-based-access-control)
+- [ ] [G28 — Access Policy Decision Register](#g28--access-policy-decision-register)
+- [ ] [G29 — Enterprise security](#g29--enterprise-security)
+- [ ] [G30 — Production readiness on Standard](#g30--production-readiness-on-standard)
+
+**G. Scale**
+
+- [ ] [G31 — Durable log intake and workflow engine](#g31--durable-log-intake-and-workflow-engine)
+- [ ] [G32 — Sharding, Standard → Scale migration and multi-region](#g32--sharding-standard--scale-migration-and-multi-region)
+- [ ] [G33 — More adapters and distribution](#g33--more-adapters-and-distribution)
+
+**H. Extensions**
+
+- [ ] [G35 — Graph, code structure, prompt overrides, air-gapped](#g35--graph-code-structure-prompt-overrides-air-gapped)
+
 ---
 
 ## 7. Goals
 
-Legend for status: `[x]` done · `[ ]` to do. Requirement IDs in **bold** are completed by the goal;
-plain IDs are partly addressed and finished in a later goal, which is named.
+Legend for status: `[x]` done · `[ ]` to do. Each goal opens with its **Done** box, followed by a
+box for each deliverable; [section 5](#logging-a-goal) says how to keep them. Requirement IDs in
+**bold** are completed by the goal; plain IDs are partly addressed and finished in a later goal,
+which is named.
 
 ### Stage A — Foundations
 
 #### G01 — Local CI and benchmark guard
+
+- [x] **Done** (1 November 2026)
 
 > `/goal Build a one-command local CI (scripts/ci.sh or cargo xtask ci) that runs fmt, clippy, unit tests, scripts/e2e.sh, the governance suite and the T1 benchmark guard, comparing results with bench/baselines.json and failing on any regression defined in section 3 of docs/roadmap.md; install it as a git pre-push hook.`
 
@@ -287,6 +392,8 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 - **Guard:** T1 (it creates it). **Depends on:** nothing.
 
 #### G02 — Repository foundation, licence boundary and secret hygiene
+
+- [x] **Done** (1 November 2026)
 
 > `/goal Prepare the repository for publication and for the long run: move the plan to docs/roadmap.md and keep planning documents that are not public out of the repository, add LICENSE, NOTICE, SPDX headers with a check, CONTRIBUTING with DCO sign-off, CODE_OF_CONDUCT, CODEOWNERS, cargo-deny licence and advisory policy, a secret scanner as a pre-commit hook and in cargo xtask ci, .env.example, docs/security/secrets.md with the secret inventory from section 4 of the roadmap, and a .mailmap with a real author identity for new commits.`
 
@@ -316,7 +423,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
   from the shipped dependencies.)
 - **Guard:** T1. **Depends on:** G01.
 
-#### G03 — Technology spike, threat model and decision records ✅
+#### G03 — Technology spike, threat model and decision records
+
+- [x] **Done** (1 November 2026)
 
 > `/goal Run the technology spike from the technical requirements (section 6.10) and write ADRs in docs/adr/ for: Lite embedded store, vector storage format, intake queue/log, authorization store, connection pooler, minimum pgvector and gRPC; write docs/threat-model.md and the AP-10 security-baseline design.`
 
@@ -363,7 +472,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 ### Stage B — Contracts (freeze before building on them)
 
-#### G04 — Logical schema v2 and Memory Format v2 ✅
+#### G04 — Logical schema v2 and Memory Format v2
+
+- [x] **Done** (2 November 2026)
 
 > `/goal Implement logical schema v2 and Memory Format v2 as expand-only migrations: principals and provenance on every record, policy version, scopes, labels, the candidate lifecycle, request keys, working memory, links, code references and structured records; publish the format spec with conformance vectors; export/import must round-trip losslessly.`
 
@@ -411,7 +522,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
   publication splits them out (RP-06, G09).
 - **Guard:** T1. **Depends on:** G03.
 
-#### G05 — Public API v1 contract ✅
+#### G05 — Public API v1 contract
+
+- [x] **Done** (2 November 2026)
 
 > `/goal Freeze public API v1: remember (returns a candidate id), recall, revise, forget (by record, user, agent, source, tenant) with idempotency keys, scopes and structured plus rendered output across REST and MCP; publish an OpenAPI spec and the API stability policy; keep the current endpoints as aliases.`
 
@@ -449,7 +562,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
   `forget_scopes` (every mode on seeded data, nothing that matched left in any representation).
 - **Guard:** T1. **Depends on:** G04.
 
-#### G06 — Identity, principals and the authorizer seam ✅
+#### G06 — Identity, principals and the authorizer seam
+
+- [x] **Done** (2 November 2026)
 
 > `/goal Add principals (agents, users, admins) with per-principal API keys and short-lived agent tokens; every call carries a verified agent and acting-user identity; introduce an Authorizer trait checked on every operation (role and scope rules for now), propose-only agent credentials, and settable labels with denied-label enforcement inside the recall statement.`
 
@@ -502,7 +617,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
     PROF-12 (an empty config is secure) and the protobuf mapping of the stable types.
 - **Guard:** T1 (latency rule matters here). **Depends on:** G05.
 
-#### G07 — Tracing, metrics and recall explanations ✅
+#### G07 — Tracing, metrics and recall explanations
+
+- [x] **Done** (2 November 2026)
 
 > `/goal Instrument every memory operation with OpenTelemetry traces (record ids, policy version, latency per stage, principal), add a Prometheus metrics endpoint, and store a retrievable explanation for every recall: returned records with ranking signals and excluded records with the reason (access, label, validity, budget).`
 
@@ -549,7 +666,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
     the provider's `type` and `code`.
 - **Guard:** T1. **Depends on:** G06.
 
-#### G09 — Open-source publication ✅
+#### G09 — Open-source publication
+
+- [x] **Done** (3 November 2026)
 
 > `/goal Prepare and, after the founder signs off, publish the product monorepo: confirm every prerequisite in the G09 checklist, rewrite the history so no private planning document and no private author address remains, scan the whole rewritten history for secrets, split memory-format into its own repository, set up hosted CI with fork-safe workflows, protected branches and required checks, turn on push protection and dependency updates, and push to the chosen forge.`
 
@@ -603,7 +722,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 ### Stage C — Engine completeness on Postgres
 
-#### G08 — Policy engine v1 (structured specs, approval, versions) ✅
+#### G08 — Policy engine v1 (structured specs, approval, versions)
+
+- [x] **Done** (4 November 2026)
 
 *Moved after publication (2 November 2026): it opens stage C.*
 
@@ -649,7 +770,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G10 — Write pipeline v2: intake queue, candidates, classification, routing
 
-> `/goal Rebuild the write path as a staged pipeline (authorize, redact, classify and gate, route, embed, insert) behind an IntakeQueue trait with a durable Postgres implementation; remember returns a candidate at once; the gate classifies statements as fact, completed event, correction, plan or speculation and commits, supersedes or rejects; route structured records to the structured table with exact-query recall; add degradation behaviour.`
+- [ ] **Done**
+
+> `/goal Rebuild the write path as a staged pipeline (authorize, redact, classify and gate, route, embed, insert) behind an IntakeQueue trait with a durable Postgres implementation; remember returns a candidate at once; the gate classifies statements as fact, completed event, correction, plan or speculation and commits, supersedes or rejects; route structured records to the structured table with exact-query recall; add degradation behaviour. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Why now:** classification and candidates change what gets stored, so quality tuning (G14) must
   come after this. The `IntakeQueue` and `JobRunner` seams let G31 swap in a durable log without
@@ -677,7 +800,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G11 — Memory types, scopes and promotion
 
-> `/goal Give each memory type its own gate, retention, retrieval method and access rules (working, episodic, semantic, preference; procedural and taxonomic as candidates), add session working memory with a low-latency cache, scopes with explicit inheritance (tenant, org, team, agent, user, session), audited promotion between types, and sharing across agents with explicit grants.`
+- [ ] **Done**
+
+> `/goal Give each memory type its own gate, retention, retrieval method and access rules (working, episodic, semantic, preference; procedural and taxonomic as candidates), add session working memory with a low-latency cache, scopes with explicit inheritance (tenant, org, team, agent, user, session), audited promotion between types, and sharing across agents with explicit grants. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **MEM-01**, **PERF-05**, **MEM-04**, **MEM-05**, **INT-06**, **ACC-10** (notes about a
   subject stored in that subject's partition), MEM-02 / MEM-03 storage only (behaviour in G19/G25).
@@ -691,7 +816,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G12 — Ranking and packing v2
 
-> `/goal Make ranking combine relevance, recency, confidence and validity with weights from compiled policy, make packing remove near-duplicates and treat the token budget as a hard cap, and return a rendered text block alongside structured hits; tune only within the guard.`
+- [ ] **Done**
+
+> `/goal Make ranking combine relevance, recency, confidence and validity with weights from compiled policy, make packing remove near-duplicates and treat the token budget as a hard cap, and return a rendered text block alongside structured hits; tune only within the guard. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **HYB-05**, **ECON-03**, **PERF-06**, INT-04 rendering (contract in G05).
 - **Deliverables:**
@@ -703,7 +830,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G13 — Evaluation platform: synthetic timelines, own suites, regression gate
 
-> `/goal Build the evaluation platform: a synthetic timeline generator with checkpointed ground truth (500 conversations to start), customer-defined suites runnable on demand and on every policy or model change, storage and retrieval F1, stale-fact and contamination metrics, and the regression gate that blocks a policy, model or engine change that degrades them.`
+- [ ] **Done**
+
+> `/goal Build the evaluation platform: a synthetic timeline generator with checkpointed ground truth (500 conversations to start), customer-defined suites runnable on demand and on every policy or model change, storage and retrieval F1, stale-fact and contamination metrics, and the regression gate that blocks a policy, model or engine change that degrades them. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Why now:** the coding (G19) and support (G24) templates need suites, and quality iteration (G14)
   needs metrics beyond the public datasets.
@@ -719,7 +848,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G14 — Quality iteration I: weak types and tiered extraction
 
-> `/goal Raise answer quality on the weak categories (LongMemEval preference 66.7 and multi-session 78.5; LoCoMo open-domain 66.7 and multi-hop 79.8) with tiered extraction (rules, then small model, then large model only below a confidence threshold) and session-batched extraction, keeping enrichment cost under $0.0002 per session; verify with T2 on every change and T3 at the end.`
+- [ ] **Done**
+
+> `/goal Raise answer quality on the weak categories (LongMemEval preference 66.7 and multi-session 78.5; LoCoMo open-domain 66.7 and multi-hop 79.8) with tiered extraction (rules, then small model, then large model only below a confidence threshold) and session-batched extraction, keeping enrichment cost under $0.0002 per session; verify with T2 on every change and T3 at the end. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **ECON-04**, **TR-MS-05**, **SCALE-08**, **TR-IN-05**, measured gains on the synthetic
   suites too. Each change is validated on a sample first, then confirmed on the full set
@@ -736,7 +867,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G15 — Adapter and profile conformance kits
 
-> `/goal Publish conformance kits for every adapter type (store, embedder, reranker, chat model, intake queue, authorizer) as reusable test suites, plus the profile conformance suite (technical document 6.11); run them against the Postgres profile in CI.`
+- [ ] **Done**
+
+> `/goal Publish conformance kits for every adapter type (store, embedder, reranker, chat model, intake queue, authorizer) as reusable test suites, plus the profile conformance suite (technical document 6.11); run them against the Postgres profile in CI. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Why now:** the Lite store (G16) and later adapters (G32–G33) are written against the kit.
 - **Scope:** **TR-CORE-01** (verified: no profile reimplements engine logic), **TR-CORE-02**,
@@ -749,7 +882,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G16 — Lite profile: embedded store
 
-> `/goal Implement the Lite profile: an embedded store (per ADR, SQLite + FTS5) with in-process exact per-subject vector scoring (binary-quantised prefilter, half-precision rescoring), in-process jobs, automatic migrations with a pre-upgrade snapshot, optional file encryption, backup by snapshot plus export with deletion-ledger replay; make it the default for memhouse up --lite; pass every conformance kit, the governance suite and the guard within noise of Postgres.`
+- [ ] **Done**
+
+> `/goal Implement the Lite profile: an embedded store (per ADR, SQLite + FTS5) with in-process exact per-subject vector scoring (binary-quantised prefilter, half-precision rescoring), in-process jobs, automatic migrations with a pre-upgrade snapshot, optional file encryption, backup by snapshot plus export with deletion-ledger replay; make it the default for memhouse up --lite; pass every conformance kit, the governance suite and the guard within noise of Postgres. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **PROF-04**, **PROF-01**, **PROF-08**, **PROF-06**, **PROF-07**, **TR-LT-01** (binary and
   container; bindings in G18), **TR-LT-03**, **TR-LT-04**, **TR-LT-06**, **TR-LT-08**,
@@ -767,7 +902,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G17 — Profile migration
 
-> `/goal Add memhouse migrate: Lite to Standard (export, import, per-record hash verification, switch-over) with a dry-run mode reporting counts, size, duration and records needing attention; prove lossless round trips in every direction between profiles.`
+- [ ] **Done**
+
+> `/goal Add memhouse migrate: Lite to Standard (export, import, per-record hash verification, switch-over) with a dry-run mode reporting counts, size, duration and records needing attention; prove lossless round trips in every direction between profiles. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **TR-MIG-01**, **TR-MIG-03**, PROF-03 (the Standard → Scale half is G32), **PROF-02**.
 - **Deliverables:**
@@ -778,7 +915,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G18 — SDKs, embedded bindings and first framework adapters
 
-> `/goal Ship Python and TypeScript SDKs generated from the OpenAPI spec with lifecycle hooks (before model call, after turn, on tool result, at session end) that only call the API, embedded Lite bindings for Python and Node, and adapters for the first two agent frameworks; run the profile conformance scenarios through each.`
+- [ ] **Done**
+
+> `/goal Ship Python and TypeScript SDKs generated from the OpenAPI spec with lifecycle hooks (before model call, after turn, on tool result, at session end) that only call the API, embedded Lite bindings for Python and Node, and adapters for the first two agent frameworks; run the profile conformance scenarios through each. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **INT-03**, **PK-04**, TR-LT-01 (bindings), INT-05 (two adapters now, the rest in
   G23). Candidates: OpenAI Agents SDK and LangGraph.
@@ -791,7 +930,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G19 — Coding template v1
 
-> `/goal Finish the coding template: code-reference table, git-aware staleness (memories linked to file paths and content hashes are excluded when the file changes, until revalidated), file-touched recall through harness hooks for Claude Code and one more harness, procedural memory promoted after repeated corrections, and a coding evaluation suite from the synthetic generator.`
+- [ ] **Done**
+
+> `/goal Finish the coding template: code-reference table, git-aware staleness (memories linked to file paths and content hashes are excluded when the file changes, until revalidated), file-touched recall through harness hooks for Claude Code and one more harness, procedural memory promoted after repeated corrections, and a coding evaluation suite from the synthetic generator. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **TPL-03**, **TPL-04**, **TPL-05**, **TR-TPL-02**, **TR-TPL-03**, **MEM-02**
   (procedural promotion), **TPL-06** and **TR-TPL-04** (already done; re-verified).
@@ -804,7 +945,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G20 — Memory browser v2 and admin console
 
-> `/goal Upgrade the Memory Browser to an admin console: view, search, edit, supersede and delete; recall explanations; candidate review and the quarantine console (approve or reject, audited); principals and keys; policy versions; and a profile advisor that warns near Lite limits with the migrate command.`
+- [ ] **Done**
+
+> `/goal Upgrade the Memory Browser to an admin console: view, search, edit, supersede and delete; recall explanations; candidate review and the quarantine console (approve or reject, audited); principals and keys; policy versions; and a profile advisor that warns near Lite limits with the migrate command. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **PROF-09**, **GOV-11**, **PROF-11**.
 - **Deliverables:**
@@ -815,7 +958,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G21 — Packaging and release v1 (developer launch)
 
-> `/goal Make MemHouse releasable: multi-arch non-root container images, a Helm chart, install script, Homebrew tap and crates.io, lockstep versioning with a changelog, a release pipeline from a signed tag that signs artefacts keylessly with checksums, SBOM and provenance and publishes through OIDC trusted publishing (no stored registry tokens), the homebrew-tap and website repositories, a docs site, and a scripted quickstart test that reaches first recall in under 10 minutes on a clean container.`
+- [ ] **Done**
+
+> `/goal Make MemHouse releasable: multi-arch non-root container images, a Helm chart, install script, Homebrew tap and crates.io, lockstep versioning with a changelog, a release pipeline from a signed tag that signs artefacts keylessly with checksums, SBOM and provenance and publishes through OIDC trusted publishing (no stored registry tokens), the homebrew-tap and website repositories, a docs site, and a scripted quickstart test that reaches first recall in under 10 minutes on a clean container. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **PK-02**, **PK-03**, **PK-05**, **DEP-05**, **RL-01**, **RL-02**, **RL-03**,
   **SC-01**, **TR-OPS-03**, **PROF-05**, **DEP-08** (stateless service verified). Repository hygiene
@@ -832,7 +977,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G22 — Governance II
 
-> `/goal Complete governance: retention per memory type and scope from policy with monthly episodic partitions, legal hold exempting data from retention, a deletion workflow that issues a completion certificate with canary verification, memhouse restore that re-applies the deletion ledger before serving, bulk purge by source and untrusted-source candidates, row-level security as a second line, audit-head anchoring, SIEM export within 60 seconds, and a compliance evidence export mapped to SOC 2 and ISO 27001.`
+- [ ] **Done**
+
+> `/goal Complete governance: retention per memory type and scope from policy with monthly episodic partitions, legal hold exempting data from retention, a deletion workflow that issues a completion certificate with canary verification, memhouse restore that re-applies the deletion ledger before serving, bulk purge by source and untrusted-source candidates, row-level security as a second line, audit-head anchoring, SIEM export within 60 seconds, and a compliance evidence export mapped to SOC 2 and ISO 27001. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **GOV-05** (configurable redact/mask/reject per category, verified), **GOV-06**,
   **GOV-07** (completion certificate), **GOV-09**, **GOV-10**, **GOV-12** (anchoring), **GOV-15**,
@@ -848,7 +995,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G23 — Context-provider plugin system, connectors and importers
 
-> `/goal Build the context-provider plugin system: a ContextProvider trait with cursor-based pull, an external-id map in Postgres, scheduling on the JobRunner, supersede-on-change and deletion propagation, writing through the normal pipeline as a principal; ship HubSpot and Zendesk providers first, then Salesforce and Shopify; add importers for Mem0 and Zep exports and chat logs that report unmapped items; add the remaining framework adapters.`
+- [ ] **Done**
+
+> `/goal Build the context-provider plugin system: a ContextProvider trait with cursor-based pull, an external-id map in Postgres, scheduling on the JobRunner, supersede-on-change and deletion propagation, writing through the normal pipeline as a principal; ship HubSpot and Zendesk providers first, then Salesforce and Shopify; add importers for Mem0 and Zep exports and chat logs that report unmapped items; add the remaining framework adapters. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Why now:** it needs principals (G06), the pipeline (G10), the job runner (G10) and policy (G08);
   the support and sales templates (G24) use it.
@@ -864,7 +1013,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G24 — Templates as packages; policies II
 
-> `/goal Turn templates into signed, versioned packages that compile to policies and install, upgrade or roll back in one command; ship support v2 (commitments as candidates with due dates, promoted or expired by connector events; help-centre content in the org partition), sales v2 and success v2 with starter evaluation suites; add layered policies with conflict detection, dry runs against recent traffic, and plain-language authoring compiled to a structured spec.`
+- [ ] **Done**
+
+> `/goal Turn templates into signed, versioned packages that compile to policies and install, upgrade or roll back in one command; ship support v2 (commitments as candidates with due dates, promoted or expired by connector events; help-centre content in the org partition), sales v2 and success v2 with starter evaluation suites; add layered policies with conflict detection, dry runs against recent traffic, and plain-language authoring compiled to a structured spec. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **TPL-01**, **TR-TPL-01**, **PK-06**, **TPL-02**, **TR-TPL-05**, **TPL-08**, **POL-02**,
   **POL-05**, **POL-06**, sales and success templates (built; now packaged with suites).
@@ -877,7 +1028,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G25 — Economics, consolidation and re-embedding
 
-> `/goal Add the cost and value meter per tenant and agent (operations, extraction spend, storage, tokens saved), per-tenant budgets and quotas with hard caps that defer consolidation first, batched scheduled consolidation that summarises old episodic memory with links to sources, taxonomic memory with admin approval, staged re-embedding to a new model without downtime, and a value report from a no-memory holdout.`
+- [ ] **Done** (one deliverable done early, 2 November 2026)
+
+> `/goal Add the cost and value meter per tenant and agent (operations, extraction spend, storage, tokens saved), per-tenant budgets and quotas with hard caps that defer consolidation first, batched scheduled consolidation that summarises old episodic memory with links to sources, taxonomic memory with admin approval, staged re-embedding to a new model without downtime, and a value report from a no-memory holdout. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **ECON-01**, **ECON-02**, **ECON-05**, **ECON-06**, **ECON-08**, **MEM-03**, **MEM-06**,
   **PERF-12**, **INT-08**, **TR-MS-04**, **QUAL-06** (shadow mode, needed to measure ECON-02
@@ -893,9 +1046,15 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G26 — Quality iteration II
 
-> `/goal Second quality pass with consolidation, templates and connectors in place: close the remaining gap to the best published LongMemEval and LoCoMo scores, and report storage/retrieval F1 on the synthetic and template suites; keep enrichment cost under $0.0002 per session and recall p95 within the guard.`
+- [ ] **Done**
+
+> `/goal Second quality pass with consolidation, templates and connectors in place: close the remaining gap to the best published LongMemEval and LoCoMo scores, and report storage/retrieval F1 on the synthetic and template suites; keep enrichment cost under $0.0002 per session and recall p95 within the guard. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** benchmark parity (a project goal); QUAL-11 reporting on public and private suites.
+- **Deliverables:**
+  - [ ] each change measured on a sample (T2), then confirmed on the full set
+  - [ ] storage and retrieval F1 reported on the synthetic and template suites
+  - [ ] results with confidence intervals and cost in `docs/benchmarks.md`
 - **Done when:** results are published in `docs/benchmarks.md` with CIs and cost; no T3 metric is below its baseline.
 - **Guard:** T2 per change, T3 at the end; T4 with approval. **Depends on:** G25. **Milestone:** regulated-ready Standard.
 
@@ -903,7 +1062,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G27 — Relationship-based access control
 
-> `/goal Implement the relationship store per the ADR: tuples (principal, relation, subject, valid from/to, purpose, consent reference) with teams, wards and organisations; a ReBAC Authorizer behind the existing seam with an in-process decision cache invalidated by a change stream (≤ 5 s TTL), consistency tokens, explainable decisions, revocation within 5 seconds, agent access as the overlap of its grants and its principal's, subject links, and cross-subject queries taking the subject set from the store; add differential authorization testing.`
+- [ ] **Done**
+
+> `/goal Implement the relationship store per the ADR: tuples (principal, relation, subject, valid from/to, purpose, consent reference) with teams, wards and organisations; a ReBAC Authorizer behind the existing seam with an in-process decision cache invalidated by a change stream (≤ 5 s TTL), consistency tokens, explainable decisions, revocation within 5 seconds, agent access as the overlap of its grants and its principal's, subject links, and cross-subject queries taking the subject set from the store; add differential authorization testing. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **ACC-01**, **ACC-02**, **ACC-03**, **ACC-04**, **ACC-06**, **ACC-07**, **ACC-09**,
   **SCALE-04**, **GOV-02**, **GOV-14**, **TR-AZ-01**, **TR-AZ-02**, **TR-AZ-03**, **TR-AZ-04**,
@@ -916,7 +1077,9 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G28 — Access Policy Decision Register
 
-> `/goal Implement the Access Policy Decision Register: decisions D-01 to D-07 configurable through API and console at their scopes, no silent defaults before go-live, an approval workflow with two approvers for widening changes, simulation of who gains or loses access, versioned values with rationale and review dates, restrict-fast/widen-on-schedule, precedence enforcement, rollback, overdue-review flags, patient-facing summaries, export and import, and emergency (break-glass) access.`
+- [ ] **Done**
+
+> `/goal Implement the Access Policy Decision Register: decisions D-01 to D-07 configurable through API and console at their scopes, no silent defaults before go-live, an approval workflow with two approvers for widening changes, simulation of who gains or loses access, versioned values with rationale and review dates, restrict-fast/widen-on-schedule, precedence enforcement, rollback, overdue-review flags, patient-facing summaries, export and import, and emergency (break-glass) access. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **ACC-05**, **ACC-08**, **TR-AZ-05**, **CFG-01**, **CFG-02**, **CFG-03**, **CFG-04**,
   **CFG-05**, **CFG-06**, **CFG-07**, **CFG-08**, **CFG-09**, **CFG-10**, **CFG-11**, **CFG-12**,
@@ -929,18 +1092,27 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G29 — Enterprise security
 
-> `/goal Add enterprise security: OIDC and SAML SSO for humans with SCIM provisioning, admin SSO, mutual TLS and workload identity between components, envelope encryption of content columns with customer-managed keys through a KMS or HSM, an egress policy so sovereign tenants make no external model calls unless enabled, and per-tenant region pinning.`
+- [ ] **Done**
+
+> `/goal Add enterprise security: OIDC and SAML SSO for humans with SCIM provisioning, admin SSO, mutual TLS and workload identity between components, envelope encryption of content columns with customer-managed keys through a KMS or HSM, an egress policy so sovereign tenants make no external model calls unless enabled, and per-tenant region pinning. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **GOV-13**, **TR-OPS-01**, **DEP-07**, **TR-OPS-02**, **TR-MS-03**, **DEP-09**,
   **SC-02** (release keys in an HSM, two-person approval).
 - **Deliverables:**
+  - [ ] OIDC and SAML SSO for humans and admins; SCIM provisioning
+  - [ ] mutual TLS and workload identity between components
+  - [ ] envelope encryption of content columns with customer-managed keys in a KMS or HSM
+  - [ ] egress policy (no external model calls for sovereign tenants unless enabled); per-tenant region pinning
+  - [ ] release keys in an HSM with two-person approval (SC-02)
   - [ ] key-revocation test (content unreadable after the key is revoked); egress test
 - **Done when:** the key-revocation and egress tests pass.
 - **Guard:** T1. **Depends on:** G28.
 
 #### G30 — Production readiness on Standard
 
-> `/goal Make Standard production-ready: a reference load test (1,000 concurrent agents, 10 million records) meeting recall p95 ≤ 150 ms, write ack p95 ≤ 50 ms and freshness ≤ 5 s; SLOs with error budgets and alerts; runbooks rehearsed in game days; admission control with per-tenant, per-principal and per-subject token buckets and priority classes; pinned prepared statements and pooled connections; replicas with a freshness check; gRPC alongside REST; and half-precision/binary vector storage if the ADR chose it.`
+- [ ] **Done**
+
+> `/goal Make Standard production-ready: a reference load test (1,000 concurrent agents, 10 million records) meeting recall p95 ≤ 150 ms, write ack p95 ≤ 50 ms and freshness ≤ 5 s; SLOs with error budgets and alerts; runbooks rehearsed in game days; admission control with per-tenant, per-principal and per-subject token buckets and priority classes; pinned prepared statements and pooled connections; replicas with a freshness check; gRPC alongside REST; and half-precision/binary vector storage if the ADR chose it. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **PERF-01**, **PERF-03**, **PERF-04**, **PERF-08**, **PERF-10**, **TR-OPS-04**,
   **TR-OPS-05**, **SCALE-07**, **TR-GW-01**, **TR-GW-03**, **TR-GW-05**, **TR-GW-06**,
@@ -960,38 +1132,69 @@ plain IDs are partly addressed and finished in a later goal, which is named.
 
 #### G31 — Durable log intake and workflow engine
 
-> `/goal Swap the Postgres IntakeQueue and JobRunner for the durable log and workflow engine chosen in the ADR: intake partitioned by subject bucket so per-subject order holds, acknowledgement after replication to two or more replicas, the audit stream with a local disk buffer that refuses traffic rather than drop audit, and workflows for retention, legal hold, re-embedding and resharding that survive restarts.`
+- [ ] **Done**
+
+> `/goal Swap the Postgres IntakeQueue and JobRunner for the durable log and workflow engine chosen in the ADR: intake partitioned by subject bucket so per-subject order holds, acknowledgement after replication to two or more replicas, the audit stream with a local disk buffer that refuses traffic rather than drop audit, and workflows for retention, legal hold, re-embedding and resharding that survive restarts. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **SCALE-09**, **TR-IN-01**, **TR-IN-02**, **TR-GW-08**, TR-WF-02 (moved to the engine;
   completed in G22 on Postgres).
 - **Deliverables:**
+  - [ ] the durable log behind `IntakeQueue` and the workflow engine behind `JobRunner`, as chosen in [ADR 0004](adr/0004-intake-queue-and-log.md)
+  - [ ] intake partitioned by subject bucket; acknowledgement after replication to two or more replicas
+  - [ ] audit stream with a local disk buffer that refuses traffic rather than drop audit
+  - [ ] workflows for retention, legal hold, re-embedding and resharding that survive restarts
+  - [ ] broker-failure, ordering and kill-and-resume tests
   - [ ] section 6.10 acceptance moved from G03: the chosen log at 25% of the national profile, on one managed service and self-hosted with no external dependencies ([ADR 0004](adr/0004-intake-queue-and-log.md), "Still to verify")
 - **Done when:** broker-failure, ordering and kill-and-resume tests pass; the conformance kits pass with the new seams; the guard is unchanged.
 - **Guard:** T1. **Depends on:** G30.
 
 #### G32 — Sharding, Standard → Scale migration and multi-region
 
-> `/goal Build the Scale profile: 4,096 virtual buckets over physical Postgres shards with a shard map refreshed from a change stream, online resharding, online Standard to Scale migration, model services sized for the national profile, synchronous in-region and asynchronous cross-region replication with failover drills, and national ramp tests at 25%, 50% and 100% of the reference profile.`
+- [ ] **Done**
+
+> `/goal Build the Scale profile: 4,096 virtual buckets over physical Postgres shards with a shard map refreshed from a change stream, online resharding, online Standard to Scale migration, model services sized for the national profile, synchronous in-region and asynchronous cross-region replication with failover drills, and national ramp tests at 25%, 50% and 100% of the reference profile. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **SCALE-01**, **SCALE-02**, **TR-DB-05**, **TR-DB-06**, **TR-GW-02**, **TR-MIG-02**,
   **PROF-03**, **TR-MS-06**, **PERF-09**, **PERF-11**.
+- **Deliverables:**
+  - [ ] 4,096 virtual buckets over physical Postgres shards; a shard map refreshed from a change stream
+  - [ ] online resharding; online Standard → Scale migration
+  - [ ] model services sized for the national profile
+  - [ ] synchronous in-region and asynchronous cross-region replication; a region failover drill
+  - [ ] ramp tests at 25%, 50% and 100% of the reference profile
 - **Done when:** the 100% ramp holds for 72 hours meeting PERF-01/03/04; a region failover drill passes.
 - **Guard:** T1 on Scale + load reports. **Depends on:** G31.
 
 #### G33 — More adapters and distribution
 
-> `/goal Add MongoDB and Vespa store adapters passing the conformance kit, the customer-cloud deployment model (vendor control plane, customer data plane), LTS branches, EU-hosted mirrors, reproducible builds with SLSA level 3 provenance, and security fixes released for every supported line at once.`
+- [ ] **Done**
+
+> `/goal Add MongoDB and Vespa store adapters passing the conformance kit, the customer-cloud deployment model (vendor control plane, customer data plane), LTS branches, EU-hosted mirrors, reproducible builds with SLSA level 3 provenance, and security fixes released for every supported line at once. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **DEP-03**, **DEP-06**, **RL-04**, **RL-05**, **PK-08**, **SC-03**, **SC-04**, **SC-05**.
+- **Deliverables:**
+  - [ ] MongoDB and Vespa store adapters passing the conformance kit
+  - [ ] customer-cloud deployment model (vendor control plane, customer data plane)
+  - [ ] LTS branches, with security fixes released for every supported line at once
+  - [ ] EU-hosted mirrors
+  - [ ] reproducible builds with SLSA level 3 provenance
 - **Guard:** T1 per adapter. **Depends on:** G32.
 
 ### Stage H — Extensions (Could requirements)
 
 #### G35 — Graph, code structure, prompt overrides, air-gapped
 
-> `/goal Add the optional graph backend with multi-hop retrieval, structural code memory (files, symbols, tests), per-consumer prompt overrides within policy limits, air-gapped deployment with local extraction and embedding models and an offline bundle, and clinical domain templates.`
+- [ ] **Done**
+
+> `/goal Add the optional graph backend with multi-hop retrieval, structural code memory (files, symbols, tests), per-consumer prompt overrides within policy limits, air-gapped deployment with local extraction and embedding models and an offline bundle, and clinical domain templates. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **DEP-04**, **HYB-07**, **HYB-08**, **POL-07**, **DEP-10**, **PK-07**.
+- **Deliverables:**
+  - [ ] optional graph backend with multi-hop retrieval
+  - [ ] structural code memory (files, symbols, tests)
+  - [ ] per-consumer prompt overrides within policy limits
+  - [ ] air-gapped deployment: local extraction and embedding models, an offline bundle
+  - [ ] clinical domain templates
 - **Guard:** T2 (multi-hop should improve LoCoMo multi-hop). **Depends on:** G33.
 
 ---
