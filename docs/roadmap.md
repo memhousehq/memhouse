@@ -1058,7 +1058,7 @@ which is named.
   - [ ] each change measured on a sample (T2), then confirmed on the full set
   - [ ] storage and retrieval F1 reported on the synthetic and template suites
   - [ ] results with confidence intervals and cost in `docs/benchmarks.md`
-- **Done when:** results are published in `docs/benchmarks.md` with CIs and cost; no T3 metric is below its baseline; enrichment costs at most $0.0002 per session; the gap to the best published LongMemEval and LoCoMo scores is closed, or the Result records why it remains.
+- **Done when:** results are published in `docs/benchmarks.md` with CIs and cost; no T3 metric is below its baseline; enrichment costs under $0.0002 per session; the gap to the best published LongMemEval and LoCoMo scores is closed, or the Result records why it remains.
 - **Guard:** T2 per change, T3 at the end; T4 with approval. **Depends on:** G25. **Milestone:** regulated-ready Standard.
 
 ### Stage F — Regulated
