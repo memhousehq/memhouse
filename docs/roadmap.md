@@ -673,7 +673,7 @@ which is named.
 
 - [x] **Done** (3 November 2026)
 
-> `/goal Prepare and, after the founder signs off, publish the product monorepo: confirm every prerequisite in the G09 checklist, rewrite the history so no private planning document and no private author address remains, scan the whole rewritten history for secrets, split memory-format into its own repository, set up hosted CI with fork-safe workflows, protected branches and required checks, turn on push protection and dependency updates, and push to the chosen forge.`
+> `/goal Prepare and, after the founder signs off, publish the product monorepo: confirm every prerequisite in the G09 checklist, rewrite the history so no private planning document remains, scan the whole rewritten history for secrets, split memory-format into its own repository, set up hosted CI with fork-safe workflows, protected branches and required checks, turn on push protection and dependency updates, and push to the chosen forge.`
 
 - **Why here:** the API (G05), schema and format (G04), identity (G06) and tracing (G07) are
   frozen, so the public sees stable contracts. The policy engine (G08) moved after publication: it
@@ -689,8 +689,9 @@ which is named.
     archived as `memhousehq/archive-memhouse`. Package registry names are reserved when needed (G21);
   - security reports through GitHub private vulnerability reporting only: acknowledgement within
     5 working days, first assessment within 20 ([SECURITY.md](../SECURITY.md));
-  - the history is rewritten, not squashed; every commit carries the author's public identity
-    (Aleksei Popov, GitHub no-reply address);
+  - the history is rewritten, not squashed; commits made locally carry the author's public
+    identity (Aleksei Popov, GitHub no-reply address). Merges made on GitHub may carry the
+    author's account address, which the author accepted on 5 November 2026;
   - the author is named as the project's author and copyright holder ([GOVERNANCE.md](../GOVERNANCE.md), `NOTICE`);
   - the commercial and business plans, the design requirements and the earlier drafts of this
     roadmap stay private;
@@ -719,8 +720,9 @@ which is named.
   `cargo xtask ci`, all 36 governance checks included.
   - `main` has been force-pushed once, on 2026-11-04, with its ruleset paused for that push: the
     squash merge of the first pull request had taken the author's account address instead of the
-    no-reply one, and the commit was rebuilt with the same tree. Merges now set the author
-    address explicitly.
+    no-reply one, and the commit was rebuilt with the same tree. On 5 November 2026 the author
+    accepted their account address in merge commits, so pull requests land with auto-merge and
+    no history is rewritten for it.
 - **Guard:** T1. **Depends on:** G07. **Milestone:** open repository public.
 
 ### Stage C — Engine completeness on Postgres
