@@ -373,6 +373,20 @@ async fn overhead(e: &Engine) -> anyhow::Result<Outcome> {
     ))
 }
 
+/// Whether `v` holds the probe word `w`, ignoring case. For numeric probes, a digit next to the
+/// match means it is part of a longer number (such as 0.000987666), not the number that was sent.
+fn holds(v: &str, w: &str) -> bool {
+    let (v, w) = (v.to_lowercase(), w.to_lowercase());
+    if !w.bytes().all(|c| c.is_ascii_digit()) {
+        return v.contains(&w);
+    }
+    v.match_indices(&w).any(|(i, _)| {
+        let before = v[..i].chars().next_back().is_some_and(|c| c.is_ascii_digit());
+        let after = v[i + w.len()..].chars().next().is_some_and(|c| c.is_ascii_digit());
+        !(before || after)
+    })
+}
+
 /// Threat model T13. The API serves writes, a quarantined write, a recall and its explanation,
 /// a revision, an ingest, an MCP recall, a refused write and an invalid one, then runs on an
 /// embedder and an LLM whose errors quote the request. Every span field and log event, at every
@@ -390,7 +404,7 @@ async fn no_content(base: &Engine, url: &str) -> anyhow::Result<Outcome> {
         drop(guard);
         let s = cap.0.lock().unwrap();
         let mut problems = wrong;
-        let leak = |v: &str| words.iter().find(|w| v.to_lowercase().contains(&w.to_lowercase())).copied();
+        let leak = |v: &str| words.iter().find(|w| holds(v, w)).copied();
         for sp in &s.all {
             for (k, v) in &sp.fields {
                 if let Some(w) = leak(v) {
@@ -565,4 +579,21 @@ async fn echoing_provider() -> anyhow::Result<String> {
         }
     });
     Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::holds;
+
+    #[test]
+    fn probe_words_match_whole_numbers_only() {
+        assert!(holds("renewed at 9876 dollars", "9876"));
+        assert!(holds("id=9876", "9876"));
+        assert!(holds("Quillfeather renewed", "quillfeather"));
+        assert!(holds("Quillfeather7 renewed", "quillfeather"));
+        assert!(holds("7Quillfeather renewed", "quillfeather"));
+        assert!(!holds("0.000987666", "9876"));
+        assert!(!holds("elapsed 19876 ms", "9876"));
+        assert!(holds("19876 or 9876", "9876"));
+    }
 }
