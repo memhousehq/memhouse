@@ -373,10 +373,13 @@ async fn overhead(e: &Engine) -> anyhow::Result<Outcome> {
     ))
 }
 
-/// Whether `v` holds the probe word `w`, ignoring case. A digit next to the match means it is part
-/// of a longer number (a timing such as 0.000987666 holds "9876"), not the number that was sent.
+/// Whether `v` holds the probe word `w`, ignoring case. For numeric probes, a digit next to the
+/// match means it is part of a longer number (such as 0.000987666), not the number that was sent.
 fn holds(v: &str, w: &str) -> bool {
     let (v, w) = (v.to_lowercase(), w.to_lowercase());
+    if !w.bytes().all(|c| c.is_ascii_digit()) {
+        return v.contains(&w);
+    }
     v.match_indices(&w).any(|(i, _)| {
         let before = v[..i].chars().next_back().is_some_and(|c| c.is_ascii_digit());
         let after = v[i + w.len()..].chars().next().is_some_and(|c| c.is_ascii_digit());
@@ -587,6 +590,8 @@ mod tests {
         assert!(holds("renewed at 9876 dollars", "9876"));
         assert!(holds("id=9876", "9876"));
         assert!(holds("Quillfeather renewed", "quillfeather"));
+        assert!(holds("Quillfeather7 renewed", "quillfeather"));
+        assert!(holds("7Quillfeather renewed", "quillfeather"));
         assert!(!holds("0.000987666", "9876"));
         assert!(!holds("elapsed 19876 ms", "9876"));
         assert!(holds("19876 or 9876", "9876"));
