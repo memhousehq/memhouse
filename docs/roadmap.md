@@ -745,11 +745,9 @@ which is named.
     - gap closed: the T13 check `telemetry_no_content` failed without a leak when a timing field
       (`elapsed_secs` 0.000987666) held the probe `9876`; numeric probes now match whole numbers
       only (pull request #15);
-    - an anonymous fresh clone of `main` at 18faac0 passed `cargo xtask ci --skip-latency`: every
-      step, all 40 governance checks and every quality metric. Other work kept the machine busy
-      (load average 15–55), so plain runs missed only the guard's latency limits; the same tree
-      passed plain `cargo xtask ci`, latency included, at a load average near 4 before it was
-      pushed. The author chose `--skip-latency` for this record.
+    - an anonymous fresh clone of `main` at b56f452 passed plain `cargo xtask ci`: every step,
+      the benchmark guard included (all 40 governance checks, every quality and latency metric).
+      Earlier runs on a busy machine (load average 15–55) missed only the guard's latency limits.
 - **Guard:** T1. **Depends on:** G07. **Milestone:** open repository public.
 
 ### Stage C — Engine completeness on Postgres
