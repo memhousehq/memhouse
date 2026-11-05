@@ -59,8 +59,10 @@ first. Plan v2 keeps that: the Lite store comes after the logical schema, API an
 are frozen (goals G04–G15), so it is written once against the final contracts instead of being
 reworked.
 
-**What is missing from the code is everything in the goals not ticked in the
-[goal tracker](#goal-tracker)** (G10 onwards, apart from the re-embedding done early in G25). The
+**What is missing from the code is the unbuilt part of each goal not ticked in the
+[goal tracker](#goal-tracker)** (G10 onwards; G25's re-embedding was done early). Some of those
+goals start from features that already work and are listed above, such as asynchronous
+enrichment (G10), date-aware recall (G12) and the v1 sales and success templates (G24). The
 largest gaps are candidates and statement classification (CORE-02 behaviour, QUAL-02), working
 memory and scopes (MEM-01/04), relationship-based access (ACC), SDKs, the Lite store, the coding
 template's git-aware features, release engineering, and all of Scale.
@@ -202,7 +204,8 @@ site and the announcement come with the developer launch (G21).
 
 ## 5. How to run a goal
 
-Paste the goal's `/goal` line into Claude Code. Each line ends by pointing here. The session should:
+Paste the goal's `/goal` line into Claude Code. The line of every goal still to do ends by
+pointing here. The session should:
 
 1. Read this plan's section for the goal, and the requirement texts it cites (the design
    requirements are kept with the project's planning documents).
@@ -215,8 +218,8 @@ Paste the goal's `/goal` line into Claude Code. Each line ends by pointing here.
 7. Commit with a message naming the goal (e.g. `G06: identity and authorizer seam`), including the
    change to this file.
 
-A goal is **done** when every deliverable box is ticked, its "Done when" holds, the guard passes,
-the docs match the code and the work is logged here.
+A goal is **done** when every deliverable box is ticked (or struck through with its reason), its
+"Done when" holds, the guard passes, the docs match the code and the work is logged here.
 
 ### Logging a goal
 
@@ -1055,7 +1058,7 @@ which is named.
   - [ ] each change measured on a sample (T2), then confirmed on the full set
   - [ ] storage and retrieval F1 reported on the synthetic and template suites
   - [ ] results with confidence intervals and cost in `docs/benchmarks.md`
-- **Done when:** results are published in `docs/benchmarks.md` with CIs and cost; no T3 metric is below its baseline.
+- **Done when:** results are published in `docs/benchmarks.md` with CIs and cost; no T3 metric is below its baseline; enrichment costs at most $0.0002 per session; the gap to the best published LongMemEval and LoCoMo scores is closed, or the Result records why it remains.
 - **Guard:** T2 per change, T3 at the end; T4 with approval. **Depends on:** G25. **Milestone:** regulated-ready Standard.
 
 ### Stage F — Regulated
@@ -1178,6 +1181,7 @@ which is named.
   - [ ] LTS branches, with security fixes released for every supported line at once
   - [ ] EU-hosted mirrors
   - [ ] reproducible builds with SLSA level 3 provenance
+- **Done when:** both adapters pass every conformance kit and the guard; a release rebuilt from its tag is identical to the published one, with SLSA level 3 provenance.
 - **Guard:** T1 per adapter. **Depends on:** G32.
 
 ### Stage H — Extensions (Could requirements)
@@ -1195,6 +1199,7 @@ which is named.
   - [ ] per-consumer prompt overrides within policy limits
   - [ ] air-gapped deployment: local extraction and embedding models, an offline bundle
   - [ ] clinical domain templates
+- **Done when:** each extension works when enabled and changes nothing when off (governance and the guard unchanged); the graph backend improves LoCoMo multi-hop; an air-gapped install reaches first recall with no network access.
 - **Guard:** T2 (multi-hop should improve LoCoMo multi-hop). **Depends on:** G33.
 
 ---
