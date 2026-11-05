@@ -723,6 +723,33 @@ which is named.
     no-reply one, and the commit was rebuilt with the same tree. On 5 November 2026 the author
     accepted their account address in merge commits, so pull requests land with auto-merge and
     no history is rewritten for it.
+  - **Verification (2026-11-05),** on GitHub and on anonymous fresh clones of both repositories:
+    - both repositories are public; `memory-format` has its own history (the monorepo's two
+      format commits and the stand-alone commit), and its `vectors/` tree is identical to the
+      monorepo's;
+    - no commit of either repository holds a private path, a private term, a local host name or
+      a home path (41 terms checked, commit authors out of scope). The earliest version of
+      `docs/roadmap.md` is the published one; every later one is a public pull-request edit. `cargo xtask secrets
+      --history` finds nothing in either repository;
+    - both repositories: secret scanning, push protection, Dependabot alerts and security
+      updates, and private vulnerability reporting on; read-only workflow tokens; approval for
+      first-time fork contributors;
+    - `memhouse` CI runs `checks` and `end-to-end and governance suite` on every pull request,
+      forks included (`pull_request` only, `contents: read`, no secrets, actions pinned);
+    - rulesets active on both repositories: `main` takes pull requests only, with linear history,
+      no force pushes or deletion; `v*` tags cannot be moved or deleted. `memhouse` requires its
+      two checks, strict;
+    - gap closed: `memory-format` had no CI. A `conformance` workflow (DCO, manifest coverage,
+      MemHouse's reader on every vector) and Dependabot for actions were added
+      (memhousehq/memory-format#1, merged as aa4ba3c); `conformance` is now a required check;
+    - gap closed: the T13 check `telemetry_no_content` failed without a leak when a timing field
+      (`elapsed_secs` 0.000987666) held the probe `9876`; numeric probes now match whole numbers
+      only (pull request #15);
+    - an anonymous fresh clone of `main` at 18faac0 passed `cargo xtask ci --skip-latency`: every
+      step, all 40 governance checks and every quality metric. Other work kept the machine busy
+      (load average 15–55), so plain runs missed only the guard's latency limits; the same tree
+      passed plain `cargo xtask ci`, latency included, at a load average near 4 before it was
+      pushed. The author chose `--skip-latency` for this record.
 - **Guard:** T1. **Depends on:** G07. **Milestone:** open repository public.
 
 ### Stage C — Engine completeness on Postgres
