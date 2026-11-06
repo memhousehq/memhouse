@@ -287,6 +287,206 @@ pub fn shares_content_word(a: &str, b: &str) -> bool {
     wa.iter().any(|w| wb.contains(w) || wb.iter().any(|x| x.len() >= 5 && w.len() >= 5 && (x.starts_with(&w[..5]) || w.starts_with(&x[..5]))))
 }
 
+static DATES: Lazy<Regex> = Lazy::new(|| {
+    re(
+        r"\b\d{4}-\d{1,2}(?:-\d{1,2})?\b|\b(?:19|20)\d0'?s\b|\b(?:19|20)\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b",
+    )
+});
+/// Numbers that name something rather than measure it: "invoice 1004", "order #77", "A-1001".
+static IDENTIFIER: Lazy<Regex> = Lazy::new(|| {
+    re(
+        r"\b(?:invoice|order|ticket|case|account|acct|id|no|number|ref|reference|version|room|flight|table|seat|gate|platform|route|bus|line|model|serial|item|sku|po|issue|bug|unit|apartment|apt|suite|building|floor|zip|code|extension|ext)\.?\s*#?\s*[\w\-]*\d[\w\-]*|#\s*\d[\w\-]*|\b[a-z]+-?\d[\w\-]*",
+    )
+});
+static QUANTITY: Lazy<Regex> = Lazy::new(|| {
+    re(
+        r"[$€£]?\d[\d,.:/\-]*[a-z%]*|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|once|twice|thrice|half|dozen|single|double|triple|several|few)\b",
+    )
+});
+const MONTHS: &[&str] = &["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const VALUE_STOP: &[&str] = &[
+    "the",
+    "user",
+    "users",
+    "their",
+    "they",
+    "them",
+    "this",
+    "that",
+    "with",
+    "from",
+    "have",
+    "has",
+    "had",
+    "was",
+    "were",
+    "been",
+    "being",
+    "got",
+    "gets",
+    "get",
+    "now",
+    "currently",
+    "recently",
+    "total",
+    "times",
+    "time",
+    "per",
+    "for",
+    "and",
+    "about",
+    "around",
+    "approximately",
+    "roughly",
+    "nearly",
+    "almost",
+    "over",
+    "under",
+    "more",
+    "than",
+    "into",
+    "onto",
+    "also",
+    "just",
+    "still",
+    "already",
+    "new",
+    "set",
+    "its",
+    "his",
+    "her",
+    "our",
+    "your",
+    "are",
+    "is",
+    "a",
+    "an",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "as",
+    "by",
+    "it",
+];
+
+/// Number words as digits, so "three" and "3" are the same value.
+fn number_word(w: &str) -> Option<&'static str> {
+    const WORDS: [(&str, &str); 23] = [
+        ("zero", "0"),
+        ("one", "1"),
+        ("single", "1"),
+        ("once", "1"),
+        ("two", "2"),
+        ("twice", "2"),
+        ("double", "2"),
+        ("three", "3"),
+        ("thrice", "3"),
+        ("triple", "3"),
+        ("four", "4"),
+        ("five", "5"),
+        ("six", "6"),
+        ("seven", "7"),
+        ("eight", "8"),
+        ("nine", "9"),
+        ("ten", "10"),
+        ("eleven", "11"),
+        ("twelve", "12"),
+        ("dozen", "12"),
+        ("twenty", "20"),
+        ("thirty", "30"),
+        ("fifty", "50"),
+    ];
+    WORDS.iter().find(|(k, _)| *k == w).map(|(_, v)| *v)
+}
+
+/// The quantities a statement states (numbers, amounts, durations, counts), dates left out.
+fn quantities(s: &str) -> std::collections::BTreeSet<String> {
+    let s = s.to_lowercase();
+    let undated = DATES.replace_all(&s, " ");
+    let undated = IDENTIFIER.replace_all(&undated, " ");
+    QUANTITY
+        .find_iter(&undated)
+        .map(|m| {
+            let q = m.as_str().trim_end_matches(['.', ',']);
+            number_word(q).map(String::from).unwrap_or_else(|| q.to_string())
+        })
+        .filter(|q| !q.is_empty())
+        .collect()
+}
+
+/// People and animals a statement can be about: a value of the user's sister is not the user's.
+const RELATIONS: &[&str] = &[
+    "sister",
+    "brother",
+    "mother",
+    "mom",
+    "father",
+    "dad",
+    "parent",
+    "parents",
+    "wife",
+    "husband",
+    "partner",
+    "spouse",
+    "son",
+    "daughter",
+    "kid",
+    "kids",
+    "child",
+    "children",
+    "friend",
+    "friends",
+    "colleague",
+    "coworker",
+    "boss",
+    "manager",
+    "team",
+    "neighbor",
+    "neighbour",
+    "cousin",
+    "uncle",
+    "aunt",
+    "grandmother",
+    "grandfather",
+    "girlfriend",
+    "boyfriend",
+    "dog",
+    "cat",
+    "pet",
+];
+
+/// The content words of a statement, without its quantities, dates and function words.
+fn value_words(s: &str) -> std::collections::BTreeSet<String> {
+    let s = s.to_lowercase();
+    let undated = DATES.replace_all(&s, " ");
+    let undated = IDENTIFIER.replace_all(&undated, " ");
+    let plain = QUANTITY.replace_all(&undated, " ");
+    plain.split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() >= 3 && !VALUE_STOP.contains(w) && !MONTHS.contains(w)).map(String::from).collect()
+}
+
+/// `new` restates `old` with a changed value ("three bikes" → "four bikes", "$350,000" →
+/// "$400,000", "twice a week" → "three times a week"): an update even without a correction
+/// marker (QUAL-01). Both state a quantity, the quantities differ on both sides, and the rest of
+/// the statement is the same (`min_overlap` of the shorter one's content words, at least two).
+pub fn value_update(old: &str, new: &str, min_overlap: f32) -> bool {
+    let (qo, qn) = (quantities(old), quantities(new));
+    if qo.is_empty() || qn.is_empty() || qo.is_subset(&qn) || qn.is_subset(&qo) {
+        return false;
+    }
+    let (wo, wn) = (value_words(old), value_words(new));
+    if wo.symmetric_difference(&wn).any(|w| RELATIONS.contains(&w.as_str())) {
+        return false;
+    }
+    let small = wo.len().min(wn.len());
+    if small < 2 {
+        return false;
+    }
+    let shared = wo.intersection(&wn).count();
+    shared as f32 / small as f32 >= min_overlap
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +540,32 @@ mod tests {
         assert!(shares_content_word("The user lives in Lisbon.", "The user now lives in Porto."));
         assert!(shares_content_word("The user has three bikes.", "The user now has four bikes."));
         assert!(!shares_content_word("The user likes jazz.", "The user now works at Globex."));
+    }
+
+    #[test]
+    fn value_updates_restate_with_a_changed_quantity() {
+        // From the LongMemEval knowledge-update sample.
+        assert!(value_update("The user currently owns three bikes in total.", "The user owns four bikes in total.", 0.6));
+        assert!(value_update("The user recently set a personal best time of 27:12 in a charity 5K run.", "The user's personal best time for a 5K run is 25:50.", 0.6));
+        assert!(value_update("The user got pre-approved for $350,000 from Wells Fargo.", "The user was pre-approved for $400,000 from Wells Fargo.", 0.6));
+        assert!(value_update("The user practices yoga twice a week.", "The user attends yoga classes three times a week.", 0.6));
+        assert!(value_update(
+            "The user spent around 5-6 hours working on their abstract ocean sculpture as of June 11, 2023.",
+            "The user has been working on an abstract ocean sculpture for 10-12 hours as of 2023-06-17.",
+            0.9
+        ));
+        // Not updates: no quantity changed, only a date, a different thing, or an added number.
+        assert!(!value_update("The user is training for a charity 5K run.", "The user's personal best time for a 5K run is 25:50.", 0.6));
+        assert!(!value_update("The user went to the gym on 2023-05-01.", "The user went to the gym on 2023-06-01.", 0.6));
+        assert!(!value_update("The user bought 2 new plants.", "The user bought 3 succulents.", 0.6));
+        assert!(!value_update("The user owns a road bike.", "The user has put 2,000 miles on their road bike.", 0.6));
+        // Seen in the sample: the same value in words and digits, another person, a decade.
+        assert!(!value_update("The user has been taking dance classes for about 3 months.", "The user has been taking cooking classes for about three months.", 0.6));
+        assert!(!value_update("The user's sister is 35 years old.", "The user is 32 years old.", 0.6));
+        assert!(!value_update("The user owns a Leica IIIa camera with a 50mm f/2 lens.", "The user owns a 1940s-era Leica IIIa camera.", 0.6));
+        // Identifiers are not values: different invoices, orders, customers.
+        assert!(!value_update("Customer kqzpfa prefers email for invoice 1000", "Customer wbtnoe prefers email for invoice 1004", 0.6));
+        assert!(!value_update("Order A-1001 shipped on Monday.", "Order A-1002 shipped on Monday.", 0.6));
     }
 
     #[test]

@@ -381,7 +381,7 @@ impl Engine {
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.remember_once(&req, &tenant, &subject, &actor, entry, policy, Op::Remember).await?;
+        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember), policy).await?;
         self.remember_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await?;
         Ok(result)
     }
@@ -389,16 +389,8 @@ impl Engine {
     /// Stages 2 and 3 of a single write (stage 1, authorization, is the caller's): validate,
     /// redact, deduplicate exactly, queue durably, answer `candidate`. With `wait`, also run the
     /// rest of the pipeline and answer with the gate's decision.
-    async fn remember_once(
-        &self,
-        req: &RememberRequest,
-        tenant: &str,
-        subject: &str,
-        actor: &str,
-        entry: Entry,
-        policy: &CompiledPolicy,
-        op: Op,
-    ) -> anyhow::Result<RememberResult> {
+    async fn remember_once(&self, req: &RememberRequest, tenant: &str, subject: &str, actor: &str, how: (Entry, Op), policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
+        let (entry, op) = how;
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
         if !policy.allows(kind) {
@@ -983,6 +975,8 @@ impl Engine {
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
+        // A version still in the intake queue is settled first, so it is revised as stored.
+        self.settle_record(&tenant, req.id).await?;
         let old = self.store.get(&tenant, req.id).await?.ok_or_else(|| error::not_found(format!("memory {} not found", req.id)))?;
         if old.status != MemoryStatus::Committed {
             return Err(error::conflict(format!("memory {} is {}; only the current, committed version can be revised", req.id, old.status.as_str())));
@@ -993,6 +987,8 @@ impl Engine {
             let (s, c) = self.store.representations(&tenant, req.id).await?;
             (req.structured.clone().or(s), req.code_refs.clone().unwrap_or(c))
         };
+        // New content that is itself a structured record replaces the old structured form.
+        let structured = if req.structured.is_none() && crate::classify::structured_from_content(&req.content).is_some() { None } else { structured };
         let inherited_metadata = Some(old.metadata.clone()).filter(|m| m.as_object().is_some_and(|o| !o.is_empty()));
         let write = RememberRequest {
             tenant: Some(tenant.clone()),
@@ -1015,7 +1011,7 @@ impl Engine {
             code_refs,
             wait: req.wait,
         };
-        let result = self.remember_once(&write, &tenant, &old.subject, &actor, entry, policy, Op::Revise).await?;
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise), policy).await?;
         self.remember_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await?;
         Ok(result)
     }

@@ -41,11 +41,13 @@ api() { curl -sf "http://127.0.0.1:$PORT$1" -H "authorization: Bearer $KEY" -H "
 api /v1/recall -d '{"subject":"customer:acme","query":"renewal date","render":true}' | grep '"rendered":"1 memory of customer:acme' >/dev/null
 test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/stats")" = 401
 curl -sf "http://127.0.0.1:$PORT/v1/openapi.json" | grep '"openapi":"3.1.0"' >/dev/null
-# A retried write with the same key returns the same id; revise supersedes it; forget by source.
+# A write is answered at once as a candidate (G10); a retry with the same key returns the same
+# id; revise (waiting for the gate) supersedes it; forget by source.
+api /v1/remember -H "Idempotency-Key: e2e-1" -d '{"subject":"customer:acme","content":"Acme champion is Priya","source":"e2e"}' | grep '"status":"candidate"' >/dev/null
 FIRST=$(api /v1/remember -H "Idempotency-Key: e2e-1" -d '{"subject":"customer:acme","content":"Acme champion is Priya","source":"e2e"}' | sed 's/.*"id":"\([^"]*\)".*/\1/')
 AGAIN=$(api /v1/remember -H "Idempotency-Key: e2e-1" -d '{"subject":"customer:acme","content":"Acme champion is Priya","source":"e2e"}' | sed 's/.*"id":"\([^"]*\)".*/\1/')
 test "$FIRST" = "$AGAIN"
-api /v1/revise -d "{\"id\":\"$FIRST\",\"content\":\"Acme champion is Priya Raman\",\"source\":\"e2e\"}" | grep "\"superseded\":\"$FIRST\"" >/dev/null
+api /v1/revise -d "{\"id\":\"$FIRST\",\"content\":\"Acme champion is Priya Raman\",\"source\":\"e2e\",\"wait\":true}" | grep "\"superseded\":\"$FIRST\"" >/dev/null
 api /v1/forget -d '{"source":"e2e"}' | grep '"deleted":2' >/dev/null
 # Pre-v1 routes still answer, marked deprecated.
 curl -si "http://127.0.0.1:$PORT/v1/memories?subject=customer:acme" -H "authorization: Bearer $KEY" | grep -i '^deprecation: @' >/dev/null
@@ -55,7 +57,7 @@ step "principals, keys and agent tokens"
 AGENT=$("$BIN" key create agent:e2e 2>/dev/null)
 as_agent() { curl -s "http://127.0.0.1:$PORT$1" -H "authorization: Bearer $AGENT" -H "content-type: application/json" "${@:2}"; }
 as_agent /v1/whoami | grep '"propose_only":true' >/dev/null
-as_agent /v1/remember -d '{"subject":"customer:acme","content":"Acme prefers calls on Tuesdays"}' | grep '"status":"committed"' >/dev/null
+as_agent /v1/remember -d '{"subject":"customer:acme","content":"Acme prefers calls on Tuesdays","wait":true}' | grep '"status":"committed"' >/dev/null
 "$BIN" audit --limit 5 | grep memory.admit >/dev/null      # proposed by agent:e2e, admitted by the engine
 test "$(as_agent /v1/recall -o /dev/null -w '%{http_code}' -d '{"subject":"user:dana","query":"x"}')" = 403
 TOKEN=$(api /v1/tokens -d '{"agent":"agent:e2e","user":"user:dana","ttl_secs":60}' | sed 's/.*"token":"\([^"]*\)".*/\1/')
@@ -99,7 +101,7 @@ if "$BIN" recall "renewal" -s customer:acme >/dev/null 2>&1; then echo "started 
 "$BIN" recall "when does Acme renew" -s customer:acme -k 3 | grep "2027-03-01" >/dev/null  # not -q: it would close the pipe early
 sleep 5  # the server compares its model with the database's at most every 5 s
 test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/recall" -H "authorization: Bearer $KEY" -H "content-type: application/json" \
-  -d '{"subject":"customer:acme","query":"renewal"}')" = 500
+  -d '{"subject":"customer:acme","query":"renewal"}')" = 409  # refused, not degraded to an empty result
 # Later steps keep the new model, as an edited config would.
 
 step "Memory Format v2: import v1 and v2, export, import again"

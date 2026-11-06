@@ -20,8 +20,9 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.3.0` (1.1 added principals, agent tokens, review and labels; 1.2
-added recall explanations and `/metrics`; 1.3 added policies). The machine-readable contract is the OpenAPI 3.1 document at
+This is **API v1**, version `1.4.0` (1.1 added principals, agent tokens, review and labels; 1.2
+added recall explanations and `/metrics`; 1.3 added policies; 1.4 the write pipeline: `wait`,
+`include_candidates`, exact recall, `degraded` and the `unavailable` code). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -200,6 +201,7 @@ Body (`RememberRequest`):
 | `source` | string | | defaults to the actor |
 | `metadata` | object | | stored as given |
 | `supersedes` | uuid | | replace this memory; prefer [`revise`](#post-v1revise-supersede-a-memory) |
+| `wait` | bool | | wait for the write gate (at most `[intake] wait_timeout_ms`, 10 s) and answer with its decision; default `false` |
 | `tenant`, `actor` | string | | |
 
 ```bash
@@ -215,36 +217,47 @@ curl -s localhost:7077/v1/remember -H "authorization: Bearer $KEY" -H "content-t
 ```
 
 ```json
-{"id":"01a19ad2-9a38-70b6-a1d9-3703432b8a32","status":"committed","deduplicated":false}
+{"id":"01a19ad2-9a38-70b6-a1d9-3703432b8a32","status":"candidate","deduplicated":false}
 ```
 
-The response comes back as soon as the record is written. It gives the record's `id` and its
-state (CORE-02). Today the state is `committed` or `quarantined`. From G10 admission becomes
-asynchronous: writes will return `candidate`, and the state becomes `committed` or `rejected`
-shortly after. Don't assume a write is committed. Read its state with
-[`GET /v1/memories/{id}`](#get-v1memoriesid-one-memory-and-its-state).
+The response comes back as soon as the write is **durably queued** (API 1.4, G10), with the
+record's `id` and `status: candidate` (CORE-02). The text is already redacted at that point:
+nothing unredacted is ever written, not even to the queue. The write gate then runs, usually
+within milliseconds, and the record becomes `committed` (recallable), stays `candidate` (a plan
+or speculation, see below), or becomes `quarantined` or `rejected`. Read its state with
+[`GET /v1/memories/{id}`](#get-v1memoriesid-one-memory-and-its-state), which answers for a
+queued id too, or send `"wait": true` to get the decision in the response:
 
-The write gate can change what gets stored. The response tells you what happened:
+```json
+{"id":"01a19ad2-9a38-70b6-a1d9-3703432b8a32","status":"committed","deduplicated":false,
+ "statement":"fact","route":"fact"}
+```
 
-| Situation | Response |
-|---|---|
-| Card number in the text | `{"id":"…","status":"committed","deduplicated":false,"redactions":["card"]}`, and the stored text reads `Card on file is [REDACTED:card], …` |
-| Prompt injection | `{"id":"…","status":"quarantined","deduplicated":false,"note":"quarantined: looks like an instruction to the agent (override)"}` |
-| Same text sent again | `{"id":"<existing id>","status":"committed","deduplicated":true,"note":"identical memory already stored"}` |
-| Near-duplicate (cosine ≥ 0.97, same kind) | the existing id, with `deduplicated: true` |
+The write pipeline runs these stages in order (TR-IN-04):
 
 ```mermaid
 flowchart LR
-    I[content] --> K{request key<br/>seen?}
-    K -- same body --> OLD[first response]
-    K -- other body --> C409[409 conflict]
-    K -- new --> R{redact<br/>secret, card, ssn, iban…}
-    R --> Q{injection<br/>pattern?}
-    Q -- yes --> QS[stored as quarantined<br/>never recalled]
-    Q -- no --> D{same hash or<br/>cosine ≥ 0.97?}
-    D -- yes --> DUP[return existing id]
-    D -- no --> W[embed → insert → audit event]
+    A[authorize] --> R[redact<br/>text and attributes] --> Q[(intake queue)]
+    Q -. answer: candidate .-> C[client]
+    Q --> G[gate: injection check,<br/>statement classifier] --> RT[route: narrative, fact,<br/>structured, relationship, code] --> E[embed] --> I[insert: duplicates, corrections,<br/>confirmations; audit, one transaction]
 ```
+
+The gate reads each statement as one of `fact`, `event`, `correction`, `plan`, `speculation`,
+`preference` or `instruction` (QUAL-02), and that decides the record's state:
+
+| Situation | With `wait`, the response is |
+|---|---|
+| A fact, event, preference or instruction | `{"status":"committed","statement":"fact",…}` |
+| A plan or speculation ("plans to", "might", "I think") | `{"status":"candidate","statement":"plan","note":"held as a candidate: reads as plan …"}`: hidden from recall (PR-7) until a completed event confirms it (it then becomes `committed`) or it passes its `valid_to`, else `[intake] plan_ttl_days` (90), and expires. Recall returns it only with `include_candidates`. Store a to-do you want recalled as `kind: commitment`. |
+| A correction ("no longer", "actually", "now lives in") | `{"status":"committed","statement":"correction","superseded":"<old id>"}` when a record of the same kind is close enough (cosine ≥ `[intake] correction_threshold`, 0.8, sharing a content word): it is superseded, kept for audit and as-of recall (QUAL-01) |
+| Card number in the text | `"redactions":["card"]`, and the stored text reads `Card on file is [REDACTED:card], …` (already in the immediate answer) |
+| Prompt injection | `{"status":"quarantined","note":"quarantined: looks like an instruction to the agent (override)"}` |
+| Same text sent again | `{"id":"<existing id>","status":"committed","deduplicated":true,"note":"identical memory already stored"}`, answered at once, nothing queued |
+| Near-duplicate (cosine ≥ 0.97, same kind) | the existing id, with `deduplicated: true`; the new id is kept as `rejected` with `metadata.duplicate_of` |
+| A JSON object with a `record_type` as `content` | stored as a [structured record](#exact-structured-recall) (`route: structured`); its text becomes `order: order_id=A-1001, status=shipped` |
+
+A write the intake queue can't take (the database is down) is refused with `503 unavailable` and
+`Retry-After: 1`; nothing is stored, so retrying (with the same `request_key`) is safe.
 
 ### `POST /v1/recall`: retrieve memories for a context
 
@@ -262,7 +275,9 @@ flowchart LR
 | `reference_time` | time | `as_of`, else now | the "now" used to read "two weeks ago" in the query; filters nothing |
 | `mode` | `hybrid` \| `dense` \| `keyword` | `hybrid` | |
 | `rerank` | bool | config | cross-encoder rerank (+~0.9 s on CPU) |
-| `analyze` | bool | config | date-aware query analysis on or off |
+| `analyze` | bool | config | date-aware query analysis on or off; it also finds record identifiers for the exact probe |
+| `include_candidates` | bool | false | also return candidates (held plans and speculation, proposals waiting for review), each with `status: candidate` (PR-7) |
+| `exact` | `{record_type?, attrs}` | none | an exact query over structured records, answered first (see below) |
 
 ```bash
 curl -s localhost:7077/v1/recall -H "authorization: Bearer $KEY" -H "content-type: application/json" -d '{
@@ -326,6 +341,26 @@ How to read a hit:
 | `similarity` | cosine similarity of the best vector |
 | `rerank_score` | present when reranking ran |
 | `plan.windows` | time phrases the query analysis found, and the window each was read as |
+| `plan.exact` | record identifiers in the query ("A-1001", "#4521") looked up exactly |
+| `exact` | the hit is a structured record matched exactly (HYB-02), not by similarity; exact hits come first |
+| `degraded` | set when retrieval failed or overran `[memory] recall_timeout_ms` (500 ms): `hits` is then empty and not a real answer (PERF-07). Carry on without memory; don't retry in a loop. |
+
+#### Exact structured recall
+
+Structured records (a `structured` form, or JSON content with a `record_type`) also live as rows
+in the structured table (HYB-02). Recall planning (HYB-03) mixes keyword, vector and exact
+retrieval: identifiers in the question are looked up in the subject's structured attributes, and
+`exact` asks for a match directly:
+
+```bash
+curl -s localhost:7077/v1/recall -H "authorization: Bearer $KEY" -H "content-type: application/json" -d '{
+  "subject": "customer:acme", "query": "order status",
+  "exact": {"record_type": "order", "attrs": {"order_id": "A-1001"}}
+}'
+```
+
+Exact matches obey the same filters as the rest of recall (status, labels, validity, scope), and
+come first with `"exact": true`.
 
 ```mermaid
 flowchart TB
@@ -413,11 +448,11 @@ new version records `supersedes`.
 | `content` | string | yes | the corrected memory |
 | `kind`, `tags`, `labels`, `scope`, `metadata`, `valid_to`, `expires_at`, `structured`, `code_refs` | | | taken from the current version when left out |
 | `occurred_at` | time | | defaults to now |
-| `user`, `source`, `request_key`, `tenant`, `actor` | | | as for `remember` |
+| `user`, `source`, `request_key`, `wait`, `tenant`, `actor` | | | as for `remember`; without `wait` the answer is the new version as a `candidate`, and `superseded` is set once the gate has run |
 
 ```bash
 curl -s localhost:7077/v1/revise -H "authorization: Bearer $KEY" -H "content-type: application/json" \
-  -d '{"id":"01a19ad2-9a38-70b6-a1d9-3703432b8a32","content":"Acme moved to the Enterprise Plus plan on 2026-10-20; renewal due 2027-03-01"}'
+  -d '{"id":"01a19ad2-9a38-70b6-a1d9-3703432b8a32","content":"Acme moved to the Enterprise Plus plan on 2026-10-20; renewal due 2027-03-01","wait":true}'
 ```
 
 ```json
@@ -501,7 +536,7 @@ Assistant text is cut to `[memory] assistant_chars` (1,200) for indexing.
 | `session_id` | string | groups rounds; also the enrichment unit |
 | `session_time` | time | the time of messages that have no `timestamp` of their own |
 | `per_message` | bool | one record per message instead of per round (for group chats without a `user` role) |
-| `scope`, `user`, `request_key` | | as for `remember` |
+| `scope`, `user`, `request_key`, `wait` | | as for `remember` |
 | `source`, `actor` | string | |
 
 ```bash
@@ -517,10 +552,13 @@ curl -s localhost:7077/v1/ingest -H "authorization: Bearer $KEY" -H "content-typ
 ```
 
 ```json
-{"stored":1,"quarantined":0,"deduplicated":0,"ids":["01a19ad2-9a86-70cf-b2eb-87fa77ba0cb7"]}
+{"stored":1,"quarantined":0,"deduplicated":0,"ids":["01a19ad2-9a86-70cf-b2eb-87fa77ba0cb7"],"queued":true}
 ```
 
-Ingesting the same session again stores nothing new (`deduplicated` counts the rounds skipped).
+`queued: true` means the rounds are in the intake queue: their ids read as `candidate` until the
+pipeline stores them, and `quarantined` is counted only with `"wait": true`. Rounds are a record
+of what was said, so they are screened for injection but not classified. Ingesting the same
+session again stores nothing new (`deduplicated` counts the rounds skipped).
 When [enrichment](operations.md#enrichment-workers) is on, ingest also queues one background job
 for the session and returns without waiting for it.
 
@@ -530,7 +568,8 @@ for the session and returns without waiting for it.
 
 ### `GET /v1/memories/{id}`: one memory and its state
 
-Returns a Memory in any state, including superseded and quarantined, or `404 not_found`.
+Returns a Memory in any state, including superseded and quarantined, or `404 not_found`. An id
+still in the intake queue reads as `candidate` (CORE-02).
 
 ```bash
 curl -s localhost:7077/v1/memories/01a19ad2-9a38-70b6-a1d9-3703432b8a32 -H "authorization: Bearer $KEY"
@@ -862,8 +901,9 @@ Every error is JSON with a stable `code` and a message for people:
 | 401 | `unauthorized` | missing, unknown, wrong, expired or revoked key or token; a disabled principal |
 | 403 | `forbidden` | the caller may not do this: a missing permission, another tenant, a subject, kind or label it may not use, another user or scope |
 | 404 | `not_found` | the memory doesn't exist, or the route doesn't |
-| 409 | `conflict` | an idempotency key reused for a different request; revising a version that is no longer current |
+| 409 | `conflict` | an idempotency key reused for a different request; revising a version that is no longer current; a process still on the embedding model the database left (`memhouse reembed`) |
 | 500 | `internal` | database or model failure; the message says which |
+| 503 | `unavailable` | a write could not be queued (the database is down): nothing was stored; retry after `Retry-After` (1.4) |
 
 Branch on `code`, never on the message: messages may be reworded in any release, codes only
 change in a new major version. New codes may be added in a minor release, so treat an unknown code

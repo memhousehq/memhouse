@@ -6,10 +6,13 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.3.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.4.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
 `forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
-(preview); 1.3 added the policy operations under `/v1/policies`. Its contract is [`api/openapi.json`](../api/openapi.json), served at
+(preview); 1.3 added the policy operations under `/v1/policies`; 1.4 made admission asynchronous
+(`remember`, `revise` and `ingest` answer once the write is queued, `wait` to answer after the gate)
+and added `include_candidates`, `exact`, `degraded`, `statement`, `route`, `queued` and the
+`unavailable` error code. Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -69,7 +72,7 @@ here so clients are ready for them:
 |---|---|---|
 | G06 (done, 1.1) | API keys belong to principals; the authenticated principal sets the actor, `tenant` and the scope filter. A body naming another tenant or user is refused (`403 forbidden`). | Send `tenant` and `user` only if you mean them; handle `403`. |
 | G06 (done, 1.1) | Agents' writes are proposals: committed by the engine at once by default, or `candidate` until reviewed with `admission = "review"`. | Don't assume `status: committed` after `remember`. |
-| G10 | Admission becomes asynchronous: `remember` returns `status: candidate` and the record becomes `committed` or `rejected` shortly after. | Read the state with `GET /v1/memories/{id}` when it matters. |
+| G10 (done, 1.4) | Admission is asynchronous: `remember` returns `status: candidate` and the record becomes `committed`, `quarantined` or `rejected` shortly after, or stays `candidate` (a plan or speculation). | Read the state with `GET /v1/memories/{id}` when it matters, or send `wait: true`. Retry `503 unavailable` with the same `request_key`. |
 | G11 | Scopes are resolved by precedence in ranking (user over team over org). | Nothing: the filter rule stays. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 

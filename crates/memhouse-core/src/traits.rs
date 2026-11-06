@@ -142,6 +142,12 @@ pub trait Store: Send + Sync {
     async fn existing_hashes(&self, tenant: &str, subject: &str, hashes: &[String]) -> anyhow::Result<std::collections::HashSet<String>>;
     /// Most similar committed record of the same kind (near-dup check).
     async fn nearest(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32]) -> anyhow::Result<Option<(Uuid, f32)>>;
+    /// The `n` most similar committed records of the same kind, most similar first (the gate's
+    /// correction and update candidates).
+    async fn nearest_many(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32], n: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        let _ = n;
+        Ok(self.nearest(tenant, subject, kind, embedding).await?.into_iter().collect())
+    }
     async fn set_superseded(&self, tenant: &str, id: Uuid, by: Uuid) -> anyhow::Result<bool>;
     async fn set_status(&self, tenant: &str, id: Uuid, status: MemoryStatus) -> anyhow::Result<bool>;
     /// Hard delete of one record and every derived representation; records the deletion in the ledger.

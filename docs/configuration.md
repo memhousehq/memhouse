@@ -30,6 +30,7 @@ memhouse doctor          # shows which config file was loaded and checks every p
 - [`[embedding]`](#embedding)
 - [`[rerank]`](#rerank)
 - [`[memory]`](#memory): recall tuning
+- [`[intake]`](#intake): the write pipeline: queue workers and the statement gate
 - [`[enrich]`](#enrich): asynchronous LLM fact extraction
 - [`[governance]`](#governance)
 - [`[server]`](#server)
@@ -260,6 +261,7 @@ restart, and can only tighten governance.
 | `window_top`, `window_top_weight` | 3, 1.0 | extra weight for the top N in-window hits |
 | `working_ttl_secs` | 86400 | lifetime of `working` memory written without `expires_at` |
 | `subquery_weight` | 0.0 | weight of "A or B" sub-query probes (off: added noise on LongMemEval) |
+| `recall_timeout_ms` | 500 | retrieval (policy read, query embedding, search, exact probe) that fails or takes longer answers an empty result flagged `degraded` instead of an error (PERF-07); 0 waits as long as it takes |
 
 How the weights combine in fusion:
 
@@ -271,10 +273,32 @@ flowchart LR
     A["age"] -->|"recency_weight / (1 + age / half_life)"| S
 ```
 
+## `[intake]`
+
+The write pipeline (G10; [architecture.md](architecture.md#write-path)). A write is authorized and
+redacted in the request, queued durably in the database (`mh_intake`) and answered `candidate`;
+the gate, routing, embedding and insert then run in the request's own task right after the
+answer, and workers pick up whatever a crash or a failure left behind.
+
+| Key | Default | Notes |
+|---|---|---|
+| `workers` | 2 | pipeline workers in `memhouse serve` (`memhouse mcp` runs one) |
+| `lease_secs` | 60 | how long a claimed proposal is held before another worker may take it over (crash recovery) |
+| `max_attempts` | 5 | attempts (backoff 0.5, 1, 2, 4 … s, at most 30) before a failing proposal is set aside and its records quarantined (`intake_failed`) |
+| `keep_done_secs` | 3600 | finished proposals, without their content, are kept this long for `wait` answers, then pruned |
+| `wait_timeout_ms` | 10000 | the longest a request with `wait: true` waits for the gate |
+| `classifier` | `rules` | the statement classifier: `rules` (deterministic, free) or `llm` (`[intake.llm]`, falling back to the rules when it fails) |
+| `llm` | `gpt-4o-mini`, 60 tokens | an `LlmConfig` table, as `[enrich.llm]`; used only with `classifier = "llm"` |
+| `plan_ttl_days` | 90 | a held plan or speculation without `valid_to` expires after this many days unconfirmed |
+| `correction_threshold` | 0.8 | cosine at or above which a correction supersedes the closest record of its kind (they must also share a content word) |
+| `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word) |
+
 ## `[enrich]`
 
 Background workers send each ingested session to a small LLM. The facts it extracts (dated,
-self-contained) are stored as `semantic`, `preference` or `commitment` memories. See
+self-contained) are stored as `semantic`, `preference` or `commitment` memories, after the same
+gate as any write: extracted plans are held as candidates, and a fact that corrects an earlier
+extracted fact supersedes it. A subject's sessions are enriched one at a time, in order. See
 [architecture.md](architecture.md#enrichment-asynchronous-llm-fact-extraction-optional) for how it works
 and [operations.md](operations.md#enrichment-workers) for running it.
 

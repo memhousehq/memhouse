@@ -1050,17 +1050,9 @@ impl PgStore {
     }
 
     /// One audit event inside the caller's transaction (the chain lock is held until it commits).
-    async fn audit_in(
-        &self,
-        tx: &mut sqlx::PgConnection,
-        actor: &str,
-        action: &str,
-        tenant: &str,
-        subject: Option<&str>,
-        memory_id: Option<Uuid>,
-        detail: &serde_json::Value,
-    ) -> anyhow::Result<()> {
-        let detail = detail.to_string();
+    async fn audit_in(&self, tx: &mut sqlx::PgConnection, tenant: &str, a: &memhouse_core::intake::AuditEntry) -> anyhow::Result<()> {
+        let (actor, action, subject, memory_id) = (a.actor.as_str(), a.action.as_str(), a.subject.as_deref(), a.memory_id);
+        let detail = a.detail.to_string();
         let at = Utc::now().trunc_subsecs(6);
         sqlx::query("SELECT pg_advisory_xact_lock(7270001)").execute(&mut *tx).await?;
         let prev: Option<String> = sqlx::query_scalar("SELECT hash FROM mh_audit ORDER BY id DESC LIMIT 1").fetch_optional(&mut *tx).await?;
@@ -1458,7 +1450,7 @@ impl Store for PgStore {
         }
         // Last: the chain lock is held only for the commit.
         for a in &w.audit {
-            self.audit_in(&mut tx, &a.actor, &a.action, &w.tenant, a.subject.as_deref(), a.memory_id, &a.detail).await?;
+            self.audit_in(&mut tx, &w.tenant, a).await?;
         }
         tx.commit().await?;
         Ok(true)
@@ -1612,6 +1604,22 @@ impl Store for PgStore {
     }
 
     #[tracing::instrument(name = "db.nearest", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
+    async fn nearest_many(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32], n: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        let rows: Vec<(Uuid, f64)> = sqlx::query_as(
+            "SELECT id, 1 - (embedding <=> $4::vector) AS sim FROM mh_memory \
+             WHERE tenant = $1 AND subject = $2 AND kind = $3 AND status = 'committed' AND embedding IS NOT NULL \
+             ORDER BY embedding <=> $4::vector LIMIT $5",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .bind(kind.as_str())
+        .bind(vec_literal(embedding))
+        .bind(n as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id, s)| (id, s as f32)).collect())
+    }
+
     async fn nearest(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32]) -> anyhow::Result<Option<(Uuid, f32)>> {
         let row = sqlx::query(
             "SELECT id, 1 - (embedding <=> $4::vector) AS sim FROM mh_memory \

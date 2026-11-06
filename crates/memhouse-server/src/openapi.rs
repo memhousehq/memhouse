@@ -10,7 +10,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{json, Map, Value};
 
 /// The API version, separate from the crate version. Minor and patch releases only add.
-pub const API_VERSION: &str = "1.3.0";
+pub const API_VERSION: &str = "1.4.0";
 
 /// Routes kept from before v1, with the route that replaces each. They answer as before and add
 /// `Deprecation`, `Sunset` and `Link` headers; they are removed no earlier than [`SUNSET`].

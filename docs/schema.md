@@ -5,10 +5,11 @@ This is the data model every MemHouse store holds, independent of how a store la
 (TR-CORE-04). The Postgres store maps it to the tables at the end; the Lite store (G16) will map
 the same model to SQLite. Exports carry exactly this model ([Memory Format v2](memory-format.md)).
 
-Schema version **5** (`mh_meta.schema_version`). Version 1 to 4 databases upgrade in place on
+Schema version **6** (`mh_meta.schema_version`). Version 1 to 5 databases upgrade in place on
 start-up; see [Upgrading from v1](#upgrading-from-v1). Version 3 added the identity tables
-(principals, API keys, token signing keys), version 4 the recall explanations and version 5 the
-policy specs and their activations; none of them is memory, so none is exported.
+(principals, API keys, token signing keys), version 4 the recall explanations, version 5 the
+policy specs and their activations, and version 6 the write pipeline's intake queue; none of them
+is memory, so none is exported.
 
 ## Entities
 
@@ -87,12 +88,16 @@ stateDiagram-v2
     expired --> [*]
 ```
 
-Only `committed` records are recalled. `superseded`, `rejected` and `expired` are terminal. A
+Only `committed` records are recalled (and `candidate` ones when a recall asks with
+`include_candidates`, labelled, PR-7). `superseded`, `rejected` and `expired` are terminal. A
 store refuses any other transition (`set_status` changes nothing and says so), and the
-governance check `lifecycle` proves it. Writes by agents without a commit grant enter as
-`candidate` and are admitted by the engine at once, or by a reviewer with `[access] admission =
-"review"` (GOV-08); other writes enter as `committed` or `quarantined`. Asynchronous admission
-arrives with the intake queue (G10).
+governance check `lifecycle` proves it. Every write is answered as a `candidate` while it waits
+in the intake queue (G10; it is not yet a stored row, but its id reads as one). The write gate
+then stores it as `committed`, `quarantined`, `rejected` (a near-duplicate, or a revision of a
+version that is no longer current), or keeps it `candidate`: a plan or speculation (QUAL-02),
+committed when a completed event confirms it and `expired` at its `valid_to` or after
+`intake.plan_ttl_days`; or a proposal from an agent without a commit grant under `[access]
+admission = "review"` (GOV-08), which a reviewer commits or rejects.
 
 ### Working memory (MEM-01)
 
@@ -153,6 +158,7 @@ key arrives with the intake queue (G10).
 | Not exported | `mh_embed_cache`, `mh_llm_cache`, `mh_enrich_job`, `mh_audit`, `mh_deletion_ledger` |
 | Recall explanations (v4, not exported) | `mh_recall` (id, tenant, subject, principal, acting user, time, the recall record as JSON); erased with the subject, tenant or user, purged after `explanation_retention_days` |
 | Policy specs (v5, not exported) | `mh_policy_spec` (tenant, version, spec as JSON, status `proposed` or `approved`, proposer, approver), `mh_policy_activation` (which version, or the default, runs from when, by whom; a trigger refuses a version that is not approved) |
+| Intake queue (v6, not exported) | `mh_intake` (the proposal's id, a `seq` for per-subject order, tenant, subject, record ids, writer, user, source and scope for erasure, `status` `pending`, `running`, `done` or `dead`, attempts, lease, the redacted proposal as JSON until it is stored, its outcome, error, embedder with the same guard trigger as `mh_memory`); erased with the subject or tenant, by user, agent or source, pruned after `intake.keep_done_secs` |
 | Identity (v3, not exported) | `mh_principal` (kind, tenant, subjects, kinds, denied labels, org, team, `can_commit`, `act_as`), `mh_api_key` (sha256 of the secret, permissions, expiry, revocation), `mh_signing_key` (token signing secrets) |
 
 ## Changing the schema

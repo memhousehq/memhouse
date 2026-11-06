@@ -600,12 +600,8 @@ impl Engine {
             if m.kind != MemoryKind::Episodic {
                 let mut c = self.classifier.classify(&m.content, m.kind).await?;
                 // The extractor's reading wins over a plain "fact" or "event" from the rules.
-                if let Some(h) = it.hint {
-                    if matches!(c.statement, Statement::Fact | Statement::Event) || h == Statement::Plan {
-                        if h != c.statement {
-                            c = Classification { statement: h, confidence: c.confidence, reason: format!("extractor: {}", h.as_str()) };
-                        }
-                    }
+                if let Some(h) = it.hint.filter(|h| *h != c.statement && (matches!(c.statement, Statement::Fact | Statement::Event) || *h == Statement::Plan)) {
+                    c = Classification { statement: h, confidence: c.confidence, reason: format!("extractor: {}", h.as_str()) };
                 }
                 metrics::inc("memhouse_gate_statements_total", &[("statement", c.statement.as_str())], 1.0);
                 m.metadata["statement"] = json!(c.statement.as_str());
@@ -711,27 +707,38 @@ impl Engine {
                 }
             } else if m.status != MemoryStatus::Quarantined {
                 if let Some(emb) = it.rec.embedding.clone() {
-                    let nearest = self.store.nearest(tenant, subject, m.kind, &emb).await?;
+                    let near = self.store.nearest_many(tenant, subject, m.kind, &emb, 5).await?;
                     // A structured record is told apart by its attributes, not its wording.
                     let comparable = it.route != Route::Structured;
-                    if let Some((dup, sim)) = nearest.filter(|(_, s)| comparable && *s >= policy.policy.write_gate.dedup_threshold) {
+                    if let Some((dup, sim)) = near.first().copied().filter(|(_, s)| comparable && *s >= policy.policy.write_gate.dedup_threshold) {
                         m.status = MemoryStatus::Rejected;
                         m.metadata["duplicate_of"] = json!(dup);
                         it.duplicate_of = Some(dup);
                         it.note = Some(format!("near-duplicate of an existing memory (similarity {sim:.3})"));
-                    } else if class == Some(Statement::Correction) && m.status == MemoryStatus::Committed {
-                        if let Some((old, sim)) = nearest.filter(|(_, s)| *s >= icfg.correction_threshold) {
-                            if let Some(o) = self.store.get(tenant, old).await? {
-                                let older = o.occurred_at.unwrap_or(o.created_at) <= m.occurred_at.unwrap_or(m.created_at);
-                                let derived_ok = !it.derived || o.metadata.get("derived").and_then(|d| d.as_bool()).unwrap_or(false);
-                                let fresh = !supersede.iter().any(|(s, _)| *s == old);
-                                if o.status == MemoryStatus::Committed && older && derived_ok && fresh && classify::shares_content_word(&o.content, &m.content) {
-                                    m.supersedes = Some(old);
-                                    supersede.push((old, m.id));
-                                    it.superseded = Some(old);
-                                    it.note = Some(format!("corrects {old} (similarity {sim:.3}), which it supersedes"));
-                                    metrics::inc("memhouse_gate_corrections_total", &[], 1.0);
-                                }
+                    } else if comparable && m.status == MemoryStatus::Committed && class.is_some_and(|c| !matches!(c, Statement::Instruction)) {
+                        // QUAL-01: a correction, or the same statement with a changed value,
+                        // supersedes what it updates: the old version stays, superseded and linked.
+                        for (old, sim) in near.iter().copied().filter(|(_, s)| *s >= icfg.correction_threshold) {
+                            let Some(o) = self.store.get(tenant, old).await? else { continue };
+                            let older = o.occurred_at.unwrap_or(o.created_at) <= m.occurred_at.unwrap_or(m.created_at);
+                            let derived_ok = !it.derived || o.metadata.get("derived").and_then(|d| d.as_bool()).unwrap_or(false);
+                            let fresh = !supersede.iter().any(|(s, _)| *s == old);
+                            if o.status != MemoryStatus::Committed || !older || !derived_ok || !fresh {
+                                continue;
+                            }
+                            let corrects = class == Some(Statement::Correction) && classify::shares_content_word(&o.content, &m.content);
+                            // An event is a new occurrence unless it restates the old one exactly.
+                            let overlap = if class == Some(Statement::Event) { 0.9 } else { 0.6 };
+                            let updates = !corrects && classify::value_update(&o.content, &m.content, overlap);
+                            if corrects || updates {
+                                let how = if corrects { "correction" } else { "value_update" };
+                                m.supersedes = Some(old);
+                                m.metadata["supersedes_because"] = json!(how);
+                                supersede.push((old, m.id));
+                                it.superseded = Some(old);
+                                it.note = Some(format!("{} {old} (similarity {sim:.3}), which it supersedes", if corrects { "corrects" } else { "updates the value of" }));
+                                metrics::inc("memhouse_gate_corrections_total", &[("how", how)], 1.0);
+                                break;
                             }
                         }
                     }

@@ -31,7 +31,12 @@ pub(crate) async fn run(engine: &Engine, run_id: &str) -> Vec<Check> {
             "The gate holds plans and speculation as candidates, commits facts, supersedes what a correction corrects, and confirms or expires plans",
             statement_gate(engine, &s("gate")).await,
         ),
-        ("exact_recall", "HYB-01 / HYB-02 / HYB-03", "Structured records are routed to the structured table and answered by exact query", exact_recall(engine).await),
+        (
+            "exact_recall",
+            "HYB-01 / HYB-02 / HYB-03 / HYB-06",
+            "Structured records are routed to the structured table and answered by exact query; a revise or forget leaves no stale representation",
+            exact_recall(engine).await,
+        ),
         (
             "degradation",
             "PERF-07 / PR-5",
@@ -457,10 +462,39 @@ async fn exact_recall(base: &Engine) -> Outcome {
         if planned != 50 || asked != 50 {
             problems.push(format!("exact answers: {planned}/50 planned from the question, {asked}/50 asked explicitly"));
         }
+        // HYB-06: after a revise, then a forget, no representation returns the old content.
+        let exact = |id: &str| RecallRequest {
+            subject: Some(subj.into()),
+            query: "order".into(),
+            k: Some(5),
+            exact: Some(ExactQuery { record_type: Some("order".into()), attrs: serde_json::json!({"order_id": id}) }),
+            ..Default::default()
+        };
+        let first = e.recall(exact("A-1000")).await?.hits.into_iter().find(|h| h.exact).map(|h| h.memory.id);
+        let revised = e
+            .revise(ReviseRequest {
+                id: first.unwrap_or_default(),
+                content: serde_json::json!({"record_type": "order", "order_id": "A-1000", "status": "returned", "total": 20}).to_string(),
+                wait: true,
+                ..Default::default()
+            })
+            .await?;
+        let after: Vec<Hit> = e.recall(exact("A-1000")).await?.hits.into_iter().filter(|h| h.exact).collect();
+        let current_only = after.len() == 1 && after[0].memory.id == revised.id && after[0].memory.content.contains("status=returned");
+        e.forget(None, revised.id, Some("bench".into())).await?;
+        let gone = e.recall(exact("A-1000")).await?.hits.iter().all(|h| !h.exact);
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id WHERE s.attrs @> '{\"order_id\": \"A-1000\"}' AND m.status = 'committed'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        if !current_only || !gone || rows != 0 {
+            problems.push(format!("HYB-06: after revise {} exact hit(s), current only {current_only}; after forget gone {gone}, {rows} committed rows", after.len()));
+        }
         verdict(
             problems,
             format!("{planned}/50 single-row lookups exact from the question, {asked}/50 by explicit query; vector-only top-1 {vector_only}/50"),
-            "100% exact on single-row lookups; every order routed to the structured table",
+            "100% exact on single-row lookups; every order routed to the structured table; after revise and forget only the current version, then nothing",
         )
     }
     .await;

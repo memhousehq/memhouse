@@ -14,6 +14,7 @@ backups, upgrades, enrichment workers, monitoring and troubleshooting.
 - [Reverse proxy and TLS](#reverse-proxy-and-tls)
 - [Sizing](#sizing)
 - [Enrichment workers](#enrichment-workers)
+- [Write pipeline](#write-pipeline)
 - [Backup and restore](#backup-and-restore)
 - [Upgrades](#upgrades)
 - [Changing the embedding model](#changing-the-embedding-model)
@@ -357,6 +358,31 @@ SELECT id, subject, attempts, left(error, 120) FROM mh_enrich_job WHERE status =
 UPDATE mh_enrich_job SET status = 'pending', attempts = 0, run_after = now(), error = NULL WHERE status = 'failed';
 ```
 
+## Write pipeline
+
+Writes are queued in the database (`mh_intake`) and answered `candidate` at once; the rest of
+the pipeline runs in the request's own task right after the answer, so a write is normally
+stored within tens of milliseconds ([architecture](architecture.md#write-path)). Pipeline workers
+(`[intake] workers`, 2 in `memhouse serve`, 1 in `memhouse mcp`) pick up what a crash or a
+failure left: a claimed proposal is held for `lease_secs` (60) and then claimed again. Several
+processes can share one database; each subject's writes still take effect in order.
+
+- **Lag.** `memhouse_intake_lag_seconds` is the age of the oldest unfinished proposal. It should
+  stay near zero; if it grows, the pipeline is failing (look for `intake of … failed` errors in
+  the log: a model endpoint or the database) or no process is running workers.
+- **Poison proposals.** A proposal that fails `max_attempts` (5) times is set aside with status
+  `dead` and its records stored as `quarantined` with `metadata.quarantine_reasons =
+  ["intake_failed"]` and the error, so it never blocks its subject. Review them like any
+  quarantined record (`memhouse list --all`, `POST /v1/review`); the error is in
+  `mh_intake.error`.
+- **Retryable refusals.** If the database can't take the write, the API answers `503
+  unavailable` with `Retry-After`, and nothing is stored. Clients should retry with the same
+  idempotency key.
+- **Retrieval failures** answer an empty result flagged `degraded` within
+  `[memory] recall_timeout_ms` (500 ms) instead of an error; watch `memhouse_recall_degraded_total`.
+- **Restarts** lose nothing that was acknowledged: proposals stay in the table until stored.
+  Finished ones keep only their ids and outcome and are pruned after `keep_done_secs` (1 h).
+
 ## Backup and restore
 
 Back up Postgres as you would any database: `pg_dump` for small installs, base backups with WAL
@@ -494,6 +520,7 @@ Plan for it:
 | Liveness | `GET /health` → `{"status":"ok"}` |
 | Full self-check | `memhouse doctor`: config, container, database, model, audit chain, MCP round-trip |
 | Volumes | `GET /v1/stats`: memories, quarantined, superseded, subjects, audit events |
+| Write pipeline backlog | `memhouse_intake_proposals{state}` and `memhouse_intake_lag_seconds` on `/metrics`: alert if the lag stays above a few seconds or `dead` > 0 (see [Write pipeline](#write-pipeline)) |
 | Enrichment backlog | `GET /v1/enrich/status`: alert if `pending` keeps growing or `failed` > 0 |
 | Audit integrity | `memhouse audit --verify`, daily (cron) |
 | Recall latency | `memhouse_recall_stage_duration_seconds` (embed, search, rerank, total) on `/metrics`; also `took_ms`, `embed_ms`, `search_ms` in every response |
@@ -551,7 +578,12 @@ per recall. The governance check `telemetry_overhead` measures it on every guard
 | `memhouse_operations_total`, `memhouse_operation_duration_seconds` | op, outcome | outcome is `ok` or the error code |
 | `memhouse_recall_stage_duration_seconds` | stage: embed, search, rerank, total | |
 | `memhouse_recall_statements` | | database round trips per recall; 1 on Postgres (PERF-02) |
-| `memhouse_writes_total` | status: committed, candidate, quarantined, deduplicated | |
+| `memhouse_writes_total` | status: committed, candidate, quarantined, rejected, deduplicated | records the pipeline stored, by state |
+| `memhouse_intake_proposals`, `memhouse_intake_lag_seconds` | state: pending, running, done, dead | the intake queue and the age of its oldest unfinished proposal (TR-IN-06) |
+| `memhouse_intake_ack_seconds`, `memhouse_intake_duration_seconds`, `memhouse_intake_freshness_seconds` | | time to the durable acknowledgement (PERF-03), to run the pipeline, and from acknowledgement to stored (PERF-04) |
+| `memhouse_intake_total`, `memhouse_intake_refused_total` | outcome: ok, retry, dead | pipeline runs; writes refused because they could not be queued |
+| `memhouse_gate_statements_total`, `memhouse_gate_corrections_total` | statement | what the gate read writes as; corrections that superseded a record |
+| `memhouse_recall_degraded_total` | | recalls answered empty and flagged after a failure or timeout (PERF-07) |
 | `memhouse_refused_total` | kind: auth, access; reason | 401s by reason, 403s by rule |
 | `memhouse_enrich_jobs`, `memhouse_enrich_queue_lag_seconds` | state | queue depth and the age of the oldest pending job |
 | `memhouse_enrich_cost_usd_total`, `memhouse_enrich_tokens_total` | type | LLM spend |
@@ -566,7 +598,8 @@ scrape_configs:
     static_configs: [{targets: ["memhouse:7077"]}]
 ```
 
-Alerts worth having: `memhouse_enrich_queue_lag_seconds > 600`; a rising
+Alerts worth having: `memhouse_intake_lag_seconds > 30`; `memhouse_intake_proposals{state="dead"} > 0`;
+any `memhouse_recall_degraded_total`; `memhouse_enrich_queue_lag_seconds > 600`; a rising
 `memhouse_refused_total{kind="auth"}` (a client with a revoked key, or someone guessing);
 `histogram_quantile(0.95, rate(memhouse_recall_stage_duration_seconds_bucket{stage="total"}[5m])) > 0.2`.
 
