@@ -712,7 +712,9 @@ impl Engine {
             } else if m.status != MemoryStatus::Quarantined {
                 if let Some(emb) = it.rec.embedding.clone() {
                     let nearest = self.store.nearest(tenant, subject, m.kind, &emb).await?;
-                    if let Some((dup, sim)) = nearest.filter(|(_, s)| *s >= policy.policy.write_gate.dedup_threshold) {
+                    // A structured record is told apart by its attributes, not its wording.
+                    let comparable = it.route != Route::Structured;
+                    if let Some((dup, sim)) = nearest.filter(|(_, s)| comparable && *s >= policy.policy.write_gate.dedup_threshold) {
                         m.status = MemoryStatus::Rejected;
                         m.metadata["duplicate_of"] = json!(dup);
                         it.duplicate_of = Some(dup);
@@ -735,7 +737,8 @@ impl Engine {
                     }
                     if class == Some(Statement::Event) && m.status == MemoryStatus::Committed {
                         for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3).await? {
-                            if sim >= icfg.confirm_threshold && !confirm.iter().any(|(p, _)| *p == plan) {
+                            let Some(pm) = self.store.get(tenant, plan).await? else { continue };
+                            if sim >= icfg.confirm_threshold && classify::shares_content_word(&pm.content, &m.content) && !confirm.iter().any(|(p, _)| *p == plan) {
                                 confirm.push((plan, m.id));
                                 it.confirms.push(plan);
                             }

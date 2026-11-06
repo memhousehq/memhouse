@@ -1008,6 +1008,10 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // 38–40. The policy engine: precedence, approval and rollback (G08).
     checks.extend(crate::policy_checks::run(engine).await);
 
+    // 41–47. The write pipeline: candidates, restart, poison, freshness, the statement gate,
+    // exact structured recall and degradation (G10).
+    checks.extend(crate::intake_checks::run(engine, run_id).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;

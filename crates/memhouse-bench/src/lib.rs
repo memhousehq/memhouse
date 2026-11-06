@@ -9,6 +9,7 @@ pub mod datasets;
 pub mod governance;
 pub mod guard;
 mod identity_checks;
+mod intake_checks;
 pub mod metrics;
 mod policy_checks;
 pub mod report;

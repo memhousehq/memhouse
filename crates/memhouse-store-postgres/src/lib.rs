@@ -513,7 +513,9 @@ impl PgStore {
         }
         match self.meta("embedder").await? {
             // A conflict, not a failure: recall refuses instead of degrading to an empty result.
-            Some(db) if db != mine => Err(memhouse_core::error::conflict(format!("this database is now embedded with {db}, not {mine}; restart with the new [embedding] configuration"))),
+            Some(db) if db != mine => {
+                Err(memhouse_core::error::conflict(format!("this database is now embedded with {db}, not {mine}; restart with the new [embedding] configuration")))
+            }
             _ => Ok(()),
         }
     }

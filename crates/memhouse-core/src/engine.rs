@@ -369,9 +369,9 @@ impl Engine {
     }
 
     pub(crate) async fn remember_with(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
-        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
         let span = Self::write_span("memhouse.remember", &policy, &req.actor, &req.subject);
-        self.traced("remember", span, self.remember_untraced(req, entry, &policy)).await
+        retryable(self.traced("remember", span, self.remember_untraced(req, entry, &policy)).await)
     }
 
     async fn remember_untraced(&self, req: RememberRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
@@ -499,9 +499,9 @@ impl Engine {
     }
 
     pub(crate) async fn ingest_with(&self, req: IngestRequest, entry: Entry) -> anyhow::Result<IngestResult> {
-        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
         let span = Self::write_span("memhouse.ingest", &policy, &req.actor, &req.subject);
-        self.traced("ingest", span, self.ingest_untraced(req, entry, &policy)).await
+        retryable(self.traced("ingest", span, self.ingest_untraced(req, entry, &policy)).await)
     }
 
     async fn ingest_untraced(&self, req: IngestRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<IngestResult> {
@@ -972,9 +972,9 @@ impl Engine {
     }
 
     pub(crate) async fn revise_with(&self, req: ReviseRequest, entry: Entry) -> anyhow::Result<RememberResult> {
-        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
         let span = Self::write_span("memhouse.revise", &policy, &req.actor, &None);
-        self.traced("revise", span, self.revise_untraced(req, entry, &policy)).await
+        retryable(self.traced("revise", span, self.revise_untraced(req, entry, &policy)).await)
     }
 
     async fn revise_untraced(&self, req: ReviseRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
@@ -1065,9 +1065,13 @@ impl Engine {
 
     /// A record by id: stored, or still in the intake queue (then `candidate`, CORE-02).
     pub async fn get_record(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>> {
-        match self.store.get(tenant, id).await? {
+        if let Some(m) = self.store.get(tenant, id).await? {
+            return Ok(Some(m));
+        }
+        match self.intake.pending(tenant, id).await? {
             Some(m) => Ok(Some(m)),
-            None => self.intake.pending(tenant, id).await,
+            // Its insert may have committed between the two reads.
+            None => self.store.get(tenant, id).await,
         }
     }
 
@@ -1285,6 +1289,12 @@ impl Engine {
         }
         Ok(n)
     }
+}
+
+/// A write that failed inside MemHouse or the database before it was queued stored nothing:
+/// the caller may retry it (PERF-07).
+fn retryable<T>(r: anyhow::Result<T>) -> anyhow::Result<T> {
+    r.map_err(|e| if error::code_of(&e) == error::ErrorCode::Internal { error::unavailable(format!("the write was not accepted, so nothing was stored; retry: {e:#}")) } else { e })
 }
 
 /// Await `fut` until `deadline` (if any); running out of time is a retryable failure.

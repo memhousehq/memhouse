@@ -67,7 +67,8 @@ pub struct IntakeConfig {
     /// Cosine similarity at or above which a correction supersedes the closest record of its
     /// kind (QUAL-01). The two must also share a content word.
     pub correction_threshold: f32,
-    /// Cosine similarity at or above which a completed event confirms a held plan.
+    /// Cosine similarity at or above which a completed event confirms a held plan (they must
+    /// also share a content word).
     pub confirm_threshold: f32,
 }
 
@@ -83,7 +84,7 @@ impl Default for IntakeConfig {
             llm: LlmConfig { model: "gpt-4o-mini".into(), max_tokens: 60, ..LlmConfig::default() },
             plan_ttl_days: 90,
             correction_threshold: 0.8,
-            confirm_threshold: 0.8,
+            confirm_threshold: 0.9,
         }
     }
 }

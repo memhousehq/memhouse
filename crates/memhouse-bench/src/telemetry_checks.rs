@@ -433,7 +433,9 @@ async fn no_content(base: &Engine, url: &str) -> anyhow::Result<Outcome> {
         }
         // The capture saw the server, engine and database spans, and the failure paths ran and were
         // logged, so the search covered them.
-        for name in ["http.request", "memhouse.remember", "memhouse.recall", "memhouse.revise", "memhouse.ingest", "memhouse.authorize", "memhouse.intake", "db.apply_intake", "db.search"] {
+        for name in
+            ["http.request", "memhouse.remember", "memhouse.recall", "memhouse.revise", "memhouse.ingest", "memhouse.authorize", "memhouse.intake", "db.apply_intake", "db.search"]
+        {
             if !s.all.iter().any(|sp| sp.name == name) {
                 problems.push(format!("no {name} span captured"));
             }
