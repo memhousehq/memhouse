@@ -93,7 +93,7 @@ tested.
 ```bash
 curl -s localhost:7077/v1/remember -H "authorization: Bearer $KEY" -H "content-type: application/json" \
   -d '{"subject":"customer:acme","content":"Card on file is 4111 1111 1111 1111, contact via ticket only"}'
-# {"id":"…","status":"committed","deduplicated":false,"redactions":["card"]}
+# {"id":"…","status":"candidate","deduplicated":false,"redactions":["card"]}   (redacted before it is queued)
 # stored content: "Card on file is [REDACTED:card], contact via ticket only"
 ```
 
@@ -167,6 +167,15 @@ flowchart LR
 - `as_of` recall reconstructs what the system knew at a point in time, which is useful for dispute
   handling ("what did the agent know when it said that?"). It returns A for times before B was
   written: A's validity ends exactly when B's starts.
+- **The write gate reads what each statement asserts** (QUAL-02): a fact, completed event,
+  correction, plan, speculation, preference or instruction. A plain `remember` that reads as a
+  correction ("Dana no longer lives in Lisbon; she now lives in Porto") supersedes the closest
+  record of its kind, exactly as a `revise` would, with the same history. Plans and speculation
+  ("plans to", "might", "I think") are held as candidates: never recalled by default (PR-7), so
+  an intention is not later asserted as fact; a completed event that fulfils a plan confirms it,
+  and an unconfirmed plan expires. The classification and route of every write are in its audit
+  event and its `metadata`. Facts an LLM extracts go through the same gate, and only supersede
+  other extracted facts, never what a person or agent wrote.
 
 ## Deletion and the right to erasure
 
@@ -187,6 +196,11 @@ Add `"dry_run": true` (`--dry-run`) to count first. The CLI asks before a bulk d
 given `--yes`. The governance check `forget_scopes` runs every mode on seeded data and finds no
 matching record, cached vector, structured row or code reference left, and one audit event per
 call.
+
+Writes queued before an erasure begins are erased with it, including one being inserted at that
+moment. A write accepted while the erasure runs overlaps it and may be kept. To erase a whole
+tenant with nothing left behind, stop its writers first (revoke or pause its agents' keys), then
+erase.
 
 What is removed:
 
@@ -443,7 +457,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-40 checks pass on the current release. The core ones:
+47 checks pass on the current release. The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -467,6 +481,13 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `policy_precedence` | 30 policies that loosen retention, redaction, labels, audit, admission, size or the injection screen fail to compile with their reason and are audited; a policy outranked by later governance stops running |
 | `policy_approval` | a proposed policy never runs, an unapproved activation is refused (also by the database), and records, explanations and spans carry the approved version |
 | `policy_rollback` | ranking weights changed by a policy change recall without a restart, also in a second process; rollback restores identical results |
+| `intake_candidates` | 200 writes are each answered `candidate` at once and stored exactly once; while they are queued, no PII canary is anywhere in the queue (the stage order: redaction before anything is written) |
+| `intake_restart` | proposals a killed worker held resume after their lease; one processed by two workers at once takes effect once (30 records, 30 write events); a stricter policy approved while writes are queued redacts and rejects what it now forbids |
+| `intake_poison` | a proposal that always fails is set aside after `max_attempts`, its record quarantined and audited, and the subject's next write still commits |
+| `intake_freshness` | a gated write is recallable within 5 s at p95 (tens of milliseconds in practice) |
+| `statement_gate` | of a labelled set, 0 plans or speculation committed (≤ 2%), every fact committed; held candidates recalled only on request; a correction supersedes with the old version kept; a plan is confirmed by its event or expires |
+| `exact_recall` | 300 orders written as JSON are routed to the structured table; questions naming an order get it first, exactly, 50 of 50 |
+| `degradation` | with the model hanging or failing, or the database gone, recall answers empty and flagged within 500 ms; a refused caller gets no data; a write that can't be queued is refused as retryable |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 

@@ -3,6 +3,7 @@
 
 pub mod access;
 pub mod caller;
+pub mod classify;
 pub mod config;
 pub mod engine;
 pub mod enrich;
@@ -11,6 +12,7 @@ pub mod explain;
 pub mod format;
 pub mod gate;
 pub mod identity;
+pub mod intake;
 pub mod metrics;
 pub mod policy;
 pub mod query;
@@ -21,5 +23,5 @@ pub mod types;
 
 pub use config::Config;
 pub use engine::Engine;
-pub use traits::{ChatModel, EmbedKind, Embedder, Reranker, Store};
+pub use traits::{ChatModel, Classifier, EmbedKind, Embedder, IntakeQueue, PiiDetector, Reranker, Store};
 pub use types::*;

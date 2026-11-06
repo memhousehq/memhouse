@@ -542,6 +542,14 @@ impl ChatModel for Llm {
 }
 
 /// The enrichment LLM from config, priced from `price` when the provider reports no cost.
+/// The write gate's chat model when `intake.classifier = "llm"` (TR-MS-01).
+pub fn classifier_chat(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ChatModel>>> {
+    if cfg.intake.classifier != memhouse_core::config::ClassifierKind::Llm {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(Llm::new(&cfg.intake.llm)?)))
+}
+
 pub fn enrich_chat(cfg: &Config, price: Option<(f64, f64)>) -> anyhow::Result<Option<Arc<dyn ChatModel>>> {
     if !cfg.enrich.enabled {
         return Ok(None);

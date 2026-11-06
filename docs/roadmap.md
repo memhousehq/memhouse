@@ -4,8 +4,8 @@
 | Field | Value |
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
-| Date | 4 November 2026 |
-| Progress | 9 of 34 goals done ([goal tracker](#goal-tracker)) |
+| Date | 6 November 2026 |
+| Progress | 10 of 34 goals done ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 40 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 47 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -49,6 +49,11 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - OpenTelemetry traces, Prometheus metrics and a stored explanation for every recall (G07);
 - versioned behaviour policies, compiled under governance, approved by a named person and
   rolled back (G08);
+- a staged write pipeline behind an `IntakeQueue` (Postgres table) and a `JobRunner`: writes are
+  redacted, durably queued and answered `candidate` at once; a statement gate commits facts,
+  holds plans and speculation, supersedes what a correction or a changed value updates; intake
+  routing with exact recall over structured records; degradation to an empty flagged result
+  (G10, API 1.4, schema v6);
 - docs: API, configuration, operations, governance, policy, development, architecture, benchmarks.
 
 Published results: LongMemEval_S QA **86.0** (GPT-4o), LoCoMo QA **83.7** (GPT-4o-mini), recall
@@ -60,11 +65,10 @@ are frozen (goals G04–G15), so it is written once against the final contracts 
 reworked.
 
 **What is missing from the code is the unbuilt part of each goal not ticked in the
-[goal tracker](#goal-tracker)** (G10 onwards; G25's re-embedding was done early). Some of those
-goals start from features that already work and are listed above, such as asynchronous
-enrichment (G10), date-aware recall (G12) and the v1 sales and success templates (G24). The
-largest gaps are candidates and statement classification (CORE-02 behaviour, QUAL-02), working
-memory and scopes (MEM-01/04), relationship-based access (ACC), SDKs, the Lite store, the coding
+[goal tracker](#goal-tracker)** (G11 onwards; G25's re-embedding was done early). Some of those
+goals start from features that already work and are listed above, such as date-aware recall
+(G12) and the v1 sales and success templates (G24). The largest gaps are working memory and
+scopes (MEM-01/04), relationship-based access (ACC), SDKs, the Lite store, the coding
 template's git-aware features, release engineering, and all of Scale.
 
 ---
@@ -125,7 +129,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 18 / 18 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 47 / 47 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -316,7 +320,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 **C. Engine**
 
 - [x] [G08 — Policy engine v1 (structured specs, approval, versions)](#g08--policy-engine-v1-structured-specs-approval-versions) (4 November 2026)
-- [ ] [G10 — Write pipeline v2: intake queue, candidates, classification, routing](#g10--write-pipeline-v2-intake-queue-candidates-classification-routing)
+- [x] [G10 — Write pipeline v2: intake queue, candidates, classification, routing](#g10--write-pipeline-v2-intake-queue-candidates-classification-routing) (6 November 2026)
 - [ ] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion)
 - [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2)
 - [ ] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate)
@@ -800,7 +804,7 @@ which is named.
 
 #### G10 — Write pipeline v2: intake queue, candidates, classification, routing
 
-- [ ] **Done**
+- [x] **Done** (6 November 2026)
 
 > `/goal Rebuild the write path as a staged pipeline (authorize, redact, classify and gate, route, embed, insert) behind an IntakeQueue trait with a durable Postgres implementation; remember returns a candidate at once; the gate classifies statements as fact, completed event, correction, plan or speculation and commits, supersedes or rejects; route structured records to the structured table with exact-query recall; add degradation behaviour. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -820,12 +824,95 @@ which is named.
   - **TR-MS-01** model-neutral internal API for extract, classify, detect PII, embed and rerank;
   - the existing enrichment becomes a pipeline stage.
 - **Deliverables:**
-  - [ ] `IntakeQueue` and `JobRunner` traits with Postgres implementations; existing enrichment moved onto them
-  - [ ] rule-based classifier first, small-model classifier behind the same interface (tiers in G14)
-  - [ ] structured-record routing (e.g. order, plan, address tables) and exact recall in `HYB-03` planning
-  - [ ] kill-and-restart test; poison-message test; freshness test (gated write recallable in ≤ 5 s p95)
-  - [ ] Postgres queue as in [ADR 0004](adr/0004-intake-queue-and-log.md): claimed with `SKIP LOCKED`, finished jobs pruned so the pending index stays small
+  - [x] `IntakeQueue` and `JobRunner` traits with Postgres implementations; existing enrichment moved onto them (its workers run on the `JobRunner`, its job is queued by the insert stage and its facts go through the pipeline's stages; its job table stays `mh_enrich_job`, see the result)
+  - [x] rule-based classifier first, small-model classifier behind the same interface (tiers in G14)
+  - [x] structured-record routing (e.g. order, plan, address tables) and exact recall in `HYB-03` planning
+  - [x] kill-and-restart test; poison-message test; freshness test (gated write recallable in ≤ 5 s p95)
+  - [x] Postgres queue as in [ADR 0004](adr/0004-intake-queue-and-log.md): claimed with `SKIP LOCKED`, finished jobs pruned so the pending index stays small
+  - [x] model-neutral `PiiDetector` and `Classifier` traits next to `Embedder`, `Reranker` and `ChatModel` (TR-MS-01) (added: not listed)
+  - [x] degradation (PERF-07): recall answers empty and flagged on failure or timeout; a write that can't be queued is refused as retryable `503 unavailable` (added: not listed)
+  - [x] value-update supersession: the same statement with a changed quantity supersedes the old one, which the knowledge-update sample needed (added: not listed)
+  - [x] API 1.4.0 (`wait`, `include_candidates`, `exact`, `degraded`, `statement`, `route`, `queued`, `unavailable`) and schema version 6 (`mh_intake`) (added: not listed)
 - **Done when:** the guard passes; a correction supersedes the fact it corrects in the LongMemEval knowledge-update sample with no loss; governance adds checks for candidates and classification.
+- **Result (2026-11-06):** done; API 1.4.0, schema version 6. See
+  [architecture.md § Write path](architecture.md#write-path) and [api.md](api.md#post-v1remember-propose-a-memory).
+  - **Pipeline** (`core/src/intake.rs`): authorize (the caller layer) → redact (text and every
+    string attribute of a structured form, `PiiDetector`) → exact dedup → durable enqueue →
+    answer `candidate` → gate (injection screen, then the `Classifier`) → route → embed → insert.
+    `remember`, `revise`, `ingest` and enrichment facts all take it. The insert stage
+    (`Store::apply_intake`) settles each record against what is stored (near-duplicates
+    `rejected` with `duplicate_of`; revisions; corrections; plan confirmations) and writes the
+    records, structured rows, supersessions, confirmations, the session's enrichment job, the
+    proposal's completion and the audit events in one transaction that locks the proposal: the
+    record ids are the idempotency key (TR-IN-03), and an erasure that deletes the proposal waits
+    for it, so nothing lands after it. `wait: true` answers after the gate (CLI, pre-v1 routes and
+    tools, benchmarks); without it, the request's own task finishes the pipeline right after the
+    answer, and `JobRunner` workers (`[intake] workers`, 2 in `serve`, 1 in `mcp`) pick up the rest.
+  - **Queue** (`mh_intake`, schema v6): claimed with `FOR UPDATE SKIP LOCKED`, only the oldest
+    unfinished proposal of each subject (so a correction lands after what it corrects), a lease
+    for crash recovery, backoff 0.5 s doubling to 30 s, `dead` after `max_attempts` with the
+    records stored `quarantined` (`intake_failed`). A finished proposal drops its content at once
+    and is pruned after `keep_done_secs`; the claim indexes cover unfinished rows only. A trigger
+    refuses proposals from a process on an embedding model the database left. Erasure by subject,
+    tenant, user, agent or source removes queued proposals.
+  - **Gate** (`core/src/classify.rs`, QUAL-02): `RuleClassifier` reads fact, event, correction,
+    plan, speculation, preference or instruction; `ChatClassifier` (`[intake] classifier =
+    "llm"`) does the same with a small model and falls back to the rules. Plans and speculation
+    stay `candidate`, hidden from recall unless `include_candidates` (PR-7), confirmed by a
+    completed event (cosine ≥ 0.9 and a shared content word) or expired at `valid_to`, else after
+    `plan_ttl_days`; a caller's own `commitment` is an open item and is committed. A correction
+    marker, or the same statement with a changed quantity (dates and identifiers don't count, a
+    relation word on one side only means another person), supersedes the closest committed
+    record of its kind (cosine ≥ 0.8, not newer than it; extracted facts only supersede extracted
+    facts), keeping it with its link (QUAL-01).
+  - **Routing and exact recall** (HYB-01/02/03): structured forms and JSON content with a
+    `record_type` go to `mh_structured`, code is tagged, relationships recorded in
+    `metadata.route`. Recall planning adds an exact probe for identifiers in the question or an
+    `exact` query; exact hits come first, marked, under the same filters.
+  - **Degradation** (PERF-07): retrieval that fails or overruns `[memory] recall_timeout_ms`
+    (450 ms) answers empty with `degraded`; a refused caller still gets `403`; a write that can't
+    be queued gets `503 unavailable` with `Retry-After`. A stale embedder is a `409` refusal, not
+    a degraded answer.
+  - **Checks:** seven new governance checks (47 in all). `intake_candidates`: 200 writes answered
+    `candidate` (ack p95 1.4–2.7 ms on one node, PERF-03 measured), readable at once, resolved in
+    1–1.6 s, each stored once; no PII canary in the queue or storage (the TR-IN-04 stage-order
+    test). `intake_restart`: 10 of 30 proposals abandoned by a killed worker and one processed by
+    two workers at once → 30 records, 30 write events. `intake_poison`: set aside after 3 attempts
+    in 1.7 s, quarantined and audited; the subject's next write committed. `intake_freshness`:
+    p95 42 ms to recallable over 30 writes (PERF-04, target 5 s). `statement_gate`: 0 of 10 plans
+    and speculation committed (QUAL-02 contamination ≤ 2%), 10 of 10 facts committed; held
+    candidates only on request; a correction superseded with the old version kept; a plan
+    confirmed by its event, a lapsed one expired. `exact_recall`: 300 orders routed to the
+    structured table; 50 of 50 single-row lookups exact from the question and by explicit query
+    (vector-only top-1: 15 of 50, HYB-03); after a revise only the new version, after a forget
+    nothing (HYB-06). `degradation`: hanging model 452 ms, failing model and database down 0 ms,
+    empty and flagged; refused access no data; queue down → `unavailable`.
+  - **Done when, the knowledge-update sample** (LongMemEval_S `--types knowledge-update
+    --enrich`, 72 scored, every extraction from the cache, $0): the gate superseded 32 extracted
+    facts in 31 of the 72 questions (31 value updates such as "three bikes" → "four bikes",
+    "$350,000" → "$400,000", "twice a week" → "three times a week", 1 correction marker); all 32
+    were checked by hand to be real updates. No loss against `main` on the same run: session
+    recall_all@5 98.6 = 98.6, session nDCG@10 99.0 = 99.0, round recall_all@10 97.2 = 97.2; round
+    recall_all@5 rose from 84.7 to 88.9. Round recall_any@1 fell from 72.2 to 65.3 (5 questions):
+    the benchmark counts the old value's round as evidence, and that round loses its superseded
+    fact. 34% of the extracted facts (5,990 of 17,504) were plans and are now held candidates;
+    their rounds stay recallable.
+  - **Guard:** T2 passed: governance 47/47; LongMemEval_S stride 10 and LoCoMo at their baselines
+    on every quality metric, search p50 9.5 and 8.3 ms; LoCoMo + enrich session recall_all@5
+    79.4 (baseline 79.6), round recall_all@10 65.5 (66.0), both inside the limits. Spend $0. Full
+    `cargo xtask ci` passed (388 s), the Docker end-to-end included. The governance baseline is
+    now 47 checks.
+  - **Differs from the plan:** the enrichment job table stays `mh_enrich_job` behind the store
+    rather than the `IntakeQueue` (it is a later stage: queued by the insert stage, run by the
+    `JobRunner`, its facts through the gate; a subject's sessions are now enriched in order); one
+    log for both arrives with G31. Relationship statements are routed and labelled but create no
+    links (the graph is G35). The requirement acceptance tests were run at smaller scale than
+    written (200 writes, not 1,000, for CORE-02; a 20-statement labelled set, not 150
+    conversations, for QUAL-02; HYB-01's 1,000-item routing set is not built): G13's evaluation
+    platform builds those suites. QA accuracy on the knowledge-update sample (paid) was not run;
+    G14 tunes the classifier tiers and thresholds against it. The guard database's audit table
+    (about a million events) made one run's uncached authentication p95 read 17 ms; on a fresh
+    database it is 3.1 ms (`main` 3.9 ms), and later guard runs measured 1–2 ms.
 - **Guard:** T2. **Depends on:** G09 (G08 if publication is waiting on its legal prerequisites).
 
 #### G11 — Memory types, scopes and promotion

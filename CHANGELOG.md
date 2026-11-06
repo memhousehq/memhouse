@@ -28,6 +28,13 @@ path from 0.x data other than export and import.
   only approved, versioned specs run; diff, approve with a named approver, roll back, without a
   restart; every record and trace carries the policy version (`memhouse policy`, `/v1/policies`,
   API 1.3.0, schema version 5).
+- Write pipeline v2: every write is authorized, redacted and durably queued, then answered
+  `candidate` at once (`wait: true` to answer after the gate); a statement gate commits facts,
+  holds plans and speculation as candidates (recalled only with `include_candidates`), and
+  supersedes what a correction or a changed value updates; structured records are answered by
+  exact query; workers resume proposals after a crash and set poison ones aside; failed
+  retrieval answers empty and flagged, a write that can't be queued is refused as retryable
+  (`503 unavailable`). API 1.4.0, schema version 6 (`mh_intake`), `[intake]` settings.
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early
   (`memhouse recall ... | head`).

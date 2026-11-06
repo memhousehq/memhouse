@@ -26,10 +26,42 @@ pub struct TimeWindow {
 pub struct QueryPlan {
     pub windows: Vec<TimeWindow>,
     pub subqueries: Vec<String>,
+    /// Identifiers in the question ("A-1001", "#4521") looked up exactly in structured records
+    /// (HYB-03): the plan then mixes keyword, vector and exact retrieval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exact: Vec<String>,
 }
 
 pub fn analyze(text: &str, now: DateTime<Utc>) -> QueryPlan {
-    QueryPlan { windows: time_windows(text, now), subqueries: subqueries(text) }
+    QueryPlan { windows: time_windows(text, now), subqueries: subqueries(text), exact: vec![] }
+}
+
+static IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"#?\b[A-Za-z]{0,12}[-_/]?\d[\w\-/]*\b|\b[A-Za-z]+\d[\w\-]*\b").expect("valid regex"));
+static DATE_LIKE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^(?:(?:19|20)\d{2}(?:[-/]\d{1,2}){0,2}|\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?|\d{1,2}(?:st|nd|rd|th|am|pm|s)|\d+(?:k|m|h|d|y|kg|km|mi|min|ms|gb|mb|x|%))$")
+        .expect("valid regex")
+});
+
+/// Record identifiers in a question, for the exact probe: tokens with a digit that are not dates,
+/// years, times, ordinals, amounts with a unit, or short numbers (plain numbers need 5 digits).
+pub fn identifiers(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    for m in IDENT.find_iter(text) {
+        let t = m.as_str().trim_start_matches('#').trim_matches(|c: char| c == '-' || c == '/' || c == '_');
+        let lower = t.to_lowercase();
+        let has_alpha = t.chars().any(|c| c.is_ascii_alphabetic());
+        let digits = t.chars().filter(|c| c.is_ascii_digit()).count();
+        // A `#` marks an identifier however short ("#77"); otherwise at least three characters.
+        let hashed = m.as_str().starts_with('#');
+        let ok = (t.len() >= 3 || (hashed && t.len() >= 2)) && !DATE_LIKE.is_match(&lower) && (has_alpha || digits >= 5 || hashed);
+        if ok && !out.contains(&lower) {
+            out.push(lower);
+        }
+        if out.len() >= 5 {
+            break;
+        }
+    }
+    out
 }
 
 const NUM: &str = r"(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a couple of|couple of|a few|few|several)";
@@ -265,6 +297,17 @@ pub fn subqueries(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_record_identifiers_not_dates() {
+        assert_eq!(identifiers("What is the status of order A-1001?"), vec!["a-1001"]);
+        assert_eq!(identifiers("ticket #4521 and invoice INV2024-77"), vec!["4521", "inv2024-77"]);
+        assert_eq!(identifiers("customer 1234567"), vec!["1234567"]);
+        assert_eq!(identifiers("What happened to ticket #77?"), vec!["77"]);
+        assert!(identifiers("What did I do on 2023-05-01 at 3pm, 2 days after the 1st?").is_empty());
+        assert!(identifiers("How many of the 12 books did I read in 2023?").is_empty());
+        assert!(identifiers("I paid $40 for 3kg of rice").is_empty());
+    }
 
     fn at(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)

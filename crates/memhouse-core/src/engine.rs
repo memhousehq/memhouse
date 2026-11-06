@@ -38,6 +38,15 @@ pub struct Engine {
     pub explain_recalls: bool,
     /// The latest recall records, so an explanation can be read before its row is written.
     recent: Arc<std::sync::Mutex<std::collections::VecDeque<RecallRecord>>>,
+    /// Where writes wait between intake and the gate (the `IntakeQueue` seam, G10).
+    pub intake: Arc<dyn crate::traits::IntakeQueue>,
+    /// The write gate's statement classifier (QUAL-02).
+    pub classifier: Arc<dyn crate::traits::Classifier>,
+    /// Redacts personal data and secrets (stage 2 of the pipeline).
+    pub pii: Arc<dyn crate::traits::PiiDetector>,
+    /// Finish each write's pipeline in the request's own task right after answering (on by
+    /// default; tests turn it off to leave proposals to workers).
+    pub inline_intake: bool,
 }
 
 /// Who recalls, and the read constraints of their authorization decision.
@@ -58,20 +67,14 @@ fn request_hash(request: &impl serde::Serialize) -> String {
     if let Some(o) = v.as_object_mut() {
         o.remove("request_key");
         o.remove("actor");
+        // Waiting changes when the answer comes, not what is written.
+        o.remove("wait");
     }
     content_hash(&v.to_string())
 }
 
-/// How a write enters the lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Entry {
-    /// Committed at once (operators, agents with a commit grant, users, admins).
-    Commit,
-    /// A candidate the engine admits as soon as it has passed the gate.
-    ProposeAdmit,
-    /// A candidate that waits for a reviewer (`access.admission = "review"`).
-    Propose,
-}
+pub(crate) use crate::intake::Entry;
+use crate::intake::{Op, PendingRecord, Proposal};
 
 /// What a list may return.
 pub(crate) struct Page {
@@ -106,7 +109,13 @@ pub fn render(subject: &str, hits: &[Hit]) -> String {
             let m = &h.memory;
             let when = m.occurred_at.unwrap_or(m.created_at).format("%Y-%m-%d");
             let tags = if m.tags.is_empty() { String::new() } else { format!(" #{}", m.tags.join(" #")) };
-            format!("- [{}] ({}, {when}{tags}) {}", m.id, m.kind, m.content.replace('\n', "\n  "))
+            // A held plan or guess (`include_candidates`) must not read as a fact (PR-7).
+            let held = if m.status == MemoryStatus::Candidate {
+                format!(", unconfirmed {}", m.metadata.get("statement").and_then(|s| s.as_str()).unwrap_or("candidate"))
+            } else {
+                String::new()
+            };
+            format!("- [{}] ({}, {when}{tags}{held}) {}", m.id, m.kind, m.content.replace('\n', "\n  "))
         })
         .collect();
     let noun = if hits.len() == 1 { "memory" } else { "memories" };
@@ -131,7 +140,42 @@ impl Engine {
         let cfg = Arc::new(cfg);
         let auth = Arc::new(crate::identity::Authenticator::new(store.clone(), cfg.clone()));
         let policy_source = Arc::new(crate::policy::StorePolicies(store.clone()));
-        Engine { store, auth, authorizer, embedder, reranker, chat: None, cfg, policies: Default::default(), policy_source, explain_recalls: true, recent: Default::default() }
+        let intake = store.intake_queue().unwrap_or_else(|| Arc::new(crate::intake::NoQueue));
+        Engine {
+            store,
+            auth,
+            authorizer,
+            embedder,
+            reranker,
+            chat: None,
+            cfg,
+            policies: Default::default(),
+            policy_source,
+            explain_recalls: true,
+            recent: Default::default(),
+            intake,
+            classifier: Arc::new(crate::classify::RuleClassifier),
+            pii: Arc::new(gate::RulePii),
+            inline_intake: true,
+        }
+    }
+
+    /// Replace the statement classifier (a small model, `intake.classifier = "llm"`).
+    pub fn with_classifier(mut self, c: Arc<dyn crate::traits::Classifier>) -> Engine {
+        self.classifier = c;
+        self
+    }
+
+    /// Replace the intake queue (tests; the durable log in G31).
+    pub fn with_intake(mut self, q: Arc<dyn crate::traits::IntakeQueue>) -> Engine {
+        self.intake = q;
+        self
+    }
+
+    /// Leave every proposal to the workers instead of finishing it in the request's task.
+    pub fn with_inline_intake(mut self, on: bool) -> Engine {
+        self.inline_intake = on;
+        self
     }
 
     fn provenance(policy: &CompiledPolicy, actor: &str, user: &Option<String>, request_key: &Option<String>) -> Provenance {
@@ -174,6 +218,16 @@ impl Engine {
         Ok(())
     }
 
+    /// The key of a write that is already queued. Failing to record it does not undo the write,
+    /// so it is not an error (which would read as "not accepted"): a retry may then queue the
+    /// same content again, and the gate rejects that copy as a near-duplicate of the first.
+    async fn accepted_key(&self, tenant: &str, subject: &str, op: &str, key: &Option<String>, request: &impl serde::Serialize, response: &impl serde::Serialize) {
+        if let Err(e) = self.remember_key(tenant, subject, op, key, request, response).await {
+            metrics::inc("memhouse_request_key_failures_total", &[("op", op)], 1.0);
+            tracing::warn!("the {op} was queued but its request key could not be recorded: {e:#}");
+        }
+    }
+
     /// Link `subject` to another subject (ACC-06), held in `subject`'s own partition.
     pub async fn link(&self, tenant: Option<String>, subject: &str, linked_subject: &str, link_type: &str, memory_id: Option<Uuid>, actor: &str) -> anyhow::Result<Link> {
         let tenant = self.tenant(&tenant);
@@ -194,8 +248,22 @@ impl Engine {
 
     /// The same engine under another configuration (policy, authenticator and authorizer rebuilt).
     pub fn reconfigure(self, cfg: Config) -> Engine {
-        let chat = self.chat.clone();
-        Engine::new(self.store, self.embedder, self.reranker, cfg).with_chat(chat)
+        let (chat, intake, pii, inline) = (self.chat.clone(), self.intake.clone(), self.pii.clone(), self.inline_intake);
+        // A classifier built for another `intake.classifier` setting is not kept: the rules
+        // stand in until the caller sets the new one with `with_classifier`.
+        let classifier: Arc<dyn crate::traits::Classifier> = if cfg.intake.classifier == self.cfg.intake.classifier {
+            self.classifier.clone()
+        } else {
+            // The model classifier is built from the configuration by the server
+            // (`memhouse_models::classifier_chat`); core can't build it, so say so.
+            if cfg.intake.classifier != crate::config::ClassifierKind::default() {
+                tracing::warn!("intake.classifier changed in reconfigure: the rules classify until with_classifier sets the model classifier");
+            }
+            Arc::new(crate::classify::RuleClassifier)
+        };
+        let mut e = Engine::new(self.store, self.embedder, self.reranker, cfg).with_chat(chat).with_classifier(classifier).with_intake(intake).with_inline_intake(inline);
+        e.pii = pii;
+        e
     }
 
     /// The span of a write: who, which subject, under which policy; the record ids and outcome
@@ -323,32 +391,15 @@ impl Engine {
         Ok(v)
     }
 
-    /// The write gate's screen under a policy: size limit, redaction, injection check.
-    pub(crate) fn screen(policy: &CompiledPolicy, content: &str) -> anyhow::Result<gate::GateOutcome> {
-        let max = policy.policy.write_gate.max_content_chars;
-        if content.trim().is_empty() {
-            return Err(error::invalid("content is empty"));
-        }
-        if content.chars().count() > max {
-            return Err(error::invalid(format!(
-                "content is {} characters; the limit is {max} (write_gate.max_content_chars of policy {})",
-                content.chars().count(),
-                policy.version
-            )));
-        }
-        // The compiler keeps "secret" in every policy (security baseline).
-        Ok(gate::screen(content, &policy.policy.redaction.categories, true))
-    }
-
     /// Store one explicit memory (a fact, preference, procedure, commitment...).
     pub async fn remember(&self, req: RememberRequest) -> anyhow::Result<RememberResult> {
         self.remember_with(req, Entry::Commit).await
     }
 
     pub(crate) async fn remember_with(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
-        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
         let span = Self::write_span("memhouse.remember", &policy, &req.actor, &req.subject);
-        self.traced("remember", span, self.remember_untraced(req, entry, &policy)).await
+        retryable(self.traced("remember", span, self.remember_untraced(req, entry, &policy)).await)
     }
 
     async fn remember_untraced(&self, req: RememberRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
@@ -358,12 +409,16 @@ impl Engine {
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.remember_once(&req, &tenant, &subject, &actor, entry, policy).await?;
-        self.remember_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await?;
+        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember), policy).await?;
+        self.accepted_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await;
         Ok(result)
     }
 
-    async fn remember_once(&self, req: &RememberRequest, tenant: &str, subject: &str, actor: &str, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
+    /// Stages 2 and 3 of a single write (stage 1, authorization, is the caller's): validate,
+    /// redact, deduplicate exactly, queue durably, answer `candidate`. With `wait`, also run the
+    /// rest of the pipeline and answer with the gate's decision.
+    async fn remember_once(&self, req: &RememberRequest, tenant: &str, subject: &str, actor: &str, how: (Entry, Op), policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
+        let (entry, op) = how;
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
         if !policy.allows(kind) {
@@ -374,66 +429,60 @@ impl Engine {
                 return Err(error::invalid("structured needs a record_type and an attrs object"));
             }
         }
-        let gated = Self::screen(policy, &req.content)?;
-        let hash = content_hash(&format!("{}\u{1f}{}", kind.as_str(), gated.content));
+        // The pipeline adds its own keys to the metadata, so it must be an object.
+        if req.metadata.as_ref().is_some_and(|m| !m.is_object()) {
+            return Err(error::invalid("metadata must be a JSON object"));
+        }
+        // Routing input (HYB-01): a JSON record written as content is a structured record.
+        let (content, structured) = match (&req.structured, crate::classify::structured_from_content(&req.content)) {
+            (None, Some((st, text))) => (text, Some(st)),
+            _ => (req.content.clone(), req.structured.clone()),
+        };
+        let (content, mut redactions) = self.redact(policy, &content).await?;
+        let structured = match structured {
+            Some(st) => Some(Structured { attrs: self.redact_attrs(policy, &st.attrs, &mut redactions).await?, record_type: st.record_type }),
+            None => None,
+        };
+        // Metadata is stored with the record, so it is redacted like the content: nothing a
+        // detector finds reaches the queue (TR-IN-02).
+        let metadata = match &req.metadata {
+            Some(m) => self.redact_attrs(policy, m, &mut redactions).await?,
+            None => serde_json::json!({}),
+        };
+        // Structured records with the same text but other attributes are different records.
+        let hash = match &structured {
+            None => content_hash(&format!("{}\u{1f}{}", kind.as_str(), content)),
+            Some(st) => content_hash(&format!("{}\u{1f}{}\u{1f}{}\u{1f}{}", kind.as_str(), content, st.record_type, st.attrs)),
+        };
 
         if req.supersedes.is_none() {
             if let Some(existing) = self.store.find_by_hash(&tenant, &subject, &hash).await? {
                 let status = self.store.get(&tenant, existing).await?.map(|m| m.status).unwrap_or(MemoryStatus::Committed);
+                metrics::inc("memhouse_writes_total", &[("status", "deduplicated")], 1.0);
                 return Ok(RememberResult {
                     id: existing,
                     status,
                     deduplicated: true,
-                    redactions: gated.redactions,
+                    redactions,
                     superseded: None,
-                    note: {
-                        metrics::inc("memhouse_writes_total", &[("status", "deduplicated")], 1.0);
-                        Some("identical memory already stored".into())
-                    },
+                    note: Some("identical memory already stored".into()),
+                    statement: None,
+                    route: None,
                 });
-            }
-        }
-
-        let embedding = self.embed_passages(std::slice::from_ref(&gated.content)).await?.pop();
-        let status = if gated.quarantine() {
-            MemoryStatus::Quarantined
-        } else if entry == Entry::Commit {
-            MemoryStatus::Committed
-        } else {
-            MemoryStatus::Candidate
-        };
-
-        if req.supersedes.is_none() && status != MemoryStatus::Quarantined {
-            if let Some(emb) = &embedding {
-                if let Some((id, sim)) = self.store.nearest(&tenant, &subject, kind, emb).await? {
-                    if sim >= policy.policy.write_gate.dedup_threshold {
-                        return Ok(RememberResult {
-                            id,
-                            status: MemoryStatus::Committed,
-                            deduplicated: true,
-                            redactions: gated.redactions,
-                            superseded: None,
-                            note: Some(format!("near-duplicate of an existing memory (similarity {sim:.3})")),
-                        });
-                    }
-                }
             }
         }
 
         let now = Utc::now();
         let id = Uuid::now_v7();
-        let mut metadata = req.metadata.clone().unwrap_or(serde_json::json!({}));
-        if !gated.injection.is_empty() {
-            metadata["quarantine_reasons"] = serde_json::json!(gated.injection);
-        }
         let expires_at = req.expires_at.or_else(|| (kind == MemoryKind::Working).then(|| now + chrono::Duration::seconds(policy.policy.retention.working_ttl_secs as i64)));
+        let source = req.source.clone().unwrap_or_else(|| actor.clone());
         let mem = Memory {
             id,
             tenant: tenant.clone(),
             subject: subject.clone(),
             kind,
-            status,
-            content: gated.content.clone(),
+            status: MemoryStatus::Candidate,
+            content,
             session_id: None,
             turn_ref: None,
             occurred_at: req.occurred_at.or(Some(now)),
@@ -442,7 +491,7 @@ impl Engine {
             supersedes: req.supersedes,
             labels: req.labels.clone(),
             tags: req.tags.clone(),
-            source: req.source.clone().unwrap_or_else(|| actor.clone()),
+            source: source.clone(),
             confidence: 1.0,
             metadata,
             created_at: now,
@@ -450,51 +499,41 @@ impl Engine {
             scope: req.scope.clone().unwrap_or_default(),
             provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
         };
-        let mut rec = NewMemory::new(mem, hash);
-        rec.embedding = embedding;
-        rec.structured = req.structured.clone();
-        rec.code_refs = req.code_refs.clone();
-        self.store.insert(&[rec]).await?;
-        let mut superseded = None;
-        if let Some(old) = req.supersedes {
-            if status == MemoryStatus::Committed && self.store.set_superseded(&tenant, old, id).await? {
-                superseded = Some(old);
-            }
-        }
-        let action = match (status, superseded) {
-            (MemoryStatus::Candidate, _) => "memory.propose",
-            (_, Some(_)) => "memory.supersede",
-            _ => "memory.write",
+        let proposal = Proposal {
+            id,
+            tenant: tenant.clone(),
+            subject: subject.clone(),
+            actor: actor.clone(),
+            user: req.user.clone(),
+            source,
+            op,
+            entry,
+            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs: req.code_refs.clone() }],
+            session_id: None,
+            enqueued_at: now,
         };
-        self.store
-            .audit(
-                &actor,
-                action,
-                &tenant,
-                Some(&subject),
-                Some(id),
-                serde_json::json!({
-                    "kind": kind.as_str(),
-                    "status": status.as_str(),
-                    "redactions": gated.redactions,
-                    "supersedes": superseded,
-                    "embedder": self.embedder.id(),
-                }),
-            )
-            .await?;
-        let (status, superseded) = if status == MemoryStatus::Candidate && entry == Entry::ProposeAdmit { self.admit(&tenant, id, "engine").await? } else { (status, superseded) };
+        self.enqueue(&proposal).await?;
         let span = tracing::Span::current();
         span.record("memhouse.record_ids", id.to_string().as_str());
-        span.record("memhouse.status", status.as_str());
-        metrics::inc("memhouse_writes_total", &[("status", status.as_str())], 1.0);
-        Ok(RememberResult {
-            id,
-            status,
-            deduplicated: false,
-            redactions: gated.redactions,
-            superseded,
-            note: if status == MemoryStatus::Quarantined { Some(format!("quarantined: looks like an instruction to the agent ({})", gated.injection.join(", "))) } else { None },
-        })
+        // From here the write is accepted: a failure while waiting answers the candidate (the
+        // workers finish it), never an error that would invite a duplicate retry.
+        if req.wait {
+            let waited = match self.settle(&tenant, &subject, id, std::time::Duration::from_millis(self.cfg.intake.wait_timeout_ms)).await {
+                Ok(_) => self.result_of(&tenant, id, redactions.clone()).await,
+                Err(e) => Err(e),
+            };
+            match waited {
+                Ok(r) => {
+                    span.record("memhouse.status", r.status.as_str());
+                    return Ok(r);
+                }
+                Err(e) => tracing::warn!("write {id} is queued; waiting for its gate decision failed: {e:#}"),
+            }
+        } else {
+            self.nudge(&tenant, &subject, id);
+        }
+        span.record("memhouse.status", "candidate");
+        Ok(RememberResult { id, status: MemoryStatus::Candidate, deduplicated: false, redactions, superseded: None, note: None, statement: None, route: None })
     }
 
     /// Store a conversation as episodic memory, one record per user/assistant round.
@@ -503,9 +542,9 @@ impl Engine {
     }
 
     pub(crate) async fn ingest_with(&self, req: IngestRequest, entry: Entry) -> anyhow::Result<IngestResult> {
-        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
         let span = Self::write_span("memhouse.ingest", &policy, &req.actor, &req.subject);
-        self.traced("ingest", span, self.ingest_untraced(req, entry, &policy)).await
+        retryable(self.traced("ingest", span, self.ingest_untraced(req, entry, &policy)).await)
     }
 
     async fn ingest_untraced(&self, req: IngestRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<IngestResult> {
@@ -516,10 +555,12 @@ impl Engine {
             return Ok(done);
         }
         let result = self.ingest_once(&req, &tenant, &subject, &actor, entry, policy).await?;
-        self.remember_key(&tenant, &subject, "ingest", &req.request_key, &req, &result).await?;
+        self.accepted_key(&tenant, &subject, "ingest", &req.request_key, &req, &result).await;
         Ok(result)
     }
 
+    /// Stages 2 and 3 of a conversation: rounds built, redacted, deduplicated against the
+    /// subject's stored rounds, queued as one proposal.
     async fn ingest_once(&self, req: &IngestRequest, tenant: &str, subject: &str, actor: &str, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<IngestResult> {
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         if !policy.allows(MemoryKind::Episodic) {
@@ -542,57 +583,48 @@ impl Engine {
         };
         let now = Utc::now();
         let mut out = IngestResult::default();
-        let mut recs: Vec<NewMemory> = Vec::with_capacity(rounds.len());
-        let mut texts = Vec::with_capacity(rounds.len());
-        // (record index, gated user text) for rounds that get a second, user-only vector.
-        let mut focus: Vec<(usize, String)> = vec![];
-        let gated_rounds: Vec<(usize, gate::GateOutcome, String)> = rounds
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| Self::screen(policy, truncate_chars(&r.text, policy.policy.write_gate.max_content_chars)).ok().map(|g| (i, g)))
-            .map(|(i, g)| {
-                let h = content_hash(&format!("episodic\u{1f}{session}\u{1f}{i}\u{1f}{}", g.content));
-                (i, g, h)
-            })
-            .collect();
-        let existing = self.store.existing_hashes(&tenant, &subject, &gated_rounds.iter().map(|(_, _, h)| h.clone()).collect::<Vec<_>>()).await?;
-        for (i, gated, hash) in gated_rounds {
+        let mut gated_rounds: Vec<(usize, String, Vec<String>, String)> = vec![];
+        for (i, r) in rounds.iter().enumerate() {
+            // An empty round is skipped; a detector that fails refuses the whole call, before
+            // anything is queued, rather than dropping the round unredacted or unseen.
+            let (text, redactions) = match self.redact(policy, truncate_chars(&r.text, policy.policy.write_gate.max_content_chars)).await {
+                Ok(v) => v,
+                Err(e) if error::code_of(&e) == error::ErrorCode::InvalidRequest => continue,
+                Err(e) => return Err(e),
+            };
+            let h = content_hash(&format!("episodic\u{1f}{session}\u{1f}{i}\u{1f}{text}"));
+            gated_rounds.push((i, text, redactions, h));
+        }
+        let existing = self.store.existing_hashes(&tenant, &subject, &gated_rounds.iter().map(|g| g.3.clone()).collect::<Vec<_>>()).await?;
+        let source = req.source.clone().unwrap_or_else(|| actor.clone());
+        let mut records: Vec<PendingRecord> = Vec::with_capacity(gated_rounds.len());
+        for (i, text, redactions, hash) in gated_rounds {
             let r = &rounds[i];
             if existing.contains(&hash) {
                 out.deduplicated += 1;
                 continue;
             }
-            let status = if gated.quarantine() {
-                MemoryStatus::Quarantined
-            } else if entry == Entry::Commit {
-                MemoryStatus::Committed
-            } else {
-                MemoryStatus::Candidate
-            };
-            if status == MemoryStatus::Quarantined {
-                out.quarantined += 1;
-            }
             let ts = r.timestamp.or(req.session_time);
             let mut metadata = serde_json::json!({ "round": i, "message_refs": r.refs });
-            if !gated.injection.is_empty() {
-                metadata["quarantine_reasons"] = serde_json::json!(gated.injection);
+            if !redactions.is_empty() {
+                metadata["redactions"] = serde_json::json!(redactions);
             }
-            if !gated.redactions.is_empty() {
-                metadata["redactions"] = serde_json::json!(gated.redactions);
-            }
-            let id = Uuid::now_v7();
-            if let Some(f) = r.focus.as_deref().and_then(|f| Self::screen(policy, f).ok()) {
-                focus.push((recs.len(), f.content));
-            }
-            texts.push(gated.content.clone());
-            recs.push(NewMemory::new(
-                Memory {
-                    id,
+            let focus = match r.focus.as_deref() {
+                Some(f) => match self.redact(policy, f).await {
+                    Ok((t, _)) => Some(t),
+                    Err(e) if error::code_of(&e) == error::ErrorCode::InvalidRequest => None,
+                    Err(e) => return Err(e),
+                },
+                None => None,
+            };
+            records.push(PendingRecord {
+                memory: Memory {
+                    id: Uuid::now_v7(),
                     tenant: tenant.clone(),
                     subject: subject.clone(),
                     kind: MemoryKind::Episodic,
-                    status,
-                    content: gated.content,
+                    status: MemoryStatus::Candidate,
+                    content: text,
                     session_id: Some(session.clone()),
                     turn_ref: Some(r.refs.join(",")),
                     occurred_at: ts,
@@ -601,7 +633,7 @@ impl Engine {
                     supersedes: None,
                     labels: req.labels.clone(),
                     tags: vec![],
-                    source: req.source.clone().unwrap_or_else(|| actor.clone()),
+                    source: source.clone(),
                     confidence: 1.0,
                     metadata,
                     created_at: now,
@@ -609,49 +641,59 @@ impl Engine {
                     scope: req.scope.clone().unwrap_or_default(),
                     provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
                 },
-                hash,
-            ));
+                content_hash: hash,
+                redactions,
+                focus,
+                structured: None,
+                code_refs: vec![],
+            });
         }
-        if recs.is_empty() {
+        if records.is_empty() {
             return Ok(out);
         }
-        let n = texts.len();
-        texts.extend(focus.iter().map(|(_, f)| f.clone()));
-        let mut vecs = self.embed_passages(&texts).await?;
-        let focus_vecs = vecs.split_off(n);
-        for (rec, v) in recs.iter_mut().zip(vecs) {
-            rec.embedding = Some(v);
-        }
-        let prefix = self.cfg.embedding.passage_prefix.clone().unwrap_or_default();
-        for ((i, f), v) in focus.into_iter().zip(focus_vecs) {
-            recs[i].alt = Some((content_hash(&format!("{prefix}{f}")), v));
-        }
-        self.store.insert(&recs).await?;
-        out.ids = recs.iter().map(|r| r.memory.id).collect();
-        // Proposed rounds are admitted by the engine at once: a conversation is a record of what
-        // was said, not a claim to review.
-        let proposed: Vec<Uuid> = recs.iter().filter(|r| r.memory.status == MemoryStatus::Candidate).map(|r| r.memory.id).collect();
-        if !proposed.is_empty() {
-            self.store.audit(&actor, "memory.propose", &tenant, Some(&subject), None, serde_json::json!({ "records": proposed.len() })).await?;
-            let n = self.store.set_status_many(&tenant, &proposed, MemoryStatus::Committed).await?;
-            self.store.audit("engine", "memory.admit", &tenant, Some(&subject), None, serde_json::json!({ "records": n })).await?;
-            for r in recs.iter_mut().filter(|r| r.memory.status == MemoryStatus::Candidate) {
-                r.memory.status = MemoryStatus::Committed;
-            }
-        }
-        out.stored = recs.len() - out.quarantined;
+        out.ids = records.iter().map(|r| r.memory.id).collect();
+        let proposal = Proposal {
+            id: out.ids[0],
+            tenant: tenant.clone(),
+            subject: subject.clone(),
+            actor: actor.clone(),
+            user: req.user.clone(),
+            source,
+            op: Op::Ingest,
+            entry,
+            records,
+            session_id: Some(session.clone()),
+            enqueued_at: now,
+        };
+        self.enqueue(&proposal).await?;
         let span = tracing::Span::current();
         span.record("memhouse.record_ids", out.ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",").as_str());
-        span.record("memhouse.status", format!("{} stored, {} quarantined", out.stored, out.quarantined).as_str());
-        metrics::inc("memhouse_writes_total", &[("status", "committed")], out.stored as f64);
-        metrics::inc("memhouse_writes_total", &[("status", "quarantined")], out.quarantined as f64);
-        if self.cfg.enrich.enabled && out.stored > 0 {
-            let committed: Vec<Uuid> = recs.iter().filter(|r| r.memory.status == MemoryStatus::Committed).map(|r| r.memory.id).collect();
-            self.store.enrich_enqueue(&tenant, &subject, &session, &committed).await?;
+        // Accepted from here: a failure while waiting answers `queued`, not an error.
+        let waited = if req.wait {
+            match self.settle(&tenant, &subject, proposal.id, std::time::Duration::from_millis(self.cfg.intake.wait_timeout_ms)).await {
+                Ok(_) => self.store.get_many(&tenant, &out.ids).await.map(Some),
+                Err(e) => Err(e),
+            }
+        } else {
+            self.nudge(&tenant, &subject, proposal.id);
+            Ok(None)
+        };
+        match waited {
+            Ok(Some(stored)) => {
+                out.queued = stored.len() < out.ids.len();
+                out.quarantined = stored.iter().filter(|m| m.status == MemoryStatus::Quarantined).count();
+                out.stored = stored.len() - out.quarantined;
+            }
+            other => {
+                if let Err(e) = other {
+                    tracing::warn!("ingest {} is queued; waiting for the pipeline failed: {e:#}", proposal.id);
+                }
+                // While queued, `stored` counts the rounds accepted (the 1.x meaning of the field).
+                out.queued = true;
+                out.stored = out.ids.len();
+            }
         }
-        self.store
-            .audit(&actor, "memory.ingest", &tenant, Some(&subject), None, serde_json::json!({ "session": session, "records": recs.len(), "quarantined": out.quarantined }))
-            .await?;
+        span.record("memhouse.status", format!("{} stored, {} quarantined{}", out.stored, out.quarantined, if out.queued { ", queued" } else { "" }).as_str());
         Ok(out)
     }
 
@@ -672,8 +714,15 @@ impl Engine {
     /// Recall with the labels a caller may not read filtered inside the statement (TR-RQ-03),
     /// traced (QUAL-07), measured, and recorded for its explanation (GOV-04).
     pub(crate) async fn recall_with(&self, req: RecallRequest, mut ctx: RecallContext) -> anyhow::Result<RecallResult> {
+        let t0 = Instant::now();
+        // PERF-07: retrieval that fails or overruns its budget answers empty and flagged.
+        let budget = self.cfg.memory.recall_timeout_ms;
+        let deadline = (budget > 0).then(|| tokio::time::Instant::now() + std::time::Duration::from_millis(budget));
         // Resolved before the span opens: a refresh read is not part of the recall's statement.
-        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let policy = match within(deadline, self.policy_for(&self.tenant(&req.tenant))).await {
+            Ok(p) => p,
+            Err(e) => return degraded(e, t0, "recall"),
+        };
         ctx.denied_labels = with_policy_labels(&ctx.denied_labels, &policy);
         let recall_id = Uuid::now_v7();
         let span = tracing::info_span!(
@@ -688,7 +737,14 @@ impl Engine {
             otel.status_code = tracing::field::Empty,
         );
         let start = Instant::now();
-        let r = self.recall_inner(req, ctx, recall_id, &policy).instrument(span.clone()).await;
+        let r = self.recall_inner(req, ctx, recall_id, &policy, deadline).instrument(span.clone()).await;
+        let r = match r {
+            Err(e) if degradable(&e) => {
+                span.record("otel.status_code", "ERROR");
+                degraded(e, t0, "recall")
+            }
+            r => r,
+        };
         let outcome = match &r {
             Ok(_) => "ok",
             Err(e) => {
@@ -701,7 +757,14 @@ impl Engine {
         r
     }
 
-    async fn recall_inner(&self, req: RecallRequest, ctx: RecallContext, recall_id: Uuid, policy: &CompiledPolicy) -> anyhow::Result<RecallResult> {
+    async fn recall_inner(
+        &self,
+        req: RecallRequest,
+        ctx: RecallContext,
+        recall_id: Uuid,
+        policy: &CompiledPolicy,
+        deadline: Option<tokio::time::Instant>,
+    ) -> anyhow::Result<RecallResult> {
         let rank = &policy.policy.ranking;
         let denied_labels = ctx.denied_labels.clone();
         let start = Instant::now();
@@ -720,7 +783,9 @@ impl Engine {
             if rank.subquery_weight <= 0.0 {
                 p.subqueries.clear();
             }
-            Some(p).filter(|p| !p.windows.is_empty() || !p.subqueries.is_empty())
+            // Identifiers in the question ("order A-1001") get an exact structured probe (HYB-03).
+            p.exact = query::identifiers(&req.query);
+            Some(p).filter(|p| !p.windows.is_empty() || !p.subqueries.is_empty() || !p.exact.is_empty())
         } else {
             None
         };
@@ -729,7 +794,7 @@ impl Engine {
             vec![None; 1 + subqueries.len()]
         } else {
             let texts: Vec<String> = std::iter::once(&req.query).chain(subqueries).cloned().collect();
-            self.embed_queries(&texts).instrument(tracing::info_span!("recall.embed", texts = texts.len())).await?.into_iter().map(Some).collect()
+            within(deadline, self.embed_queries(&texts).instrument(tracing::info_span!("recall.embed", texts = texts.len()))).await?.into_iter().map(Some).collect()
         };
         let embed_ms = start.elapsed().as_secs_f64() * 1000.0;
         let now_valid = req.as_of.unwrap_or_else(Utc::now);
@@ -753,6 +818,7 @@ impl Engine {
             vector_weight: rank.vector_weight,
             windows: vec![],
             scope: req.scope.clone().unwrap_or_default(),
+            include_candidates: req.include_candidates,
         };
         // Extra probes: the same query inside the time windows it mentions, and one per sub-query.
         let mut probes: Vec<(SearchQuery, f32)> = vec![];
@@ -773,7 +839,38 @@ impl Engine {
         let n_probes = 1 + probes.len();
         let statements = self.store.statements_per_recall(n_probes);
         let all: Vec<SearchQuery> = std::iter::once(q.clone()).chain(probes.iter().map(|(p, _)| p.clone())).collect();
-        let mut lists = self.store.search_many(&all).instrument(tracing::info_span!("recall.search", probes = n_probes, db.statements = statements)).await?;
+        let mut lists = within(deadline, self.store.search_many(&all).instrument(tracing::info_span!("recall.search", probes = n_probes, db.statements = statements))).await?;
+        // The exact probe (HYB-02/03): structured records matched on the request's attributes or
+        // on identifiers in the question, never by similarity.
+        let exact_values: Vec<String> = plan.as_ref().map(|p| p.exact.clone()).unwrap_or_default();
+        let mut exact_statements = 0;
+        let exact_hits = if req.exact.is_some() || !exact_values.is_empty() {
+            let (rt, attrs) = match &req.exact {
+                Some(x) => (x.record_type.as_deref(), Some(&x.attrs).filter(|a| a.as_object().is_some_and(|o| !o.is_empty()))),
+                None => (None, None),
+            };
+            let mut xq = q.clone();
+            xq.limit = k;
+            // Attributes asked for explicitly decide alone. A type alone narrows the identifiers
+            // in the question: those matches first, then the type's other records.
+            let (values, fallback) = match &req.exact {
+                Some(_) if attrs.is_some() => (vec![], false),
+                Some(_) => (exact_values, true),
+                None => (exact_values, false),
+            };
+            let mut found = within(deadline, self.store.structured_lookup(&xq, rt, attrs, &values).instrument(tracing::info_span!("recall.exact"))).await?;
+            if fallback && !values.is_empty() && found.len() < k {
+                let more = within(deadline, self.store.structured_lookup(&xq, rt, None, &[]).instrument(tracing::info_span!("recall.exact"))).await?;
+                let seen: std::collections::HashSet<Uuid> = found.iter().map(|h| h.memory.id).collect();
+                found.extend(more.into_iter().filter(|h| !seen.contains(&h.memory.id)));
+                found.truncate(k);
+            }
+            exact_statements += 1 + usize::from(fallback && !values.is_empty());
+            found
+        } else {
+            vec![]
+        };
+        let statements = statements + exact_statements;
         let mut hits = if probes.is_empty() {
             lists.pop().unwrap_or_default()
         } else {
@@ -793,7 +890,7 @@ impl Engine {
             let rr = self.reranker.as_ref().unwrap();
             let n = hits.len().min(rerank_n);
             let docs: Vec<String> = hits[..n].iter().map(|h| h.memory.content.clone()).collect();
-            let scores = rr.rerank(&req.query, &docs).instrument(tracing::info_span!("recall.rerank", docs = n)).await?;
+            let scores = within(deadline, rr.rerank(&req.query, &docs).instrument(tracing::info_span!("recall.rerank", docs = n))).await?;
             // Blend the cross-encoder with the fused rank so a good keyword/vector agreement still counts.
             for (i, (h, s)) in hits[..n].iter_mut().zip(scores).enumerate() {
                 let fused_prior = 1.0 - i as f32 / n as f32;
@@ -815,6 +912,22 @@ impl Engine {
             hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         }
 
+        if !exact_hits.is_empty() {
+            let top = hits.first().map(|h| h.score).unwrap_or(0.0);
+            let ids: std::collections::HashSet<Uuid> = exact_hits.iter().map(|h| h.memory.id).collect();
+            hits.retain(|h| !ids.contains(&h.memory.id));
+            let n = exact_hits.len();
+            let exact: Vec<Hit> = exact_hits
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut h)| {
+                    h.exact = true;
+                    h.score = top + 1.0 + (n - i) as f32;
+                    h
+                })
+                .collect();
+            hits.splice(0..0, exact);
+        }
         // What the recall itself leaves out, for the explanation: below k, then over the budget.
         let mut cut: Vec<ExcludedRecord> = if hits.len() > k {
             hits.split_off(k)
@@ -839,16 +952,20 @@ impl Engine {
             });
         }
         if policy.policy.recall.audit_reads {
-            self.store
-                .audit(
+            // Inside the recall's deadline too: an audit that can't be written in time degrades
+            // the answer to empty rather than returning unaudited reads late.
+            within(
+                deadline,
+                self.store.audit(
                     req.actor.as_deref().unwrap_or("api"),
                     "memory.recall",
                     &tenant,
                     Some(&subject),
                     None,
                     serde_json::json!({ "returned": hits.iter().map(|h| h.memory.id).collect::<Vec<_>>() }),
-                )
-                .await?;
+                ),
+            )
+            .await?;
         }
         let rendered = req.render.then(|| render(&subject, &hits));
         let rerank_ms = if use_rerank { t_rerank.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
@@ -924,12 +1041,14 @@ impl Engine {
             reranked: use_rerank,
             recall_id: self.explain_recalls.then_some(recall_id),
             plan,
+            degraded: None,
         })
     }
 
     /// Replace a memory with new content; the old version stays for audit but is no longer recalled.
     pub async fn update(&self, tenant: Option<String>, id: Uuid, content: String, actor: Option<String>) -> anyhow::Result<RememberResult> {
-        self.revise(ReviseRequest { tenant, id, content, actor, ..Default::default() }).await
+        // The pre-v1 call answered with the stored revision: it waits for the gate.
+        self.revise(ReviseRequest { tenant, id, content, actor, wait: true, ..Default::default() }).await
     }
 
     /// A new version of a memory that supersedes the current one (CORE-04). Fields the request
@@ -939,9 +1058,9 @@ impl Engine {
     }
 
     pub(crate) async fn revise_with(&self, req: ReviseRequest, entry: Entry) -> anyhow::Result<RememberResult> {
-        let policy = self.policy_for(&self.tenant(&req.tenant)).await?;
+        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
         let span = Self::write_span("memhouse.revise", &policy, &req.actor, &None);
-        self.traced("revise", span, self.revise_untraced(req, entry, &policy)).await
+        retryable(self.traced("revise", span, self.revise_untraced(req, entry, &policy)).await)
     }
 
     async fn revise_untraced(&self, req: ReviseRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
@@ -950,6 +1069,8 @@ impl Engine {
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
+        // A version still in the intake queue is settled first, so it is revised as stored.
+        self.settle_record(&tenant, req.id).await?;
         let old = self.store.get(&tenant, req.id).await?.ok_or_else(|| error::not_found(format!("memory {} not found", req.id)))?;
         if old.status != MemoryStatus::Committed {
             return Err(error::conflict(format!("memory {} is {}; only the current, committed version can be revised", req.id, old.status.as_str())));
@@ -960,6 +1081,8 @@ impl Engine {
             let (s, c) = self.store.representations(&tenant, req.id).await?;
             (req.structured.clone().or(s), req.code_refs.clone().unwrap_or(c))
         };
+        // New content that is itself a structured record replaces the old structured form.
+        let structured = if req.structured.is_none() && crate::classify::structured_from_content(&req.content).is_some() { None } else { structured };
         let inherited_metadata = Some(old.metadata.clone()).filter(|m| m.as_object().is_some_and(|o| !o.is_empty()));
         let write = RememberRequest {
             tenant: Some(tenant.clone()),
@@ -980,15 +1103,17 @@ impl Engine {
             expires_at: req.expires_at.or(old.expires_at),
             structured,
             code_refs,
+            wait: req.wait,
         };
-        let result = self.remember_once(&write, &tenant, &old.subject, &actor, entry, policy).await?;
-        self.remember_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await?;
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise), policy).await?;
+        self.accepted_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await;
         Ok(result)
     }
 
     /// Commit a candidate (GOV-08): by the engine at once, or by a reviewer. A revision whose
     /// predecessor is no longer current is rejected instead, so history never forks.
     pub(crate) async fn admit(&self, tenant: &str, id: Uuid, by: &str) -> anyhow::Result<(MemoryStatus, Option<Uuid>)> {
+        self.settle_record(tenant, id).await?;
         let m = self.store.get(tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
         if m.status != MemoryStatus::Candidate {
             return Err(error::conflict(format!("memory {id} is {}; only candidates are admitted", m.status.as_str())));
@@ -1007,6 +1132,7 @@ impl Engine {
 
     /// Refuse a candidate.
     pub(crate) async fn reject(&self, tenant: &str, id: Uuid, by: &str, reason: &str) -> anyhow::Result<MemoryStatus> {
+        self.settle_record(tenant, id).await?;
         let m = self.store.get(tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
         if !self.store.set_status(tenant, id, MemoryStatus::Rejected).await? {
             return Err(error::conflict(format!("memory {id} is {}; it can't be rejected", m.status.as_str())));
@@ -1015,13 +1141,42 @@ impl Engine {
         Ok(MemoryStatus::Rejected)
     }
 
+    /// A record still in the intake queue: run its proposal through the pipeline first, so what
+    /// follows (a review, a forget) acts on the stored record.
+    pub(crate) async fn settle_record(&self, tenant: &str, id: Uuid) -> anyhow::Result<()> {
+        if let Some(m) = self.intake.pending(tenant, id).await? {
+            if m.status == MemoryStatus::Candidate {
+                let proposal = self.intake.pending_proposal(tenant, id).await?.unwrap_or(id);
+                self.settle(tenant, &m.subject, proposal, std::time::Duration::from_millis(self.cfg.intake.wait_timeout_ms)).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A record by id: stored, or still in the intake queue (then `candidate`, CORE-02).
+    pub async fn get_record(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>> {
+        if let Some(m) = self.store.get(tenant, id).await? {
+            return Ok(Some(m));
+        }
+        match self.intake.pending(tenant, id).await? {
+            Some(m) => Ok(Some(m)),
+            // Its insert may have committed between the two reads.
+            None => self.store.get(tenant, id).await,
+        }
+    }
+
     pub async fn forget(&self, tenant: Option<String>, id: Uuid, actor: Option<String>) -> anyhow::Result<bool> {
         let t = self.tenant(&tenant);
         let actor = actor.unwrap_or_else(|| "api".into());
-        let mem = self.store.get(&t, id).await?;
-        let ok = self.store.delete(&t, id, &actor).await?;
+        self.settle_record(&t, id).await?;
+        let mem = self.get_record(&t, id).await?;
+        // Whatever of it is still queued goes first (a proposal that could not be settled, or a
+        // poison one whose records could not be stored): only this record leaves the proposal,
+        // and it waits for an insert in progress, so the delete below sees what that wrote.
+        let queued = self.intake.discard(&t, ForgetScope::Record, &id.to_string()).await? > 0;
+        let ok = self.store.delete(&t, id, &actor).await? || queued;
         if ok {
-            self.store.audit(&actor, "memory.delete", &t, mem.as_ref().map(|m| m.subject.as_str()), Some(id), serde_json::json!({})).await?;
+            self.store.audit(&actor, "memory.delete", &t, mem.as_ref().map(|m| m.subject.as_str()), Some(id), serde_json::json!({ "queued": queued })).await?;
         }
         Ok(ok)
     }
@@ -1070,7 +1225,7 @@ impl Engine {
         let deleted = match scope {
             ForgetScope::Record => {
                 let id = req.id.expect("named");
-                let mem = self.store.get(&tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
+                let mem = self.get_record(&tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
                 key_subject = mem.subject;
                 if !req.dry_run && !self.forget(Some(tenant.clone()), id, Some(actor.clone())).await? {
                     return Err(error::not_found(format!("memory {id} not found")));
@@ -1085,6 +1240,11 @@ impl Engine {
                 n
             }
             ForgetScope::User | ForgetScope::Agent | ForgetScope::Source => {
+                // Queued writes that match go first, so none lands after the erasure.
+                let queued = self.intake.discard(&tenant, scope, &value).await?;
+                if queued > 0 {
+                    self.store.audit(&actor, "intake.discard", &tenant, None, None, serde_json::json!({ "by": scope.as_str(), "value": value, "proposals": queued })).await?;
+                }
                 let before = self.store.forget_count(&tenant, scope, &value).await?;
                 // Each record goes with its full cascade (derived facts, cached vectors, jobs,
                 // ledger row). Facts derived from a match may match too and are then gone already.
@@ -1223,6 +1383,51 @@ impl Engine {
         }
         Ok(n)
     }
+}
+
+/// A write that failed inside MemHouse or the database before it was queued stored nothing:
+/// the caller may retry it (PERF-07).
+fn retryable<T>(r: anyhow::Result<T>) -> anyhow::Result<T> {
+    r.map_err(|e| if error::code_of(&e) == error::ErrorCode::Internal { error::unavailable(format!("the write was not accepted, so nothing was stored; retry: {e:#}")) } else { e })
+}
+
+/// Await `fut` until `deadline` (if any); running out of time is a retryable failure.
+async fn within<T>(deadline: Option<tokio::time::Instant>, fut: impl std::future::Future<Output = anyhow::Result<T>>) -> anyhow::Result<T> {
+    match deadline {
+        None => fut.await,
+        Some(d) => match tokio::time::timeout_at(d, fut).await {
+            Ok(r) => r,
+            Err(_) => Err(error::unavailable("retrieval took longer than memory.recall_timeout_ms")),
+        },
+    }
+}
+
+/// A failure recall answers with an empty, flagged result (PERF-07): one inside MemHouse or a
+/// dependency. A refused or invalid request stays an error, so no data leaks either way.
+fn degradable(e: &anyhow::Error) -> bool {
+    matches!(error::code_of(e), error::ErrorCode::Internal | error::ErrorCode::Unavailable)
+}
+
+fn degraded(e: anyhow::Error, start: Instant, op: &str) -> anyhow::Result<RecallResult> {
+    if !degradable(&e) {
+        return Err(e);
+    }
+    let reason = format!("{e:#}");
+    tracing::warn!("{op} degraded to an empty result: {reason}");
+    metrics::inc("memhouse_recall_degraded_total", &[], 1.0);
+    Ok(RecallResult {
+        hits: vec![],
+        took_ms: start.elapsed().as_secs_f64() * 1000.0,
+        embed_ms: 0.0,
+        search_ms: 0.0,
+        rerank_ms: 0.0,
+        candidates: 0,
+        reranked: false,
+        plan: None,
+        rendered: None,
+        recall_id: None,
+        degraded: Some(reason),
+    })
 }
 
 /// Labels a read may not return: the caller's, and those the tenant's policy denies.

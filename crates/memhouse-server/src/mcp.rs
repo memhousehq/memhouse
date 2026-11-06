@@ -111,7 +111,7 @@ fn build_tools() -> Value {
             "name": "recall",
             "title": "Recall memories",
             "description": "Search long-term memory for anything relevant to a question or task. Call this before answering questions that may depend on earlier conversations, the user's preferences, or project knowledge. Returns the most relevant memories with ids, dates, kinds and provenance.",
-            "inputSchema": input_schema::<RecallRequest>(&["query", "subject", "k", "kinds", "tags", "scope", "as_of", "token_budget"], &["query"],
+            "inputSchema": input_schema::<RecallRequest>(&["query", "subject", "k", "kinds", "tags", "scope", "as_of", "token_budget", "include_candidates", "exact"], &["query"],
                 json!({"k": {"minimum": 1, "maximum": 50, "description": "Number of memories to return (default 10)."}, "as_of": {"description": format!("Recall what was true at this time. {DATE_HINT}")}})),
             "outputSchema": inline_schema::<RecallResult>(),
             "annotations": {"readOnlyHint": true}
@@ -119,8 +119,8 @@ fn build_tools() -> Value {
         {
             "name": "remember",
             "title": "Remember",
-            "description": "Store one durable memory: a fact, preference, procedure, decision or commitment worth knowing in future sessions. Write it so it stands alone (who, what, when). Don't store secrets or one-off chatter. Instructions aimed at an agent are quarantined. Returns the new record's id and state.",
-            "inputSchema": input_schema::<RememberRequest>(&["content", "kind", "subject", "tags", "occurred_at", "valid_to", "expires_at", "labels", "scope", "request_key"], &["content"],
+            "description": "Store one durable memory: a fact, preference, procedure, decision or commitment worth knowing in future sessions. Write it so it stands alone (who, what, when). Don't store secrets or one-off chatter. Text that tries to instruct the agent reading it (prompt injection) is quarantined; plans and guesses are held until confirmed (store a to-do as kind commitment). Returns the new record's id at once, as a candidate; it is recallable within seconds.",
+            "inputSchema": input_schema::<RememberRequest>(&["content", "kind", "subject", "tags", "occurred_at", "valid_to", "expires_at", "labels", "scope", "request_key", "wait"], &["content"],
                 json!({"occurred_at": date, "valid_to": date, "expires_at": date})),
             "outputSchema": inline_schema::<RememberResult>()
         },
@@ -128,7 +128,7 @@ fn build_tools() -> Value {
             "name": "revise",
             "title": "Revise a memory",
             "description": "Replace a memory whose information changed or was wrong with a corrected version. The old version is kept for audit but is no longer recalled. Use this instead of storing a contradicting memory.",
-            "inputSchema": input_schema::<ReviseRequest>(&["id", "content", "kind", "tags", "valid_to", "request_key"], &["id", "content"],
+            "inputSchema": input_schema::<ReviseRequest>(&["id", "content", "kind", "tags", "valid_to", "request_key", "wait"], &["id", "content"],
                 json!({"id": {"description": "Id of the memory to revise (from recall)."}, "valid_to": date})),
             "outputSchema": inline_schema::<RememberResult>()
         },
@@ -144,7 +144,7 @@ fn build_tools() -> Value {
             "name": "ingest",
             "title": "Save conversation",
             "description": "Save conversation turns as episodic memory so they can be recalled later, e.g. at the end of a session.",
-            "inputSchema": input_schema::<IngestRequest>(&["messages", "session_id", "session_time", "subject", "request_key"], &["messages"], json!({"session_time": date})),
+            "inputSchema": input_schema::<IngestRequest>(&["messages", "session_id", "session_time", "subject", "request_key", "wait"], &["messages"], json!({"session_time": date})),
             "outputSchema": inline_schema::<IngestResult>()
         },
         {
@@ -204,10 +204,11 @@ async fn call_v1(c: &Caller, name: &str, args: &Value) -> anyhow::Result<Option<
             let req: ReviseRequest = request(name, args)?;
             let old = req.id;
             let r = c.revise(req).await?;
-            let text = match (r.superseded, &r.note) {
-                (Some(_), _) => format!("Revised: {} now replaces {old}", r.id),
-                (None, Some(n)) => format!("Not revised: {n} (id {})", r.id),
-                (None, None) => format!("Stored {} ({}); {old} was not superseded", r.id, r.status.as_str()),
+            let text = match (r.superseded, &r.note, r.status) {
+                (Some(_), _, _) => format!("Revised: {} now replaces {old}", r.id),
+                (None, Some(n), _) => format!("Not revised: {n} (id {})", r.id),
+                (None, None, MemoryStatus::Candidate) => format!("Accepted: {} replaces {old} once the write gate has run", r.id),
+                (None, None, s) => format!("Stored {} ({}); {old} was not superseded", r.id, s.as_str()),
             };
             (text, serde_json::to_value(&r)?)
         }
@@ -225,7 +226,12 @@ async fn call_v1(c: &Caller, name: &str, args: &Value) -> anyhow::Result<Option<
             let mut req: IngestRequest = request(name, args)?;
             req.source = Some("mcp".into());
             let r = c.ingest(req).await?;
-            (format!("Saved {} rounds ({} quarantined, {} already stored)", r.stored, r.quarantined, r.deduplicated), serde_json::to_value(&r)?)
+            let text = if r.queued {
+                format!("Accepted {} rounds ({} already stored); they are recallable once the write pipeline has stored them", r.ids.len(), r.deduplicated)
+            } else {
+                format!("Saved {} rounds ({} quarantined, {} already stored)", r.stored, r.quarantined, r.deduplicated)
+            };
+            (text, serde_json::to_value(&r)?)
         }
         "list_memories" => {
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20).clamp(1, 100) as usize;
@@ -243,9 +249,12 @@ async fn call_v1(c: &Caller, name: &str, args: &Value) -> anyhow::Result<Option<
 }
 
 fn remembered_text(r: &RememberResult) -> String {
-    match &r.note {
-        Some(n) => format!("{n} (id {})", r.id),
-        None => format!("Remembered (id {}){}", r.id, if r.redactions.is_empty() { String::new() } else { format!("; redacted: {}", r.redactions.join(", ")) }),
+    let redacted = if r.redactions.is_empty() { String::new() } else { format!("; redacted: {}", r.redactions.join(", ")) };
+    match (&r.note, r.status) {
+        (Some(n), _) => format!("{n} (id {})", r.id),
+        // The default answer: queued, the write gate decides within seconds (CORE-02).
+        (None, MemoryStatus::Candidate) => format!("Accepted (id {}, candidate until the write gate has run){redacted}", r.id),
+        (None, _) => format!("Remembered (id {}){redacted}", r.id),
     }
 }
 
@@ -429,6 +438,8 @@ async fn call_legacy(c: &Caller, name: &str, args: &Value) -> anyhow::Result<(St
                     occurred_at: arg_time(args, "occurred_at")?,
                     valid_to: arg_time(args, "valid_to")?,
                     source: Some("mcp".into()),
+                    // The pre-v1 tool answered once the memory was stored; it still does.
+                    wait: true,
                     ..Default::default()
                 })
                 .await?;
@@ -438,7 +449,7 @@ async fn call_legacy(c: &Caller, name: &str, args: &Value) -> anyhow::Result<(St
             let id = arg_str(args, "id").ok_or_else(|| anyhow::anyhow!("id is required"))?;
             let id = uuid::Uuid::parse_str(&id).map_err(|_| anyhow::anyhow!("id must be a memory id from memory_recall"))?;
             let content = arg_str(args, "content").ok_or_else(|| anyhow::anyhow!("content is required"))?;
-            let r = c.revise(ReviseRequest { id, content, ..Default::default() }).await?;
+            let r = c.revise(ReviseRequest { id, content, wait: true, ..Default::default() }).await?;
             Ok((format!("Updated: {} now replaces {}", r.id, id), serde_json::to_value(&r)?))
         }
         "memory_forget" => {
@@ -454,7 +465,14 @@ async fn call_legacy(c: &Caller, name: &str, args: &Value) -> anyhow::Result<(St
         "memory_log_conversation" => {
             let messages: Vec<Message> = serde_json::from_value(args.get("messages").cloned().unwrap_or(json!([])))?;
             let r = c
-                .ingest(IngestRequest { subject: arg_str(args, "subject"), session_id: arg_str(args, "session_id"), messages, source: Some("mcp".into()), ..Default::default() })
+                .ingest(IngestRequest {
+                    subject: arg_str(args, "subject"),
+                    session_id: arg_str(args, "session_id"),
+                    messages,
+                    source: Some("mcp".into()),
+                    wait: true,
+                    ..Default::default()
+                })
                 .await?;
             Ok((format!("Saved {} rounds ({} quarantined, {} already stored)", r.stored, r.quarantined, r.deduplicated), serde_json::to_value(&r)?))
         }

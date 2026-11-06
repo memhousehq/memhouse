@@ -46,7 +46,7 @@ fn verdict(problems: Vec<String>, value: String, ok: &str) -> Outcome {
 }
 
 fn remember(subject: &str, content: &str) -> RememberRequest {
-    RememberRequest { subject: Some(subject.into()), content: content.into(), actor: Some("bench".into()), ..Default::default() }
+    RememberRequest { subject: Some(subject.into()), content: content.into(), actor: Some("bench".into()), wait: true, ..Default::default() }
 }
 
 async fn count(engine: &Engine, subject: &str) -> anyhow::Result<usize> {
@@ -73,6 +73,7 @@ async fn idempotency(engine: &Engine, subj: &str, run_id: &str) -> Outcome {
         ],
         actor: Some("bench".into()),
         request_key: Some(format!("gov-{run_id}-ingest")),
+        wait: true,
         ..Default::default()
     };
     let mut stored = vec![];
@@ -254,6 +255,7 @@ async fn roundtrip_in(base: &Engine, url1: &str, url2: &str) -> Outcome {
         ],
         actor: Some("bench".into()),
         user: Some("user:lee".into()),
+        wait: true,
         ..Default::default()
     })
     .await?;

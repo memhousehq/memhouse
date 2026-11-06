@@ -10,7 +10,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{json, Map, Value};
 
 /// The API version, separate from the crate version. Minor and patch releases only add.
-pub const API_VERSION: &str = "1.3.0";
+pub const API_VERSION: &str = "1.4.0";
 
 /// Routes kept from before v1, with the route that replaces each. They answer as before and add
 /// `Deprecation`, `Sunset` and `Link` headers; they are removed no earlier than [`SUNSET`].
@@ -144,14 +144,14 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             path: "/v1/remember",
             id: "remember",
             summary: "Propose a memory",
-            description: "Runs the write gate (redaction, injection screen, deduplication) and returns the record's id and state at once. The state is `committed` or `quarantined` today and may be `candidate` from G10; read it with `GET /v1/memories/{id}`.",
+            description: "Redacts the write, queues it durably and answers at once with the record's id as `candidate` (1.4); the rest of the pipeline (injection screen, statement gate, routing, embedding, deduplication) then runs in the background and the record becomes `committed`, `quarantined` or `rejected`, or stays `candidate` (a plan or a guess). Read the state with `GET /v1/memories/{id}`, or send `wait: true` to answer with the gate's decision. A `503` means nothing was queued: retry with the same idempotency key.",
             tag: "memory",
             stability: Stable,
             body: Some(remember_req.clone()),
             ok: remember_res.clone(),
             params: vec![],
             idempotent: true,
-            errors: &[400, 401, 409, 500],
+            errors: &[400, 401, 409, 500, 503],
             open: false,
         },
         Op {
@@ -174,14 +174,14 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             path: "/v1/revise",
             id: "revise",
             summary: "Supersede a memory with a new version",
-            description: "The current version becomes `superseded` and stays for audit and as-of recall; the new version records `supersedes`. Revising a version that is not `committed` is a conflict.",
+            description: "The current version becomes `superseded` and stays for audit and as-of recall; the new version records `supersedes`. Revising a version that is not `committed` is a conflict. Answers once the new version is queued, as `candidate`, unless `wait` is set (1.4).",
             tag: "memory",
             stability: Stable,
             body: Some(revise_req),
             ok: remember_res.clone(),
             params: vec![],
             idempotent: true,
-            errors: &[400, 401, 404, 409, 500],
+            errors: &[400, 401, 404, 409, 500, 503],
             open: false,
         },
         Op {
@@ -204,14 +204,14 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             path: "/v1/ingest",
             id: "ingest",
             summary: "Store a conversation as episodic memory",
-            description: "One record per user/assistant round; queues background enrichment when it is on.",
+            description: "One record per user/assistant round; queues background enrichment when it is on. Answers once the rounds are queued (`queued: true`), unless `wait` is set (1.4).",
             tag: "memory",
             stability: Stable,
             body: Some(ingest_req),
             ok: ingest_res,
             params: vec![],
             idempotent: true,
-            errors: &[400, 401, 409, 500],
+            errors: &[400, 401, 409, 500, 503],
             open: false,
         },
         Op {
@@ -532,7 +532,7 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             ok: remember_res.clone(),
             params: vec![],
             idempotent: true,
-            errors: &[400, 401, 409, 500],
+            errors: &[400, 401, 409, 500, 503],
             open: false,
         },
         Op {
@@ -568,7 +568,7 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             ok: remember_res,
             params: vec![id_param()],
             idempotent: true,
-            errors: &[400, 401, 404, 409, 500],
+            errors: &[400, 401, 404, 409, 500, 503],
             open: false,
         },
         Op {
@@ -611,9 +611,16 @@ fn error_response(code: u16) -> Value {
         403 => "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope.",
         404 => "Not found (`not_found`).",
         409 => "Conflict with the stored state (`conflict`).",
+        503 => {
+            "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key."
+        }
         _ => "Internal failure (`internal`).",
     };
-    json!({"description": what, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}})
+    let mut r = json!({"description": what, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorBody"}}}});
+    if code == 503 {
+        r["headers"] = json!({"Retry-After": {"description": "Seconds to wait before retrying.", "schema": {"type": "integer", "minimum": 1}}});
+    }
+    r
 }
 
 /// The OpenAPI document. Deterministic: the same build gives the same bytes.

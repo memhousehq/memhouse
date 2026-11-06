@@ -270,8 +270,31 @@
             "const": "internal",
             "description": "A failure inside MemHouse or its database or models (500).",
             "type": "string"
+          },
+          {
+            "const": "unavailable",
+            "description": "A dependency is down for now (the intake queue, the database): retry later (503, with\n`Retry-After`). Nothing was written (PERF-07).",
+            "type": "string"
           }
         ]
+      },
+      "ExactQuery": {
+        "additionalProperties": false,
+        "description": "An exact structured-record query inside a recall (HYB-02, HYB-03).",
+        "properties": {
+          "attrs": {
+            "default": {},
+            "description": "A JSON object the record's attributes must contain (`{\"order_id\": \"A-1001\"}`)."
+          },
+          "record_type": {
+            "description": "Only records of this type (`order`, `address`, ...); any type when absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "ExcludedRecord": {
         "description": "A record left out of a recall, and why.",
@@ -485,6 +508,10 @@
       },
       "Hit": {
         "properties": {
+          "exact": {
+            "description": "Found by an exact structured-record match (HYB-02), not by similarity.",
+            "type": "boolean"
+          },
           "keyword_rank": {
             "format": "int32",
             "type": [
@@ -621,6 +648,10 @@
               "string",
               "null"
             ]
+          },
+          "wait": {
+            "description": "Wait until the rounds are stored, as for `remember`.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -637,7 +668,7 @@
             "type": "integer"
           },
           "ids": {
-            "description": "Ids of the rounds stored.",
+            "description": "Ids of the rounds stored (or queued).",
             "items": {
               "format": "uuid",
               "type": "string"
@@ -650,8 +681,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "queued": {
+            "description": "True while the rounds are still in the intake queue (the request did not set `wait`):\ntheir ids resolve to `candidate` until the pipeline has stored them.",
+            "type": "boolean"
+          },
           "stored": {
-            "description": "Rounds stored.",
+            "description": "Rounds stored; while `queued`, the rounds accepted into the intake queue.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -1800,6 +1835,13 @@
       },
       "QueryPlan": {
         "properties": {
+          "exact": {
+            "description": "Identifiers in the question (\"A-1001\", \"#4521\") looked up exactly in structured records\n(HYB-03): the plan then mixes keyword, vector and exact retrieval.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "subqueries": {
             "items": {
               "type": "string"
@@ -2018,6 +2060,21 @@
               "null"
             ]
           },
+          "exact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExactQuery"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An exact query over structured records (HYB-02): records of this type whose attributes\ncontain these values are returned first, matched exactly, never by similarity."
+          },
+          "include_candidates": {
+            "description": "Also return candidates (plans and speculation the gate holds, proposals waiting for\nreview), each labelled by its `status` (PR-7). Default recall never returns them.",
+            "type": "boolean"
+          },
           "k": {
             "default": null,
             "description": "Number of memories to return (default `memory.default_k`, at most 200).",
@@ -2136,6 +2193,13 @@
             "format": "uint",
             "minimum": 0,
             "type": "integer"
+          },
+          "degraded": {
+            "description": "Set when retrieval failed or ran out of time: `hits` is then empty, not a real answer\n(PERF-07). The value says why; callers should go on without memory, not retry in a loop.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "embed_ms": {
             "default": 0.0,
@@ -2425,6 +2489,10 @@
               "string",
               "null"
             ]
+          },
+          "wait": {
+            "description": "Wait for the write gate before answering (at most `intake.wait_timeout_ms`): the result\nthen carries the record's final state. By default `remember` answers as soon as the\nredacted write is durably queued, with `status: candidate` (CORE-02).",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2445,7 +2513,7 @@
             "type": "string"
           },
           "note": {
-            "description": "Why the write was deduplicated or quarantined.",
+            "description": "Why the write was deduplicated, held, quarantined or rejected.",
             "type": [
               "string",
               "null"
@@ -2458,9 +2526,31 @@
             },
             "type": "array"
           },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Route"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The representation the record was routed to (HYB-01), once the gate has run."
+          },
+          "statement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Statement"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the gate read the statement as (QUAL-02), once it has run."
+          },
           "status": {
             "$ref": "#/components/schemas/MemoryStatus",
-            "description": "`committed` or `quarantined` today; `candidate` once admission is asynchronous (G10).\nClients must not assume a write is committed."
+            "description": "`candidate` while the write waits for the gate (the default answer); with `wait`, the\ngate's decision: `committed`, `candidate` (a plan or speculation held until confirmed, or a\nproposal waiting for review), `quarantined` or `rejected`. Clients must not assume a write\nis committed: read `GET /v1/memories/{id}` for its state."
           },
           "superseded": {
             "description": "The record this write superseded.",
@@ -2739,6 +2829,10 @@
               "string",
               "null"
             ]
+          },
+          "wait": {
+            "description": "Wait for the write gate, as for `remember`.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2760,6 +2854,36 @@
           }
         },
         "type": "object"
+      },
+      "Route": {
+        "description": "The representation intake routes a record to (HYB-01).",
+        "oneOf": [
+          {
+            "const": "narrative",
+            "description": "Conversation or longer prose: text with keyword and vector search.",
+            "type": "string"
+          },
+          {
+            "const": "fact",
+            "description": "One self-contained statement: text search plus correction and duplicate checks.",
+            "type": "string"
+          },
+          {
+            "const": "structured",
+            "description": "A record with attributes (an order, an address): also a row in the structured table,\nanswered by exact query (HYB-02).",
+            "type": "string"
+          },
+          {
+            "const": "relationship",
+            "description": "A statement relating people or organisations; stored as a fact until the graph (G35).",
+            "type": "string"
+          },
+          {
+            "const": "code",
+            "description": "Source code or a change to it; stored as text with the `code` tag until code-aware\nmemory (G19).",
+            "type": "string"
+          }
+        ]
       },
       "Scope": {
         "additionalProperties": false,
@@ -2797,6 +2921,46 @@
           }
         },
         "type": "object"
+      },
+      "Statement": {
+        "description": "What a statement asserts, as the write gate reads it (QUAL-02). Plans and speculation stay\ncandidates until confirmed or expired (PR-7); a correction supersedes what it corrects.",
+        "oneOf": [
+          {
+            "const": "fact",
+            "description": "Something true now (\"Acme's renewal date is 1 March\").",
+            "type": "string"
+          },
+          {
+            "const": "event",
+            "description": "Something that happened (\"The user adopted a cat in March\").",
+            "type": "string"
+          },
+          {
+            "const": "correction",
+            "description": "A change to, or fix of, something stored before (\"Actually, she moved to Porto\").",
+            "type": "string"
+          },
+          {
+            "const": "plan",
+            "description": "An intention not yet carried out (\"The user plans to visit Japan in May\").",
+            "type": "string"
+          },
+          {
+            "const": "speculation",
+            "description": "A guess, rumour or hypothetical (\"He might switch vendors\").",
+            "type": "string"
+          },
+          {
+            "const": "preference",
+            "description": "A like, dislike or way of working.",
+            "type": "string"
+          },
+          {
+            "const": "instruction",
+            "description": "How something should be done (\"Run the tests before every commit\").",
+            "type": "string"
+          }
+        ]
       },
       "Stats": {
         "properties": {
@@ -3082,7 +3246,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -3405,7 +3569,7 @@
     },
     "/v1/ingest": {
       "post": {
-        "description": "One record per user/assistant round; queues background enrichment when it is on.",
+        "description": "One record per user/assistant round; queues background enrichment when it is on. Answers once the rounds are queued (`queued: true`), unless `wait` is set (1.4).",
         "operationId": "ingest",
         "parameters": [
           {
@@ -3488,6 +3652,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Store a conversation as episodic memory",
@@ -3794,6 +3977,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use POST /v1/remember",
@@ -4094,6 +4296,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use POST /v1/revise",
@@ -4799,7 +5020,7 @@
     },
     "/v1/remember": {
       "post": {
-        "description": "Runs the write gate (redaction, injection screen, deduplication) and returns the record's id and state at once. The state is `committed` or `quarantined` today and may be `candidate` from G10; read it with `GET /v1/memories/{id}`.",
+        "description": "Redacts the write, queues it durably and answers at once with the record's id as `candidate` (1.4); the rest of the pipeline (injection screen, statement gate, routing, embedding, deduplication) then runs in the background and the record becomes `committed`, `quarantined` or `rejected`, or stays `candidate` (a plan or a guess). Read the state with `GET /v1/memories/{id}`, or send `wait: true` to answer with the gate's decision. A `503` means nothing was queued: retry with the same idempotency key.",
         "operationId": "remember",
         "parameters": [
           {
@@ -4882,6 +5103,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Propose a memory",
@@ -4994,7 +5234,7 @@
     },
     "/v1/revise": {
       "post": {
-        "description": "The current version becomes `superseded` and stays for audit and as-of recall; the new version records `supersedes`. Revising a version that is not `committed` is a conflict.",
+        "description": "The current version becomes `superseded` and stays for audit and as-of recall; the new version records `supersedes`. Revising a version that is not `committed` is a conflict. Answers once the new version is queued, as `candidate`, unless `wait` is set (1.4).",
         "operationId": "revise",
         "parameters": [
           {
@@ -5087,6 +5327,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Supersede a memory with a new version",

@@ -3,8 +3,8 @@
   "measured_at": "2026-11-01",
   "embedding_model": "bge-small-en-v1.5-onnx-Q",
   "governance": {
-    "min_checks": 36,
-    "source": "bench-results/20261101-175534-6f4df3_governance_guard_base"
+    "min_checks": 47,
+    "source": "bench-results/guard/20261106-171717-62444f_governance_guard_governance"
   },
   "runs": [
     {

@@ -33,10 +33,92 @@ pub trait ChatModel: Send + Sync {
     async fn chat(&self, system: &str, user: &str) -> anyhow::Result<(String, LlmUsage)>;
 }
 
+/// Finds and redacts personal data and secrets before anything is stored (TR-MS-01, GOV-05).
+/// The deterministic rules of [`crate::gate`] are the implementation today; a model-based
+/// detector plugs in here.
+#[async_trait]
+pub trait PiiDetector: Send + Sync {
+    fn id(&self) -> &str;
+    /// The text with every match of `categories` replaced, and the categories found (each once).
+    async fn redact(&self, text: &str, categories: &[String]) -> anyhow::Result<(String, Vec<String>)>;
+}
+
+/// Reads what a statement asserts for the write gate (QUAL-02, TR-MS-01): rules first
+/// ([`crate::classify::RuleClassifier`]), a small model behind the same interface.
+#[async_trait]
+pub trait Classifier: Send + Sync {
+    fn id(&self) -> String;
+    async fn classify(&self, text: &str, kind: MemoryKind) -> anyhow::Result<crate::classify::Classification>;
+}
+
+/// The intake queue (ADR 0004, TR-LT-05): a write is acknowledged once its redacted proposal is
+/// here, durably. Postgres implements it as a table claimed with `SKIP LOCKED`; Scale swaps in a
+/// log (G31) without touching the pipeline stages.
+#[async_trait]
+pub trait IntakeQueue: Send + Sync {
+    fn name(&self) -> &'static str;
+    /// Durable on return.
+    async fn enqueue(&self, p: &crate::intake::Proposal) -> anyhow::Result<()>;
+    /// Claim up to `limit` proposals: pending ones whose retry time has come, or running ones
+    /// whose lease expired. Proposals of one subject are handed out one at a time, in the order
+    /// they were queued (so a correction lands after what it corrects). `subject` (tenant,
+    /// subject) limits the claim to one subject.
+    async fn claim(&self, limit: usize, lease_secs: u64, subject: Option<(&str, &str)>) -> anyhow::Result<Vec<crate::intake::IntakeJob>>;
+    /// Mark a proposal finished (a no-op when the store did it in the insert's transaction).
+    async fn finish(&self, id: Uuid, outcome: &serde_json::Value) -> anyhow::Result<()>;
+    /// A failed attempt: retry after a backoff, or, with `dead`, set the proposal aside (TR-IN-07).
+    /// `keep_payload` keeps its content for the operator when its records could not be stored.
+    /// `attempt` is the claim's attempt number: a worker whose lease expired and was claimed
+    /// again changes nothing.
+    async fn fail(&self, id: Uuid, attempt: i32, error: &str, dead: bool, keep_payload: bool) -> anyhow::Result<()>;
+    /// The record with this id while its proposal is unfinished (as a `candidate`) or dead and
+    /// not stored (as `quarantined`).
+    async fn pending(&self, tenant: &str, record_id: Uuid) -> anyhow::Result<Option<Memory>>;
+    /// The id of the unfinished proposal holding this record.
+    async fn pending_proposal(&self, tenant: &str, record_id: Uuid) -> anyhow::Result<Option<Uuid>>;
+    /// Whether the proposal is still pending or running.
+    async fn unfinished(&self, id: Uuid) -> anyhow::Result<bool>;
+    /// Whether any proposal of this subject is still pending or running.
+    async fn subject_unfinished(&self, tenant: &str, subject: &str) -> anyhow::Result<bool>;
+    /// What the pipeline decided for a finished proposal, while it is kept.
+    async fn outcome(&self, id: Uuid) -> anyhow::Result<Option<serde_json::Value>>;
+    async fn status(&self, tenant: Option<&str>) -> anyhow::Result<IntakeStatus>;
+    /// Delete finished proposals older than this (the pending index stays small).
+    async fn prune(&self, done_older_than_secs: u64) -> anyhow::Result<u64>;
+    /// Drop unfinished proposals of a subject, a tenant, or by a user, agent or source (erasure,
+    /// TR-WF-01). With `ForgetScope::Record` only that record leaves its proposal (the proposal
+    /// goes when it was the last). Returns how many proposals changed.
+    async fn discard(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64>;
+}
+
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()>;
     async fn insert(&self, records: &[NewMemory]) -> anyhow::Result<()>;
+    /// The intake queue kept in this store, if it has one (Postgres: a table in the same
+    /// database, so a proposal's insert and its completion commit together).
+    fn intake_queue(&self) -> Option<std::sync::Arc<dyn IntakeQueue>> {
+        None
+    }
+    /// The insert stage (TR-IN-03, TR-IN-04): write what the pipeline decided for one proposal in
+    /// one transaction: records with their structured rows, supersessions, confirmations, the
+    /// enrichment job, the proposal's completion and the audit events. Returns false, writing
+    /// nothing, when the proposal was already applied or has been discarded (erased meanwhile).
+    async fn apply_intake(&self, _w: &crate::intake::IntakeWrite) -> anyhow::Result<bool> {
+        anyhow::bail!("this store has no write pipeline")
+    }
+    /// Structured records of a subject matched exactly (HYB-02): of `record_type` if given,
+    /// whose attributes contain `attrs` if given, and, if `values` is not empty, with a top-level
+    /// attribute equal to one of them (case-insensitive). Filtered like recall (`q`'s status,
+    /// labels, validity and scope rules); at most `q.limit`, newest first.
+    async fn structured_lookup(&self, _q: &SearchQuery, _record_type: Option<&str>, _attrs: Option<&serde_json::Value>, _values: &[String]) -> anyhow::Result<Vec<Hit>> {
+        Ok(vec![])
+    }
+    /// Unexpired plans of a subject the gate holds as candidates (`metadata.held = "plan"`), most
+    /// similar first (plan confirmation; candidates waiting for a reviewer are not among them).
+    async fn nearest_held(&self, _tenant: &str, _subject: &str, _embedding: &[f32], _limit: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        Ok(vec![])
+    }
     /// One hybrid statement per subject: keyword + vector candidates fused by RRF.
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>>;
     /// Several probes of one recall. Stores that can run them as one statement do (PERF-02).
@@ -65,6 +147,12 @@ pub trait Store: Send + Sync {
     async fn existing_hashes(&self, tenant: &str, subject: &str, hashes: &[String]) -> anyhow::Result<std::collections::HashSet<String>>;
     /// Most similar committed record of the same kind (near-dup check).
     async fn nearest(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32]) -> anyhow::Result<Option<(Uuid, f32)>>;
+    /// The `n` most similar committed records of the same kind, most similar first (the gate's
+    /// correction and update candidates).
+    async fn nearest_many(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32], n: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        let _ = n;
+        Ok(self.nearest(tenant, subject, kind, embedding).await?.into_iter().collect())
+    }
     async fn set_superseded(&self, tenant: &str, id: Uuid, by: Uuid) -> anyhow::Result<bool>;
     async fn set_status(&self, tenant: &str, id: Uuid, status: MemoryStatus) -> anyhow::Result<bool>;
     /// Hard delete of one record and every derived representation; records the deletion in the ledger.

@@ -106,7 +106,18 @@ impl Api {
         if authed {
             req = req.header("authorization", format!("Bearer {KEY}"));
         }
-        if let Some(b) = body {
+        if let Some(mut b) = body {
+            // Writes answer `candidate` at once (G10); the checks that read the result back wait
+            // for the gate unless the body says otherwise.
+            let write = method == "POST" && matches!(template, "/v1/remember" | "/v1/revise" | "/v1/ingest" | "/v1/memories");
+            if let (true, Some(o)) = (write, b.as_object_mut()) {
+                o.entry("wait").or_insert(json!(true));
+            }
+            if b["method"] == "tools/call" && matches!(b["params"]["name"].as_str(), Some("remember" | "revise" | "ingest")) {
+                if let Some(a) = b["params"]["arguments"].as_object_mut() {
+                    a.entry("wait").or_insert(json!(true));
+                }
+            }
             req = req.json(&b);
         }
         let resp = req.send().await?;
@@ -179,10 +190,24 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
         }
     };
 
-    // remember: valid, then invalid payloads.
-    let a = api.post("/v1/remember", json!({"subject": subj, "content": "Acme renews on 2027-03-01", "tags": ["plan"], "scope": {"team": "sales"}})).await?;
-    expect(a.status == 200 && a.body["id"].is_string(), format!("remember: {} {}", a.status, a.body));
+    // remember: valid (answered at once, as a candidate), then invalid payloads.
+    let a = api.post("/v1/remember", json!({"subject": subj, "content": "Acme renews on 2027-03-01", "tags": ["plan"], "scope": {"team": "sales"}, "wait": false})).await?;
+    expect(a.status == 200 && a.body["id"].is_string() && a.body["status"] == "candidate", format!("remember: {} {}", a.status, a.body));
     let a_id = a.body["id"].as_str().unwrap_or_default().to_string();
+    // CORE-02: the candidate's id resolves at once, and to `committed` once the gate has run.
+    let mut states = vec![];
+    for _ in 0..250 {
+        let g = api.call("GET", "/v1/memories/{id}", &format!("/v1/memories/{a_id}"), None, &[]).await?;
+        states.push(g.body["status"].as_str().unwrap_or("?").to_string());
+        if g.body["status"] == "committed" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    expect(
+        states.last().map(String::as_str) == Some("committed") && states.iter().all(|s| s == "candidate" || s == "committed"),
+        format!("candidate {a_id} went through {states:?}, expected candidate then committed within 5 s"),
+    );
     for (bad, why) in [
         (json!({"subject": subj}), "no content"),
         (json!({"content": ""}), "empty content"),
@@ -625,12 +650,20 @@ async fn forget(api: &mut Api, pool: &sqlx::PgPool, engine: &Engine) -> anyhow::
     for (body, actor) in &rows {
         let mut req: memhouse_core::types::RememberRequest = serde_json::from_value(body.clone())?;
         req.actor = Some(actor.clone());
+        // Stored before the forget checks count them.
+        req.wait = true;
         engine.remember(req).await?;
     }
     // A second tenant, erased whole at the end.
     for c in ["Other tenant fact one", "Other tenant fact two"] {
         engine
-            .remember(memhouse_core::types::RememberRequest { tenant: Some("gov-api-t2".into()), subject: Some("gov:fs-t2".into()), content: c.into(), ..Default::default() })
+            .remember(memhouse_core::types::RememberRequest {
+                tenant: Some("gov-api-t2".into()),
+                subject: Some("gov:fs-t2".into()),
+                content: c.into(),
+                wait: true,
+                ..Default::default()
+            })
             .await?;
     }
     // Only an admin of that tenant may erase it.

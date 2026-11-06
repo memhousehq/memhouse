@@ -163,28 +163,27 @@ fn kind_of(k: Option<&str>) -> MemoryKind {
     }
 }
 
+/// Enrichment as a job of the [`crate::intake::JobRunner`]: one session per run.
+pub struct EnrichWorker {
+    pub engine: Engine,
+    pub spend: Arc<Spend>,
+}
+
+#[async_trait::async_trait]
+impl crate::intake::Job for EnrichWorker {
+    fn name(&self) -> &'static str {
+        "enrichment"
+    }
+    async fn run_once(&self) -> anyhow::Result<bool> {
+        self.engine.enrich_once(&self.spend).await
+    }
+}
+
 impl Engine {
     /// Start `n` enrichment workers on this runtime. They poll the queue until `stop` is set.
     pub fn spawn_enrichment(&self, n: usize, stop: Arc<AtomicBool>, spend: Arc<Spend>) -> Vec<tokio::task::JoinHandle<()>> {
-        (0..n)
-            .map(|w| {
-                let e = self.clone();
-                let stop = stop.clone();
-                let spend = spend.clone();
-                tokio::spawn(async move {
-                    while !stop.load(Ordering::Relaxed) {
-                        match e.enrich_once(&spend).await {
-                            Ok(true) => {}
-                            Ok(false) => tokio::time::sleep(Duration::from_millis(150)).await,
-                            Err(err) => {
-                                tracing::warn!("enrichment worker {w}: {err:#}");
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-                            }
-                        }
-                    }
-                })
-            })
-            .collect()
+        use crate::intake::JobRunner;
+        crate::intake::LocalRunner::new(stop).spawn(Arc::new(EnrichWorker { engine: self.clone(), spend }), n)
     }
 
     /// Claim and process one job. Returns false when the queue is empty.
@@ -268,18 +267,23 @@ impl Engine {
         Ok((Some(key), outcome))
     }
 
+    /// The extracted facts through stages 4 to 7 of the write pipeline: the gate (injection
+    /// check, statement classifier: plans held, corrections superseding the facts they correct),
+    /// routing, embedding, and one insert with their audit events.
     async fn store_facts(&self, job: &EnrichJob, rounds: &[Memory], session_time: Option<DateTime<Utc>>, facts: Vec<ExtractedFact>, model: &str) -> anyhow::Result<usize> {
+        use crate::intake::{Entry, IntakeWrite, Item};
         let now = Utc::now();
         let policy = self.policy_for(&job.tenant).await?;
-        let mut recs: Vec<NewMemory> = vec![];
+        let mut items: Vec<Item> = vec![];
         let mut seen = std::collections::HashSet::new();
         for f in facts {
-            // Facts go through the same gate as any write, under the tenant's policy now.
-            if !policy.allows(kind_of(f.kind.as_deref())) {
+            // Facts go through the same stages as any write, under the tenant's policy now.
+            let kind = kind_of(f.kind.as_deref());
+            if !policy.allows(kind) {
                 continue;
             }
-            let Ok(gated) = Engine::screen(&policy, f.text.trim()) else { continue };
-            let hash = content_hash(&format!("fact\u{1f}{}\u{1f}{}", job.session_id, gated.content));
+            let Ok((content, redactions)) = self.redact(&policy, f.text.trim()).await else { continue };
+            let hash = content_hash(&format!("fact\u{1f}{}\u{1f}{}", job.session_id, content));
             if !seen.insert(hash.clone()) {
                 continue;
             }
@@ -295,7 +299,6 @@ impl Engine {
             }
             let refs: Vec<String> = src.iter().filter_map(|r| r.turn_ref.clone()).collect();
             let when = f.date.as_deref().and_then(parse_date).or(session_time);
-            let status = if gated.quarantine() { MemoryStatus::Quarantined } else { MemoryStatus::Committed };
             let mut metadata = serde_json::json!({
                 "derived": true,
                 "extractor": model,
@@ -303,67 +306,77 @@ impl Engine {
                 "source_ids": src.iter().map(|r| r.id.to_string()).collect::<Vec<_>>(),
                 "observed_at": session_time,
             });
-            if !gated.redactions.is_empty() {
-                metadata["redactions"] = serde_json::json!(gated.redactions);
+            if !redactions.is_empty() {
+                metadata["redactions"] = serde_json::json!(redactions);
             }
-            if !gated.injection.is_empty() {
-                metadata["quarantine_reasons"] = serde_json::json!(gated.injection);
-            }
-            recs.push(NewMemory::new(
-                Memory {
-                    id: Uuid::now_v7(),
-                    tenant: job.tenant.clone(),
-                    subject: job.subject.clone(),
-                    kind: kind_of(f.kind.as_deref()),
-                    status,
-                    content: gated.content,
-                    session_id: Some(job.session_id.clone()),
-                    turn_ref: Some(refs.join(",")).filter(|r| !r.is_empty()),
-                    occurred_at: when,
-                    valid_from: when.unwrap_or(now),
-                    valid_to: None,
-                    supersedes: None,
-                    labels: vec![],
-                    tags: vec![],
-                    source: format!("enrich:{model}"),
-                    confidence: 0.9,
-                    metadata,
-                    created_at: now,
-                    expires_at: None,
-                    scope: src.first().map(|r| r.scope.clone()).unwrap_or_default(),
-                    provenance: Provenance {
-                        agent: Some("enrich".into()),
-                        user: src.first().and_then(|r| r.provenance.user.clone()),
-                        policy_version: Some(policy.version.clone()),
-                        request_key: None,
-                        extractor: Some(model.to_string()),
-                        extractor_config: Some(PROMPT_VERSION.to_string()),
-                    },
+            let mem = Memory {
+                id: Uuid::now_v7(),
+                tenant: job.tenant.clone(),
+                subject: job.subject.clone(),
+                kind,
+                status: MemoryStatus::Candidate,
+                content,
+                session_id: Some(job.session_id.clone()),
+                turn_ref: Some(refs.join(",")).filter(|r| !r.is_empty()),
+                occurred_at: when,
+                valid_from: when.unwrap_or(now),
+                valid_to: None,
+                supersedes: None,
+                labels: vec![],
+                tags: vec![],
+                source: format!("enrich:{model}"),
+                confidence: 0.9,
+                metadata,
+                created_at: now,
+                expires_at: None,
+                scope: src.first().map(|r| r.scope.clone()).unwrap_or_default(),
+                provenance: Provenance {
+                    agent: Some("enrich".into()),
+                    user: src.first().and_then(|r| r.provenance.user.clone()),
+                    policy_version: Some(policy.version.clone()),
+                    request_key: None,
+                    extractor: Some(model.to_string()),
+                    extractor_config: Some(PROMPT_VERSION.to_string()),
                 },
-                hash,
-            ));
+            };
+            let mut it = Item::new(NewMemory::new(mem, hash), None, redactions);
+            it.derived = true;
+            it.hint = match f.kind.as_deref() {
+                Some("plan") => Some(Statement::Plan),
+                Some("event") => Some(Statement::Event),
+                Some("preference") => Some(Statement::Preference),
+                _ => None,
+            };
+            items.push(it);
         }
-        let existing = self.store.existing_hashes(&job.tenant, &job.subject, &recs.iter().map(|r| r.content_hash.clone()).collect::<Vec<_>>()).await?;
-        recs.retain(|r| !existing.contains(&r.content_hash));
-        if recs.is_empty() {
+        let existing = self.store.existing_hashes(&job.tenant, &job.subject, &items.iter().map(|i| i.rec.content_hash.clone()).collect::<Vec<_>>()).await?;
+        items.retain(|i| !existing.contains(&i.rec.content_hash));
+        if items.is_empty() {
             return Ok(0);
         }
-        let vecs = self.embed_passages(&recs.iter().map(|r| r.memory.content.clone()).collect::<Vec<_>>()).await?;
-        for (r, v) in recs.iter_mut().zip(vecs) {
-            r.embedding = Some(v);
-        }
-        self.store.insert(&recs).await?;
-        self.store
-            .audit(
-                "enrich",
-                "memory.enrich",
-                &job.tenant,
-                Some(&job.subject),
-                None,
-                serde_json::json!({ "session": job.session_id, "job": job.id, "facts": recs.len(), "model": model }),
-            )
-            .await?;
-        Ok(recs.len())
+        self.gate_stage(Entry::Commit, &mut items).await?;
+        Self::route_stage(&mut items);
+        self.embed_stage(&mut items).await?;
+        let (supersede, confirm) = self.resolve_stage(&policy, &job.tenant, &job.subject, Entry::Commit, &mut items).await?;
+        let count = |s: MemoryStatus| items.iter().filter(|i| i.rec.memory.status == s).count();
+        let (held, rejected, quarantined) = (count(MemoryStatus::Candidate), count(MemoryStatus::Rejected), count(MemoryStatus::Quarantined));
+        // One event for the batch; each change to another record (a supersession, a confirmed
+        // plan) also gets its own.
+        let mut audit: Vec<_> = self.record_audit(&items, &job.subject).into_iter().filter(|a| a.action == "memory.supersede" || a.action == "memory.admit").collect();
+        audit.insert(
+            0,
+            crate::intake::AuditEntry {
+                actor: "enrich".into(),
+                action: "memory.enrich".into(),
+                subject: Some(job.subject.clone()),
+                memory_id: None,
+                detail: serde_json::json!({ "session": job.session_id, "job": job.id, "facts": items.len(), "held": held, "rejected": rejected, "quarantined": quarantined, "superseded": supersede.len(), "confirmed": confirm.len(), "model": model }),
+            },
+        );
+        let n = items.len();
+        let w = IntakeWrite { proposal: None, tenant: job.tenant.clone(), records: items.into_iter().map(|i| i.rec).collect(), supersede, confirm, audit, ..Default::default() };
+        self.store.apply_intake(&w).await?;
+        Ok(n)
     }
 
     /// Wait until the subject has no pending or running jobs (benchmarks; tests).

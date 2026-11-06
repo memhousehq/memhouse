@@ -265,6 +265,7 @@ async fn run_item(engine: &Engine, spec: &RunSpec, item: Item) -> anyhow::Result
                 per_message: item.per_message,
                 source: Some(format!("bench:{}", spec.dataset)),
                 actor: Some("bench".into()),
+                wait: true,
                 ..Default::default()
             })
             .await?;
