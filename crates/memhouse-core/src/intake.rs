@@ -274,6 +274,16 @@ impl IntakeQueue for NoQueue {
     }
 }
 
+/// Writes are refused unless their metadata is an object (the pipeline adds its own keys); one
+/// queued before that check keeps its value under a key, so no stage can fail on it, every
+/// attempt, and block its subject.
+fn object_metadata(m: &mut Memory) {
+    if !m.metadata.is_object() {
+        let old = std::mem::take(&mut m.metadata);
+        m.metadata = if old.is_null() { json!({}) } else { json!({ "value": old }) };
+    }
+}
+
 /// A record on its way through stages 4 to 7.
 pub(crate) struct Item {
     pub rec: NewMemory,
@@ -509,6 +519,7 @@ impl Engine {
         let mut audit = vec![];
         for r in &p.records {
             let mut m = r.memory.clone();
+            object_metadata(&mut m);
             m.status = MemoryStatus::Quarantined;
             m.metadata["quarantine_reasons"] = json!(["intake_failed"]);
             m.metadata["intake_error"] = json!(error.chars().take(500).collect::<String>());
@@ -537,11 +548,7 @@ impl Engine {
             .iter()
             .map(|r| {
                 let mut m = r.memory.clone();
-                // Writes are refused unless their metadata is an object; one queued before that
-                // check keeps its value under a key rather than failing every attempt.
-                if !m.metadata.is_object() {
-                    m.metadata = json!({ "value": m.metadata });
-                }
+                object_metadata(&mut m);
                 let mut rec = NewMemory::new(m, r.content_hash.clone());
                 rec.structured = r.structured.clone();
                 rec.code_refs = r.code_refs.clone();

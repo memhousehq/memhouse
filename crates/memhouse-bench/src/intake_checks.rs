@@ -279,6 +279,9 @@ async fn poison(base: &Engine) -> Outcome {
         e.embedder = Arc::new(Poisoned(StubEmbedder { id: "stub:intake".into(), dim: DIM }));
         let subj = "customer:poison";
         let bad = e.remember(write(subj, "POISON pill note about the account", false)).await?.id;
+        // Queued before writes were refused for non-object metadata: setting it aside must not
+        // fail on it either (the subject's next write still commits).
+        sqlx::query("UPDATE mh_intake SET payload = jsonb_set(payload, '{records,0,memory,metadata}', '[\"legacy\"]') WHERE id = $1").bind(bad).execute(&pool).await?;
         let good = e.remember(write(subj, "The account manager is Lena", false)).await?.id;
         let stop = Arc::new(AtomicBool::new(false));
         let t = Instant::now();
@@ -294,7 +297,8 @@ async fn poison(base: &Engine) -> Outcome {
         let g = e.store.get(&tenant, good).await?;
         let dead: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_intake WHERE status = 'dead' AND id = $1").bind(bad).fetch_one(&pool).await?;
         let audited: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_audit WHERE action = 'memory.quarantine' AND memory_id = $1").bind(bad).fetch_one(&pool).await?;
-        let quarantined = b.as_ref().is_some_and(|m| m.status == MemoryStatus::Quarantined && m.metadata["quarantine_reasons"][0] == "intake_failed");
+        let quarantined =
+            b.as_ref().is_some_and(|m| m.status == MemoryStatus::Quarantined && m.metadata["quarantine_reasons"][0] == "intake_failed" && m.metadata["value"][0] == "legacy");
         let committed = g.as_ref().is_some_and(|m| m.status == MemoryStatus::Committed);
         if !idle || !quarantined || !committed || dead != 1 || audited != 1 {
             problems.push(format!("queue idle: {idle}; poison quarantined: {quarantined}, set aside: {}, audited: {audited}; next write committed: {committed}", dead == 1));

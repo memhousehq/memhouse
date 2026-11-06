@@ -197,6 +197,11 @@ given `--yes`. The governance check `forget_scopes` runs every mode on seeded da
 matching record, cached vector, structured row or code reference left, and one audit event per
 call.
 
+Writes queued before an erasure begins are erased with it, including one being inserted at that
+moment. A write accepted while the erasure runs overlaps it and may be kept. To erase a whole
+tenant with nothing left behind, stop its writers first (revoke or pause its agents' keys), then
+erase.
+
 What is removed:
 
 ```mermaid

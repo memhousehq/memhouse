@@ -251,8 +251,16 @@ impl Engine {
         let (chat, intake, pii, inline) = (self.chat.clone(), self.intake.clone(), self.pii.clone(), self.inline_intake);
         // A classifier built for another `intake.classifier` setting is not kept: the rules
         // stand in until the caller sets the new one with `with_classifier`.
-        let classifier: Arc<dyn crate::traits::Classifier> =
-            if cfg.intake.classifier == self.cfg.intake.classifier { self.classifier.clone() } else { Arc::new(crate::classify::RuleClassifier) };
+        let classifier: Arc<dyn crate::traits::Classifier> = if cfg.intake.classifier == self.cfg.intake.classifier {
+            self.classifier.clone()
+        } else {
+            // The model classifier is built from the configuration by the server
+            // (`memhouse_models::classifier_chat`); core can't build it, so say so.
+            if cfg.intake.classifier != crate::config::ClassifierKind::default() {
+                tracing::warn!("intake.classifier changed in reconfigure: the rules classify until with_classifier sets the model classifier");
+            }
+            Arc::new(crate::classify::RuleClassifier)
+        };
         let mut e = Engine::new(self.store, self.embedder, self.reranker, cfg).with_chat(chat).with_classifier(classifier).with_intake(intake).with_inline_intake(inline);
         e.pii = pii;
         e

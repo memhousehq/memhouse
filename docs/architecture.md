@@ -100,7 +100,9 @@ flowchart LR
    enrichment job of an ingested session, the proposal's completion and the audit events. The
    record ids are the proposal's idempotency key, so a proposal takes effect exactly once
    (TR-IN-03) even when two workers hold it; an erasure deletes queued proposals in the same
-   transaction as the subject's records, so nothing lands after it.
+   transaction as the subject's records, waiting for an insert in progress, so no write
+   acknowledged before the erasure began lands after it. A write that overlaps the erasure is
+   ordered before it (erased) or after it (kept), depending on when it commits.
 
 A proposal that keeps failing is retried with backoff and, after `max_attempts`, set aside as
 `dead` with its records stored as `quarantined` (`intake_failed`) for a reviewer, so it never
