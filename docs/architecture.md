@@ -114,7 +114,7 @@ by hash against the subject's stored rounds, and queues them as one proposal; ea
 both vectors (`embedding_alt`, cache key in `alt_hash` so deletion purges it too).
 
 **Recall degrades, never errs, on a failed dependency** (PERF-07): retrieval that fails or takes
-longer than `recall_timeout_ms` (500 ms) answers an empty result with `degraded` set; a refused
+longer than `recall_timeout_ms` (450 ms) answers, within 500 ms, an empty result with `degraded` set; a refused
 caller still gets `403` and no data.
 
 ## Enrichment: asynchronous LLM fact extraction (optional)

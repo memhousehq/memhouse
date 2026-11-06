@@ -545,7 +545,7 @@ async fn degradation(base: &Engine) -> Outcome {
             let ms = t.elapsed().as_secs_f64() * 1000.0;
             timings.push(format!("{what} {ms:.0} ms"));
             match r {
-                Ok(r) if r.hits.is_empty() && r.degraded.is_some() && ms <= 500.0 + 100.0 => {}
+                Ok(r) if r.hits.is_empty() && r.degraded.is_some() && ms <= 500.0 => {}
                 Ok(r) => problems.push(format!("{what}: {} hits, degraded {:?}, {ms:.0} ms", r.hits.len(), r.degraded)),
                 Err(err) => problems.push(format!("{what}: error {err:#}")),
             }

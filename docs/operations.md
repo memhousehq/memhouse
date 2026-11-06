@@ -379,7 +379,7 @@ processes can share one database; each subject's writes still take effect in ord
   unavailable` with `Retry-After`, and nothing is stored. Clients should retry with the same
   idempotency key.
 - **Retrieval failures** answer an empty result flagged `degraded` within
-  `[memory] recall_timeout_ms` (500 ms) instead of an error; watch `memhouse_recall_degraded_total`.
+  `[memory] recall_timeout_ms` (450 ms) instead of an error; watch `memhouse_recall_degraded_total`.
 - **Restarts** lose nothing that was acknowledged: proposals stay in the table until stored.
   Finished ones keep only their ids and outcome and are pruned after `keep_done_secs` (1 h).
 

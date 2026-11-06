@@ -343,7 +343,7 @@ How to read a hit:
 | `plan.windows` | time phrases the query analysis found, and the window each was read as |
 | `plan.exact` | record identifiers in the query ("A-1001", "#4521") looked up exactly |
 | `exact` | the hit is a structured record matched exactly (HYB-02), not by similarity; exact hits come first |
-| `degraded` | set when retrieval failed or overran `[memory] recall_timeout_ms` (500 ms): `hits` is then empty and not a real answer (PERF-07). Carry on without memory; don't retry in a loop. |
+| `degraded` | set when retrieval failed or overran `[memory] recall_timeout_ms` (450 ms, so the answer comes within 500 ms): `hits` is then empty and not a real answer (PERF-07). Carry on without memory; don't retry in a loop. |
 
 #### Exact structured recall
 

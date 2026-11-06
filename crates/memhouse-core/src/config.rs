@@ -382,7 +382,7 @@ impl Default for MemoryConfig {
             working_ttl_secs: 86_400,
             subquery_weight: 0.0,
             template: None,
-            recall_timeout_ms: 500,
+            recall_timeout_ms: 450,
         }
     }
 }

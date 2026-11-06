@@ -261,7 +261,7 @@ restart, and can only tighten governance.
 | `window_top`, `window_top_weight` | 3, 1.0 | extra weight for the top N in-window hits |
 | `working_ttl_secs` | 86400 | lifetime of `working` memory written without `expires_at` |
 | `subquery_weight` | 0.0 | weight of "A or B" sub-query probes (off: added noise on LongMemEval) |
-| `recall_timeout_ms` | 500 | retrieval (policy read, query embedding, search, exact probe) that fails or takes longer answers an empty result flagged `degraded` instead of an error (PERF-07); 0 waits as long as it takes |
+| `recall_timeout_ms` | 450 | retrieval (policy read, query embedding, search, exact probe) that fails or takes longer answers an empty result flagged `degraded` instead of an error (PERF-07): the default leaves room to answer within 500 ms; 0 waits as long as it takes |
 
 How the weights combine in fusion:
 
