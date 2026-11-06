@@ -291,7 +291,7 @@ answer, and workers pick up whatever a crash or a failure left behind.
 | `llm` | `gpt-4o-mini`, 60 tokens | an `LlmConfig` table, as `[enrich.llm]`; used only with `classifier = "llm"` |
 | `plan_ttl_days` | 90 | a held plan or speculation without `valid_to` expires after this many days unconfirmed |
 | `correction_threshold` | 0.8 | cosine at or above which a correction supersedes the closest record of its kind (they must also share a content word) |
-| `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word) |
+| `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word and the scope; speculation is never confirmed) |
 
 ## `[enrich]`
 

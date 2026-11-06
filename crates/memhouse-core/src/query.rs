@@ -51,7 +51,9 @@ pub fn identifiers(text: &str) -> Vec<String> {
         let lower = t.to_lowercase();
         let has_alpha = t.chars().any(|c| c.is_ascii_alphabetic());
         let digits = t.chars().filter(|c| c.is_ascii_digit()).count();
-        let ok = t.len() >= 3 && !DATE_LIKE.is_match(&lower) && (has_alpha || digits >= 5 || m.as_str().starts_with('#'));
+        // A `#` marks an identifier however short ("#77"); otherwise at least three characters.
+        let hashed = m.as_str().starts_with('#');
+        let ok = (t.len() >= 3 || (hashed && t.len() >= 2)) && !DATE_LIKE.is_match(&lower) && (has_alpha || digits >= 5 || hashed);
         if ok && !out.contains(&lower) {
             out.push(lower);
         }
@@ -301,6 +303,7 @@ mod tests {
         assert_eq!(identifiers("What is the status of order A-1001?"), vec!["a-1001"]);
         assert_eq!(identifiers("ticket #4521 and invoice INV2024-77"), vec!["4521", "inv2024-77"]);
         assert_eq!(identifiers("customer 1234567"), vec!["1234567"]);
+        assert_eq!(identifiers("What happened to ticket #77?"), vec!["77"]);
         assert!(identifiers("What did I do on 2023-05-01 at 3pm, 2 days after the 1st?").is_empty());
         assert!(identifiers("How many of the 12 books did I read in 2023?").is_empty());
         assert!(identifiers("I paid $40 for 3kg of rice").is_empty());

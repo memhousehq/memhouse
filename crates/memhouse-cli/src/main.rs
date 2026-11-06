@@ -410,7 +410,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let workers = eng.spawn_intake(1, stop.clone());
             memhouse_server::mcp::serve_stdio(eng.caller(who)).await?;
             // Give this process's last writes a moment to finish their pipeline before exiting.
-            let _ = eng.settle_subject(None, &eng.cfg.memory.default_subject.clone(), std::time::Duration::from_secs(2)).await;
+            // Bounded as a whole: a job waiting on a model call doesn't hold the exit.
+            let two = std::time::Duration::from_secs(2);
+            let _ = tokio::time::timeout(two, eng.settle_subject(None, &eng.cfg.memory.default_subject.clone(), two)).await;
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             drop(workers);
         }

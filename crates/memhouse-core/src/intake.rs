@@ -245,7 +245,7 @@ impl IntakeQueue for NoQueue {
     async fn finish(&self, _id: Uuid, _o: &serde_json::Value) -> anyhow::Result<()> {
         Ok(())
     }
-    async fn fail(&self, _id: Uuid, _e: &str, _d: bool, _k: bool) -> anyhow::Result<()> {
+    async fn fail(&self, _id: Uuid, _a: i32, _e: &str, _d: bool, _k: bool) -> anyhow::Result<()> {
         Ok(())
     }
     async fn pending(&self, _t: &str, _id: Uuid) -> anyhow::Result<Option<Memory>> {
@@ -255,6 +255,9 @@ impl IntakeQueue for NoQueue {
         Ok(None)
     }
     async fn unfinished(&self, _id: Uuid) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+    async fn subject_unfinished(&self, _t: &str, _s: &str) -> anyhow::Result<bool> {
         Ok(false)
     }
     async fn outcome(&self, _id: Uuid) -> anyhow::Result<Option<serde_json::Value>> {
@@ -413,10 +416,19 @@ impl Engine {
             match self.intake.claim(1, self.cfg.intake.lease_secs, Some((tenant, subject))).await?.pop() {
                 Some(job) => {
                     let own = job.proposal.id == id;
-                    // This write's own attempt failed: answer now (still a candidate); the
-                    // retries run in the background.
-                    if !self.process_job(job).await? && own {
-                        return Ok(false);
+                    // The job runs on its own task, so a slow model can't hold the answer past
+                    // the deadline: the answer is then the candidate and the job finishes here.
+                    let e = self.clone();
+                    let run = tokio::spawn(async move { e.process_job(job).await });
+                    match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), run).await {
+                        // This write's own attempt failed: answer now (still a candidate); the
+                        // retries run in the background.
+                        Ok(done) => {
+                            if !done.map_err(|j| anyhow::anyhow!("the intake job stopped: {j}"))?? && own {
+                                return Ok(false);
+                            }
+                        }
+                        Err(_) => return Ok(false),
                     }
                 }
                 None => tokio::time::sleep(Duration::from_millis(20)).await,
@@ -436,9 +448,10 @@ impl Engine {
                 Some(job) => {
                     self.process_job(job).await?;
                 }
+                // Nothing to claim: done once no proposal of this subject is unfinished (another
+                // process may be running its head).
                 None => {
-                    let st = self.intake.status(Some(&tenant)).await?;
-                    if st.pending + st.running == 0 {
+                    if !self.intake.subject_unfinished(&tenant, subject).await? {
                         return Ok(true);
                     }
                     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -480,10 +493,10 @@ impl Engine {
                         tracing::error!("poison proposal {} could not be stored as quarantined: {qe:#}", p.id);
                     }
                     if !matches!(stored, Ok(true)) {
-                        self.intake.fail(p.id, &msg, true, true).await?;
+                        self.intake.fail(p.id, job.attempts, &msg, true, true).await?;
                     }
                 } else {
-                    self.intake.fail(p.id, &msg, false, true).await?;
+                    self.intake.fail(p.id, job.attempts, &msg, false, true).await?;
                 }
                 Ok(false)
             }
@@ -523,13 +536,27 @@ impl Engine {
             .records
             .iter()
             .map(|r| {
-                let mut rec = NewMemory::new(r.memory.clone(), r.content_hash.clone());
+                let mut m = r.memory.clone();
+                // Writes are refused unless their metadata is an object; one queued before that
+                // check keeps its value under a key rather than failing every attempt.
+                if !m.metadata.is_object() {
+                    m.metadata = json!({ "value": m.metadata });
+                }
+                let mut rec = NewMemory::new(m, r.content_hash.clone());
                 rec.structured = r.structured.clone();
                 rec.code_refs = r.code_refs.clone();
                 Item::new(rec, r.focus.clone(), r.redactions.clone())
             })
             .collect();
         self.gate_stage(p.entry, &mut items).instrument(tracing::info_span!("intake.gate")).await?;
+        // The policy in force now decides, not the one the write was queued under.
+        for it in items.iter_mut() {
+            let m = &mut it.rec.memory;
+            if m.status != MemoryStatus::Quarantined && !policy.allows(m.kind) {
+                m.status = MemoryStatus::Rejected;
+                it.note = Some(format!("rejected: policy {} no longer allows {} memories", policy.version, m.kind.as_str()));
+            }
+        }
         Self::route_stage(&mut items);
         self.embed_stage(&mut items).instrument(tracing::info_span!("intake.embed")).await?;
         let (supersede, confirm) = self.resolve_stage(&policy, &p.tenant, &p.subject, p.entry, &mut items).instrument(tracing::info_span!("intake.resolve")).await?;
@@ -596,6 +623,10 @@ impl Engine {
     pub(crate) async fn gate_stage(&self, entry: Entry, items: &mut [Item]) -> anyhow::Result<()> {
         for it in items.iter_mut() {
             let m = &mut it.rec.memory;
+            // `held` is the gate's own mark (a revision may carry its predecessor's metadata).
+            if let Some(o) = m.metadata.as_object_mut() {
+                o.remove("held");
+            }
             let reasons = gate::injection(&m.content);
             if m.kind != MemoryKind::Episodic {
                 let mut c = self.classifier.classify(&m.content, m.kind).await?;
@@ -625,6 +656,9 @@ impl Engine {
                     m.expires_at = Some(m.valid_to.unwrap_or(base + chrono::Duration::days(self.cfg.intake.plan_ttl_days.max(1) as i64)));
                 }
                 it.note = Some(format!("held as a candidate: reads as {} (QUAL-02); recalled only with include_candidates until confirmed", s.as_str()));
+                // Only what the gate holds is confirmed by an event; a candidate waiting for a
+                // reviewer is not (GOV-08).
+                m.metadata["held"] = json!(s.as_str());
                 MemoryStatus::Candidate
             } else {
                 MemoryStatus::Committed
@@ -743,9 +777,12 @@ impl Engine {
                         }
                     }
                     if class == Some(Statement::Event) && m.status == MemoryStatus::Committed {
+                        // Held plans only (a guess is not "done" by a similar event), unexpired, in
+                        // the event's own scope.
                         for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3).await? {
                             let Some(pm) = self.store.get(tenant, plan).await? else { continue };
-                            if sim >= icfg.confirm_threshold && classify::shares_content_word(&pm.content, &m.content) && !confirm.iter().any(|(p, _)| *p == plan) {
+                            let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope;
+                            if open && sim >= icfg.confirm_threshold && classify::shares_content_word(&pm.content, &m.content) && !confirm.iter().any(|(p, _)| *p == plan) {
                                 confirm.push((plan, m.id));
                                 it.confirms.push(plan);
                             }

@@ -372,9 +372,11 @@ processes can share one database; each subject's writes still take effect in ord
   the log: a model endpoint or the database) or no process is running workers.
 - **Poison proposals.** A proposal that fails `max_attempts` (5) times is set aside with status
   `dead` and its records stored as `quarantined` with `metadata.quarantine_reasons =
-  ["intake_failed"]` and the error, so it never blocks its subject. Review them like any
-  quarantined record (`memhouse list --all`, `POST /v1/review`); the error is in
-  `mh_intake.error`.
+  ["intake_failed"]` and the error, so it never blocks its subject. Find them with `memhouse
+  list --all` (the error is also in `mh_intake.error`). They can't be admitted: `POST
+  /v1/review` only rejects them. To store one after fixing the cause (a model endpoint, a
+  policy), forget the quarantined record and write its content again, with `remember` or
+  `ingest`; until it is forgotten, the same content is answered as a duplicate of it.
 - **Retryable refusals.** If the database can't take the write, the API answers `503
   unavailable` with `Retry-After`, and nothing is stored. Clients should retry with the same
   idempotency key.

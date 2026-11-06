@@ -527,7 +527,10 @@ async fn exercise(base: &Engine, url: &str) -> anyhow::Result<(Vec<&'static str>
     let mut api2 = Api::new(format!("http://{}", listener.local_addr()?));
     tokio::spawn(memhouse_server::serve_listener(listener, failing));
     let (m, t, p) = post("/v1/remember");
-    let a = api2.call(m, t, p, Some(w("Ostrogoth noted the outage")), &[]).await?;
+    // Without `wait` (the helper adds it unless the body says otherwise): the asynchronous answer.
+    let mut body = w("Ostrogoth noted the outage");
+    body["wait"] = json!(false);
+    let a = api2.call(m, t, p, Some(body), &[]).await?;
     let (m, t, p) = post("/v1/recall");
     let b = api2.call(m, t, p, Some(json!({"subject": subj, "query": "when did Pemberwick call"})), &[]).await?;
     let llm = memhouse_models::Llm::new(&memhouse_core::config::LlmConfig { base_url: echo, model: "echo".into(), api_key_env: None, ..Default::default() })?;

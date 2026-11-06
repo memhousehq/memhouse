@@ -650,6 +650,8 @@ async fn forget(api: &mut Api, pool: &sqlx::PgPool, engine: &Engine) -> anyhow::
     for (body, actor) in &rows {
         let mut req: memhouse_core::types::RememberRequest = serde_json::from_value(body.clone())?;
         req.actor = Some(actor.clone());
+        // Stored before the forget checks count them.
+        req.wait = true;
         engine.remember(req).await?;
     }
     // A second tenant, erased whole at the end.

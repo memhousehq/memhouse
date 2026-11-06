@@ -235,7 +235,7 @@ pub fn router(engine: Engine) -> Router {
         .route("/v1/policies/rollback", post(policy_rollback))
         .route("/v1/policies/{version}/approve", post(policy_approve))
         // Pre-v1 aliases (see `openapi::DEPRECATED`)
-        .route("/v1/memories", post(remember).get(list))
+        .route("/v1/memories", post(remember_legacy).get(list))
         .route("/v1/subjects/{subject}", axum::routing::delete(erase_subject))
         .route("/mcp", post(mcp_http))
         .layer(middleware::from_fn(deprecation))
@@ -282,8 +282,14 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
         })
         .await?;
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    // Workers stop after their current job; one stuck on a model call is left behind after the
+    // grace period (its proposal is claimed again after `intake.lease_secs`).
+    let grace = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     for w in workers {
-        let _ = w.await;
+        if tokio::time::timeout_at(grace, w).await.is_err() {
+            tracing::warn!("a worker was still busy at shutdown; its job resumes after the lease");
+            break;
+        }
     }
     Ok(())
 }
@@ -334,6 +340,13 @@ async fn enrich_status(Who(c): Who) -> ApiResult<EnrichStatus> {
 
 async fn remember(Who(c): Who, headers: HeaderMap, Body(mut req): Body<RememberRequest>) -> ApiResult<RememberResult> {
     request_key(&headers, &mut req.request_key)?;
+    Ok(Json(c.remember(req).await?))
+}
+
+/// The pre-v1 write answered with the gate's decision; it still waits for it.
+async fn remember_legacy(Who(c): Who, headers: HeaderMap, Body(mut req): Body<RememberRequest>) -> ApiResult<RememberResult> {
+    request_key(&headers, &mut req.request_key)?;
+    req.wait = true;
     Ok(Json(c.remember(req).await?))
 }
 

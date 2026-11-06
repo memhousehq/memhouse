@@ -94,9 +94,9 @@ store refuses any other transition (`set_status` changes nothing and says so), a
 governance check `lifecycle` proves it. Every write is answered as a `candidate` while it waits
 in the intake queue (G10; it is not yet a stored row, but its id reads as one). The write gate
 then stores it as `committed`, `quarantined`, `rejected` (a near-duplicate, or a revision of a
-version that is no longer current), or keeps it `candidate`: a plan or speculation (QUAL-02),
-committed when a completed event confirms it and `expired` at its `valid_to` or after
-`intake.plan_ttl_days`; or a proposal from an agent without a commit grant under `[access]
+version that is no longer current), or keeps it `candidate`: a plan or speculation (QUAL-02,
+marked `metadata.held`), a plan committed when a completed event in its scope confirms it, and
+either `expired` at its `valid_to` or after `intake.plan_ttl_days`; or a proposal from an agent without a commit grant under `[access]
 admission = "review"` (GOV-08), which a reviewer commits or rejects.
 
 ### Working memory (MEM-01)

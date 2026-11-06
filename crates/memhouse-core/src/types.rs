@@ -698,7 +698,7 @@ pub struct IngestRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct IngestResult {
-    /// Rounds stored.
+    /// Rounds stored; while `queued`, the rounds accepted into the intake queue.
     pub stored: usize,
     /// Rounds stored as quarantined (never recalled).
     pub quarantined: usize,

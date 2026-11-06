@@ -686,7 +686,7 @@
             "type": "boolean"
           },
           "stored": {
-            "description": "Rounds stored.",
+            "description": "Rounds stored; while `queued`, the rounds accepted into the intake queue.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -3569,7 +3569,7 @@
     },
     "/v1/ingest": {
       "post": {
-        "description": "One record per user/assistant round; queues background enrichment when it is on.",
+        "description": "One record per user/assistant round; queues background enrichment when it is on. Answers once the rounds are queued (`queued: true`), unless `wait` is set (1.4).",
         "operationId": "ingest",
         "parameters": [
           {
@@ -3652,6 +3652,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Store a conversation as episodic memory",
@@ -3958,6 +3977,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use POST /v1/remember",
@@ -4258,6 +4296,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use POST /v1/revise",
@@ -4963,7 +5020,7 @@
     },
     "/v1/remember": {
       "post": {
-        "description": "Runs the write gate (redaction, injection screen, deduplication) and returns the record's id and state at once. The state is `committed` or `quarantined` today and may be `candidate` from G10; read it with `GET /v1/memories/{id}`.",
+        "description": "Redacts the write, queues it durably and answers at once with the record's id as `candidate` (1.4); the rest of the pipeline (injection screen, statement gate, routing, embedding, deduplication) then runs in the background and the record becomes `committed`, `quarantined` or `rejected`, or stays `candidate` (a plan or a guess). Read the state with `GET /v1/memories/{id}`, or send `wait: true` to answer with the gate's decision. A `503` means nothing was queued: retry with the same idempotency key.",
         "operationId": "remember",
         "parameters": [
           {
@@ -5046,6 +5103,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Propose a memory",
@@ -5158,7 +5234,7 @@
     },
     "/v1/revise": {
       "post": {
-        "description": "The current version becomes `superseded` and stays for audit and as-of recall; the new version records `supersedes`. Revising a version that is not `committed` is a conflict.",
+        "description": "The current version becomes `superseded` and stays for audit and as-of recall; the new version records `supersedes`. Revising a version that is not `committed` is a conflict. Answers once the new version is queued, as `candidate`, unless `wait` is set (1.4).",
         "operationId": "revise",
         "parameters": [
           {
@@ -5251,6 +5327,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Supersede a memory with a new version",

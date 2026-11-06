@@ -119,7 +119,7 @@ fn build_tools() -> Value {
         {
             "name": "remember",
             "title": "Remember",
-            "description": "Store one durable memory: a fact, preference, procedure, decision or commitment worth knowing in future sessions. Write it so it stands alone (who, what, when). Don't store secrets or one-off chatter. Instructions aimed at an agent are quarantined; plans and guesses are held until confirmed (store a to-do as kind commitment). Returns the new record's id at once, as a candidate; it is recallable within seconds.",
+            "description": "Store one durable memory: a fact, preference, procedure, decision or commitment worth knowing in future sessions. Write it so it stands alone (who, what, when). Don't store secrets or one-off chatter. Text that tries to instruct the agent reading it (prompt injection) is quarantined; plans and guesses are held until confirmed (store a to-do as kind commitment). Returns the new record's id at once, as a candidate; it is recallable within seconds.",
             "inputSchema": input_schema::<RememberRequest>(&["content", "kind", "subject", "tags", "occurred_at", "valid_to", "expires_at", "labels", "scope", "request_key", "wait"], &["content"],
                 json!({"occurred_at": date, "valid_to": date, "expires_at": date})),
             "outputSchema": inline_schema::<RememberResult>()

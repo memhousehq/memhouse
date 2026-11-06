@@ -68,7 +68,9 @@ pub trait IntakeQueue: Send + Sync {
     async fn finish(&self, id: Uuid, outcome: &serde_json::Value) -> anyhow::Result<()>;
     /// A failed attempt: retry after a backoff, or, with `dead`, set the proposal aside (TR-IN-07).
     /// `keep_payload` keeps its content for the operator when its records could not be stored.
-    async fn fail(&self, id: Uuid, error: &str, dead: bool, keep_payload: bool) -> anyhow::Result<()>;
+    /// `attempt` is the claim's attempt number: a worker whose lease expired and was claimed
+    /// again changes nothing.
+    async fn fail(&self, id: Uuid, attempt: i32, error: &str, dead: bool, keep_payload: bool) -> anyhow::Result<()>;
     /// The record with this id while its proposal is unfinished (as a `candidate`) or dead and
     /// not stored (as `quarantined`).
     async fn pending(&self, tenant: &str, record_id: Uuid) -> anyhow::Result<Option<Memory>>;
@@ -76,13 +78,16 @@ pub trait IntakeQueue: Send + Sync {
     async fn pending_proposal(&self, tenant: &str, record_id: Uuid) -> anyhow::Result<Option<Uuid>>;
     /// Whether the proposal is still pending or running.
     async fn unfinished(&self, id: Uuid) -> anyhow::Result<bool>;
+    /// Whether any proposal of this subject is still pending or running.
+    async fn subject_unfinished(&self, tenant: &str, subject: &str) -> anyhow::Result<bool>;
     /// What the pipeline decided for a finished proposal, while it is kept.
     async fn outcome(&self, id: Uuid) -> anyhow::Result<Option<serde_json::Value>>;
     async fn status(&self, tenant: Option<&str>) -> anyhow::Result<IntakeStatus>;
     /// Delete finished proposals older than this (the pending index stays small).
     async fn prune(&self, done_older_than_secs: u64) -> anyhow::Result<u64>;
     /// Drop unfinished proposals of a subject, a tenant, or by a user, agent or source (erasure,
-    /// TR-WF-01). Returns how many.
+    /// TR-WF-01). With `ForgetScope::Record` only that record leaves its proposal (the proposal
+    /// goes when it was the last). Returns how many proposals changed.
     async fn discard(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64>;
 }
 
@@ -109,8 +114,8 @@ pub trait Store: Send + Sync {
     async fn structured_lookup(&self, _q: &SearchQuery, _record_type: Option<&str>, _attrs: Option<&serde_json::Value>, _values: &[String]) -> anyhow::Result<Vec<Hit>> {
         Ok(vec![])
     }
-    /// Candidates of a subject the gate holds as plans or speculation, most similar first (plan
-    /// confirmation).
+    /// Unexpired plans of a subject the gate holds as candidates (`metadata.held = "plan"`), most
+    /// similar first (plan confirmation; candidates waiting for a reviewer are not among them).
     async fn nearest_held(&self, _tenant: &str, _subject: &str, _embedding: &[f32], _limit: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
         Ok(vec![])
     }

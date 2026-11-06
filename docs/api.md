@@ -87,8 +87,11 @@ its own user. A body naming another `user` is refused.
 `Idempotency-Key` header or a `request_key` field (1 to 255 characters). Send both only if they
 are equal. A repeat with the same key and the same body returns the first response and changes
 nothing: no second record, no second audit event. The same key with a different body is a `409
-conflict`. Keys are kept per tenant, with the subject they are about, so erasing a subject also
-removes its keys. Recall and the reads are naturally idempotent and take no key.
+conflict`. `wait` is not part of the body for this comparison: it changes when the answer comes,
+not what is written, so a repeat that adds or drops `wait` returns the first response too (read
+the current state with `GET /v1/memories/{id}`). Keys are kept per tenant, with the subject they
+are about, so erasing a subject also removes its keys. Recall and the reads are naturally
+idempotent and take no key.
 
 ```bash
 curl -s localhost:7077/v1/remember -H "authorization: Bearer $KEY" -H "content-type: application/json" \
@@ -330,7 +333,8 @@ Every response has a `recall_id`: the key of its [explanation](#get-v1recallside
 
 The response is model-neutral (INT-04). `hits` is structured JSON with each record's id and
 provenance. `rendered` is the same hits as plain text, one line per memory with its id, kind,
-date and tags, to paste into any model's prompt as it is. MCP tools return both.
+date and tags, to paste into any model's prompt as it is; a candidate returned with
+`include_candidates` says so on its line (`unconfirmed plan`). MCP tools return both.
 
 How to read a hit:
 
@@ -360,7 +364,8 @@ curl -s localhost:7077/v1/recall -H "authorization: Bearer $KEY" -H "content-typ
 ```
 
 Exact matches obey the same filters as the rest of recall (status, labels, validity, scope), and
-come first with `"exact": true`.
+come first with `"exact": true`. An `exact` with only a `record_type` narrows the identifiers in
+the question to that type: their matches come first, then the type's other records, newest first.
 
 ```mermaid
 flowchart TB
@@ -556,7 +561,8 @@ curl -s localhost:7077/v1/ingest -H "authorization: Bearer $KEY" -H "content-typ
 ```
 
 `queued: true` means the rounds are in the intake queue: their ids read as `candidate` until the
-pipeline stores them, and `quarantined` is counted only with `"wait": true`. Rounds are a record
+pipeline stores them, `stored` counts the rounds accepted into the queue, and `quarantined` is
+counted only with `"wait": true`. Rounds are a record
 of what was said, so they are screened for injection but not classified. Ingesting the same
 session again stores nothing new (`deduplicated` counts the rounds skipped).
 When [enrichment](operations.md#enrichment-workers) is on, ingest also queues one background job

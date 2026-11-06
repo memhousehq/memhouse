@@ -1201,18 +1201,20 @@ impl memhouse_core::IntakeQueue for PgStore {
         Ok(())
     }
 
-    async fn fail(&self, id: Uuid, error: &str, dead: bool, keep_payload: bool) -> anyhow::Result<()> {
-        // Backoff 0.5, 1, 2, 4 ... seconds, at most 30.
+    async fn fail(&self, id: Uuid, attempt: i32, error: &str, dead: bool, keep_payload: bool) -> anyhow::Result<()> {
+        // Backoff 0.5, 1, 2, 4 ... seconds, at most 30. Only the attempt that holds the claim: a
+        // worker whose lease expired must not reset a proposal another worker now runs.
         sqlx::query(
             "UPDATE mh_intake SET status = CASE WHEN $3 THEN 'dead' ELSE 'pending' END, locked_until = NULL, error = $2, \
                run_after = now() + make_interval(secs => least(power(2, attempts) * 0.25, 30)), \
                finished_at = CASE WHEN $3 THEN now() END, payload = CASE WHEN $4 THEN payload END \
-             WHERE id = $1 AND status IN ('pending', 'running')",
+             WHERE id = $1 AND status IN ('pending', 'running') AND attempts = $5",
         )
         .bind(id)
         .bind(error)
         .bind(dead)
         .bind(keep_payload)
+        .bind(attempt)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1252,6 +1254,14 @@ impl memhouse_core::IntakeQueue for PgStore {
         Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mh_intake WHERE id = $1 AND status IN ('pending', 'running'))").bind(id).fetch_one(&self.pool).await?)
     }
 
+    async fn subject_unfinished(&self, tenant: &str, subject: &str) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mh_intake WHERE tenant = $1 AND subject = $2 AND status IN ('pending', 'running'))")
+            .bind(tenant)
+            .bind(subject)
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
     async fn outcome(&self, id: Uuid) -> anyhow::Result<Option<serde_json::Value>> {
         Ok(sqlx::query_scalar("SELECT outcome FROM mh_intake WHERE (id = $1 OR record_ids @> ARRAY[$1]::uuid[]) AND outcome IS NOT NULL LIMIT 1")
             .bind(id)
@@ -1289,13 +1299,36 @@ impl memhouse_core::IntakeQueue for PgStore {
     }
 
     async fn discard(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
+        if scope == ForgetScope::Record {
+            // One record leaves its proposal; the other records stay queued (or kept for the
+            // operator). The update waits for an insert holding the row, which then has no payload.
+            let id: Uuid = value.parse()?;
+            let mut tx = self.pool.begin().await?;
+            let n = sqlx::query(
+                "UPDATE mh_intake SET record_ids = array_remove(record_ids, $2), \
+                   payload = jsonb_set(payload, '{records}', coalesce((SELECT jsonb_agg(r) FROM jsonb_array_elements(payload -> 'records') r \
+                                                                         WHERE r -> 'memory' ->> 'id' <> $2::text), '[]'::jsonb)) \
+                 WHERE tenant = $1 AND record_ids @> ARRAY[$2] AND payload IS NOT NULL AND status IN ('pending', 'running', 'dead')",
+            )
+            .bind(tenant)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            sqlx::query("DELETE FROM mh_intake WHERE tenant = $1 AND cardinality(record_ids) = 0 AND status IN ('pending', 'running', 'dead')")
+                .bind(tenant)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            return Ok(n);
+        }
         let filter = match scope {
             ForgetScope::Subject => "subject = $2",
             ForgetScope::Tenant => "$2 = $2",
             ForgetScope::User => "(acting_user = $2 OR scope_user = $2)",
             ForgetScope::Agent => "(agent = $2 OR scope_agent = $2)",
             ForgetScope::Source => "source = $2",
-            ForgetScope::Record => "record_ids @> ARRAY[$2::uuid]",
+            ForgetScope::Record => unreachable!("handled above"),
         };
         Ok(sqlx::query(trusted_sql!("DELETE FROM mh_intake WHERE tenant = $1 AND {filter} AND (payload IS NOT NULL OR status IN ('pending', 'running'))"))
             .bind(tenant)
@@ -1385,18 +1418,21 @@ impl Store for PgStore {
         if let Some(pid) = w.proposal {
             // Locks the proposal: an erasure that deletes it waits for this insert, then removes
             // what it wrote; a proposal already erased writes nothing.
-            let status: Option<String> = sqlx::query_scalar("SELECT status FROM mh_intake WHERE id = $1 FOR UPDATE").bind(pid).fetch_optional(&mut *tx).await?;
-            match status.as_deref() {
-                None | Some("done") => return Ok(false),
-                _ => {}
+            let row: Option<(String, Vec<Uuid>)> = sqlx::query_as("SELECT status, record_ids FROM mh_intake WHERE id = $1 FOR UPDATE").bind(pid).fetch_optional(&mut *tx).await?;
+            let Some((status, queued)) = row else { return Ok(false) };
+            if status == "done" {
+                return Ok(false);
             }
+            // A record forgotten while this attempt ran left the proposal: retry with what is left.
+            anyhow::ensure!(w.records.iter().all(|r| queued.contains(&r.memory.id)), "a record of proposal {pid} was forgotten while it was being written");
         }
         if !w.records.is_empty() {
             // Exactly once in effect (TR-IN-03): the record ids are the proposal's idempotency key.
             let ids: Vec<Uuid> = w.records.iter().map(|r| r.memory.id).collect();
-            let seen: bool =
-                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2))").bind(&w.tenant).bind(&ids).fetch_one(&mut *tx).await?;
-            if seen {
+            // A proposal's records are written in one transaction, so they are all there or none.
+            let seen: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE tenant = $1 AND id = ANY($2)").bind(&w.tenant).bind(&ids).fetch_one(&mut *tx).await?;
+            anyhow::ensure!(seen == 0 || seen as usize == ids.len(), "{seen} of the proposal's {} records are already stored", ids.len());
+            if seen > 0 {
                 if let Some(pid) = w.proposal {
                     sqlx::query("UPDATE mh_intake SET status = 'done', finished_at = now(), locked_until = NULL, payload = NULL WHERE id = $1").bind(pid).execute(&mut *tx).await?;
                     tx.commit().await?;
@@ -1418,15 +1454,19 @@ impl Store for PgStore {
             anyhow::ensure!(n == 1, "memory {old} stopped being current while {new} was being written");
         }
         for (plan, by) in &w.confirm {
-            sqlx::query(
-                "UPDATE mh_memory SET status = 'committed', expires_at = NULL, metadata = metadata || jsonb_build_object('confirmed_by', $3::text), \
-                 updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2 AND status = 'candidate'",
+            // Still a held, unexpired plan at commit time; otherwise retry, which then sees it.
+            let n = sqlx::query(
+                "UPDATE mh_memory SET status = 'committed', expires_at = NULL, metadata = (metadata - 'held') || jsonb_build_object('confirmed_by', $3::text), \
+                 updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2 AND status = 'candidate' AND metadata ->> 'held' = 'plan' \
+                 AND (expires_at IS NULL OR expires_at > now())",
             )
             .bind(&w.tenant)
             .bind(plan)
             .bind(by.to_string())
             .execute(&mut *tx)
-            .await?;
+            .await?
+            .rows_affected();
+            anyhow::ensure!(n == 1, "plan {plan} stopped being a held candidate while {by} was being written");
         }
         if let Some((subject, session, rounds)) = &w.enrich {
             sqlx::query("INSERT INTO mh_enrich_job (tenant, subject, session_id, round_ids) VALUES ($1, $2, $3, $4)")
@@ -1479,7 +1519,7 @@ impl Store for PgStore {
         let rows: Vec<(Uuid, f64)> = sqlx::query_as(
             "SELECT id, 1 - (embedding <=> $3::vector) AS sim FROM mh_memory \
              WHERE tenant = $1 AND subject = $2 AND status = 'candidate' AND embedding IS NOT NULL \
-             AND metadata ->> 'statement' IN ('plan', 'speculation') ORDER BY embedding <=> $3::vector LIMIT $4",
+             AND metadata ->> 'held' = 'plan' AND (expires_at IS NULL OR expires_at > now()) ORDER BY embedding <=> $3::vector LIMIT $4",
         )
         .bind(tenant)
         .bind(subject)

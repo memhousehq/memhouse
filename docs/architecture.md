@@ -94,7 +94,8 @@ flowchart LR
    revision supersedes its predecessor or is rejected if that is no longer current; a correction
    supersedes the closest record of its kind (cosine ≥ `correction_threshold`, a shared content
    word, not newer than itself; enrichment facts only supersede enrichment facts); a completed
-   event commits the held plans it fulfils (`metadata.confirmed_by`). Then one transaction locks
+   event commits the unexpired held plans in its scope it fulfils (`metadata.confirmed_by`;
+   speculation and candidates waiting for a reviewer are never confirmed this way). Then one transaction locks
    the proposal, writes the records and structured rows, the supersessions and confirmations, the
    enrichment job of an ingested session, the proposal's completion and the audit events. The
    record ids are the proposal's idempotency key, so a proposal takes effect exactly once

@@ -161,6 +161,9 @@ async fn candidates(base: &Engine) -> Outcome {
             problems.push("a PII canary reached storage".into());
         }
         let ack_p95 = p95(&mut ack);
+        if ack_p95 > 50.0 {
+            problems.push(format!("ack p95 {ack_p95:.1} ms, over the 50 ms target (PERF-03)"));
+        }
         verdict(
             problems,
             format!("200 candidates, ack p95 {ack_p95:.1} ms; all resolved in {resolved_s:.1} s"),
@@ -420,7 +423,7 @@ async fn statement_gate(e: &Engine, subj: &str) -> Outcome {
 
 /// HYB-01/02/03: 300 orders written as JSON records; questions naming an order get it first.
 async fn exact_recall(base: &Engine) -> Outcome {
-    let (scratch, e, pool) = scratch_engine(base, "int4", |_| {}).await?;
+    let (scratch, e, pool) = scratch_engine(base, "int4", |c| c.governance.denied_labels = vec!["restricted".into()]).await?;
     let result = async {
         let mut problems = vec![];
         let subj = "customer:orders";
@@ -491,10 +494,38 @@ async fn exact_recall(base: &Engine) -> Outcome {
         if !current_only || !gone || rows != 0 {
             problems.push(format!("HYB-06: after revise {} exact hit(s), current only {current_only}; after forget gone {gone}, {rows} committed rows", after.len()));
         }
+        // The exact probe answers inside the recall's filters: a denied label, another user's
+        // scope and another tenant keep their records out, asked from the question or explicitly.
+        let iso = |id: &str| serde_json::json!({"record_type": "order", "order_id": id, "status": "on hold", "total": 1}).to_string();
+        let other_user = Scope { user: Some("int4-other".into()), ..Default::default() };
+        let me = Scope { user: Some("int4-me".into()), ..Default::default() };
+        e.remember(RememberRequest { labels: vec!["restricted".into()], ..write(subj, &iso("Z-9001"), true) }).await?;
+        e.remember(RememberRequest { scope: Some(other_user.clone()), ..write(subj, &iso("Z-9002"), true) }).await?;
+        e.remember(RememberRequest { tenant: Some("int4-t2".into()), ..write(subj, &iso("Z-9003"), true) }).await?;
+        let mut leaked = vec![];
+        for id in ["Z-9001", "Z-9002", "Z-9003"] {
+            let asked = RecallRequest { query: format!("What is the status of order {id}?"), scope: Some(me.clone()), ..exact(id) };
+            let planned = RecallRequest { exact: None, ..asked.clone() };
+            for (how, r) in [("explicit", asked), ("question", planned)] {
+                if e.recall(r).await?.hits.iter().any(|h| h.memory.content.contains(id)) {
+                    leaked.push(format!("{id} ({how})"));
+                }
+            }
+        }
+        // Controls: each record is there for a caller the filter lets through.
+        let seen_by = |id: &str, tenant: Option<&str>, scope: Option<Scope>| RecallRequest { tenant: tenant.map(String::from), scope, ..exact(id) };
+        let mut controls = 0;
+        for r in [seen_by("Z-9002", None, Some(other_user)), seen_by("Z-9003", Some("int4-t2"), None)] {
+            controls += usize::from(e.recall(r).await?.hits.iter().any(|h| h.exact));
+        }
+        let labelled: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE 'restricted' = ANY(labels) AND status = 'committed'").fetch_one(&pool).await?;
+        if !leaked.is_empty() || controls != 2 || labelled != 1 {
+            problems.push(format!("exact probe isolation: leaked {}; controls {controls}/2, labelled record stored {labelled}", if leaked.is_empty() { "none".into() } else { leaked.join(", ") }));
+        }
         verdict(
             problems,
             format!("{planned}/50 single-row lookups exact from the question, {asked}/50 by explicit query; vector-only top-1 {vector_only}/50"),
-            "100% exact on single-row lookups; every order routed to the structured table; after revise and forget only the current version, then nothing",
+            "100% exact on single-row lookups; every order routed to the structured table; after revise and forget only the current version, then nothing; denied labels, scope and tenant hold for the exact probe",
         )
     }
     .await;

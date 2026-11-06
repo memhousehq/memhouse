@@ -68,7 +68,7 @@ pub struct IntakeConfig {
     /// kind (QUAL-01). The two must also share a content word.
     pub correction_threshold: f32,
     /// Cosine similarity at or above which a completed event confirms a held plan (they must
-    /// also share a content word).
+    /// also share a content word and the scope; speculation is never confirmed).
     pub confirm_threshold: f32,
 }
 
