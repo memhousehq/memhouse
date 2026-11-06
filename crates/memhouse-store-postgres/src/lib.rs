@@ -307,6 +307,40 @@ CREATE INDEX IF NOT EXISTS mh_recall_at_idx ON mh_recall (at);
 /// The v5 additions (G08): behaviour policy specs, their approval and activations. Specs are
 /// numbered per tenant; an activation names an approved spec or, with no version, the default
 /// policy. The trigger refuses to activate anything else (POL-03).
+/// v6 (G10): the intake queue of the write pipeline (ADR 0004). Content is redacted before it
+/// gets here; a finished proposal keeps only its ids and outcome until it is pruned.
+const SCHEMA_V6_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS mh_intake (
+  id           uuid PRIMARY KEY,
+  seq          bigserial,
+  tenant       text NOT NULL,
+  subject      text NOT NULL,
+  record_ids   uuid[] NOT NULL,
+  agent        text,
+  acting_user  text,
+  source       text,
+  scope_agent  text,
+  scope_user   text,
+  status       text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'done', 'dead')),
+  attempts     int NOT NULL DEFAULT 0,
+  run_after    timestamptz NOT NULL DEFAULT now(),
+  locked_until timestamptz,
+  enqueued_at  timestamptz NOT NULL DEFAULT now(),
+  finished_at  timestamptz,
+  payload      jsonb,
+  outcome      jsonb,
+  error        text
+);
+-- Small by design: only unfinished proposals are indexed for claiming, and finished ones are pruned.
+CREATE INDEX IF NOT EXISTS mh_intake_queue_idx ON mh_intake (seq) WHERE status IN ('pending', 'running');
+CREATE INDEX IF NOT EXISTS mh_intake_order_idx ON mh_intake (tenant, subject, seq) WHERE status IN ('pending', 'running');
+CREATE INDEX IF NOT EXISTS mh_intake_records_idx ON mh_intake USING gin (record_ids);
+CREATE INDEX IF NOT EXISTS mh_intake_done_idx ON mh_intake (finished_at) WHERE status = 'done';
+-- A process still on the old model after a re-embedding can't queue writes either.
+ALTER TABLE mh_intake ADD COLUMN IF NOT EXISTS embedder text;
+CREATE OR REPLACE TRIGGER mh_intake_embedder_guard BEFORE INSERT ON mh_intake FOR EACH ROW EXECUTE FUNCTION mh_memory_embedder_guard();
+"#;
+
 const SCHEMA_V5_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS mh_policy_spec (
   tenant      text NOT NULL,
@@ -478,7 +512,8 @@ impl PgStore {
             *at = Some(std::time::Instant::now());
         }
         match self.meta("embedder").await? {
-            Some(db) if db != mine => anyhow::bail!("this database is now embedded with {db}, not {mine}; restart with the new [embedding] configuration"),
+            // A conflict, not a failure: recall refuses instead of degrading to an empty result.
+            Some(db) if db != mine => Err(memhouse_core::error::conflict(format!("this database is now embedded with {db}, not {mine}; restart with the new [embedding] configuration"))),
             _ => Ok(()),
         }
     }
@@ -509,7 +544,7 @@ pub fn redact_url(url: &str) -> String {
 
 /// The single-statement hybrid recall (keyword + vector candidates fused by RRF, section 4.5).
 const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions superseded since; validity below keeps the one true then.
-    AND (m.status = 'committed' OR ($7::timestamptz IS NOT NULL AND m.status = 'superseded'))
+    AND (m.status = 'committed' OR ($7::timestamptz IS NOT NULL AND m.status = 'superseded') OR ($25::bool AND m.status = 'candidate'))
     AND ($4::text[] IS NULL OR m.kind = ANY($4))
     AND ($5::text[] IS NULL OR m.tags && $5)
     AND NOT (m.labels && $6::text[])
@@ -619,7 +654,7 @@ fn multi_search_sql(n: usize) -> String {
 }
 
 /// Parameters of one recall statement.
-const SEARCH_PARAMS: usize = 24;
+const SEARCH_PARAMS: usize = 25;
 
 /// Shift every `$N` in `sql` by `by`.
 fn renumber(sql: &str, by: usize) -> String {
@@ -685,6 +720,7 @@ fn row_to_hit(r: &PgRow) -> anyhow::Result<Hit> {
         vector_rank: r.try_get("vrk")?,
         similarity: r.try_get::<Option<f64>, _>("sim")?.map(|s| s as f32),
         rerank_score: None,
+        exact: false,
     })
 }
 
@@ -722,6 +758,7 @@ fn bind_search<'a>(
         .bind(&q.scope.agent)
         .bind(&q.scope.user)
         .bind(&q.scope.session)
+        .bind(q.include_candidates)
 }
 
 /// The schema as it was at version 1, kept verbatim: `migrate` runs it, then the v2 additions,
@@ -914,10 +951,17 @@ impl PgStore {
     /// Insert records with every column; `skip_existing` ignores ids already present. Returns
     /// the ids inserted.
     async fn write_rows(&self, rows: &[WriteRow<'_>], skip_existing: bool) -> anyhow::Result<Vec<Uuid>> {
+        let mut tx = self.pool.begin().await?;
+        let inserted = self.write_rows_in(&mut tx, rows, skip_existing).await?;
+        tx.commit().await?;
+        Ok(inserted)
+    }
+
+    /// `write_rows` inside a transaction the caller commits.
+    async fn write_rows_in(&self, tx: &mut sqlx::PgConnection, rows: &[WriteRow<'_>], skip_existing: bool) -> anyhow::Result<Vec<Uuid>> {
         let embedder = self.embedder.lock().unwrap().clone();
         let config = self.embedder_config.lock().unwrap().clone();
         let mut inserted = vec![];
-        let mut tx = self.pool.begin().await?;
         for chunk in rows.chunks(400) {
             let mut qb = sqlx::QueryBuilder::new(
                 "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, embedding, embedding_alt, alt_hash, embedder, embedder_config, \
@@ -1000,70 +1044,44 @@ impl PgStore {
                     .await?;
             }
         }
-        tx.commit().await?;
         Ok(inserted)
     }
-}
 
-#[async_trait]
-impl Store for PgStore {
-    async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()> {
-        let mine = EmbeddingIdentity { embedder: embedder_id.to_string(), dim, passage_prefix: self.passage_prefix.clone() };
-        if let Some(db) = self.identity_of("").await? {
-            // Databases from before the prefix was recorded take the configured one.
-            let prefix_known = self.meta("passage_prefix").await?.is_some();
-            let same = db.embedder == mine.embedder && db.dim == mine.dim && (!prefix_known || db.passage_prefix == mine.passage_prefix);
-            if !same {
-                let unfinished = self.identity_of("reembed_target_").await?.is_some_and(|t| t == mine);
-                anyhow::bail!(
-                    "this database's memories are embedded with {db}, but the configuration says {mine}. {}",
-                    if unfinished {
-                        "A re-embedding to it is unfinished: run `memhouse reembed` to complete it."
-                    } else {
-                        "Run `memhouse reembed` to re-embed every memory with the configured model, or go back to the previous [embedding] settings."
-                    }
-                );
-            }
-        }
-        let stored_version: Option<u32> = self.meta("schema_version").await?.map(|v| v.parse()).transpose()?;
-        if let Some(v) = stored_version.filter(|v| *v > SCHEMA_VERSION) {
-            anyhow::bail!("this database has schema version {v}, newer than this build ({SCHEMA_VERSION}); upgrade MemHouse");
-        }
-        sqlx::raw_sql(sqlx::AssertSqlSafe(schema_v1_ddl(dim))).execute(&self.pool).await?;
-        check_pgvector(&self.pool).await?;
-        sqlx::raw_sql(SCHEMA_V2_DDL).execute(&self.pool).await?;
-        sqlx::raw_sql(SCHEMA_V3_DDL).execute(&self.pool).await?;
-        sqlx::raw_sql(SCHEMA_V4_DDL).execute(&self.pool).await?;
-        sqlx::raw_sql(SCHEMA_V5_DDL).execute(&self.pool).await?;
-        for (k, v) in [
-            ("schema_version", SCHEMA_VERSION.to_string()),
-            ("embedding_dim", dim.to_string()),
-            ("embedder", embedder_id.to_string()),
-            ("passage_prefix", self.passage_prefix.clone()),
-        ] {
-            sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING").bind(k).bind(v).execute(&self.pool).await?;
-        }
-        let config = mine.config_hash();
-        if stored_version.is_some_and(|v| v < 2) {
-            self.backfill_v2(embedder_id, &config).await?;
-        }
-        // v3, v4 and v5 only add tables.
-        sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
-            .bind(SCHEMA_VERSION.to_string())
-            .bind(SCHEMA_VERSION as i32)
-            .execute(&self.pool)
+    /// One audit event inside the caller's transaction (the chain lock is held until it commits).
+    async fn audit_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        actor: &str,
+        action: &str,
+        tenant: &str,
+        subject: Option<&str>,
+        memory_id: Option<Uuid>,
+        detail: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let detail = detail.to_string();
+        let at = Utc::now().trunc_subsecs(6);
+        sqlx::query("SELECT pg_advisory_xact_lock(7270001)").execute(&mut *tx).await?;
+        let prev: Option<String> = sqlx::query_scalar("SELECT hash FROM mh_audit ORDER BY id DESC LIMIT 1").fetch_optional(&mut *tx).await?;
+        let prev = prev.unwrap_or_else(|| "genesis".into());
+        let hash = audit_hash(&prev, &at, actor, action, tenant, subject, memory_id, &detail);
+        sqlx::query("INSERT INTO mh_audit (at, actor, action, tenant, subject, memory_id, detail, prev_hash, hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+            .bind(at)
+            .bind(actor)
+            .bind(action)
+            .bind(tenant)
+            .bind(subject)
+            .bind(memory_id)
+            .bind(&detail)
+            .bind(&prev)
+            .bind(&hash)
+            .execute(&mut *tx)
             .await?;
-        *self.embedder.lock().unwrap() = Some(embedder_id.to_string());
-        *self.embedder_config.lock().unwrap() = Some(config);
         Ok(())
     }
 
-    #[tracing::instrument(name = "db.insert", skip_all, fields(db.system = "postgresql", db.operation = "INSERT", rows = records.len()))]
-    async fn insert(&self, records: &[NewMemory]) -> anyhow::Result<()> {
-        if records.is_empty() {
-            return Ok(());
-        }
-        let lines: Vec<RecordLine> = records
+    /// The record lines of new memories (the shape `write_rows` takes).
+    fn lines_of(records: &[NewMemory]) -> Vec<RecordLine> {
+        records
             .iter()
             .map(|n| {
                 let m = &n.memory;
@@ -1097,7 +1115,263 @@ impl Store for PgStore {
                     updated_at: m.created_at,
                 }
             })
-            .collect();
+            .collect()
+    }
+}
+
+/// The SQL that supersedes `$2` by `$3` (see `set_superseded`).
+const SUPERSEDE_SQL: &str = "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, \
+     valid_to = least(COALESCE(valid_to, 'infinity'), greatest(COALESCE((SELECT n.valid_from FROM mh_memory n WHERE n.tenant = $1 AND n.id = $3), now()), valid_from)), \
+     updated_at = greatest(now(), created_at) \
+     WHERE tenant = $1 AND id = $2 AND status = 'committed'";
+
+fn proposal_of(payload: serde_json::Value) -> anyhow::Result<memhouse_core::intake::Proposal> {
+    serde_json::from_value(payload).map_err(|e| anyhow::anyhow!("unreadable intake proposal: {e}"))
+}
+
+#[async_trait]
+impl memhouse_core::IntakeQueue for PgStore {
+    fn name(&self) -> &'static str {
+        "postgres"
+    }
+
+    #[tracing::instrument(name = "db.intake_enqueue", skip_all, fields(db.system = "postgresql", db.operation = "INSERT"))]
+    async fn enqueue(&self, p: &memhouse_core::intake::Proposal) -> anyhow::Result<()> {
+        let first = p.records.first().map(|r| &r.memory);
+        let embedder = self.embedder.lock().unwrap().clone();
+        // Durable on return: the insert commits with synchronous_commit (TR-LT-05).
+        let r = sqlx::query(
+            "INSERT INTO mh_intake (id, tenant, subject, record_ids, agent, acting_user, source, scope_agent, scope_user, payload, enqueued_at, embedder) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        )
+        .bind(p.id)
+        .bind(&p.tenant)
+        .bind(&p.subject)
+        .bind(p.record_ids())
+        .bind(&p.actor)
+        .bind(&p.user)
+        .bind(&p.source)
+        .bind(first.and_then(|m| m.scope.agent.clone()))
+        .bind(first.and_then(|m| m.scope.user.clone()))
+        .bind(serde_json::to_value(p)?)
+        .bind(p.enqueued_at)
+        .bind(embedder)
+        .execute(&self.pool)
+        .await;
+        match r {
+            Ok(_) => Ok(()),
+            Err(e) if e.to_string().contains("is now embedded with") => Err(memhouse_core::error::conflict(e.to_string())),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    #[tracing::instrument(name = "db.intake_claim", skip_all, fields(db.system = "postgresql", db.operation = "UPDATE"))]
+    async fn claim(&self, limit: usize, lease_secs: u64, subject: Option<(&str, &str)>) -> anyhow::Result<Vec<memhouse_core::intake::IntakeJob>> {
+        // The oldest unfinished proposal of each subject only, so one subject's writes take effect
+        // in the order they were acknowledged; SKIP LOCKED lets workers claim different subjects.
+        let rows = sqlx::query(
+            "UPDATE mh_intake j SET status = 'running', attempts = j.attempts + 1, locked_until = now() + make_interval(secs => $2) \
+             WHERE j.id IN (SELECT c.id FROM mh_intake c \
+               WHERE ((c.status = 'pending' AND c.run_after <= now()) OR (c.status = 'running' AND c.locked_until < now())) \
+                 AND ($3::text IS NULL OR (c.tenant = $3 AND c.subject = $4)) \
+                 AND NOT EXISTS (SELECT 1 FROM mh_intake o WHERE o.tenant = c.tenant AND o.subject = c.subject \
+                                 AND o.status IN ('pending', 'running') AND o.seq < c.seq) \
+               ORDER BY c.seq LIMIT $1 FOR UPDATE SKIP LOCKED) \
+             RETURNING j.payload, j.attempts",
+        )
+        .bind(limit as i64)
+        .bind(lease_secs as f64)
+        .bind(subject.map(|s| s.0))
+        .bind(subject.map(|s| s.1))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                let payload: Option<serde_json::Value> = r.try_get("payload")?;
+                Ok(memhouse_core::intake::IntakeJob {
+                    proposal: proposal_of(payload.ok_or_else(|| anyhow::anyhow!("a claimed proposal has no content"))?)?,
+                    attempts: r.try_get("attempts")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn finish(&self, id: Uuid, outcome: &serde_json::Value) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE mh_intake SET status = 'done', finished_at = now(), locked_until = NULL, payload = NULL, outcome = $2 WHERE id = $1 AND status IN ('pending', 'running')",
+        )
+        .bind(id)
+        .bind(outcome)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn fail(&self, id: Uuid, error: &str, dead: bool, keep_payload: bool) -> anyhow::Result<()> {
+        // Backoff 0.5, 1, 2, 4 ... seconds, at most 30.
+        sqlx::query(
+            "UPDATE mh_intake SET status = CASE WHEN $3 THEN 'dead' ELSE 'pending' END, locked_until = NULL, error = $2, \
+               run_after = now() + make_interval(secs => least(power(2, attempts) * 0.25, 30)), \
+               finished_at = CASE WHEN $3 THEN now() END, payload = CASE WHEN $4 THEN payload END \
+             WHERE id = $1 AND status IN ('pending', 'running')",
+        )
+        .bind(id)
+        .bind(error)
+        .bind(dead)
+        .bind(keep_payload)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn pending(&self, tenant: &str, record_id: Uuid) -> anyhow::Result<Option<Memory>> {
+        let row = sqlx::query(
+            "SELECT status, payload, error FROM mh_intake WHERE tenant = $1 AND record_ids @> ARRAY[$2]::uuid[] \
+             AND status IN ('pending', 'running', 'dead') AND payload IS NOT NULL ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(tenant)
+        .bind(record_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let status: String = row.try_get("status")?;
+        let p = proposal_of(row.try_get("payload")?)?;
+        Ok(p.records.into_iter().find(|r| r.memory.id == record_id).map(|r| {
+            let mut m = r.memory;
+            if status == "dead" {
+                m.status = MemoryStatus::Quarantined;
+                m.metadata["quarantine_reasons"] = serde_json::json!(["intake_failed"]);
+            }
+            m
+        }))
+    }
+
+    async fn pending_proposal(&self, tenant: &str, record_id: Uuid) -> anyhow::Result<Option<Uuid>> {
+        Ok(sqlx::query_scalar("SELECT id FROM mh_intake WHERE tenant = $1 AND record_ids @> ARRAY[$2]::uuid[] AND status IN ('pending', 'running') LIMIT 1")
+            .bind(tenant)
+            .bind(record_id)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    async fn unfinished(&self, id: Uuid) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mh_intake WHERE id = $1 AND status IN ('pending', 'running'))").bind(id).fetch_one(&self.pool).await?)
+    }
+
+    async fn outcome(&self, id: Uuid) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(sqlx::query_scalar("SELECT outcome FROM mh_intake WHERE (id = $1 OR record_ids @> ARRAY[$1]::uuid[]) AND outcome IS NOT NULL LIMIT 1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    async fn status(&self, tenant: Option<&str>) -> anyhow::Result<IntakeStatus> {
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT status, count(*) FROM mh_intake WHERE ($1::text IS NULL OR tenant = $1) GROUP BY status").bind(tenant).fetch_all(&self.pool).await?;
+        let mut st = IntakeStatus::default();
+        for (s, n) in rows {
+            match s.as_str() {
+                "pending" => st.pending = n,
+                "running" => st.running = n,
+                "done" => st.done = n,
+                _ => st.dead = n,
+            }
+        }
+        st.oldest_pending_secs = sqlx::query_scalar(
+            "SELECT extract(epoch FROM now() - min(enqueued_at))::float8 FROM mh_intake WHERE ($1::text IS NULL OR tenant = $1) AND status IN ('pending', 'running')",
+        )
+        .bind(tenant)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(st)
+    }
+
+    async fn prune(&self, done_older_than_secs: u64) -> anyhow::Result<u64> {
+        Ok(sqlx::query("DELETE FROM mh_intake WHERE status = 'done' AND finished_at < now() - make_interval(secs => $1)")
+            .bind(done_older_than_secs as f64)
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+
+    async fn discard(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
+        let filter = match scope {
+            ForgetScope::Subject => "subject = $2",
+            ForgetScope::Tenant => "$2 = $2",
+            ForgetScope::User => "(acting_user = $2 OR scope_user = $2)",
+            ForgetScope::Agent => "(agent = $2 OR scope_agent = $2)",
+            ForgetScope::Source => "source = $2",
+            ForgetScope::Record => "record_ids @> ARRAY[$2::uuid]",
+        };
+        Ok(sqlx::query(trusted_sql!("DELETE FROM mh_intake WHERE tenant = $1 AND {filter} AND (payload IS NOT NULL OR status IN ('pending', 'running'))"))
+            .bind(tenant)
+            .bind(value)
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+}
+
+#[async_trait]
+impl Store for PgStore {
+    async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()> {
+        let mine = EmbeddingIdentity { embedder: embedder_id.to_string(), dim, passage_prefix: self.passage_prefix.clone() };
+        if let Some(db) = self.identity_of("").await? {
+            // Databases from before the prefix was recorded take the configured one.
+            let prefix_known = self.meta("passage_prefix").await?.is_some();
+            let same = db.embedder == mine.embedder && db.dim == mine.dim && (!prefix_known || db.passage_prefix == mine.passage_prefix);
+            if !same {
+                let unfinished = self.identity_of("reembed_target_").await?.is_some_and(|t| t == mine);
+                anyhow::bail!(
+                    "this database's memories are embedded with {db}, but the configuration says {mine}. {}",
+                    if unfinished {
+                        "A re-embedding to it is unfinished: run `memhouse reembed` to complete it."
+                    } else {
+                        "Run `memhouse reembed` to re-embed every memory with the configured model, or go back to the previous [embedding] settings."
+                    }
+                );
+            }
+        }
+        let stored_version: Option<u32> = self.meta("schema_version").await?.map(|v| v.parse()).transpose()?;
+        if let Some(v) = stored_version.filter(|v| *v > SCHEMA_VERSION) {
+            anyhow::bail!("this database has schema version {v}, newer than this build ({SCHEMA_VERSION}); upgrade MemHouse");
+        }
+        sqlx::raw_sql(sqlx::AssertSqlSafe(schema_v1_ddl(dim))).execute(&self.pool).await?;
+        check_pgvector(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V2_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V3_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V4_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V5_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V6_DDL).execute(&self.pool).await?;
+        for (k, v) in [
+            ("schema_version", SCHEMA_VERSION.to_string()),
+            ("embedding_dim", dim.to_string()),
+            ("embedder", embedder_id.to_string()),
+            ("passage_prefix", self.passage_prefix.clone()),
+        ] {
+            sqlx::query("INSERT INTO mh_meta(key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING").bind(k).bind(v).execute(&self.pool).await?;
+        }
+        let config = mine.config_hash();
+        if stored_version.is_some_and(|v| v < 2) {
+            self.backfill_v2(embedder_id, &config).await?;
+        }
+        // v3 to v6 only add tables.
+        sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
+            .bind(SCHEMA_VERSION.to_string())
+            .bind(SCHEMA_VERSION as i32)
+            .execute(&self.pool)
+            .await?;
+        *self.embedder.lock().unwrap() = Some(embedder_id.to_string());
+        *self.embedder_config.lock().unwrap() = Some(config);
+        Ok(())
+    }
+
+    #[tracing::instrument(name = "db.insert", skip_all, fields(db.system = "postgresql", db.operation = "INSERT", rows = records.len()))]
+    async fn insert(&self, records: &[NewMemory]) -> anyhow::Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let lines = Self::lines_of(records);
         let rows: Vec<WriteRow> = lines
             .iter()
             .zip(records)
@@ -1105,6 +1379,121 @@ impl Store for PgStore {
             .collect();
         self.write_rows(&rows, false).await?;
         Ok(())
+    }
+
+    fn intake_queue(&self) -> Option<std::sync::Arc<dyn memhouse_core::IntakeQueue>> {
+        Some(std::sync::Arc::new(self.clone()))
+    }
+
+    #[tracing::instrument(name = "db.apply_intake", skip_all, fields(db.system = "postgresql", db.operation = "INSERT", rows = w.records.len()))]
+    async fn apply_intake(&self, w: &memhouse_core::intake::IntakeWrite) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(pid) = w.proposal {
+            // Locks the proposal: an erasure that deletes it waits for this insert, then removes
+            // what it wrote; a proposal already erased writes nothing.
+            let status: Option<String> = sqlx::query_scalar("SELECT status FROM mh_intake WHERE id = $1 FOR UPDATE").bind(pid).fetch_optional(&mut *tx).await?;
+            match status.as_deref() {
+                None | Some("done") => return Ok(false),
+                _ => {}
+            }
+        }
+        if !w.records.is_empty() {
+            // Exactly once in effect (TR-IN-03): the record ids are the proposal's idempotency key.
+            let ids: Vec<Uuid> = w.records.iter().map(|r| r.memory.id).collect();
+            let seen: bool =
+                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2))").bind(&w.tenant).bind(&ids).fetch_one(&mut *tx).await?;
+            if seen {
+                if let Some(pid) = w.proposal {
+                    sqlx::query("UPDATE mh_intake SET status = 'done', finished_at = now(), locked_until = NULL, payload = NULL WHERE id = $1").bind(pid).execute(&mut *tx).await?;
+                    tx.commit().await?;
+                }
+                return Ok(false);
+            }
+            let lines = Self::lines_of(&w.records);
+            let rows: Vec<WriteRow> = lines
+                .iter()
+                .zip(&w.records)
+                .map(|(r, n)| WriteRow { r, embedding: n.embedding.as_ref().map(|v| vec_literal(v)), alt: n.alt.as_ref().map(|(_, v)| vec_literal(v)) })
+                .collect();
+            self.write_rows_in(&mut tx, &rows, false).await?;
+        }
+        for (old, new) in &w.supersede {
+            let n = sqlx::query(SUPERSEDE_SQL).bind(&w.tenant).bind(old).bind(new).execute(&mut *tx).await?.rows_affected();
+            // The pipeline checked it was current; another write got there first: retry the
+            // proposal, which then sees the new state.
+            anyhow::ensure!(n == 1, "memory {old} stopped being current while {new} was being written");
+        }
+        for (plan, by) in &w.confirm {
+            sqlx::query(
+                "UPDATE mh_memory SET status = 'committed', expires_at = NULL, metadata = metadata || jsonb_build_object('confirmed_by', $3::text), \
+                 updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2 AND status = 'candidate'",
+            )
+            .bind(&w.tenant)
+            .bind(plan)
+            .bind(by.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
+        if let Some((subject, session, rounds)) = &w.enrich {
+            sqlx::query("INSERT INTO mh_enrich_job (tenant, subject, session_id, round_ids) VALUES ($1, $2, $3, $4)")
+                .bind(&w.tenant)
+                .bind(subject)
+                .bind(session)
+                .bind(rounds)
+                .execute(&mut *tx)
+                .await?;
+        }
+        if let Some(pid) = w.proposal {
+            sqlx::query(
+                "UPDATE mh_intake SET status = CASE WHEN $2::text IS NULL THEN 'done' ELSE 'dead' END, finished_at = now(), locked_until = NULL, \
+                 payload = NULL, outcome = $3, error = $2 WHERE id = $1",
+            )
+            .bind(pid)
+            .bind(&w.dead)
+            .bind(&w.outcome)
+            .execute(&mut *tx)
+            .await?;
+        }
+        // Last: the chain lock is held only for the commit.
+        for a in &w.audit {
+            self.audit_in(&mut tx, &a.actor, &a.action, &w.tenant, a.subject.as_deref(), a.memory_id, &a.detail).await?;
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    #[tracing::instrument(name = "db.structured_lookup", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
+    async fn structured_lookup(&self, q: &SearchQuery, record_type: Option<&str>, attrs: Option<&serde_json::Value>, values: &[String]) -> anyhow::Result<Vec<Hit>> {
+        let p = Probe::of(q);
+        // The recall filters (status, labels, validity, scope) with the recall's own parameters,
+        // then the exact match on the structured row.
+        let sql = format!(
+            "SELECT {COLS}, 1.0::float8 AS score, NULL::int AS krk, NULL::int AS vrk, NULL::float8 AS sim, 0 AS probe \
+             FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id \
+             WHERE s.tenant = $1 AND s.subject = $2 AND m.tenant = $1 AND m.subject = $2 \
+             {SEARCH_FILTERS} \
+             AND ($26::text IS NULL OR s.record_type = $26) AND ($27::jsonb IS NULL OR s.attrs @> $27) \
+             AND (cardinality($28::text[]) = 0 OR EXISTS (SELECT 1 FROM jsonb_each_text(s.attrs) e WHERE lower(e.value) = ANY($28))) \
+             ORDER BY m.created_at DESC, m.id LIMIT $15"
+        );
+        let lower: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
+        let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).bind(record_type).bind(attrs).bind(lower).fetch_all(&self.pool).await?;
+        rows.iter().map(row_to_hit).collect()
+    }
+
+    async fn nearest_held(&self, tenant: &str, subject: &str, embedding: &[f32], limit: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        let rows: Vec<(Uuid, f64)> = sqlx::query_as(
+            "SELECT id, 1 - (embedding <=> $3::vector) AS sim FROM mh_memory \
+             WHERE tenant = $1 AND subject = $2 AND status = 'candidate' AND embedding IS NOT NULL \
+             AND metadata ->> 'statement' IN ('plan', 'speculation') ORDER BY embedding <=> $3::vector LIMIT $4",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .bind(vec_literal(embedding))
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id, s)| (id, s as f32)).collect())
     }
 
     #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "postgresql", db.operation = "SELECT", probes = 1))]
@@ -1244,17 +1633,7 @@ impl Store for PgStore {
         // A version stops being true when its successor starts (even if it had a later end of its
         // own), so as-of recall finds exactly one version at any time. The successor's time comes
         // from the same clock as the version's own, not the database's.
-        let r = sqlx::query(
-            "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, \
-             valid_to = least(COALESCE(valid_to, 'infinity'), greatest(COALESCE((SELECT n.valid_from FROM mh_memory n WHERE n.tenant = $1 AND n.id = $3), now()), valid_from)), \
-             updated_at = greatest(now(), created_at) \
-             WHERE tenant = $1 AND id = $2 AND status = 'committed'",
-        )
-        .bind(tenant)
-        .bind(id)
-        .bind(by)
-        .execute(&self.pool)
-        .await?;
+        let r = sqlx::query(SUPERSEDE_SQL).bind(tenant).bind(id).bind(by).execute(&self.pool).await?;
         Ok(r.rows_affected() > 0)
     }
 
@@ -1321,6 +1700,9 @@ impl Store for PgStore {
     #[tracing::instrument(name = "db.delete_subject", skip_all, fields(db.system = "postgresql", db.operation = "DELETE"))]
     async fn delete_subject(&self, tenant: &str, subject: &str, actor: &str, purge_cache: bool) -> anyhow::Result<u64> {
         let mut tx = self.pool.begin().await?;
+        // Queued writes first: a proposal being inserted right now holds its row, so this waits
+        // for it and the deletes below then see what it wrote (nothing lands after an erasure).
+        sqlx::query("DELETE FROM mh_intake WHERE tenant = $1 AND subject = $2").bind(tenant).bind(subject).execute(&mut *tx).await?;
         if purge_cache {
             sqlx::query(
                 "DELETE FROM mh_embed_cache c USING mh_memory m WHERE m.tenant = $1 AND m.subject = $2 \
@@ -1754,6 +2136,7 @@ impl Store for PgStore {
 
     async fn delete_tenant(&self, tenant: &str, actor: &str) -> anyhow::Result<u64> {
         let mut total = 0;
+        sqlx::query("DELETE FROM mh_intake WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         loop {
             // Every subject, in any state (`subjects` lists only those with committed records).
             let subjects: Vec<String> = sqlx::query_scalar("SELECT DISTINCT subject FROM mh_memory WHERE tenant = $1 LIMIT 500").bind(tenant).fetch_all(&self.pool).await?;
@@ -1764,7 +2147,8 @@ impl Store for PgStore {
                 total += self.delete_subject(tenant, &s, actor, true).await?;
             }
         }
-        // What is left without a record: links, remembered responses, queued jobs.
+        // What is left without a record: links, remembered responses, queued jobs and writes.
+        sqlx::query("DELETE FROM mh_intake WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_link WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_recall WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
@@ -1795,9 +2179,11 @@ impl Store for PgStore {
         let rows = sqlx::query(
             "UPDATE mh_enrich_job j SET status = 'running', attempts = j.attempts + 1, \
                locked_until = now() + make_interval(secs => $2) \
-             WHERE j.id IN (SELECT id FROM mh_enrich_job \
-               WHERE (status = 'pending' AND run_after <= now()) OR (status = 'running' AND locked_until < now()) \
-               ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED) \
+             WHERE j.id IN (SELECT c.id FROM mh_enrich_job c \
+               WHERE ((c.status = 'pending' AND c.run_after <= now()) OR (c.status = 'running' AND c.locked_until < now())) \
+                 AND NOT EXISTS (SELECT 1 FROM mh_enrich_job o WHERE o.tenant = c.tenant AND o.subject = c.subject \
+                                 AND o.status IN ('pending', 'running') AND o.id < c.id) \
+               ORDER BY c.id LIMIT $1 FOR UPDATE SKIP LOCKED) \
              RETURNING j.id, j.tenant, j.subject, j.session_id, j.round_ids, j.attempts",
         )
         .bind(limit as i64)

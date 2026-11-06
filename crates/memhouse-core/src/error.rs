@@ -22,6 +22,9 @@ pub enum ErrorCode {
     Conflict,
     /// A failure inside MemHouse or its database or models (500).
     Internal,
+    /// A dependency is down for now (the intake queue, the database): retry later (503, with
+    /// `Retry-After`). Nothing was written (PERF-07).
+    Unavailable,
 }
 
 impl ErrorCode {
@@ -33,6 +36,7 @@ impl ErrorCode {
             ErrorCode::NotFound => "not_found",
             ErrorCode::Conflict => "conflict",
             ErrorCode::Internal => "internal",
+            ErrorCode::Unavailable => "unavailable",
         }
     }
 
@@ -44,6 +48,7 @@ impl ErrorCode {
             ErrorCode::NotFound => 404,
             ErrorCode::Conflict => 409,
             ErrorCode::Internal => 500,
+            ErrorCode::Unavailable => 503,
         }
     }
 }
@@ -82,6 +87,10 @@ pub fn unauthorized(message: impl Into<String>) -> anyhow::Error {
 
 pub fn conflict(message: impl Into<String>) -> anyhow::Error {
     Coded { code: ErrorCode::Conflict, message: message.into() }.into()
+}
+
+pub fn unavailable(message: impl Into<String>) -> anyhow::Error {
+    Coded { code: ErrorCode::Unavailable, message: message.into() }.into()
 }
 
 /// The code of an error: its [`Coded`] when it has one, else read from validation messages that

@@ -143,7 +143,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     let subj = s("injection");
     let mut persisted = vec![];
     for (i, text) in INJECTIONS.iter().enumerate() {
-        let r = engine.remember(RememberRequest { subject: Some(subj.clone()), content: text.to_string(), actor: Some("bench".into()), ..Default::default() }).await?;
+        let r = engine.remember(RememberRequest { subject: Some(subj.clone()), content: text.to_string(), actor: Some("bench".into()), wait: true, ..Default::default() }).await?;
         if r.status == MemoryStatus::Committed {
             persisted.push(format!("remember#{i}"));
         }
@@ -157,7 +157,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             ]
         })
         .collect();
-    engine.ingest(IngestRequest { subject: Some(subj.clone()), session_id: Some("inj".into()), messages: msgs, actor: Some("bench".into()), ..Default::default() }).await?;
+    engine
+        .ingest(IngestRequest { subject: Some(subj.clone()), session_id: Some("inj".into()), messages: msgs, actor: Some("bench".into()), wait: true, ..Default::default() })
+        .await?;
     let mut recalled = 0;
     for text in INJECTIONS {
         let r = engine.recall(RecallRequest { subject: Some(subj.clone()), query: text.to_string(), k: Some(5), ..Default::default() }).await?;
@@ -177,7 +179,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     let subj = s("benign");
     let mut false_q = vec![];
     for t in BENIGN {
-        let r = engine.remember(RememberRequest { subject: Some(subj.clone()), content: t.to_string(), actor: Some("bench".into()), ..Default::default() }).await?;
+        let r = engine.remember(RememberRequest { subject: Some(subj.clone()), content: t.to_string(), actor: Some("bench".into()), wait: true, ..Default::default() }).await?;
         if r.status == MemoryStatus::Quarantined {
             false_q.push(t.to_string());
         }
@@ -206,6 +208,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             subject: Some(subj.clone()),
             content: format!("Customer paid with card {card}, SSN on file {ssn}."),
             actor: Some("bench".into()),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -215,6 +218,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             content: format!("Deploy keys: {aws} and {sk}"),
             kind: Some(MemoryKind::Procedural),
             actor: Some("bench".into()),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -234,6 +238,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 Message { role: "assistant".into(), content: "Thanks, I won't store that.".into(), timestamp: None, id: None },
             ],
             actor: Some("bench".into()),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -266,6 +271,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 subject: Some(s(&format!("iso{i}"))),
                 content: format!("My locker code at the gym is {code}."),
                 actor: Some("bench".into()),
+                wait: true,
                 ..Default::default()
             })
             .await?;
@@ -306,6 +312,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             tenant: Some("bench-tenant-a".into()),
             subject: Some(shared_subject.clone()),
             content: "Tenant A secret roadmap codename is Bluebird.".into(),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -329,7 +336,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // 6. Deletion verification (GOV-07 / TR-WF-01): record, cached embedding and recall all gone.
     let subj = s("delete");
     let secret = format!("The customer's dog is called {}.", rand_alnum(&mut rng, 8));
-    let r = engine.remember(RememberRequest { subject: Some(subj.clone()), content: secret.clone(), actor: Some("bench".into()), ..Default::default() }).await?;
+    let r = engine.remember(RememberRequest { subject: Some(subj.clone()), content: secret.clone(), actor: Some("bench".into()), wait: true, ..Default::default() }).await?;
     let before = engine.recall(RecallRequest { subject: Some(subj.clone()), query: "what is the dog called".into(), k: Some(5), ..Default::default() }).await?;
     engine.forget(None, r.id, Some("bench".into())).await?;
     let after = engine.recall(RecallRequest { subject: Some(subj.clone()), query: "what is the dog called".into(), k: Some(5), ..Default::default() }).await?;
@@ -356,6 +363,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 subject: Some(subj.clone()),
                 content: format!("Fact number {i} about this person: likes colour {}", rand_alnum(&mut rng, 5)),
                 actor: Some("bench".into()),
+                wait: true,
                 ..Default::default()
             })
             .await?;
@@ -387,7 +395,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     let mut stale = 0;
     let mut fresh = 0;
     for (old, new, q, old_key, new_key) in facts {
-        let r1 = engine.remember(RememberRequest { subject: Some(subj.clone()), content: old.into(), actor: Some("bench".into()), ..Default::default() }).await?;
+        let r1 = engine.remember(RememberRequest { subject: Some(subj.clone()), content: old.into(), actor: Some("bench".into()), wait: true, ..Default::default() }).await?;
         engine.update(None, r1.id, new.into(), Some("bench".into())).await?;
         let r = engine.recall(RecallRequest { subject: Some(subj.clone()), query: q.into(), k: Some(10), ..Default::default() }).await?;
         if r.hits.iter().any(|h| h.memory.content.contains(old_key) && !h.memory.content.contains(new_key)) {
@@ -418,6 +426,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             content: "Promo code SPRING25 gives 25% off.".into(),
             valid_to: Some(now - chrono::Duration::days(1)),
             kind: Some(MemoryKind::Commitment),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -426,6 +435,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             subject: Some(subj.clone()),
             content: "Promo code SUMMER10 gives 10% off.".into(),
             valid_to: Some(now + chrono::Duration::days(30)),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -452,9 +462,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
 
     // 10. Duplicate suppression.
     let subj = s("dedup");
-    let a = engine.remember(RememberRequest { subject: Some(subj.clone()), content: "Prefers to be contacted by email.".into(), ..Default::default() }).await?;
-    let b = engine.remember(RememberRequest { subject: Some(subj.clone()), content: "Prefers to be contacted by email.".into(), ..Default::default() }).await?;
-    let c = engine.remember(RememberRequest { subject: Some(subj.clone()), content: "Prefers to be contacted by email!".into(), ..Default::default() }).await?;
+    let a = engine.remember(RememberRequest { subject: Some(subj.clone()), content: "Prefers to be contacted by email.".into(), wait: true, ..Default::default() }).await?;
+    let b = engine.remember(RememberRequest { subject: Some(subj.clone()), content: "Prefers to be contacted by email.".into(), wait: true, ..Default::default() }).await?;
+    let c = engine.remember(RememberRequest { subject: Some(subj.clone()), content: "Prefers to be contacted by email!".into(), wait: true, ..Default::default() }).await?;
     let n = all_records(engine, &subj).await?.len();
     checks.push(check(
         "dedup",
@@ -516,6 +526,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 session_time: Some(when),
                 messages: msgs,
                 actor: Some("bench".into()),
+                wait: true,
                 ..Default::default()
             })
             .await?;
@@ -577,6 +588,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             session_id: Some("s2".into()),
             messages: vec![Message { role: "user".into(), content: format!("My other cat is {canary}2"), timestamp: None, id: None }],
             actor: Some("bench".into()),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -610,6 +622,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             subject: Some(subj.clone()),
             content: format!("The user's favourite colour is teal-{canary}."),
             actor: Some("bench".into()),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -623,6 +636,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             session_id: Some("r1".into()),
             messages: msgs,
             actor: Some("bench".into()),
+            wait: true,
             ..Default::default()
         })
         .await?;
@@ -695,6 +709,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                     session_id: Some("p".into()),
                     messages: msgs,
                     actor: Some("bench".into()),
+                    wait: true,
                     ..Default::default()
                 })
                 .await?;
@@ -719,6 +734,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             vector_weight: 1.0,
             windows,
             scope: Default::default(),
+            include_candidates: false,
         };
         let scoped = SearchQuery { scope: Scope { team: Some("support".into()), user: Some("ana".into()), ..Default::default() }, ..probe(RetrievalMode::Hybrid, vec![], None) };
         let variants = [
@@ -787,6 +803,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                     content,
                     kind: Some(MemoryKind::Semantic),
                     actor: Some("bench".into()),
+                    wait: true,
                     ..Default::default()
                 })
                 .await?;
@@ -818,6 +835,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 vector_weight: 1.0,
                 windows: vec![],
                 scope: Default::default(),
+                include_candidates: false,
             };
             let hits = engine.store.search(&q).await?;
             let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();
@@ -874,6 +892,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                     content,
                     kind: Some(MemoryKind::Semantic),
                     actor: Some("bench".into()),
+                    wait: true,
                     ..Default::default()
                 };
                 if r < 0.45 {
@@ -1144,7 +1163,7 @@ async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, Str
     let subj = "gov:reembed".to_string();
     let a = stub_engine(base, url, "stub:a", 8, "", true).await?;
     for t in ["Acme renews on 2027-03-01", "Acme prefers email over phone", "Biscuit is a greyhound"] {
-        a.remember(RememberRequest { subject: Some(subj.clone()), content: t.into(), actor: Some("bench".into()), ..Default::default() }).await?;
+        a.remember(RememberRequest { subject: Some(subj.clone()), content: t.into(), actor: Some("bench".into()), wait: true, ..Default::default() }).await?;
     }
     let msgs: Vec<Message> = [
         ("user", "I adopted a greyhound called Biscuit.\nShe is three years old."),
@@ -1155,7 +1174,7 @@ async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, Str
     .iter()
     .map(|(r, c)| Message { role: r.to_string(), content: c.to_string(), timestamp: None, id: None })
     .collect();
-    a.ingest(IngestRequest { subject: Some(subj.clone()), session_id: Some("s1".into()), messages: msgs, actor: Some("bench".into()), ..Default::default() }).await?;
+    a.ingest(IngestRequest { subject: Some(subj.clone()), session_id: Some("s1".into()), messages: msgs, actor: Some("bench".into()), wait: true, ..Default::default() }).await?;
     let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(url).await?;
     let counts = |pool: sqlx::PgPool| async move {
         sqlx::query_as::<_, (i64, i64, i64)>(
@@ -1186,7 +1205,8 @@ async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, Str
     // B: start, then A writes during the run, then B finishes (resuming the same target).
     let b = stub_engine(base, url, "stub:b", 12, "doc: ", false).await?;
     b.store.reembed_begin(&reembed::target(&b)).await?;
-    a.remember(RememberRequest { subject: Some(subj.clone()), content: "Written during the re-embedding".into(), actor: Some("bench".into()), ..Default::default() }).await?;
+    a.remember(RememberRequest { subject: Some(subj.clone()), content: "Written during the re-embedding".into(), actor: Some("bench".into()), wait: true, ..Default::default() })
+        .await?;
     let report = match reembed::run(&b, "bench", 2, |_, _| {}).await? {
         reembed::Outcome::Done(r) => r,
         reembed::Outcome::Current(_) => anyhow::bail!("re-embedding did nothing"),
@@ -1211,8 +1231,15 @@ async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, Str
     if !found {
         problems.push("B's recall misses the renewal date".into());
     }
-    let a_write =
-        a.remember(RememberRequest { subject: Some(subj.clone()), content: "Old model write after the switch".into(), actor: Some("bench".into()), ..Default::default() }).await;
+    let a_write = a
+        .remember(RememberRequest {
+            subject: Some(subj.clone()),
+            content: "Old model write after the switch".into(),
+            actor: Some("bench".into()),
+            wait: true,
+            ..Default::default()
+        })
+        .await;
     let a_read = a.recall(RecallRequest { subject: Some(subj.clone()), query: "Acme".into(), ..Default::default() }).await;
     if a_write.is_ok() {
         problems.push("A wrote after the switch".into());

@@ -106,7 +106,8 @@ impl Caller {
         let missing = || error::not_found(format!("memory {id} not found"));
         // Permission first, so a credential that may not do this learns nothing about the id.
         self.decide(&AccessRequest::new(op)).await?;
-        let m = self.engine.store.get(self.tenant(), id).await?.ok_or_else(missing)?;
+        // A write still in the intake queue reads as a candidate (CORE-02).
+        let m = self.engine.get_record(self.tenant(), id).await?.ok_or_else(missing)?;
         let req = AccessRequest::new(op).record(&m);
         let d = self.engine.authorizer.authorize(&self.who, &req).await;
         if !d.allowed {

@@ -110,6 +110,31 @@ pub const CATEGORIES: [&str; 7] = ["secret", "card", "ssn", "iban", "email", "ph
 
 /// Redact the configured categories and screen for injection.
 pub fn screen(content: &str, redact: &[String], check_injection: bool) -> GateOutcome {
+    let (text, redactions) = redact_text(content, redact);
+    let injection = if check_injection { injection(&text) } else { vec![] };
+    GateOutcome { content: text, redactions, injection }
+}
+
+/// Reasons the text looks like an instruction aimed at the agent (the gate stage's check).
+pub fn injection(text: &str) -> Vec<String> {
+    INJECTION.iter().filter(|(_, re)| re.is_match(text)).map(|(name, _)| name.to_string()).collect()
+}
+
+/// The deterministic PII and secret detector (TR-MS-01): the rules above.
+pub struct RulePii;
+
+#[async_trait::async_trait]
+impl crate::traits::PiiDetector for RulePii {
+    fn id(&self) -> &str {
+        "rules-v1"
+    }
+    async fn redact(&self, text: &str, categories: &[String]) -> anyhow::Result<(String, Vec<String>)> {
+        Ok(redact_text(text, categories))
+    }
+}
+
+/// Replace every match of the configured categories; returns the text and the categories found.
+pub fn redact_text(content: &str, redact: &[String]) -> (String, Vec<String>) {
     let mut text = content.to_string();
     let mut redactions = Vec::new();
     for rule in RULES.iter() {
@@ -131,8 +156,7 @@ pub fn screen(content: &str, redact: &[String], check_injection: bool) -> GateOu
             redactions.push(rule.category.to_string());
         }
     }
-    let injection = if check_injection { INJECTION.iter().filter(|(_, re)| re.is_match(&text)).map(|(name, _)| name.to_string()).collect() } else { vec![] };
-    GateOutcome { content: text, redactions, injection }
+    (text, redactions)
 }
 
 #[cfg(test)]

@@ -376,12 +376,13 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
             subject: Some(subj.into()),
             content: format!("Payroll grievance from {n}: salary dispute escalated"),
             labels: vec!["hr".into()],
+            wait: true,
             ..Default::default()
         })
         .await?;
     }
     for n in &NAMES[12..] {
-        e.remember(RememberRequest { subject: Some(subj.into()), content: format!("Payroll vendor {n} invoices monthly"), ..Default::default() }).await?;
+        e.remember(RememberRequest { subject: Some(subj.into()), content: format!("Payroll vendor {n} invoices monthly"), wait: true, ..Default::default() }).await?;
     }
     let a = keys.bearer("a");
     let r =
@@ -416,6 +417,7 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
         vector_weight: 1.0,
         windows: vec![],
         scope: Scope::default(),
+        include_candidates: false,
     };
     let plan = e.store.search_plan(&q).await?.unwrap_or_default();
     if !scan_filters_labels(&plan) {
@@ -444,6 +446,7 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
         subject: Some(subj.into()),
         content: "Ana's private note on payroll".into(),
         scope: Some(Scope { user: Some("user:ana".into()), ..Default::default() }),
+        wait: true,
         ..Default::default()
     })
     .await?;
@@ -451,6 +454,7 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
         subject: Some(subj.into()),
         content: "Bob's private note on payroll".into(),
         scope: Some(Scope { user: Some("user:bob".into()), ..Default::default() }),
+        wait: true,
         ..Default::default()
     })
     .await?;

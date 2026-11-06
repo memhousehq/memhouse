@@ -113,6 +113,98 @@ impl MemoryStatus {
     }
 }
 
+/// What a statement asserts, as the write gate reads it (QUAL-02). Plans and speculation stay
+/// candidates until confirmed or expired (PR-7); a correction supersedes what it corrects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Statement {
+    /// Something true now ("Acme's renewal date is 1 March").
+    Fact,
+    /// Something that happened ("The user adopted a cat in March").
+    Event,
+    /// A change to, or fix of, something stored before ("Actually, she moved to Porto").
+    Correction,
+    /// An intention not yet carried out ("The user plans to visit Japan in May").
+    Plan,
+    /// A guess, rumour or hypothetical ("He might switch vendors").
+    Speculation,
+    /// A like, dislike or way of working.
+    Preference,
+    /// How something should be done ("Run the tests before every commit").
+    Instruction,
+}
+
+impl Statement {
+    pub const ALL: [Statement; 7] =
+        [Statement::Fact, Statement::Event, Statement::Correction, Statement::Plan, Statement::Speculation, Statement::Preference, Statement::Instruction];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Statement::Fact => "fact",
+            Statement::Event => "event",
+            Statement::Correction => "correction",
+            Statement::Plan => "plan",
+            Statement::Speculation => "speculation",
+            Statement::Preference => "preference",
+            Statement::Instruction => "instruction",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Statement> {
+        let s = s.trim().to_ascii_lowercase();
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+
+    /// Held as a candidate instead of committed (QUAL-02, PR-7).
+    pub fn held(&self) -> bool {
+        matches!(self, Statement::Plan | Statement::Speculation)
+    }
+}
+
+/// The representation intake routes a record to (HYB-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Route {
+    /// Conversation or longer prose: text with keyword and vector search.
+    Narrative,
+    /// One self-contained statement: text search plus correction and duplicate checks.
+    Fact,
+    /// A record with attributes (an order, an address): also a row in the structured table,
+    /// answered by exact query (HYB-02).
+    Structured,
+    /// A statement relating people or organisations; stored as a fact until the graph (G35).
+    Relationship,
+    /// Source code or a change to it; stored as text with the `code` tag until code-aware
+    /// memory (G19).
+    Code,
+}
+
+impl Route {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Route::Narrative => "narrative",
+            Route::Fact => "fact",
+            Route::Structured => "structured",
+            Route::Relationship => "relationship",
+            Route::Code => "code",
+        }
+    }
+}
+
+/// The intake queue's backlog (TR-IN-06): the lag metric.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct IntakeStatus {
+    pub pending: i64,
+    pub running: i64,
+    /// Finished and not yet pruned.
+    pub done: i64,
+    /// Poison proposals moved aside after `intake.max_attempts` (TR-IN-07).
+    pub dead: i64,
+    /// Age of the oldest unfinished proposal, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_pending_secs: Option<f64>,
+}
+
 /// Narrower visibility inside a subject (MEM-04). All empty means the whole subject; resolution
 /// order (user over team over org) is applied by recall from G11.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -402,6 +494,11 @@ pub struct RememberRequest {
     /// Files the memory is about, for staleness checks.
     #[serde(default)]
     pub code_refs: Vec<CodeRef>,
+    /// Wait for the write gate before answering (at most `intake.wait_timeout_ms`): the result
+    /// then carries the record's final state. By default `remember` answers as soon as the
+    /// redacted write is durably queued, with `status: candidate` (CORE-02).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wait: bool,
 }
 
 /// What a write did. The id is returned at once; `status` says the record's state, which can
@@ -410,8 +507,10 @@ pub struct RememberRequest {
 pub struct RememberResult {
     /// The record's id. For a deduplicated write, the id of the memory already stored.
     pub id: Uuid,
-    /// `committed` or `quarantined` today; `candidate` once admission is asynchronous (G10).
-    /// Clients must not assume a write is committed.
+    /// `candidate` while the write waits for the gate (the default answer); with `wait`, the
+    /// gate's decision: `committed`, `candidate` (a plan or speculation held until confirmed, or a
+    /// proposal waiting for review), `quarantined` or `rejected`. Clients must not assume a write
+    /// is committed: read `GET /v1/memories/{id}` for its state.
     pub status: MemoryStatus,
     /// True when an equivalent memory already existed and nothing new was written.
     pub deduplicated: bool,
@@ -421,9 +520,15 @@ pub struct RememberResult {
     /// The record this write superseded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded: Option<Uuid>,
-    /// Why the write was deduplicated or quarantined.
+    /// Why the write was deduplicated, held, quarantined or rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// What the gate read the statement as (QUAL-02), once it has run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<Statement>,
+    /// The representation the record was routed to (HYB-01), once the gate has run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<Route>,
 }
 
 /// Correct a memory (`revise`, CORE-04): a new version that supersedes the current one. Fields
@@ -466,6 +571,9 @@ pub struct ReviseRequest {
     /// Idempotency key, as for `remember`.
     #[serde(default)]
     pub request_key: Option<String>,
+    /// Wait for the write gate, as for `remember`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wait: bool,
 }
 
 /// Delete memories (`forget`, CORE-05). Name exactly one of `id`, `subject`, `user`, `agent`,
@@ -583,6 +691,9 @@ pub struct IngestRequest {
     /// Sensitivity labels for every round.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Wait until the rounds are stored, as for `remember`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wait: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -593,8 +704,12 @@ pub struct IngestResult {
     pub quarantined: usize,
     /// Rounds already stored, skipped.
     pub deduplicated: usize,
-    /// Ids of the rounds stored.
+    /// Ids of the rounds stored (or queued).
     pub ids: Vec<Uuid>,
+    /// True while the rounds are still in the intake queue (the request did not set `wait`):
+    /// their ids resolve to `candidate` until the pipeline has stored them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
@@ -652,6 +767,30 @@ pub struct RecallRequest {
     pub render: bool,
     #[serde(default)]
     pub actor: Option<String>,
+    /// Also return candidates (plans and speculation the gate holds, proposals waiting for
+    /// review), each labelled by its `status` (PR-7). Default recall never returns them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_candidates: bool,
+    /// An exact query over structured records (HYB-02): records of this type whose attributes
+    /// contain these values are returned first, matched exactly, never by similarity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact: Option<ExactQuery>,
+}
+
+/// An exact structured-record query inside a recall (HYB-02, HYB-03).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExactQuery {
+    /// Only records of this type (`order`, `address`, ...); any type when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_type: Option<String>,
+    /// A JSON object the record's attributes must contain (`{"order_id": "A-1001"}`).
+    #[serde(default = "empty_object")]
+    pub attrs: serde_json::Value,
+}
+
+fn empty_object() -> serde_json::Value {
+    serde_json::json!({})
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -668,6 +807,9 @@ pub struct Hit {
     pub similarity: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank_score: Option<f32>,
+    /// Found by an exact structured-record match (HYB-02), not by similarity.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exact: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -693,6 +835,10 @@ pub struct RecallResult {
     /// Id of this recall's explanation (`GET /v1/recalls/{id}/explanation`, GOV-04).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recall_id: Option<Uuid>,
+    /// Set when retrieval failed or ran out of time: `hits` is then empty, not a real answer
+    /// (PERF-07). The value says why; callers should go on without memory, not retry in a loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<String>,
 }
 
 /// Parameters passed from the engine to a store's single-statement hybrid search.
@@ -720,6 +866,8 @@ pub struct SearchQuery {
     pub windows: Vec<(DateTime<Utc>, DateTime<Utc>)>,
     /// Only records visible in this scope (see `RecallRequest::scope`).
     pub scope: Scope,
+    /// Candidates too (PR-7: only when the caller asks).
+    pub include_candidates: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

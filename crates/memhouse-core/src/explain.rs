@@ -86,6 +86,7 @@ impl Engine {
             vector_weight: rank.vector_weight,
             windows: vec![],
             scope: Scope::default(),
+            include_candidates: false,
         };
         let candidates = self.store.search_unfiltered(&q).await?;
         let returned: HashSet<_> = record.returned.iter().map(|r| r.id).collect();

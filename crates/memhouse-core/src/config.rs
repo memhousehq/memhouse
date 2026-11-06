@@ -21,6 +21,71 @@ pub struct Config {
     pub access: AccessConfig,
     /// Traces, metrics and recall explanations (G07).
     pub telemetry: TelemetryConfig,
+    /// The write pipeline: intake queue, workers and the statement gate (G10).
+    pub intake: IntakeConfig,
+}
+
+/// Which statement classifier the write gate uses (QUAL-02, TR-MS-01).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassifierKind {
+    /// Deterministic rules: no model, no cost (the default).
+    #[default]
+    Rules,
+    /// A small chat model (`intake.llm`) behind the same interface; the rules answer when it
+    /// fails. Tiering the two by confidence comes with G14.
+    Llm,
+}
+
+/// The write pipeline (TR-IN-04): a write is authorized and redacted in the request, durably
+/// queued, and answered with `candidate`; workers then classify and gate it, route, embed and
+/// insert it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IntakeConfig {
+    /// Pipeline workers in `memhouse serve` (and one in `memhouse mcp`). Every request also
+    /// finishes its own write right after answering, so workers mainly pick up writes left
+    /// behind by a restart or a failure.
+    pub workers: usize,
+    /// Seconds a worker holds a claimed proposal before another may take it over (a crashed
+    /// worker's proposals resume after this, TR-LT-05).
+    pub lease_secs: u64,
+    /// Attempts before a proposal that keeps failing is set aside as poison and its records
+    /// quarantined (TR-IN-07).
+    pub max_attempts: i32,
+    /// Seconds finished proposals are kept (without their content) before they are pruned.
+    pub keep_done_secs: u64,
+    /// Longest a request with `wait` waits for the gate, in milliseconds; after it the request
+    /// answers with the record's state then (usually `candidate`).
+    pub wait_timeout_ms: u64,
+    /// Statement classifier of the write gate.
+    pub classifier: ClassifierKind,
+    /// Chat model of the `llm` classifier.
+    pub llm: LlmConfig,
+    /// A held plan or speculation with no end date expires after this many days unconfirmed.
+    pub plan_ttl_days: u32,
+    /// Cosine similarity at or above which a correction supersedes the closest record of its
+    /// kind (QUAL-01). The two must also share a content word.
+    pub correction_threshold: f32,
+    /// Cosine similarity at or above which a completed event confirms a held plan.
+    pub confirm_threshold: f32,
+}
+
+impl Default for IntakeConfig {
+    fn default() -> Self {
+        IntakeConfig {
+            workers: 2,
+            lease_secs: 60,
+            max_attempts: 5,
+            keep_done_secs: 3600,
+            wait_timeout_ms: 10_000,
+            classifier: ClassifierKind::Rules,
+            llm: LlmConfig { model: "gpt-4o-mini".into(), max_tokens: 60, ..LlmConfig::default() },
+            plan_ttl_days: 90,
+            correction_threshold: 0.8,
+            confirm_threshold: 0.8,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +355,9 @@ pub struct MemoryConfig {
     pub subquery_weight: f32,
     /// Active template (support, sales, success, coding, personal).
     pub template: Option<String>,
+    /// Retrieval that fails or takes longer than this (milliseconds) answers with an empty
+    /// result flagged `degraded` instead of an error (PERF-07). 0 waits as long as it takes.
+    pub recall_timeout_ms: u64,
 }
 
 impl Default for MemoryConfig {
@@ -313,6 +381,7 @@ impl Default for MemoryConfig {
             working_ttl_secs: 86_400,
             subquery_weight: 0.0,
             template: None,
+            recall_timeout_ms: 500,
         }
     }
 }

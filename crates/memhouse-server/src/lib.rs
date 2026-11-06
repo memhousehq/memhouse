@@ -34,7 +34,11 @@ pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<En
     let store = PgStore::connect(&cfg.database.url, cfg.database.max_connections, cfg.embedding.passage_prefix.as_deref().unwrap_or("")).await?;
     store.migrate(embedder.dim(), embedder.id()).await?;
     let chat = memhouse_models::enrich_chat(&cfg, None)?;
-    let engine = Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat);
+    let classifier = memhouse_models::classifier_chat(&cfg)?;
+    let mut engine = Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat);
+    if let Some(chat) = classifier {
+        engine = engine.with_classifier(Arc::new(memhouse_core::classify::ChatClassifier { chat }));
+    }
     // Records name the policy that admitted them; the policy itself is kept with them (and the
     // active policy is compiled now, so a spec that no longer compiles is reported at start).
     engine.policy_for(&engine.cfg.memory.tenant).await?;
@@ -62,6 +66,10 @@ impl IntoResponse for ApiError {
             tracing::error!("{}", body.error);
         }
         let status = StatusCode::from_u16(body.code.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        if body.code == ErrorCode::Unavailable {
+            // PERF-07: a write refused because intake is down is safe to retry.
+            return (status, [(axum::http::header::RETRY_AFTER, "1")], Json(body)).into_response();
+        }
         (status, Json(body)).into_response()
     }
 }
@@ -260,12 +268,14 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     tracing::info!("MemHouse listening on http://{bind}");
     eprintln!("MemHouse is running on http://{bind}  (Memory Browser: http://{bind}/ , MCP: http://{bind}/mcp)");
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let workers = if engine.cfg.enrich.enabled && engine.chat.is_some() && engine.cfg.enrich.workers > 0 {
+    let mut workers = if engine.cfg.enrich.enabled && engine.chat.is_some() && engine.cfg.enrich.workers > 0 {
         eprintln!("Enrichment: {} workers, model {}", engine.cfg.enrich.workers, engine.cfg.enrich.llm.model);
         engine.spawn_enrichment(engine.cfg.enrich.workers, stop.clone(), Default::default())
     } else {
         vec![]
     };
+    // The write pipeline's workers resume proposals left by a restart (TR-LT-05).
+    workers.extend(engine.spawn_intake(engine.cfg.intake.workers, stop.clone()));
     axum::serve(listener, router(engine))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -299,6 +309,12 @@ async fn metrics(Who(c): Who) -> Result<Response, ApiError> {
         set("memhouse_enrich_jobs", &[("state", state)], n as f64);
     }
     set("memhouse_enrich_queue_lag_seconds", &[], q.oldest_pending_secs.unwrap_or(0.0));
+    // TR-IN-06: the intake backlog and its lag.
+    let i = c.engine.intake_status(Some(&c.who.principal.tenant)).await?;
+    for (state, n) in [("pending", i.pending), ("running", i.running), ("done", i.done), ("dead", i.dead)] {
+        set("memhouse_intake_proposals", &[("state", state)], n as f64);
+    }
+    set("memhouse_intake_lag_seconds", &[], i.oldest_pending_secs.unwrap_or(0.0));
     set("memhouse_build_info", &[("version", env!("CARGO_PKG_VERSION")), ("api_version", openapi::API_VERSION)], 1.0);
     let body = memhouse_core::metrics::render();
     Ok(([(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], body).into_response())
@@ -424,7 +440,8 @@ struct UpdateBody {
 async fn update(Who(c): Who, headers: HeaderMap, PathParam(id): PathParam<Uuid>, Body(b): Body<UpdateBody>) -> ApiResult<RememberResult> {
     let mut key = None;
     request_key(&headers, &mut key)?;
-    Ok(Json(c.revise(ReviseRequest { id, content: b.content, request_key: key, ..Default::default() }).await?))
+    // The pre-v1 update answered with the stored revision; it still waits for the gate.
+    Ok(Json(c.revise(ReviseRequest { id, content: b.content, request_key: key, wait: true, ..Default::default() }).await?))
 }
 
 async fn forget_legacy(Who(c): Who, PathParam(id): PathParam<Uuid>) -> ApiResult<serde_json::Value> {

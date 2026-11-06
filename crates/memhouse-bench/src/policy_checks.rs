@@ -185,6 +185,7 @@ async fn approval(base: &Engine, e: &Engine, url: &str, pool: &sqlx::PgPool) -> 
         kind: Some(kind),
         labels,
         actor: Some("bench".into()),
+        wait: true,
         ..Default::default()
     };
     let before = e.remember(remember("Acme's data sheet lists 40 seats", MemoryKind::Document, vec![])).await?;
@@ -317,6 +318,7 @@ async fn rollback(base: &Engine, e: &Engine, url: &str, pool: &sqlx::PgPool) -> 
             content: text.into(),
             occurred_at: Some(now - chrono::Duration::days(days)),
             actor: Some("bench".into()),
+            wait: true,
             ..Default::default()
         })
         .await?;

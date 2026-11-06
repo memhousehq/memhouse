@@ -405,7 +405,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let eng = memhouse_server::build_engine(cfg, false).await?;
             let who =
                 eng.auth.authenticate(&key, None).await.map_err(|f| anyhow::anyhow!("MEMHOUSE_MCP_KEY was refused: {f}; run `memhouse connect <agent>` again for a new key"))?;
+            // One pipeline worker: picks up writes another agent's process left behind.
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let workers = eng.spawn_intake(1, stop.clone());
             memhouse_server::mcp::serve_stdio(eng.caller(who)).await?;
+            // Give this process's last writes a moment to finish their pipeline before exiting.
+            let _ = eng.settle_subject(None, &eng.cfg.memory.default_subject.clone(), std::time::Duration::from_secs(2)).await;
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            drop(workers);
         }
         Cmd::Connect { agent, subject, print, project, no_verify } => {
             let cfg = Config::load(cfg_path.as_deref())?;
@@ -468,7 +475,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Remember { content, subject, kind, tags } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;
-            let r = eng.remember(RememberRequest { subject, content, kind: Some(kind), tags, actor: Some("cli".into()), ..Default::default() }).await?;
+            let r = eng.remember(RememberRequest { subject, content, kind: Some(kind), tags, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Cmd::Recall { query, subject, k, rerank, json } => {
@@ -498,7 +505,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Cmd::Revise { id, content } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
-            let r = eng.revise(ReviseRequest { id: uuid::Uuid::parse_str(&id)?, content, actor: Some("cli".into()), ..Default::default() }).await?;
+            let r = eng.revise(ReviseRequest { id: uuid::Uuid::parse_str(&id)?, content, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
             match r.superseded {
                 Some(old) => println!("{} now replaces {old}", r.id),
                 None => println!("stored {} ({}); {id} was not superseded{}", r.id, r.status.as_str(), r.note.map(|n| format!(": {n}")).unwrap_or_default()),
@@ -529,7 +536,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Ingest { file, subject, session } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let messages: Vec<Message> = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
-            let r = eng.ingest(IngestRequest { subject, session_id: session, messages, actor: Some("cli".into()), ..Default::default() }).await?;
+            let r = eng.ingest(IngestRequest { subject, session_id: session, messages, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
             println!("stored {} rounds ({} quarantined, {} already present)", r.stored, r.quarantined, r.deduplicated);
         }
         Cmd::Export { subject, out, tenant } => {
