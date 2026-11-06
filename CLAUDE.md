@@ -29,16 +29,21 @@ here first; also update `ROADMAP.md` in [memhousehq/memory-format](https://githu
 ## Commands
 
 ```bash
+export MEMHOUSE_HOME="$(git rev-parse --show-toplevel)/.dev-home"   # first, in every shell
 cargo xtask ci                 # everything CI runs, plus the benchmark guard (~5 min)
 cargo xtask ci --fix           # apply rustfmt and add missing SPDX headers
 cargo xtask ci --tier 2        # guard tier 2: cached enrichment, about $0.01
 cargo xtask ci --skip-e2e      # without Docker
-memhouse bench guard           # the guard alone (tier 1, free)
+cargo build --release -p memhouse-cli && ./target/release/memhouse bench guard   # the guard alone (tier 1, free)
 cargo xtask secrets --staged   # the secret scan the pre-commit hook runs
 cargo xtask links              # relative links and anchors in the docs
 ```
 
-- Use `MEMHOUSE_HOME=$PWD/.dev-home` for local runs, never `~/.memhouse`.
+- **Export `MEMHOUSE_HOME`** as above before any `memhouse` command, `cargo xtask ci` or
+  `git push` (the pre-push hook runs the CI). The benchmark database settings and datasets live
+  in the repository's ignored `.dev-home/`; without it, commands fall back to `~/.memhouse`, and
+  the guard fails with `password authentication failed`. Anchor it to the repository root, not
+  `$PWD`: a `.dev-home/` in a subdirectory is not ignored.
 - Paid tiers and benchmarks run only locally, on demand, with the key given for that one run as an
   environment variable. Never in hosted CI, never written to a file.
 - Build, test and guard details: [docs/development.md](docs/development.md); benchmarks:
