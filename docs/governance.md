@@ -477,7 +477,7 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `policy_approval` | a proposed policy never runs, an unapproved activation is refused (also by the database), and records, explanations and spans carry the approved version |
 | `policy_rollback` | ranking weights changed by a policy change recall without a restart, also in a second process; rollback restores identical results |
 | `intake_candidates` | 200 writes are each answered `candidate` at once and stored exactly once; while they are queued, no PII canary is anywhere in the queue (the stage order: redaction before anything is written) |
-| `intake_restart` | proposals a killed worker held resume after their lease; one processed by two workers at once takes effect once (30 records, 30 write events) |
+| `intake_restart` | proposals a killed worker held resume after their lease; one processed by two workers at once takes effect once (30 records, 30 write events); a stricter policy approved while writes are queued redacts and rejects what it now forbids |
 | `intake_poison` | a proposal that always fails is set aside after `max_attempts`, its record quarantined and audited, and the subject's next write still commits |
 | `intake_freshness` | a gated write is recallable within 5 s at p95 (tens of milliseconds in practice) |
 | `statement_gate` | of a labelled set, 0 plans or speculation committed (≤ 2%), every fact committed; held candidates recalled only on request; a correction supersedes with the old version kept; a plan is confirmed by its event or expires |

@@ -22,7 +22,12 @@ pub(crate) async fn run(engine: &Engine, run_id: &str) -> Vec<Check> {
             "remember answers a candidate at once; every id resolves to one stored state; nothing unredacted is ever queued",
             candidates(engine).await,
         ),
-        ("intake_restart", "TR-LT-05 / TR-IN-03", "Proposals left by a killed worker resume after their lease and take effect exactly once", restart(engine).await),
+        (
+            "intake_restart",
+            "TR-LT-05 / TR-IN-03 / GOV-05",
+            "Proposals left by a killed worker resume after their lease and take effect exactly once, under the policy in force when they run",
+            restart(engine).await,
+        ),
         ("intake_poison", "TR-IN-07", "A proposal that keeps failing is set aside and quarantined without blocking its subject", poison(engine).await),
         ("intake_freshness", "PERF-04", "A write that passes the gate is recallable within 5 s at p95", freshness(engine, &s("fresh")).await),
         (
@@ -196,6 +201,21 @@ async fn restart(base: &Engine) -> Outcome {
         let dup = e.intake.claim(1, 1, None).await?.pop().ok_or_else(|| anyhow::anyhow!("nothing to claim"))?;
         let (a, b) = tokio::join!(e.process_job(dup.clone()), e.process_job(dup));
         let both_ok = a.is_ok() && b.is_ok();
+        // A stricter policy approved while writes wait in the queue applies to them: an e-mail
+        // address it now redacts is redacted, and a kind it no longer allows is rejected
+        // without a vector (its content never reaches the embedder).
+        let tenant = e.cfg.memory.tenant.clone();
+        let mail = "ana.lindqvist@example.org";
+        let queued_mail = e.remember(write("customer:policy", &format!("Ana Lindqvist prefers e-mail at {mail} for renewals"), false)).await?.id;
+        let queued_proc = e
+            .remember(RememberRequest { kind: Some(MemoryKind::Procedural), ..write("customer:policy", "To renew, open the billing console and press Extend", false) })
+            .await?
+            .id;
+        let strict = memhouse_core::policy::parse_spec(&format!(
+            "name = \"gov-intake\"\n[scope]\ntenant = \"{tenant}\"\n[redaction]\ncategories = [\"secret\", \"card\", \"ssn\", \"iban\", \"email\"]\n[memory_types]\nallowed = [\"semantic\", \"episodic\", \"preference\", \"working\", \"commitment\", \"document\"]"
+        ))?;
+        let proposed = e.policy_propose(&tenant, &strict, "bench", None).await?;
+        let active = e.policy_approve(&tenant, proposed.version, "Dana Reviewer").await?.version;
         let stop = Arc::new(AtomicBool::new(false));
         let workers = e.spawn_intake(3, stop.clone());
         let idle = wait_idle(&e, Duration::from_secs(30)).await?;
@@ -209,10 +229,19 @@ async fn restart(base: &Engine) -> Outcome {
         if !idle || rows != 30 || events != 30 || abandoned != 10 || !both_ok || retried < 10 {
             problems.push(format!("queue idle: {idle}; {rows}/30 records, {events}/30 write events; {abandoned} abandoned, {retried} retried; double processing ok: {both_ok}"));
         }
+        let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE content LIKE $1 OR metadata::text LIKE $1").bind(format!("%{mail}%")).fetch_one(&pool).await?;
+        let redacted = e.store.get(&tenant, queued_mail).await?.is_some_and(|m| m.status == MemoryStatus::Committed && m.provenance.policy_version.as_deref() == Some(active.as_str()));
+        let (proc_status, proc_vector): (Option<String>, Option<bool>) =
+            sqlx::query_as("SELECT status, embedding IS NOT NULL FROM mh_memory WHERE id = $1").bind(queued_proc).fetch_optional(&pool).await?.map(|(s, v)| (Some(s), Some(v))).unwrap_or((None, None));
+        if leaked != 0 || !redacted || proc_status.as_deref() != Some("rejected") || proc_vector != Some(false) {
+            problems.push(format!(
+                "policy approved while queued: address stored {leaked} time(s), redacted record under the new policy {redacted}; disallowed kind {proc_status:?}, vector {proc_vector:?}"
+            ));
+        }
         verdict(
             problems,
             format!("30 proposals, 10 abandoned by a killed worker, 1 processed twice → {rows} records, {events} write events"),
-            "resumed after the lease; exactly once in effect",
+            "resumed after the lease; exactly once in effect; a policy approved meanwhile redacts and rejects what it now forbids",
         )
     }
     .await;

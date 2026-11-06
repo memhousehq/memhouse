@@ -104,7 +104,10 @@ flowchart LR
 
 A proposal that keeps failing is retried with backoff and, after `max_attempts`, set aside as
 `dead` with its records stored as `quarantined` (`intake_failed`) for a reviewer, so it never
-blocks its subject (TR-IN-07). Stages 4 to 7 run in the request's own task right after the
+blocks its subject (TR-IN-07). Each attempt runs under the tenant's policy in force at that
+moment: a write queued under an older policy is redacted again with the current categories,
+and one of a kind the policy no longer allows is rejected before any model sees it, without a
+vector. Stages 4 to 7 run in the request's own task right after the
 answer (a write is recallable in tens of milliseconds, PERF-04), or before it with `wait: true`;
 the `JobRunner` workers (`[intake] workers`) pick up anything left. The `intake_restart`,
 `intake_poison` and `intake_freshness` checks cover these paths.

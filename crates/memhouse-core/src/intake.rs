@@ -548,15 +548,23 @@ impl Engine {
                 Item::new(rec, r.focus.clone(), r.redactions.clone())
             })
             .collect();
-        self.gate_stage(p.entry, &mut items).instrument(tracing::info_span!("intake.gate")).await?;
-        // The policy in force now decides, not the one the write was queued under.
+        // Queued under an older policy: its redaction rules are applied again, so a stricter
+        // policy activated meanwhile holds for what is stored (and sent to the embedder).
+        for it in items.iter_mut() {
+            if it.rec.memory.provenance.policy_version.as_deref() != Some(policy.version.as_str()) {
+                self.reredact(&policy, it).await?;
+            }
+        }
+        // The policy in force now decides, not the one the write was queued under: a kind it no
+        // longer allows is rejected before any model (classifier, embedder) sees the content.
         for it in items.iter_mut() {
             let m = &mut it.rec.memory;
-            if m.status != MemoryStatus::Quarantined && !policy.allows(m.kind) {
+            if !policy.allows(m.kind) {
                 m.status = MemoryStatus::Rejected;
                 it.note = Some(format!("rejected: policy {} no longer allows {} memories", policy.version, m.kind.as_str()));
             }
         }
+        self.gate_stage(p.entry, &mut items).instrument(tracing::info_span!("intake.gate")).await?;
         Self::route_stage(&mut items);
         self.embed_stage(&mut items).instrument(tracing::info_span!("intake.embed")).await?;
         let (supersede, confirm) = self.resolve_stage(&policy, &p.tenant, &p.subject, p.entry, &mut items).instrument(tracing::info_span!("intake.resolve")).await?;
@@ -617,12 +625,44 @@ impl Engine {
         Ok(outcome)
     }
 
+    /// Stage 2 again, under the policy in force now: content, focus text, metadata and
+    /// structured attributes. Redaction is idempotent, so text already redacted is unchanged.
+    async fn reredact(&self, policy: &CompiledPolicy, it: &mut Item) -> anyhow::Result<()> {
+        let cats = &policy.policy.redaction.categories;
+        let mut found = it.redactions.clone();
+        let m = &mut it.rec.memory;
+        let (content, more) = self.pii.redact(&m.content, cats).await?;
+        m.content = content;
+        found.extend(more);
+        if let Some(f) = &it.focus {
+            let (f, more) = self.pii.redact(f, cats).await?;
+            it.focus = Some(f);
+            found.extend(more);
+        }
+        m.metadata = self.redact_attrs(policy, &m.metadata, &mut found).await?;
+        if let Some(st) = &it.rec.structured {
+            let attrs = self.redact_attrs(policy, &st.attrs, &mut found).await?;
+            it.rec.structured = Some(Structured { attrs, record_type: st.record_type.clone() });
+        }
+        found.sort();
+        found.dedup();
+        if found != it.redactions && m.kind == MemoryKind::Episodic {
+            m.metadata["redactions"] = json!(found);
+        }
+        it.redactions = found;
+        m.provenance.policy_version = Some(policy.version.clone());
+        Ok(())
+    }
+
     /// Stage 4: the injection check, then the statement classifier, then the state each record
     /// takes (QUAL-02). Conversation rounds are a record of what was said: they are screened for
     /// injection but not classified.
     pub(crate) async fn gate_stage(&self, entry: Entry, items: &mut [Item]) -> anyhow::Result<()> {
         for it in items.iter_mut() {
             let m = &mut it.rec.memory;
+            if m.status == MemoryStatus::Rejected {
+                continue;
+            }
             // `held` is the gate's own mark (a revision may carry its predecessor's metadata).
             if let Some(o) = m.metadata.as_object_mut() {
                 o.remove("held");
@@ -686,14 +726,20 @@ impl Engine {
         if items.is_empty() {
             return Ok(());
         }
-        let n = items.len();
-        let mut texts: Vec<String> = items.iter().map(|i| i.rec.memory.content.clone()).collect();
-        let focus: Vec<(usize, String)> = items.iter().enumerate().filter_map(|(i, it)| it.focus.clone().map(|f| (i, f))).collect();
+        // A record already rejected (its kind no longer allowed) is stored without a vector:
+        // its content is never sent to the embedder.
+        let todo: Vec<usize> = (0..items.len()).filter(|i| items[*i].rec.memory.status != MemoryStatus::Rejected).collect();
+        if todo.is_empty() {
+            return Ok(());
+        }
+        let n = todo.len();
+        let mut texts: Vec<String> = todo.iter().map(|i| items[*i].rec.memory.content.clone()).collect();
+        let focus: Vec<(usize, String)> = todo.iter().filter_map(|i| items[*i].focus.clone().map(|f| (*i, f))).collect();
         texts.extend(focus.iter().map(|(_, f)| f.clone()));
         let mut vecs = self.embed_passages(&texts).await?;
         let focus_vecs = vecs.split_off(n);
-        for (it, v) in items.iter_mut().zip(vecs) {
-            it.rec.embedding = Some(v);
+        for (i, v) in todo.into_iter().zip(vecs) {
+            items[i].rec.embedding = Some(v);
         }
         let prefix = self.cfg.embedding.passage_prefix.clone().unwrap_or_default();
         for ((i, f), v) in focus.into_iter().zip(focus_vecs) {
