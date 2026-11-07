@@ -1004,8 +1004,10 @@ which is named.
     enabled set
   - [ ] language detection without a model (a library such as `lingua` or `whatlang`, limited to
     the enabled languages) for each write and each query, recorded on the record (an expand-only
-    schema change); text whose language is not detected is screened with the injection phrases of
-    every enabled pack, so the screen never weakens
+    schema change); detection never narrows the injection screen: every write is screened with
+    the injection phrases of every enabled pack, whatever language it was detected in, and the
+    built-in English phrases always apply as a floor, even when English is not enabled, a tenant
+    narrows the set or an operator pack replaces the English one, so the screen never weakens
   - [ ] full-text search in the record's language (a `regconfig` column feeding the generated
     `tsv`), with the query probing each enabled configuration
   - [ ] Unicode letter classes wherever a word or identifier is matched
@@ -1023,7 +1025,9 @@ which is named.
   - [ ] governance checks: `language_packs` (every built-in pack loads, validates and passes its
     test set; an invalid operator pack stops startup with the file and line) and
     `injection_languages` (every enabled pack's injection attempts are quarantined, including in
-    text whose language is not detected)
+    text whose language is not detected and in mixed-language text such as a French write
+    carrying an English injection; today's English injection fixtures are still quarantined with
+    only German enabled, with a tenant narrowed to German, and with an operator English pack)
   - [ ] docs: `docs/languages.md` (the format, how to write and test a pack, each language's
     support level), plus configuration, operations and architecture
 - **Done when:** with only English enabled, the guard's values are unchanged. Each of the 24 packs
