@@ -4,8 +4,8 @@
 | Field | Value |
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
-| Date | 6 November 2026 |
-| Progress | 10 of 34 goals done ([goal tracker](#goal-tracker)) |
+| Date | 7 November 2026 |
+| Progress | 10 of 35 goals done ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -98,7 +98,8 @@ template's git-aware features, release engineering, and all of Scale.
    on Postgres (stage C), then a conformance kit is written (G15), and only then is the Lite store
    built against it (G16).
 5. **Quality tuning after refactors.** Retrieval tuning (G14, G26) happens after the write
-   pipeline and ranking are rebuilt (G10–G12), so tuning effort isn't lost.
+   pipeline and ranking are rebuilt (G10–G12) and the word lists move into language packs (G36),
+   so tuning effort isn't lost.
 6. **Governance is never weakened.** Every goal keeps the governance suite at 100% and adds checks
    for what it introduces.
 7. **Access model before regulated features.** The decision register (G28) sits on ReBAC (G27),
@@ -266,7 +267,7 @@ flowchart LR
         G04[G04 schema + format v2] --> G05[G05 API v1] --> G06[G06 identity + authorizer] --> G07[G07 tracing + explain] --> G09[G09 publish open repo]
     end
     subgraph C[Stage C · engine]
-        G08[G08 policy engine] --> G10[G10 write pipeline v2] --> G11[G11 types + scopes] --> G12[G12 ranking + packing] --> G13[G13 eval platform] --> G14[G14 quality I]
+        G08[G08 policy engine] --> G10[G10 write pipeline v2] --> G11[G11 types + scopes] --> G12[G12 ranking + packing] --> G13[G13 eval platform] --> G36[G36 language packs] --> G14[G14 quality I]
     end
     subgraph D[Stage D · Lite + developer launch]
         G15[G15 conformance kits] --> G16[G16 Lite store] --> G17[G17 migrate] --> G18[G18 SDKs] --> G19[G19 coding template] --> G20[G20 browser + console] --> G21[G21 release v1]
@@ -288,7 +289,7 @@ flowchart LR
 |---|---|---|---|
 | A. Foundations | G01–G03 | everything measured; repositories split; secrets policy in force; decisions recorded | T1 |
 | B. Contracts | G04–G07, G09 | schema, API, identity and tracing frozen (old v1 gate G1); **open repository public** (G09) | T1 |
-| C. Engine | G08, G10–G14 | policy engine; every engine Must on Postgres | T3 |
+| C. Engine | G08, G10–G13, G36, G14 | policy engine; every engine Must on Postgres; the 24 EU languages | T3 |
 | D. Lite + developer launch | G15–G21 | **developer launch**: Lite + Standard, SDKs, coding template, release pipeline (old G2 + G3) | T3, plus T4 with approval |
 | E. Governance, connectors, templates | G22–G26 | regulated-ready Standard; plugin system; template packages | T3 |
 | F. Regulated | G27–G30 | **pilot-ready**: ReBAC, decision register, enterprise security, load-tested (old G4/P0) | T3, plus T4 with approval |
@@ -324,6 +325,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 - [ ] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion)
 - [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2)
 - [ ] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate)
+- [ ] [G36 — Language packs: word lists as data, several languages at once](#g36--language-packs-word-lists-as-data-several-languages-at-once)
 - [ ] [G14 — Quality iteration I: weak types and tiered extraction](#g14--quality-iteration-i-weak-types-and-tiered-extraction)
 
 **D. Lite + developer launch**
@@ -963,6 +965,76 @@ which is named.
 - **Done when:** a policy that disables corrections is blocked by the gate with a clear report.
 - **Guard:** T1 + its own suites. **Depends on:** G12.
 
+#### G36 — Language packs: word lists as data, several languages at once
+
+- [ ] **Done**
+
+> `/goal Move every natural-language word list and phrase pattern out of the code into language packs (one file per language, English the default), let the configuration enable several languages at once and load the operator's own packs, detect the language of each write and query without a model and use the matching full-text search configuration, and ship packs for the 24 official EU languages, each with a labelled test set. Log progress and results in docs/roadmap.md as its section 5 describes.`
+
+- **Why now:** the rules that read statements, time phrases and queries are English word lists
+  compiled into the code, and G10 added more of them. G14 tunes those rules, so they become data
+  first and are tuned once, per language, on G13's suites. The pack format is also fixed before
+  the Lite store (G16) and the SDKs (G18) build on it.
+- **Scope:** new scope, with no requirement ID yet (one is to be added to the design
+  requirements). It extends QUAL-02 (the statement gate), HYB-03 (query planning) and the
+  injection screen to every enabled language. The English built into the code today:
+  - `memhouse-core/src/classify.rs`: statement markers (speculation, correction, plan, preference,
+    instruction, event), relationship and code markers, stopwords, number words, relation words,
+    date and quantity patterns;
+  - `memhouse-core/src/query.rs`: number and unit words, month and weekday names, relative-time
+    phrases ("ago", "last", "yesterday", "this week"), clause words, leading articles;
+  - `memhouse-core/src/gate.rs`: the injection phrases (the PII patterns vary by country rather
+    than by language, and stay with GOV-05);
+  - `memhouse-store-postgres`: full-text search fixed to the `english` configuration, in the
+    generated `tsv` column and in the query;
+  - ASCII-only letter classes (`[A-Za-z]`) in identifier and word matching;
+  - the classifier and enrichment prompts, which are written in English;
+  - the default embedder, `bge-small-en-v1.5`, which is English-only.
+- **Deliverables:**
+  - [ ] a versioned language-pack format (TOML, with a JSON Schema) holding statement markers,
+    relation and number words, stopwords, month and weekday names, relative-time phrases, query
+    clause words, injection phrases and the Postgres text-search configuration (`simple` where
+    Postgres has no stemmer); packs are compiled to patterns at load and validated, and
+    `memhouse lang check <file>` reports errors with file and line
+  - [ ] built-in packs embedded in the binary; English is the default, and its pack reproduces
+    today's behaviour exactly
+  - [ ] configuration: `[language] enabled = ["en", …]` (one or more), `default`, and `packs_dir`
+    for the operator's own packs, which add a language or replace a built-in pack; each key with
+    a default, a doc comment and a row in `docs/configuration.md`; a tenant policy may narrow the
+    enabled set
+  - [ ] language detection without a model (a library such as `lingua` or `whatlang`, limited to
+    the enabled languages) for each write and each query, recorded on the record (an expand-only
+    schema change); text whose language is not detected is screened with the injection phrases of
+    every enabled pack, so the screen never weakens
+  - [ ] full-text search in the record's language (a `regconfig` column feeding the generated
+    `tsv`), with the query probing each enabled configuration
+  - [ ] Unicode letter classes wherever a word or identifier is matched
+  - [ ] the classifier and enrichment prompts handle every enabled language and keep facts in the
+    language they were stated in
+  - [ ] embedder: a warning at start and in `memhouse doctor` when a language other than English
+    is enabled with an English-only model, and a documented multilingual model (switching uses
+    the existing `memhouse reembed`)
+  - [ ] packs for the 24 official EU languages: Bulgarian, Croatian, Czech, Danish, Dutch,
+    English, Estonian, Finnish, French, German, Greek, Hungarian, Irish, Italian, Latvian,
+    Lithuanian, Maltese, Polish, Portuguese, Romanian, Slovak, Slovenian, Spanish and Swedish.
+    Each pack comes with a labelled test set (statements for the gate, temporal and identifier
+    queries, injection attempts) and is marked stable once a speaker of the language has reviewed
+    it
+  - [ ] governance checks: `language_packs` (every built-in pack loads, validates and passes its
+    test set; an invalid operator pack stops startup with the file and line) and
+    `injection_languages` (every enabled pack's injection attempts are quarantined, including in
+    text whose language is not detected)
+  - [ ] docs: `docs/languages.md` (the format, how to write and test a pack, each language's
+    support level), plus configuration, operations and architecture
+- **Done when:** with only English enabled, the guard's values are unchanged. Each of the 24 packs
+  passes its own test set: the statement gate reads at least 95% of its labelled statements
+  correctly, commits no plan, and quarantines every injection attempt. A tenant with
+  `enabled = ["en", "de", "fr"]` and a multilingual embedder recalls a German correction over the
+  French fact it supersedes. An operator's pack in `packs_dir` replaces a built-in one without a
+  rebuild.
+- **Guard:** T1 plus the packs' test sets; T2 for the English results. **Depends on:** G13 (its
+  suite format carries the test sets). G14 then tunes the rules per language.
+
 #### G14 — Quality iteration I: weak types and tiered extraction
 
 - [ ] **Done**
@@ -978,7 +1050,7 @@ which is named.
   - [ ] multi-session aggregation (counting, dedup across sessions) at fact level
   - [ ] results added to `docs/benchmarks.md`
 - **Done when:** LongMemEval_S QA (T4, with approval) ≥ 86.0 with preference ≥ 80; LoCoMo QA (T3) ≥ 84.5; large-model calls ≤ 30% of writes.
-- **Guard:** T2 per change, T3 at the end. **Depends on:** G13. **Milestone:** engine complete.
+- **Guard:** T2 per change, T3 at the end. **Depends on:** G13, G36. **Milestone:** engine complete.
 
 ### Stage D — Lite profile and developer launch
 
@@ -1348,6 +1420,7 @@ current code already meets it and the named goal re-verifies it; it isn't reopen
 | Governance | GOV-01 G06 · GOV-02 G06/G27 · GOV-03 G08 · GOV-04 G07 · GOV-05 G22 (done, verified) · GOV-06 G22 · GOV-07 G22 · GOV-08 G06 · GOV-09 G22 · GOV-10 G22 · GOV-11 G20 · GOV-12 G22 · GOV-13 G06/G29 · GOV-14 G27 · GOV-15 G22 · GOV-16 G22 |
 | Access | ACC-01 G27 · ACC-02 G27 · ACC-03 G27 · ACC-04 G27 · ACC-05 G28 · ACC-06 G27 · ACC-07 G27 · ACC-08 G28 · ACC-09 G27 · ACC-10 G11 |
 | Decision register | CFG-01…CFG-12 G28 · D-01…D-07 G28 |
+| Languages | new scope, no requirement ID yet: language packs and the 24 official EU languages G36 |
 | Integration | INT-01 G30 · INT-02 G05 · INT-03 G18 · INT-04 G05/G12 · INT-05 G18/G23 · INT-06 G11 · INT-07 G04 · INT-08 G25 · INT-09 G04 · INT-10 G04 |
 | Performance | PERF-01 G30 · PERF-02 G07 · PERF-03 G30 · PERF-04 G30 · PERF-05 G11 · PERF-06 G12 · PERF-07 G10 · PERF-08 G30 · PERF-09 G32 · PERF-10 G30 · PERF-11 G32 · PERF-12 G25 |
 | Scale | SCALE-01 G32 · SCALE-02 G32 (data model done) · SCALE-03 G01 (done, verified) · SCALE-04 G27 · SCALE-05 G15 · SCALE-06 G30 · SCALE-07 G30 · SCALE-08 G14 · SCALE-09 G31 |
