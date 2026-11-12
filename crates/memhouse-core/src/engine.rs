@@ -920,38 +920,28 @@ impl Engine {
                 let mut statements = usize::from(loaded);
                 // What was read holds the session's newest notes, whoever wrote them and whether
                 // or not they are still live. If it was cut at its limit and too few of them are
-                // this reader's to give, older ones may lie beyond it: page through the session
-                // with the reader's scope, grants and labels in the statement, applying expiry,
-                // validity and tags to each page, until there are enough or no more.
+                // this reader's to give, older ones may lie beyond it: read the session with the
+                // reader's scope, grants, labels, tags, validity and expiry in the statement.
                 let want = if working_only { k } else { (k / 2).max(1) };
                 if full && mine.len() < want {
                     if let Some(s) = &session_first {
-                        let page = want.max(50);
-                        let mut q = ListQuery {
+                        let q = ListQuery {
                             tenant: tenant.clone(),
                             subject: Some(subject.clone()),
                             kinds: Some(vec![MemoryKind::Working]),
-                            limit: page,
+                            limit: want,
                             denied_labels: denied_labels.clone(),
                             scope: scope.clone(),
                             shared_agents: ctx.shared_agents.clone(),
                             session: Some(s.clone()),
+                            tags: req.tags.clone(),
+                            live_at: Some(now_valid),
                             ..Default::default()
                         };
-                        let now_live = Utc::now();
-                        mine.clear();
-                        // Bounded: a session with thousands of ineligible notes costs at most this.
-                        for _ in 0..20 {
-                            let rows = within(deadline, self.store.list(&q)).await?;
-                            statements += 1;
-                            let last = rows.last().map(|m| (m.created_at, m.id));
-                            let more = rows.len() == page;
-                            mine.extend(rows.into_iter().filter(|m| m.expires_at.is_none_or(|t| t > now_live)).filter(visible));
-                            match last {
-                                Some(l) if more && mine.len() < want => q.before = Some(l),
-                                _ => break,
-                            }
-                        }
+                        // Every filter is in the statement, before its limit: however many
+                        // newer notes don't count, the newest that do are the ones returned.
+                        mine = within(deadline, self.store.list(&q)).await?.into_iter().filter(visible).collect();
+                        statements += 1;
                     }
                 }
                 (mine, statements)
@@ -1532,6 +1522,8 @@ impl Engine {
                 scope: Scope::default(),
                 shared_agents: vec![],
                 session: None,
+                tags: None,
+                live_at: None,
             })
             .await
     }
@@ -1567,6 +1559,8 @@ impl Engine {
             scope: page.scope,
             shared_agents: page.shared_agents,
             session: None,
+            tags: None,
+            live_at: None,
         };
         let mut items = self.store.list(&q).await?;
         let next_cursor = if items.len() > limit {

@@ -1083,8 +1083,9 @@ which is named.
     deduplicated within their scope; a single source's structured form carries over only with
     its own text. A promotion is queued under its subject's lock with its sources checked, so
     one that read its source before an erasure is refused, not queued; the session fallback
-    pages with expiry, validity and tags applied per page, and triggers on what was read before
-    expired notes are left out. `memory_types` has 34 scenarios.
+    triggers on what was read before expired notes are left out, and is one statement with the
+    reader's scope, grants, labels, tags, validity and expiry applied before its limit.
+    `memory_types` has 35 scenarios.
     The question the review raised about session reads within API v1 is settled above
     ("Changes for API 1.4 clients").
 - **Guard:** T2. **Depends on:** G10.

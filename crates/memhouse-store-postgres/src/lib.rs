@@ -1740,6 +1740,8 @@ impl Store for PgStore {
              AND ($13::text IS NULL OR m.scope_user IS NULL OR m.scope_user = $13) \
              AND ($14::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $14 OR ($14 = $17 AND m.kind <> 'working')) \
              AND ($16::text IS NULL OR m.scope_session = $16) \
+             AND ($18::text[] IS NULL OR m.tags && $18) \
+             AND ($19::timestamptz IS NULL OR (m.valid_from <= $19 AND (m.valid_to IS NULL OR m.valid_to > $19) AND (m.expires_at IS NULL OR m.expires_at > $19))) \
              ORDER BY m.created_at DESC, m.id DESC LIMIT $5 OFFSET $6"
         ))
         .bind(&q.tenant)
@@ -1759,6 +1761,8 @@ impl Store for PgStore {
         .bind(&q.shared_agents)
         .bind(&q.session)
         .bind(memhouse_core::access::NOBODY)
+        .bind(&q.tags)
+        .bind(q.live_at)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_memory).collect()

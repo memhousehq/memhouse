@@ -994,6 +994,12 @@ pub struct ListQuery {
     /// Only records scoped to exactly this session (a session's working memory).
     #[serde(default)]
     pub session: Option<String>,
+    /// Only records with at least one of these tags.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    /// Only records valid and unexpired at this time.
+    #[serde(default)]
+    pub live_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

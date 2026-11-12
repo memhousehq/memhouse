@@ -282,6 +282,16 @@ async fn memory_types(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     let mut after_expiry = ask(subj, "anything", Some("deep"));
     after_expiry.k = Some(2);
     let after_expiry = small.recall(after_expiry).await?;
+    // However many newer notes fail the filter: the filter is in the statement, before its limit.
+    for i in 0..60 {
+        small.remember(in_deep(words("crowd", i), vec![], None)).await?;
+    }
+    let mut crowded = ask(subj, "anything", Some("deep"));
+    (crowded.k, crowded.tags, crowded.kinds) = (Some(1), Some(vec!["keep".into()]), Some(vec![MemoryKind::Working]));
+    let crowded = small.recall(crowded).await?;
+    s.case("working: a filter is applied before the limit, whatever the crowd", first_working(&crowded) == Some(older), || {
+        format!("{:?} behind 60 newer untagged notes; expected {older}", first_working(&crowded))
+    });
     s.case("working: newer notes that don't count don't hide an older one", first_working(&by_tag) == Some(older) && first_working(&after_expiry) == Some(older), || {
         format!("with a tag filter: {:?}; after the newer notes expired: {:?}; expected {older}", first_working(&by_tag), first_working(&after_expiry))
     });
@@ -789,8 +799,15 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     base.scope = session("ps");
     let base = p.remember(base).await?.id;
     let middle = p.promote(PromoteRequest { sources: vec![base], kind: MemoryKind::Semantic, wait: true, ..Default::default() }).await?.id;
+    // Nothing else can be waiting for this lock: the subject's intake queue is drained first
+    // (a promotion's own task may outlive its request), and the waiter count is zero before the
+    // deletion starts, so the waiter seen afterwards is the deletion.
+    e.settle_subject(None, subj, Duration::from_secs(30)).await?;
     let mut tx = pool.begin().await?;
     sqlx::query(memhouse_store_postgres::SUBJECT_LOCK_SQL).bind(TENANT).bind(subj).execute(&mut *tx).await?;
+    let waiters = "SELECT count(*) FROM pg_locks w WHERE w.locktype = 'advisory' AND w.classid = 7270002 AND NOT w.granted \
+                   AND w.objid::bigint = (hashtext($1 || chr(31) || $2)::bigint & 4294967295)";
+    let before: i64 = sqlx::query_scalar(waiters).bind(TENANT).bind(subj).fetch_one(pool).await?;
     let deleter = on(&p, e);
     let deletion = tokio::spawn(async move { deleter.forget(ForgetRequest { id: Some(base), ..Default::default() }).await.map(|_| ()) });
     // Until the database itself shows the deletion waiting for the subject's lock: only then
@@ -809,7 +826,7 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         .fetch_one(pool)
         .await?;
         if blocked > 0 {
-            waited = !deletion.is_finished();
+            waited = before == 0 && !deletion.is_finished();
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -851,10 +868,13 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         problems.push(format!("a queued promotion (queued: {was_queued}) was still readable by its id after its source was forgotten"));
     }
     // A promotion that read its source and reaches the queue only after the source was erased
-    // is not queued at all: built here as the engine would have, naming a source that is gone.
-    if let Some(mut late) = e.store.get(TENANT, promoted[1].0).await? {
-        (late.id, late.status) = (Uuid::now_v7(), MemoryStatus::Candidate);
-        late.metadata = json!({ "promoted_from": [Uuid::now_v7().to_string()], "promoted_from_kinds": ["semantic"] });
+    // is not queued at all. The interleaving, step by step: the source is stored and read (the
+    // proposal is built from it, as the engine builds one), then erased, then the enqueue runs.
+    let read = p.remember(write(subj, &words("readthenerased", 1), MemoryKind::Semantic)).await?.id;
+    if let Some(mut late) = e.store.get(TENANT, read).await? {
+        (late.id, late.kind, late.status) = (Uuid::now_v7(), MemoryKind::Procedural, MemoryStatus::Candidate);
+        late.metadata = json!({ "promoted_from": [read.to_string()], "promoted_from_kinds": ["semantic"] });
+        p.forget(ForgetRequest { id: Some(read), ..Default::default() }).await?;
         let proposal = memhouse_core::intake::Proposal {
             id: late.id,
             tenant: TENANT.into(),
@@ -880,7 +900,7 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
             problems.push("a promotion was queued after its source had been erased".into());
         }
     } else {
-        problems.push("the enqueue scenario found no promoted record to build on".into());
+        problems.push("the enqueue scenario could not read the source it had just stored".into());
     }
     // The same on a bulk erasure: forgetting by source removes the queued promotion of what it deletes.
     let mut tagged = write(subj, &words("bulk", 1), MemoryKind::Semantic);

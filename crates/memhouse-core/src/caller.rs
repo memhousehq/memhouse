@@ -434,6 +434,8 @@ impl Caller {
             scope: d.scope.clone(),
             shared_agents: d.shared_agents.clone(),
             session: None,
+            tags: None,
+            live_at: None,
         };
         self.engine.store.list(&q).await
     }
