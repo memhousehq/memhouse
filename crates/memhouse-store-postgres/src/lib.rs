@@ -1151,6 +1151,12 @@ impl PgStore {
 }
 
 /// The SQL that supersedes `$2` by `$3` (see `set_superseded`).
+/// Serializes, per tenant and subject, the writes that add a promotion link with the deletions
+/// that follow those links (MEM-05). A deletion's cascade reads one snapshot: without this, a
+/// promotion of a dependent that commits while the cascade waits on a row would be missed.
+/// `$1` is the tenant, `$2` the subject; held until the transaction ends.
+pub const SUBJECT_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock(7270002, hashtext($1 || chr(31) || $2))";
+
 const SUPERSEDE_SQL: &str = "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, \
      valid_to = least(COALESCE(valid_to, 'infinity'), greatest(COALESCE((SELECT n.valid_from FROM mh_memory n WHERE n.tenant = $1 AND n.id = $3), now()), valid_from)), \
      updated_at = greatest(now(), created_at) \
@@ -1497,6 +1503,9 @@ impl Store for PgStore {
             self.write_rows_in(&mut tx, &rows, false).await?;
         }
         if !w.requires.is_empty() {
+            if let Some(first) = w.records.first() {
+                sqlx::query(SUBJECT_LOCK_SQL).bind(&w.tenant).bind(&first.memory.subject).execute(&mut *tx).await?;
+            }
             // The sources of a promotion, locked until this commits: a `forget` of one waits,
             // then finds and removes what was promoted from it; one already gone stops the insert.
             let there: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2) FOR SHARE) s")
@@ -1806,6 +1815,12 @@ impl Store for PgStore {
     #[tracing::instrument(name = "db.delete", skip_all, fields(db.system = "postgresql", db.operation = "DELETE"))]
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
+        // No promotion in this subject is in flight while its links are followed below.
+        let Some(of): Option<String> = sqlx::query_scalar("SELECT subject FROM mh_memory WHERE tenant = $1 AND id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?
+        else {
+            return Ok(false);
+        };
+        sqlx::query(SUBJECT_LOCK_SQL).bind(tenant).bind(&of).execute(&mut *tx).await?;
         let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING subject, content, alt_hash").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
         let Some(row) = row else { return Ok(false) };
         let subject: String = row.try_get("subject")?;
@@ -2676,6 +2691,17 @@ impl Store for PgStore {
         audit: &memhouse_core::intake::AuditEntry,
     ) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
+        // The subject's lock first, then the record's row: the order a deletion takes them in.
+        let Some(subject): Option<String> =
+            sqlx::query_scalar("SELECT subject FROM mh_memory WHERE tenant = $1 AND id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?
+        else {
+            return Ok(false);
+        };
+        sqlx::query(SUBJECT_LOCK_SQL).bind(tenant).bind(&subject).execute(&mut *tx).await?;
+        // It must (still) be a promotion.
+        let row: Option<(serde_json::Value, Vec<String>)> =
+            sqlx::query_as("SELECT metadata, labels FROM mh_memory WHERE tenant = $1 AND id = $2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
+        let Some((mut metadata, mut all_labels)) = row.filter(|(m, _)| m.get("promoted_from").is_some_and(|f| f.is_array())) else { return Ok(false) };
         // As for a new promotion: the sources are locked, so a `forget` of one waits and then
         // finds this record through the link added here.
         let there: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2) FOR SHARE) s")
@@ -2684,26 +2710,30 @@ impl Store for PgStore {
             .fetch_one(&mut *tx)
             .await?;
         anyhow::ensure!(there as usize == sources.len(), "a source of a promotion was deleted while it was being written");
-        let from: Vec<String> = sources.iter().map(|s| s.to_string()).collect();
-        let n = sqlx::query(
-            "UPDATE mh_memory SET metadata = metadata || jsonb_build_object( \
-               'promoted_from', (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements((metadata -> 'promoted_from') || $3::jsonb) x), \
-               'promoted_from_kinds', (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements(coalesce(metadata -> 'promoted_from_kinds', '[]'::jsonb) || $4::jsonb) x)), \
-             labels = (SELECT coalesce(array_agg(DISTINCT l ORDER BY l), '{}') FROM unnest(labels || $5::text[]) l), \
-             updated_at = greatest(now(), created_at) \
-             WHERE tenant = $1 AND id = $2 AND jsonb_typeof(metadata -> 'promoted_from') = 'array'",
-        )
-        .bind(tenant)
-        .bind(id)
-        .bind(serde_json::json!(from))
-        .bind(serde_json::json!(kinds))
-        .bind(labels)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        if n == 0 {
-            return Ok(false);
+        // Sources and their kinds are parallel lists: merged as pairs, a source once.
+        let strings = |v: Option<&serde_json::Value>| -> Vec<String> { v.and_then(|a| a.as_array()).into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect() };
+        let mut from = strings(metadata.get("promoted_from"));
+        let mut from_kinds = strings(metadata.get("promoted_from_kinds"));
+        from_kinds.resize(from.len(), String::new());
+        for (i, source) in sources.iter().enumerate() {
+            let source = source.to_string();
+            if !from.contains(&source) {
+                from.push(source);
+                from_kinds.push(kinds.get(i).cloned().unwrap_or_default());
+            }
         }
+        metadata["promoted_from"] = serde_json::json!(from);
+        metadata["promoted_from_kinds"] = serde_json::json!(from_kinds);
+        all_labels.extend(labels.iter().cloned());
+        all_labels.sort();
+        all_labels.dedup();
+        sqlx::query("UPDATE mh_memory SET metadata = $3, labels = $4, updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2")
+            .bind(tenant)
+            .bind(id)
+            .bind(&metadata)
+            .bind(&all_labels)
+            .execute(&mut *tx)
+            .await?;
         self.audit_in(&mut tx, tenant, audit).await?;
         tx.commit().await?;
         Ok(true)

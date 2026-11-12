@@ -229,10 +229,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ---- 2. SQLite + FTS5, in-process scoring ----
-    // In the user's own MemHouse home, not a shared temp directory: nobody else can plant a
-    // database or a `-wal` file where this opens one (RUSTSEC-2026-0459, see deny.toml).
+    // A directory checked to be this user's own and closed to others, emptied of any left-over
+    // database files first.
     let dir = memhouse_core::config::home_dir().join("spike");
-    std::fs::create_dir_all(&dir)?;
+    private_dir(&dir)?;
     let file = dir.join("memhouse-spike-lite.db");
     for stale in ["", "-wal", "-shm"] {
         let path = dir.join(format!("memhouse-spike-lite.db{stale}"));
@@ -474,5 +474,24 @@ async fn main() -> anyhow::Result<()> {
     println!();
     println!("**Process RSS at the end:** {:.0} MB (includes the embedding model and all {} rounds in memory twice).", rss_kb as f64 / 1024.0, n_rounds);
     sqlx::raw_sql("DROP TABLE spike_vec").execute(&pg).await?;
+    Ok(())
+}
+
+/// A directory only this user can use: created if missing, then checked to be the user's own
+/// and closed to everyone else, so nobody can plant a database or a `-wal` file in it
+/// (RUSTSEC-2026-0459, see deny.toml). `MEMHOUSE_HOME` may point anywhere; this does not trust it.
+fn private_dir(dir: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let meta = std::fs::symlink_metadata(dir)?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        anyhow::ensure!(meta.is_dir() && meta.uid() == me, "{} is not a directory owned by this user; the spike won't open a database there", dir.display());
+        if meta.mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
     Ok(())
 }

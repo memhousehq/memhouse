@@ -38,12 +38,13 @@ yanked = "warn"
 # Reviewed exception (12 November 2026): SQLite before 3.54.0 can return stale memory when it
 # opens a database with a crafted `-wal` file. `libsqlite3-sys` reaches the graph only through
 # `rusqlite`, an optional dependency of memhouse-bench's `spike` feature (the G03 technology
-# spike examples), which no shipped binary enables; the examples keep their databases in the
-# user's own MemHouse home (never a shared temp directory) and remove any left-over file first.
+# spike examples), which no shipped binary enables. Each example opens its database only in a
+# directory it has checked to be owned by the running user and closed to everyone else (mode
+# 0700), every time it opens it, so no other user can place the database or its `-wal` there.
 # The fixed release (0.39) can't be selected while sqlx 0.9 holds `libsqlite3-sys` below 0.38.
 # Remove this entry when sqlx allows 0.39 or the spike examples go.
 ignore = [
-  { id = "RUSTSEC-2026-0459", reason = "bundled SQLite only in the optional `spike` examples, which keep their databases in the user's own MemHouse home; the fix is blocked by sqlx 0.9's libsqlite3-sys bound" },
+  { id = "RUSTSEC-2026-0459", reason = "bundled SQLite only in the optional `spike` examples, which open databases only in a directory verified to be the user's own (0700); the fix is blocked by sqlx 0.9's libsqlite3-sys bound" },
 ]
 
 [bans]

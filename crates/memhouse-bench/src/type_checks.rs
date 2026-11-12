@@ -74,7 +74,7 @@ async fn typed_suites(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     let out = async {
         let e = stub_engine(base, &scratch.url, "stub:t", 64, "", true).await?;
         let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
-        Ok::<_, anyhow::Error>(vec![memory_types(&e, &pool).await, working_session(&e, &scratch.url, base).await, scope_inheritance(&e).await, promotion(&e).await])
+        Ok::<_, anyhow::Error>(vec![memory_types(&e, &pool).await, working_session(&e, &scratch.url, base).await, scope_inheritance(&e).await, promotion(&e, &pool).await])
     }
     .await;
     scratch.drop().await?;
@@ -628,7 +628,7 @@ async fn scope_inheritance(e: &Engine) -> Outcome {
 }
 
 /// MEM-05: 100 promotions, each linked to its sources and audited.
-async fn promotion(e: &Engine) -> Outcome {
+async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     let mut problems = vec![];
     let subj = "customer:promote";
     let p = who(e, "agent:p", PrincipalKind::Agent, |p| p.can_commit = true).await?;
@@ -728,7 +728,9 @@ async fn promotion(e: &Engine) -> Outcome {
     let both = e.store.get(TENANT, merged.id).await?;
     let linked_both = both.as_ref().is_some_and(|m| {
         let from = m.metadata["promoted_from"].as_array().cloned().unwrap_or_default();
-        from.contains(&json!(one.to_string())) && from.contains(&json!(two.to_string())) && m.labels.contains(&"twin-label".to_string())
+        // Each source keeps its own kind: the two lists stay parallel.
+        let kinds = m.metadata["promoted_from_kinds"] == json!(["working", "working"]);
+        from == vec![json!(one.to_string()), json!(two.to_string())] && kinds && m.labels.contains(&"twin-label".to_string())
     });
     let logged = e.store.audit_log(TENANT, 200).await?.iter().any(|ev| ev.action == "memory.promote" && ev.memory_id == Some(merged.id) && ev.detail["deduplicated"] == true);
     if again.id != merged.id || !again.deduplicated || !linked_both || !logged {
@@ -737,6 +739,36 @@ async fn promotion(e: &Engine) -> Outcome {
     p.forget(ForgetRequest { id: Some(two), ..Default::default() }).await?;
     if e.store.get(TENANT, merged.id).await?.is_some() {
         problems.push("forgetting the second source left the record that was promoted from it".into());
+    }
+    // A promotion in flight and a chain deletion are serialized: one that commits while the
+    // deletion waits is still found. A second connection plays the in-flight promotion: it
+    // holds the subject's lock, adds a record promoted from the fact, and commits.
+    let mut base = write(subj, &words("inflight", 1), MemoryKind::Working);
+    base.scope = session("ps");
+    let base = p.remember(base).await?.id;
+    let middle = p.promote(PromoteRequest { sources: vec![base], kind: MemoryKind::Semantic, wait: true, ..Default::default() }).await?.id;
+    let mut tx = pool.begin().await?;
+    sqlx::query(memhouse_store_postgres::SUBJECT_LOCK_SQL).bind(TENANT).bind(subj).execute(&mut *tx).await?;
+    let deleter = on(&p, e);
+    let deletion = tokio::spawn(async move { deleter.forget(ForgetRequest { id: Some(base), ..Default::default() }).await.map(|_| ()) });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let waited = !deletion.is_finished();
+    let tip = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, valid_from, source, metadata) \
+         VALUES ($1, $2, $3, 'procedural', 'committed', 'promoted while the deletion waited', $4, now(), 'bench', $5)",
+    )
+    .bind(tip)
+    .bind(TENANT)
+    .bind(subj)
+    .bind(format!("{:064x}", tip.as_u128()))
+    .bind(json!({ "promoted_from": [middle.to_string()] }))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    deletion.await??;
+    if !waited || e.store.get(TENANT, middle).await?.is_some() || e.store.get(TENANT, tip).await?.is_some() {
+        problems.push(format!("a promotion committed during a chain deletion survived it (the deletion waited for it: {waited})"));
     }
     // A note past its expiry is not given a durable copy, marked expired yet or not.
     let mut brief = write(subj, &words("lapsed", 1), MemoryKind::Working);
