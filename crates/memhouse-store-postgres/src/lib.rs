@@ -1485,6 +1485,16 @@ impl Store for PgStore {
                 .collect();
             self.write_rows_in(&mut tx, &rows, false).await?;
         }
+        if !w.requires.is_empty() {
+            // The sources of a promotion, locked until this commits: a `forget` of one waits,
+            // then finds and removes what was promoted from it; one already gone stops the insert.
+            let there: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2) FOR SHARE) s")
+                .bind(&w.tenant)
+                .bind(&w.requires)
+                .fetch_one(&mut *tx)
+                .await?;
+            anyhow::ensure!(there as usize == w.requires.len(), "a source of a promotion was deleted while it was being written");
+        }
         for (old, new) in &w.supersede {
             let n = sqlx::query(SUPERSEDE_SQL).bind(&w.tenant).bind(old).bind(new).execute(&mut *tx).await?.rows_affected();
             // The pipeline checked it was current; another write got there first: retry the
@@ -1572,17 +1582,28 @@ impl Store for PgStore {
         rows.iter().map(row_to_hit).collect()
     }
 
-    async fn nearest_held(&self, tenant: &str, subject: &str, embedding: &[f32], limit: usize, held: &str) -> anyhow::Result<Vec<(Uuid, f32)>> {
+    async fn nearest_held(&self, tenant: &str, subject: &str, embedding: &[f32], limit: usize, which: &memhouse_core::traits::Held<'_>) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        let (held, kind, scope) = (which.reason, which.kind, which.scope);
         let rows: Vec<(Uuid, f64)> = sqlx::query_as(
             "SELECT id, 1 - (embedding <=> $3::vector) AS sim FROM mh_memory \
              WHERE tenant = $1 AND subject = $2 AND status = 'candidate' AND embedding IS NOT NULL \
-             AND metadata ->> 'held' = $5 AND (expires_at IS NULL OR expires_at > now()) ORDER BY embedding <=> $3::vector LIMIT $4",
+             AND metadata ->> 'held' = $5 AND (expires_at IS NULL OR expires_at > now()) \
+             AND ($6::text IS NULL OR kind = $6) \
+             AND scope_org IS NOT DISTINCT FROM $7 AND scope_team IS NOT DISTINCT FROM $8 AND scope_agent IS NOT DISTINCT FROM $9 \
+             AND scope_user IS NOT DISTINCT FROM $10 AND scope_session IS NOT DISTINCT FROM $11 \
+             ORDER BY embedding <=> $3::vector LIMIT $4",
         )
         .bind(tenant)
         .bind(subject)
         .bind(vec_literal(embedding))
         .bind(limit as i64)
         .bind(held)
+        .bind(kind.map(|k| k.as_str()))
+        .bind(&scope.org)
+        .bind(&scope.team)
+        .bind(&scope.agent)
+        .bind(&scope.user)
+        .bind(&scope.session)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id, s)| (id, s as f32)).collect())

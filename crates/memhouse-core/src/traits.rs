@@ -91,6 +91,17 @@ pub trait IntakeQueue: Send + Sync {
     async fn discard(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64>;
 }
 
+/// Which held candidates a write is compared with (see [`Store::nearest_held`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Held<'a> {
+    /// `metadata.held`: `plan` or `signal`.
+    pub reason: &'a str,
+    /// Only this kind, if given.
+    pub kind: Option<MemoryKind>,
+    /// Only records of exactly this scope.
+    pub scope: &'a Scope,
+}
+
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()>;
@@ -117,7 +128,9 @@ pub trait Store: Send + Sync {
     /// Unexpired records of a subject the gate holds as candidates for the reason `held`
     /// (`metadata.held`: `plan` for plans awaiting their event, `signal` for inferred preferences
     /// awaiting a repeat), most similar first. Candidates waiting for a reviewer are not among them.
-    async fn nearest_held(&self, _tenant: &str, _subject: &str, _embedding: &[f32], _limit: usize, _held: &str) -> anyhow::Result<Vec<(Uuid, f32)>> {
+    /// Only records of exactly `scope`, and of `kind` if given: filtered before the limit, so
+    /// closer candidates of other scopes never hide one of the write's own.
+    async fn nearest_held(&self, _tenant: &str, _subject: &str, _embedding: &[f32], _limit: usize, _which: &Held<'_>) -> anyhow::Result<Vec<(Uuid, f32)>> {
         Ok(vec![])
     }
     /// One hybrid statement per subject: keyword + vector candidates fused by RRF.

@@ -41,12 +41,14 @@ every type (security baseline).
 | `none` | Nothing more: no statement classifier, no duplicate check, no review. A plan noted in a scratchpad is a note, not a claim. |
 | `source` | The writing principal and a source label are on the record; a record without them is `rejected`. What was said is not judged. |
 | `full` | The [statement gate](api.md#post-v1remember-propose-a-memory) (QUAL-02): plans and speculation are held as candidates, near-duplicates rejected, corrections supersede. |
-| `explicit` | The statement gate, and only explicit statements commit. A write marked as an inferred signal (`"metadata": {"signal": true}`) is held as a candidate until the same signal has been seen `[intake] preference_signals` times (2), in the same scope; the repeat commits the held record and is not stored twice. |
+| `explicit` | The statement gate, and only explicit statements commit. A write marked as an inferred signal (`"metadata": {"signal": true}`) is held as a candidate until the same signal has been seen `[intake] preference_signals` times (2), in the same scope and, for a keyed preference, under the same key; the repeat commits the held record (which then replaces the value its key had in that scope) and is not stored twice. The stricter gates hold signals the same way. |
 | `confirmation` | The statement gate, and a proposal from an agent without a commit grant waits for [`POST /v1/review`](api.md#post-v1review-commit-or-reject-a-candidate), also where `admission = "auto"`. A user's, an admin's or a trusted agent's own write is the confirmation. |
 | `approval` | The statement gate, and only the type's approver commits: everyone else's write is a candidate until the approver reviews it. |
 
 A [policy](policy.md#per-type-sections) may give a type a stricter gate, a shorter retention or
-tighter access rules, never looser ones. `GET /v1/policies` shows the rules in force under
+tighter access rules, never looser ones. The gate in force when a write is processed decides:
+a write still queued when a policy raises its type to `confirmation` or `approval` waits for a
+reviewer, whatever it was allowed when it was queued. `GET /v1/policies` shows the rules in force under
 `running.policy.types`.
 
 Procedural and taxonomic memory are stored and gated here; promoting a procedure after repeated
@@ -75,12 +77,13 @@ curl -s $MH/v1/recall -H "authorization: Bearer $KEY" -H 'content-type: applicat
   the injection screen still quarantines.
 - **Lifetime.** A note lives until the session's last working-memory write plus the type's
   `ttl_secs`: every write in the session moves the session's notes to the new expiry. A note
-  written with its own `expires_at` keeps it. Past its expiry a note is never recalled, and
-  retention marks it `expired`.
+  written with its own `expires_at` keeps it, and a revised note keeps following its session.
+  Past its expiry a note is never recalled or promoted, and retention marks it `expired`.
 - **Recall in the session.** The session's notes come first, newest first, marked
   `"working": true`; they are not ranked against the query. A recall of mixed types keeps at
   least half of its `k` places for ranked memories. A recall of `"kinds": ["working"]` is
-  answered from the session cache alone: no query embedding, no database statement.
+  answered from the session cache alone: no query embedding, no database statement (one
+  statement when it asks for more notes than the cache keeps per session).
 - **Session-local.** A recall or a list returns a session's records only when it names that
   session (this holds for every type scoped to a session, not only working memory). A record is
   still read by its id.
@@ -98,8 +101,9 @@ recently used session evicted first. The cache holds nothing the database doesn'
 on a session's first recall (while the query is being embedded, so a miss adds no latency),
 updated by the writes that go through the process, dropped by a deletion, revision, relabel or
 retention pass, and read again after `working_cache_secs` (5), so a change made through another
-process shows within that time. Access rules are applied to what the cache returns on every
-read. `working_cache_secs = 0` turns it off. The metric `memhouse_working_cache_total` counts
+process shows within that time. Something read from the database before a deletion or relabel
+is never put into the cache after it. Access rules are applied to what the cache returns on
+every read. `working_cache_secs = 0` turns it off. The metric `memhouse_working_cache_total` counts
 hits and misses.
 
 ## Scopes and inheritance
@@ -172,7 +176,7 @@ curl -s $MH/v1/promote -H "authorization: Bearer $KEY" -H 'content-type: applica
 
 | Field | Notes |
 |---|---|
-| `sources` | 1 to 50 committed records of one subject, which the caller can see |
+| `sources` | 1 to 50 committed, unexpired records of one subject, which the caller can see |
 | `kind` | `semantic`, `preference`, `procedural` or `taxonomic`; `episodic` for working memory. Promotion moves towards durable memory: never into `working`, never to the same kind (that is `revise`) |
 | `content` | the promoted memory's text; required for several sources, for one it defaults to the source's text |
 | `scope` | defaults to the sources' common scope without its session, so a note promoted out of a session becomes visible to the session's user |
@@ -187,7 +191,12 @@ kinds, target type, scope, reason) are written in one transaction. A plain `reme
 claim a `promoted_from`: the key is removed.
 
 Deleting a source with `forget` deletes what was promoted from it, as it deletes extracted
-facts. Retention is different: when a source ages out, the promoted record stays.
+facts; a promotion still in the intake queue when its source is forgotten is not written.
+Retention is different, and deliberately so: when a source ages out under its type's retention,
+the promoted record stays, under its own type's retention. That is what promotion is for (a
+fact outlives the conversation it came from), and the record's `promoted_from` then names a
+source that is gone. A type kept in its author's partition (below) can't be the target of a
+promotion from another subject: write it with `remember`.
 
 The CLI equivalent is `memhouse promote <id>… --kind semantic [--content …]`.
 
@@ -236,7 +245,8 @@ partition = "author"
 
 A write of such a type made for a verified user is then stored in that user's own subject (the
 user's id, for example `user:dr-lee`), whatever subject the request named. The user needs no
-subject pattern for it; reading that subject follows the usual subject rules.
+subject pattern for the write, nor to read, revise or forget by its id a record they wrote
+there; searching or listing that subject follows the usual subject rules.
 
 ## What is checked
 

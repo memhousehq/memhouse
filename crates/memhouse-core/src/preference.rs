@@ -11,6 +11,9 @@ use chrono::Utc;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use uuid::Uuid;
 
+/// Preferences read from the store per statement.
+const PAGE: usize = 1000;
+
 /// Who reads: the constraints of their authorization decision.
 pub(crate) struct Reader<'a> {
     pub scope: &'a Scope,
@@ -43,8 +46,9 @@ pub fn resolve(visible: Vec<Memory>, key: Option<&str>) -> Vec<EffectivePreferen
 }
 
 /// In a recall's hits, a keyed preference that is overridden gives its place to the one that
-/// applies (once), and is listed in `overridden` for the explanation.
-pub(crate) fn apply_overrides(hits: &mut Vec<Hit>, effective: &[EffectivePreference], overridden: &mut Vec<ExcludedRecord>) {
+/// applies (once), and is listed in `overridden` for the explanation. A winner outside the
+/// recall's own tag filter takes no place: the overridden hit just goes.
+pub(crate) fn apply_overrides(hits: &mut Vec<Hit>, effective: &[EffectivePreference], tags: Option<&[String]>, overridden: &mut Vec<ExcludedRecord>) {
     let winners: HashMap<&str, &EffectivePreference> = effective.iter().filter_map(|e| e.key.as_deref().map(|k| (k, e))).collect();
     let present: HashSet<Uuid> = hits.iter().map(|h| h.memory.id).collect();
     let mut placed: HashSet<Uuid> = HashSet::new();
@@ -67,7 +71,8 @@ pub(crate) fn apply_overrides(hits: &mut Vec<Hit>, effective: &[EffectivePrefere
             detail: format!("the same preference is set at the {} level ({})", w.level.as_str(), w.memory.id),
         });
         // The winner keeps its own place if it was found; otherwise it takes this one, once.
-        if present.contains(&w.memory.id) || !placed.insert(w.memory.id) {
+        let filtered_out = tags.is_some_and(|t| !t.iter().any(|x| w.memory.tags.contains(x)));
+        if filtered_out || present.contains(&w.memory.id) || !placed.insert(w.memory.id) {
             continue;
         }
         h.memory = w.memory.clone();
@@ -81,18 +86,29 @@ impl Engine {
     /// The preferences of a subject as they apply to a reader, optionally one key only. One
     /// statement, inside the subject, under the reader's own filters.
     pub(crate) async fn effective_preferences(&self, tenant: &str, subject: &str, key: Option<&str>, reader: &Reader<'_>) -> anyhow::Result<Vec<EffectivePreference>> {
-        let q = ListQuery {
+        let mut q = ListQuery {
             tenant: tenant.to_string(),
             subject: Some(subject.to_string()),
             kinds: Some(vec![MemoryKind::Preference]),
-            limit: 1000,
+            limit: PAGE,
             denied_labels: reader.denied_labels.to_vec(),
             scope: reader.scope.clone(),
             shared_agents: reader.shared_agents.to_vec(),
             ..Default::default()
         };
         let now = Utc::now();
-        let mut visible = self.store.list(&q).await?;
+        // Every visible preference, page by page: an old one is still the value of its key.
+        let mut visible: Vec<Memory> = vec![];
+        loop {
+            let page = self.store.list(&q).await?;
+            let last = page.last().map(|m| (m.created_at, m.id));
+            let full = page.len() == PAGE;
+            visible.extend(page.into_iter().filter(|m| key.is_none_or(|k| m.metadata.get("pref_key").and_then(|v| v.as_str()) == Some(k))));
+            match last {
+                Some(l) if full => q.before = Some(l),
+                _ => break,
+            }
+        }
         visible.retain(|m| m.valid_from <= now && m.valid_to.is_none_or(|t| t > now) && m.expires_at.is_none_or(|t| t > now));
         Ok(resolve(visible, key))
     }
@@ -165,8 +181,14 @@ mod tests {
         // In a recall the overridden hit gives its place to the winner, once.
         let mut hits = vec![hit(&org, 3.0), hit(&tone, 2.0), hit(&team, 1.0)];
         let mut cut = vec![];
-        apply_overrides(&mut hits, &all, &mut cut);
+        apply_overrides(&mut hits, &all, None, &mut cut);
         assert_eq!(hits.iter().map(|h| h.memory.id).collect::<Vec<_>>(), vec![user.id, tone.id]);
         assert!(cut.len() == 2 && cut.iter().all(|c| c.reason == ExclusionReason::Overridden));
+        // A winner without the recall's tag takes no place; the overridden hit still goes.
+        let mut hits = vec![hit(&org, 3.0), hit(&tone, 2.0)];
+        let mut cut = vec![];
+        apply_overrides(&mut hits, &all, Some(&["billing".to_string()]), &mut cut);
+        assert_eq!(hits.iter().map(|h| h.memory.id).collect::<Vec<_>>(), vec![tone.id]);
+        assert_eq!(cut.len(), 1);
     }
 }

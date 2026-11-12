@@ -29,7 +29,7 @@ use crate::error;
 use crate::gate;
 use crate::metrics;
 use crate::policy::CompiledPolicy;
-use crate::traits::IntakeQueue;
+use crate::traits::{Held, IntakeQueue};
 use crate::types::*;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -139,6 +139,9 @@ pub struct IntakeWrite {
     /// Held signals seen again: (held record, the repeat, commit). The held record's count goes
     /// up by one, and with `commit` it is committed and its expiry cleared.
     pub signals: Vec<(Uuid, Uuid, bool)>,
+    /// Records that must still be stored when this is written (a promotion's sources): checked
+    /// and locked inside the insert's transaction, so an erasure can't be outrun.
+    pub requires: Vec<Uuid>,
     pub audit: Vec<AuditEntry>,
     /// Queue enrichment for these rounds: (subject, session id, round ids).
     pub enrich: Option<(String, String, Vec<Uuid>)>,
@@ -308,6 +311,9 @@ pub(crate) struct Item {
     pub confirms: Vec<Uuid>,
     /// The held signal this record repeats, its new count, and whether that commits it.
     pub signal: Option<(Uuid, u32, bool)>,
+    /// Queued under another policy than the one in force now: what its writer was allowed to
+    /// commit then says nothing about a gate that has since been raised.
+    pub policy_changed: bool,
 }
 
 impl Item {
@@ -326,6 +332,7 @@ impl Item {
             superseded: None,
             confirms: vec![],
             signal: None,
+            policy_changed: false,
         }
     }
 }
@@ -336,6 +343,11 @@ impl Item {
 pub fn preference_key(structured: Option<&Structured>) -> Option<String> {
     let st = structured.filter(|s| s.record_type == "preference")?;
     st.attrs.get("key").and_then(|k| k.as_str()).map(str::trim).filter(|k| !k.is_empty()).map(String::from)
+}
+
+/// The source records a promoted record names (`metadata.promoted_from`).
+pub(crate) fn promoted_from(m: &Memory) -> Vec<Uuid> {
+    m.metadata.get("promoted_from").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok())).collect()).unwrap_or_default()
 }
 
 /// The held signals a batch of records repeats (see [`IntakeWrite::signals`]).
@@ -580,6 +592,7 @@ impl Engine {
         // policy activated meanwhile holds for what is stored (and sent to the embedder).
         for it in items.iter_mut() {
             if it.rec.memory.provenance.policy_version.as_deref() != Some(policy.version.as_str()) {
+                it.policy_changed = true;
                 self.reredact(&policy, it).await?;
             }
         }
@@ -590,6 +603,19 @@ impl Engine {
             if !policy.allows(m.kind) {
                 m.status = MemoryStatus::Rejected;
                 it.note = Some(format!("rejected: policy {} no longer allows {} memories", policy.version, m.kind.as_str()));
+            }
+        }
+        // A promotion whose source was erased while it was queued is not written (MEM-05, GOV-07):
+        // rejected here, before any model sees its content, and checked again inside the insert.
+        for it in items.iter_mut() {
+            let sources = promoted_from(&it.rec.memory);
+            if !sources.is_empty() && it.rec.memory.status != MemoryStatus::Rejected && self.store.get_many(&p.tenant, &sources).await?.len() != sources.len() {
+                // Nothing derived from the erased source is kept, not even in a rejected row.
+                it.rec.memory.status = MemoryStatus::Rejected;
+                it.rec.memory.content = "(removed: a source of this promotion was deleted)".into();
+                it.rec.structured = None;
+                it.focus = None;
+                it.note = Some("rejected: a source of the promotion was deleted before it was written".into());
             }
         }
         self.gate_stage(&policy, p.entry, &mut items).instrument(tracing::info_span!("intake.gate")).await?;
@@ -633,10 +659,12 @@ impl Engine {
             audit = self.record_audit(&items, &p.subject);
         }
         let outcome = outcome_json(&items);
+        let generation = self.working.generation();
         let w = IntakeWrite {
             proposal: Some(p.id),
             tenant: p.tenant.clone(),
             signals: signals_of(&items),
+            requires: items.iter().filter(|i| i.rec.memory.status != MemoryStatus::Rejected).flat_map(|i| promoted_from(&i.rec.memory)).collect(),
             records: items.into_iter().map(|i| i.rec).collect(),
             supersede,
             confirm,
@@ -655,7 +683,7 @@ impl Engine {
                 let m = &r.memory;
                 if let Some(s) = m.scope.session.as_deref().filter(|_| m.kind == MemoryKind::Working) {
                     if m.status == MemoryStatus::Committed && m.supersedes.is_none() {
-                        self.working.wrote(m, s, None);
+                        self.working.wrote(generation, m, s, None);
                     } else {
                         self.working.drop_session(&m.tenant, &m.subject, s);
                     }
@@ -734,7 +762,11 @@ impl Engine {
             // "Source verified": an authenticated writer and a source label are on the record.
             let unsourced = type_gate == TypeGate::Source && (m.provenance.agent.as_deref().is_none_or(|a| a.trim().is_empty()) || m.source.trim().is_empty());
             // An inferred preference is a signal, not a statement: held until it repeats.
-            let signal = type_gate == TypeGate::Explicit && m.metadata.get("signal").and_then(|v| v.as_bool()) == Some(true) && self.cfg.intake.preference_signals > 1;
+            let signal = type_gate.holds_signals() && m.metadata.get("signal").and_then(|v| v.as_bool()) == Some(true) && self.cfg.intake.preference_signals > 1;
+            // A proposal waits for its reviewer; and under a gate that always needs one, so does
+            // anything that was not let through under the policy in force now: a proposal queued
+            // as "admit at once", or any write queued before the policy changed.
+            let reviewed = (entry == Entry::Propose && type_gate.judges_statements()) || (type_gate.needs_review() && (entry != Entry::Commit || it.policy_changed));
             m.status = if !reasons.is_empty() {
                 m.metadata["quarantine_reasons"] = json!(reasons);
                 it.note = Some(format!("quarantined: looks like an instruction to the agent ({})", reasons.join(", ")));
@@ -742,7 +774,7 @@ impl Engine {
             } else if unsourced {
                 it.note = Some(format!("rejected: {} memory needs a verified source (the writing principal and a source label)", m.kind.as_str()));
                 MemoryStatus::Rejected
-            } else if entry == Entry::Propose && type_gate.judges_statements() {
+            } else if reviewed {
                 it.note = Some("waiting for a reviewer".into());
                 MemoryStatus::Candidate
             } else if signal {
@@ -875,11 +907,24 @@ impl Engine {
                 // The same signal again, in the same scope: the held one counts it; at the
                 // threshold it is committed. The repeat itself is not stored twice.
                 if let Some(emb) = it.rec.embedding.clone() {
-                    for (held, sim) in self.store.nearest_held(tenant, subject, &emb, 3, "signal").await? {
+                    for (held, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "signal", kind: Some(m.kind), scope: &m.scope }).await? {
                         let Some(h) = self.store.get(tenant, held).await? else { continue };
-                        let open = h.expires_at.is_none_or(|t| t > Utc::now()) && h.scope == m.scope && h.kind == m.kind;
+                        // The same preference: same scope and kind, and the same key if keyed
+                        // (two keys with similar wording are two preferences).
+                        let same = h.scope == m.scope && h.kind == m.kind && h.metadata.get("pref_key") == m.metadata.get("pref_key");
+                        let open = h.expires_at.is_none_or(|t| t > Utc::now()) && same;
                         if open && sim >= icfg.confirm_threshold && !items_signalled.contains(&held) {
                             let seen = h.metadata.get("signals").and_then(|n| n.as_u64()).unwrap_or(1) as u32 + 1;
+                            // Committed by this repeat, a keyed preference replaces the value
+                            // its scope held, as a stated one would.
+                            if let Some(key) = h.metadata.get("pref_key").and_then(|k| k.as_str()).filter(|_| seen >= icfg.preference_signals) {
+                                let ids: Vec<Uuid> =
+                                    self.store.structured_query(tenant, subject, "preference", &json!({ "key": key })).await?.into_iter().map(|(id, _)| id).collect();
+                                let old = self.store.get_many(tenant, &ids).await?;
+                                supersede.extend(
+                                    old.iter().filter(|o| o.status == MemoryStatus::Committed && o.kind == h.kind && o.scope == h.scope && o.id != held).map(|o| (o.id, held)),
+                                );
+                            }
                             m.status = MemoryStatus::Rejected;
                             m.metadata["duplicate_of"] = json!(held);
                             m.metadata.as_object_mut().map(|o| o.remove("held"));
@@ -931,7 +976,7 @@ impl Engine {
                     if class == Some(Statement::Event) && m.status == MemoryStatus::Committed {
                         // Held plans only (a guess is not "done" by a similar event), unexpired, in
                         // the event's own scope.
-                        for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3, "plan").await? {
+                        for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope }).await? {
                             let Some(pm) = self.store.get(tenant, plan).await? else { continue };
                             let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope;
                             if open && sim >= icfg.confirm_threshold && classify::shares_content_word(&pm.content, &m.content) && !confirm.iter().any(|(p, _)| *p == plan) {

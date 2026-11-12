@@ -218,6 +218,17 @@ impl TypeGate {
         }
     }
 
+    /// Whether an inferred signal (`metadata.signal`) is held until it repeats: under `explicit`
+    /// and under every stricter gate, so tightening a type never drops the requirement.
+    pub fn holds_signals(&self) -> bool {
+        matches!(self, TypeGate::Explicit | TypeGate::Confirmation | TypeGate::Approval)
+    }
+
+    /// Whether a proposal waits for a reviewer whatever the admission setting.
+    pub fn needs_review(&self) -> bool {
+        self.strictness() >= 3
+    }
+
     /// Whether the statement classifier, the duplicate check and corrections apply.
     pub fn judges_statements(&self) -> bool {
         self.strictness() >= 2
@@ -761,7 +772,10 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
         let own = gov.types.of(kind).clone();
         let slot = b.types.of_mut(kind);
         if let Some(g) = t.gate {
-            if g.strictness() < own.gate.strictness() {
+            // `full` is as strict as `explicit` on statements but commits a first inferred
+            // signal, so it is not a replacement for it.
+            let drops_signals = own.gate.holds_signals() && !g.holds_signals();
+            if g.strictness() < own.gate.strictness() || drops_signals {
                 err(
                     &format!("types.{name}.gate"),
                     LOOSEN,
@@ -1482,6 +1496,7 @@ mod tests {
             ("[types.semantic]\ngate = \"source\"", "types.semantic.gate", "PR-1"),
             ("[types.episodic]\ngate = \"none\"", "types.episodic.gate", "PR-1"),
             ("[types.procedural]\ngate = \"full\"", "types.procedural.gate", "PR-1"),
+            ("[types.preference]\ngate = \"full\"", "types.preference.gate", "PR-1"),
             ("[types.taxonomic]\ngate = \"confirmation\"", "types.taxonomic.gate", "PR-1"),
             ("[types.taxonomic.access]\napprover = \"reviewer\"", "types.taxonomic.access.approver", "PR-1"),
             ("[types.working.access]\nagent_private = false", "types.working.access.agent_private", "PR-1"),

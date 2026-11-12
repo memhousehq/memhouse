@@ -380,10 +380,15 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
         format!("preferences: {} {}", prefs.status, prefs.body),
     );
     let gr = api.post("/v1/grants", json!({"grantor": "agent:gov-api", "grantee": "agent:gov-api-peer", "kinds": ["semantic"]})).await?;
-    expect(gr.status == 200 && gr.body["subjects"] == "*" && gr.body["id"].is_string(), format!("grant: {} {}", gr.status, gr.body));
+    // The fields that decide who reads whose records, and which kinds, are the ones asked for.
+    let as_asked = |g: &serde_json::Value| g["grantor"] == "agent:gov-api" && g["grantee"] == "agent:gov-api-peer" && g["kinds"] == json!(["semantic"]) && g["subjects"] == "*";
+    expect(gr.status == 200 && as_asked(&gr.body) && gr.body["id"].is_string(), format!("grant: {} {}", gr.status, gr.body));
     let grant_id = gr.body["id"].as_str().unwrap_or_default().to_string();
     let listed = api.call("GET", "/v1/grants", "/v1/grants", None, &[]).await?;
-    expect(listed.status == 200 && listed.body.as_array().is_some_and(|a| a.iter().any(|x| x["id"] == gr.body["id"])), format!("grants: {} {}", listed.status, listed.body));
+    expect(
+        listed.status == 200 && listed.body.as_array().is_some_and(|a| a.iter().any(|x| x["id"] == gr.body["id"] && as_asked(x))),
+        format!("grants: {} {}", listed.status, listed.body),
+    );
     let bad = api.post("/v1/grants", json!({"grantor": "agent:gov-api", "grantee": "agent:nobody"})).await?;
     expect(bad.status == 400, format!("grant to an unknown agent: {}", bad.status));
     let rv = api.call("DELETE", "/v1/grants/{id}", &format!("/v1/grants/{grant_id}"), None, &[]).await?;

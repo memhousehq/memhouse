@@ -982,7 +982,7 @@ which is named.
     cache. Read access only; applied within 2 seconds on other nodes; audited.
   - **Checks:** six new governance checks (53 in all), on scratch databases through the caller
     layer. `memory_types` (MEM-01, with the storage of MEM-02 and
-    MEM-03): 28 of 28 scenarios, among them a note the statement gate would hold committed as
+    MEM-03): 28 of 28 scenarios (32 after the review fixes below), among them a note the statement gate would hold committed as
     working memory, never waiting for review, quarantined when injected; its expiry moved by a
     later write in the session; first in the session's recall and absent outside it and for
     another agent; a round committed on its source and rejected without one; a 366-day-old round
@@ -1041,6 +1041,19 @@ which is named.
     announced "the filter rule stays" for G11; strict inheritance needed this one change); an
     agent's working memory is private to that agent; an agent's procedural proposals wait for
     review.
+  - **Review fixes (2026-11-12, pull request 23):** ingest takes the episodic gate like any
+    write; a revision that names a scope keeps an agent-private record the agent's, and a revised
+    session note keeps following its session; a write queued before a policy raised its type to
+    `confirmation` or `approval` waits for a reviewer; `full` is no longer accepted in place of
+    `explicit` (it would drop the signal threshold); signals repeat only under the same key and
+    scope, searched within the scope, and a keyed signal committed by its repeat supersedes the
+    old value; preferences are resolved over every page, and a replacement outside a recall's
+    tag filter takes no place; a promotion is refused for an expired source and into another
+    subject for a type kept in its author's partition, and one still queued when its source is
+    forgotten is not written (checked again, with the sources locked, inside the insert); the
+    author reads back by id what was stored in their own partition; the session cache never
+    takes in what was read before a deletion or relabel, and a recall of working memory alone
+    reaches past the cache's capacity. `memory_types` now has 32 scenarios; governance 53/53.
 - **Guard:** T2. **Depends on:** G10.
 
 #### G12 — Ranking and packing v2

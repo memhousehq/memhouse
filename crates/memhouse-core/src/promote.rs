@@ -57,6 +57,11 @@ impl Engine {
             if m.status != MemoryStatus::Committed {
                 return Err(error::conflict(format!("memory {} is {}; only committed records are promoted", m.id, m.status.as_str())));
             }
+            // Past its expiry a note is no longer recalled, whether or not retention has marked
+            // it yet: it is not given a durable copy either.
+            if m.expires_at.is_some_and(|t| t <= chrono::Utc::now()) {
+                return Err(error::conflict(format!("memory {} has expired; only live records are promoted", m.id)));
+            }
             if !m.kind.promotable_to(to) {
                 return Err(error::invalid(format!("{} memory can't be promoted to {to}", m.kind)));
             }
@@ -99,7 +104,9 @@ impl Engine {
         labels.dedup();
         let structured = match (&req.structured, sources.as_slice()) {
             (Some(s), _) => Some(s.clone()),
-            (None, [one]) => self.store.representations(&tenant, one.id).await?.0,
+            // New content that is itself a structured record replaces the source's structured
+            // form (as in `revise`); otherwise the single source's form carries over.
+            (None, [one]) if crate::classify::structured_from_content(&content).is_none() => self.store.representations(&tenant, one.id).await?.0,
             _ => None,
         };
         let mut metadata = json!({

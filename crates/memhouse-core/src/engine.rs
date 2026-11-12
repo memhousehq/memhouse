@@ -501,7 +501,7 @@ impl Engine {
             Some(st) => write_hash(format!("{}\u{1f}{}\u{1f}{}\u{1f}{}", kind.as_str(), content, st.record_type, st.attrs), &scope),
         };
         // A signal must reach the gate every time it is seen: the repeat is what commits it.
-        let signal = type_policy.gate == crate::policy::TypeGate::Explicit && metadata.get("signal").and_then(|v| v.as_bool()) == Some(true);
+        let signal = type_policy.gate.holds_signals() && metadata.get("signal").and_then(|v| v.as_bool()) == Some(true);
 
         if req.supersedes.is_none() && !signal {
             if let Some(existing) = self.store.find_by_hash(&tenant, &subject, &hash).await? {
@@ -877,7 +877,12 @@ impl Engine {
         };
         let load = async {
             match &session_first {
-                Some(s) => within(deadline, self.session_working(&tenant, &subject, s).instrument(tracing::info_span!("recall.working"))).await.map(Some),
+                Some(s) => {
+                    // A recall of working memory alone that asks for more than the cache keeps
+                    // per session reads the store, so no note is out of its reach.
+                    let more = (working_only && k > self.working.max_items()).then_some(k);
+                    within(deadline, self.session_working(&tenant, &subject, s, more).instrument(tracing::info_span!("recall.working"))).await.map(Some)
+                }
                 None => Ok(None),
             }
         };
@@ -1043,7 +1048,7 @@ impl Engine {
             let reader = crate::preference::Reader { scope: &scope, denied_labels: &ctx.denied_labels, shared_agents: &ctx.shared_agents };
             let effective = within(deadline, self.effective_preferences(&tenant, &subject, None, &reader).instrument(tracing::info_span!("recall.preferences"))).await?;
             statements += 1;
-            crate::preference::apply_overrides(&mut hits, &effective, &mut overridden);
+            crate::preference::apply_overrides(&mut hits, &effective, req.tags.as_deref(), &mut overridden);
         }
         if !session_hits.is_empty() {
             // A mixed recall keeps at least half its places for ranked memories.
@@ -1242,7 +1247,9 @@ impl Engine {
             scope: Some(req.scope.clone().unwrap_or(old.scope)),
             user: req.user.clone(),
             request_key: req.request_key.clone(),
-            expires_at: req.expires_at.or(old.expires_at),
+            // A note that follows its session keeps doing so: its expiry is the session's, set
+            // again by the write, not an expiry the revision asked for.
+            expires_at: req.expires_at.or(old.expires_at.filter(|_| old.metadata.get("ttl").and_then(|t| t.as_str()) != Some("session"))),
             structured,
             code_refs,
             wait: req.wait,
@@ -1520,24 +1527,31 @@ impl Engine {
 
     /// The committed working memory of a session, newest first, and whether it was read from the
     /// store (a cache miss: one statement) rather than the session cache.
-    pub(crate) async fn session_working(&self, tenant: &str, subject: &str, session: &str) -> anyhow::Result<(Vec<Memory>, bool)> {
+    /// `more`: the caller wants up to this many, more than the cache keeps per session; they are
+    /// read from the store and not cached.
+    pub(crate) async fn session_working(&self, tenant: &str, subject: &str, session: &str, more: Option<usize>) -> anyhow::Result<(Vec<Memory>, bool)> {
         let now = Utc::now();
-        if let Some(items) = self.working.get(tenant, subject, session, now) {
-            metrics::inc("memhouse_working_cache_total", &[("outcome", "hit")], 1.0);
-            return Ok((items, false));
+        let generation = self.working.generation();
+        if more.is_none() {
+            if let Some(items) = self.working.get(tenant, subject, session, now) {
+                metrics::inc("memhouse_working_cache_total", &[("outcome", "hit")], 1.0);
+                return Ok((items, false));
+            }
+            metrics::inc("memhouse_working_cache_total", &[("outcome", "miss")], 1.0);
         }
-        metrics::inc("memhouse_working_cache_total", &[("outcome", "miss")], 1.0);
         let q = ListQuery {
             tenant: tenant.to_string(),
             subject: Some(subject.to_string()),
             kinds: Some(vec![MemoryKind::Working]),
-            limit: self.working.max_items(),
+            limit: more.unwrap_or(self.working.max_items()),
             session: Some(session.to_string()),
             ..Default::default()
         };
         let mut items = self.store.list(&q).await?;
         items.retain(|m| m.expires_at.is_none_or(|t| t > now));
-        self.working.put(tenant, subject, session, items.clone());
+        if more.is_none() {
+            self.working.put(generation, tenant, subject, session, items.clone());
+        }
         Ok((items, true))
     }
 
@@ -1545,7 +1559,7 @@ impl Engine {
     /// take the new expiry (MEM-01: end of session plus the TTL), and the session cache shows the
     /// write at once. Failures here leave the write as it is and the cache to its next refresh.
     async fn session_wrote(&self, tenant: &str, subject: &str, session: &str, result: &RememberResult, extend_to: Option<chrono::DateTime<Utc>>, revision: bool) {
-        if result.status != MemoryStatus::Committed || result.deduplicated || revision {
+        if result.status != MemoryStatus::Committed || result.deduplicated {
             self.working.drop_session(tenant, subject, session);
             return;
         }
@@ -1554,8 +1568,14 @@ impl Engine {
                 tracing::warn!("working memory of session {session} was not extended: {e:#}");
             }
         }
+        // A revision replaced a note the cache may hold: the session reads the store again.
+        if revision {
+            self.working.drop_session(tenant, subject, session);
+            return;
+        }
+        let generation = self.working.generation();
         match self.store.get(tenant, result.id).await {
-            Ok(Some(m)) => self.working.wrote(&m, session, extend_to),
+            Ok(Some(m)) => self.working.wrote(generation, &m, session, extend_to),
             _ => self.working.drop_session(tenant, subject, session),
         }
     }

@@ -110,6 +110,7 @@ impl Caller {
         // A write still in the intake queue reads as a candidate (CORE-02).
         let m = self.engine.get_record(self.tenant(), id).await?.ok_or_else(missing)?;
         let mut req = AccessRequest::new(op).record(&m);
+        req.own_partition = self.own(&m);
         // A record of another agent that was shared with this one (INT-06) is read as shared,
         // not as a claim to that agent's scope. Reads only: a grant gives nothing else.
         let shared =
@@ -131,6 +132,12 @@ impl Caller {
             return Err(missing());
         }
         Ok((m, d))
+    }
+
+    /// A record in the caller's own partition that the caller wrote (ACC-10): the id a write
+    /// returned stays readable, revisable and forgettable by its author.
+    fn own(&self, m: &Memory) -> bool {
+        self.who.user.as_ref().is_some_and(|u| *u == m.subject && m.provenance.user.as_ref() == Some(u))
     }
 
     /// Reads by an agent also return what other agents shared with it (INT-06).
@@ -244,6 +251,12 @@ impl Caller {
             sources.push(self.visible(Operation::Promote, *id).await?.0);
         }
         let policy = self.engine.policy_for(self.tenant()).await?;
+        // ACC-10: a type kept in its author's partition is not promoted into another subject's.
+        if policy.of(kind).access.partition == Partition::Author {
+            if let Some(u) = self.who.user.as_ref().filter(|u| **u != sources[0].subject) {
+                return Err(error::invalid(format!("{kind} memory is kept in its author's partition ({u}); a promotion stays in its sources' subject, so write it with remember")));
+            }
+        }
         let mut scope = match req.scope.take() {
             Some(s) => Some(s),
             None => Some(Engine::promotion_scope(&sources)?).filter(|s| !s.is_empty()),
@@ -292,8 +305,16 @@ impl Caller {
 
     pub async fn revise(&self, mut req: ReviseRequest) -> anyhow::Result<RememberResult> {
         let (old, _) = self.visible(Operation::Revise, req.id).await?;
+        let kind = req.kind.unwrap_or(old.kind);
+        // A scope given with the revision is completed like a new write's: an agent's revision of
+        // an agent-private type stays the agent's. Without one the old scope is inherited.
+        if req.scope.is_some() {
+            let policy = self.engine.policy_for(self.tenant()).await?;
+            self.agent_private(&policy, kind, &mut req.scope);
+        }
         let mut a = AccessRequest::new(Operation::Revise).record(&old).tenant(&req.tenant);
-        a.kinds = vec![req.kind.unwrap_or(old.kind)];
+        a.own_partition = self.own(&old);
+        a.kinds = vec![kind];
         a.labels = req.labels.clone().unwrap_or(old.labels.clone());
         if let Some(s) = &req.scope {
             a.scope = Some(s.clone());
@@ -303,7 +324,6 @@ impl Caller {
         req.tenant = Some(d.tenant.clone());
         req.actor = Some(self.who.id().into());
         req.user = self.who.user.clone();
-        let kind = req.kind.unwrap_or(old.kind);
         self.engine.revise_with(req, self.entry(&d, kind).await?).await
     }
 
@@ -321,7 +341,10 @@ impl Caller {
         req.subject = Some(subject);
         req.actor = Some(self.who.id().into());
         req.user = self.who.user.clone();
-        self.engine.ingest_with(req, if d.propose_only { Entry::Propose } else { Entry::Commit }).await
+        // The episodic gate decides, like any type's: under its own gate (`source`) rounds are
+        // admitted by the engine; a tenant that raised it to confirmation or approval gets review.
+        let entry = self.entry(&d, MemoryKind::Episodic).await?;
+        self.engine.ingest_with(req, entry).await
     }
 
     pub async fn recall(&self, mut req: RecallRequest) -> anyhow::Result<RecallResult> {
@@ -422,7 +445,10 @@ impl Caller {
             ForgetScope::Record => {
                 let id = req.id.expect("named");
                 match self.visible(Operation::Forget(ForgetScope::Record), id).await {
-                    Ok((m, _)) => a = a.record(&m),
+                    Ok((m, _)) => {
+                        a.own_partition = self.own(&m);
+                        a = a.record(&m);
+                    }
                     // A keyed retry of a forget that succeeded finds the record gone: the engine
                     // answers it from the stored response (or with `not_found`).
                     Err(e) if req.request_key.is_some() && error::code_of(&e) == error::ErrorCode::NotFound => {}

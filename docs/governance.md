@@ -286,9 +286,11 @@ gives a type its own `retention_days` (`[types.semantic] retention_days = 730`).
 
 `memhouse serve` purges episodic memories (conversation rounds) older than this every hour, and
 `memhouse retention` does it on demand. Each purge writes a `retention.purge` audit event with the
-record count. A purge cascades exactly like a deletion: the rounds' cached vectors, the facts
+record count. A purge cascades like a deletion: the rounds' cached vectors, the facts
 extracted from them, their enrichment jobs and cached extractions go too, and every purged round
-gets a `retention` row in the deletion ledger. Facts you stored explicitly (`semantic`,
+gets a `retention` row in the deletion ledger. One difference: a record someone
+[promoted](memory-types.md#promotion) from a round is kept under its own type's retention when
+the round ages out; `forget` removes it with its source. Facts you stored explicitly (`semantic`,
 `preference`, …) are kept. Use `valid_to` for those that should expire.
 
 ## Audit log

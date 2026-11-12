@@ -81,8 +81,9 @@ pub struct AccessRequest {
     pub user: Option<String>,
     /// The user, agent or source a `forget` names.
     pub target: Option<String>,
-    /// A write the type's rules send to the author's own partition (ACC-10): the subject is the
-    /// verified user, who needs no subject pattern for it.
+    /// The author's own partition (ACC-10): a write the type's rules send there, or an operation
+    /// by id on a record the author wrote there. The subject is the verified user, who needs no
+    /// subject pattern for these; searching or listing the partition still needs one.
     pub own_partition: bool,
 }
 
@@ -251,7 +252,8 @@ impl Authorizer for ScopeAuthorizer {
             }
         }
         if let Some(s) = &req.subject {
-            let own = req.own_partition && op == Operation::Remember && who.user.as_ref() == Some(s);
+            let by_id = matches!(op, Operation::Remember | Operation::Get | Operation::Revise | Operation::Forget(ForgetScope::Record));
+            let own = req.own_partition && by_id && who.user.as_ref() == Some(s);
             if !own && !p.may_use_subject(s) {
                 return deny(d, "subject", format!("subject {s} is outside this principal's subjects"));
             }
@@ -362,13 +364,23 @@ mod tests {
         r.scope = Some(Scope { session: Some("s1".into()), ..Default::default() });
         assert_eq!(decide(&agent, r).await.scope.session.as_deref(), Some("s1"));
         assert!(decide(&agent, AccessRequest::new(Operation::Get).subject("customer:1")).await.scope.session.is_none());
-        // ACC-10: the author's own partition needs no subject pattern, for a redirected write only.
+        // ACC-10: the author's own partition needs no subject pattern for the redirected write
+        // and for reading its id back; searching it still does.
         let mut ana = who(PrincipalKind::User, &[perm::WRITE, perm::READ]);
         ana.user = Some("user:x".into());
         let mut r = AccessRequest::new(Operation::Remember).subject("user:x");
         assert_eq!(decide(&ana, r.clone()).await.rule, "subject");
         r.own_partition = true;
         assert!(decide(&ana, r).await.allowed);
+        for op in [Operation::Get, Operation::Revise, Operation::Forget(ForgetScope::Record)] {
+            let mut r = AccessRequest::new(op).subject("user:x");
+            r.own_partition = true;
+            let d = decide(&ana, r).await;
+            assert!(d.allowed || d.rule == "permission", "{op:?}: {}", d.rule);
+        }
+        let mut r = AccessRequest::new(Operation::List).subject("user:x");
+        r.own_partition = true;
+        assert_eq!(decide(&ana, r).await.rule, "subject");
         let mut r = AccessRequest::new(Operation::Recall).subject("user:x");
         r.own_partition = true;
         assert_eq!(decide(&ana, r).await.rule, "subject");

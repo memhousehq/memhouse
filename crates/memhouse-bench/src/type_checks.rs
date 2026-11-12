@@ -244,6 +244,22 @@ async fn memory_types(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     s.case("working: private to the agent that wrote it", !has(&other_agent, note.id) && b.get(note.id).await.is_err() && a.get(note.id).await.is_ok(), || {
         "another agent in the same session read it, or its own agent could not".into()
     });
+    // A revision that names a scope without the agent stays the agent's, and still follows its session.
+    let revised_note = a.revise(ReviseRequest { id: later.id, content: words("revised", 1), scope: session("s1"), wait: true, ..Default::default() }).await?;
+    let now_note = e.store.get(TENANT, revised_note.id).await?;
+    let kept = now_note.as_ref().is_some_and(|m| {
+        m.scope.agent.as_deref() == Some("agent:a") && m.metadata["ttl"] == "session" && m.expires_at.is_some_and(|t| ((t - chrono::Utc::now()).num_seconds() - ttl).abs() < 60)
+    });
+    s.case("working: a revision keeps its agent and its session's lifetime", revised_note.superseded == Some(later.id) && kept, || {
+        format!("{:?}", now_note.map(|m| (m.scope.agent, m.metadata["ttl"].clone(), m.expires_at)))
+    });
+    // More notes than the cache keeps per session are still all within a recall's reach.
+    let mut small_cfg = (*e.cfg).clone();
+    small_cfg.memory.working_cache_items = 2;
+    let mut all_notes = ask(subj, "anything", Some("s1"));
+    all_notes.kinds = Some(vec![MemoryKind::Working]);
+    let beyond = on(&a, &e.clone().reconfigure(small_cfg)).recall(all_notes).await?;
+    s.case("working: a recall reaches past the cache's capacity", beyond.hits.len() == 4, || format!("{} of 4 notes with a cache of 2", beyond.hits.len()));
 
     // ── Episodic: source verified, retention in days, time-filtered hybrid search. ──
     let said = |text: &str, at: Option<chrono::DateTime<chrono::Utc>>, sess: &str| IngestRequest {
@@ -340,6 +356,30 @@ async fn memory_types(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     let one = root.preferences(subj, Some("channel"), None).await?;
     s.case("preference: one value per key in a scope", phone.superseded == Some(email.id) && one.len() == 1 && one[0].memory.id == phone.id, || {
         format!("superseded {:?}; {} effective", phone.superseded, one.len())
+    });
+    // Signals are counted per key: the same words under another key are another preference.
+    let inferred = |key: &str, value: &str, text: &str| {
+        let mut r = keyed(subj, key, value, org.clone());
+        r.content = text.into();
+        r.metadata = Some(json!({ "signal": true }));
+        r
+    };
+    let editor = root.remember(inferred("theme-editor", "dark", "Prefers the dark theme")).await?;
+    let terminal = root.remember(inferred("theme-terminal", "dark", "Prefers the dark theme")).await?;
+    let counted = e.store.get(TENANT, editor.id).await?.map(|m| (m.status, m.metadata["signals"].clone()));
+    s.case(
+        "preference: a signal for another key is not a repeat",
+        editor.status == MemoryStatus::Candidate && terminal.status == MemoryStatus::Candidate && terminal.id != editor.id && counted == Some((MemoryStatus::Candidate, json!(1))),
+        || format!("first {counted:?}; second answered {} ({})", terminal.id, terminal.status.as_str()),
+    );
+    // A keyed signal that its repeat commits replaces the value the scope held.
+    let weekly = root.remember(keyed(subj, "digest", "weekly", org.clone())).await?;
+    let daily = root.remember(inferred("digest", "daily", "Preference digest: daily")).await?;
+    root.remember(inferred("digest", "daily", "Preference digest: daily")).await?;
+    let digest = root.preferences(subj, Some("digest"), None).await?;
+    let replaced = status_of(e, weekly.id).await? == Some(MemoryStatus::Superseded) && status_of(e, daily.id).await? == Some(MemoryStatus::Committed);
+    s.case("preference: a signal committed by its repeat supersedes the old value", replaced && digest.len() == 1 && digest[0].memory.id == daily.id, || {
+        format!("old value superseded and new committed: {replaced}; {} effective", digest.len())
     });
 
     // ── Procedural and taxonomic: stored as candidates until confirmed or approved. ──
@@ -667,6 +707,26 @@ async fn promotion(e: &Engine) -> Outcome {
     if waits.status != MemoryStatus::Candidate {
         problems.push(format!("an agent's promotion to procedural memory is {}", waits.status.as_str()));
     }
+    // A note past its expiry is not given a durable copy, marked expired yet or not.
+    let mut brief = write(subj, &words("lapsed", 1), MemoryKind::Working);
+    brief.scope = session("ps");
+    brief.expires_at = Some(chrono::Utc::now() + chrono::Duration::milliseconds(300));
+    let brief = p.remember(brief).await?.id;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let lapsed = p.promote(PromoteRequest { sources: vec![brief], kind: Some(MemoryKind::Semantic), wait: true, ..Default::default() }).await;
+    if !lapsed.as_ref().is_err_and(|e| is(e, ErrorCode::Conflict)) {
+        problems.push("an expired note was promoted".into());
+    }
+    // A promotion still queued when its source is forgotten is never written with its content.
+    let doomed = p.remember(write(subj, &words("doomed", 1), MemoryKind::Semantic)).await?.id;
+    let slow = on(&p, &e.clone().with_inline_intake(false));
+    let queued = slow.promote(PromoteRequest { sources: vec![doomed], kind: Some(MemoryKind::Procedural), ..Default::default() }).await?.id;
+    p.forget(ForgetRequest { id: Some(doomed), ..Default::default() }).await?;
+    e.settle_subject(None, subj, Duration::from_secs(30)).await?;
+    let outran = e.store.get(TENANT, queued).await?.is_some_and(|m| m.status != MemoryStatus::Rejected || m.content.contains("doomed"));
+    if outran {
+        problems.push("a promotion queued before its source was forgotten was stored afterwards".into());
+    }
     // Provenance can't be claimed by a plain write, and goes with its source on deletion.
     let mut forged = write(subj, &words("forged", 1), MemoryKind::Semantic);
     forged.metadata = Some(json!({ "promoted_from": [plan[2].0[0].to_string()], "note": "kept" }));
@@ -842,6 +902,16 @@ async fn partitions(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     .await?;
     if strays > 0 {
         problems.push(format!("{strays} records are in the wrong kind of partition"));
+    }
+    // The author reads back, by its id, what was stored in their own partition; nobody else does.
+    // (Entry 18 is clinician 0's own preference, written directly; entry 0 their note about a patient.)
+    if clinicians[0].get(expected[18].0).await.is_err() || clinicians[1].get(expected[18].0).await.is_ok() {
+        problems.push("the author could not read back a record of their own partition, or another clinician could".into());
+    }
+    // A type kept in the author's partition is not promoted into a patient's.
+    let misplaced = clinicians[0].promote(PromoteRequest { sources: vec![expected[0].0], kind: Some(MemoryKind::Preference), ..Default::default() }).await;
+    if !misplaced.as_ref().is_err_and(|e| is(e, ErrorCode::InvalidRequest)) {
+        problems.push("a note about a patient was promoted to a preference inside the patient's partition".into());
     }
     // The own partition is not a way around subject rules: reading it still needs the subject.
     let read = clinicians[0].recall(ask("user:dr-1", "Entry clinic", None)).await;
