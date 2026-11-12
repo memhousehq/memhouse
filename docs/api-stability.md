@@ -82,6 +82,29 @@ here so clients are ready for them:
 | G11 (1.5) | A keyed preference (`structured.record_type = "preference"` with `attrs.key`) supersedes the same key in the same scope, and recall returns the one at the narrowest scope (user over team over org). A write deduplicates only against records of its own scope. | Nothing. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
+### Recorded exception: session working memory (1.5)
+
+One change in 1.5 is not additive, and is recorded here as an exception to the rule that a
+behaviour change needs a new major version. It was approved by the maintainer on 12 November
+2026, during the review of G11.
+
+- **What changed.** Before 1.5, a recall or list that named no session also returned records
+  written with `scope.session`, of every type. From 1.5 it no longer returns `working` memory
+  written with `scope.session`. Records of every other type are returned as before.
+- **Who is affected.** A non-admin client that wrote `working` memory with `scope.session` and
+  read it back without naming the session. Admin callers and reads by id are unchanged.
+- **Why it was allowed inside v1.** Before 1.5, `working` memory had no session behaviour of its
+  own beyond its expiry: making it a session's scratchpad is what the type is for (the schema
+  document announced it for G11), and a scratchpad that leaks into other sessions' recalls is a
+  defect of that feature, not a contract worth a major version. The same change for the other
+  types would have altered what clients store durably and read back, so it was not made: it is
+  planned for the next major version (G37, in the table above).
+- **What a client does.** Send `"scope": {"session": "…"}` on the recalls that should see a
+  session's working memory.
+
+No other exception has been made. The compatibility check below compares shapes, not this kind
+of behaviour, so behaviour changes are reviewed against this section by hand.
+
 ## Deprecation
 
 A deprecated route, field or tool:
