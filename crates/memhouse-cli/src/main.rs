@@ -512,7 +512,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;
             let sources = ids.iter().map(|i| uuid::Uuid::parse_str(i)).collect::<Result<Vec<_>, _>>()?;
-            let r = eng.promote(PromoteRequest { sources, kind: Some(kind), content, reason, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
+            let r = eng.promote(PromoteRequest { sources, kind, content, reason, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Cmd::Recall { query, subject, session, k, rerank, json } => {

@@ -1291,7 +1291,7 @@ pub struct RecallExplanation {
 /// Promote memories to another type (`POST /v1/promote`, MEM-05): a new record of `kind` in the
 /// same subject, through that type's own gate, linked to its sources (`metadata.promoted_from`)
 /// and audited (`memory.promote`). The sources stay as they are.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PromoteRequest {
     #[serde(default)]
     pub tenant: Option<String>,
@@ -1299,7 +1299,7 @@ pub struct PromoteRequest {
     pub sources: Vec<Uuid>,
     /// The type of the new record: `semantic`, `preference`, `procedural` or `taxonomic`, or
     /// `episodic` for working memory.
-    pub kind: Option<MemoryKind>,
+    pub kind: MemoryKind,
     /// The promoted memory's text. Required for several sources; for one it defaults to the
     /// source's text.
     #[serde(default)]
@@ -1330,6 +1330,28 @@ pub struct PromoteRequest {
     /// Wait for the write gate, as for `remember`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wait: bool,
+}
+
+impl Default for PromoteRequest {
+    /// For struct-update syntax in Rust callers; on the wire `kind` is required.
+    fn default() -> Self {
+        PromoteRequest {
+            tenant: None,
+            sources: vec![],
+            kind: MemoryKind::Semantic,
+            content: None,
+            reason: None,
+            tags: vec![],
+            labels: vec![],
+            scope: None,
+            structured: None,
+            valid_to: None,
+            actor: None,
+            user: None,
+            request_key: None,
+            wait: false,
+        }
+    }
 }
 
 /// One agent's agent-scoped memory made readable to another agent (INT-06). Without a grant an

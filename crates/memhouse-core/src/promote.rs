@@ -87,7 +87,7 @@ impl Engine {
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let kind = req.kind.ok_or_else(|| error::invalid("promote needs the kind to promote to"))?;
+        let kind = req.kind;
         let sources = self.promotion_sources(&tenant, &req.sources, kind).await?;
         let subject = sources[0].subject.clone();
         let content = match req.content.as_deref().map(str::trim).filter(|c| !c.is_empty()) {

@@ -10,6 +10,7 @@
 use crate::engine::Engine;
 use crate::error;
 use crate::identity::PrincipalKind;
+use crate::intake::AuditEntry;
 use crate::types::*;
 use chrono::Utc;
 use serde_json::json;
@@ -93,7 +94,8 @@ impl Engine {
         self.agent_of(tenant, &req.grantor, "grantor").await?;
         self.agent_of(tenant, &req.grantee, "grantee").await?;
         let subjects = req.subjects.clone().unwrap_or_else(|| "*".into());
-        if subjects.trim().is_empty() || subjects.len() > 200 || subjects[..subjects.len() - 1].contains('*') {
+        // A `*` only as the last character (checked by characters: a subject may be any text).
+        if subjects.trim().is_empty() || subjects.chars().count() > 200 || subjects.strip_suffix('*').unwrap_or(&subjects).contains('*') {
             return Err(error::invalid("subjects is an exact subject, a prefix ending in '*', or '*'"));
         }
         if req.expires_at.is_some_and(|t| t <= Utc::now()) {
@@ -114,10 +116,10 @@ impl Engine {
             expires_at: req.expires_at,
             revoked_at: None,
         };
-        self.store.grant_put(&g).await?;
-        self.grants.clear();
         let detail = json!({ "grant": g.id, "grantor": g.grantor, "grantee": g.grantee, "subjects": g.subjects, "kinds": g.kinds, "expires_at": g.expires_at });
-        self.store.audit(by, "grant.create", tenant, None, None, detail).await?;
+        let audit = AuditEntry { actor: by.to_string(), action: "grant.create".into(), subject: None, memory_id: None, detail };
+        self.store.grant_put(&g, &audit).await?;
+        self.grants.clear();
         Ok(g)
     }
 
@@ -128,11 +130,11 @@ impl Engine {
 
     /// Revoke a grant now (audited as `grant.revoke`).
     pub async fn grant_revoke(&self, tenant: &str, id: Uuid, by: &str) -> anyhow::Result<()> {
-        if !self.store.grant_revoke(tenant, id).await? {
+        let audit = AuditEntry { actor: by.to_string(), action: "grant.revoke".into(), subject: None, memory_id: None, detail: json!({ "grant": id }) };
+        if !self.store.grant_revoke(tenant, id, &audit).await? {
             return Err(error::not_found(format!("no active grant {id}")));
         }
         self.grants.clear();
-        self.store.audit(by, "grant.revoke", tenant, None, None, json!({ "grant": id })).await?;
         Ok(())
     }
 }
@@ -179,5 +181,10 @@ mod tests {
         let other = Scope { agent: Some("agent:c".into()), ..Default::default() };
         assert!(!reader.sees(&other, MemoryKind::Semantic, &shared_keys(&[grant("*", vec![])], "customer:1", now)));
         assert!(reader.sees(&Scope::default(), MemoryKind::Semantic, &[]));
+        // A subject pattern is any text: a multi-byte one is matched, not sliced.
+        let mut accented = grant("é*", vec![]);
+        assert!(accented.covers("école") && !accented.covers("ecole"));
+        accented.subjects = "é".into();
+        assert!(accented.covers("é"));
     }
 }

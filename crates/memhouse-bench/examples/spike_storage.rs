@@ -223,14 +223,23 @@ async fn main() -> anyhow::Result<()> {
         let lit = format!("[{}]", q.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
         for (j, (_, sql)) in pg_sql.iter().enumerate() {
             let t = Instant::now();
-            let got: Vec<String> = sqlx::query_scalar(sql).bind(subject).bind(&lit).fetch_all(&pg).await?;
+            let got: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_string())).bind(subject).bind(&lit).fetch_all(&pg).await?;
             pg_stats[j].add(&truth, &got, t.elapsed().as_secs_f64() * 1e3);
         }
     }
 
     // ---- 2. SQLite + FTS5, in-process scoring ----
-    let file = std::env::temp_dir().join("memhouse-spike-lite.db");
-    let _ = std::fs::remove_file(&file);
+    // In the user's own MemHouse home, not a shared temp directory: nobody else can plant a
+    // database or a `-wal` file where this opens one (RUSTSEC-2026-0459, see deny.toml).
+    let dir = memhouse_core::config::home_dir().join("spike");
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("memhouse-spike-lite.db");
+    for stale in ["", "-wal", "-shm"] {
+        let path = dir.join(format!("memhouse-spike-lite.db{stale}"));
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+    }
     let mut db = rusqlite::Connection::open(&file)?;
     db.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;
@@ -351,6 +360,8 @@ async fn main() -> anyhow::Result<()> {
             vector_weight: 1.0,
             windows: vec![],
             scope: Default::default(),
+            include_candidates: false,
+            shared_agents: vec![],
         };
         let pgk = store.search(&sq).await?;
         let session_of: HashMap<&str, &str> = rounds.iter().map(|r| (r.id.as_str(), r.session.as_str())).collect();

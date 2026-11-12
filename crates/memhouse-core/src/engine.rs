@@ -505,18 +505,31 @@ impl Engine {
 
         if req.supersedes.is_none() && !signal {
             if let Some(existing) = self.store.find_by_hash(&tenant, &subject, &hash).await? {
-                let status = self.store.get(&tenant, existing).await?.map(|m| m.status).unwrap_or(MemoryStatus::Committed);
+                let stored = self.store.get(&tenant, existing).await?;
+                let status = stored.as_ref().map(|m| m.status).unwrap_or(MemoryStatus::Committed);
                 metrics::inc("memhouse_writes_total", &[("status", "deduplicated")], 1.0);
-                return Ok(RememberResult {
-                    id: existing,
-                    status,
-                    deduplicated: true,
-                    redactions,
-                    superseded: None,
-                    note: Some("identical memory already stored".into()),
-                    statement: None,
-                    route: None,
-                });
+                // A promotion that lands on an identical record still happened (MEM-05): its
+                // sources, kinds and labels join a record that is itself a promotion, and it is
+                // audited either way. A record someone wrote independently is left as it is.
+                let mut note = "identical memory already stored".to_string();
+                if op == Op::Promote {
+                    let sources = crate::intake::promoted_from_in(&metadata);
+                    let kinds: Vec<String> = metadata["promoted_from_kinds"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(String::from)).collect();
+                    let audit = crate::intake::AuditEntry {
+                        actor: actor.clone(),
+                        action: "memory.promote".into(),
+                        subject: Some(subject.clone()),
+                        memory_id: Some(existing),
+                        detail: serde_json::json!({ "from": metadata["promoted_from"], "from_kinds": metadata["promoted_from_kinds"], "to": kind.as_str(), "status": status.as_str(), "deduplicated": true, "reason": metadata.get("promotion_reason") }),
+                    };
+                    if self.store.promotion_merge(&tenant, existing, &sources, &kinds, &req.labels, &audit).await? {
+                        note = "identical promoted memory already stored; these sources were added to it".into();
+                    } else {
+                        self.store.audit(&audit.actor, &audit.action, &tenant, audit.subject.as_deref(), audit.memory_id, audit.detail.clone()).await?;
+                        note = "identical memory already stored independently of these sources; it was left as it is".into();
+                    }
+                }
+                return Ok(RememberResult { id: existing, status, deduplicated: true, redactions, superseded: None, note: Some(note), statement: None, route: None });
             }
         }
 

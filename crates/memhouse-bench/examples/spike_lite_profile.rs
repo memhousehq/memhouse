@@ -147,7 +147,10 @@ fn vec_of_half(b: &[u8]) -> Vec<f32> {
 }
 
 fn store_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("memhouse-spike-lite-profile").join("memhouse.db")
+    // In the user's own MemHouse home, not a shared temp directory: `build` and `run` are two
+    // processes, and nobody else can plant a database or a `-wal` file between them
+    // (RUSTSEC-2026-0459, see deny.toml).
+    memhouse_core::config::home_dir().join("spike-lite-profile").join("memhouse.db")
 }
 
 fn config() -> anyhow::Result<Config> {
@@ -169,8 +172,11 @@ fn config() -> anyhow::Result<Config> {
 async fn build() -> anyhow::Result<()> {
     let embedder = memhouse_models::build_embedder(&config()?, false)?;
     let path = store_path();
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    let dir = path.parent().expect("the store has a directory");
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    std::fs::create_dir_all(dir)?;
     let mut rng = StdRng::seed_from_u64(7);
     let db = open(&path, false)?;
     db.execute_batch(

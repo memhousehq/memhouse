@@ -2275,14 +2275,7 @@
             ]
           },
           "kind": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MemoryKind"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "$ref": "#/components/schemas/MemoryKind",
             "description": "The type of the new record: `semantic`, `preference`, `procedural` or `taxonomic`, or\n`episodic` for working memory."
           },
           "labels": {
@@ -2375,7 +2368,8 @@
           }
         },
         "required": [
-          "sources"
+          "sources",
+          "kind"
         ],
         "type": "object"
       },

@@ -184,16 +184,35 @@ pub trait Store: Send + Sync {
     }
 
     // Grants between agents (INT-06).
-    async fn grant_put(&self, _g: &Grant) -> anyhow::Result<()> {
+    /// Store a grant and its audit event in one transaction: no grant is ever active unaudited.
+    async fn grant_put(&self, _g: &Grant, _audit: &crate::intake::AuditEntry) -> anyhow::Result<()> {
         anyhow::bail!("this store has no grants")
     }
-    /// Grants of a tenant, newest first: all of them, or those given to one agent.
+    /// Grants of a tenant, newest first. For one agent (`grantee`): every grant given to it that
+    /// is active now, however many (what authorization reads). Without: the newest 1,000 in any
+    /// state (a listing).
     async fn grants(&self, _tenant: &str, _grantee: Option<&str>) -> anyhow::Result<Vec<Grant>> {
         Ok(vec![])
     }
-    /// Revoke a grant now. False if it doesn't exist or was revoked already.
-    async fn grant_revoke(&self, _tenant: &str, _id: Uuid) -> anyhow::Result<bool> {
+    /// Revoke a grant now, with its audit event in the same transaction. False, writing
+    /// nothing, if it doesn't exist or was revoked already.
+    async fn grant_revoke(&self, _tenant: &str, _id: Uuid, _audit: &crate::intake::AuditEntry) -> anyhow::Result<bool> {
         anyhow::bail!("this store has no grants")
+    }
+    /// A promotion whose text and scope equal an existing promoted record's: add its sources,
+    /// their kinds and labels to that record, with the `memory.promote` event, in one
+    /// transaction that also checks the sources are still stored. False if `id` is not a
+    /// promoted record (nothing is changed).
+    async fn promotion_merge(
+        &self,
+        _tenant: &str,
+        _id: Uuid,
+        _sources: &[Uuid],
+        _kinds: &[String],
+        _labels: &[String],
+        _audit: &crate::intake::AuditEntry,
+    ) -> anyhow::Result<bool> {
+        anyhow::bail!("this store can't merge promotions")
     }
     async fn embed_cache_get(&self, model: &str, hashes: &[String]) -> anyhow::Result<Vec<(String, Vec<f32>)>>;
     async fn embed_cache_put(&self, model: &str, items: &[(String, Vec<f32>)]) -> anyhow::Result<()>;

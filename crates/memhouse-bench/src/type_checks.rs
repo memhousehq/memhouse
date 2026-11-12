@@ -657,9 +657,8 @@ async fn promotion(e: &Engine) -> Outcome {
     }
     let mut promoted: Vec<(Uuid, Vec<Uuid>, MemoryKind)> = vec![];
     for (sources, kind, content) in &plan {
-        let r = p
-            .promote(PromoteRequest { sources: sources.clone(), kind: Some(*kind), content: content.clone(), reason: Some("bench".into()), wait: true, ..Default::default() })
-            .await?;
+        let r =
+            p.promote(PromoteRequest { sources: sources.clone(), kind: *kind, content: content.clone(), reason: Some("bench".into()), wait: true, ..Default::default() }).await?;
         if r.status != MemoryStatus::Committed || r.deduplicated || sources.contains(&r.id) {
             problems.push(format!("promotion to {kind} answered {} (deduplicated {})", r.status.as_str(), r.deduplicated));
         }
@@ -687,7 +686,7 @@ async fn promotion(e: &Engine) -> Outcome {
         problems.push(format!("a labelled source's promotion carries labels {labelled:?}"));
     }
     // What a promotion can't do.
-    let request = |sources: Vec<Uuid>, kind| PromoteRequest { sources, kind: Some(kind), content: Some(words("refused", 1)), wait: true, ..Default::default() };
+    let request = |sources: Vec<Uuid>, kind| PromoteRequest { sources, kind, content: Some(words("refused", 1)), wait: true, ..Default::default() };
     let elsewhere = p.remember(write("customer:other", &words("other", 1), MemoryKind::Semantic)).await?.id;
     let demote = p.promote(request(vec![promoted[0].0], MemoryKind::Working)).await;
     let across = p.promote(request(vec![promoted[0].0, elsewhere], MemoryKind::Procedural)).await;
@@ -703,9 +702,41 @@ async fn promotion(e: &Engine) -> Outcome {
     }
     // The gate of the target type still decides: an agent's promoted procedure waits.
     let own = q.remember(write(subj, &words("habit", 1), MemoryKind::Semantic)).await?.id;
-    let waits = q.promote(PromoteRequest { sources: vec![own], kind: Some(MemoryKind::Procedural), wait: true, ..Default::default() }).await?;
+    let waits = q.promote(PromoteRequest { sources: vec![own], kind: MemoryKind::Procedural, wait: true, ..Default::default() }).await?;
     if waits.status != MemoryStatus::Candidate {
         problems.push(format!("an agent's promotion to procedural memory is {}", waits.status.as_str()));
+    }
+    // The whole chain goes with its first source: a note promoted to a fact, the fact to a procedure.
+    let mut link = write(subj, &words("chain", 1), MemoryKind::Working);
+    link.scope = session("ps");
+    let first = p.remember(link).await?.id;
+    let second = p.promote(PromoteRequest { sources: vec![first], kind: MemoryKind::Semantic, wait: true, ..Default::default() }).await?.id;
+    let third = p.promote(PromoteRequest { sources: vec![second], kind: MemoryKind::Procedural, wait: true, ..Default::default() }).await?.id;
+    p.forget(ForgetRequest { id: Some(first), ..Default::default() }).await?;
+    if e.store.get(TENANT, second).await?.is_some() || e.store.get(TENANT, third).await?.is_some() {
+        problems.push("forgetting a source left a record promoted from its promotion".into());
+    }
+    // Two identical notes promoted to the same place are one record that names both sources.
+    let twin = |s: &str| {
+        let mut r = write(subj, &words("twin", 1), MemoryKind::Working);
+        r.scope = session(s);
+        r
+    };
+    let (one, two) = (p.remember(twin("ps")).await?.id, p.remember(twin("ps-2")).await?.id);
+    let merged = p.promote(PromoteRequest { sources: vec![one], kind: MemoryKind::Semantic, wait: true, ..Default::default() }).await?;
+    let again = p.promote(PromoteRequest { sources: vec![two], kind: MemoryKind::Semantic, labels: vec!["twin-label".into()], wait: true, ..Default::default() }).await?;
+    let both = e.store.get(TENANT, merged.id).await?;
+    let linked_both = both.as_ref().is_some_and(|m| {
+        let from = m.metadata["promoted_from"].as_array().cloned().unwrap_or_default();
+        from.contains(&json!(one.to_string())) && from.contains(&json!(two.to_string())) && m.labels.contains(&"twin-label".to_string())
+    });
+    let logged = e.store.audit_log(TENANT, 200).await?.iter().any(|ev| ev.action == "memory.promote" && ev.memory_id == Some(merged.id) && ev.detail["deduplicated"] == true);
+    if again.id != merged.id || !again.deduplicated || !linked_both || !logged {
+        problems.push(format!("a promotion onto an identical record: deduplicated {}, both sources and the label kept {linked_both}, audited {logged}", again.deduplicated));
+    }
+    p.forget(ForgetRequest { id: Some(two), ..Default::default() }).await?;
+    if e.store.get(TENANT, merged.id).await?.is_some() {
+        problems.push("forgetting the second source left the record that was promoted from it".into());
     }
     // A note past its expiry is not given a durable copy, marked expired yet or not.
     let mut brief = write(subj, &words("lapsed", 1), MemoryKind::Working);
@@ -713,14 +744,14 @@ async fn promotion(e: &Engine) -> Outcome {
     brief.expires_at = Some(chrono::Utc::now() + chrono::Duration::milliseconds(300));
     let brief = p.remember(brief).await?.id;
     tokio::time::sleep(Duration::from_millis(400)).await;
-    let lapsed = p.promote(PromoteRequest { sources: vec![brief], kind: Some(MemoryKind::Semantic), wait: true, ..Default::default() }).await;
+    let lapsed = p.promote(PromoteRequest { sources: vec![brief], kind: MemoryKind::Semantic, wait: true, ..Default::default() }).await;
     if !lapsed.as_ref().is_err_and(|e| is(e, ErrorCode::Conflict)) {
         problems.push("an expired note was promoted".into());
     }
     // A promotion still queued when its source is forgotten is never written with its content.
     let doomed = p.remember(write(subj, &words("doomed", 1), MemoryKind::Semantic)).await?.id;
     let slow = on(&p, &e.clone().with_inline_intake(false));
-    let queued = slow.promote(PromoteRequest { sources: vec![doomed], kind: Some(MemoryKind::Procedural), ..Default::default() }).await?.id;
+    let queued = slow.promote(PromoteRequest { sources: vec![doomed], kind: MemoryKind::Procedural, ..Default::default() }).await?.id;
     p.forget(ForgetRequest { id: Some(doomed), ..Default::default() }).await?;
     e.settle_subject(None, subj, Duration::from_secs(30)).await?;
     let outran = e.store.get(TENANT, queued).await?.is_some_and(|m| m.status != MemoryStatus::Rejected || m.content.contains("doomed"));
@@ -793,7 +824,7 @@ async fn agent_grants(e: &Engine) -> Outcome {
     // Read access only.
     let revise = b.revise(ReviseRequest { id: finding, content: "Overwritten by B.".into(), wait: true, ..Default::default() }).await;
     let forget = b.forget(ForgetRequest { id: Some(finding), ..Default::default() }).await;
-    let promote = b.promote(PromoteRequest { sources: vec![finding], kind: Some(MemoryKind::Procedural), ..Default::default() }).await;
+    let promote = b.promote(PromoteRequest { sources: vec![finding], kind: MemoryKind::Procedural, ..Default::default() }).await;
     let read_only = [revise.map(|_| ()), forget.map(|_| ()), promote.map(|_| ())].iter().all(|r| r.as_ref().is_err_and(|e| is(e, ErrorCode::NotFound)));
     s.case("a grant gives read access only", read_only && status_of(e, finding).await? == Some(MemoryStatus::Committed), || "B revised, forgot or promoted A's record".into());
 
@@ -909,7 +940,7 @@ async fn partitions(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         problems.push("the author could not read back a record of their own partition, or another clinician could".into());
     }
     // A type kept in the author's partition is not promoted into a patient's.
-    let misplaced = clinicians[0].promote(PromoteRequest { sources: vec![expected[0].0], kind: Some(MemoryKind::Preference), ..Default::default() }).await;
+    let misplaced = clinicians[0].promote(PromoteRequest { sources: vec![expected[0].0], kind: MemoryKind::Preference, ..Default::default() }).await;
     if !misplaced.as_ref().is_err_and(|e| is(e, ErrorCode::InvalidRequest)) {
         problems.push("a note about a patient was promoted to a preference inside the patient's partition".into());
     }

@@ -347,7 +347,12 @@ pub fn preference_key(structured: Option<&Structured>) -> Option<String> {
 
 /// The source records a promoted record names (`metadata.promoted_from`).
 pub(crate) fn promoted_from(m: &Memory) -> Vec<Uuid> {
-    m.metadata.get("promoted_from").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok())).collect()).unwrap_or_default()
+    promoted_from_in(&m.metadata)
+}
+
+/// The source ids in a record's metadata.
+pub(crate) fn promoted_from_in(metadata: &serde_json::Value) -> Vec<Uuid> {
+    metadata.get("promoted_from").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok())).collect()).unwrap_or_default()
 }
 
 /// The held signals a batch of records repeats (see [`IntakeWrite::signals`]).

@@ -177,9 +177,9 @@ curl -s $MH/v1/promote -H "authorization: Bearer $KEY" -H 'content-type: applica
 | Field | Notes |
 |---|---|
 | `sources` | 1 to 50 committed, unexpired records of one subject, which the caller can see |
-| `kind` | `semantic`, `preference`, `procedural` or `taxonomic`; `episodic` for working memory. Promotion moves towards durable memory: never into `working`, never to the same kind (that is `revise`) |
+| `kind` | required. `semantic`, `preference`, `procedural` or `taxonomic`; `episodic` for working memory. Promotion moves towards durable memory: never into `working`, never to the same kind (that is `revise`) |
 | `content` | the promoted memory's text; required for several sources, for one it defaults to the source's text |
-| `scope` | defaults to the sources' common scope without its session, so a note promoted out of a session becomes visible to the session's user |
+| `scope` | defaults to the sources' common scope without its session: the promoted memory leaves the session but keeps the sources' other levels. A note an agent wrote stays scoped to that agent (and its user), so another agent reads it only with a grant; name a broader `scope` to share it |
 | `reason`, `tags`, `labels`, `structured`, `valid_to`, `request_key`, `wait` | as for `remember`; `labels` are added to the sources' own |
 
 The promoted record is a new record. It goes through the write pipeline, so **the target type's
@@ -188,10 +188,13 @@ procedural proposal. It keeps the ids and kinds of its sources in `metadata.prom
 `metadata.promoted_from_kinds`, the union of their labels, and the earliest of their event
 times. The sources stay as they are. The insert and a `memory.promote` audit event (sources,
 kinds, target type, scope, reason) are written in one transaction. A plain `remember` can't
-claim a `promoted_from`: the key is removed.
+claim a `promoted_from`: the key is removed. A promotion whose text and scope equal an
+existing promoted record's creates no second record: its sources, kinds and labels are added to
+that record, with the `memory.promote` event, in one transaction (the answer has
+`deduplicated: true`). If the identical record was written independently, it is left as it is.
 
-Deleting a source with `forget` deletes what was promoted from it, as it deletes extracted
-facts; a promotion still in the intake queue when its source is forgotten is not written.
+Deleting a source with `forget` deletes what was promoted from it, and what was promoted from
+that in turn, as it deletes extracted facts; a promotion still in the intake queue when its source is forgotten is not written.
 Retention is different, and deliberately so: when a source ages out under its type's retention,
 the promoted record stays, under its own type's retention. That is what promotion is for (a
 fact outlives the conversation it came from), and the record's `promoted_from` then names a

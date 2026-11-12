@@ -242,7 +242,7 @@ impl Caller {
     /// Promote records to another type (MEM-05): the caller must see every source and may write
     /// the target type, with the sources' labels, at the target scope.
     pub async fn promote(&self, mut req: PromoteRequest) -> anyhow::Result<RememberResult> {
-        let kind = req.kind.ok_or_else(|| error::invalid("promote needs the kind to promote to"))?;
+        let kind = req.kind;
         if req.sources.is_empty() || req.sources.len() > crate::promote::MAX_SOURCES {
             return Err(error::invalid(format!("a promotion names 1 to {} source records", crate::promote::MAX_SOURCES)));
         }

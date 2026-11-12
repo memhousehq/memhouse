@@ -1807,11 +1807,17 @@ impl Store for PgStore {
             .bind(alt_hash)
             .execute(&mut *tx)
             .await?;
-        // Facts derived from this record and records promoted from it (MEM-05) go with it, with
-        // their cached vectors, and so does the cached extraction of every session job that read it.
+        // Facts derived from this record and records promoted from it (MEM-05) go with it, and
+        // so does everything promoted from those in turn (a note promoted to a fact, the fact to
+        // a procedure), with their cached vectors; and the cached extraction of every session
+        // job that read it.
         sqlx::query(
-            "WITH d AS (DELETE FROM mh_memory WHERE tenant = $1 AND (metadata -> 'source_ids' ? $2 \
-                 OR (metadata ? 'promoted_from' AND metadata -> 'promoted_from' ? $2)) RETURNING content) \
+            "WITH RECURSIVE dep(id) AS ( \
+               SELECT id FROM mh_memory WHERE tenant = $1 AND (metadata -> 'source_ids' ? $2 \
+                 OR (metadata ? 'promoted_from' AND metadata -> 'promoted_from' ? $2)) \
+               UNION \
+               SELECT m.id FROM dep JOIN mh_memory m ON m.tenant = $1 AND m.metadata ? 'promoted_from' AND m.metadata -> 'promoted_from' ? dep.id::text), \
+             d AS (DELETE FROM mh_memory WHERE tenant = $1 AND id IN (SELECT id FROM dep) RETURNING content) \
              DELETE FROM mh_embed_cache c USING d WHERE c.hash = encode(sha256(convert_to($3 || d.content, 'UTF8')), 'hex')",
         )
         .bind(tenant)
@@ -2628,8 +2634,9 @@ impl Store for PgStore {
         .rows_affected())
     }
 
-    async fn grant_put(&self, g: &Grant) -> anyhow::Result<()> {
+    async fn grant_put(&self, g: &Grant, audit: &memhouse_core::intake::AuditEntry) -> anyhow::Result<()> {
         let kinds: Vec<&str> = g.kinds.iter().map(|k| k.as_str()).collect();
+        let mut tx = self.pool.begin().await?;
         sqlx::query("INSERT INTO mh_grant (id, tenant, grantor, grantee, subjects, kinds, created_by, created_at, expires_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
             .bind(g.id)
             .bind(&g.tenant)
@@ -2641,15 +2648,61 @@ impl Store for PgStore {
             .bind(g.created_at)
             .bind(g.expires_at)
             .bind(g.revoked_at)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        self.audit_in(&mut tx, &g.tenant, audit).await?;
+        tx.commit().await?;
         Ok(())
+    }
+
+    async fn promotion_merge(
+        &self,
+        tenant: &str,
+        id: Uuid,
+        sources: &[Uuid],
+        kinds: &[String],
+        labels: &[String],
+        audit: &memhouse_core::intake::AuditEntry,
+    ) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        // As for a new promotion: the sources are locked, so a `forget` of one waits and then
+        // finds this record through the link added here.
+        let there: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2) FOR SHARE) s")
+            .bind(tenant)
+            .bind(sources)
+            .fetch_one(&mut *tx)
+            .await?;
+        anyhow::ensure!(there as usize == sources.len(), "a source of a promotion was deleted while it was being written");
+        let from: Vec<String> = sources.iter().map(|s| s.to_string()).collect();
+        let n = sqlx::query(
+            "UPDATE mh_memory SET metadata = metadata || jsonb_build_object( \
+               'promoted_from', (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements((metadata -> 'promoted_from') || $3::jsonb) x), \
+               'promoted_from_kinds', (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements(coalesce(metadata -> 'promoted_from_kinds', '[]'::jsonb) || $4::jsonb) x)), \
+             labels = (SELECT coalesce(array_agg(DISTINCT l ORDER BY l), '{}') FROM unnest(labels || $5::text[]) l), \
+             updated_at = greatest(now(), created_at) \
+             WHERE tenant = $1 AND id = $2 AND jsonb_typeof(metadata -> 'promoted_from') = 'array'",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(serde_json::json!(from))
+        .bind(serde_json::json!(kinds))
+        .bind(labels)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if n == 0 {
+            return Ok(false);
+        }
+        self.audit_in(&mut tx, tenant, audit).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn grants(&self, tenant: &str, grantee: Option<&str>) -> anyhow::Result<Vec<Grant>> {
         let rows = sqlx::query(
             "SELECT id, tenant, grantor, grantee, subjects, kinds, created_by, created_at, expires_at, revoked_at FROM mh_grant \
-             WHERE tenant = $1 AND ($2::text IS NULL OR grantee = $2) ORDER BY created_at DESC, id DESC LIMIT 1000",
+             WHERE tenant = $1 AND ($2::text IS NULL OR (grantee = $2 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()))) \
+             ORDER BY created_at DESC, id DESC LIMIT CASE WHEN $2::text IS NULL THEN 1000 END",
         )
         .bind(tenant)
         .bind(grantee)
@@ -2674,14 +2727,20 @@ impl Store for PgStore {
             .collect()
     }
 
-    async fn grant_revoke(&self, tenant: &str, id: Uuid) -> anyhow::Result<bool> {
-        Ok(sqlx::query("UPDATE mh_grant SET revoked_at = now() WHERE tenant = $1 AND id = $2 AND revoked_at IS NULL")
+    async fn grant_revoke(&self, tenant: &str, id: Uuid, audit: &memhouse_core::intake::AuditEntry) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let n = sqlx::query("UPDATE mh_grant SET revoked_at = now() WHERE tenant = $1 AND id = $2 AND revoked_at IS NULL")
             .bind(tenant)
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?
-            .rows_affected()
-            > 0)
+            .rows_affected();
+        if n == 0 {
+            return Ok(false);
+        }
+        self.audit_in(&mut tx, tenant, audit).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn expire_due(&self, tenant: &str) -> anyhow::Result<u64> {
