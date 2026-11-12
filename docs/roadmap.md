@@ -1064,6 +1064,9 @@ which is named.
     listing's cap; `kind` is required in `PromoteRequest`; a multi-byte subject pattern no longer
     panics; the G03 spike examples keep their databases in the user's own MemHouse home (and
     build again with their feature), which the advisory exception in `deny.toml` relies on.
+    Follow-up on erasure: forgetting a record also removes a promotion of it that is still
+    queued (gone by its id at once), and a promotion whose source is gone is stored without its
+    content on every path: rejected by policy, or set aside as poison.
     Left for the maintainer: whether a recall without `scope.session` should keep returning
     session-scoped records within API v1 (see "Changes for API 1.4 clients").
 - **Guard:** T2. **Depends on:** G10.

@@ -1356,8 +1356,19 @@ impl memhouse_core::IntakeQueue for PgStore {
                 .bind(tenant)
                 .execute(&mut *tx)
                 .await?;
+            // A promotion of this record that is still queued (or set aside with its content)
+            // goes with it (MEM-05): it is no longer readable by its id, and never written.
+            let promoted = sqlx::query(
+                "DELETE FROM mh_intake WHERE tenant = $1 AND payload IS NOT NULL \
+                 AND jsonb_path_exists(payload, '$.records[*].memory.metadata.promoted_from[*] ? (@ == $id)', jsonb_build_object('id', $2::text))",
+            )
+            .bind(tenant)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
             tx.commit().await?;
-            return Ok(n);
+            return Ok(n + promoted);
         }
         let filter = match scope {
             ForgetScope::Subject => "subject = $2",

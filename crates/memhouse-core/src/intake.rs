@@ -345,6 +345,15 @@ pub fn preference_key(structured: Option<&Structured>) -> Option<String> {
     st.attrs.get("key").and_then(|k| k.as_str()).map(str::trim).filter(|k| !k.is_empty()).map(String::from)
 }
 
+/// What a promotion's text becomes when a source of it was erased before it was written.
+pub const SOURCE_ERASED: &str = "(removed: a source of this promotion was deleted)";
+
+/// The sources that must still be stored when these records are written: those of every
+/// promotion that still carries its content, whatever its state (a rejected row is stored too).
+fn required_sources<'a>(records: impl Iterator<Item = &'a NewMemory>) -> Vec<Uuid> {
+    records.filter(|r| r.memory.content != SOURCE_ERASED).flat_map(|r| promoted_from(&r.memory)).collect()
+}
+
 /// The source records a promoted record names (`metadata.promoted_from`).
 pub(crate) fn promoted_from(m: &Memory) -> Vec<Uuid> {
     promoted_from_in(&m.metadata)
@@ -536,7 +545,12 @@ impl Engine {
                 tracing::error!("intake of {} failed (attempt {}{}): {msg}", p.id, job.attempts, if dead { ", set aside" } else { "" });
                 metrics::inc("memhouse_intake_total", &[("outcome", if dead { "dead" } else { "retry" })], 1.0);
                 if dead {
-                    let stored = self.quarantine_poison(p, &msg).await;
+                    // Once more if the insert lost a race (a promotion's source deleted meanwhile):
+                    // the second pass sees the deletion and stores the record without its content.
+                    let mut stored = self.quarantine_poison(p, &msg).await;
+                    if stored.is_err() {
+                        stored = self.quarantine_poison(p, &msg).await;
+                    }
                     if let Err(qe) = &stored {
                         tracing::error!("poison proposal {} could not be stored as quarantined: {qe:#}", p.id);
                     }
@@ -571,11 +585,38 @@ impl Engine {
             let mut rec = NewMemory::new(m, r.content_hash.clone());
             rec.structured = r.structured.clone();
             rec.code_refs = r.code_refs.clone();
+            // The erasure guarantee of a promotion holds on this path too.
+            self.without_erased_sources(&p.tenant, &mut rec).await?;
             records.push(rec);
         }
-        let w =
-            IntakeWrite { proposal: Some(p.id), tenant: p.tenant.clone(), records, audit, dead: Some(error.to_string()), outcome: json!({ "dead": true }), ..Default::default() };
+        let w = IntakeWrite {
+            proposal: Some(p.id),
+            tenant: p.tenant.clone(),
+            requires: required_sources(records.iter()),
+            records,
+            audit,
+            dead: Some(error.to_string()),
+            outcome: json!({ "dead": true }),
+            ..Default::default()
+        };
         self.store.apply_intake(&w).await
+    }
+
+    /// A promotion whose source was erased is never stored with its content (MEM-05, GOV-07),
+    /// whatever else happens to it (rejected by its gate or policy, or set aside as poison): the
+    /// record is kept as `rejected` with nothing derived from the source. Returns whether it was.
+    async fn without_erased_sources(&self, tenant: &str, rec: &mut NewMemory) -> anyhow::Result<bool> {
+        let sources = promoted_from(&rec.memory);
+        if sources.is_empty() || self.store.get_many(tenant, &sources).await?.len() == sources.len() {
+            return Ok(false);
+        }
+        rec.memory.status = MemoryStatus::Rejected;
+        rec.memory.content = SOURCE_ERASED.into();
+        rec.structured = None;
+        rec.code_refs = vec![];
+        rec.embedding = None;
+        rec.alt = None;
+        Ok(true)
     }
 
     /// Stages 4 to 7 for one proposal. Returns the outcome kept on the finished proposal.
@@ -612,13 +653,9 @@ impl Engine {
         }
         // A promotion whose source was erased while it was queued is not written (MEM-05, GOV-07):
         // rejected here, before any model sees its content, and checked again inside the insert.
+        // Also for one the policy has already rejected: a rejected row is stored too.
         for it in items.iter_mut() {
-            let sources = promoted_from(&it.rec.memory);
-            if !sources.is_empty() && it.rec.memory.status != MemoryStatus::Rejected && self.store.get_many(&p.tenant, &sources).await?.len() != sources.len() {
-                // Nothing derived from the erased source is kept, not even in a rejected row.
-                it.rec.memory.status = MemoryStatus::Rejected;
-                it.rec.memory.content = "(removed: a source of this promotion was deleted)".into();
-                it.rec.structured = None;
+            if self.without_erased_sources(&p.tenant, &mut it.rec).await? {
                 it.focus = None;
                 it.note = Some("rejected: a source of the promotion was deleted before it was written".into());
             }
@@ -669,7 +706,7 @@ impl Engine {
             proposal: Some(p.id),
             tenant: p.tenant.clone(),
             signals: signals_of(&items),
-            requires: items.iter().filter(|i| i.rec.memory.status != MemoryStatus::Rejected).flat_map(|i| promoted_from(&i.rec.memory)).collect(),
+            requires: required_sources(items.iter().map(|i| &i.rec)),
             records: items.into_iter().map(|i| i.rec).collect(),
             supersede,
             confirm,

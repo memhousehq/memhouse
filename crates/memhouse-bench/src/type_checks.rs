@@ -748,15 +748,24 @@ async fn promotion(e: &Engine) -> Outcome {
     if !lapsed.as_ref().is_err_and(|e| is(e, ErrorCode::Conflict)) {
         problems.push("an expired note was promoted".into());
     }
-    // A promotion still queued when its source is forgotten is never written with its content.
+    // A promotion still queued when its source is forgotten goes with it: gone by its id at once.
     let doomed = p.remember(write(subj, &words("doomed", 1), MemoryKind::Semantic)).await?.id;
     let slow = on(&p, &e.clone().with_inline_intake(false));
     let queued = slow.promote(PromoteRequest { sources: vec![doomed], kind: MemoryKind::Procedural, ..Default::default() }).await?.id;
+    let was_queued = e.get_record(TENANT, queued).await?.is_some();
     p.forget(ForgetRequest { id: Some(doomed), ..Default::default() }).await?;
+    if !was_queued || e.get_record(TENANT, queued).await?.is_some() {
+        problems.push(format!("a queued promotion (queued: {was_queued}) was still readable by its id after its source was forgotten"));
+    }
+    // And if the deletion gets past the queue (here: straight in the store), the pipeline
+    // stores the promotion without anything of its source.
+    let erased = |m: Option<Memory>| m.is_some_and(|m| m.status == MemoryStatus::Rejected && m.content == memhouse_core::intake::SOURCE_ERASED);
+    let raced = p.remember(write(subj, &words("raced", 1), MemoryKind::Semantic)).await?.id;
+    let late = slow.promote(PromoteRequest { sources: vec![raced], kind: MemoryKind::Procedural, ..Default::default() }).await?.id;
+    e.store.delete(TENANT, raced, "bench").await?;
     e.settle_subject(None, subj, Duration::from_secs(30)).await?;
-    let outran = e.store.get(TENANT, queued).await?.is_some_and(|m| m.status != MemoryStatus::Rejected || m.content.contains("doomed"));
-    if outran {
-        problems.push("a promotion queued before its source was forgotten was stored afterwards".into());
+    if !erased(e.store.get(TENANT, late).await?) {
+        problems.push("a promotion whose source was deleted while it was queued was stored with its content".into());
     }
     // Provenance can't be claimed by a plain write, and goes with its source on deletion.
     let mut forged = write(subj, &words("forged", 1), MemoryKind::Semantic);
@@ -769,6 +778,21 @@ async fn promotion(e: &Engine) -> Outcome {
     p.forget(ForgetRequest { id: Some(plan[3].0[0]), ..Default::default() }).await?;
     if e.store.get(TENANT, promoted[3].0).await?.is_some() {
         problems.push("a record promoted from a forgotten source is still stored".into());
+    }
+    // The same when the policy in force by then rejects the promotion's type anyway: the
+    // rejected row is stored, so it must not carry the erased source's content either.
+    // (Last in this database: it activates a policy.)
+    let banned = p.remember(write(subj, &words("banned", 1), MemoryKind::Semantic)).await?.id;
+    let refused = slow.promote(PromoteRequest { sources: vec![banned], kind: MemoryKind::Procedural, ..Default::default() }).await?.id;
+    e.store.delete(TENANT, banned, "bench").await?;
+    let spec = parse_spec(&format!(
+        "name = \"no-procedures\"\n[scope]\ntenant = \"{TENANT}\"\n[memory_types]\nallowed = [\"working\", \"episodic\", \"semantic\", \"preference\", \"commitment\", \"document\", \"taxonomic\"]"
+    ))?;
+    let version = e.policy_propose(TENANT, &spec, "admin:bench", None).await?.version;
+    e.policy_approve(TENANT, version, "admin:bench").await?;
+    e.settle_subject(None, subj, Duration::from_secs(30)).await?;
+    if !erased(e.store.get(TENANT, refused).await?) {
+        problems.push("a promotion rejected by policy after its source was deleted was stored with its content".into());
     }
     Ok(verdict(
         problems,
