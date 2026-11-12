@@ -119,8 +119,10 @@ record when every level the record names is the reader's own (MEM-04). Every rea
 the caller's own scope, which the server injects. A user sees records scoped to them and records
 that set no user, never another user's. An agent sees its own agent-scoped records, and another
 agent's only with a [grant](#grants-between-agents). A caller without a team or org sees no
-team- or org-scoped records. A recall or a list returns a session's records only when it names
-that session (`"scope": {"session": "…"}`). Admins see everything. A request can't point its
+team- or org-scoped records. A recall or a list that names a session
+(`"scope": {"session": "…"}`) returns that session's records and no other session's; one that
+names none returns no session's working memory, and, as in 1.4, the session-scoped records of
+other types. Admins see everything. A request can't point its
 scope at someone else: `{"user": "user:bob"}` from Ana is a `403`. A preference set at a narrower
 level overrides the same preference at a broader one (user over team over org). The whole model
 is in [memory-types.md](memory-types.md).

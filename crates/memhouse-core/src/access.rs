@@ -292,8 +292,9 @@ impl Authorizer for ScopeAuthorizer {
                 };
             }
         }
-        // Session-local (MEM-01, MEM-04): a search or a list returns the records of the session
-        // it names and of no other; one that names none returns no session's records. A record
+        // Session-local working memory (MEM-01): a search or a list that names no session is
+        // marked as such, and then returns no session's working memory. Records of other types
+        // scoped to a session are still returned to it, as in API 1.4 (`Scope::sees`). A record
         // read by its id is not bound to a session (its other scope levels still apply).
         if matches!(op, Operation::Recall | Operation::List) && !admin && d.scope.session.is_none() {
             d.scope.session = Some(NOBODY.to_string());
@@ -357,13 +358,19 @@ mod tests {
         r.scope = Some(Scope { user: Some("user:ana".into()), ..Default::default() });
         let d = decide(&admin, r).await;
         assert!(d.allowed && !d.propose_only && d.scope.user.as_deref() == Some("user:ana"));
-        // MEM-04: a search is bound to the session it names, or to none; an admin sees all.
+        // MEM-01: a search is marked with the session it names, or with none (then it gets no
+        // session's working memory, but other session-scoped records as before); an admin sees all.
         assert_eq!(ok.scope.session.as_deref(), Some(NOBODY));
         assert!(d.scope.session.is_none());
         let mut r = AccessRequest::new(Operation::Recall).subject("customer:1");
         r.scope = Some(Scope { session: Some("s1".into()), ..Default::default() });
         assert_eq!(decide(&agent, r).await.scope.session.as_deref(), Some("s1"));
         assert!(decide(&agent, AccessRequest::new(Operation::Get).subject("customer:1")).await.scope.session.is_none());
+        let in_session = Scope { session: Some("s1".into()), ..Default::default() };
+        let (no_session, named, other) =
+            (Scope { session: Some(NOBODY.into()), ..Default::default() }, in_session.clone(), Scope { session: Some("s2".into()), ..Default::default() });
+        assert!(no_session.sees(&in_session, MemoryKind::Semantic, &[]) && !no_session.sees(&in_session, MemoryKind::Working, &[]));
+        assert!(named.sees(&in_session, MemoryKind::Working, &[]) && !other.sees(&in_session, MemoryKind::Working, &[]) && !other.sees(&in_session, MemoryKind::Semantic, &[]));
         // ACC-10: the author's own partition needs no subject pattern for the redirected write
         // and for reading its id back; searching it still does.
         let mut ana = who(PrincipalKind::User, &[perm::WRITE, perm::READ]);

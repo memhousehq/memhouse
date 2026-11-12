@@ -84,9 +84,10 @@ curl -s $MH/v1/recall -H "authorization: Bearer $KEY" -H 'content-type: applicat
   least half of its `k` places for ranked memories. A recall of `"kinds": ["working"]` is
   answered from the session cache alone: no query embedding, no database statement (one
   statement when it asks for more notes than the cache keeps per session).
-- **Session-local.** A recall or a list returns a session's records only when it names that
-  session (this holds for every type scoped to a session, not only working memory). A record is
-  still read by its id.
+- **Session-local.** A recall or a list returns a session's working memory only when it names
+  that session. A note is still read by its id. (Records of other types scoped to a session are
+  also returned to a request that names no session, as in API 1.4; see
+  [scopes](#scopes-and-inheritance).)
 - **Private to its agent.** An agent's working memory is scoped to that agent
   (`scope.agent`); another agent in the same session reads it only with a
   [grant](#sharing-across-agents).
@@ -120,8 +121,14 @@ flowchart LR
 **Inheritance is one rule**, applied to every read: a reader sees a record when, at every
 level, the record either names nothing or names the reader's own value. So a session sees its
 own records and those of its user, agent, team, org and tenant. Nothing flows the other way: a
-user outside the session does not see the session's records, a teammate does not see another
-user's, another team does not see the team's.
+teammate does not see another user's records, another team does not see the team's, and one
+session does not see another's.
+
+One exception is kept for API v1. A recall or list that names **no** session still returns
+records scoped to a session, as it did in 1.4, unless they are working memory. Strict
+inheritance at the session level (no session, no session records) would change what a 1.x
+client gets, so it waits for the next major API version ([roadmap](roadmap.md), G37). A
+session's own preference never overrides anything outside that session.
 
 The reader's own scope is not taken from the request. The server sets the org and team from the
 principal, the agent from the authenticated agent, and the user from the verified user

@@ -408,7 +408,7 @@ impl PgStore {
     async fn search_one(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         self.ensure_current().await?;
         let p = Probe::of(q);
-        let sql = search_sql(!q.shared_agents.is_empty());
+        let sql = search_sql(Variant::of(q));
         let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
@@ -573,9 +573,33 @@ const AGENT_FILTER: &str = "    AND ($22::text IS NULL OR m.scope_agent IS NULL 
 const AGENT_FILTER_SHARED: &str = "    AND ($22::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $22\n         \
      OR (m.scope_agent || chr(31) || '*') = ANY($26::text[]) OR (m.scope_agent || chr(31) || m.kind) = ANY($26::text[]))\n";
 
-/// The filters of a recall, for a reader with (`shared`) or without grants.
-fn search_filters(shared: bool) -> String {
-    SEARCH_FILTERS.replace("{AGENT}\n", if shared { AGENT_FILTER_SHARED } else { AGENT_FILTER })
+/// The scope filter on the session level: records of the session the reader names, and
+/// unscoped ones.
+const SESSION_FILTER: &str = "    AND ($24::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $24)\n";
+/// For a reader marked as naming no session (`$24` is `access::NOBODY`): every session's
+/// records as in API 1.4, except working memory, which is session-local (MEM-01).
+const SESSION_FILTER_NONE: &str = "    AND ($24::text IS NOT NULL AND (m.scope_session IS NULL OR m.kind <> 'working'))\n";
+
+/// Which statement a recall runs: the common one, or one for a reader with grants (`shared`)
+/// and one for a reader that names no session (`no_session`).
+#[derive(Clone, Copy, Default)]
+struct Variant {
+    shared: bool,
+    no_session: bool,
+}
+
+impl Variant {
+    fn of(q: &SearchQuery) -> Variant {
+        Variant { shared: !q.shared_agents.is_empty(), no_session: q.scope.session.as_deref() == Some(memhouse_core::access::NOBODY) }
+    }
+}
+
+/// The filters of a recall. The default variant is the statement the guard's baselines were
+/// measured with.
+fn search_filters(v: Variant) -> String {
+    SEARCH_FILTERS
+        .replace("{AGENT}\n", if v.shared { AGENT_FILTER_SHARED } else { AGENT_FILTER })
+        .replace("{SESSION}\n", if v.no_session { SESSION_FILTER_NONE } else { SESSION_FILTER })
 }
 
 /// The single-statement hybrid recall (keyword + vector candidates fused by RRF, section 4.5).
@@ -590,7 +614,7 @@ const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions supersede
     AND ($21::text IS NULL OR m.scope_team IS NULL OR m.scope_team = $21)
 {AGENT}
     AND ($23::text IS NULL OR m.scope_user IS NULL OR m.scope_user = $23)
-    AND ($24::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $24)
+{SESSION}
     AND ($7::timestamptz IS NULL OR m.occurred_at IS NULL OR m.occurred_at <= $7)
     AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
       SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
@@ -599,8 +623,8 @@ const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions supersede
 
 /// The recall statement. `filtered = false` drops every filter but tenant and subject: the
 /// candidates a recall explanation classifies (why each was excluded).
-fn search_sql_with(filtered: bool, shared: bool) -> String {
-    let filters = if filtered { search_filters(shared) } else { String::new() };
+fn search_sql_with(filtered: bool, v: Variant) -> String {
+    let filters = if filtered { search_filters(v) } else { String::new() };
     format!(
         r#"
 WITH q AS (
@@ -678,14 +702,14 @@ fn forget_condition(scope: ForgetScope) -> anyhow::Result<&'static str> {
     })
 }
 
-fn search_sql(shared: bool) -> String {
-    search_sql_with(true, shared)
+fn search_sql(v: Variant) -> String {
+    search_sql_with(true, v)
 }
 
 /// Several probes of one recall as one statement (PERF-02: one round trip): each probe's search,
 /// with its own parameters, under `UNION ALL`, rows tagged with the probe's position.
-fn multi_search_sql(n: usize, shared: bool) -> String {
-    let one = search_sql(shared);
+fn multi_search_sql(n: usize, v: Variant) -> String {
+    let one = search_sql(v);
     (0..n).map(|i| format!("({})", renumber(&one, i * SEARCH_PARAMS).replace("0 AS probe", &format!("{i} AS probe")))).collect::<Vec<_>>().join("\nUNION ALL\n")
 }
 
@@ -1587,7 +1611,7 @@ impl Store for PgStore {
         let p = Probe::of(q);
         // The recall filters (status, labels, validity, scope) with the recall's own parameters,
         // then the exact match on the structured row.
-        let filters = search_filters(!q.shared_agents.is_empty());
+        let filters = search_filters(Variant::of(q));
         let sql = format!(
             "SELECT {COLS}, 1.0::float8 AS score, NULL::int AS krk, NULL::int AS vrk, NULL::float8 AS sim, 0 AS probe \
              FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id \
@@ -1641,7 +1665,8 @@ impl Store for PgStore {
         }
         self.ensure_current().await?;
         let probes: Vec<Probe> = qs.iter().map(Probe::of).collect();
-        let sql = multi_search_sql(qs.len(), qs.iter().any(|q| !q.shared_agents.is_empty()));
+        // The probes of one recall share its reader, so its variant.
+        let sql = multi_search_sql(qs.len(), qs.first().map(Variant::of).unwrap_or_default());
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for (q, p) in qs.iter().zip(&probes) {
             query = bind_search(query, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec);
@@ -1661,7 +1686,7 @@ impl Store for PgStore {
     #[tracing::instrument(name = "db.search_unfiltered", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn search_unfiltered(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         let p = Probe::of(q);
-        let sql = search_sql_with(false, false);
+        let sql = search_sql_with(false, Variant::default());
         let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
@@ -1673,7 +1698,7 @@ impl Store for PgStore {
         let use_vec = q.mode != RetrievalMode::Keyword && q.embedding.is_some();
         let tsq = if use_kw { or_query(&q.text) } else { String::new() };
         let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
-        let sql = format!("EXPLAIN (FORMAT JSON) {}", search_sql(!q.shared_agents.is_empty()));
+        let sql = format!("EXPLAIN (FORMAT JSON) {}", search_sql(Variant::of(q)));
         let row = search_query(sql, q, &tsq, kinds, use_kw, use_vec).fetch_one(&self.pool).await?;
         Ok(Some(row.try_get::<serde_json::Value, _>(0)?))
     }
@@ -1697,7 +1722,7 @@ impl Store for PgStore {
              AND ($12::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $12 \
                   OR (m.scope_agent || chr(31) || '*') = ANY($15::text[]) OR (m.scope_agent || chr(31) || m.kind) = ANY($15::text[])) \
              AND ($13::text IS NULL OR m.scope_user IS NULL OR m.scope_user = $13) \
-             AND ($14::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $14) \
+             AND ($14::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $14 OR ($14 = $17 AND m.kind <> 'working')) \
              AND ($16::text IS NULL OR m.scope_session = $16) \
              ORDER BY m.created_at DESC, m.id DESC LIMIT $5 OFFSET $6"
         ))
@@ -1717,6 +1742,7 @@ impl Store for PgStore {
         .bind(&q.scope.session)
         .bind(&q.shared_agents)
         .bind(&q.session)
+        .bind(memhouse_core::access::NOBODY)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_memory).collect()

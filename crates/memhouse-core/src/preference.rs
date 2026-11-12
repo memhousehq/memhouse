@@ -110,6 +110,9 @@ impl Engine {
             }
         }
         visible.retain(|m| m.valid_from <= now && m.valid_to.is_none_or(|t| t > now) && m.expires_at.is_none_or(|t| t > now));
+        // A session's own preference applies inside that session only: a reader outside it may
+        // still read the record (API v1), but it overrides nothing for them.
+        visible.retain(|m| m.scope.session.is_none() || m.scope.session == reader.scope.session);
         Ok(resolve(visible, key))
     }
 

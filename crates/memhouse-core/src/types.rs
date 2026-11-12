@@ -273,13 +273,19 @@ impl Scope {
     /// Scope inheritance (MEM-04), the one rule every read applies: a reader in this scope sees a
     /// record whose scope names, at every level, either nothing (the record belongs to a broader
     /// level) or the reader's own value. So a session sees its own records and those of its user,
-    /// agent, team, org and tenant; nothing flows the other way. `shared` holds the agents whose
-    /// memory was granted to the reader (INT-06), as `agent`, or `agent` for one kind.
+    /// agent, team, org and tenant. `shared` holds the agents whose memory was granted to the
+    /// reader (INT-06), as `agent`, or `agent` for one kind.
+    ///
+    /// The session level has one exception, kept for API v1: a reader that names no session
+    /// (its session is [`crate::access::NOBODY`]) still sees session-scoped records, as it did
+    /// before 1.5, except working memory, which is session-local (MEM-01). A reader that names
+    /// a session never sees another session's records.
     pub fn sees(&self, record: &Scope, kind: MemoryKind, shared: &[String]) -> bool {
         let field = |mine: &Option<String>, theirs: &Option<String>| mine.is_none() || theirs.is_none() || mine == theirs;
+        let session = field(&self.session, &record.session) || (self.session.as_deref() == Some(crate::access::NOBODY) && kind != MemoryKind::Working);
         let agent =
             field(&self.agent, &record.agent) || record.agent.as_ref().is_some_and(|a| shared.contains(&shared_key(a, None)) || shared.contains(&shared_key(a, Some(kind))));
-        field(&self.org, &record.org) && field(&self.team, &record.team) && agent && field(&self.user, &record.user) && field(&self.session, &record.session)
+        field(&self.org, &record.org) && field(&self.team, &record.team) && agent && field(&self.user, &record.user) && session
     }
 }
 

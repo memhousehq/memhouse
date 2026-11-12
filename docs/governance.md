@@ -415,9 +415,11 @@ waits for review; procedural memory proposed by an agent always waits for a revi
 memory (the organisation's terms) is committed only by an administrator. A policy may make any
 type's gate stricter, never looser ([memory-types.md](memory-types.md#the-types)).
 
-**Scopes inherit, and sessions are local (MEM-04).** A reader sees a record only when every scope
-level the record names (org, team, agent, user, session) is the reader's own, so a team's records
-are not read from another team and a session's records are not returned to a search outside it.
+**Scopes inherit, and working memory is session-local (MEM-04, MEM-01).** A reader sees a record
+only when every scope level the record names (org, team, agent, user, session) is the reader's
+own, so a team's records are not read from another team and one session's from another. A
+session's working memory is not returned to a search outside it. (Within API v1 a search that
+names no session still returns session-scoped records of the other types, as before 1.5.)
 A write is deduplicated against, and supersedes, only records of its own scope.
 
 **Agents share memory only by grant (INT-06).** A record scoped to an agent is read by that agent

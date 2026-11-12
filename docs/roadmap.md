@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 12 November 2026 |
-| Progress | 10 of 35 goals done; G11 built, its latency gate open ([goal tracker](#goal-tracker)) |
+| Progress | 10 of 36 goals done; G11 built, its latency gate open ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -285,7 +285,7 @@ flowchart LR
     subgraph G[Stage G · scale]
         G31[G31 durable log] --> G32[G32 sharding] --> G33[G33 adapters + distribution]
     end
-    H[G35 extensions]
+    H[G35 extensions] --> G37[G37 API v2 scopes]
     A --> B --> C --> D --> E --> F --> G --> H
 ```
 
@@ -298,7 +298,7 @@ flowchart LR
 | E. Governance, connectors, templates | G22–G26 | regulated-ready Standard; plugin system; template packages | T3 |
 | F. Regulated | G27–G30 | **pilot-ready**: ReBAC, decision register, enterprise security, load-tested (old G4/P0) | T3, plus T4 with approval |
 | G. Scale | G31–G33 | **general availability**: Scale profile (old G5) | T3 |
-| H. Extensions | G35 | Could requirements (old G6) | T1 |
+| H. Extensions | G35, G37 | Could requirements (old G6); strict session scopes in the next major API | T1 |
 
 Indicative pace with Claude Code doing the implementation: a goal takes one to three working
 sessions; stages A–D are about 6–8 weeks of steady work. Stages E onward have no calendar yet.
@@ -366,6 +366,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 **H. Extensions**
 
 - [ ] [G35 — Graph, code structure, prompt overrides, air-gapped](#g35--graph-code-structure-prompt-overrides-air-gapped)
+- [ ] [G37 — API v2: strict scope inheritance for sessions](#g37--api-v2-strict-scope-inheritance-for-sessions)
 
 ---
 
@@ -965,7 +966,9 @@ which is named.
     of `kinds: ["working"]` makes no database statement.
   - **Scopes** (`Scope::sees`, one rule for the recall statement, lists, reads by id and the
     cache): a reader sees a record when every level the record names is the reader's own. A
-    recall or list now returns a session's records only when it names that session. Keyed
+    recall or list returns a session's working memory only when it names that session; for the
+    other types a request that names no session still gets session-scoped records, as in API
+    1.4 (strict inheritance there is G37). Keyed
     preferences (`structured.record_type = "preference"`, `attrs.key`) have one value per key in
     a scope and resolve session, user, agent, team, org, tenant (`core/src/preference.rs`,
     `GET /v1/subjects/{subject}/preferences`); recall replaces an overridden hit and explains it
@@ -1039,11 +1042,13 @@ which is named.
     CLI surfaces but no MCP tool: the MCP tool set is the one INT-02 names. ACC-10 is met for the
     partition a write names plus the author's partition by policy; relationship checks on who
     may write about whom are G27.
-  - **Changes for API 1.4 clients** (listed in [api-stability.md](api-stability.md)): a recall or
-    list without `scope.session` no longer returns session-scoped records (the table there
-    announced "the filter rule stays" for G11; strict inheritance needed this one change); an
-    agent's working memory is private to that agent; an agent's procedural proposals wait for
-    review.
+  - **Changes for API 1.4 clients** (listed in [api-stability.md](api-stability.md)): working
+    memory in a session is session-local (a recall or list without `scope.session` no longer
+    returns it); an agent's working memory is private to that agent; an agent's procedural
+    proposals wait for review. Decided by the user on 2026-11-12, after review: strict session
+    inheritance for every type would break what a 1.x client relies on, so the first version of
+    this goal, which hid all session-scoped records from a request naming no session, was
+    narrowed to working memory, and the strict rule moved to G37.
   - **Review fixes (2026-11-12, pull request 23):** ingest takes the episodic gate like any
     write; a revision that names a scope keeps an agent-private record the agent's, and a revised
     session note keeps following its session; a write queued before a policy raised its type to
@@ -1067,8 +1072,8 @@ which is named.
     Follow-up on erasure: forgetting a record also removes a promotion of it that is still
     queued (gone by its id at once), and a promotion whose source is gone is stored without its
     content on every path: rejected by policy, or set aside as poison.
-    Left for the maintainer: whether a recall without `scope.session` should keep returning
-    session-scoped records within API v1 (see "Changes for API 1.4 clients").
+    The question the review raised about session reads within API v1 is settled above
+    ("Changes for API 1.4 clients").
 - **Guard:** T2. **Depends on:** G10.
 
 #### G12 — Ranking and packing v2
@@ -1534,6 +1539,26 @@ which is named.
 - **Done when:** each extension works when enabled and changes nothing when off (governance and the guard unchanged); the graph backend improves LoCoMo multi-hop; an air-gapped install reaches first recall with no network access.
 - **Guard:** T2 (multi-hop should improve LoCoMo multi-hop). **Depends on:** G33.
 
+#### G37 — API v2: strict scope inheritance for sessions
+
+- [ ] **Done**
+
+> `/goal In the next major API version, make scope inheritance strict at the session level: a recall or list that names no session returns no session-scoped record of any type, and a session's records are read only inside it or by id; keep API v1 behaving as it does, with both versions served side by side, and give clients a migration note. Log progress and results in docs/roadmap.md as its section 5 describes.`
+
+- **Why later:** G11 made working memory session-local and kept the 1.4 rule for the other types,
+  because the [stability policy](api-stability.md) allows no change within v1 that a correct
+  client could rely on. Strict inheritance for every type (MEM-04 read to the letter) therefore
+  needs a new major version. The engine already has both rules: `Scope::sees` and the recall
+  statement's session filter treat "no session" as its own case.
+- **Scope:** **MEM-04** (session level, all types), **QUAL-09** (versioning and deprecation).
+- **Deliverables:**
+  - [ ] the major-version mechanics the stability policy describes (`/v2/` prefix served next to `/v1/`, the MCP tool names, the OpenAPI document and its breaking-change baseline), if no earlier goal has built them
+  - [ ] the strict session rule on the v2 read paths (recall, list, preferences), chosen per request version, with v1 unchanged
+  - [ ] governance: the scope-inheritance check runs both versions (v1 as today; v2: a reader naming no session sees no session-scoped record)
+  - [ ] migration note in `docs/api-stability.md` and a deprecation schedule for the v1 behaviour
+- **Done when:** the same request answers by the 1.x rule on `/v1/` and by the strict rule on `/v2/`; the breaking-change check against the v1 baseline still passes; governance stays at 100%.
+- **Guard:** T1. **Depends on:** G35 (or the first goal that introduces API v2, whichever comes first).
+
 ---
 
 ## 8. Risks
@@ -1559,7 +1584,7 @@ current code already meets it and the named goal re-verifies it; it isn't reopen
 | Area | IDs → goal |
 |---|---|
 | Core operations | CORE-01 G05 · CORE-02 G04/G10 · CORE-03 G05 · CORE-04 G05 · CORE-05 G05 · CORE-06 G04/G05 |
-| Memory types | MEM-01 G11 · MEM-02 G19 (storage and gate G11) · MEM-03 G25 (storage and gate G11) · MEM-04 G11 · MEM-05 G11 · MEM-06 G25 |
+| Memory types | MEM-01 G11 · MEM-02 G19 (storage and gate G11) · MEM-03 G25 (storage and gate G11) · MEM-04 G11 (strict session reads for every type: G37) · MEM-05 G11 · MEM-06 G25 |
 | Hybrid retrieval | HYB-01 G10 · HYB-02 G10 · HYB-03 G10 · HYB-04 G04 · HYB-05 G12 · HYB-06 G10 · HYB-07 G35 · HYB-08 G35 |
 | Quality | QUAL-01 G10 (done, verified) · QUAL-02 G10 · QUAL-03 G13 · QUAL-04 G13 · QUAL-05 G01/G13 · QUAL-06 G25 · QUAL-07 G07 · QUAL-08 G04 · QUAL-09 G05 · QUAL-10 G13 · QUAL-11 G13 |
 | Policy | POL-01 G08 · POL-02 G24 · POL-03 G08 · POL-04 G08 · POL-05 G24 · POL-06 G24 · POL-07 G35 · POL-08 G08 |

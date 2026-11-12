@@ -602,7 +602,9 @@ async fn scope_inheritance(e: &Engine) -> Outcome {
     }
     for (reader, name, in_session, expect) in [
         (&ana, "the user in the session", Some("s1"), vec!["tenant", "org", "team", "user", "session"]),
-        (&ana, "the user outside it", None, vec!["tenant", "org", "team", "user"]),
+        // API v1 keeps the 1.4 rule for a reader that names no session: it still gets
+        // session-scoped records of durable types (only working memory is session-local).
+        (&ana, "the user naming no session", None, vec!["tenant", "org", "team", "user", "session"]),
         (&ana, "the user in another session", Some("s2"), vec!["tenant", "org", "team", "user"]),
         (&dan, "a teammate", Some("s1"), vec!["tenant", "org", "team"]),
         (&bob, "another team", None, vec!["tenant", "org"]),
