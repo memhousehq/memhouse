@@ -1022,7 +1022,9 @@ which is named.
     dependency-policy step on RUSTSEC-2026-0459 (`libsqlite3-sys 0.30.1`, an optional dependency
     of the G03 spike examples), published after G10 and not touched by this goal: the fixed
     release can't be selected while `sqlx 0.9` holds `libsqlite3-sys` below 0.38. The governance
-    baseline is now 53 checks.
+    baseline is now 53 checks. Decided by the user on 2026-11-12: the advisory is a reviewed
+    exception in `deny.toml` (the crate is in no default build, only behind the `spike` feature),
+    to be removed when sqlx allows the fixed release; the dependency-policy step passes again.
   - **Differs from the plan:** the built-in episodic retention stays "keep" (the type table says
     12 months): switching it on by default would delete stored conversations on upgrade, so it is
     a setting (`[governance] episodic_retention_days`, or a policy) and a decision moved to G22;
