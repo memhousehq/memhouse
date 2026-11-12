@@ -659,7 +659,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             Some(k) => e.store.llm_cache_get(k).await?.is_some(),
             None => false,
         };
-        let purged = e.store.purge_episodic_older_than(&tenant, 0).await?;
+        let purged = e.store.purge_older_than(&tenant, MemoryKind::Episodic, 0).await?;
         let after = list(e.clone()).await?;
         let rounds_left = after.iter().filter(|m| m.kind == MemoryKind::Episodic).count();
         let facts_left = after.iter().filter(|m| m.metadata["derived"].as_bool() == Some(true)).count();
@@ -735,6 +735,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             windows,
             scope: Default::default(),
             include_candidates: false,
+            shared_agents: vec![],
         };
         let scoped = SearchQuery { scope: Scope { team: Some("support".into()), user: Some("ana".into()), ..Default::default() }, ..probe(RetrievalMode::Hybrid, vec![], None) };
         let variants = [
@@ -836,6 +837,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 windows: vec![],
                 scope: Default::default(),
                 include_candidates: false,
+                shared_agents: vec![],
             };
             let hits = engine.store.search(&q).await?;
             let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();
@@ -1011,6 +1013,10 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // 41–47. The write pipeline: candidates, restart, poison, freshness, the statement gate,
     // exact structured recall and degradation (G10).
     checks.extend(crate::intake_checks::run(engine, run_id).await);
+
+    // 48–53. Memory types, the session cache, scope inheritance, promotion, grants between
+    // agents and partitions (G11).
+    checks.extend(crate::type_checks::run(engine).await);
 
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {

@@ -13,6 +13,11 @@
       "note": "every state, kind, provenance, scope, labels, structured, code refs, links, a second vector, a version chain"
     },
     {
+      "file": "v2-memory-types.jsonl",
+      "records": 3,
+      "note": "schema 7: a taxonomic candidate, session working memory with its scope and expiry, a record promoted from it (metadata.promoted_from)"
+    },
+    {
       "file": "v1-export.jsonl",
       "records": 4,
       "note": "format v1 (schema v1): read and upgraded"

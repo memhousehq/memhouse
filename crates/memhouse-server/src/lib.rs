@@ -220,6 +220,10 @@ pub fn router(engine: Engine) -> Router {
         .route("/v1/subjects/{subject}/memories", get(list_page))
         .route("/v1/labels", post(relabel))
         .route("/v1/review", post(review))
+        .route("/v1/promote", post(promote))
+        .route("/v1/subjects/{subject}/preferences", get(preferences))
+        .route("/v1/grants", get(grants).post(grant_create))
+        .route("/v1/grants/{id}", axum::routing::delete(grant_revoke))
         .route("/v1/tokens", post(issue_token))
         .route("/v1/whoami", get(whoami))
         .route("/v1/recalls/{id}/explanation", get(explanation))
@@ -367,6 +371,34 @@ async fn ingest(Who(c): Who, headers: HeaderMap, Body(mut req): Body<IngestReque
 
 async fn recall(Who(c): Who, Body(req): Body<RecallRequest>) -> ApiResult<RecallResult> {
     Ok(Json(c.recall(req).await?))
+}
+
+async fn promote(Who(c): Who, headers: HeaderMap, Body(mut req): Body<PromoteRequest>) -> ApiResult<RememberResult> {
+    request_key(&headers, &mut req.request_key)?;
+    Ok(Json(c.promote(req).await?))
+}
+
+#[derive(Deserialize)]
+struct PreferenceParams {
+    key: Option<String>,
+    session: Option<String>,
+}
+
+async fn preferences(Who(c): Who, PathParam(subject): PathParam<String>, QueryParams(p): QueryParams<PreferenceParams>) -> ApiResult<Vec<EffectivePreference>> {
+    Ok(Json(c.preferences(&subject, p.key.as_deref(), p.session).await?))
+}
+
+async fn grants(Who(c): Who) -> ApiResult<Vec<Grant>> {
+    Ok(Json(c.grants().await?))
+}
+
+async fn grant_create(Who(c): Who, Body(req): Body<GrantRequest>) -> ApiResult<Grant> {
+    Ok(Json(c.grant_create(&req).await?))
+}
+
+async fn grant_revoke(Who(c): Who, PathParam(id): PathParam<Uuid>) -> ApiResult<openapi::GrantRevoked> {
+    c.grant_revoke(id).await?;
+    Ok(Json(openapi::GrantRevoked { revoked: id }))
 }
 
 async fn relabel(Who(c): Who, Body(req): Body<RelabelRequest>) -> ApiResult<Memory> {

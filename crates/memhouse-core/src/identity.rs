@@ -42,7 +42,9 @@ pub mod perm {
     pub const POLICY_PROPOSE: &str = "policy:propose";
     /// Approve a proposed spec, or roll back to an earlier one.
     pub const POLICY_APPROVE: &str = "policy:approve";
-    pub const ALL: [&str; 12] = [READ, WRITE, FORGET, ERASE, LABEL, REVIEW, TOKEN, OPS, AUDIT, POLICY_READ, POLICY_PROPOSE, POLICY_APPROVE];
+    /// Create, list and revoke grants between agents (INT-06).
+    pub const GRANT: &str = "grant:manage";
+    pub const ALL: [&str; 13] = [READ, WRITE, FORGET, ERASE, LABEL, REVIEW, TOKEN, OPS, AUDIT, POLICY_READ, POLICY_PROPOSE, POLICY_APPROVE, GRANT];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

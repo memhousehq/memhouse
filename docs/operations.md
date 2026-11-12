@@ -641,6 +641,9 @@ like the memories themselves.
 | `403 forbidden` | The credential is valid but may not do this: the message says which rule (permission, tenant, subject, label, user, scope). `GET /v1/whoami` shows what the key may do. |
 | An agent says "MEMHOUSE_MCP_KEY was refused" or "needs the agent's key" | Run `memhouse connect <agent>` again: it creates the agent's principal and a fresh key and writes it into the agent's MCP config. |
 | An agent's memories stay `candidate` | `[access] admission = "review"`: commit them with `POST /v1/review`, or grant the agent direct commits with `memhouse principal add agent:<name> --commit`. |
+| An agent's procedures or the organisation's terms stay `candidate` | By design ([memory types](memory-types.md#the-types)): `procedural` memory proposed by an agent waits for `POST /v1/review`, `taxonomic` memory for an admin's review. |
+| An agent can't see another agent's notes | Working memory is private to the agent that wrote it, and so is any record with `scope.agent`. Share it with `memhouse grant add <grantor> <grantee>`. |
+| A recall no longer returns records written with `scope.session` | From API 1.5 a recall or list returns a session's records only when it names that session: send `"scope": {"session": "…"}`. |
 | `cannot listen on 127.0.0.1:7077` | The port is in use. Set `--bind` or `MEMHOUSE_BIND`. |
 | The model download hangs or fails | It needs `huggingface.co` once (or a mirror in `HF_ENDPOINT`). Pre-seed `cache_dir` from a machine that has access for air-gapped installs. |
 | `invalid peer certificate: UnknownIssuer` | The operating system has no CA certificates (install `ca-certificates`), or a proxy re-signs TLS: add its CA to the system store. |

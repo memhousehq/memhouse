@@ -10,7 +10,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{json, Map, Value};
 
 /// The API version, separate from the crate version. Minor and patch releases only add.
-pub const API_VERSION: &str = "1.4.0";
+pub const API_VERSION: &str = "1.5.0";
 
 /// Routes kept from before v1, with the route that replaces each. They answer as before and add
 /// `Deprecation`, `Sunset` and `Link` headers; they are removed no earlier than [`SUNSET`].
@@ -55,6 +55,12 @@ pub struct LegacyDeleted {
     pub deleted: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
+}
+
+/// The answer to `DELETE /v1/grants/{id}`.
+#[derive(serde::Serialize, JsonSchema)]
+pub struct GrantRevoked {
+    pub revoked: uuid::Uuid,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -124,6 +130,12 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
     let token_req = s(g.subschema_for::<TokenRequest>());
     let token_res = s(g.subschema_for::<memhouse_core::identity::TokenResponse>());
     let whoami = s(g.subschema_for::<WhoAmI>());
+    let promote_req = s(g.subschema_for::<PromoteRequest>());
+    let preferences = s(g.subschema_for::<Vec<EffectivePreference>>());
+    let grant = s(g.subschema_for::<Grant>());
+    let grant_list = s(g.subschema_for::<Vec<Grant>>());
+    let grant_req = s(g.subschema_for::<GrantRequest>());
+    let grant_revoked = s(g.subschema_for::<GrantRevoked>());
     let explanation = s(g.subschema_for::<RecallExplanation>());
     use memhouse_core::policy as pol;
     let policy_status = s(g.subschema_for::<pol::PolicyStatus>());
@@ -270,7 +282,7 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             path: "/v1/review",
             id: "review",
             summary: "Commit or reject a candidate",
-            description: "For proposals that wait for review (`access.admission = \"review\"`). Needs `memory:review`. A revision whose predecessor is no longer current is rejected instead of committed.",
+            description: "For proposals that wait for review: every agent proposal where `access.admission = \"review\"`, and always procedural memory proposed by an agent and taxonomic memory proposed by anyone but an administrator. Needs `memory:review`; taxonomic memory also needs an admin principal. A revision whose predecessor is no longer current is rejected instead of committed.",
             tag: "memory",
             stability: Stable,
             body: Some(review_req),
@@ -278,6 +290,85 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             params: vec![],
             idempotent: false,
             errors: &[400, 401, 404, 409, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/promote",
+            id: "promote",
+            summary: "Promote memories to another type",
+            description: "Writes a new record of `kind` in the sources' subject, through that type's own gate, and answers like `remember`. The new record names its sources in `metadata.promoted_from` and keeps their labels; the sources stay as they are. Audited as `memory.promote` (MEM-05). Working memory may become any durable type; nothing is promoted into working memory. Deleting a source also deletes what was promoted from it. Needs `memory:write` and sight of every source.",
+            tag: "memory",
+            stability: Stable,
+            body: Some(promote_req),
+            ok: remember_res.clone(),
+            params: vec![],
+            idempotent: true,
+            errors: &[400, 401, 404, 409, 500, 503],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/subjects/{subject}/preferences",
+            id: "preferences",
+            summary: "The preferences that apply to the caller",
+            description: "Scope-ordered lookup (MEM-04). For each preference key (`structured.attrs.key` of a `preference` record) the one set at the narrowest scope the caller is in: session, then user, agent, team, org, tenant; `overrides` lists the broader ones it replaces. Preferences without a key are listed as they are. Needs `memory:read`.",
+            tag: "memory",
+            stability: Stable,
+            body: None,
+            ok: preferences,
+            params: vec![
+                path_param("subject", "Whose preferences."),
+                query_param("key", "Only this preference key.", json!({"type": "string"})),
+                query_param("session", "Also the preferences set in this session.", json!({"type": "string"})),
+            ],
+            idempotent: false,
+            errors: &[400, 401, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/grants",
+            id: "listGrants",
+            summary: "Grants between agents",
+            description: "Every grant of the tenant, newest first, revoked and expired ones included (INT-06). Needs `grant:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: None,
+            ok: grant_list,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/grants",
+            id: "createGrant",
+            summary: "Share one agent's memory with another",
+            description: "Records scoped to an agent (`scope.agent`; working memory always is) are read by that agent only. A grant lets `grantee` read `grantor`'s agent-scoped records in the subjects and kinds it names, until it expires or is revoked; it gives no right to revise, forget or promote them. Applies within 2 seconds on every node. Audited as `grant.create`. Needs `grant:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: Some(grant_req),
+            ok: grant,
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 500],
+            open: false,
+        },
+        Op {
+            method: "delete",
+            path: "/v1/grants/{id}",
+            id: "revokeGrant",
+            summary: "Revoke a grant",
+            description: "The grantee stops reading the grantor's agent-scoped records within 2 seconds. Audited as `grant.revoke`. Needs `grant:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: None,
+            ok: grant_revoked,
+            params: vec![path_param("id", "The grant's id.")],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
             open: false,
         },
         Op {

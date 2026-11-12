@@ -70,6 +70,10 @@ pub struct IntakeConfig {
     /// Cosine similarity at or above which a completed event confirms a held plan (they must
     /// also share a content word and the scope; speculation is never confirmed).
     pub confirm_threshold: f32,
+    /// Times an inferred preference (a write with `metadata.signal`) must be seen before it is
+    /// committed (MEM-01: "explicit statement or repeated signal"). A repeat is the same signal
+    /// in the same scope, at or above `confirm_threshold`.
+    pub preference_signals: u32,
 }
 
 impl Default for IntakeConfig {
@@ -85,6 +89,7 @@ impl Default for IntakeConfig {
             plan_ttl_days: 90,
             correction_threshold: 0.8,
             confirm_threshold: 0.9,
+            preference_signals: 2,
         }
     }
 }
@@ -359,6 +364,14 @@ pub struct MemoryConfig {
     /// Retrieval that fails or takes longer than this (milliseconds) answers with an empty
     /// result flagged `degraded` instead of an error (PERF-07). 0 waits as long as it takes.
     pub recall_timeout_ms: u64,
+    /// Seconds a session's working memory is served from the in-process cache before it is read
+    /// from the store again (PERF-05). Writes and deletions made through this process show at
+    /// once; those made through another process show within this time. 0 turns the cache off.
+    pub working_cache_secs: u64,
+    /// Sessions kept in the working-memory cache; the least recently used is evicted.
+    pub working_cache_sessions: usize,
+    /// Working-memory records kept per session, newest first; older ones are found by search.
+    pub working_cache_items: usize,
 }
 
 impl Default for MemoryConfig {
@@ -383,6 +396,9 @@ impl Default for MemoryConfig {
             subquery_weight: 0.0,
             template: None,
             recall_timeout_ms: 450,
+            working_cache_secs: 5,
+            working_cache_sessions: 1000,
+            working_cache_items: 50,
         }
     }
 }

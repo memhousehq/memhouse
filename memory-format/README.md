@@ -9,6 +9,7 @@ the code so it can move to a repository of its own (RP-06).
 |---|---|
 | `vectors/v2-minimal.jsonl` | the smallest valid file |
 | `vectors/v2-full.jsonl` | every kind and state, provenance, scope, labels, a version chain, a second vector, a structured record, code references, links and a policy |
+| `vectors/v2-memory-types.jsonl` | schema 7: a `taxonomic` candidate, a session's working memory with its scope and expiry, and a record promoted from it |
 | `vectors/v1-export.jsonl` | a version 1 file, read and upgraded |
 | `vectors/invalid-*.jsonl` | one broken rule each |
 | `vectors/manifest.json` | the expected outcome of every file |

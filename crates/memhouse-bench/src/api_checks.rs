@@ -41,6 +41,7 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
         cfg.governance.audit_reads = false;
         let e = e.reconfigure(cfg);
         e.store.principal_put(&memhouse_core::identity::Principal::new("agent:gov-api", "default", memhouse_core::identity::PrincipalKind::Agent, "bench")).await?;
+        e.store.principal_put(&memhouse_core::identity::Principal::new("agent:gov-api-peer", "default", memhouse_core::identity::PrincipalKind::Agent, "bench")).await?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base_url = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(memhouse_server::serve_listener(listener, e.clone()));
@@ -348,6 +349,50 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     expect(r.status == 409, format!("review of a committed record: {}", r.status));
     let r = api.post("/v1/review", json!({"id": a_id, "action": "approve"})).await?;
     expect(r.status == 400, format!("review with an unknown action: {}", r.status));
+
+    // Memory types (G11, API 1.5): promotion, scope-ordered preferences, grants between agents.
+    let types = "gov:api-types";
+    let src = api.post("/v1/remember", json!({"subject": types, "content": "Check the staging dashboard before every deploy", "wait": true})).await?;
+    let src_id = src.body["id"].as_str().unwrap_or_default().to_string();
+    let p = api.post("/v1/promote", json!({"sources": [src_id], "kind": "procedural", "reason": "contract check", "wait": true})).await?;
+    expect(p.status == 200 && p.body["status"] == "committed" && p.body["id"] != src.body["id"], format!("promote: {} {}", p.status, p.body));
+    let promoted = p.body["id"].as_str().unwrap_or_default().to_string();
+    let g = api.call("GET", "/v1/memories/{id}", &format!("/v1/memories/{promoted}"), None, &[]).await?;
+    expect(g.body["kind"] == "procedural" && g.body["metadata"]["promoted_from"] == json!([src_id]), format!("promoted record: {}", g.body));
+    for (bad, why, status) in [
+        (json!({"sources": [src_id], "kind": "working"}), "into working memory", 400),
+        (json!({"sources": [], "kind": "semantic"}), "of nothing", 400),
+        (json!({"sources": [uuid::Uuid::now_v7()], "kind": "semantic"}), "of a missing record", 404),
+    ] {
+        let r = api.post("/v1/promote", bad).await?;
+        expect(r.status == status, format!("promote {why}: {} (expected {status})", r.status));
+    }
+    for (value, scope) in [("formal", json!({"org": "acme"})), ("casual", json!({"org": "acme", "team": "sales"}))] {
+        let body = json!({"subject": types, "kind": "preference", "content": format!("Tone of replies: {value}"), "scope": scope, "wait": true,
+            "structured": {"record_type": "preference", "attrs": {"key": "tone", "value": value}}});
+        let r = api.post("/v1/remember", body).await?;
+        expect(r.status == 200 && r.body["status"] == "committed", format!("keyed preference: {} {}", r.status, r.body));
+    }
+    let prefs = api.call("GET", "/v1/subjects/{subject}/preferences", &format!("/v1/subjects/{types}/preferences?key=tone"), None, &[]).await?;
+    let one = prefs.body.as_array().map(|a| a.len()) == Some(1);
+    expect(
+        prefs.status == 200 && one && prefs.body[0]["level"] == "team" && prefs.body[0]["overrides"].as_array().map(|o| o.len()) == Some(1),
+        format!("preferences: {} {}", prefs.status, prefs.body),
+    );
+    let gr = api.post("/v1/grants", json!({"grantor": "agent:gov-api", "grantee": "agent:gov-api-peer", "kinds": ["semantic"]})).await?;
+    expect(gr.status == 200 && gr.body["subjects"] == "*" && gr.body["id"].is_string(), format!("grant: {} {}", gr.status, gr.body));
+    let grant_id = gr.body["id"].as_str().unwrap_or_default().to_string();
+    let listed = api.call("GET", "/v1/grants", "/v1/grants", None, &[]).await?;
+    expect(listed.status == 200 && listed.body.as_array().is_some_and(|a| a.iter().any(|x| x["id"] == gr.body["id"])), format!("grants: {} {}", listed.status, listed.body));
+    let bad = api.post("/v1/grants", json!({"grantor": "agent:gov-api", "grantee": "agent:nobody"})).await?;
+    expect(bad.status == 400, format!("grant to an unknown agent: {}", bad.status));
+    let rv = api.call("DELETE", "/v1/grants/{id}", &format!("/v1/grants/{grant_id}"), None, &[]).await?;
+    expect(rv.status == 200 && rv.body["revoked"] == gr.body["id"], format!("revoke: {} {}", rv.status, rv.body));
+    let rv = api.call("DELETE", "/v1/grants/{id}", &format!("/v1/grants/{grant_id}"), None, &[]).await?;
+    expect(rv.status == 404, format!("revoke twice: {}", rv.status));
+    // Leave nothing behind for the checks that count this database's records.
+    let gone = api.post("/v1/forget", json!({"subject": types})).await?;
+    expect(gone.status == 200 && gone.body["deleted"].as_u64().is_some_and(|n| n >= 4), format!("forget {types}: {} {}", gone.status, gone.body));
 
     // Policies (G08): validate, propose, diff, approve and roll back; refusals.
     let spec = json!({"name": "api-check", "scope": {"tenant": "default"}, "recall": {"denied_labels": ["api-check-only"]}});

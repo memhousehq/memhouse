@@ -22,7 +22,7 @@ That's the whole setup. There are no API keys to obtain and no cloud account. Em
 |---|---|
 | **Easy** | One binary. `memhouse up` starts a managed Postgres in Docker, writes `~/.memhouse/config.toml`, downloads a small local embedding model and migrates the schema (about 15 seconds on a laptop). `memhouse connect <agent>` writes the agent's MCP config and verifies a real recall through it. |
 | **Governed** | Every write passes a deterministic write gate: secrets, card numbers, SSNs and IBANs are redacted before storage. Prompt-injection attempts are quarantined, never recalled. Writes, updates and deletions go into a hash-chained, tamper-evident audit log. Deletion removes the record, its cached embedding and every recall path, and is recorded in a deletion ledger. |
-| **Measurable** | `memhouse bench` runs LongMemEval and LoCoMo through the same engine your agents use, plus 47 governance checks. It reports confidence intervals, latency percentiles and published reference results side by side. |
+| **Measurable** | `memhouse bench` runs LongMemEval and LoCoMo through the same engine your agents use, plus 53 governance checks. It reports confidence intervals, latency percentiles and published reference results side by side. |
 | **Yours** | Plain Postgres (16+) with pgvector. Point it at your own database with `memhouse init --database-url ...`. Export everything as JSONL at any time. |
 | **Made for customer-facing teams** | Templates for `support`, `sales` and `success` (plus `coding` and `personal`) set how subjects are named, what gets remembered and how the agent is instructed. |
 
@@ -92,6 +92,9 @@ API v1 ([reference](docs/api.md), OpenAPI 3.1 at `/v1/openapi.json`, [stability 
 | GET | `/v1/memories/{id}` | one memory and its state |
 | GET | `/v1/subjects/{subject}/memories` | list, keyset-paged |
 | GET | `/v1/subjects`, `/v1/stats`, `/v1/audit` | browse and operate (preview) |
+| POST | `/v1/promote` | promote memories to another type (a working note to a fact), linked to its sources and audited |
+| GET | `/v1/subjects/{subject}/preferences` | the preferences that apply to the caller: user over team over org |
+| GET, POST, DELETE | `/v1/grants`, `/v1/grants/{id}` | let one agent read another agent's own memory ([memory types](docs/memory-types.md)) |
 | GET, POST | `/v1/policies`, `…/validate`, `…/diff`, `…/{version}/approve`, `…/rollback` | behaviour policy: propose, approve, roll back ([policies](docs/policy.md)) |
 | POST | `/mcp` | MCP over streamable HTTP |
 
@@ -132,7 +135,8 @@ agent ──MCP/REST──▶ memhouse (Rust)
 - **Two vectors per conversation round:** the whole round, and the user's own words alone, so a
   fact mentioned in passing is not drowned out by a long assistant reply. Keyword search is BM25.
 
-- **Memory kinds:** `episodic` (conversation rounds), `semantic`, `preference`, `procedural`, `commitment`, `document`.
+- **Memory kinds:** `working` (a session's scratchpad), `episodic` (conversation rounds), `semantic`, `preference`, `procedural`, `taxonomic`, `commitment`, `document`. Each type has its own write gate, retention, retrieval method and access rules ([memory types](docs/memory-types.md)).
+- **Scopes** narrow a memory inside its subject (org, team, agent, user, session) and inherit from broad to narrow: a session sees its user's, team's and organisation's memories, never the other way round.
 - **Subjects** partition memory (a user, customer, account or repository). Recall never crosses subjects or tenants. The governance suite checks this on every run.
 - **Time:** every record has an event time (`occurred_at`) and a validity window. `as_of` recall answers "what did we know then"; expired memories drop out of recall automatically.
 - **Supersession:** `revise` replaces a fact without losing history; as-of recall still finds the old version for the time it was true.

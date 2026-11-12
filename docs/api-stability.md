@@ -6,13 +6,15 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.4.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.5.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
 `forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
 (preview); 1.3 added the policy operations under `/v1/policies`; 1.4 made admission asynchronous
 (`remember`, `revise` and `ingest` answer once the write is queued, `wait` to answer after the gate)
 and added `include_candidates`, `exact`, `degraded`, `statement`, `route`, `queued` and the
-`unavailable` error code. Its contract is [`api/openapi.json`](../api/openapi.json), served at
+`unavailable` error code; 1.5 added memory types (`taxonomic`, `POST /v1/promote`,
+`GET /v1/subjects/{subject}/preferences`, `/v1/grants`, `working` on a hit, `scope` in
+`/v1/whoami`, the `overridden` exclusion reason and the `grant:manage` permission). Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -73,7 +75,10 @@ here so clients are ready for them:
 | G06 (done, 1.1) | API keys belong to principals; the authenticated principal sets the actor, `tenant` and the scope filter. A body naming another tenant or user is refused (`403 forbidden`). | Send `tenant` and `user` only if you mean them; handle `403`. |
 | G06 (done, 1.1) | Agents' writes are proposals: committed by the engine at once by default, or `candidate` until reviewed with `admission = "review"`. | Don't assume `status: committed` after `remember`. |
 | G10 (done, 1.4) | Admission is asynchronous: `remember` returns `status: candidate` and the record becomes `committed`, `quarantined` or `rejected` shortly after, or stays `candidate` (a plan or speculation). | Read the state with `GET /v1/memories/{id}` when it matters, or send `wait: true`. Retry `503 unavailable` with the same `request_key`. |
-| G11 | Scopes are resolved by precedence in ranking (user over team over org). | Nothing: the filter rule stays. |
+| G11 (done, 1.5) | Scopes inherit strictly: a recall or a list returns records scoped to a session only when it names that session (before, a request naming no session also returned them). | Send `scope.session` on recalls that should see a session's records. Reads by id are unchanged. |
+| G11 (done, 1.5) | An agent's `working` memory is scoped to that agent; other agents read it only with a grant. | Create a grant (`POST /v1/grants`) where agents share a scratchpad. |
+| G11 (done, 1.5) | `procedural` memory proposed by an agent without a commit grant stays `candidate` until reviewed, also with `admission = "auto"`. `working` memory is committed without the statement gate and without review. | Review procedural proposals (`POST /v1/review`), or give the agent a commit grant. |
+| G11 (done, 1.5) | A keyed preference (`structured.record_type = "preference"` with `attrs.key`) supersedes the same key in the same scope, and recall returns the one at the narrowest scope (user over team over org). A write deduplicates only against records of its own scope. | Nothing. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ## Deprecation

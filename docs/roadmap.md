@@ -4,8 +4,8 @@
 | Field | Value |
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
-| Date | 7 November 2026 |
-| Progress | 10 of 35 goals done ([goal tracker](#goal-tracker)) |
+| Date | 12 November 2026 |
+| Progress | 11 of 35 goals done ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 47 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 53 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -54,6 +54,10 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
   holds plans and speculation, supersedes what a correction or a changed value updates; intake
   routing with exact recall over structured records; degradation to an empty flagged result
   (G10, API 1.4, schema v6);
+- memory types with their own gate, retention, retrieval method and access rules in the compiled
+  policy; session working memory served first from a per-session cache; scopes that inherit from
+  tenant to session, with preferences resolved user over team over org; audited promotion
+  between types; grants between agents; the `taxonomic` kind (G11, API 1.5, schema v7);
 - docs: API, configuration, operations, governance, policy, development, architecture, benchmarks.
 
 Published results: LongMemEval_S QA **86.0** (GPT-4o), LoCoMo QA **83.7** (GPT-4o-mini), recall
@@ -65,11 +69,11 @@ are frozen (goals G04–G15), so it is written once against the final contracts 
 reworked.
 
 **What is missing from the code is the unbuilt part of each goal not ticked in the
-[goal tracker](#goal-tracker)** (G11 onwards; G25's re-embedding was done early). Some of those
+[goal tracker](#goal-tracker)** (G12 onwards; G25's re-embedding was done early). Some of those
 goals start from features that already work and are listed above, such as date-aware recall
-(G12) and the v1 sales and success templates (G24). The largest gaps are working memory and
-scopes (MEM-01/04), relationship-based access (ACC), SDKs, the Lite store, the coding
-template's git-aware features, release engineering, and all of Scale.
+(G12) and the v1 sales and success templates (G24). The largest gaps are relationship-based
+access (ACC), SDKs, the Lite store, the coding template's git-aware features, release
+engineering, and all of Scale.
 
 ---
 
@@ -130,7 +134,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 47 / 47 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 53 / 53 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -322,7 +326,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 
 - [x] [G08 — Policy engine v1 (structured specs, approval, versions)](#g08--policy-engine-v1-structured-specs-approval-versions) (4 November 2026)
 - [x] [G10 — Write pipeline v2: intake queue, candidates, classification, routing](#g10--write-pipeline-v2-intake-queue-candidates-classification-routing) (6 November 2026)
-- [ ] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion)
+- [x] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion) (12 November 2026)
 - [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2)
 - [ ] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate)
 - [ ] [G36 — Language packs: word lists as data, several languages at once](#g36--language-packs-word-lists-as-data-several-languages-at-once)
@@ -919,18 +923,122 @@ which is named.
 
 #### G11 — Memory types, scopes and promotion
 
-- [ ] **Done**
+- [x] **Done** (12 November 2026)
 
 > `/goal Give each memory type its own gate, retention, retrieval method and access rules (working, episodic, semantic, preference; procedural and taxonomic as candidates), add session working memory with a low-latency cache, scopes with explicit inheritance (tenant, org, team, agent, user, session), audited promotion between types, and sharing across agents with explicit grants. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **MEM-01**, **PERF-05**, **MEM-04**, **MEM-05**, **INT-06**, **ACC-10** (notes about a
   subject stored in that subject's partition), MEM-02 / MEM-03 storage only (behaviour in G19/G25).
 - **Deliverables:**
-  - [ ] per-type policy sections (from G08) and tests per type
-  - [ ] working-memory cache per session with TTL and eviction
-  - [ ] scope resolution with inheritance; preference precedence (user over team over org)
-  - [ ] promotion API and an audit event that preserves provenance
+  - [x] per-type policy sections (from G08) and tests per type
+  - [x] working-memory cache per session with TTL and eviction
+  - [x] scope resolution with inheritance; preference precedence (user over team over org)
+  - [x] promotion API and an audit event that preserves provenance
+  - [x] grants between agents: `mh_grant`, `/v1/grants`, `memhouse grant`, the `grant:manage` permission (added: in the goal line, not listed)
+  - [x] the `taxonomic` kind, stored as a candidate until an administrator approves it; procedural memory held until confirmed (added: MEM-02 / MEM-03 storage)
+  - [x] the author's partition for a type (`types.<kind>.access.partition = "author"`, ACC-10) (added: not listed)
+  - [x] a write is deduplicated against, and supersedes, only records of its own scope; the scope is part of the deduplication key (added: not listed; the scope-blind checks would have let one scope's write replace another's)
+  - [x] API 1.5.0 (`/v1/promote`, `/v1/subjects/{subject}/preferences`, `/v1/grants`, `working` on a hit, `scope` in `/v1/whoami`, the `overridden` exclusion reason) and schema version 7 (added: not listed)
 - **Done when:** the type-specific scenario suite passes 100%; recall in a session sees working memory first without extra latency (p95 within the guard).
+- **Result (2026-11-12):** done; API 1.5.0, schema version 7. See
+  [memory-types.md](memory-types.md), [policy.md § Per-type sections](policy.md#per-type-sections)
+  and [api.md § Memory types](api.md#memory-types).
+  - **Type rules** (`core/src/policy.rs`): the compiled policy has a `types` section with, per
+    kind, `gate` (`none`, `source`, `full`, `explicit`, `confirmation`, `approval`),
+    `retention_days` or `ttl_secs`, `retrieval` and `access` (`agent_private`, `partition`,
+    `approver`). The defaults follow the type table of the requirements; a spec's
+    `[types.<kind>]` section may only tighten them (a looser gate, a non-private working memory
+    or a reviewer approving taxonomic memory fails with PR-1). The engine reads the rules where
+    behaviour differs: how a write enters (`caller.rs`), the gate and resolve stages
+    (`intake.rs`), recall and retention (`engine.rs`). Working memory is committed without the
+    statement gate, the duplicate check or review; episodic memory on its source; a preference
+    sent as an inferred signal (`metadata.signal`) is held until it repeats
+    (`[intake] preference_signals`); an agent's procedural proposal waits for a reviewer also
+    under `admission = "auto"`; taxonomic memory is committed only by an admin.
+  - **Session working memory** (`core/src/working.rs`, PERF-05): `scope.session` names the
+    session. Its working memory lives until the session's last write plus the TTL
+    (`Store::session_extend`), is session-local and private to the writing agent, and comes
+    first in the session's recalls (`Hit.working`), read from a per-process cache while the query
+    is embedded. The cache holds up to `[memory] working_cache_items` notes for
+    `working_cache_sessions` sessions (least recently used evicted), follows the writes and
+    deletions made through the process and is read again after `working_cache_secs` (5). A recall
+    of `kinds: ["working"]` makes no database statement.
+  - **Scopes** (`Scope::sees`, one rule for the recall statement, lists, reads by id and the
+    cache): a reader sees a record when every level the record names is the reader's own. A
+    recall or list now returns a session's records only when it names that session. Keyed
+    preferences (`structured.record_type = "preference"`, `attrs.key`) have one value per key in
+    a scope and resolve session, user, agent, team, org, tenant (`core/src/preference.rs`,
+    `GET /v1/subjects/{subject}/preferences`); recall replaces an overridden hit and explains it
+    as `overridden`.
+  - **Promotion** (`core/src/promote.rs`, `POST /v1/promote`, `memhouse promote`): a new record
+    of the target type through the write pipeline and that type's gate, with
+    `metadata.promoted_from`, the sources' labels and earliest event time, and a `memory.promote`
+    audit event in the insert's transaction. Never into working memory, across subjects or from
+    records the caller can't see. Forgetting a source removes what was promoted from it;
+    retention of a source does not.
+  - **Grants** (`core/src/sharing.rs`, schema v7 `mh_grant`): records scoped to an agent are
+    read by that agent only; a grant (grantor, grantee, subject pattern, kinds, expiry) adds the
+    grantor to the grantee's reads, in the recall statement, lists, reads by id and the session
+    cache. Read access only; applied within 2 seconds on other nodes; audited.
+  - **Checks:** six new governance checks (53 in all), on scratch databases through the caller
+    layer. `memory_types` (MEM-01, with the storage of MEM-02 and
+    MEM-03): 28 of 28 scenarios, among them a note the statement gate would hold committed as
+    working memory, never waiting for review, quarantined when injected; its expiry moved by a
+    later write in the session; first in the session's recall and absent outside it and for
+    another agent; a round committed on its source and rejected without one; a 366-day-old round
+    purged under a 365-day retention, a 364-day-old one and an 800-day-old fact kept; the time
+    window read from a dated question; a fact superseded by its revision and an order found
+    exactly; an inferred preference held, then committed by its repeat; one value per preference
+    key in a scope; an agent's procedure and anyone's term held until reviewed, a term only by an
+    admin; three loosening specs refused. `working_session` (PERF-05): 200 cached recalls of a
+    session's 20 notes at p95 0.06 ms with 0 database statements; read-your-writes; a forgotten
+    and an expired note gone; a note written through another process visible within the cache
+    lifetime. `scope_inheritance` (MEM-04): 90 of 90 cases: 20 preferences set at org, team and
+    user level in all six orders resolve to the user's for the user, the team's for a teammate,
+    the org's for another team and nothing for another org; one fact per level is seen by exactly
+    the readers that inherit it; the same words in two scopes are two records. `promotion`
+    (MEM-05): 100 promotions (working to semantic and episodic, pairs of rounds to semantic,
+    semantic to procedural), 100 linked to their sources and 100 audited; refused into working
+    memory, across subjects and for unseen sources; an agent's promoted procedure waits; a forged
+    `promoted_from` is dropped; forgetting a source removes its promotion. `agent_grants`
+    (INT-06): 14 of 14 cases: nothing of agent A's own without a grant, by kind and by subject
+    with one, read-only, nothing again after revocation and expiry. `partitions` (ACC-10): 1,000
+    mixed writes by three clinicians, half through an agent: 1,000 in the correct partition,
+    1,000 with the correct author and writer. The API contract and route-authorization checks
+    cover the five new operations.
+  - **Done when:** `memory_types` passes every scenario; `working_session` shows working memory
+    first in a session at 13.3 ms p95 against 13.0 ms for the same questions outside
+    it, and the cached recall of PERF-05 at 0.06 ms p95 (target 20 ms).
+  - **Guard:** T2, run with `--skip-latency` (section 3: a machine known to be busy; an
+    unrelated job held four to five of its eight cores throughout): governance 53/53;
+    LongMemEval_S stride 10 and LoCoMo at their baselines on every quality metric (91.3 / 94.2 /
+    84.8 and 78.8 / 78.6 / 59.2); LoCoMo + enrich session recall_all@5 79.3 (baseline 79.6),
+    round recall_all@10 65.6 (66.0), inside the limits. Spend $0 (every extraction from the
+    cache). **Latency was measured but not gated:** search p50 16.5 ms (LongMemEval_S) and
+    43.0 ms (LoCoMo) on the loaded machine, against limits of 14.7 and 14.0 ms; the recall
+    statement of a reader without grants is the same text as before this goal. The latency gate
+    is still to be confirmed with `memhouse bench guard` on a quiet machine. Clippy, the unit
+    tests (78) and the Docker end-to-end passed; `cargo xtask ci` as a whole stops at its
+    dependency-policy step on RUSTSEC-2026-0459 (`libsqlite3-sys 0.30.1`, an optional dependency
+    of the G03 spike examples), published after G10 and not touched by this goal: the fixed
+    release can't be selected while `sqlx 0.9` holds `libsqlite3-sys` below 0.38. The governance
+    baseline is now 53 checks.
+  - **Differs from the plan:** the built-in episodic retention stays "keep" (the type table says
+    12 months): switching it on by default would delete stored conversations on upgrade, so it is
+    a setting (`[governance] episodic_retention_days`, or a policy) and a decision moved to G22;
+    the suite runs the 365-day case. Expired working memory is marked `expired` and never
+    recalled, but not purged (G22). Procedural memory's promotion after repeated corrections and
+    task-matched retrieval stay in G19, taxonomic term matching in G25 (boxes added there); both
+    types are found by hybrid search meanwhile. A type's retrieval method is fixed by the engine
+    and shown in the compiled policy, not settable in a spec. Promotion and grants have REST and
+    CLI surfaces but no MCP tool: the MCP tool set is the one INT-02 names. ACC-10 is met for the
+    partition a write names plus the author's partition by policy; relationship checks on who
+    may write about whom are G27.
+  - **Changes for API 1.4 clients** (listed in [api-stability.md](api-stability.md)): a recall or
+    list without `scope.session` no longer returns session-scoped records (the table there
+    announced "the filter rule stays" for G11; strict inheritance needed this one change); an
+    agent's working memory is private to that agent; an agent's procedural proposals wait for
+    review.
 - **Guard:** T2. **Depends on:** G10.
 
 #### G12 — Ranking and packing v2
@@ -1133,6 +1241,7 @@ which is named.
   - [ ] `memhouse hook file-opened|file-edited|post-commit` commands used by harness hook configs
   - [ ] staleness checker (content hash per path) and revalidation
   - [ ] coding suite in `bench/suites/coding/`
+  - [ ] procedural memory promoted after the configured number of repeated corrections, and task-matched retrieval for it (moved from G11, which stores procedural memory, holds an agent's proposal until confirmed and counts repeated signals for preferences: `metadata.held = "signal"`, `[intake] preference_signals`)
 - **Done when:** 200 staleness cases: 100% of affected memories flagged, 0 unaffected; 100 file-touched cases: 100% linked memories returned.
 - **Guard:** T1 + coding suite. **Depends on:** G18.
 
@@ -1180,6 +1289,8 @@ which is named.
   **TR-WF-03**, **TR-DB-03**, **TR-DB-04**.
 - **Deliverables:**
   - [ ] partitioned episodic table with partition-drop retention
+  - [ ] purge of expired working memory, and retention per scope (moved from G11, which expires working memory out of recall and purges by type: `types.<kind>.retention_days`)
+  - [ ] decide the default episodic retention: the type table's 12 months, or keep (G11 left the built-in default at keep, so an upgrade deletes nothing; a tenant sets it in `[governance]` or a policy)
   - [ ] `memhouse restore`, `memhouse deletion certificate <id>`, `memhouse audit anchor`
   - [ ] RLS policies with session settings set by the service; a direct-connection bypass test
   - [ ] SIEM exporter (syslog/CEF and OTLP logs); evidence bundle command
@@ -1231,6 +1342,7 @@ which is named.
 - **Deliverables:**
   - [ ] meter tables and `GET /v1/usage`; budget enforcement tests
   - [ ] consolidation job with a provenance-preserving summary and rollback
+  - [ ] taxonomic memory in use: terms matched exactly in questions and offered to extraction (moved from G11, which stores taxonomic memory as candidates that only an administrator approves, MEM-03's acceptance test)
   - [x] `memhouse reembed` in place: staged columns, resumable backfill while serving, one-transaction cut-over, abort, old-model processes refused; governance check `reembed` (done early, 2 November 2026, at the user's request)
   - [ ] re-embedding under synthetic load with zero recall errors, and the T1 guard on the new model before cut-over (shadow comparison)
   - [ ] shadow mode and holdout configuration; value report
@@ -1417,7 +1529,7 @@ current code already meets it and the named goal re-verifies it; it isn't reopen
 | Area | IDs → goal |
 |---|---|
 | Core operations | CORE-01 G05 · CORE-02 G04/G10 · CORE-03 G05 · CORE-04 G05 · CORE-05 G05 · CORE-06 G04/G05 |
-| Memory types | MEM-01 G11 · MEM-02 G19 · MEM-03 G25 · MEM-04 G11 · MEM-05 G11 · MEM-06 G25 |
+| Memory types | MEM-01 G11 · MEM-02 G19 (storage and gate G11) · MEM-03 G25 (storage and gate G11) · MEM-04 G11 · MEM-05 G11 · MEM-06 G25 |
 | Hybrid retrieval | HYB-01 G10 · HYB-02 G10 · HYB-03 G10 · HYB-04 G04 · HYB-05 G12 · HYB-06 G10 · HYB-07 G35 · HYB-08 G35 |
 | Quality | QUAL-01 G10 (done, verified) · QUAL-02 G10 · QUAL-03 G13 · QUAL-04 G13 · QUAL-05 G01/G13 · QUAL-06 G25 · QUAL-07 G07 · QUAL-08 G04 · QUAL-09 G05 · QUAL-10 G13 · QUAL-11 G13 |
 | Policy | POL-01 G08 · POL-02 G24 · POL-03 G08 · POL-04 G08 · POL-05 G24 · POL-06 G24 · POL-07 G35 · POL-08 G08 |

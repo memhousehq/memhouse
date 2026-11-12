@@ -45,6 +45,10 @@ pub enum Operation {
     PolicyPropose,
     /// Approve a spec or roll back.
     PolicyApprove,
+    /// Promote records to another memory type (MEM-05).
+    Promote,
+    /// Create, list or revoke grants between agents (INT-06).
+    GrantManage,
 }
 
 impl Operation {
@@ -56,7 +60,7 @@ impl Operation {
     }
 
     pub fn is_write(&self) -> bool {
-        matches!(self, Operation::Remember | Operation::Revise | Operation::Ingest | Operation::Relabel)
+        matches!(self, Operation::Remember | Operation::Revise | Operation::Ingest | Operation::Relabel | Operation::Promote)
     }
 
     pub fn is_read(&self) -> bool {
@@ -77,6 +81,9 @@ pub struct AccessRequest {
     pub user: Option<String>,
     /// The user, agent or source a `forget` names.
     pub target: Option<String>,
+    /// A write the type's rules send to the author's own partition (ACC-10): the subject is the
+    /// verified user, who needs no subject pattern for it.
+    pub own_partition: bool,
 }
 
 impl AccessRequest {
@@ -122,20 +129,20 @@ pub struct Decision {
     pub kinds: Vec<MemoryKind>,
     /// Writes enter as `candidate` and the engine admits them (GOV-08).
     pub propose_only: bool,
+    /// Agents whose agent-scoped memory a read may also return (INT-06): filled from the grants
+    /// given to the caller, for reads only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_agents: Vec<String>,
 }
 
 impl Decision {
-    /// Whether a record is visible under this decision's read constraints.
+    /// Whether a record is visible under this decision's read constraints (scope inheritance:
+    /// [`Scope::sees`]).
     pub fn visible(&self, m: &Memory) -> bool {
-        let field = |want: &Option<String>, have: &Option<String>| want.is_none() || have.is_none() || want == have;
         m.tenant == self.tenant
             && !m.labels.iter().any(|l| self.denied_labels.contains(l))
             && (self.kinds.is_empty() || self.kinds.contains(&m.kind))
-            && field(&self.scope.org, &m.scope.org)
-            && field(&self.scope.team, &m.scope.team)
-            && field(&self.scope.agent, &m.scope.agent)
-            && field(&self.scope.user, &m.scope.user)
-            && field(&self.scope.session, &m.scope.session)
+            && self.scope.sees(&m.scope, m.kind, &self.shared_agents)
     }
 }
 
@@ -168,7 +175,8 @@ impl ScopeAuthorizer {
         let own = |v: &Option<String>| v.is_some() && *v == req.target;
         Some(match req.op? {
             Operation::Recall | Operation::Get | Operation::List | Operation::Explain => perm::READ,
-            Operation::Remember | Operation::Revise | Operation::Ingest => perm::WRITE,
+            Operation::Remember | Operation::Revise | Operation::Ingest | Operation::Promote => perm::WRITE,
+            Operation::GrantManage => perm::GRANT,
             Operation::Forget(ForgetScope::Record) => perm::FORGET,
             Operation::Forget(ForgetScope::User) if own(&who.user) => perm::FORGET,
             Operation::Forget(ForgetScope::Agent) if who.principal.kind == PrincipalKind::Agent && own(&Some(who.principal.id.clone())) => perm::FORGET,
@@ -223,6 +231,7 @@ impl Authorizer for ScopeAuthorizer {
             scope: own.clone(),
             kinds: p.kinds.clone(),
             propose_only: p.kind == PrincipalKind::Agent && !p.can_commit,
+            shared_agents: vec![],
         };
         let deny = |mut d: Decision, rule: &str, why: String| {
             d.allowed = false;
@@ -242,7 +251,8 @@ impl Authorizer for ScopeAuthorizer {
             }
         }
         if let Some(s) = &req.subject {
-            if !p.may_use_subject(s) {
+            let own = req.own_partition && op == Operation::Remember && who.user.as_ref() == Some(s);
+            if !own && !p.may_use_subject(s) {
                 return deny(d, "subject", format!("subject {s} is outside this principal's subjects"));
             }
         }
@@ -279,6 +289,12 @@ impl Authorizer for ScopeAuthorizer {
                     session: s.session.clone().or(own.session),
                 };
             }
+        }
+        // Session-local (MEM-01, MEM-04): a search or a list returns the records of the session
+        // it names and of no other; one that names none returns no session's records. A record
+        // read by its id is not bound to a session (its other scope levels still apply).
+        if matches!(op, Operation::Recall | Operation::List) && !admin && d.scope.session.is_none() {
+            d.scope.session = Some(NOBODY.to_string());
         }
         d.reasons.push(format!("{} may {} with {}", p.id, op.name(), Self::permission(who, req).unwrap_or("any credential")));
         d
@@ -339,5 +355,25 @@ mod tests {
         r.scope = Some(Scope { user: Some("user:ana".into()), ..Default::default() });
         let d = decide(&admin, r).await;
         assert!(d.allowed && !d.propose_only && d.scope.user.as_deref() == Some("user:ana"));
+        // MEM-04: a search is bound to the session it names, or to none; an admin sees all.
+        assert_eq!(ok.scope.session.as_deref(), Some(NOBODY));
+        assert!(d.scope.session.is_none());
+        let mut r = AccessRequest::new(Operation::Recall).subject("customer:1");
+        r.scope = Some(Scope { session: Some("s1".into()), ..Default::default() });
+        assert_eq!(decide(&agent, r).await.scope.session.as_deref(), Some("s1"));
+        assert!(decide(&agent, AccessRequest::new(Operation::Get).subject("customer:1")).await.scope.session.is_none());
+        // ACC-10: the author's own partition needs no subject pattern, for a redirected write only.
+        let mut ana = who(PrincipalKind::User, &[perm::WRITE, perm::READ]);
+        ana.user = Some("user:x".into());
+        let mut r = AccessRequest::new(Operation::Remember).subject("user:x");
+        assert_eq!(decide(&ana, r.clone()).await.rule, "subject");
+        r.own_partition = true;
+        assert!(decide(&ana, r).await.allowed);
+        let mut r = AccessRequest::new(Operation::Recall).subject("user:x");
+        r.own_partition = true;
+        assert_eq!(decide(&ana, r).await.rule, "subject");
+        // Grants are an admin's to manage.
+        assert_eq!(decide(&agent, AccessRequest::new(Operation::GrantManage)).await.rule, "permission");
+        assert!(decide(&admin, AccessRequest::new(Operation::GrantManage)).await.allowed);
     }
 }

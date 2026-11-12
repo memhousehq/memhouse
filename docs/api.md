@@ -20,9 +20,10 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.4.0` (1.1 added principals, agent tokens, review and labels; 1.2
+This is **API v1**, version `1.5.0` (1.1 added principals, agent tokens, review and labels; 1.2
 added recall explanations and `/metrics`; 1.3 added policies; 1.4 the write pipeline: `wait`,
-`include_candidates`, exact recall, `degraded` and the `unavailable` code). The machine-readable contract is the OpenAPI 3.1 document at
+`include_candidates`, exact recall, `degraded` and the `unavailable` code; 1.5 memory types:
+session working memory, scope inheritance and preferences, promotion and grants). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -38,6 +39,7 @@ run to run.
 - [Conversations](#conversations): ingest
 - [Reading records](#reading-records): get, list
 - [Labels and review](#labels-and-review): relabel, commit or reject a candidate
+- [Memory types](#memory-types): promote, preferences by scope, grants between agents
 - [Identity](#identity): who am I, agent tokens
 - [Policies](#policies): validate, propose, diff, approve, roll back
 - [Operations](#operations): subjects, stats, audit, enrichment status, health
@@ -111,13 +113,17 @@ subject, the configured `default_subject` is used. A *tenant* is the top-level p
 always comes from the credential's principal. A body may repeat it, but a body naming another
 tenant is refused.
 
-**Scopes.** A record can carry a `scope`: `{org, team, agent, user, session}`, any of them. Every
-read is filtered by the caller's own scope, which the server injects. A user sees records scoped
-to them and records that set no user, never another user's. An agent sees its own agent-scoped
-records. A caller without a team or org sees no team- or org-scoped records. Admins see
-everything. A request may narrow its scope (a `session`), but it can't point it at someone else:
-`{"user": "user:bob"}` from Ana is a `403`. Precedence in ranking (user over team over org) comes
-in G11.
+**Scopes.** A record can carry a `scope`: `{org, team, agent, user, session}`, any of them. The
+levels inherit from broad to narrow (tenant, org, team, agent, user, session): a reader sees a
+record when every level the record names is the reader's own (MEM-04). Every read is filtered by
+the caller's own scope, which the server injects. A user sees records scoped to them and records
+that set no user, never another user's. An agent sees its own agent-scoped records, and another
+agent's only with a [grant](#grants-between-agents). A caller without a team or org sees no
+team- or org-scoped records. A recall or a list returns a session's records only when it names
+that session (`"scope": {"session": "…"}`). Admins see everything. A request can't point its
+scope at someone else: `{"user": "user:bob"}` from Ana is a `403`. A preference set at a narrower
+level overrides the same preference at a broader one (user over team over org). The whole model
+is in [memory-types.md](memory-types.md).
 
 **Times.** ISO-8601 / RFC 3339 in UTC, for example `2026-10-14T15:00:00Z`. MCP tools also
 accept a plain date (`2026-10-14`).
@@ -190,13 +196,13 @@ Body (`RememberRequest`):
 |---|---|---|---|
 | `content` | string | yes | Write it so it stands alone (who, what, when). At most `max_content_chars` (20,000) characters. |
 | `subject` | string | | defaults to `default_subject` |
-| `kind` | kind | | defaults to `semantic` |
+| `kind` | kind | | defaults to `semantic`. `working`, `episodic`, `semantic`, `preference`, `procedural`, `commitment`, `document` or `taxonomic`; each [type has its own gate](memory-types.md#the-types) |
 | `tags` | string[] | | used as recall filters |
 | `occurred_at` | time | | event time; defaults to now |
 | `valid_to` | time | | when it stops being true, e.g. an expiry or due date |
 | `expires_at` | time | | when it stops being recalled; `working` memory defaults to now + `[memory] working_ttl_secs` |
 | `labels` | string[] | | sensitivity labels; `[governance] denied_labels` keeps them out of recall |
-| `scope` | object | | `{org, team, agent, user, session}` |
+| `scope` | object | | `{org, team, agent, user, session}`: where the memory applies. `session` makes it session-local; `working` memory in a session is that session's scratchpad ([working memory](memory-types.md#working-memory-and-sessions)) |
 | `user` | string | | the user the agent acts for (provenance) |
 | `request_key` | string | | idempotency key, or the `Idempotency-Key` header |
 | `structured` | `{record_type, attrs}` | | the queryable form of a record (an order, a ticket); same id as the text |
@@ -258,6 +264,16 @@ The gate reads each statement as one of `fact`, `event`, `correction`, `plan`, `
 | Same text sent again | `{"id":"<existing id>","status":"committed","deduplicated":true,"note":"identical memory already stored"}`, answered at once, nothing queued |
 | Near-duplicate (cosine ≥ 0.97, same kind) | the existing id, with `deduplicated: true`; the new id is kept as `rejected` with `metadata.duplicate_of` |
 | A JSON object with a `record_type` as `content` | stored as a [structured record](#exact-structured-recall) (`route: structured`); its text becomes `order: order_id=A-1001, status=shipped` |
+
+The type of the memory decides which of these apply (API 1.5, MEM-01):
+
+| `kind` | What differs |
+|---|---|
+| `working` | No statement gate, no duplicate check and no review: a note is committed as written (the injection screen still applies). In a session it answers with the decision, like `wait`. An agent's working memory is scoped to that agent. |
+| `episodic` | Committed when the writing principal and a source label are on the record; not classified. |
+| `preference` | A stated preference commits. One sent with `"metadata": {"signal": true}` (inferred, not stated) is held as a `candidate` until the same signal arrives again: `{"id":"<the held id>","status":"committed","deduplicated":true}`. With `structured: {"record_type":"preference","attrs":{"key":…}}` it has a key: one value per key in a scope, and the [narrowest scope wins](#get-v1subjectssubjectpreferences-the-preferences-that-apply). |
+| `procedural` | An agent's proposal stays `candidate` until [reviewed](#post-v1review-commit-or-reject-a-candidate), also with `admission = "auto"`. |
+| `taxonomic` | Everyone's but an admin's stays `candidate` until an admin reviews it. |
 
 A write the intake queue can't take (the database is down) is refused with `503 unavailable` and
 `Retry-After: 1`; nothing is stored, so retrying (with the same `request_key`) is safe.
@@ -347,6 +363,7 @@ How to read a hit:
 | `plan.windows` | time phrases the query analysis found, and the window each was read as |
 | `plan.exact` | record identifiers in the query ("A-1001", "#4521") looked up exactly |
 | `exact` | the hit is a structured record matched exactly (HYB-02), not by similarity; exact hits come first |
+| `working` | the hit is working memory of the recall's session (`scope.session`): listed before everything else, newest first, not ranked against the query. With `"kinds": ["working"]` the whole answer comes from the session cache |
 | `degraded` | set when retrieval failed or overran `[memory] recall_timeout_ms` (450 ms, so the answer comes within 500 ms): `hits` is then empty and not a real answer (PERF-07). Carry on without memory; don't retry in a loop. |
 
 #### Exact structured recall
@@ -620,12 +637,65 @@ ranking (TR-RQ-03), so a recall still returns `k` hits.
 `{"id": "…", "action": "commit" | "reject", "reason": "…"}`. Writes by agents without a
 commit grant enter as `candidate` (GOV-08). With `[access] admission = "auto"` (the default) the
 engine commits them as soon as they pass the write gate. With `"review"` they wait for this call,
-by a principal with `memory:review`. A revision whose predecessor is no longer current is
-rejected instead of committed.
+by a principal with `memory:review`. Two types always wait for it: `procedural` memory proposed
+by an agent, and `taxonomic` memory proposed by anyone but an admin, which only an admin may
+commit or reject (`403` for another reviewer). A revision whose predecessor is no longer current
+is rejected instead of committed.
 
 ```json
 {"id":"01a19b27-…","status":"committed"}
 ```
+
+---
+
+## Memory types
+
+API 1.5. The model behind these operations (types, scopes, promotion, grants) is described in
+[memory-types.md](memory-types.md).
+
+### `POST /v1/promote`: promote memories to another type
+
+Body (`PromoteRequest`): `sources` (1 to 50 ids of committed records of one subject), `kind`
+(the target type), and optionally `content` (required for several sources), `reason`, `tags`,
+`labels`, `scope`, `structured`, `valid_to`, `request_key` and `wait`. Needs `memory:write` and
+sight of every source. The answer is a `RememberResult`, as for `remember`: the new record goes
+through the write pipeline and the target type's gate.
+
+```bash
+curl -s $MH/v1/promote -H "authorization: Bearer $KEY" -H 'content-type: application/json' \
+-d '{"sources":["01a1d0c2-…"],"kind":"semantic","reason":"confirmed by the customer","wait":true}'
+# {"id":"01a1d0d4-…","status":"committed","deduplicated":false,"statement":"fact","route":"fact"}
+```
+
+The promoted record names its sources in `metadata.promoted_from`, keeps their labels and the
+earliest of their event times, and is audited as `memory.promote` (MEM-05). The sources stay.
+`400` for a promotion into `working` memory, to the same kind, of records of several subjects,
+or of several sources without `content`; `404` for a source the caller can't see; `409` for a
+source that is not `committed`.
+
+### `GET /v1/subjects/{subject}/preferences`: the preferences that apply
+
+Scope-ordered lookup (MEM-04). For each preference key the record set at the narrowest scope
+the caller is in, with its `level` (`session`, `user`, `agent`, `team`, `org` or `tenant`) and
+the ids of the broader ones it `overrides`; preferences without a key are listed as they are.
+`?key=` returns one key, `?session=` adds the preferences of a session. Needs `memory:read`.
+
+```json
+[{"key":"reply_language","level":"team","memory":{"id":"01a1d0c7-…","kind":"preference",
+  "content":"Reply in German","scope":{"org":"acme","team":"support"},…},"overrides":["01a1d0c5-…"]}]
+```
+
+### Grants between agents
+
+| Operation | Permission | Returns |
+|---|---|---|
+| `POST /v1/grants` `{"grantor", "grantee", "subjects"?, "kinds"?, "expires_at"?}` | `grant:manage` | the `Grant`; `400` unless both are active agents of the tenant |
+| `GET /v1/grants` | `grant:manage` | every grant, newest first, revoked and expired ones included |
+| `DELETE /v1/grants/{id}` | `grant:manage` | `{"revoked": "<id>"}`; `404` if it is not active |
+
+A grant lets `grantee` read (recall, get, list, preferences) the records scoped to `grantor`
+(`scope.agent`) in the subjects and kinds it names (INT-06). It gives no right to revise, forget
+or promote them. `grant:manage` is a permission of admins.
 
 ---
 
@@ -634,12 +704,14 @@ rejected instead of committed.
 ### `GET /v1/whoami`
 
 What the credential is: principal, kind, tenant, verified user, permissions, subjects, denied
-labels, whether writes are proposals, and how it authenticated. Needs no permission.
+labels, its own scope (org, team, agent, user: what its reads inherit from), whether writes are
+proposals, and how it authenticated. Needs no permission.
 
 ```json
 {"principal":"agent:support-bot","kind":"agent","tenant":"default","user":"user:ana",
  "scopes":["memory:read","memory:write","memory:forget"],"subjects":["customer:*"],
- "denied_labels":["hr"],"propose_only":true,"via":"token","expires_at":"2026-11-02T09:15:00Z"}
+ "denied_labels":["hr"],"propose_only":true,"scope":{"agent":"agent:support-bot","user":"user:ana"},
+ "via":"token","expires_at":"2026-11-02T09:15:00Z"}
 ```
 
 ### `POST /v1/tokens`: a short-lived agent token (GOV-13)

@@ -110,7 +110,7 @@ fn build_tools() -> Value {
         {
             "name": "recall",
             "title": "Recall memories",
-            "description": "Search long-term memory for anything relevant to a question or task. Call this before answering questions that may depend on earlier conversations, the user's preferences, or project knowledge. Returns the most relevant memories with ids, dates, kinds and provenance.",
+            "description": "Search long-term memory for anything relevant to a question or task. Call this before answering questions that may depend on earlier conversations, the user's preferences, or project knowledge. Returns the most relevant memories with ids, dates, kinds and provenance. Pass scope.session to recall inside a session: its working notes come first.",
             "inputSchema": input_schema::<RecallRequest>(&["query", "subject", "k", "kinds", "tags", "scope", "as_of", "token_budget", "include_candidates", "exact"], &["query"],
                 json!({"k": {"minimum": 1, "maximum": 50, "description": "Number of memories to return (default 10)."}, "as_of": {"description": format!("Recall what was true at this time. {DATE_HINT}")}})),
             "outputSchema": inline_schema::<RecallResult>(),
@@ -119,7 +119,7 @@ fn build_tools() -> Value {
         {
             "name": "remember",
             "title": "Remember",
-            "description": "Store one durable memory: a fact, preference, procedure, decision or commitment worth knowing in future sessions. Write it so it stands alone (who, what, when). Don't store secrets or one-off chatter. Text that tries to instruct the agent reading it (prompt injection) is quarantined; plans and guesses are held until confirmed (store a to-do as kind commitment). Returns the new record's id at once, as a candidate; it is recallable within seconds.",
+            "description": "Store one durable memory: a fact, preference, procedure, decision or commitment worth knowing in future sessions. Write it so it stands alone (who, what, when). Don't store secrets or one-off chatter. Text that tries to instruct the agent reading it (prompt injection) is quarantined; plans and guesses are held until confirmed (store a to-do as kind commitment). For a scratchpad of the current task use kind working with scope.session: it is visible only in that session and expires after it. Returns the new record's id at once, as a candidate; it is recallable within seconds.",
             "inputSchema": input_schema::<RememberRequest>(&["content", "kind", "subject", "tags", "occurred_at", "valid_to", "expires_at", "labels", "scope", "request_key", "wait"], &["content"],
                 json!({"occurred_at": date, "valid_to": date, "expires_at": date})),
             "outputSchema": inline_schema::<RememberResult>()
