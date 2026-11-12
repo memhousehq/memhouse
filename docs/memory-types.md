@@ -41,7 +41,7 @@ every type (security baseline).
 | `none` | Nothing more: no statement classifier, no duplicate check, no review. A plan noted in a scratchpad is a note, not a claim. |
 | `source` | The writing principal and a source label are on the record; a record without them is `rejected`. What was said is not judged. |
 | `full` | The [statement gate](api.md#post-v1remember-propose-a-memory) (QUAL-02): plans and speculation are held as candidates, near-duplicates rejected, corrections supersede. |
-| `explicit` | The statement gate, and only explicit statements commit. A write marked as an inferred signal (`"metadata": {"signal": true}`) is held as a candidate until the same signal has been seen `[intake] preference_signals` times (2), in the same scope and, for a keyed preference, under the same key; the repeat commits the held record (which then replaces the value its key had in that scope) and is not stored twice. The stricter gates hold signals the same way. |
+| `explicit` | The statement gate, and only explicit statements commit. A write marked as an inferred signal (`"metadata": {"signal": true}`) is held as a candidate until the same signal has been seen `[intake] preference_signals` times (2), in the same scope and, for a keyed preference, under the same key; the repeat commits the held record (which then replaces the value its key had in that scope) and is not stored twice. The stricter gates hold signals the same way; where the write also waits for a reviewer, repeats are counted on the one held record and only the reviewer commits it. |
 | `confirmation` | The statement gate, and a proposal from an agent without a commit grant waits for [`POST /v1/review`](api.md#post-v1review-commit-or-reject-a-candidate), also where `admission = "auto"`. A user's, an admin's or a trusted agent's own write is the confirmation. |
 | `approval` | The statement gate, and only the type's approver commits: everyone else's write is a candidate until the approver reviews it. |
 
@@ -84,10 +84,11 @@ curl -s $MH/v1/recall -H "authorization: Bearer $KEY" -H 'content-type: applicat
   least half of its `k` places for ranked memories. A recall of `"kinds": ["working"]` is
   answered from the session cache alone: no query embedding, no database statement (one
   statement when it asks for more notes than the cache keeps per session).
-- **Session-local.** A recall or a list returns a session's working memory only when it names
-  that session. A note is still read by its id. (Records of other types scoped to a session are
-  also returned to a request that names no session, as in API 1.4; see
-  [scopes](#scopes-and-inheritance).)
+- **Session-local.** A recall returns a session's working memory only when it names that
+  session. The list operations take no session, so they never return a session's working memory
+  to a caller that isn't an admin; use a recall with `"kinds": ["working"]`. A note is still
+  read by its id. (Records of other types scoped to a session are also returned to a request
+  that names no session, as in API 1.4; see [scopes](#scopes-and-inheritance).)
 - **Private to its agent.** An agent's working memory is scoped to that agent
   (`scope.agent`); another agent in the same session reads it only with a
   [grant](#sharing-across-agents).
@@ -185,7 +186,7 @@ curl -s $MH/v1/promote -H "authorization: Bearer $KEY" -H 'content-type: applica
 |---|---|
 | `sources` | 1 to 50 committed, unexpired records of one subject, which the caller can see |
 | `kind` | required. `semantic`, `preference`, `procedural` or `taxonomic`; `episodic` for working memory. Promotion moves towards durable memory: never into `working`, never to the same kind (that is `revise`) |
-| `content` | the promoted memory's text; required for several sources, for one it defaults to the source's text |
+| `content` | the promoted memory's text; required for several sources, for one it defaults to the source's text. A single source's structured form carries over only with its own text: give `structured` with new text |
 | `scope` | defaults to the sources' common scope without its session: the promoted memory leaves the session but keeps the sources' other levels. A note an agent wrote stays scoped to that agent (and its user), so another agent reads it only with a grant; name a broader `scope` to share it |
 | `reason`, `tags`, `labels`, `structured`, `valid_to`, `request_key`, `wait` | as for `remember`; `labels` are added to the sources' own |
 
@@ -256,7 +257,9 @@ partition = "author"
 A write of such a type made for a verified user is then stored in that user's own subject (the
 user's id, for example `user:dr-lee`), whatever subject the request named. The user needs no
 subject pattern for the write, nor to read, revise or forget by its id a record they wrote
-there; searching or listing that subject follows the usual subject rules.
+there; searching or listing that subject follows the usual subject rules. A revision or a
+promotion stays in its record's subject, so neither can turn a record of another subject into a
+type kept in its author's partition (`400`): write it with `remember`.
 
 ## What is checked
 

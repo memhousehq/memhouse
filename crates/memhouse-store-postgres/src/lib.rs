@@ -1494,6 +1494,11 @@ impl Store for PgStore {
     #[tracing::instrument(name = "db.apply_intake", skip_all, fields(db.system = "postgresql", db.operation = "INSERT", rows = w.records.len()))]
     async fn apply_intake(&self, w: &memhouse_core::intake::IntakeWrite) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
+        // A promotion takes its subject's lock before any row lock (the order a deletion takes
+        // them in), so the two never wait on each other.
+        if let Some(first) = w.records.first().filter(|_| !w.requires.is_empty()) {
+            sqlx::query(SUBJECT_LOCK_SQL).bind(&w.tenant).bind(&first.memory.subject).execute(&mut *tx).await?;
+        }
         if let Some(pid) = w.proposal {
             // Locks the proposal: an erasure that deletes it waits for this insert, then removes
             // what it wrote; a proposal already erased writes nothing.
@@ -1527,9 +1532,6 @@ impl Store for PgStore {
             self.write_rows_in(&mut tx, &rows, false).await?;
         }
         if !w.requires.is_empty() {
-            if let Some(first) = w.records.first() {
-                sqlx::query(SUBJECT_LOCK_SQL).bind(&w.tenant).bind(&first.memory.subject).execute(&mut *tx).await?;
-            }
             // The sources of a promotion, locked until this commits: a `forget` of one waits,
             // then finds and removes what was promoted from it; one already gone stops the insert.
             let there: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2) FOR SHARE) s")
@@ -1863,18 +1865,37 @@ impl Store for PgStore {
         // so does everything promoted from those in turn (a note promoted to a fact, the fact to
         // a procedure), with their cached vectors; and the cached extraction of every session
         // job that read it.
-        sqlx::query(
+        let dependents: Vec<(Uuid, String)> = sqlx::query_as(
             "WITH RECURSIVE dep(id) AS ( \
                SELECT id FROM mh_memory WHERE tenant = $1 AND (metadata -> 'source_ids' ? $2 \
                  OR (metadata ? 'promoted_from' AND metadata -> 'promoted_from' ? $2)) \
                UNION \
-               SELECT m.id FROM dep JOIN mh_memory m ON m.tenant = $1 AND m.metadata ? 'promoted_from' AND m.metadata -> 'promoted_from' ? dep.id::text), \
-             d AS (DELETE FROM mh_memory WHERE tenant = $1 AND id IN (SELECT id FROM dep) RETURNING content) \
-             DELETE FROM mh_embed_cache c USING d WHERE c.hash = encode(sha256(convert_to($3 || d.content, 'UTF8')), 'hex')",
+               SELECT m.id FROM dep JOIN mh_memory m ON m.tenant = $1 AND m.metadata ? 'promoted_from' AND m.metadata -> 'promoted_from' ? dep.id::text) \
+             DELETE FROM mh_memory WHERE tenant = $1 AND id IN (SELECT id FROM dep) RETURNING id, content",
         )
         .bind(tenant)
         .bind(id.to_string())
-        .bind(&self.passage_prefix)
+        .fetch_all(&mut *tx)
+        .await?;
+        let contents: Vec<&str> = dependents.iter().map(|(_, c)| c.as_str()).collect();
+        sqlx::query("DELETE FROM mh_embed_cache WHERE hash IN (SELECT encode(sha256(convert_to($1 || c, 'UTF8')), 'hex') FROM unnest($2::text[]) c)")
+            .bind(&self.passage_prefix)
+            .bind(&contents)
+            .execute(&mut *tx)
+            .await?;
+        // Promotions of this record, or of anything that went with it, that are still queued
+        // (or set aside with their payload): gone with it on every erasure path, single or
+        // bulk, so none is readable by its id or written later.
+        let gone: Vec<String> = std::iter::once(id).chain(dependents.iter().map(|(d, _)| *d)).map(|u| u.to_string()).collect();
+        sqlx::query(
+            "DELETE FROM mh_intake q WHERE q.tenant = $1 AND q.payload IS NOT NULL AND EXISTS ( \
+               SELECT 1 FROM jsonb_array_elements(q.payload -> 'records') r, \
+                             jsonb_array_elements_text(CASE WHEN jsonb_typeof(r -> 'memory' -> 'metadata' -> 'promoted_from') = 'array' \
+                                                            THEN r -> 'memory' -> 'metadata' -> 'promoted_from' ELSE '[]'::jsonb END) s \
+               WHERE s = ANY($2::text[]))",
+        )
+        .bind(tenant)
+        .bind(&gone)
         .execute(&mut *tx)
         .await?;
         sqlx::query(

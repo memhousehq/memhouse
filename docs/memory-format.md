@@ -94,7 +94,7 @@ source did:
 
 | Record | Hash input |
 |---|---|
-| episodic round (`metadata.round` present) | `episodic␟<session_id>␟<round>␟<content>` |
+| episodic round (`metadata.round` present) | `episodic␟<session_id>␟<round>␟<content>`, then `␟scope␟<scope>` for a round with a scope |
 | derived fact (`metadata.derived = true`) | `fact␟<session_id>␟<content>` |
 | any other | `<kind>␟<content>`, then `␟<record_type>␟<attrs>` for a structured record, then `␟scope␟<scope>` for a record with a scope (the scope as canonical JSON, fields in the order above) |
 

@@ -666,7 +666,9 @@ impl Engine {
                 Err(e) if error::code_of(&e) == error::ErrorCode::InvalidRequest => continue,
                 Err(e) => return Err(e),
             };
-            let h = content_hash(&format!("episodic\u{1f}{session}\u{1f}{i}\u{1f}{text}"));
+            // Scoped rounds (an agent-private conversation) are their scope's own records: two
+            // agents that ingest the same round each keep theirs.
+            let h = write_hash(format!("episodic\u{1f}{session}\u{1f}{i}\u{1f}{text}"), req.scope.as_ref().unwrap_or(&Scope::default()));
             gated_rounds.push((i, text, redactions, h));
         }
         let existing = self.store.existing_hashes(&tenant, &subject, &gated_rounds.iter().map(|g| g.3.clone()).collect::<Vec<_>>()).await?;
@@ -914,7 +916,33 @@ impl Engine {
                         && m.valid_to.is_none_or(|t| t > now_valid)
                         && req.tags.as_ref().is_none_or(|t| t.iter().any(|x| m.tags.contains(x)))
                 };
-                (items.into_iter().filter(visible).collect::<Vec<Memory>>(), usize::from(loaded))
+                let fetched = items.len();
+                let mut mine: Vec<Memory> = items.into_iter().filter(visible).collect();
+                let mut statements = usize::from(loaded);
+                // The cache holds the session's newest notes, whoever wrote them. If it is full
+                // and too few of them are this reader's, older ones of the reader may lie
+                // beyond it: read those with the reader's own filters, in the statement.
+                let want = if working_only { k } else { (k / 2).max(1) };
+                let limit = if working_only { k.max(self.working.max_items()) } else { self.working.max_items() };
+                if fetched >= limit && mine.len() < want {
+                    if let Some(s) = &session_first {
+                        let q = ListQuery {
+                            tenant: tenant.clone(),
+                            subject: Some(subject.clone()),
+                            kinds: Some(vec![MemoryKind::Working]),
+                            limit: want,
+                            denied_labels: denied_labels.clone(),
+                            scope: scope.clone(),
+                            shared_agents: ctx.shared_agents.clone(),
+                            session: Some(s.clone()),
+                            ..Default::default()
+                        };
+                        let now_live = Utc::now();
+                        mine = within(deadline, self.store.list(&q)).await?.into_iter().filter(|m| m.expires_at.is_none_or(|t| t > now_live)).filter(visible).collect();
+                        statements += 1;
+                    }
+                }
+                (mine, statements)
             }
             None => (vec![], 0),
         };
@@ -1061,7 +1089,7 @@ impl Engine {
             let reader = crate::preference::Reader { scope: &scope, denied_labels: &ctx.denied_labels, shared_agents: &ctx.shared_agents };
             let effective = within(deadline, self.effective_preferences(&tenant, &subject, None, &reader).instrument(tracing::info_span!("recall.preferences"))).await?;
             statements += 1;
-            crate::preference::apply_overrides(&mut hits, &effective, req.tags.as_deref(), &mut overridden);
+            crate::preference::apply_overrides(&mut hits, &effective, req.tags.as_deref(), req.exact.is_some(), &mut overridden);
         }
         if !session_hits.is_empty() {
             // A mixed recall keeps at least half its places for ranked memories.
@@ -1578,7 +1606,10 @@ impl Engine {
         }
         if let Some(until) = extend_to {
             if let Err(e) = self.store.session_extend(tenant, subject, session, until).await {
+                // The cache must not show an expiry the store doesn't have: read it again.
                 tracing::warn!("working memory of session {session} was not extended: {e:#}");
+                self.working.drop_session(tenant, subject, session);
+                return;
             }
         }
         // A revision replaced a note the cache may hold: the session reads the store again.

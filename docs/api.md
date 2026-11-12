@@ -119,10 +119,10 @@ record when every level the record names is the reader's own (MEM-04). Every rea
 the caller's own scope, which the server injects. A user sees records scoped to them and records
 that set no user, never another user's. An agent sees its own agent-scoped records, and another
 agent's only with a [grant](#grants-between-agents). A caller without a team or org sees no
-team- or org-scoped records. A recall or a list that names a session
-(`"scope": {"session": "…"}`) returns that session's records and no other session's; one that
-names none returns no session's working memory, and, as in 1.4, the session-scoped records of
-other types. Admins see everything. A request can't point its
+team- or org-scoped records. A recall that names a session (`"scope": {"session": "…"}`)
+returns that session's records and no other session's. A recall that names none, and every
+list (the list operations take no session), returns no session's working memory and, as in
+1.4, the session-scoped records of other types. Admins see everything. A request can't point its
 scope at someone else: `{"user": "user:bob"}` from Ana is a `403`. A preference set at a narrower
 level overrides the same preference at a broader one (user over team over org). The whole model
 is in [memory-types.md](memory-types.md).
@@ -204,7 +204,7 @@ Body (`RememberRequest`):
 | `valid_to` | time | | when it stops being true, e.g. an expiry or due date |
 | `expires_at` | time | | when it stops being recalled; `working` memory defaults to now + `[memory] working_ttl_secs` |
 | `labels` | string[] | | sensitivity labels; `[governance] denied_labels` keeps them out of recall |
-| `scope` | object | | `{org, team, agent, user, session}`: where the memory applies. `session` makes it session-local; `working` memory in a session is that session's scratchpad ([working memory](memory-types.md#working-memory-and-sessions)) |
+| `scope` | object | | `{org, team, agent, user, session}`: where the memory applies. `session` ties it to a session: `working` memory in a session is that session's scratchpad and is returned only to recalls that name it; a record of another type is hidden from other sessions but, in API v1, still returned to a recall that names no session ([working memory](memory-types.md#working-memory-and-sessions)) |
 | `user` | string | | the user the agent acts for (provenance) |
 | `request_key` | string | | idempotency key, or the `Idempotency-Key` header |
 | `structured` | `{record_type, attrs}` | | the queryable form of a record (an order, a ticket); same id as the text |

@@ -236,7 +236,9 @@ async fn main() -> anyhow::Result<()> {
     let file = dir.join("memhouse-spike-lite.db");
     for stale in ["", "-wal", "-shm"] {
         let path = dir.join(format!("memhouse-spike-lite.db{stale}"));
-        if path.exists() {
+        // Whatever is at the path goes, a dangling symlink included (`exists` follows links
+        // and would miss one, and SQLite would then create the database at its target).
+        if std::fs::symlink_metadata(&path).is_ok() {
             std::fs::remove_file(&path)?;
         }
     }

@@ -381,6 +381,21 @@ async fn memory_types(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     s.case("preference: a signal committed by its repeat supersedes the old value", replaced && digest.len() == 1 && digest[0].memory.id == daily.id, || {
         format!("old value superseded and new committed: {replaced}; {} effective", digest.len())
     });
+    // Where a reviewer must commit, a signal is still counted on one record, and its repeats
+    // never commit it.
+    let watched = || {
+        let mut r = write(subj, "Ana skips the weekly status call.", MemoryKind::Preference);
+        r.metadata = Some(json!({ "signal": true }));
+        r
+    };
+    let agent_reviewed = on(&a, &reviewed);
+    let held_first = agent_reviewed.remember(watched()).await?;
+    let held_again = agent_reviewed.remember(watched()).await?;
+    agent_reviewed.remember(watched()).await?;
+    let waiting = e.store.get(TENANT, held_first.id).await?.map(|m| (m.status, m.metadata["signals"].clone()));
+    s.case("preference: a signal that needs review is counted, not committed", held_again.id == held_first.id && waiting == Some((MemoryStatus::Candidate, json!(3))), || {
+        format!("{waiting:?}; the repeat answered {}", held_again.id)
+    });
 
     // ── Procedural and taxonomic: stored as candidates until confirmed or approved. ──
     let rule = "Always run the integration tests before tagging a release.";
@@ -753,8 +768,17 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     sqlx::query(memhouse_store_postgres::SUBJECT_LOCK_SQL).bind(TENANT).bind(subj).execute(&mut *tx).await?;
     let deleter = on(&p, e);
     let deletion = tokio::spawn(async move { deleter.forget(ForgetRequest { id: Some(base), ..Default::default() }).await.map(|_| ()) });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let waited = !deletion.is_finished();
+    // Until the database itself shows the deletion waiting for the subject's lock: only then
+    // does committing below exercise the interleaving.
+    let mut waited = false;
+    for _ in 0..200 {
+        let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 7270002 AND NOT granted").fetch_one(pool).await?;
+        if blocked > 0 {
+            waited = !deletion.is_finished();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     let tip = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, valid_from, source, metadata) \
@@ -791,9 +815,19 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     if !was_queued || e.get_record(TENANT, queued).await?.is_some() {
         problems.push(format!("a queued promotion (queued: {was_queued}) was still readable by its id after its source was forgotten"));
     }
-    // And if the deletion gets past the queue (here: straight in the store), the pipeline
-    // stores the promotion without anything of its source.
-    let erased = |m: Option<Memory>| m.is_some_and(|m| m.status == MemoryStatus::Rejected && m.content == memhouse_core::intake::SOURCE_ERASED);
+    // The same on a bulk erasure: forgetting by source removes the queued promotion of what it deletes.
+    let mut tagged = write(subj, &words("bulk", 1), MemoryKind::Semantic);
+    tagged.source = Some("bulk-import-7".into());
+    let tagged = p.remember(tagged).await?.id;
+    let pending = slow.promote(PromoteRequest { sources: vec![tagged], kind: MemoryKind::Procedural, ..Default::default() }).await?.id;
+    admin(e).forget(ForgetRequest { source: Some("bulk-import-7".into()), ..Default::default() }).await?;
+    if e.store.get(TENANT, tagged).await?.is_some() || e.get_record(TENANT, pending).await?.is_some() {
+        problems.push("a queued promotion was still readable after its source was erased by source label".into());
+    }
+    // And when the deletion comes straight from the store (no engine in between): the queued
+    // promotion goes in the deletion's own transaction; had it been running already, it would
+    // be stored without anything of its source. Either way nothing of the source is left.
+    let erased = |m: Option<Memory>| m.is_none_or(|m| m.status == MemoryStatus::Rejected && m.content == memhouse_core::intake::SOURCE_ERASED);
     let raced = p.remember(write(subj, &words("raced", 1), MemoryKind::Semantic)).await?.id;
     let late = slow.promote(PromoteRequest { sources: vec![raced], kind: MemoryKind::Procedural, ..Default::default() }).await?.id;
     e.store.delete(TENANT, raced, "bench").await?;
@@ -996,6 +1030,12 @@ async fn partitions(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     // (Entry 18 is clinician 0's own preference, written directly; entry 0 their note about a patient.)
     if clinicians[0].get(expected[18].0).await.is_err() || clinicians[1].get(expected[18].0).await.is_ok() {
         problems.push("the author could not read back a record of their own partition, or another clinician could".into());
+    }
+    // Nor does a revision turn a note in a patient's partition into one of the author's types.
+    let turned =
+        clinicians[0].revise(ReviseRequest { id: expected[0].0, content: "Prefers morning rounds".into(), kind: Some(MemoryKind::Preference), ..Default::default() }).await;
+    if !turned.as_ref().is_err_and(|e| is(e, ErrorCode::InvalidRequest)) {
+        problems.push("a note about a patient was revised into a preference inside the patient's partition".into());
     }
     // A type kept in the author's partition is not promoted into a patient's.
     let misplaced = clinicians[0].promote(PromoteRequest { sources: vec![expected[0].0], kind: MemoryKind::Preference, ..Default::default() }).await;

@@ -1072,6 +1072,16 @@ which is named.
     Follow-up on erasure: forgetting a record also removes a promotion of it that is still
     queued (gone by its id at once), and a promotion whose source is gone is stored without its
     content on every path: rejected by policy, or set aside as poison.
+    Third round (2026-11-13): erasing a record also removes queued promotions of it and of
+    what went with it, on every path including bulk erasure by user, agent or source (inside
+    `Store::delete`); a promotion takes its subject's lock before any row lock; a revision
+    can't turn a record of another subject into a type kept in its author's partition; an
+    inferred preference that also needs review is counted on one held record and never
+    committed by its repeats; a reader whose notes lie beyond a session cache filled by other
+    agents gets them from a filtered read; an expiry the store failed to extend is not cached;
+    an exact preference match is not replaced by the one that applies; scoped rounds are
+    deduplicated within their scope; a single source's structured form carries over only with
+    its own text. `memory_types` has 33 scenarios.
     The question the review raised about session reads within API v1 is settled above
     ("Changes for API 1.4 clients").
 - **Guard:** T2. **Depends on:** G10.

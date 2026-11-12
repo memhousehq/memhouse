@@ -48,7 +48,9 @@ pub fn resolve(visible: Vec<Memory>, key: Option<&str>) -> Vec<EffectivePreferen
 /// In a recall's hits, a keyed preference that is overridden gives its place to the one that
 /// applies (once), and is listed in `overridden` for the explanation. A winner outside the
 /// recall's own tag filter takes no place: the overridden hit just goes.
-pub(crate) fn apply_overrides(hits: &mut Vec<Hit>, effective: &[EffectivePreference], tags: Option<&[String]>, overridden: &mut Vec<ExcludedRecord>) {
+/// With `keep_exact` (the request gave its own exact query, HYB-02) a hit matched exactly stays
+/// as it is: it is what was asked for.
+pub(crate) fn apply_overrides(hits: &mut Vec<Hit>, effective: &[EffectivePreference], tags: Option<&[String]>, keep_exact: bool, overridden: &mut Vec<ExcludedRecord>) {
     let winners: HashMap<&str, &EffectivePreference> = effective.iter().filter_map(|e| e.key.as_deref().map(|k| (k, e))).collect();
     let present: HashSet<Uuid> = hits.iter().map(|h| h.memory.id).collect();
     let mut placed: HashSet<Uuid> = HashSet::new();
@@ -61,7 +63,9 @@ pub(crate) fn apply_overrides(hits: &mut Vec<Hit>, effective: &[EffectivePrefere
             out.push(h);
             continue;
         };
-        if w.memory.id == h.memory.id {
+        // The one that applies, or a hit the request's own exact query matched: that is what
+        // was asked for, and is not swapped for a record that doesn't match it.
+        if w.memory.id == h.memory.id || (h.exact && keep_exact) {
             out.push(h);
             continue;
         }
@@ -184,13 +188,24 @@ mod tests {
         // In a recall the overridden hit gives its place to the winner, once.
         let mut hits = vec![hit(&org, 3.0), hit(&tone, 2.0), hit(&team, 1.0)];
         let mut cut = vec![];
-        apply_overrides(&mut hits, &all, None, &mut cut);
+        apply_overrides(&mut hits, &all, None, false, &mut cut);
         assert_eq!(hits.iter().map(|h| h.memory.id).collect::<Vec<_>>(), vec![user.id, tone.id]);
         assert!(cut.len() == 2 && cut.iter().all(|c| c.reason == ExclusionReason::Overridden));
+        // A match of the request's own exact query stays, overridden or not; one found by an
+        // identifier in the question is replaced like any hit.
+        let mut asked = hit(&org, 3.0);
+        asked.exact = true;
+        let mut hits = vec![asked.clone()];
+        let mut cut = vec![];
+        apply_overrides(&mut hits, &all, None, true, &mut cut);
+        assert!(hits.len() == 1 && hits[0].memory.id == org.id && cut.is_empty());
+        let mut hits = vec![asked];
+        apply_overrides(&mut hits, &all, None, false, &mut cut);
+        assert!(hits.len() == 1 && hits[0].memory.id == user.id && cut.len() == 1);
         // A winner without the recall's tag takes no place; the overridden hit still goes.
         let mut hits = vec![hit(&org, 3.0), hit(&tone, 2.0)];
         let mut cut = vec![];
-        apply_overrides(&mut hits, &all, Some(&["billing".to_string()]), &mut cut);
+        apply_overrides(&mut hits, &all, Some(&["billing".to_string()]), false, &mut cut);
         assert_eq!(hits.iter().map(|h| h.memory.id).collect::<Vec<_>>(), vec![tone.id]);
         assert_eq!(cut.len(), 1);
     }

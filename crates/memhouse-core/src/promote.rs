@@ -104,9 +104,9 @@ impl Engine {
         labels.dedup();
         let structured = match (&req.structured, sources.as_slice()) {
             (Some(s), _) => Some(s.clone()),
-            // New content that is itself a structured record replaces the source's structured
-            // form (as in `revise`); otherwise the single source's form carries over.
-            (None, [one]) if crate::classify::structured_from_content(&content).is_none() => self.store.representations(&tenant, one.id).await?.0,
+            // The single source's structured form carries over with its own text only: new
+            // text describes something the old attributes may not (give `structured` with it).
+            (None, [one]) if content == one.content => self.store.representations(&tenant, one.id).await?.0,
             _ => None,
         };
         let mut metadata = json!({

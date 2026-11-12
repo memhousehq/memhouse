@@ -780,6 +780,7 @@ impl Engine {
             if let Some(o) = m.metadata.as_object_mut() {
                 o.remove("held");
                 o.remove("signals");
+                o.remove("review");
                 o.remove("pref_key");
             }
             if m.kind == MemoryKind::Preference {
@@ -816,20 +817,27 @@ impl Engine {
             } else if unsourced {
                 it.note = Some(format!("rejected: {} memory needs a verified source (the writing principal and a source label)", m.kind.as_str()));
                 MemoryStatus::Rejected
-            } else if reviewed {
-                it.note = Some("waiting for a reviewer".into());
-                MemoryStatus::Candidate
             } else if signal {
                 if m.expires_at.is_none() {
                     m.expires_at = Some(m.created_at + chrono::Duration::days(self.cfg.intake.plan_ttl_days.max(1) as i64));
                 }
-                it.note = Some(format!(
-                    "held as a candidate: an inferred {} is committed once it has been seen {} times (or stated explicitly)",
-                    m.kind.as_str(),
-                    self.cfg.intake.preference_signals
-                ));
                 m.metadata["held"] = json!("signal");
                 m.metadata["signals"] = json!(1);
+                if reviewed {
+                    // Counted like any signal, so repeats land on this record instead of piling
+                    // up; but only a reviewer commits it, however often it is seen.
+                    m.metadata["review"] = json!(true);
+                    it.note = Some(format!("held as a candidate: an inferred {} that also waits for a reviewer; repeats are counted", m.kind.as_str()));
+                } else {
+                    it.note = Some(format!(
+                        "held as a candidate: an inferred {} is committed once it has been seen {} times (or stated explicitly)",
+                        m.kind.as_str(),
+                        self.cfg.intake.preference_signals
+                    ));
+                }
+                MemoryStatus::Candidate
+            } else if reviewed {
+                it.note = Some("waiting for a reviewer".into());
                 MemoryStatus::Candidate
             } else if statement.is_some_and(|s| s.held()) && !open_item {
                 let s = statement.expect("held");
@@ -957,9 +965,12 @@ impl Engine {
                         let open = h.expires_at.is_none_or(|t| t > Utc::now()) && same;
                         if open && sim >= icfg.confirm_threshold && !items_signalled.contains(&held) {
                             let seen = h.metadata.get("signals").and_then(|n| n.as_u64()).unwrap_or(1) as u32 + 1;
+                            // A held signal that also waits for a reviewer is counted, never
+                            // committed by its repeats.
+                            let commits = seen >= icfg.preference_signals && h.metadata.get("review").and_then(|r| r.as_bool()) != Some(true);
                             // Committed by this repeat, a keyed preference replaces the value
                             // its scope held, as a stated one would.
-                            if let Some(key) = h.metadata.get("pref_key").and_then(|k| k.as_str()).filter(|_| seen >= icfg.preference_signals) {
+                            if let Some(key) = h.metadata.get("pref_key").and_then(|k| k.as_str()).filter(|_| commits) {
                                 let ids: Vec<Uuid> =
                                     self.store.structured_query(tenant, subject, "preference", &json!({ "key": key })).await?.into_iter().map(|(id, _)| id).collect();
                                 let old = self.store.get_many(tenant, &ids).await?;
@@ -971,7 +982,7 @@ impl Engine {
                             m.metadata["duplicate_of"] = json!(held);
                             m.metadata.as_object_mut().map(|o| o.remove("held"));
                             it.duplicate_of = Some(held);
-                            it.signal = Some((held, seen, seen >= icfg.preference_signals));
+                            it.signal = Some((held, seen, commits));
                             it.note = Some(format!("the same signal as {held}, now seen {seen} times"));
                             items_signalled.push(held);
                             break;

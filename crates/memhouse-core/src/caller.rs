@@ -192,6 +192,18 @@ impl Caller {
         })
     }
 
+    /// A revision stays in its record's subject, so it may not turn the record into a type that
+    /// is kept in its author's partition unless it is already there (ACC-10).
+    async fn keeps_partition(&self, kind: MemoryKind, subject: &str) -> anyhow::Result<()> {
+        let policy = self.engine.policy_for(self.tenant()).await?;
+        match &self.who.user {
+            Some(u) if policy.of(kind).access.partition == Partition::Author && u != subject => {
+                Err(error::invalid(format!("{kind} memory is kept in its author's partition ({u}); a revision stays in its record's subject, so write it with remember")))
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn approves(&self, approver: Approver) -> bool {
         self.who.has(perm::REVIEW) && (approver == Approver::Reviewer || self.who.is_admin())
     }
@@ -227,6 +239,7 @@ impl Caller {
         a.user = req.user.clone();
         let d = self.decide(&a).await?;
         if let Some(old) = req.supersedes {
+            self.keeps_partition(kind, &subject).await?;
             let (m, _) = self.visible(Operation::Revise, old).await?;
             if m.subject != subject {
                 return Err(error::invalid("supersedes names a memory of another subject"));
@@ -306,6 +319,7 @@ impl Caller {
     pub async fn revise(&self, mut req: ReviseRequest) -> anyhow::Result<RememberResult> {
         let (old, _) = self.visible(Operation::Revise, req.id).await?;
         let kind = req.kind.unwrap_or(old.kind);
+        self.keeps_partition(kind, &old.subject).await?;
         // A scope given with the revision is completed like a new write's: an agent's revision of
         // an agent-private type stays the agent's. Without one the old scope is inherited.
         if req.scope.is_some() {

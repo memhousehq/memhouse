@@ -643,7 +643,7 @@ like the memories themselves.
 | An agent's memories stay `candidate` | `[access] admission = "review"`: commit them with `POST /v1/review`, or grant the agent direct commits with `memhouse principal add agent:<name> --commit`. |
 | An agent's procedures or the organisation's terms stay `candidate` | By design ([memory types](memory-types.md#the-types)): `procedural` memory proposed by an agent waits for `POST /v1/review`, `taxonomic` memory for an admin's review. |
 | An agent can't see another agent's notes | Working memory is private to the agent that wrote it, and so is any record with `scope.agent`. Share it with `memhouse grant add <grantor> <grantee>`. |
-| A recall no longer returns working memory written with `scope.session` | From API 1.5 working memory in a session is session-local: a recall or list returns it only when it names that session (`"scope": {"session": "…"}`). Other types are unaffected. |
+| A recall no longer returns working memory written with `scope.session` | From API 1.5 working memory in a session is session-local: a recall returns it only when the request names that session (`"scope": {"session": "…"}`), and the list operations, which take no session, don't return it to non-admin callers. Other types are unaffected. |
 | `cannot listen on 127.0.0.1:7077` | The port is in use. Set `--bind` or `MEMHOUSE_BIND`. |
 | The model download hangs or fails | It needs `huggingface.co` once (or a mirror in `HF_ENDPOINT`). Pre-seed `cache_dir` from a machine that has access for air-gapped installs. |
 | `invalid peer certificate: UnknownIssuer` | The operating system has no CA certificates (install `ca-certificates`), or a proxy re-signs TLS: add its CA to the system store. |
