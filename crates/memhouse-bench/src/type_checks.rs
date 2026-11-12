@@ -283,14 +283,21 @@ async fn memory_types(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     after_expiry.k = Some(2);
     let after_expiry = small.recall(after_expiry).await?;
     // However many newer notes fail the filter: the filter is in the statement, before its limit.
-    for i in 0..60 {
-        small.remember(in_deep(words("crowd", i), vec![], None)).await?;
-    }
+    // 1,000 of them, written straight into the store: more than any bounded paging would read.
+    sqlx::query(
+        "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, valid_from, expires_at, scope_agent, scope_session, source, created_at, updated_at) \
+         SELECT gen_random_uuid(), $1, $2, 'working', 'committed', 'crowd note ' || g, encode(sha256(convert_to('crowd' || g, 'UTF8')), 'hex'), now(), now() + interval '1 day', \
+                'agent:a', 'deep', 'bench', now() + g * interval '1 millisecond', now() + g * interval '1 millisecond' FROM generate_series(1, 1000) g",
+    )
+    .bind(TENANT)
+    .bind(subj)
+    .execute(pool)
+    .await?;
     let mut crowded = ask(subj, "anything", Some("deep"));
     (crowded.k, crowded.tags, crowded.kinds) = (Some(1), Some(vec!["keep".into()]), Some(vec![MemoryKind::Working]));
     let crowded = small.recall(crowded).await?;
     s.case("working: a filter is applied before the limit, whatever the crowd", first_working(&crowded) == Some(older), || {
-        format!("{:?} behind 60 newer untagged notes; expected {older}", first_working(&crowded))
+        format!("{:?} behind 1,000 newer untagged notes; expected {older}", first_working(&crowded))
     });
     s.case("working: newer notes that don't count don't hide an older one", first_working(&by_tag) == Some(older) && first_working(&after_expiry) == Some(older), || {
         format!("with a tag filter: {:?}; after the newer notes expired: {:?}; expected {older}", first_working(&by_tag), first_working(&after_expiry))
@@ -802,7 +809,7 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     // Nothing else can be waiting for this lock: the subject's intake queue is drained first
     // (a promotion's own task may outlive its request), and the waiter count is zero before the
     // deletion starts, so the waiter seen afterwards is the deletion.
-    e.settle_subject(None, subj, Duration::from_secs(30)).await?;
+    anyhow::ensure!(e.settle_subject(None, subj, Duration::from_secs(30)).await?, "the subject's intake queue did not drain");
     let mut tx = pool.begin().await?;
     sqlx::query(memhouse_store_postgres::SUBJECT_LOCK_SQL).bind(TENANT).bind(subj).execute(&mut *tx).await?;
     let waiters = "SELECT count(*) FROM pg_locks w WHERE w.locktype = 'advisory' AND w.classid = 7270002 AND NOT w.granted \
@@ -870,11 +877,15 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     // A promotion that read its source and reaches the queue only after the source was erased
     // is not queued at all. The interleaving, step by step: the source is stored and read (the
     // proposal is built from it, as the engine builds one), then erased, then the enqueue runs.
-    let read = p.remember(write(subj, &words("readthenerased", 1), MemoryKind::Semantic)).await?.id;
+    let mut read = write(subj, &words("readthenerased", 1), MemoryKind::Semantic);
+    read.source = Some("erased-import-9".into());
+    let read = p.remember(read).await?.id;
     if let Some(mut late) = e.store.get(TENANT, read).await? {
         (late.id, late.kind, late.status) = (Uuid::now_v7(), MemoryKind::Procedural, MemoryStatus::Candidate);
         late.metadata = json!({ "promoted_from": [read.to_string()], "promoted_from_kinds": ["semantic"] });
-        p.forget(ForgetRequest { id: Some(read), ..Default::default() }).await?;
+        // Erased by its source label, the bulk path, between the read and the enqueue.
+        admin(e).forget(ForgetRequest { source: Some("erased-import-9".into()), ..Default::default() }).await?;
+        anyhow::ensure!(e.store.get(TENANT, read).await?.is_none(), "the source was not erased by its source label");
         let proposal = memhouse_core::intake::Proposal {
             id: late.id,
             tenant: TENANT.into(),
