@@ -71,15 +71,17 @@ impl WorkingCache {
         (tenant.to_string(), subject.to_string(), session.to_string())
     }
 
-    /// The session's live working memory, newest first, if the cache holds it and it is fresh.
-    pub fn get(&self, tenant: &str, subject: &str, session: &str, now: DateTime<Utc>) -> Option<Vec<Memory>> {
+    /// The session's live working memory, newest first, if the cache holds it and it is fresh;
+    /// and whether the entry is full, counted before expired notes are left out (the session
+    /// may then have older notes the cache doesn't hold).
+    pub fn get(&self, tenant: &str, subject: &str, session: &str, now: DateTime<Utc>) -> Option<(Vec<Memory>, bool)> {
         if !self.enabled() {
             return None;
         }
         let mut m = self.entries.lock().ok()?;
         let e = m.get_mut(&Self::key(tenant, subject, session)).filter(|e| e.loaded.elapsed() < self.ttl)?;
         e.used = Instant::now();
-        Some(e.items.iter().filter(|i| i.expires_at.is_none_or(|t| t > now)).cloned().collect())
+        Some((e.items.iter().filter(|i| i.expires_at.is_none_or(|t| t > now)).cloned().collect(), e.items.len() >= self.max_items))
     }
 
     /// Keep what the store returned for a session (newest first), unless something was
@@ -203,14 +205,14 @@ mod tests {
         let c = WorkingCache::new(60, 10, 3);
         assert!(c.get("t", "s", "a", Utc::now()).is_none());
         c.put(c.generation(), "t", "s", "a", vec![rec("a", "two", 60), rec("a", "one", -1)]);
-        let got = c.get("t", "s", "a", Utc::now()).unwrap();
+        let (got, _) = c.get("t", "s", "a", Utc::now()).unwrap();
         assert_eq!(got.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), vec!["two"]);
         // A write goes in front, extends the session's records, and the entry stays bounded.
         let later = Utc::now() + chrono::Duration::seconds(600);
         for t in ["three", "four", "five"] {
             c.wrote(c.generation(), &rec("a", t, 600), "a", Some(later));
         }
-        let got = c.get("t", "s", "a", Utc::now()).unwrap();
+        let (got, _) = c.get("t", "s", "a", Utc::now()).unwrap();
         assert_eq!(got.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(), vec!["five", "four", "three"]);
         // Another session is another entry; a write to an uncached session caches nothing.
         c.wrote(c.generation(), &rec("b", "other", 60), "b", None);

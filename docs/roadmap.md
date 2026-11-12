@@ -1081,7 +1081,10 @@ which is named.
     agents gets them from a filtered read; an expiry the store failed to extend is not cached;
     an exact preference match is not replaced by the one that applies; scoped rounds are
     deduplicated within their scope; a single source's structured form carries over only with
-    its own text. `memory_types` has 33 scenarios.
+    its own text. A promotion is queued under its subject's lock with its sources checked, so
+    one that read its source before an erasure is refused, not queued; the session fallback
+    pages with expiry, validity and tags applied per page, and triggers on what was read before
+    expired notes are left out. `memory_types` has 34 scenarios.
     The question the review raised about session reads within API v1 is settled above
     ("Changes for API 1.4 clients").
 - **Guard:** T2. **Depends on:** G10.

@@ -355,7 +355,7 @@ fn required_sources<'a>(records: impl Iterator<Item = &'a NewMemory>) -> Vec<Uui
 }
 
 /// The source records a promoted record names (`metadata.promoted_from`).
-pub(crate) fn promoted_from(m: &Memory) -> Vec<Uuid> {
+pub fn promoted_from(m: &Memory) -> Vec<Uuid> {
     promoted_from_in(&m.metadata)
 }
 

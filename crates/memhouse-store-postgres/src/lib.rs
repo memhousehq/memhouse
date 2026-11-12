@@ -1200,6 +1200,20 @@ impl memhouse_core::IntakeQueue for PgStore {
     async fn enqueue(&self, p: &memhouse_core::intake::Proposal) -> anyhow::Result<()> {
         let first = p.records.first().map(|r| &r.memory);
         let embedder = self.embedder.lock().unwrap().clone();
+        let mut tx = self.pool.begin().await?;
+        // A promotion is queued under its subject's lock with its sources checked (MEM-05): a
+        // deletion that ran since they were read either sees this row and removes it, or has
+        // already removed a source, and then nothing is queued.
+        let sources: Vec<Uuid> = p.records.iter().flat_map(|r| memhouse_core::intake::promoted_from(&r.memory)).collect();
+        if !sources.is_empty() {
+            sqlx::query(SUBJECT_LOCK_SQL).bind(&p.tenant).bind(&p.subject).execute(&mut *tx).await?;
+            let there: i64 =
+                sqlx::query_scalar("SELECT count(DISTINCT id) FROM mh_memory WHERE tenant = $1 AND id = ANY($2)").bind(&p.tenant).bind(&sources).fetch_one(&mut *tx).await?;
+            let distinct: std::collections::HashSet<&Uuid> = sources.iter().collect();
+            if there as usize != distinct.len() {
+                return Err(memhouse_core::error::conflict("a source of the promotion was deleted; nothing was queued"));
+            }
+        }
         // Durable on return: the insert commits with synchronous_commit (TR-LT-05).
         let r = sqlx::query(
             "INSERT INTO mh_intake (id, tenant, subject, record_ids, agent, acting_user, source, scope_agent, scope_user, payload, enqueued_at, embedder) \
@@ -1217,10 +1231,10 @@ impl memhouse_core::IntakeQueue for PgStore {
         .bind(serde_json::to_value(p)?)
         .bind(p.enqueued_at)
         .bind(embedder)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await;
         match r {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(tx.commit().await?),
             Err(e) if e.to_string().contains("is now embedded with") => Err(memhouse_core::error::conflict(e.to_string())),
             Err(e) => Err(e.into()),
         }

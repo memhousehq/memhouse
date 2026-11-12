@@ -907,7 +907,7 @@ impl Engine {
         let now_valid = req.as_of.unwrap_or_else(Utc::now);
         // The cache is per session, not per reader: every access rule is applied here.
         let (mut session_hits, session_statements) = match working {
-            Some((items, loaded)) => {
+            Some((items, loaded, full)) => {
                 let visible = |m: &Memory| {
                     m.status == MemoryStatus::Committed
                         && !m.labels.iter().any(|l| denied_labels.contains(l))
@@ -916,21 +916,22 @@ impl Engine {
                         && m.valid_to.is_none_or(|t| t > now_valid)
                         && req.tags.as_ref().is_none_or(|t| t.iter().any(|x| m.tags.contains(x)))
                 };
-                let fetched = items.len();
                 let mut mine: Vec<Memory> = items.into_iter().filter(visible).collect();
                 let mut statements = usize::from(loaded);
-                // The cache holds the session's newest notes, whoever wrote them. If it is full
-                // and too few of them are this reader's, older ones of the reader may lie
-                // beyond it: read those with the reader's own filters, in the statement.
+                // What was read holds the session's newest notes, whoever wrote them and whether
+                // or not they are still live. If it was cut at its limit and too few of them are
+                // this reader's to give, older ones may lie beyond it: page through the session
+                // with the reader's scope, grants and labels in the statement, applying expiry,
+                // validity and tags to each page, until there are enough or no more.
                 let want = if working_only { k } else { (k / 2).max(1) };
-                let limit = if working_only { k.max(self.working.max_items()) } else { self.working.max_items() };
-                if fetched >= limit && mine.len() < want {
+                if full && mine.len() < want {
                     if let Some(s) = &session_first {
-                        let q = ListQuery {
+                        let page = want.max(50);
+                        let mut q = ListQuery {
                             tenant: tenant.clone(),
                             subject: Some(subject.clone()),
                             kinds: Some(vec![MemoryKind::Working]),
-                            limit: want,
+                            limit: page,
                             denied_labels: denied_labels.clone(),
                             scope: scope.clone(),
                             shared_agents: ctx.shared_agents.clone(),
@@ -938,8 +939,19 @@ impl Engine {
                             ..Default::default()
                         };
                         let now_live = Utc::now();
-                        mine = within(deadline, self.store.list(&q)).await?.into_iter().filter(|m| m.expires_at.is_none_or(|t| t > now_live)).filter(visible).collect();
-                        statements += 1;
+                        mine.clear();
+                        // Bounded: a session with thousands of ineligible notes costs at most this.
+                        for _ in 0..20 {
+                            let rows = within(deadline, self.store.list(&q)).await?;
+                            statements += 1;
+                            let last = rows.last().map(|m| (m.created_at, m.id));
+                            let more = rows.len() == page;
+                            mine.extend(rows.into_iter().filter(|m| m.expires_at.is_none_or(|t| t > now_live)).filter(visible));
+                            match last {
+                                Some(l) if more && mine.len() < want => q.before = Some(l),
+                                _ => break,
+                            }
+                        }
                     }
                 }
                 (mine, statements)
@@ -1570,13 +1582,15 @@ impl Engine {
     /// store (a cache miss: one statement) rather than the session cache.
     /// `more`: the caller wants up to this many, more than the cache keeps per session; they are
     /// read from the store and not cached.
-    pub(crate) async fn session_working(&self, tenant: &str, subject: &str, session: &str, more: Option<usize>) -> anyhow::Result<(Vec<Memory>, bool)> {
+    /// The third value says whether the read was cut at its limit, counted before expired notes
+    /// are left out: the session may then have older notes that were not read.
+    pub(crate) async fn session_working(&self, tenant: &str, subject: &str, session: &str, more: Option<usize>) -> anyhow::Result<(Vec<Memory>, bool, bool)> {
         let now = Utc::now();
         let generation = self.working.generation();
         if more.is_none() {
-            if let Some(items) = self.working.get(tenant, subject, session, now) {
+            if let Some((items, full)) = self.working.get(tenant, subject, session, now) {
                 metrics::inc("memhouse_working_cache_total", &[("outcome", "hit")], 1.0);
-                return Ok((items, false));
+                return Ok((items, false, full));
             }
             metrics::inc("memhouse_working_cache_total", &[("outcome", "miss")], 1.0);
         }
@@ -1589,11 +1603,12 @@ impl Engine {
             ..Default::default()
         };
         let mut items = self.store.list(&q).await?;
-        items.retain(|m| m.expires_at.is_none_or(|t| t > now));
+        let full = items.len() >= q.limit;
         if more.is_none() {
             self.working.put(generation, tenant, subject, session, items.clone());
         }
-        Ok((items, true))
+        items.retain(|m| m.expires_at.is_none_or(|t| t > now));
+        Ok((items, true, full))
     }
 
     /// After a session's working-memory write committed: the session's other working records
