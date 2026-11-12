@@ -4,7 +4,7 @@
   "embedding_model": "bge-small-en-v1.5-onnx-Q",
   "governance": {
     "min_checks": 53,
-    "source": "bench-results/guard/20261112-193509-9d0103_governance_guard_governance"
+    "source": "bench-results/guard/20261112-225004-c1283a_governance_guard_governance"
   },
   "runs": [
     {

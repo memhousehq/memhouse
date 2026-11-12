@@ -4,8 +4,8 @@
 | Field | Value |
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
-| Date | 12 November 2026 |
-| Progress | 10 of 36 goals done; G11 built, its latency gate open ([goal tracker](#goal-tracker)) |
+| Date | 13 November 2026 |
+| Progress | 11 of 36 goals done ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -326,7 +326,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 
 - [x] [G08 — Policy engine v1 (structured specs, approval, versions)](#g08--policy-engine-v1-structured-specs-approval-versions) (4 November 2026)
 - [x] [G10 — Write pipeline v2: intake queue, candidates, classification, routing](#g10--write-pipeline-v2-intake-queue-candidates-classification-routing) (6 November 2026)
-- [ ] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion) (built 12 November 2026; the guard's latency gate is still to pass on a quiet machine)
+- [x] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion) (13 November 2026)
 - [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2)
 - [ ] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate)
 - [ ] [G36 — Language packs: word lists as data, several languages at once](#g36--language-packs-word-lists-as-data-several-languages-at-once)
@@ -924,7 +924,7 @@ which is named.
 
 #### G11 — Memory types, scopes and promotion
 
-- [ ] **Done** (every deliverable done 12 November 2026; not ticked until the guard's latency gate passes on a quiet machine, see the result)
+- [x] **Done** (13 November 2026)
 
 > `/goal Give each memory type its own gate, retention, retrieval method and access rules (working, episodic, semantic, preference; procedural and taxonomic as candidates), add session working memory with a low-latency cache, scopes with explicit inheritance (tenant, org, team, agent, user, session), audited promotion between types, and sharing across agents with explicit grants. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -941,7 +941,7 @@ which is named.
   - [x] a write is deduplicated against, and supersedes, only records of its own scope; the scope is part of the deduplication key (added: not listed; the scope-blind checks would have let one scope's write replace another's)
   - [x] API 1.5.0 (`/v1/promote`, `/v1/subjects/{subject}/preferences`, `/v1/grants`, `working` on a hit, `scope` in `/v1/whoami`, the `overridden` exclusion reason) and schema version 7 (added: not listed)
 - **Done when:** the type-specific scenario suite passes 100%; recall in a session sees working memory first without extra latency (p95 within the guard).
-- **Result (2026-11-12):** built; API 1.5.0, schema version 7. See
+- **Result (2026-11-12, closed 2026-11-13):** done; API 1.5.0, schema version 7. See
   [memory-types.md](memory-types.md), [policy.md § Per-type sections](policy.md#per-type-sections)
   and [api.md § Memory types](api.md#memory-types).
   - **Type rules** (`core/src/policy.rs`): the compiled policy has a `types` section with, per
@@ -1017,13 +1017,13 @@ which is named.
     LongMemEval_S stride 10 and LoCoMo at their baselines on every quality metric (91.3 / 94.2 /
     84.8 and 78.8 / 78.6 / 59.2); LoCoMo + enrich session recall_all@5 79.3 (baseline 79.6),
     round recall_all@10 65.6 (66.0), inside the limits. Spend $0 (every extraction from the
-    cache). **The latency gate has not passed, so the goal is not ticked.** Search p50
-    (limits 14.7 ms on LongMemEval_S, 14.0 ms on LoCoMo) in the three complete guard runs of the
-    day, all on the loaded machine: 13.8 and 20.5 ms (gated, failed on LoCoMo); 16.5 and 43.0 ms
-    (`--skip-latency`); 16.3 and 19.0 ms (gated, failed on both). The spread between runs of the
-    same code points at the load, and the recall statement of a reader without grants is the
-    same text as before this goal, but neither is a passing gate. To close the goal: run
-    `memhouse bench guard --tier 2` on a quiet machine, record its figures here, tick the boxes. Clippy, the unit
+    cache). **Latency:** search p50 (limits 14.7 ms on LongMemEval_S, 14.0 ms on
+    LoCoMo) read 13.8 and 20.5 ms, 16.5 and 43.0 ms, 16.3 and 19.0 ms in the three guard runs of
+    12 November, all with unrelated jobs holding five or more of the machine's eight cores; the
+    goal stayed unticked. **The gated T2 guard passed on 13 November**, with the other job down to
+    one core, on the code after every review fix: governance 53/53; search p50 8.5 ms
+    (LongMemEval_S) and 7.9 ms (LoCoMo), recall p95 43.4 and 45.3 ms; quality as above (LoCoMo +
+    enrich 79.3 / 65.6); spend $0. No baseline was changed. Clippy, the unit
     tests (78) and the Docker end-to-end passed; `cargo xtask ci` as a whole stops at its
     dependency-policy step on RUSTSEC-2026-0459 (`libsqlite3-sys 0.30.1`, an optional dependency
     of the G03 spike examples), published after G10 and not touched by this goal: the fixed
