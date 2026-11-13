@@ -158,6 +158,19 @@ pub struct SpecRanking {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recency_half_life_days: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relevance_weight: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_weight: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity_weight: Option<f32>,
+    /// Leave near-duplicates out of a recall (ECON-03).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_cosine: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedup_overlap: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_analysis: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_weight: Option<f32>,
@@ -505,6 +518,25 @@ pub struct Ranking {
     pub window_top: usize,
     pub window_top_weight: f32,
     pub subquery_weight: f32,
+    /// Weights of the final score's features (HYB-05): relevance, confidence and validity next
+    /// to `recency_weight`. Bodies compiled before they existed rank by relevance and recency.
+    #[serde(default = "one")]
+    pub relevance_weight: f32,
+    #[serde(default)]
+    pub confidence_weight: f32,
+    #[serde(default)]
+    pub validity_weight: f32,
+    /// Near-duplicate removal in packing (ECON-03) and its two thresholds.
+    #[serde(default)]
+    pub dedup: bool,
+    #[serde(default = "one")]
+    pub dedup_cosine: f32,
+    #[serde(default = "one")]
+    pub dedup_overlap: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 impl Ranking {
@@ -522,6 +554,12 @@ impl Ranking {
             window_top: m.window_top,
             window_top_weight: m.window_top_weight,
             subquery_weight: m.subquery_weight,
+            relevance_weight: m.relevance_weight,
+            confidence_weight: m.confidence_weight,
+            validity_weight: m.validity_weight,
+            dedup: m.recall_dedup,
+            dedup_cosine: m.recall_dedup_cosine,
+            dedup_overlap: m.recall_dedup_overlap,
         }
     }
 
@@ -890,8 +928,16 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
         weight("ranking.window_weight", r.window_weight, 0.0, 100.0, false, &mut k.window_weight);
         weight("ranking.window_top_weight", r.window_top_weight, 0.0, 100.0, false, &mut k.window_top_weight);
         weight("ranking.subquery_weight", r.subquery_weight, 0.0, 100.0, false, &mut k.subquery_weight);
+        weight("ranking.relevance_weight", r.relevance_weight, 0.0, 100.0, false, &mut k.relevance_weight);
+        weight("ranking.confidence_weight", r.confidence_weight, 0.0, 100.0, false, &mut k.confidence_weight);
+        weight("ranking.validity_weight", r.validity_weight, 0.0, 100.0, false, &mut k.validity_weight);
+        weight("ranking.dedup_cosine", r.dedup_cosine, 0.0, 1.0, true, &mut k.dedup_cosine);
+        weight("ranking.dedup_overlap", r.dedup_overlap, 0.0, 1.0, true, &mut k.dedup_overlap);
         if let Some(q) = r.query_analysis {
             k.query_analysis = q;
+        }
+        if let Some(d) = r.dedup {
+            k.dedup = d;
         }
         if k.keyword_weight == 0.0 && k.vector_weight == 0.0 {
             err("ranking", "range", "keyword_weight and vector_weight are both 0, so recall would rank nothing".into());

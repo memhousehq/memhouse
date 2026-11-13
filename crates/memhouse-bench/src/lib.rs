@@ -11,6 +11,7 @@ pub mod guard;
 mod identity_checks;
 mod intake_checks;
 pub mod metrics;
+mod pack_checks;
 mod policy_checks;
 pub mod report;
 pub mod runner;

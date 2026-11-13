@@ -24,7 +24,8 @@ tasks:
     --fix           apply rustfmt and add missing SPDX headers instead of checking them
     --skip-e2e      skip scripts/e2e.sh (no Docker needed)
     --skip-guard    skip the benchmark guard (no benchmark database needed)
-    --skip-latency  report the guard's timings without failing on them (a machine known to be busy)
+    --skip-latency  report the guard's timings without failing on them (a machine known to be busy);
+                    MEMHOUSE_CI_SKIP_LATENCY=1 does the same where no option can be passed (the pre-push hook)
   spdx [--fix]    check (or add) SPDX licence identifiers
   links           check relative links and #anchors in the Markdown docs
     --external      also list the external links (not fetched)
@@ -71,6 +72,11 @@ fn workspace_root() -> PathBuf {
 fn ci(root: &Path, args: &[String]) -> Result<(), String> {
     let mut tier = "1".to_string();
     let (mut fix, mut skip_e2e, mut skip_guard, mut skip_latency) = (false, false, false, false);
+    // The pre-push hook passes no options: on a machine known to be busy, the environment says so.
+    // Only timings stop gating; every quality metric and every other step still does.
+    if std::env::var("MEMHOUSE_CI_SKIP_LATENCY").is_ok_and(|v| v == "1") {
+        skip_latency = true;
+    }
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -263,13 +269,18 @@ fn install_hooks(root: &Path, args: &[String]) -> Result<(), String> {
     }
     let dir = repo.join(String::from_utf8_lossy(&out.stdout).trim());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // Hooks call back into this checkout, so they work for any repository.
-    let xtask = format!("cargo run --quiet --manifest-path \"{}/Cargo.toml\" --package xtask --", root.display());
+    // A hook runs in the checkout git is working on: the repository's own directory or one of
+    // its worktrees. The product's hooks build xtask from that checkout and check that tree, so
+    // a push from a worktree is checked as it is, not as the main checkout happens to be. Another
+    // repository's hooks call back into this checkout for xtask and scan their own tree.
+    let top = "\"$(git rev-parse --show-toplevel)\"";
+    let xtask = if product {
+        "cargo run --quiet --manifest-path \"$(git rev-parse --show-toplevel)/Cargo.toml\" --package xtask --".to_string()
+    } else {
+        format!("cargo run --quiet --manifest-path \"{}/Cargo.toml\" --package xtask --", root.display())
+    };
     let mut hooks = vec![
-        (
-            "pre-commit",
-            format!("# Secret scan of staged changes. Bypass only for a false positive: git commit --no-verify\nexec {xtask} secrets --repo \"{}\" --staged\n", repo.display()),
-        ),
+        ("pre-commit", format!("# Secret scan of staged changes. Bypass only for a false positive: git commit --no-verify\nexec {xtask} secrets --repo {top} --staged\n")),
         (
             "commit-msg",
             "# DCO: every commit is signed off (git commit -s). See CONTRIBUTING.md.\n\

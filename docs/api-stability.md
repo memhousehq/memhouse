@@ -6,7 +6,7 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.5.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.6.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
 `forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
 (preview); 1.3 added the policy operations under `/v1/policies`; 1.4 made admission asynchronous
@@ -14,7 +14,9 @@ principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels`
 and added `include_candidates`, `exact`, `degraded`, `statement`, `route`, `queued` and the
 `unavailable` error code; 1.5 added memory types (`taxonomic`, `POST /v1/promote`,
 `GET /v1/subjects/{subject}/preferences`, `/v1/grants`, `working` on a hit, `scope` in
-`/v1/whoami`, the `overridden` exclusion reason and the `grant:manage` permission). Its contract is [`api/openapi.json`](../api/openapi.json), served at
+`/v1/whoami`, the `overridden` exclusion reason and the `grant:manage` permission); 1.6 added
+`render_format`, the `duplicate` exclusion reason, `features` on an explanation's returned records
+and the ranking fields of a compiled policy. Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -80,6 +82,8 @@ here so clients are ready for them:
 | G11 (1.5) | An agent's `working` memory is scoped to that agent; other agents read it only with a grant. | Create a grant (`POST /v1/grants`) where agents share a scratchpad. |
 | G11 (1.5) | `procedural` memory proposed by an agent without a commit grant stays `candidate` until reviewed, also with `admission = "auto"`. `working` memory is committed without the statement gate and without review. | Review procedural proposals (`POST /v1/review`), or give the agent a commit grant. |
 | G11 (1.5) | A keyed preference (`structured.record_type = "preference"` with `attrs.key`) supersedes the same key in the same scope, and recall returns the one at the narrowest scope (user over team over org). A write deduplicates only against records of its own scope. | Nothing. |
+| G12 (1.6) | `token_budget` is a hard cap: the first hit is no longer returned when it alone exceeds the budget, and the `rendered` block counts against it too ([recorded exception](#recorded-exception-the-token-budget-is-a-hard-cap-16)). | Send a budget that fits at least one memory, and handle an empty `hits`. |
+| G12 (1.6) | Recall leaves out near-duplicates of a better-ranked hit (cosine 0.97 or text overlap 0.9 by default); they are listed in the explanation as `duplicate`. | Nothing; a policy with `[ranking] dedup = false` returns them. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ### Recorded exception: session working memory (1.5)
@@ -101,6 +105,23 @@ behaviour change needs a new major version. It was approved by the maintainer on
   planned for the next major version (G37, in the table above).
 - **What a client does.** Send `"scope": {"session": "…"}` on the recalls that should see a
   session's working memory.
+
+### Recorded exception: the token budget is a hard cap (1.6)
+
+- **What changed.** Before 1.6, `token_budget` stopped adding hits once the budget was reached
+  but always returned the first hit, even when it alone was larger than the budget, and the
+  `rendered` block was not counted. From 1.6 neither the returned content nor the block exceeds
+  the budget: a memory that doesn't fit is left out (smaller ones below it may still be
+  returned), and a budget smaller than every candidate returns no hits.
+- **Who is affected.** A client that sent a budget smaller than its top memory and relied on
+  getting that memory anyway, or that sent a budget and pasted `rendered`, which could be larger
+  than the budget.
+- **Why it was allowed inside v1.** The budget exists so that a caller can size a prompt; a cap
+  that the response may exceed can't be relied on for that, which is what requirement PERF-06
+  asks for (no response over its budget). The maintainer set this as the goal of G12 ("treat the
+  token budget as a hard cap", 13 November 2026). The field's type and default are unchanged.
+- **What a client does.** Send a budget that fits at least one memory, and treat an empty `hits`
+  with a budget as "nothing fits", not as "nothing known".
 
 No other exception has been made. The compatibility check below compares shapes, not this kind
 of behaviour, so behaviour changes are reviewed against this section by hand.

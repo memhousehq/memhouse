@@ -405,6 +405,11 @@
             "type": "string"
           },
           {
+            "const": "duplicate",
+            "description": "A near-duplicate of a better-ranked memory in the same recall (ECON-03).",
+            "type": "string"
+          },
+          {
             "const": "budget",
             "description": "Cut by the token budget.",
             "type": "string"
@@ -1311,6 +1316,26 @@
             "minimum": 0,
             "type": "integer"
           },
+          "confidence_weight": {
+            "default": 0.0,
+            "format": "float",
+            "type": "number"
+          },
+          "dedup": {
+            "default": false,
+            "description": "Near-duplicate removal in packing (ECON-03) and its two thresholds.",
+            "type": "boolean"
+          },
+          "dedup_cosine": {
+            "default": 1.0,
+            "format": "float",
+            "type": "number"
+          },
+          "dedup_overlap": {
+            "default": 1.0,
+            "format": "float",
+            "type": "number"
+          },
           "default_k": {
             "format": "uint",
             "minimum": 0,
@@ -1331,11 +1356,22 @@
             "format": "float",
             "type": "number"
           },
+          "relevance_weight": {
+            "default": 1.0,
+            "description": "Weights of the final score's features (HYB-05): relevance, confidence and validity next\nto `recency_weight`. Bodies compiled before they existed rank by relevance and recency.",
+            "format": "float",
+            "type": "number"
+          },
           "rrf_k": {
             "format": "float",
             "type": "number"
           },
           "subquery_weight": {
+            "format": "float",
+            "type": "number"
+          },
+          "validity_weight": {
+            "default": 0.0,
             "format": "float",
             "type": "number"
           },
@@ -1551,6 +1587,34 @@
               "null"
             ]
           },
+          "confidence_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "dedup": {
+            "description": "Leave near-duplicates out of a recall (ECON-03).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "dedup_cosine": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "dedup_overlap": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "default_k": {
             "format": "uint",
             "minimum": 0,
@@ -1586,6 +1650,13 @@
               "null"
             ]
           },
+          "relevance_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "rrf_k": {
             "format": "float",
             "type": [
@@ -1594,6 +1665,13 @@
             ]
           },
           "subquery_weight": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "validity_weight": {
             "format": "float",
             "type": [
               "number",
@@ -2449,6 +2527,38 @@
         ],
         "type": "object"
       },
+      "RankFeatures": {
+        "description": "What a hit's final score was combined from (HYB-05), each before its policy weight.",
+        "properties": {
+          "confidence": {
+            "description": "The record's confidence, 0 to 1.",
+            "format": "float",
+            "type": "number"
+          },
+          "recency": {
+            "description": "1 for a memory of now, halving towards 0 with age (`1 / (1 + age / half_life)`).",
+            "format": "float",
+            "type": "number"
+          },
+          "relevance": {
+            "description": "Keyword and vector ranks fused, or the reranker's score.",
+            "format": "float",
+            "type": "number"
+          },
+          "validity": {
+            "description": "1 for a confirmed record valid now, 0.5 for a candidate, 0 for one no longer valid.",
+            "format": "float",
+            "type": "number"
+          }
+        },
+        "required": [
+          "relevance",
+          "recency",
+          "confidence",
+          "validity"
+        ],
+        "type": "object"
+      },
       "RecallExplanation": {
         "description": "A recall's explanation (`GET /v1/recalls/{id}/explanation`, GOV-04): what it returned and why,\nand the records that matched the query but were left out, each with its reason. Exclusions for\naccess, labels and state are recomputed from the store when the explanation is read\n(`replayed_at`); budget and rank cuts are as recorded.",
         "properties": {
@@ -2720,6 +2830,17 @@
             "description": "Also return the memories as a text block ready for a prompt (`rendered`, INT-04).",
             "type": "boolean"
           },
+          "render_format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RenderFormat"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The form of the text block: `plain` (the default), `markdown` or `xml`. Naming one also\nasks for the block, like `render`."
+          },
           "rerank": {
             "default": null,
             "description": "Override the configured reranker on/off.",
@@ -2768,7 +2889,7 @@
           },
           "token_budget": {
             "default": null,
-            "description": "Approximate token budget for the returned memories.",
+            "description": "A hard cap, in approximate tokens (4 bytes each), on the content of the returned\nmemories and on the rendered block (PERF-06). A memory that does not fit is left out.",
             "format": "uint",
             "minimum": 0,
             "type": [
@@ -3163,6 +3284,26 @@
         ],
         "type": "object"
       },
+      "RenderFormat": {
+        "description": "The form of a recall's rendered text block (INT-04).",
+        "oneOf": [
+          {
+            "const": "plain",
+            "description": "One line per memory: `- [id] (kind, date #tags) text`.",
+            "type": "string"
+          },
+          {
+            "const": "markdown",
+            "description": "A Markdown list under a heading.",
+            "type": "string"
+          },
+          {
+            "const": "xml",
+            "description": "One `<memory>` element per memory inside `<memories>`, with the text escaped.",
+            "type": "string"
+          }
+        ]
+      },
       "Retrieval": {
         "description": "How a type is retrieved (MEM-01). Set by the engine per type; shown in the compiled policy.",
         "oneOf": [
@@ -3215,6 +3356,17 @@
       "ReturnedRecord": {
         "description": "A record a recall returned, with its ranking signals.",
         "properties": {
+          "features": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RankFeatures"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the score was combined from, each before its policy weight (HYB-05)."
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -3933,7 +4085,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.5.0"
+    "version": "1.6.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

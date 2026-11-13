@@ -736,6 +736,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             scope: Default::default(),
             include_candidates: false,
             shared_agents: vec![],
+            with_vectors: false,
         };
         let scoped = SearchQuery { scope: Scope { team: Some("support".into()), user: Some("ana".into()), ..Default::default() }, ..probe(RetrievalMode::Hybrid, vec![], None) };
         let variants = [
@@ -838,6 +839,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 scope: Default::default(),
                 include_candidates: false,
                 shared_agents: vec![],
+                with_vectors: false,
             };
             let hits = engine.store.search(&q).await?;
             let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();
@@ -1017,6 +1019,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // 48–53. Memory types, the session cache, scope inheritance, promotion, grants between
     // agents and partitions (G11).
     checks.extend(crate::type_checks::run(engine).await);
+
+    // 54–56. Ranking by policy weights, near-duplicate removal and the token budget (G12).
+    checks.extend(crate::pack_checks::run(engine).await);
 
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {

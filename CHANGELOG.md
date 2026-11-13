@@ -45,6 +45,14 @@ path from 0.x data other than export and import.
   `taxonomic` kind for an administrator's approval. API 1.5.0, schema version 7 (`mh_grant`),
   `[memory] working_cache_*` and `[intake] preference_signals` settings. Behaviour changes for
   1.4 clients are listed in [docs/api-stability.md](docs/api-stability.md).
+- Ranking and packing v2: the final score combines relevance, recency, confidence and validity
+  with weights from the compiled policy (`[ranking] relevance_weight`, `confidence_weight`,
+  `validity_weight`); recall leaves out near-duplicates by vector cosine and text shingles and
+  fills the freed places (`dedup`, `dedup_cosine`, `dedup_overlap`); `token_budget` is a hard cap
+  on the hits and on the rendered block; `render_format` picks the block's form (`plain`,
+  `markdown`, `xml`). API 1.6.0; `[memory] relevance_weight`, `confidence_weight`,
+  `validity_weight` and `recall_dedup*` settings. The budget change for 1.5 clients is recorded in
+  [docs/api-stability.md](docs/api-stability.md).
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early
   (`memhouse recall ... | head`).

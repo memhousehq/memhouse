@@ -847,7 +847,8 @@ pub struct RecallRequest {
     /// Override the configured reranker on/off.
     #[serde(default)]
     pub rerank: Option<bool>,
-    /// Approximate token budget for the returned memories.
+    /// A hard cap, in approximate tokens (4 bytes each), on the content of the returned
+    /// memories and on the rendered block (PERF-06). A memory that does not fit is left out.
     #[serde(default)]
     pub token_budget: Option<usize>,
     /// Override query analysis (time windows and sub-queries) on/off.
@@ -860,6 +861,10 @@ pub struct RecallRequest {
     /// Also return the memories as a text block ready for a prompt (`rendered`, INT-04).
     #[serde(default)]
     pub render: bool,
+    /// The form of the text block: `plain` (the default), `markdown` or `xml`. Naming one also
+    /// asks for the block, like `render`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_format: Option<RenderFormat>,
     #[serde(default)]
     pub actor: Option<String>,
     /// Also return candidates (plans and speculation the gate holds, proposals waiting for
@@ -888,6 +893,46 @@ fn empty_object() -> serde_json::Value {
     serde_json::json!({})
 }
 
+/// The form of a recall's rendered text block (INT-04).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderFormat {
+    /// One line per memory: `- [id] (kind, date #tags) text`.
+    #[default]
+    Plain,
+    /// A Markdown list under a heading.
+    Markdown,
+    /// One `<memory>` element per memory inside `<memories>`, with the text escaped.
+    Xml,
+}
+
+impl RenderFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RenderFormat::Plain => "plain",
+            RenderFormat::Markdown => "markdown",
+            RenderFormat::Xml => "xml",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<RenderFormat> {
+        [RenderFormat::Plain, RenderFormat::Markdown, RenderFormat::Xml].into_iter().find(|f| f.as_str() == s)
+    }
+}
+
+/// What a hit's final score was combined from (HYB-05), each before its policy weight.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RankFeatures {
+    /// Keyword and vector ranks fused, or the reranker's score.
+    pub relevance: f32,
+    /// 1 for a memory of now, halving towards 0 with age (`1 / (1 + age / half_life)`).
+    pub recency: f32,
+    /// The record's confidence, 0 to 1.
+    pub confidence: f32,
+    /// 1 for a confirmed record valid now, 0.5 for a candidate, 0 for one no longer valid.
+    pub validity: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Hit {
     pub memory: Memory,
@@ -909,6 +954,14 @@ pub struct Hit {
     /// ranked against the query.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub working: bool,
+    /// The record's vector, kept inside the engine for near-duplicate removal; never returned.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub embedding: Option<Vec<f32>>,
+    /// The score's features, kept for the recall explanation.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub features: Option<RankFeatures>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -969,6 +1022,8 @@ pub struct SearchQuery {
     pub include_candidates: bool,
     /// Agents whose agent-scoped records the reader was granted (INT-06): `shared_key` values.
     pub shared_agents: Vec<String>,
+    /// Also return each hit's vector (`Hit::embedding`), for near-duplicate removal (ECON-03).
+    pub with_vectors: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1175,6 +1230,8 @@ pub enum ExclusionReason {
     Filter,
     /// A preference overridden by the same preference at a narrower scope (MEM-04).
     Overridden,
+    /// A near-duplicate of a better-ranked memory in the same recall (ECON-03).
+    Duplicate,
     /// Cut by the token budget.
     Budget,
     /// Ranked below the `k` returned.
@@ -1190,6 +1247,7 @@ impl ExclusionReason {
             ExclusionReason::Validity => "validity",
             ExclusionReason::Filter => "filter",
             ExclusionReason::Overridden => "overridden",
+            ExclusionReason::Duplicate => "duplicate",
             ExclusionReason::Budget => "budget",
             ExclusionReason::Rank => "rank",
         }
@@ -1213,6 +1271,9 @@ pub struct ReturnedRecord {
     pub rerank_score: Option<f32>,
     /// Approximate tokens of its content.
     pub tokens: usize,
+    /// What the score was combined from, each before its policy weight (HYB-05).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<RankFeatures>,
 }
 
 /// A record left out of a recall, and why.

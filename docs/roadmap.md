@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 11 of 36 goals done ([goal tracker](#goal-tracker)) |
+| Progress | 11 of 36 goals done, G12 built and waiting for its latency check ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 53 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 56 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -58,6 +58,9 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
   policy; session working memory served first from a per-session cache; scopes that inherit from
   tenant to session, with preferences resolved user over team over org; audited promotion
   between types; grants between agents; the `taxonomic` kind (G11, API 1.5, schema v7);
+- ranking that combines relevance, recency, confidence and validity with the compiled policy's
+  weights; packing that leaves out near-duplicates and treats the token budget as a hard cap;
+  the rendered block as plain text, Markdown or XML (G12, API 1.6);
 - docs: API, configuration, operations, governance, policy, development, architecture, benchmarks.
 
 Published results: LongMemEval_S QA **86.0** (GPT-4o), LoCoMo QA **83.7** (GPT-4o-mini), recall
@@ -69,9 +72,9 @@ are frozen (goals G04–G15), so it is written once against the final contracts 
 reworked.
 
 **What is missing from the code is the unbuilt part of each goal not ticked in the
-[goal tracker](#goal-tracker)** (G12 onwards; G25's re-embedding was done early). Some of those
-goals start from features that already work and are listed above, such as date-aware recall
-(G12) and the v1 sales and success templates (G24). The largest gaps are relationship-based
+[goal tracker](#goal-tracker)** (G13 onwards, and G12's latency check; G25's re-embedding was done early). Some of those
+goals start from features that already work and are listed above, such as the v1 sales and
+success templates (G24). The largest gaps are relationship-based
 access (ACC), SDKs, the Lite store, the coding template's git-aware features, release
 engineering, and all of Scale.
 
@@ -134,7 +137,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 53 / 53 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 56 / 56 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -327,7 +330,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 - [x] [G08 — Policy engine v1 (structured specs, approval, versions)](#g08--policy-engine-v1-structured-specs-approval-versions) (4 November 2026)
 - [x] [G10 — Write pipeline v2: intake queue, candidates, classification, routing](#g10--write-pipeline-v2-intake-queue-candidates-classification-routing) (6 November 2026)
 - [x] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion) (13 November 2026)
-- [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2)
+- [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2) (built 13 November 2026; latency still to confirm on a quiet machine)
 - [ ] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate)
 - [ ] [G36 — Language packs: word lists as data, several languages at once](#g36--language-packs-word-lists-as-data-several-languages-at-once)
 - [ ] [G14 — Quality iteration I: weak types and tiered extraction](#g14--quality-iteration-i-weak-types-and-tiered-extraction)
@@ -1092,16 +1095,81 @@ which is named.
 
 #### G12 — Ranking and packing v2
 
-- [ ] **Done**
+- [ ] **Done** (built 13 November 2026; one box open: the latency check)
 
 > `/goal Make ranking combine relevance, recency, confidence and validity with weights from compiled policy, make packing remove near-duplicates and treat the token budget as a hard cap, and return a rendered text block alongside structured hits; tune only within the guard. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **HYB-05**, **ECON-03**, **PERF-06**, INT-04 rendering (contract in G05).
 - **Deliverables:**
-  - [ ] ranking function reading policy weights; recency and confidence features
-  - [ ] near-duplicate removal (cosine and text shingles) in packing
-  - [ ] rendered block templates (plain, markdown, XML-ish) chosen per request
+  - [x] ranking function reading policy weights; recency and confidence features
+  - [x] near-duplicate removal (cosine and text shingles) in packing
+  - [x] rendered block templates (plain, markdown, XML-ish) chosen per request
+  - [ ] the guard's latency gates passed on a quiet machine with near-duplicate removal on (added 13 November 2026: every run of this goal was made while another process loaded the machine, so the timings were reported, not gated)
 - **Done when:** the token budget is never exceeded (property test); T2 is equal or better.
+- **Result (2026-11-13):**
+  - **Built.** `memhouse-core/src/pack.rs` holds the last steps of a recall, with no model and
+    no further statement. *Ranking* (HYB-05): every hit's final score is
+    `relevance_weight × relevance + recency_weight × recency + confidence_weight × confidence +
+    validity_weight × validity`, with the weights read from the compiled policy (`[ranking]` in
+    a spec; defaults in `[memory]`: 1, 0, 0, 0, so the default order is the relevance order,
+    bit for bit). Validity is 1 for a committed record valid now, 0.5 for a candidate, 0 for a
+    version an `as_of` recall found that is no longer valid. A recall's explanation lists the
+    four features of each returned record (`features`). *Packing* (ECON-03): of hits whose
+    vectors are at least `dedup_cosine` similar (0.97) or whose texts share at least
+    `dedup_overlap` of their three-word shingles (0.9), only the best-ranked is returned; the
+    places freed are filled from a reserve of up to 20 candidates ranked just below, fetched in
+    the same statement by the main probe (with removal on, the search statement also returns
+    each row's vector; with it off the statement is the one of G11). A keyed preference never
+    fills a place from the reserve, since only returned preferences are resolved by scope. A committed record
+    is preferred to a candidate that says the same, an exact structured match is never dropped,
+    and two episodic records of different sessions are different events and both stay. The
+    removed records are in the explanation with the new reason `duplicate`. *Budget* (PERF-06):
+    `token_budget` is a hard cap on the content of the returned memories and on the rendered
+    block; a memory that doesn't fit is passed over and smaller ones below it may still fit.
+    *Rendering* (INT-04): `render_format` picks `plain` (as before), `markdown` or `xml` (text
+    escaped, so a memory can't close its own element); the MCP `recall` tool takes it too.
+    API 1.6.0; no schema change. Docs: [api.md](api.md#ranking-four-features-weights-from-the-policy),
+    [configuration.md](configuration.md), [policy.md](policy.md), [governance.md](governance.md),
+    [architecture.md](architecture.md), [api-stability.md](api-stability.md).
+  - **Done when.** Property tests in `pack.rs`: for any memories, budget (0 to 9,000) and form,
+    neither the returned content nor the block exceeds the budget and rank order is kept; after
+    removal no two kept hits reach a threshold. Three governance checks, 56 of 56 in all:
+    `ranking_weights` (five policies, each changing the order of a controlled set as
+    specified), `packing_dedup` (10 duplicates seeded over 7 statements, 0 pairs at a
+    threshold, places refilled, off by policy returns them) and `token_budget` (500 recalls,
+    budgets 200 to 8,000 tokens, plain, Markdown and XML: 0 over).
+  - **Guard: T2, $0 spent (enrichment served from the cache); quality passed, latency open.**
+    Quality with removal on: LongMemEval_S 91.3 / 94.2 / 84.8; LoCoMo 78.8 / 78.7 / 59.2;
+    LoCoMo with enrichment 79.4 / 65.6. "Equal or better" is measured against the engine as G11
+    left it, which is the same build with removal turned off: LoCoMo round recall_all@10 is
+    59.18 off and 59.24 on, and the enrichment run is 79.3 / 65.6 off. The enrichment pair is
+    below the 1 November baseline (79.6 / 66.0), inside its limit, with removal on or off: that
+    difference predates this goal. **Latency is not confirmed.** Another process held the
+    machine at a load average of 11 to 28 during every run, and the same build measured a SQL
+    search p50 anywhere from 16 to 46 ms (baseline 9.0 ms). A/B runs under that load (LoCoMo,
+    k = 100) put removal at 2 to 6 ms of search time, for up to 20 reserve rows and the
+    vectors of the rows returned; a recall with the default k of 10 fetches far fewer. The runs
+    were made with `--skip-latency`, so the timings were reported and not gated. The open box
+    above stays until the gated guard passes on a quiet machine; if it does not, the cost is
+    reduced in this goal.
+  - **Tuned within the guard.** The first thresholds tried (cosine 0.95, overlap 0.85) cost one
+    LoCoMo question (round recall_all@10 59.1), so the defaults are 0.97 (the write gate's own
+    duplicate threshold) and 0.9, which change no guard value. The first version also removed
+    the second of two identical rounds said in different sessions; the `memory_types` suite
+    caught it, hence the rule for episodic records.
+  - **Differs from the plan.** The token budget was "approximate" in API 1.5, and the first hit
+    was returned even when it alone exceeded it. Making it a hard cap, as this goal's line
+    asks, changes that inside v1: it is recorded as an exception in
+    [api-stability.md](api-stability.md#recorded-exception-the-token-budget-is-a-hard-cap-16).
+    Confidence can't yet be set on a write through the API (extracted facts carry it; explicit
+    writes are 1.0): the confidence score on extracted facts is G14's.
+  - **Review fixes (2026-11-13, pull request 24):** each retriever returns at least as many
+    candidates as the recall fetches, so the reserve is not empty when `candidates` is no
+    larger than `k`; a confirmed record in the reserve replaces a kept candidate that says the
+    same even when no place is free; a confirmed record that replaces a candidate is compared
+    with the hits kept below it, which give way if they duplicate it; `packing_dedup` seeds a
+    twin with the same words in reverse order, which only the cosine rule can remove, and
+    fails on a hit returned without its vector.
 - **Guard:** T2. **Depends on:** G11.
 
 #### G13 — Evaluation platform: synthetic timelines, own suites, regression gate

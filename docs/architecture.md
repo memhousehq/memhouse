@@ -65,7 +65,7 @@ model is described in [memory-types.md](memory-types.md).
 3. **Vector candidates:** exact cosine distance with pgvector, the better of the round vector and the user-only vector.
 4. **Fusion:** weighted reciprocal rank fusion (`k = 60`) inside each statement, then across probes (window probe: 0.15 for every in-window hit, +1.0 for its top 3). Only the top `k` fused ids are then fetched, each by primary key and still filtered on tenant and subject, so no step of the statement reads another subject's rows.
 5. **Exact probe** (HYB-03): when the request has `exact`, or the query names a record identifier ("order A-1001"), structured records are matched exactly on their attributes (one more statement) and put first, marked `exact`.
-6. **Engine side (optional):** cross-encoder reranking of the top candidates blended with the fused rank, a recency bonus, and token-budget packing.
+6. **Engine side** (`pack.rs`, no model and no further statement): optional cross-encoder reranking of the top candidates blended with the fused rank; the final score, which combines relevance, recency, confidence and validity with the compiled policy's weights (HYB-05); near-duplicate removal by vector cosine and text shingles, with the freed places filled from a small reserve fetched in the same statement (ECON-03); the token budget as a hard cap on the hits and on the rendered block (PERF-06); and the block itself, as plain text, Markdown or XML (INT-04).
 
 The query embedding and the SQL statement are the whole hot path. On a laptop, p50 recall is a few milliseconds plus query embedding. The recall's explanation record (`mh_recall`) is written off that path, after the response.
 

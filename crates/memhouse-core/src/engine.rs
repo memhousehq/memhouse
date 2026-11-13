@@ -114,37 +114,13 @@ fn decode_cursor(c: &str) -> anyhow::Result<(chrono::DateTime<Utc>, Uuid)> {
     Ok((at, Uuid::parse_str(id).map_err(|_| bad())?))
 }
 
-/// Recall hits as a model-neutral text block (INT-04): one line per memory with its id, kind,
-/// date and tags, most relevant first. MCP returns it as the tool's text content.
+/// Recall hits as the plain model-neutral text block (INT-04); [`crate::pack::render`] has the
+/// other forms. MCP returns it as the tool's text content.
 pub fn render(subject: &str, hits: &[Hit]) -> String {
-    if hits.is_empty() {
-        return format!("No relevant memories found for {subject}.");
-    }
-    let lines: Vec<String> = hits
-        .iter()
-        .map(|h| {
-            let m = &h.memory;
-            let when = m.occurred_at.unwrap_or(m.created_at).format("%Y-%m-%d");
-            let tags = if m.tags.is_empty() { String::new() } else { format!(" #{}", m.tags.join(" #")) };
-            // A held plan or guess (`include_candidates`) must not read as a fact (PR-7).
-            let held = if m.status == MemoryStatus::Candidate {
-                format!(", unconfirmed {}", m.metadata.get("statement").and_then(|s| s.as_str()).unwrap_or("candidate"))
-            } else {
-                String::new()
-            };
-            // The session's own scratchpad is context, not a ranked match.
-            let session = if h.working { ", this session" } else { "" };
-            format!("- [{}] ({}, {when}{tags}{held}{session}) {}", m.id, m.kind, m.content.replace('\n', "\n  "))
-        })
-        .collect();
-    let noun = if hits.len() == 1 { "memory" } else { "memories" };
-    format!("{} {noun} of {subject} (most relevant first):\n{}", hits.len(), lines.join("\n"))
+    crate::pack::render(subject, hits, RenderFormat::Plain)
 }
 
-/// Rough token estimate (4 characters per token) used for context packing.
-pub fn approx_tokens(s: &str) -> usize {
-    s.len().div_ceil(4)
-}
+pub use crate::pack::approx_tokens;
 
 fn truncate_chars(s: &str, n: usize) -> &str {
     match s.char_indices().nth(n) {
@@ -950,6 +926,9 @@ impl Engine {
         };
         let fused_limit = if use_rerank { self.cfg.rerank.candidates.max(k) } else { k };
         let rerank_n = self.cfg.rerank.candidates.max(1);
+        // Near-duplicate removal (ECON-03) frees places; the candidates ranked just below the
+        // ones a recall without it would consider are fetched in the same statement to fill them.
+        let fetch_limit = if rank.dedup { fused_limit + k.clamp(5, 20) } else { fused_limit };
         let q = SearchQuery {
             tenant: tenant.clone(),
             subject: subject.clone(),
@@ -961,8 +940,10 @@ impl Engine {
             as_of: req.as_of,
             valid_at: now_valid,
             mode,
-            per_retriever: rank.candidates.max(fused_limit),
-            limit: fused_limit,
+            // Each retriever returns at least what is fetched, or the reserve would be empty
+            // whenever `candidates` is no larger than k.
+            per_retriever: rank.candidates.max(fetch_limit),
+            limit: fetch_limit,
             rrf_k: rank.rrf_k,
             keyword_weight: rank.keyword_weight,
             vector_weight: rank.vector_weight,
@@ -970,6 +951,7 @@ impl Engine {
             scope: scope.clone(),
             include_candidates: req.include_candidates,
             shared_agents: ctx.shared_agents.clone(),
+            with_vectors: rank.dedup,
         };
         // Extra probes: the same query inside the time windows it mentions, and one per sub-query.
         let mut probes: Vec<(SearchQuery, f32)> = vec![];
@@ -977,12 +959,15 @@ impl Engine {
             if !p.windows.is_empty() {
                 let mut w = q.clone();
                 w.windows = p.windows.iter().map(|w| (w.start, w.end)).collect();
+                // The reserve comes from the main probe alone.
+                w.limit = fused_limit;
                 probes.push((w, rank.window_weight));
             }
             for (sq, emb) in p.subqueries.iter().zip(embeddings.into_iter().skip(1)) {
                 let mut s = q.clone();
                 s.text = sq.clone();
                 s.embedding = emb;
+                s.limit = fused_limit;
                 probes.push((s, rank.subquery_weight));
             }
         }
@@ -1026,6 +1011,17 @@ impl Engine {
             vec![]
         };
         let mut statements = statements + exact_statements + session_statements;
+        // Each probe's list as a recall without the reserve would see it; what lies below is
+        // the main list's reserve, which only fills places freed by duplicates.
+        let mut reserve: Vec<Hit> = vec![];
+        for (i, l) in lists.iter_mut().enumerate() {
+            if l.len() > fused_limit {
+                let tail = l.split_off(fused_limit);
+                if i == 0 {
+                    reserve = tail;
+                }
+            }
+        }
         let mut hits = if probes.is_empty() {
             lists.pop().unwrap_or_default()
         } else {
@@ -1055,17 +1051,10 @@ impl Engine {
             hits[..n].sort_by(|a, b| b.score.total_cmp(&a.score));
         }
 
-        let rw = rank.recency_weight;
-        if rw > 0.0 {
-            let now = req.as_of.unwrap_or_else(Utc::now);
-            let hl = rank.recency_half_life_days.max(1.0);
-            for h in hits.iter_mut() {
-                let t = h.memory.occurred_at.unwrap_or(h.memory.created_at);
-                let age = (now - t).num_seconds().max(0) as f32 / 86_400.0;
-                h.score += rw / (1.0 + age / hl);
-            }
-            hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-        }
+        // HYB-05: the final score combines relevance, recency, confidence and validity with
+        // the compiled policy's weights. Recency is measured from the recall's own time.
+        let present = Utc::now();
+        crate::pack::score(&mut hits, rank, req.as_of.unwrap_or(present), present);
 
         if !exact_hits.is_empty() {
             let top = hits.first().map(|h| h.score).unwrap_or(0.0);
@@ -1112,34 +1101,34 @@ impl Engine {
                     rerank_score: None,
                     exact: false,
                     working: true,
+                    embedding: None,
+                    features: None,
                 })
                 .collect();
             hits.splice(0..0, first);
         }
-        // What the recall itself leaves out, for the explanation: below k, then over the budget.
-        let mut cut: Vec<ExcludedRecord> = if hits.len() > k {
-            hits.split_off(k)
-                .iter()
-                .enumerate()
-                .map(|(i, h)| ExcludedRecord { id: h.memory.id, reason: ExclusionReason::Rank, detail: format!("rank {} of {} candidates; k = {k}", k + i + 1, candidates) })
-                .collect()
-        } else {
-            vec![]
-        };
-        cut.extend(overridden);
-        if let Some(budget) = req.token_budget {
-            let mut used = 0;
-            hits.retain(|h| {
-                let t = approx_tokens(&h.memory.content);
-                if used + t <= budget || used == 0 {
-                    used += t;
-                    true
-                } else {
-                    cut.push(ExcludedRecord { id: h.memory.id, reason: ExclusionReason::Budget, detail: format!("~{t} tokens over the {budget}-token budget ({used} used)") });
-                    false
-                }
-            });
+        // What the recall itself leaves out, for the explanation: near-duplicates, then below
+        // k, then over the budget.
+        let mut cut: Vec<ExcludedRecord> = vec![];
+        if rank.dedup {
+            let ids: std::collections::HashSet<Uuid> = hits.iter().map(|h| h.memory.id).collect();
+            // A keyed preference is resolved by scope before it is returned (MEM-04); the
+            // reserve was not, so it never fills a place with one.
+            reserve.retain(|h| !ids.contains(&h.memory.id) && !keyed(h));
+            crate::pack::score(&mut reserve, rank, req.as_of.unwrap_or(present), present);
+            hits = crate::pack::dedup(hits, reserve, k, rank, &mut cut);
         }
+        if hits.len() > k {
+            cut.extend(hits.split_off(k).iter().enumerate().map(|(i, h)| ExcludedRecord {
+                id: h.memory.id,
+                reason: ExclusionReason::Rank,
+                detail: format!("rank {} of {} candidates; k = {k}", k + i + 1, candidates),
+            }));
+        }
+        cut.extend(overridden);
+        // PERF-06: the token budget is a hard cap on the returned memories and on the block.
+        let format = req.render_format.or(req.render.then_some(RenderFormat::Plain));
+        let rendered = crate::pack::pack(&mut hits, req.token_budget, format, &subject, &mut cut);
         if policy.policy.recall.audit_reads {
             // Inside the recall's deadline too: an audit that can't be written in time degrades
             // the answer to empty rather than returning unaudited reads late.
@@ -1156,7 +1145,6 @@ impl Engine {
             )
             .await?;
         }
-        let rendered = req.render.then(|| render(&subject, &hits));
         let rerank_ms = if use_rerank { t_rerank.elapsed().as_secs_f64() * 1000.0 } else { 0.0 };
         let total_ms = start.elapsed().as_secs_f64() * 1000.0;
         let span = tracing::Span::current();
@@ -1204,6 +1192,7 @@ impl Engine {
                         similarity: h.similarity,
                         rerank_score: h.rerank_score,
                         tokens: approx_tokens(&h.memory.content),
+                        features: h.features,
                     })
                     .collect(),
                 cut,

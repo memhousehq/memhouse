@@ -56,7 +56,7 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (53 checks); the API, identity, intake, schema, telemetry, policy and memory-type checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (56 checks); the API, identity, intake, schema, telemetry, policy, memory-type and packing checks are in `*_checks.rs` next to it |
 
 ## Build
 
@@ -103,7 +103,9 @@ cargo xtask ci
 
 It takes about 5 minutes on a laptop. Options: `--tier 2` (adds LoCoMo with cached enrichment,
 about $0.01), `--fix` (apply rustfmt and add missing SPDX headers), `--skip-e2e` (no Docker), `--skip-guard` (no benchmark
-database). `scripts/ci.sh` is the same command.
+database), `--skip-latency` (report the guard's timings without failing on them, for a machine
+known to be busy; `MEMHOUSE_CI_SKIP_LATENCY=1` does the same for the pre-push hook, which passes no
+options). `scripts/ci.sh` is the same command.
 
 Hosted CI (`.github/workflows/ci.yml`) runs every step on each pull request except the benchmark
 guard: the e2e step there includes the governance suite. Benchmarks need the public datasets
@@ -122,6 +124,9 @@ cargo xtask install-hooks
 | pre-commit | `cargo xtask secrets --staged` | `git commit --no-verify` (false positives only) |
 | commit-msg | requires a DCO `Signed-off-by` line (`git commit -s`, see [CONTRIBUTING.md](../CONTRIBUTING.md)) | — |
 | pre-push | `cargo xtask ci` | `git push --no-verify` |
+
+The hooks check the checkout git is working on: in a worktree they build `xtask` from that
+worktree and check its tree, not the main checkout's.
 
 `cargo xtask install-hooks --repo ../other-repo` installs the pre-commit and commit-msg hooks in
 another repository.
@@ -179,11 +184,12 @@ sequenceDiagram
         E->>S: SearchQuery {windows}
     end
     S-->>E: fused hits per probe
-    E->>E: fuse probes (window_weight, window_top), recency
+    E->>E: fuse probes (window_weight, window_top)
     opt rerank enabled
         E->>R: rerank(query, top candidates)
     end
-    E->>E: token budget, optional audit (audit_reads)
+    E->>E: score by policy weights, drop near-duplicates, token budget, render (pack.rs)
+    E->>E: optional audit (audit_reads)
     E-->>H: RecallResult {hits, timings, plan}
 ```
 

@@ -122,7 +122,8 @@ agent ──MCP/REST──▶ memhouse (Rust)
                       one SQL statement per recall:
                       BM25 full-text       ┐
                                            ├─ reciprocal rank fusion → (optional cross-encoder rerank)
-                      exact vector scan    ┘   → validity / as-of filter → token-budget packing
+                      exact vector scan    ┘   → validity / as-of filter → policy-weighted score
+                                               → near-duplicates out → hard token budget
                       (per subject, no ANN index: exact top-k)
 ```
 

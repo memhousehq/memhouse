@@ -421,6 +421,7 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
         scope: Scope::default(),
         include_candidates: false,
         shared_agents: vec![],
+        with_vectors: false,
     };
     let plan = e.store.search_plan(&q).await?.unwrap_or_default();
     if !scan_filters_labels(&plan) {
