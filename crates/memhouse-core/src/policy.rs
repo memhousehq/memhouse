@@ -1289,6 +1289,12 @@ impl Engine {
                 return Ok(p.clone());
             }
         }
+        // Names with the scratch mark belong to evaluation replays: the queue hands their
+        // writes to the replaying engine only, so an ordinary tenant can't have one (its
+        // writes would wait for a worker that never takes them).
+        if tenant.contains(crate::eval::SCRATCH_MARK) {
+            return Err(error::invalid(format!("tenant names containing '{}' are reserved for evaluation replays", crate::eval::SCRATCH_MARK)));
+        }
         if let Some(p) = self.policies.fresh(tenant) {
             return Ok(p);
         }

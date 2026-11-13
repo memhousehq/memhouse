@@ -14,6 +14,8 @@ metrics).
   beyond what your write path is configured to call. The scratch tenant (its name contains
   `~eval~`) runs the policy under evaluation: its queued writes are processed only by the
   engine that replays, never by an intake worker, and no recall explanation is kept for it.
+  Tenant names containing `~eval~` are reserved for this: a write to one from anything but a
+  replay is refused.
   A write the policy refuses (a type it forbids, a text over its limit) is scored as not
   stored; a store or model failure fails the replay, which is then not scored at all.
 - The **gate** replays a tenant's suites under the running policy and under a proposed one, on

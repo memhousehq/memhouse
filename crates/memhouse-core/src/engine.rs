@@ -175,7 +175,7 @@ impl Engine {
     }
 
     /// Run `tenant` under `policy` whatever policy is active for it (an evaluation's scratch tenant).
-    pub(crate) fn with_policy_pin(mut self, tenant: &str, policy: Arc<CompiledPolicy>) -> Engine {
+    pub fn with_policy_pin(mut self, tenant: &str, policy: Arc<CompiledPolicy>) -> Engine {
         self.policy_pin = Some(Arc::new((tenant.to_string(), policy)));
         self
     }

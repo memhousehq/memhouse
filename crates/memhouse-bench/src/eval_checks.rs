@@ -13,6 +13,7 @@ use crate::governance::{check, stub_engine, Check, Scratch};
 use memhouse_core::error::{code_of, ErrorCode};
 use memhouse_core::eval::{EvalTrigger, Expect, Suite, SuiteConversation, SuiteQuestion, SuiteSession, SuiteTurn, SUITE_FORMAT};
 use memhouse_core::policy::parse_spec;
+use memhouse_core::types::RememberRequest;
 use memhouse_core::Engine;
 
 type Outcome = anyhow::Result<(bool, String, String)>;
@@ -183,6 +184,41 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         if n != 0 {
             problems.push(format!("{n} rows of a scratch tenant are left in {table}"));
         }
+    }
+    // Claim isolation: a write queued for a scratch tenant is not handed to a worker (which
+    // claims without naming a tenant and knows no pinned policy), only to the engine that asks
+    // for it by tenant and subject; a normal tenant's queued write is handed to a worker.
+    let scratch = format!("{TENANT}{}claimcheck", memhouse_core::eval::SCRATCH_MARK);
+    let pinned = e.clone().with_policy_pin(&scratch, e.policy_for(TENANT).await?).with_inline_intake(false);
+    let queued = |tenant: &str| RememberRequest {
+        tenant: Some(tenant.into()),
+        subject: Some("eval:claim".into()),
+        content: "Queued for the claim check.".into(),
+        actor: Some("eval".into()),
+        ..Default::default()
+    };
+    pinned.remember(queued(&scratch)).await?;
+    let lease = e.cfg.intake.lease_secs;
+    let by_worker = e.intake.claim(10, lease, None).await?;
+    if by_worker.iter().any(|j| j.proposal.tenant == scratch) {
+        problems.push("a worker's claim was handed a scratch tenant's write".into());
+    }
+    let by_replay = e.intake.claim(10, lease, Some((&scratch, "eval:claim"))).await?;
+    if by_replay.len() != 1 {
+        problems.push(format!("the replaying engine's claim by tenant and subject got {} writes; expected 1", by_replay.len()));
+    }
+    e.clone().with_inline_intake(false).remember(queued(TENANT)).await?;
+    let normal = e.intake.claim(10, lease, None).await?;
+    if !normal.iter().any(|j| j.proposal.tenant == TENANT && j.proposal.subject == "eval:claim") {
+        problems.push("a normal tenant's queued write was not handed to a worker".into());
+    }
+    // An ordinary tenant can't take a reserved name: its writes would never reach a worker.
+    match e.remember(queued(&scratch)).await {
+        Err(err) if code_of(&err) == ErrorCode::InvalidRequest && format!("{err:#}").contains("reserved for evaluation") => {}
+        other => problems.push(format!("a write to a reserved tenant name without a pinned policy: {:?}", other.map(|r| r.status).map_err(|e| format!("{e:#}")))),
+    }
+    for t in [scratch.as_str(), TENANT] {
+        sqlx::query("DELETE FROM mh_intake WHERE tenant = $1 AND subject = 'eval:claim'").bind(t).execute(pool).await?;
     }
     // The replay ran in a scratch tenant, which is gone; the tenant itself was not written to.
     let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE tenant LIKE $1 OR subject LIKE 'eval:%'")
