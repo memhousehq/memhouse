@@ -63,6 +63,7 @@ conversations:
 | `kind` | the memory type written (`semantic` when absent) |
 | `id`, `confirms` | a `hold` turn may have an `id`; a later `commit` turn that carries the plan out names it in `confirms` ("I plan to move to Porto" … "I moved to Porto"). The engine may then commit the plan's own record, rightly: from that turn on the plan is scored neither as held nor as contamination |
 | `ask` | the checkpoint after the session: each question names the `key` whose current value answers it |
+| `language`, `statement`, `injection`, `covers`, `ids` | labels of a [language pack's test set](languages.md#writing-and-testing-a-pack): the suite's language; what the gate should read a turn as; a turn that is an injection attempt; the days a question's time phrases cover and the identifiers it names. A replay does not score them (a question with no `key` is not asked); `memhouse lang check --tests` does |
 
 Instead of `conversations`, a suite can ask for generated ones:
 

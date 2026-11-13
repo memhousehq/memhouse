@@ -50,7 +50,7 @@ static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
         Rule { category: "card", re: r(r"\b(?:\d[ -]?){12,18}\d\b"), replacement: "[REDACTED:card]", check: Some(luhn_ok) },
         Rule { category: "ssn", re: r(r"\b\d{3}-\d{2}-\d{4}\b"), replacement: "[REDACTED:ssn]", check: None },
         Rule { category: "iban", re: r(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b"), replacement: "[REDACTED:iban]", check: None },
-        Rule { category: "email", re: r(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), replacement: "[REDACTED:email]", check: None },
+        Rule { category: "email", re: r(r"\b[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}.\-]+\.\p{L}{2,}\b"), replacement: "[REDACTED:email]", check: None },
         Rule { category: "phone", re: r(r"(?:\+\d{1,3}[ .\-]?)?\(?\b\d{3}\)?[ .\-]?\d{3}[ .\-]?\d{4}\b"), replacement: "[REDACTED:phone]", check: None },
         Rule { category: "ip", re: r(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"), replacement: "[REDACTED:ip]", check: None },
     ]
@@ -160,6 +160,13 @@ mod tests {
         assert!(!out.content.contains("sk-proj"));
         assert!(!out.content.contains("bob@example.com"));
         assert_eq!(out.redactions, vec!["secret", "email"]);
+    }
+
+    #[test]
+    fn redacts_addresses_with_letters_outside_ascii() {
+        let out = screen("write to jürgen.müller@bücher.example or zoë@example.fr", &all(), false);
+        assert!(!out.content.contains('@'), "{}", out.content);
+        assert_eq!(out.redactions, vec!["email"]);
     }
 
     #[test]

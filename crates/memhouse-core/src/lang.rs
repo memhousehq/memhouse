@@ -28,7 +28,32 @@ use std::sync::Arc;
 pub const PACK_FORMAT: u32 = 1;
 
 /// The built-in packs: language code and TOML source. English first; it is the default.
-pub const BUILTIN: &[(&str, &str)] = &[("en", include_str!("../../../languages/en.toml"))];
+pub const BUILTIN: &[(&str, &str)] = &[
+    ("en", include_str!("../../../languages/en.toml")),
+    ("bg", include_str!("../../../languages/bg.toml")),
+    ("cs", include_str!("../../../languages/cs.toml")),
+    ("da", include_str!("../../../languages/da.toml")),
+    ("de", include_str!("../../../languages/de.toml")),
+    ("el", include_str!("../../../languages/el.toml")),
+    ("es", include_str!("../../../languages/es.toml")),
+    ("et", include_str!("../../../languages/et.toml")),
+    ("fi", include_str!("../../../languages/fi.toml")),
+    ("fr", include_str!("../../../languages/fr.toml")),
+    ("ga", include_str!("../../../languages/ga.toml")),
+    ("hr", include_str!("../../../languages/hr.toml")),
+    ("hu", include_str!("../../../languages/hu.toml")),
+    ("it", include_str!("../../../languages/it.toml")),
+    ("lt", include_str!("../../../languages/lt.toml")),
+    ("lv", include_str!("../../../languages/lv.toml")),
+    ("mt", include_str!("../../../languages/mt.toml")),
+    ("nl", include_str!("../../../languages/nl.toml")),
+    ("pl", include_str!("../../../languages/pl.toml")),
+    ("pt", include_str!("../../../languages/pt.toml")),
+    ("ro", include_str!("../../../languages/ro.toml")),
+    ("sk", include_str!("../../../languages/sk.toml")),
+    ("sl", include_str!("../../../languages/sl.toml")),
+    ("sv", include_str!("../../../languages/sv.toml")),
+];
 
 /// How far a pack has been checked.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -394,6 +419,7 @@ pub struct Pack {
     pub(crate) injection: Vec<(&'static str, Regex)>,
     detect_words: HashSet<String>,
     detect_letters: HashSet<char>,
+    vocabulary: HashSet<String>,
 }
 
 impl std::fmt::Debug for Pack {
@@ -438,14 +464,22 @@ impl std::fmt::Debug for Languages {
     }
 }
 
+/// The share of the winner's evidence at which another language is still a contender.
+const CONTENDER: f32 = 0.5;
+/// The evidence (points) and the lead over the runner-up that make a detection sure.
+const SURE_EVIDENCE: f32 = 2.0;
+const SURE_LEAD: f32 = 1.5;
+
 /// What a text was detected as.
 #[derive(Clone)]
 pub struct Detected {
     pub pack: Arc<Pack>,
-    /// False when nothing told the enabled languages apart: `pack` is then the default one,
-    /// and the gate tries the markers of every pack ([`Detected::others`]).
+    /// False when the evidence is thin or two languages are close: `pack` is then the best
+    /// guess (the default language when there is no evidence at all), and the gate tries the
+    /// markers of every pack ([`Detected::others`]).
     pub sure: bool,
-    /// The other packs the text may be in, when the detection is not sure.
+    /// The other packs the text may be in: every other allowed pack when the detection is not
+    /// sure, and the close contenders when it is.
     pub others: Vec<Arc<Pack>>,
     /// More than one language is enabled for this text's tenant.
     pub multilingual: bool,
@@ -696,6 +730,13 @@ impl Pack {
             query,
             injection,
             detect_words: file.detect.words.iter().map(|w| w.to_lowercase()).collect(),
+            vocabulary: [&file.values.stop, &file.values.value_stop, &file.values.identifier, &file.values.quantity, &file.relations.people, &file.time.month_names]
+                .into_iter()
+                .flatten()
+                .chain(file.values.numbers.keys())
+                .map(|w| w.to_lowercase())
+                .filter(|w| !w.contains(' '))
+                .collect(),
             detect_letters: file.detect.letters.chars().filter(|ch| !ch.is_whitespace()).flat_map(|ch| ch.to_lowercase()).collect(),
             file,
         })
@@ -812,12 +853,19 @@ impl Pack {
         }
     }
 
-    /// How much of `text` reads as this language: one point for each function word, half a
-    /// point for each of its marking letters.
-    fn evidence(&self, words: &[String], letters: &[char]) -> f32 {
-        let w = words.iter().filter(|w| self.detect_words.contains(w.as_str())).count() as f32;
-        let l = letters.iter().filter(|ch| self.detect_letters.contains(ch)).count() as f32;
-        w + 0.5 * l
+    fn has_word(&self, w: &str) -> bool {
+        self.detect_words.contains(w)
+    }
+
+    /// The pack's other plain words (stop words, people, identifier and number words, month
+    /// names): weaker evidence of the language than its function words, but present in short
+    /// statements that have none.
+    fn knows_word(&self, w: &str) -> bool {
+        self.vocabulary.contains(w)
+    }
+
+    fn has_letter(&self, ch: char) -> bool {
+        self.detect_letters.contains(&ch)
     }
 }
 
@@ -999,7 +1047,10 @@ impl Languages {
 
     /// The language of `text`, among the enabled ones (or those `narrowed` names). Function
     /// words and marking letters are counted for each pack; the pack with the most evidence
-    /// wins. With no evidence, or a tie, the answer is the default language and not sure.
+    /// wins; the pack's other plain words count half. Evidence several packs claim is shared
+    /// among them. With no evidence, or a tie, the answer is the default language and not sure.
+    /// Either way the answer names the other packs the text may be in, so the gate can stay
+    /// cautious ([`Detected::classify_text`]).
     pub fn detect(&self, text: &str, narrowed: Option<&[String]>) -> Detected {
         let allowed = self.allowed(narrowed);
         if allowed.len() == 1 {
@@ -1008,17 +1059,39 @@ impl Languages {
         let lower = text.to_lowercase();
         let words: Vec<String> = lower.split(|ch: char| !ch.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect();
         let letters: Vec<char> = lower.chars().filter(|ch| ch.is_alphabetic() && !ch.is_ascii()).collect();
-        let scores: Vec<f32> = allowed.iter().map(|p| p.evidence(&words, &letters)).collect();
+        // One point for each function word and half a point for each marking letter, shared
+        // among the packs that claim it: "de" is in six languages' lists and says little, "the"
+        // is in one.
+        let mut scores = vec![0f32; allowed.len()];
+        let mut share = |claims: Vec<usize>, weight: f32| {
+            for i in &claims {
+                scores[*i] += weight / claims.len() as f32;
+            }
+        };
+        for w in &words {
+            share((0..allowed.len()).filter(|i| allowed[*i].has_word(w)).collect(), 1.0);
+            share((0..allowed.len()).filter(|i| !allowed[*i].has_word(w) && allowed[*i].knows_word(w)).collect(), 0.5);
+        }
+        for ch in &letters {
+            share((0..allowed.len()).filter(|i| allowed[*i].has_letter(*ch)).collect(), 0.5);
+        }
         let best = scores.iter().cloned().fold(0.0f32, f32::max);
         let fallback = || allowed.iter().position(|p| Arc::ptr_eq(p, self.default_pack())).unwrap_or(0);
-        let winners: Vec<usize> = (0..allowed.len()).filter(|i| best > 0.0 && scores[*i] == best).collect();
+        let winners: Vec<usize> = (0..allowed.len()).filter(|i| best > 0.0 && (scores[*i] - best).abs() < 1e-4).collect();
         let (at, sure) = match winners.as_slice() {
-            [one] => (*one, true),
+            // Sure only on enough evidence and a clear lead: one shared word in a short
+            // statement names a best guess, not the language.
+            [one] => {
+                let second = scores.iter().enumerate().filter(|(i, _)| i != one).map(|(_, s)| *s).fold(0.0f32, f32::max);
+                (*one, best >= SURE_EVIDENCE && best >= second * SURE_LEAD)
+            }
             [] => (fallback(), false),
             // A tie: the default language if it is among them, else the first enabled.
             many => (if many.contains(&fallback()) { fallback() } else { many[0] }, false),
         };
-        let others = if sure { vec![] } else { allowed.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, p)| p.clone()).collect() };
+        // Not sure: every other pack. Sure: the contenders, packs with at least half the winner's
+        // evidence (close languages such as Czech and Slovak share most function words).
+        let others = allowed.iter().enumerate().filter(|(i, _)| *i != at && (!sure || scores[*i] >= best * CONTENDER)).map(|(_, p)| p.clone()).collect();
         Detected { pack: allowed[at].clone(), sure, others, multilingual: true }
     }
 
@@ -1030,7 +1103,8 @@ impl Languages {
     pub fn injection(&self, text: &str) -> Vec<String> {
         let mut found: Vec<&'static str> = vec![];
         self.floor.injection(text, &mut found);
-        for p in &self.packs {
+        // The built-in English pack, when enabled, is the floor itself: once is enough.
+        for p in self.packs.iter().filter(|p| p.hash != self.floor.hash) {
             p.injection(text, &mut found);
         }
         if CHAT_MARKUP.is_match(text) {
@@ -1044,6 +1118,28 @@ impl Languages {
 
 fn codes<'a>(it: impl Iterator<Item = &'a str>) -> String {
     it.collect::<Vec<_>>().join(", ")
+}
+
+/// Whether an embedding model is known to be trained on English alone: `bge-*-en-*` and other
+/// names with an `en` part, and the English-only families that do not say so in their name.
+pub fn english_only_embedder(model: &str) -> bool {
+    static EN: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)(?:^|[-_/.])en(?:[-_.]|$)|(?:^|/)all-(?:minilm|mpnet)|(?:^|/)(?:e5|gte)-(?:small|base|large)(?:-v2)?$|(?:^|/)nomic-embed-text-v1|(?:^|/)mxbai-embed-large|(?:^|/)snowflake-arctic-embed-(?:xs|s|m|l)$")
+            .expect("valid regex")
+    });
+    EN.is_match(model.trim())
+}
+
+/// The warning for a server that reads other languages than English with an embedding model
+/// trained on English alone: keyword search works in every language, vector search does not.
+pub fn embedder_warning(enabled: &[String], model: &str) -> Option<String> {
+    let others: Vec<&str> = enabled.iter().map(|s| s.as_str()).filter(|c| *c != "en" && !c.starts_with("en-")).collect();
+    (!others.is_empty() && english_only_embedder(model)).then(|| {
+        format!(
+            "language.enabled includes {}, but the embedding model {model} is trained on English only: vector search will be poor in other languages. Use a multilingual model (for example embedding.model = \"multilingual-e5-small\") and move the database to it with `memhouse reembed` (docs/languages.md)",
+            others.join(", ")
+        )
+    })
 }
 
 /// The JSON Schema of the pack format (`languages/pack.schema.json`).
@@ -1115,6 +1211,22 @@ mod tests {
         assert!(l.injection("We decided to ignore the flaky test for now").is_empty());
         assert_eq!(l.tag(), "");
         assert_eq!(l.text_search(), vec!["english"]);
+    }
+
+    #[test]
+    fn english_only_models_are_recognised() {
+        for m in
+            ["bge-small-en-v1.5", "bge-small-en-v1.5-onnx-Q", "BAAI/bge-base-en-v1.5", "all-MiniLM-L6-v2", "nomic-embed-text-v1.5", "e5-small-v2", "jina-embeddings-v2-base-en"]
+        {
+            assert!(english_only_embedder(m), "{m}");
+        }
+        for m in ["multilingual-e5-small", "intfloat/multilingual-e5-base", "bge-m3", "text-embedding-3-small", "paraphrase-multilingual-MiniLM-L12-v2", "gte-multilingual-base"] {
+            assert!(!english_only_embedder(m), "{m}");
+        }
+        let langs = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(embedder_warning(&langs(&["en"]), "bge-small-en-v1.5").is_none());
+        assert!(embedder_warning(&langs(&["en", "de"]), "multilingual-e5-small").is_none());
+        assert!(embedder_warning(&langs(&["en", "de"]), "bge-small-en-v1.5").unwrap().contains("includes de"));
     }
 
     #[test]

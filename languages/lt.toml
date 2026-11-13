@@ -1,0 +1,417 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Lithuanian language pack. Draft: it passes its test set (languages/tests/lt.yaml) and has
+# not yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "lt"
+name = "Lithuanian"
+status = "draft"
+text_search = "lithuanian"
+
+[detect]
+words = [
+  "ir", "yra", "kad", "su", "į", "iš", "tai", "bet", "ar", "kaip", "o", "ne", "aš", "tu", "jis",
+  "ji", "mes", "jūs", "jie", "jos", "mano", "tavo", "jo", "jų", "mūsų", "savo", "šis", "ši", "tas",
+  "ta", "kas", "ką", "kur", "kada", "kodėl", "buvo", "bus", "būti", "per", "po", "prie", "nuo",
+  "iki", "dėl", "už", "ant", "apie", "prieš", "tik", "dar", "jau", "labai", "taip", "arba", "nes",
+  "kai", "jei", "čia", "ten", "turi", "gali", "nėra", "tą", "šį", "naudotojas", "naudotojo",
+]
+letters = "ąčęėįšųūž"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# "gali" alone (can) is not a hedge; "gali būti" (may be) is.
+speculation = [
+  "galbūt",
+  "gal",
+  "galimai",
+  "turbūt",
+  "tikriausiai",
+  "greičiausiai",
+  "veikiausiai",
+  "ko gero",
+  "matyt",
+  "regis",
+  "rodos",
+  "atrodo",
+  "panašu",
+  "gali būti",
+  "galėjo būti",
+  "galėtų",
+  "manau",
+  "manyčiau",
+  "spėju",
+  "įtariu",
+  "nesu tikr(?:as|a)",
+  "neaišku,? ar",
+  "nežinia,? ar",
+  "gand(?:as|ai|ų|us)",
+  "kalbama",
+  "esą",
+  "neva",
+  "tariamai",
+  "teoriškai",
+  "hipotetiškai",
+  "svarst(?:o|au|ome|ė)",
+  "galvoj(?:a|u|ame) (?:apie|ar)",
+  "jei(?:gu)? (?:\\w+ ){0,4}(?:būtų|galėtų|turėtų|norėtų|būčiau|galėčiau|turėčiau|norėčiau)",
+]
+# A change to something stored before. Past forms only for "moved" and "switched": the
+# infinitive appears in plans ("planuoja persikraustyti").
+correction = [
+  "tiesą sakant",
+  "iš tikrųjų",
+  "iš tiesų",
+  "pataisymas",
+  "patikslinimas",
+  "pataisau",
+  "suklydau",
+  "klydau",
+  "nebe\\w*",
+  "jau ne\\w*",
+  "vietoj",
+  "vietoje",
+  "užuot",
+  "pasikeitė",
+  "pakeitė",
+  "pakeist(?:as|a|i|os)",
+  "perėj(?:o|au|ome) (?:į|prie)",
+  "persikraust(?:ė|ėme)",
+  "persikrausčiau",
+  "persikėl(?:ė|iau|ėme)",
+  "išsikraust(?:ė|ėme)",
+  "išsikėl(?:ė|iau|ėme)",
+  "dabar",
+  "atnaujint(?:as|a|i|os)",
+  "anksčiau",
+]
+# An intention not yet carried out. The future tense is one word in Lithuanian ("pradės"), so
+# the common verbs are listed with their future endings.
+plan = [
+  "planuoj(?:a|u|i|ame|ate)",
+  "suplanav(?:o|au|ome)",
+  "suplanuot(?:as|a|i|os)",
+  "ketin(?:a|u|i|ame|ate)",
+  "nor(?:i|iu|ime|ite)",
+  "norėt(?:ų|ume|umėte)",
+  "norėčiau",
+  "ruošia(?:si|uosi|mės)",
+  "rengia(?:si|uosi|mės)",
+  "žad(?:a|u|ame)",
+  "tiki(?:si|uosi|mės)",
+  "vili(?:asi|uosi|amės)",
+  "siek(?:ia|iu|iame)",
+  "(?:aplanky|pradė|persikrausty|persikel|keliau|vyk|važiuo|skri|ei|pirk|nusipirk|pasirašy|išlei|prisijung|išei|paskambin|išsių|nusių|susitik|dalyvau|bandy|pabandy|užsaky|pratę|atšauk|perei|atnaujin|peržiūrė|nusprę|baig|pabaig|užbaig|parduo|grįš)s(?:iu|ime|ite)?",
+  "kit(?:ą|ais|ų) (?:savaitę|mėnesį|ketvirtį|metais|metų|pirmadienį|antradienį|trečiadienį|ketvirtadienį|penktadienį|šeštadienį|sekmadienį|savaitgalį|pavasarį|vasarą|rudenį|žiemą)",
+  "ateinan\\w+ (?:savaitę|mėnesį|ketvirtį|metais|pirmadienį|antradienį|trečiadienį|ketvirtadienį|penktadienį|šeštadienį|sekmadienį|savaitgalį|pavasarį|vasarą|rudenį|žiemą)",
+  "kitąmet",
+  "rytoj",
+  "poryt",
+  "netrukus",
+  "vėliau (?:šią savaitę|šį mėnesį|šiais metais|šiemet)",
+  "nepamiršk(?:ite)?",
+  "tikslas yra",
+]
+preference = [
+  "patink(?:a|u)",
+  "nepatink(?:a|u)",
+  "patiko",
+  "mėgst(?:a|u|ame)",
+  "nemėgst(?:a|u|ame)",
+  "mėgstam\\w+",
+  "mėgauja(?:si|uosi|mės)",
+  "dievin(?:a|u|ame)",
+  "myl(?:i|iu|ime)",
+  "nekenč(?:ia|iu|iame)",
+  "nepakenč(?:ia|iu|iame)",
+  "negal(?:i|iu|ime) pakęsti",
+  "pirmenyb\\w+",
+  "mieliau",
+  "verčiau",
+  "alergišk(?:as|a|i|os)",
+]
+# Only at the start of the statement. "ne…k" is the negative imperative ("nerašyk").
+instruction_start = [
+  "visada", "visuomet", "niekada", "niekuomet", "jokiu būdu", "įsitikink(?:ite)?",
+  "užtikrink(?:ite)?", "būtinai", "prašau", "prašome", "venk(?:ite)?", "naudok(?:ite)?",
+  "ne\\w{3,}k(?:ite)?",
+]
+instruction = [
+  "(?:visada|visuomet) (?:turi|privalo|turėtų)",
+  "(?:turi|privalo|turėtų) (?:visada|visuomet)",
+  "(?:niekada|niekuomet) (?:neturi|negali|neturėtų)",
+  "(?:neturi|negali|neturėtų) (?:niekada|niekuomet)",
+]
+# Past events: a dated reference or a completed action (third person and first person).
+event = [
+  "vakar",
+  "užvakar",
+  "pernai",
+  "(?:praėjus|praeit|pereit)\\w+ (?:savaitę|mėnesį|metais|naktį|savaitgalį|pirmadienį|antradienį|trečiadienį|ketvirtadienį|penktadienį|šeštadienį|sekmadienį|pavasarį|vasarą|rudenį|žiemą)",
+  "prieš \\d+ (?:dien\\w+|savait\\w+|mėnes\\w+|met\\w+)",
+  "prieš (?:\\w+ )?(?:dieną|dienas|dienų|savaitę|savaites|savaičių|mėnesį|mėnesius|mėnesių|metus|metų)",
+  "(?:nu|nusi|į|įsi)?pirk(?:o|au|ome)",
+  "pardav(?:ė|iau|ėme)",
+  "aplank(?:ė|iau|ėme)",
+  "lank(?:ėsi|iausi|ėmės)",
+  "(?:nu|iš|at|par)(?:ėjo|ėjau|ėjome|vyko|vykau|vykome)",
+  "priglaud(?:ė|žiau|ėme)",
+  "įsivaikin(?:o|au|ome)",
+  "pradėj(?:o|au|ome)",
+  "(?:pa|už)?baig(?:ė|iau|ėme)",
+  "pasiraš(?:ė|iau|ėme)",
+  "prisijung(?:ė|iau|ėme)",
+  "palik(?:o|au|ome)",
+  "susitik(?:o|au|ome)",
+  "dalyvav(?:o|au|ome)",
+  "ved(?:ė|žiau)",
+  "ištekėj(?:o|au)",
+  "susituok(?:ė|ėme)",
+  "gav(?:o|au|ome)",
+  "išleid(?:o|au|ome)",
+  "pristat(?:ė|ėme)",
+  "pristačiau",
+  "pratęs(?:ė|iau|ėme)",
+  "atšauk(?:ė|iau|ėme)",
+  "(?:su|ap)mokėj(?:o|au|ome)",
+  "užsak(?:ė|iau|ėme)",
+  "grąžin(?:o|au|ome)",
+  "grįž(?:o|au|ome)",
+  "keliav(?:o|au|ome)",
+  "(?:pra)?laimėj(?:o|au|ome)",
+  "prarad(?:o|au|ome)",
+  "pamet(?:ė|ėme)",
+  "paėm(?:ė|iau|ėme)",
+  "padar(?:ė|iau|ėme)",
+  "gim(?:ė|iau)",
+  "mir(?:ė|usi)",
+  "(?:at)?švent(?:ė|ėme)",
+  "įdarbin(?:o|au|ome)",
+  "atleid(?:o|au|ome)",
+  "įsigij(?:o|au|ome)",
+  "atnaujin(?:o|au|ome)",
+  "paskelb(?:ė|iau|ėme)",
+  "išsiunt(?:ė|ėme)",
+  "išsiunčiau",
+]
+
+[relations]
+# The person related to comes first, in the genitive: "Dana yra Jono vadovė".
+relationship = [
+  "\\b(?:yra|buvo|tapo) (?:dabar )?(?:\\w+ ){1,2}(?:vadov(?:as|ė)|viršinink(?:as|ė)|koleg(?:a|ė)|žmona|vyras|partner(?:is|ė)|draug(?:as|ė)|brolis|sesuo|motina|mama|tėvas|tėtis|sūnus|dukra|duktė|pusbrolis|pusseserė|dėdė|teta|kaimyn(?:as|ė)|mentor(?:ius|ė)|klient(?:as|ė)|tiekėj(?:as|a)|savinink(?:as|ė)|įkūrėj(?:as|a)|direktor(?:ius|ė))\\b",
+  "\\b(?:atsiskaito|pavaldus|pavaldi|dirba su|dirba pas|vadovauja|susižadėj\\w+ su|ištekėjusi už)\\b",
+]
+people = [
+  "sesuo", "sesers", "seserį", "brolis", "brolio", "brolį", "motina", "motinos", "mama", "mamos",
+  "tėvas", "tėvo", "tėtis", "tėčio", "tėvai", "tėvų", "tėvus", "žmona", "žmonos", "vyras", "vyro",
+  "partneris", "partnerė", "sūnus", "sūnaus", "dukra", "dukros", "duktė", "vaikas", "vaikai",
+  "vaikų", "draugas", "draugė", "draugai", "draugo", "kolega", "kolegė", "viršininkas", "vadovas",
+  "vadovė", "komanda", "kaimynas", "kaimynė", "pusbrolis", "pusseserė", "dėdė", "teta", "močiutė",
+  "senelis", "senelė", "mergina", "vaikinas", "šuo", "šuns", "šunį", "katė", "katės", "katę",
+  "augintinis",
+]
+
+[values]
+stop = [
+  "naudotojas", "naudotojo", "naudotojui", "naudotoją", "naudotoja", "naudotojos", "vartotojas",
+  "vartotojo", "kuris", "kuri", "kurie", "buvo", "būti", "dabar", "apie", "tada", "kada", "taip",
+  "labai", "savo", "mano", "mūsų", "jūsų", "tavo", "turi", "turėjo", "kitas", "kiti", "daugiau",
+  "tiesą", "sakant", "tikrųjų", "tiesų", "anksčiau", "pataisymas", "patikslinimas", "vietoj",
+  "vietoje", "užuot", "pasikeitė", "pakeitė", "persikraustė", "persikėlė", "perėjo", "šiuo", "metu",
+  "nebe", "prie", "prieš", "kaip", "arba", "tačiau",
+]
+value_stop = [
+  "naudotojas", "naudotojo", "naudotojui", "naudotoją", "vartotojas", "jis", "ji", "jie", "jos",
+  "jo", "jų", "šis", "ši", "tas", "ta", "tai", "su", "iš", "į", "yra", "buvo", "turi", "turėjo",
+  "gavo", "dabar", "šiuo", "metu", "neseniai", "viso", "kartą", "kartus", "kartų",
+  "per", "už", "ir", "apie", "maždaug", "apytiksliai", "beveik", "virš", "daugiau", "mažiau",
+  "nei", "negu", "taip", "pat", "tik", "dar", "jau", "naujas", "nauja", "naują", "savo", "mūsų",
+  "mano", "prie", "ant", "po", "iki", "nuo", "kaip", "o", "bet",
+]
+identifier = [
+  "sąskaita", "sąskaitos", "sąskaitą", "sąskaitai", "faktūra", "faktūros", "faktūrą", "užsakymas",
+  "užsakymo", "užsakymą", "užsakymui", "bilietas", "bilieto", "bilietą", "bilietui", "kreipinys",
+  "kreipinio", "kreipinį", "kreipiniui", "užklausa", "užklausos", "užklausą", "užklausai", "byla",
+  "bylos", "bylą", "paskyra", "paskyros", "paskyrą", "id", "nr", "numeris", "numerio", "numerį",
+  "nuoroda", "versija", "versijos", "versiją", "kambarys", "kambario", "kambarį", "skrydis",
+  "skrydžio", "skrydį", "stalas", "stalo", "vieta", "vietos", "vartai", "peronas", "maršrutas",
+  "maršruto", "autobusas", "autobuso", "linija", "linijos", "modelis", "modelio", "serija",
+  "prekė", "prekės", "sku", "klaida", "klaidos", "klaidą", "butas", "buto", "pastatas", "aukštas",
+  "kodas", "kodo", "kodą",
+]
+quantity = [
+  "nulis", "vienas", "viena", "vieną", "du", "dvi", "trys", "tris", "keturi", "keturis",
+  "keturios", "keturias", "penki", "penkis", "penkios", "penkias", "šeši", "šešis", "šešios",
+  "šešias", "septyni", "septynis", "septynios", "septynias", "aštuoni", "aštuonis", "aštuonios",
+  "aštuonias", "devyni", "devynis", "devynios", "devynias", "dešimt", "vienuolika", "dvylika",
+  "trylika", "keturiolika", "penkiolika", "šešiolika", "septyniolika", "aštuoniolika",
+  "devyniolika", "dvidešimt", "trisdešimt", "keturiasdešimt", "penkiasdešimt", "šešiasdešimt",
+  "septyniasdešimt", "aštuoniasdešimt", "devyniasdešimt", "šimtas", "šimtą", "tūkstantis",
+  "tūkstantį", "milijonas", "milijoną", "kartą", "dukart", "triskart", "pusė", "pusę", "tuzinas",
+  "tuziną", "dvigubai", "keli", "kelis", "kelios", "kelias", "keletas", "keletą", "pora", "porą",
+]
+# "kovo 1 d.", "birželio 3"
+dates = [
+  "\\b(?:sausio|vasario|kovo|balandžio|gegužės|birželio|liepos|rugpjūčio|rugsėjo|spalio|lapkričio|gruodžio)\\s+\\d{1,2}(?:\\s*d\\.)?",
+]
+
+[values.numbers]
+nulis = 0
+vienas = 1
+viena = 1
+"vieną" = 1
+"kartą" = 1
+du = 2
+dvi = 2
+dukart = 2
+dvigubai = 2
+trys = 3
+tris = 3
+triskart = 3
+keturi = 4
+keturis = 4
+keturios = 4
+keturias = 4
+penki = 5
+penkis = 5
+penkios = 5
+penkias = 5
+"šeši" = 6
+"šešis" = 6
+"šešios" = 6
+"šešias" = 6
+septyni = 7
+septynis = 7
+"aštuoni" = 8
+"aštuonis" = 8
+devyni = 9
+devynis = 9
+"dešimt" = 10
+vienuolika = 11
+dvylika = 12
+tuzinas = 12
+"dvidešimt" = 20
+"trisdešimt" = 30
+"penkiasdešimt" = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# "3 d.", "14 val.", "3-ią", "1-oji"
+number_suffixes = ["d", "val", "-?(?:asis|oji|osios|ąjį|ąją|ojo|as|ą|a|is|ioji|iąją|ią|ias)"]
+weekdays = [
+  ["pirmadien(?:is|į|io)"], ["antradien(?:is|į|io)"], ["trečiadien(?:is|į|io)"],
+  ["ketvirtadien(?:is|į|io)"], ["penktadien(?:is|į|io)"], ["šeštadien(?:is|į|io)"],
+  ["sekmadien(?:is|į|io)"],
+]
+# The genitive and the accusative, the forms dates and "in <month>" use. The nominatives
+# "kovas" (rook), "balandis" (pigeon) and "liepa" (linden) are left out: they are also other words.
+months = [
+  ["saus(?:is|į|io)"], ["vasar(?:is|į|io)"], ["kov(?:o|ą)"], ["baland(?:į|žio)"],
+  ["geguž(?:ė|ę|ės)"], ["biržel(?:is|į|io)"], ["liep(?:ą|os)"], ["rugpjū(?:tis|tį|čio)"],
+  ["rugsėj(?:is|į|o)"], ["spal(?:is|į|io)"], ["lapkri(?:tis|tį|čio)"], ["gruod(?:is|į|žio)"],
+]
+month_names = [
+  "sausis", "sausį", "sausio", "vasaris", "vasarį", "vasario", "kovas", "kovą", "kovo", "balandis",
+  "balandį", "balandžio", "gegužė", "gegužę", "gegužės", "birželis", "birželį", "birželio", "liepa",
+  "liepą", "liepos", "rugpjūtis", "rugpjūtį", "rugpjūčio", "rugsėjis", "rugsėjį", "rugsėjo",
+  "spalis", "spalį", "spalio", "lapkritis", "lapkritį", "lapkričio", "gruodis", "gruodį",
+  "gruodžio",
+]
+# "prieš dvi savaites"
+ago = ["prieš\\s+{num}\\s+{unit}"]
+# "per pastarąjį mėnesį", "per pastaruosius tris mėnesius", "praėjusią savaitę"; and
+# "prieš savaitę" (a week ago, no number), read as the time since then.
+past = [
+  "(?:pastar\\w+|praėjus\\w+|praeit\\w+|pereit\\w+|paskutin\\w+)\\s+(?:{num}\\s+)?{unit}",
+  "prieš\\s+{unit}",
+]
+# "praėjusį mėnesį" and "praėjusiais metais" are the previous calendar month and year.
+calendar = ["^(?:praėjus|praeit|pereit)"]
+# "praėjusį šeštadienį", "šį šeštadienį", and the bare accusative "šeštadienį" (on Saturday).
+last_weekday = ["(?:(?:praėjus\\w+|praeit\\w+|pereit\\w+|šį)\\s+)?{weekday}"]
+strictly_before = ["^(?:praėjus|praeit|pereit)"]
+last_weekend = ["(?:praėjus\\w+|praeit\\w+|pereit\\w+)\\s+savaitgal(?:į|io)"]
+yesterday = ["vakar"]
+# "šią savaitę", "šį mėnesį", "šiais metais"
+this = ["(?:šią|šį|šiais|šio|šios|šių)\\s+{unit}"]
+# "vasarį", "vasario mėnesį", "birželio 3 dieną"
+in_month = ["{month}(?:\\s+{day})?"]
+
+[time.numbers]
+"vieną" = 1
+vienerius = 1
+du = 2
+dvi = 2
+dvejus = 2
+"dviejų" = 2
+"porą" = 2
+tris = 3
+trejus = 3
+"trijų" = 3
+kelis = 3
+kelias = 3
+"keletą" = 3
+kelerius = 3
+"kelių" = 3
+keturis = 4
+keturias = 4
+ketverius = 4
+"keturių" = 4
+penkis = 5
+penkias = 5
+penkerius = 5
+"penkių" = 5
+"šešis" = 6
+"šešias" = 6
+"šešių" = 6
+septynis = 7
+septynias = 7
+"septynių" = 7
+"aštuonis" = 8
+"aštuonias" = 8
+"aštuonių" = 8
+devynis = 9
+devynias = 9
+"devynių" = 9
+"dešimt" = 10
+vienuolika = 11
+dvylika = 12
+
+[time.units]
+day = ["dien(?:a|ą|os|as|ų|omis)"]
+week = ["savait(?:ė|ę|ės|es|ėmis)", "savaičių"]
+month = ["mėnuo", "mėnes(?:į|io|ius|ių|iai|iais)"]
+year = ["met(?:ai|us|ų|ais)"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["ar", "arba"]
+or_not = ["ar ne"]
+between = ["tarp\\s+(.+?)\\s+ir\\s+(.+?)"]
+clause = ["kai", "kol", "kada", "prieš tai,? kai", "po to,? kai", "nuo tada,? kai", "iki tol,? kol"]
+lead = [
+  "su\\s+kuo", "kur\\w*", "kok\\w+", "kas", "ką", "ko", "kam", "kuo", "kieno", "kada", "kaip",
+  "kiek\\s+(?:kartų|laiko)?", "kodėl", "ar",
+]
+article = ["mano", "mūsų", "savo", "tas", "ta", "tą", "tie", "tos", "tuos", "šis", "ši", "šį", "šią"]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:ignoruok(?:ite)?|ignoruoti|nepaisyk(?:ite)?|nepaisyti|pamiršk(?:ite)?|pamiršti|nekreipk(?:ite)? dėmesio|nesilaikyk(?:ite)?|nebesilaikyk(?:ite)?|atmesk(?:ite)?)\\b[^.\\n]{0,40}\\b(?:ankstesn\\w+|pirmesn\\w+|ligšiolin\\w+|aukščiau|vis(?:as|ų|us|ais|omis)|savo|tavo|jūsų|bet koki\\w+)\\b[^.\\n]{0,25}\\b(?:instrukcij\\w+|nurodym\\w+|taisykl\\w+|gair\\w+|nuostat\\w+|raginim\\w+|prompt\\w*)",
+]
+# After "nuo šiol" the pronoun is usually dropped: the second-person future ("atsakinėsi") marks it.
+role_hijack = [
+  "\\b(?:dabar (?:tu |jūs )?(?:esi|esate)|(?:tu|jūs) dabar (?:esi|esate)|nuo (?:šiol|dabar|šios akimirkos),? (?:(?:tu|jūs)\\b|esi|esate|būsi(?:te)?|privalai|privalote|turi(?:te)? (?:atsakyti|atsakinėti|elgtis|kalbėti|vykdyti|būti)|\\w+(?:[yėūi]|uo|au)si(?:te)?\\b)|elki(?:s|tės) kaip (?:\\w+ )?(?:nerib\\w+|necenzūr\\w+|be apribojimų)|apsimesk(?:ite)?,? (?:kad|jog) neturi(?:te)? (?:jokių )?(?:taisyklių|apribojimų))",
+]
+system_prompt = [
+  "\\b(?:parodyk(?:ite)?|parodyti|atskleisk(?:ite)?|atskleisti|išspausdink(?:ite)?|išspausdinti|pateik(?:ite)?|pateikti|išvesk(?:ite)?|parašyk(?:ite)?|pasakyk(?:ite)?|nutekink(?:ite)?)\\b[^.\\n]{0,40}\\b(?:sistemin\\w+ (?:raginim\\w+|užklaus\\w+|prompt\\w*|instrukcij\\w+|nurodym\\w+|pranešim\\w+)|sistemos (?:raginim\\w+|instrukcij\\w+|nurodym\\w+|pranešim\\w+|prompt\\w*)|system prompt\\w*|paslėpt\\w+ (?:instrukcij\\w+|nurodym\\w+)|kūrėjo (?:pranešim\\w+|žinut\\w+))",
+]
+# The gap allows the abbreviation "el." (el. laiškus, el. paštu).
+memory_directive = [
+  "\\b(?:visada|visuomet|kaskart|kiekvieną kartą|kai tik|kada tik)\\b(?:[^.\\n]|\\bel\\.){0,60}\\b(?:(?:per|iš|nu|pa)?siųsk(?:ite)?|(?:per|iš|nu)siųsti|perduok(?:ite)?|perduoti|įkelk(?:ite)?|įkelti|perkelk(?:ite)?|pervesk(?:ite)?)\\b(?:[^.\\n]|\\bel\\.){0,80}(?:https?://|@|\\bpinigin\\w+|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:įvykdyk(?:ite)?|vykdyk(?:ite)?|įvykdyti|paleisk(?:ite)?|paleisti|iškviesk(?:ite)?|iškviesti)\\b[^.\\n]{0,30}\\b(?:komand\\w+|įrank\\w+|funkcij\\w+)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

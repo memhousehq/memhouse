@@ -1,0 +1,446 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Romanian language pack. Draft: it passes its test set (languages/tests/ro.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+# Romanian is written with ș/ț (comma below), with the legacy ş/ţ (cedilla), and often with no
+# diacritics at all. Patterns accept all three ("s[ăa]pt[ăa]m[âa]na"); plain word lists carry each
+# spelling.
+format = 1
+language = "ro"
+name = "Romanian"
+status = "draft"
+text_search = "romanian"
+
+[detect]
+words = [
+  "și", "şi", "si", "în", "in", "de", "la", "cu", "pe", "un", "o", "a", "este", "e", "sunt", "nu",
+  "că", "ca", "să", "sa", "se", "din", "pentru", "care", "mai", "dar", "sau", "ce", "cine", "când",
+  "cand", "unde", "cum", "am", "ai", "au", "are", "era", "fost", "lui", "ei", "lor", "el", "ea",
+  "eu", "al", "ale", "își", "îşi", "isi", "îi", "ii", "le", "acest", "această", "aceasta", "acum",
+  "după", "dupa", "până", "pana", "prin", "despre", "foarte", "doar", "fără", "fara", "între",
+  "intre", "dacă", "daca", "utilizatorul",
+]
+letters = "ăâîșțşţ"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# "poate" alone is left out: it is also the verb "can" ("poate veni"). "posibil" alone is left out:
+# it is also the adjective in "cât mai repede posibil".
+speculation = [
+  "poate c[ăa]",
+  "probabil",
+  "posibil (?:ca|s[ăa])",
+  "(?:e|este|era) posibil",
+  "eventual",
+  "s-ar putea",
+  "ar putea",
+  "ar fi putut",
+  "se poate (?:ca|s[ăa])",
+  "cred c[ăa]",
+  "credem c[ăa]",
+  "b[ăa]nuiesc",
+  "presupun",
+  "m[ăa] [îi]ntreb",
+  "nu (?:sunt|e|este) sigur(?:[ăa])?",
+  "nesigur(?:[ăa])?",
+  "zvon(?:ul|uri|urile)?",
+  "se zvone[șşs]te",
+  "cic[ăa]",
+  "chipurile",
+  "se pare",
+  "pare-se",
+  "aparent",
+  "ipotetic",
+  "[îi]n teorie",
+  "teoretic",
+  "(?:se g[âa]nde[șşs]te|se g[âa]ndesc|m[ăa] g[âa]ndesc|ne g[âa]ndim) s[ăa]",
+  "(?:ia|iau|lu[ăa]m) [îi]n (?:considerare|calcul)",
+  "dac[ăa] (?:am|a[șşs]|ar|ai|a[țţt]i) (?:fi|avea|putea)",
+]
+# A change to something stored before.
+# "acum" (now) needs a verb next to it: "acum două săptămâni" is "two weeks ago". "înainte" is left
+# out: it is mostly the preposition "înainte de" (before).
+correction = [
+  "de fapt",
+  "corec[țţt]ie",
+  "corectare",
+  "corectur[ăa]",
+  "rectificare",
+  "m-am [îi]n[șşs]elat",
+  "am gre[șşs]it",
+  "nu mai",
+  "[îi]n loc de",
+  "[îi]n loc s[ăa]",
+  "[îi]n schimb",
+  "schimbat(?:[ăa])?",
+  "mutat(?:[ăa])?",
+  "(?:a|au|am|a[țţt]i) trecut (?:la|pe|[îi]n)",
+  "acum (?:are|au|este|e|sunt|lucreaz[ăa]|locuie[șşs]te|st[ăa]|folose[șşs]te|prefer[ăa]|de[țţt]ine|se afl[ăa])",
+  "(?:are|au|este|e|sunt|lucreaz[ăa]|locuie[șşs]te|st[ăa]|folose[șşs]te|prefer[ăa]|de[țţt]ine) acum",
+  "[îi]n prezent",
+  "actualmente",
+  "actualizat(?:[ăa])?",
+  "[îi]nlocuit(?:[ăa])? (?:cu|de)",
+  "pe vremuri",
+  "odinioar[ăa]",
+  "anterior",
+  "c[âa]ndva",
+  "obi[șşs]nui(?:a|au|am) s[ăa]",
+]
+# An intention not yet carried out.
+# "va" needs a verb of action: without diacritics it is also the pronoun "vă". "trebuie să" is left
+# out: with "întotdeauna" it marks an instruction.
+plan = [
+  "pl[ăa]nuie[șşs]te",
+  "pl[ăa]nuiesc",
+  "pl[ăa]nuim",
+  "planific[ăa]",
+  "(?:are|au|am|avem) de g[âa]nd",
+  "inten[țţt]ioneaz[ăa]",
+  "inten[țţt]ionez",
+  "inten[țţt]ion[ăa]m",
+  "inten[țţt]ia",
+  "vrea",
+  "vreau",
+  "vrem",
+  "vor",
+  "(?:ar|a[șşs]|am) vrea",
+  "(?:dore[șşs]te|doresc|dorim) s[ăa]",
+  "sper[ăa]",
+  "sper",
+  "sper[ăa]m",
+  "vom",
+  "urmeaz[ăa] s[ăa]",
+  "o s[ăa]",
+  "va (?:\\w+ ){0,3}(?:fi|avea|face|merge|pleca|[îi]ncepe|vizita|cump[ăa]ra|vinde|semna|lansa|livra|p[ăa]r[ăa]si|suna|trimite|[îi]nt[âa]lni|participa|[îi]ncerca|lua|rezerva|re[îi]nnoi|anula|trece|migra|actualiza|decide|termina|c[ăa]l[ăa]tori|veni|ajunge|primi|deveni)",
+  "(?:s[ăa]pt[ăa]m[âa]na|luna|vara|iarna|toamna|prim[ăa]vara|lunea|mar[țţt]ea|miercurea|joia|vinerea|s[âa]mb[ăa]ta|duminica) viitoare",
+  "(?:anul|trimestrul|weekendul) viitor",
+  "(?:s[ăa]pt[ăa]m[âa]na|luna) care vine",
+  "m[âa]ine",
+  "poim[âa]ine",
+  "[îi]n cur[âa]nd",
+  "mai t[âa]rziu (?:s[ăa]pt[ăa]m[âa]na aceasta|luna aceasta|anul acesta)",
+  "nu uita s[ăa]",
+  "[țţt]ine minte s[ăa]",
+  "mai trebuie s[ăa]",
+  "(?:scopul|obiectivul) este",
+]
+preference = [
+  "prefer[ăa]",
+  "prefer",
+  "prefer[ăa]m",
+  "preferat(?:[ăa]|e|ul|a)?",
+  "preferin[țţt](?:[ăa]|a|e|ele)",
+  "(?:[îi]i|le|[îi]mi|ne|[îi][țţt]i) plac(?:e)?",
+  "(?:[îi]i|le|[îi]mi|ne|[îi][țţt]i) pl[ăa]cea",
+  "ador[ăa]",
+  "ador",
+  "iube[șşs]te",
+  "iubesc",
+  "savureaz[ăa]",
+  "se bucur[ăa] de",
+  "ur[ăa][șşs]te",
+  "ur[ăa]sc",
+  "detest[ăa]",
+  "detest",
+  "favorit(?:[ăa]|ul|a|e)?",
+  "mai degrab[ăa]",
+  "nu suport[ăa]",
+  "nu suport",
+  "nu (?:poate|pot) suferi",
+  "alergic(?:[ăa])? la",
+  "pasionat(?:[ăa])? de",
+  "(?:[îi]i|le|[îi]mi) displace",
+]
+# Only at the start of the statement.
+# "nu" starts a negative imperative ("Nu trimite …").
+instruction_start = [
+  "[îi]ntotdeauna",
+  "totdeauna",
+  "mereu",
+  "niciodat[ăa]",
+  "nu",
+  "asigur[ăa]-te",
+  "asigura[țţt]i-v[ăa]",
+  "ai grij[ăa]",
+  "ave[țţt]i grij[ăa]",
+  "evit[ăa]",
+  "evita[țţt]i",
+  "folose[șşs]te",
+  "folosi[țţt]i",
+  "utilizeaz[ăa]",
+  "utiliza[țţt]i",
+  "ruleaz[ăa]",
+  "rula[țţt]i",
+  "verific[ăa]",
+  "verifica[țţt]i",
+  "te rog",
+]
+instruction = [
+  "trebuie(?: \\w+){0,3} (?:[îi]ntotdeauna|mereu|niciodat[ăa])",
+  "(?:[îi]ntotdeauna|mereu|niciodat[ăa]) trebuie",
+]
+# Past events: a dated reference or a completed action.
+# Participles of the compound past ("a cumpărat"). "început" and "angajat" alone are also nouns.
+event = [
+  "ieri",
+  "alalt[ăa]ieri",
+  "(?:s[ăa]pt[ăa]m[âa]na|luna|vara|iarna|toamna|prim[ăa]vara|noaptea|lunea|mar[țţt]ea|miercurea|joia|vinerea|s[âa]mb[ăa]ta|duminica) trecut[ăa]",
+  "(?:anul|weekendul|trimestrul) trecut",
+  "acum (?:\\d+|o|un|dou[ăa]|doi|trei|patru|cinci|[șşs]ase|c[âa]teva|c[âa][țţt]iva) (?:de )?(?:zi|zile|s[ăa]pt[ăa]m[âa]n[ăa]|s[ăa]pt[ăa]m[âa]ni|lun[ăa]|luni|an|ani)",
+  "[îi]n urm[ăa]",
+  "cump[ăa]rat",
+  "v[âa]ndut",
+  "vizitat",
+  "mers",
+  "plecat",
+  "adoptat",
+  "(?:a|au|am|a[țţt]i) [îi]nceput",
+  "terminat",
+  "finalizat",
+  "[îi]ncheiat",
+  "semnat",
+  "al[ăa]turat",
+  "p[ăa]r[ăa]sit",
+  "[îi]nt[âa]lnit",
+  "participat",
+  "absolvit",
+  "c[ăa]s[ăa]torit",
+  "primit",
+  "lansat",
+  "livrat",
+  "re[îi]nnoit",
+  "anulat",
+  "pl[ăa]tit",
+  "rezervat",
+  "comandat",
+  "returnat",
+  "c[ăa]l[ăa]torit",
+  "c[âa][șşs]tigat",
+  "pierdut",
+  "dat",
+  "luat",
+  "f[ăa]cut",
+  "n[ăa]scut",
+  "murit",
+  "decedat",
+  "s[ăa]rb[ăa]torit",
+  "(?:a|au|am|a[țţt]i) angajat",
+  "a fost angajat(?:[ăa])?",
+  "concediat",
+  "demisionat",
+  "pensionat",
+  "achizi[țţt]ionat",
+]
+
+[relations]
+relationship = [
+  "\\b(?:este|e|era|sunt|erau|a devenit|a fost) (?:acum )?(?:noul |noua )?(?:managerul|manager|[șşs]eful|[șşs]efa|[șşs]ef|colegul|colega|coleg|so[țţt]ia|so[țţt]ul|partenerul|partenera|prietenul|prietena|fratele|sora|mama|tat[ăa]l|fiul|fiica|v[ăa]rul|veri[șşs]oara|unchiul|m[ăa]tu[șşs]a|vecinul|vecina|mentorul|clientul|client|furnizorul|furnizor|proprietarul|fondatorul|directorul|sponsorul|persoana de contact) (?:lui|al|a|de la|pentru|la)\\b",
+  "\\b(?:raporteaz[ăa] c[ăa]tre|lucreaz[ăa] pentru|lucreaz[ăa] cu|c[ăa]s[ăa]torit(?:[ăa])? cu|logodit(?:[ăa])? cu|este rud[ăa] cu|este condus(?:[ăa])? de)\\b",
+]
+people = [
+  "soră", "sora", "frate", "fratele", "mamă", "mama", "tată", "tata", "tatăl", "tatal", "părinte",
+  "parinte", "părinți", "părinţi", "parinti", "părinții", "părinţii", "parintii", "soție", "soţie",
+  "sotie", "soția", "soţia", "sotia", "soț", "soţ", "sot", "soțul", "soţul", "sotul", "partener",
+  "parteneră", "partenera", "fiu", "fiul", "fiică", "fiica", "copil", "copii", "copiii", "prieten",
+  "prietenă", "prietena", "prieteni", "coleg", "colegă", "colega", "șef", "şef", "sef", "șefă",
+  "şefă", "sefa", "manager", "echipă", "echipa", "vecin", "vecină", "vecina", "văr", "var",
+  "verișoară", "verişoară", "verisoara", "unchi", "mătușă", "mătuşă", "matusa", "bunică", "bunica",
+  "bunic", "bunicul", "iubit", "iubită", "iubita", "câine", "caine", "câinele", "cainele", "pisică",
+  "pisica", "animal",
+]
+
+[values]
+stop = [
+  "utilizator", "utilizatorul", "utilizatorului", "utilizatorii", "acest", "această", "aceasta",
+  "aceste", "acești", "aceşti", "acesti", "este", "sunt", "avea", "avut", "acum", "acolo", "erau",
+  "fost", "despre", "decât", "decat", "atunci", "când", "cand", "care", "ceea", "pentru", "dintre",
+  "între", "intre", "după", "dupa", "înainte", "inainte", "până", "pana", "prin", "către", "catre",
+  "doar", "foarte", "niște", "nişte", "niste", "unele", "mult", "multe", "alte", "alți", "alţi",
+  "alti", "numai", "astfel", "vostru", "nostru", "noastră", "noastra", "fapt", "schimb", "schimbat",
+  "mutat", "trecut", "actualizat", "anterior", "cândva", "candva", "corecție", "corecţie",
+  "corectie", "prezent", "obișnuia", "obişnuia", "obisnuia", "dacă", "daca", "fiind", "însă",
+  "insa", "deci", "încă", "inca", "deja", "chiar", "toate", "toți", "toţi", "toti",
+]
+value_stop = [
+  "un", "o", "unui", "unei", "utilizator", "utilizatorul", "utilizatorului", "lor", "ei", "el",
+  "ea", "lui", "acest", "această", "aceasta", "cu", "de", "din", "la", "are", "au", "avea", "a",
+  "avut", "era", "erau", "este", "e", "sunt", "fost", "primit", "acum", "prezent", "recent",
+  "total", "ori", "oară", "oara", "dată", "data", "timp", "pe", "pentru", "și", "şi", "si",
+  "despre", "aproximativ", "circa", "cam", "aproape", "peste", "sub", "mai", "mult", "decât",
+  "decat", "în", "in", "tot", "doar", "numai", "încă", "inca", "deja", "nou", "noi", "său", "sau",
+  "sa", "săi", "sai", "sale", "nostru", "tău", "tau", "ta", "ca", "se", "că", "să", "către",
+  "catre", "prin", "al", "ai", "ale",
+]
+identifier = [
+  "factură", "factura", "facturii", "comandă", "comanda", "comenzii", "tichet", "tichetul",
+  "tichetului", "bilet", "biletul", "caz", "cazul", "dosar", "dosarul", "cont", "contul", "id",
+  "nr", "număr", "numar", "numărul", "numarul", "ref", "referință", "referinţă", "referinta",
+  "referința", "referinţa", "versiune", "versiunea", "cameră", "camera", "zbor", "zborul", "masă",
+  "masa", "loc", "locul", "poartă", "poarta", "peron", "peronul", "linie", "linia", "rută", "ruta",
+  "autobuz", "autobuzul", "model", "modelul", "serie", "seria", "articol", "articolul", "sku",
+  "problemă", "problema", "bug", "bugul", "unitate", "apartament", "apartamentul", "ap", "clădire",
+  "cladire", "clădirea", "cladirea", "etaj", "etajul", "cod", "codul", "interior",
+]
+# "nouă" is left out of the number words: it is nine, but also "new" (feminine) and "to us".
+quantity = [
+  "zero", "unu", "una", "doi", "două", "doua", "trei", "patru", "cinci", "șase", "şase", "sase",
+  "șapte", "şapte", "sapte", "opt", "zece", "unsprezece", "doisprezece", "douăsprezece",
+  "douasprezece", "treisprezece", "paisprezece", "cincisprezece", "șaisprezece", "şaisprezece",
+  "saisprezece", "șaptesprezece", "şaptesprezece", "saptesprezece", "optsprezece", "nouăsprezece",
+  "nouasprezece", "douăzeci", "douazeci", "treizeci", "patruzeci", "cincizeci", "șaizeci",
+  "şaizeci", "saizeci", "șaptezeci", "şaptezeci", "saptezeci", "optzeci", "nouăzeci", "nouazeci",
+  "sută", "suta", "sute", "mie", "mii", "milion", "milioane", "jumătate", "jumatate", "duzină",
+  "duzina", "dublu", "triplu", "câteva", "cateva", "câțiva", "câţiva", "cativa", "mulți", "mulţi",
+  "multi", "multe",
+]
+dates = [
+  "\\b\\d{1,2}\\s+(?:ian|feb|mar|apr|mai|iun|iul|aug|sep|sept|oct|noi|dec)[a-z]*\\.?",
+  "\\b\\d{1,2}\\.\\d{1,2}\\.(?:\\d{2,4})?",
+]
+
+[values.numbers]
+zero = 0
+unu = 1
+doi = 2
+"două" = 2
+doua = 2
+dublu = 2
+trei = 3
+triplu = 3
+patru = 4
+cinci = 5
+"șase" = 6
+"şase" = 6
+sase = 6
+"șapte" = 7
+"şapte" = 7
+sapte = 7
+opt = 8
+zece = 10
+unsprezece = 11
+doisprezece = 12
+"douăsprezece" = 12
+douasprezece = 12
+"duzină" = 12
+duzina = 12
+"douăzeci" = 20
+douazeci = 20
+treizeci = 30
+cincizeci = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = ["-a", "-lea", "-ea"]
+weekdays = [
+  ["lun(?:i|ea)"],
+  ["mar[țţt](?:i|ea)"],
+  ["miercur(?:i|ea)"],
+  ["jo(?:i|ia)"],
+  ["viner(?:i|ea)"],
+  ["s[âa]mb[ăa]t(?:[ăa]|a)"],
+  ["duminic(?:[ăa]|a)"],
+]
+# "mai" is also "more" and "still" ("nu mai"): the in_month templates ask for a preposition or a day.
+months = [
+  ["ianuarie"],
+  ["februarie"],
+  ["martie"],
+  ["aprilie"],
+  ["mai"],
+  ["iunie"],
+  ["iulie"],
+  ["august"],
+  ["septembrie"],
+  ["octombrie"],
+  ["noiembrie"],
+  ["decembrie"],
+]
+month_names = [
+  "ianuarie", "februarie", "martie", "aprilie", "mai", "iunie", "iulie", "august", "septembrie",
+  "octombrie", "noiembrie", "decembrie",
+]
+ago = ["acum\\s+{num}\\s+(?:de\\s+)?{unit}", "(?:cu\\s+)?{num}\\s+(?:de\\s+)?{unit}\\s+[îi]n\\s+urm[ăa]"]
+past = ["ultim(?:a|ul|ele|ii)\\s+(?:{num}\\s+(?:de\\s+)?)?{unit}", "{unit}\\s+trecut(?:[ăa])?"]
+# "luna trecută" and "anul trecut" are the previous calendar month and year; "ultima lună" is the
+# last thirty days.
+calendar = ["trecut"]
+last_weekday = ["{weekday}\\s+trecut[ăa]", "ultima\\s+{weekday}"]
+strictly_before = ["trecut", "^ultima"]
+last_weekend = ["weekend(?:-?ul)?\\s+trecut", "sf[âa]r[șşs]itul\\s+de\\s+s[ăa]pt[ăa]m[âa]n[ăa]\\s+trecut", "ultimul\\s+weekend"]
+yesterday = ["ieri"]
+this = ["{unit}\\s+(?:aceasta|asta|acesta|[ăa]sta)", "(?:aceast[ăa]|acest)\\s+{unit}"]
+in_month = ["(?:[îi]n|din|pe|lui|luna|lunii|data\\s+de)\\s+(?:{day}\\s+)?{month}", "{day}\\s+{month}"]
+
+[time.numbers]
+o = 1
+un = 1
+"două" = 2
+doua = 2
+doi = 2
+trei = 3
+"câteva" = 3
+cateva = 3
+"câțiva" = 3
+"câţiva" = 3
+cativa = 3
+patru = 4
+cinci = 5
+"șase" = 6
+"şase" = 6
+sase = 6
+"șapte" = 7
+"şapte" = 7
+sapte = 7
+opt = 8
+"nouă" = 9
+noua = 9
+zece = 10
+unsprezece = 11
+"douăsprezece" = 12
+douasprezece = 12
+doisprezece = 12
+
+[time.units]
+day = ["zi", "zile", "zilele", "ziua"]
+week = ["s[ăa]pt[ăa]m[âa]n(?:[ăa]|a|i|ile)"]
+month = ["lun(?:[ăa]|a|i|ile)"]
+year = ["an", "ani", "anul", "anii"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["sau", "ori"]
+or_not = ["sau nu"]
+between = ["[îi]ntre\\s+(.+?)\\s+[șşs]i\\s+(.+?)"]
+clause = [
+  "c[âa]nd", "[îi]nainte", "dup[ăa]", "de c[âa]nd", "[îi]n timp ce", "p[âa]n[ăa]",
+]
+lead = [
+  "care", "ce", "cine", "cui", "c[âa]nd", "unde", "cum", "cu\\s+cine", "la\\s+ce", "pe\\s+cine",
+  "c[âa][țţt]i", "c[âa]te", "c[âa]t(?:[ăa])?(?:\\s+de\\s+\\w+)?", "am", "ai", "au", "a[țţt]i", "a",
+  "este", "era", "e", "sunt", "s-a",
+]
+article = [
+  "un", "o", "ni[șşs]te", "al", "a", "acel", "acea", "acei", "acele", "acest", "aceast[ăa]",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:ignor[ăa]|ignora[țţt]i|ignori|neglijeaz[ăa]|nesocote[șşs]te|[îi]ncalc[ăa]|treci peste|nu (?:mai )?[țţt]ine(?:[țţt]i)? cont de|nu (?:mai )?respecta)\\b[^.\\n]{0,40}\\b(?:instruc[țţt]iun(?:i|ile)|regul(?:i|ile)|indica[țţt]ii(?:le)?|directive(?:le)?|prompt(?:ul|urile)?|ordine(?:le)?)\\b[^.\\n]{0,25}\\b(?:anterioare|precedente|de mai sus|de p[âa]n[ăa] acum|ini[țţt]iale|primite|tale|voastre|dumneavoastr[ăa])",
+  "\\b(?:ignor[ăa]|ignora[țţt]i|ignori|neglijeaz[ăa]|nesocote[șşs]te|[îi]ncalc[ăa]|treci peste|nu (?:mai )?[țţt]ine(?:[țţt]i)? cont de|nu (?:mai )?respecta)\\b[^.\\n]{0,40}\\b(?:toate|orice|oricare)\\b[^.\\n]{0,25}\\b(?:instruc[țţt]iun(?:i|ile)|regul(?:i|ile)|indica[țţt]ii(?:le)?|directive(?:le)?|prompt(?:ul|urile)?|ordine(?:le)?)",
+  "\\buit[ăa](?:[țţt]i)?\\s+(?:de\\s+)?(?:toate\\s+)?(?:instruc[țţt]iun(?:i|ile)|regul(?:i|ile)|indica[țţt]ii(?:le)?|directive(?:le)?|prompt(?:ul|urile)?|ordine(?:le)?)\\b[^.\\n]{0,25}\\b(?:anterioare|precedente|de mai sus|de p[âa]n[ăa] acum|ini[țţt]iale|primite|tale|voastre|dumneavoastr[ăa])",
+]
+role_hijack = [
+  "\\b(?:(?:e[șşs]ti|sunte[țţt]i) (?:acum|de acum)|(?:acum|de acum) (?:e[șşs]ti|sunte[țţt]i)|(?:de acum (?:[îi]nainte|[îi]ncolo)|din acest moment),? (?:e[șşs]ti|vei|ve[țţt]i|trebuie|r[ăa]spunzi|vorbe[șşs]ti|scrii|sunte[țţt]i)|(?:poart[ăa]-te|comport[ăa]-te|ac[țţt]ioneaz[ăa]) ca (?:un |o )?(?:\\w+ )?(?:f[ăa]r[ăa] (?:restric[țţt]ii|limite|reguli|cenzur[ăa])|nerestric[țţt]ionat(?:[ăa])?|necenzurat(?:[ăa])?|nelimitat(?:[ăa])?)|pref[ăa]-te c[ăa] nu ai (?:nicio |niciun fel de )?(?:reguli|restric[țţt]ii|restric[țţt]ie|limite))",
+]
+system_prompt = [
+  "\\b(?:arat[ăa]|ar[ăa][țţt]i|ar[ăa]ta[țţt]i|dezv[ăa]luie|dezv[ăa]lui[țţt]i|afi[șşs]eaz[ăa]|afi[șşs]a[țţt]i|spune|spune[țţt]i|d[ăa]-mi|d[ăa]-ne|scrie|printeaz[ăa]|divulg[ăa])\\b[^.\\n]{0,40}\\b(?:prompt(?:ul|ului)? de sistem|system prompt|instruc[țţt]iunile (?:ascunse|de sistem)|mesajul dezvoltatorului)",
+]
+memory_directive = [
+  "\\b(?:[îi]ntotdeauna|totdeauna|mereu|ori de c[âa]te ori|de fiecare dat[ăa]|oric[âa]nd)\\b[^.\\n]{0,60}\\b(?:trimite|trimite[țţt]i|trimi[țţt]i|redirec[țţt]ioneaz[ăa]|redirec[țţt]iona[țţt]i|retrimite|expediaz[ăa]|[îi]ncarc[ăa]|transfer[ăa]|transmite)\\b[^.\\n]{0,60}\\b(?:c[ăa]tre|la|pe|spre)\\b[^.\\n]{0,40}(?:https?://|@|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:ruleaz[ăa]|rula[țţt]i|execut[ăa]|executa[țţt]i|apeleaz[ăa]|porne[șşs]te|lanseaz[ăa])\\b[^.\\n]{0,30}\\b(?:comanda|comenzii|instrumentul|unealta|func[țţt]ia|tool-?ul)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

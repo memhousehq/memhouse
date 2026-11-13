@@ -754,6 +754,11 @@ async fn doctor(cfg_path: &Option<PathBuf>) -> anyhow::Result<()> {
             if let Some(r) = &eng.reranker {
                 ok(&format!("reranker {}", r.id()));
             }
+            let packs: Vec<String> = eng.languages.packs().iter().map(|p| format!("{} ({})", p.code(), p.source)).collect();
+            ok(&format!("languages {}; default {}", packs.join(", "), eng.languages.default_pack().code()));
+            if let Some(w) = memhouse_core::lang::embedder_warning(&eng.languages.codes(), &cfg.embedding.model) {
+                bad(&w);
+            }
             let st = eng.store.stats(&cfg.memory.tenant).await?;
             ok(&format!("{} memories, {} subjects, {} audit events", st.committed, st.subjects, st.audit_events));
             match eng.store.audit_verify().await? {

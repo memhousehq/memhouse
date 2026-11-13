@@ -596,6 +596,12 @@ impl Config {
         if let Some(v) = var("MEMHOUSE_TENANT") {
             self.memory.tenant = v;
         }
+        if let Some(v) = var("MEMHOUSE_LANGUAGES") {
+            self.language.enabled = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+        if let Some(v) = var("MEMHOUSE_LANGUAGE_PACKS_DIR") {
+            self.language.packs_dir = v;
+        }
         if let Some(v) = var("MEMHOUSE_BIND") {
             self.server.bind = v;
         }

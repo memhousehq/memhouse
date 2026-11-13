@@ -78,6 +78,7 @@ Fields in this order; optional fields are left out when empty.
 | `source` | text | yes | |
 | `confidence` | number | yes | 0 to 1 |
 | `provenance` | `{agent?, user?, policy_version?, request_key?, extractor?, extractor_config?}` | no | |
+| `language` | text | no | the language the text was detected as: a language-pack code (`en`, `de`, `pt-BR`); from schema 9 |
 | `alt_hash` | lowercase sha256 hex | no | the key of the second vector, below |
 | `structured` | `{record_type, attrs}` | no | `attrs` is an object |
 | `code_refs` | `[{path, blob_hash}]` | no | each path once |

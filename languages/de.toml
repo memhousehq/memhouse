@@ -14,7 +14,8 @@ words = [
   "auf", "für", "von", "zu", "im", "sich", "auch", "es", "ich", "er", "sie", "wir", "ihr", "hat",
   "haben", "war", "wird", "sind", "bei", "nach", "aus", "wie", "was", "wer", "wo", "wann", "oder",
   "aber", "wenn", "als", "noch", "nur", "schon", "sehr", "mein", "meine", "sein", "seine", "unser",
-  "zum", "zur", "über", "am", "um", "dass", "kann", "wurde", "jetzt", "nutzer",
+  "zum", "zur", "über", "am", "um", "dass", "kann", "wurde", "jetzt", "nutzer", "in", "an", "vom",
+  "ihre", "diese", "dieser", "einer", "einem", "bin",
 ]
 letters = "äöüß"
 

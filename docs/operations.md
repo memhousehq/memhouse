@@ -18,6 +18,7 @@ backups, upgrades, enrichment workers, monitoring and troubleshooting.
 - [Backup and restore](#backup-and-restore)
 - [Upgrades](#upgrades)
 - [Changing the embedding model](#changing-the-embedding-model)
+- [Languages](#languages)
 - [Monitoring](#monitoring)
 - [Traces, metrics and recall explanations](#traces-metrics-and-recall-explanations)
 - [Routine maintenance](#routine-maintenance)
@@ -468,6 +469,11 @@ is planned (TR-WF-03).
    ([schema](schema.md#upgrading-from-v1)).
 4. `memhouse doctor`.
 
+   Version 9 adds three nullable columns to `mh_memory` (`language`, `ts_config`, `tsv_lang`), a
+   trigger and a partial index. No row is rewritten: existing records keep their `english`
+   keyword index and have no `language` until they are written again.
+   A database upgraded to version 9 is refused by an older binary.
+
 Rolling restarts work: old and new processes can share the database while the changes are additive.
 Changing the embedding model is different: see [Changing the embedding model](#changing-the-embedding-model).
 
@@ -514,6 +520,27 @@ Plan for it:
 | Cost | a paid API charges for the characters `--dry-run` shows (≈ 4 per token), once per record and once per second vector. |
 | Disk | the staging columns double the vector storage until the switch; dropped columns are reclaimed as autovacuum reuses the space, or at once by `VACUUM FULL mh_memory` in a maintenance window. |
 | Writers | writes go on during the run; they wait only for the switch itself (well under a second plus the last few records). If records keep arriving from old-model writers through 10 passes, the run stops and asks you to stop them; progress is kept. |
+
+## Languages
+
+Full reference: [languages.md](languages.md).
+
+- **Enable a language:** add its code to `[language] enabled` and restart. `memhouse lang list`
+  shows the packs; `memhouse doctor` names the enabled ones and warns about an English-only
+  embedding model.
+- **Text search:** each pack names a Postgres text-search configuration. The server checks at
+  start that the database has every one an enabled pack names, and stops with the name of a
+  missing one. Records written before a language was enabled keep the `english` index; they are
+  indexed in their own language when they are written again (`revise`, or export and import).
+- **Embedding model:** with another language than English, move to a multilingual model with
+  `memhouse reembed` (above); vector search with an English-only model is poor in other
+  languages.
+- **Your own packs:** put `<code>.toml` files in `[language] packs_dir`. Check each with
+  `memhouse lang check <file> --tests <test set>` before a restart: a file that does not
+  validate stops the start, with its file and line, whether or not its language is enabled.
+- **A tenant with fewer languages:** `[language] enabled` in the tenant's policy spec.
+- **Detection:** `memhouse lang detect "<text>"` shows what a text is detected as. A record's
+  `language` field shows what it was stored as.
 
 ## Monitoring
 

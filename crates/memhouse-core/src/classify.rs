@@ -65,17 +65,19 @@ impl Pack {
 
 impl Detected {
     /// The rules' reading of `text` (QUAL-02). A text whose language was detected is read by
-    /// that language's markers. One whose language was not is read by every enabled pack, and
-    /// the most cautious reading wins: detection must not let a plan through as a fact.
+    /// that language's markers; a close contender (Slovak for a Czech text) can only make the
+    /// reading more cautious, by reading a guess or a plan where the detected language reads
+    /// neither. A text whose language was not detected is read by every enabled pack, and the
+    /// most cautious reading wins. Detection must not let a plan through as a fact.
     pub fn classify_text(&self, text: &str, kind: MemoryKind) -> Classification {
-        if self.sure || self.others.is_empty() {
-            return self.pack.classify_text(text, kind);
-        }
         let mut best = self.pack.marker(text, kind);
+        if self.others.is_empty() || best.as_ref().is_some_and(|b| b.statement.held()) {
+            return best.unwrap_or(Classification { statement: Statement::Fact, confidence: 0.6, reason: "rules: no marker".into() });
+        }
         for p in &self.others {
-            if let Some(c) = p.marker(text, kind) {
+            if let Some(c) = p.marker(text, kind).filter(|c| !self.sure || c.statement.held()) {
                 if best.as_ref().is_none_or(|b| caution(c.statement) < caution(b.statement)) {
-                    best = Some(c);
+                    best = Some(Classification { reason: format!("{} [{}]", c.reason, p.code()), ..c });
                 }
             }
         }

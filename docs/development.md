@@ -56,7 +56,8 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (59 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing and evaluation checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (62 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation and language checks are in `*_checks.rs` next to it |
+| `core/src/lang.rs`, `langcheck.rs` | language packs: the format, validation, compilation to patterns, detection; a pack's labelled test set. The packs are in `languages/`, their test sets in `languages/tests/` |
 
 ## Build
 

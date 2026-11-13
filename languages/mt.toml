@@ -1,0 +1,430 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Maltese language pack. Draft: it passes its test set (languages/tests/mt.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+#
+# Maltese joins the article to its noun with a hyphen ("il-kelb", "l-utent", "ix-xahar") and
+# marks person on the verb with a prefix or an ending ("jixtieq", "tixtieq", "nixtieq"), so the
+# patterns list the forms by person. An apostrophe may be straight or curly ("ta'", "ta’").
+format = 1
+language = "mt"
+name = "Maltese"
+status = "draft"
+text_search = "simple"
+
+[detect]
+words = [
+  "il", "li", "ta", "tal", "u", "ma", "mal", "fil", "fi", "hu", "hi", "huwa", "hija", "huma",
+  "jien", "int", "aħna", "dan", "din", "dawn", "dak", "dik", "minn", "mill", "għal", "għall",
+  "bil", "bi", "lil", "lill", "fuq", "taħt", "bejn", "wara", "qabel", "jew", "imma", "iżda", "jekk",
+  "meta", "fejn", "kif", "xi", "kien", "kienet", "kienu", "se", "qed", "mhux", "biex", "ukoll",
+  "ħafna", "tiegħu", "tagħha", "tiegħi", "tagħna", "tagħhom", "għandu", "għandha", "kull", "issa",
+  "liema", "utent",
+]
+letters = "ċġħż"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# "jista'" alone (can) is not a hedge; "jista' jkun" (maybe) and "għandu mnejn" (might) are.
+speculation = [
+  "forsi",
+  "probabbli",
+  "probabbilment",
+  "x['’]aktarx",
+  "aktarx",
+  "[jt]ista['’] [jt]kun",
+  "għand(?:u|ha|hom|i|na|ek) mnejn",
+  "naħseb",
+  "naħsbu",
+  "[jt]aħseb li",
+  "nissoponi",
+  "nimmaġina",
+  "nissuspetta",
+  "jidhirli",
+  "jidher li",
+  "milli jidher",
+  "donn(?:u|ha|hom)",
+  "mhux ċert\\w*",
+  "m['’]inix ċert\\w*",
+  "ma nafx jekk",
+  "jingħad",
+  "għajdut",
+  "suppost",
+  "allegatament",
+  "teoretikament",
+  "ipotetikament",
+  "(?:qed|qiegħed|qiegħda|qegħdin) (?:[jtn]aħseb|[jtn]aħsbu|[jtn]ikkunsidra\\w*)",
+  "kieku",
+]
+# A change to something stored before. "m'għadux" is "no longer"; "kien joqgħod" (the past of
+# "to be" with an imperfect verb) is "used to live", listed for the common verbs only. "issa"
+# (now) counts only next to a verb of state: "minn issa 'l quddiem" (from now on) opens plans.
+correction = [
+  "fil-fatt",
+  "fil-verità",
+  "fir-realtà",
+  "korrezzjoni",
+  "żbaljajt",
+  "kont żbaljat\\w*",
+  "m['’]għad\\w+x",
+  "minflok",
+  "flok",
+  "inbid(?:el|let|lu)",
+  "bidd(?:el|let|lu)",
+  "bdilt",
+  "(?:qaleb|qalbet|qlibt|qlibna|qalbu) (?:għa\\w*|minn|mill-\\w+)",
+  "(?:mar|marret|marru) [jt]oq(?:għod|ogħdu)",
+  "mort noqgħod",
+  "morna noqogħdu",
+  "issa (?:għand\\w+|qed|qiegħed|qiegħda|hu|hi|huwa|hija|huma|[jtn]oqgħod|[jtn]għix|[jtn]aħdem|[jtn]uża|[jtn]ippreferi)",
+  "(?:għand\\w+|[jtn]oqgħod|[jtn]għix|[jtn]aħdem|[jtn]uża|[jtn]ippreferi) issa",
+  "aġġornat\\w*",
+  "dari",
+  "qabel kien(?:et|u)?",
+  "(?:kien|kienet|kont|konna|kienu) (?:[jtn]oqgħod|[jn]oqogħdu|[jtn]għix|[jn]għixu|[jtn]aħdem|[jn]aħdmu|[ij]kollu|[ij]kollha|[ij]kolli|[ij]kollna|[ij]kollhom|[jtn]uża|[jtn]ippreferi)",
+]
+# An intention not yet carried out. "se" / "ser" before a verb is the future.
+plan = [
+  "[jtn]?ippjana\\w*",
+  "pjan(?:ijiet)? (?:li|biex)",
+  "bi ħsieb\\w+",
+  "biħsieb\\w+",
+  "[jtn]ixtieq\\w*",
+  "irid",
+  "jrid",
+  "trid",
+  "irrid",
+  "rrid",
+  "nrid",
+  "(?:i|j|t|ir|n)ridu",
+  "[jtn]ittama\\w*",
+  "[jtn]immira\\w*",
+  "se",
+  "ser",
+  "sejjer",
+  "sejra",
+  "sejrin",
+  "d-dieħ(?:el|la)",
+  "li ġej(?:ja|jin)?",
+  "għada",
+  "pitgħada",
+  "dalwaqt",
+  "aktar tard (?:din il-ġimgħa|dan ix-xahar|din is-sena)",
+  "ftakar biex",
+  "tinsiex",
+  "tinsewx",
+  "bżonn li",
+  "[jt]eħtieġ\\w*",
+]
+preference = [
+  "(?:[jtn]|in)?ippreferi\\w*",
+  "preferenza",
+  "preferut\\w*",
+  "(?:i|j|t|n|in)ħobb(?:u)?",
+  "[jtn]obgħod",
+  "[jtn]obogħdu",
+  "favorit\\w*",
+  "[jtn]ie(?:ħu|ħdu) gost",
+  "[jt]ogħġ(?:ob|bu)\\w*",
+  "ma [jtn]iflaħx",
+  "ma [jtn]ifilħux",
+  "allerġi(?:ku|ka|ċi)",
+]
+# Only at the start of the statement. "t…x" is the negative imperative ("tibgħatx").
+instruction_start = [
+  "dejjem", "qatt", "kun żgur\\w*", "kunu żguri", "aċċerta ruħek", "jekk jogħġbok", "evita(?:w)?",
+  "uża(?:w)?", "t\\w{2,}x",
+]
+instruction = [
+  "għand(?:u|ha|hom|ek|kom|na) dejjem",
+  "dejjem għand(?:u|ha|hom|ek|kom|na)",
+  "qatt m['’]għand\\w+",
+  "m['’]għand\\w+ qatt",
+]
+# Past events: a dated reference or a completed action (he, she, I, they).
+event = [
+  "(?:il-?|l-?)?bieraħ",
+  "lbieraħtlula",
+  "li għadd(?:a|iet|ew)",
+  "(?:jum|jumejn|jiem|ġimgħa|ġimagħtejn|ġimgħat|xahar|xahrejn|xhur|sena|sentejn|snin) ilu",
+  "xtara",
+  "xtrat",
+  "xtrajt",
+  "xtraw",
+  "biegħ(?:et|u)?",
+  "begħt",
+  "żar(?:et|u)?",
+  "żort",
+  "mar(?:ret|ru)?",
+  "mort",
+  "morna",
+  "adotta(?:t|jt|w)?",
+  "beda",
+  "bdiet",
+  "bdejt",
+  "bdew",
+  "spiċċa(?:t|jt|w)?",
+  "temm(?:et|ejt|ew)?",
+  "iffirma(?:t|jt|w)?",
+  "ingħaqad",
+  "ingħaqdet",
+  "ingħaqdu",
+  "telaq",
+  "telqet",
+  "tlaqt",
+  "telqu",
+  "iltaqa",
+  "iltaqgħet",
+  "iltqajt",
+  "iltaqgħu",
+  "attend(?:a|iet|ejt|ew)",
+  "iggradwa(?:t|jt|w)?",
+  "iżżewweġ",
+  "iżżewġet",
+  "iżżewwiġt",
+  "iżżewġu",
+  "irċiev(?:a|ew)",
+  "irċeviet",
+  "irċevejt",
+  "nied(?:a|ew)",
+  "nediet",
+  "ħareġ",
+  "ħarġet",
+  "ħriġt",
+  "ħarġu",
+  "ġedded",
+  "ġeddet",
+  "ġeddidt",
+  "ikkanċella(?:t|jt|w)?",
+  "ħallas",
+  "ħallset",
+  "ħallast",
+  "ħallsu",
+  "ibbukkja(?:t|jt|w)?",
+  "ordna(?:t|jt|w)?",
+  "irritorna(?:t|jt|w)?",
+  "siefer",
+  "siefret",
+  "sifirt",
+  "siefru",
+  "rebaħ",
+  "rebħet",
+  "rbaħt",
+  "rebħu",
+  "tilef",
+  "tilfet",
+  "tlift",
+  "tilfu",
+  "għamel",
+  "għamlet",
+  "għamilt",
+  "għamlu",
+  "twieled",
+  "twieldet",
+  "miet",
+  "mietet",
+  "iċċelebra(?:t|jt|w)?",
+  "irtira(?:t|jt|w)?",
+  "akkwista(?:t|jt|w)?",
+  "wasal",
+  "waslet",
+  "wasalt",
+  "waslu",
+  "bagħat",
+  "bagħtet",
+  "bgħatt",
+  "bagħtu",
+  "kiseb",
+  "kisbet",
+  "ippubblika(?:t|jt|w)?",
+]
+
+[relations]
+relationship = [
+  "\\b(?:huwa|hija|kien|kienet|sar|saret) (?:issa )?(?:\\w{1,2}-)?(?:maniġer|kap|kollega|mara|raġel|sieħeb|sieħba|ħabib|ħabiba|ħu|oħt|omm|missier|iben|bint|kuġin|kuġina|ziju|zija|ġar|ġara|klijent|fornitur|sid|fundatur|direttur) (?:ta['’]|ta\\w-|tiegħ|tagħ)",
+  "\\b(?:[jt]irrapporta lil|[jt]aħdem għal|[jt]aħdem ma['’]|miżżewweġ lil|miżżewġa lil|għarus ta['’]|għarusa ta['’])",
+]
+people = [
+  "oħt", "ħu", "omm", "mama", "missier", "papà", "ġenituri", "mara", "raġel", "sieħeb", "sieħba",
+  "iben", "bint", "tifel", "tifla", "tfal", "ħabib", "ħabiba", "ħbieb", "kollega", "kollegi",
+  "kap", "maniġer", "tim", "ġar", "ġara", "kuġin", "kuġina", "ziju", "zija", "nanna", "nannu",
+  "għarus", "għarusa", "kelb", "qattus", "pet",
+]
+
+[values]
+stop = [
+  "utent", "l-utent", "tal-utent", "tiegħu", "tagħha", "tiegħi", "tagħna", "tagħhom", "huwa",
+  "hija", "huma", "kien", "kienet", "kienu", "għandu", "għandha", "għandhom", "issa", "fatt",
+  "fil-fatt", "minflok", "flok", "korrezzjoni", "dari", "ukoll", "ħafna", "aktar", "biss", "minn",
+  "mill", "għal", "għall", "dawn", "dawk", "meta", "fejn", "liema", "jekk", "biex", "kull", "mhux",
+  "qabel", "wara", "bħal", "dwar", "m'għadux", "m'għadhiex",
+]
+value_stop = [
+  "il", "l", "ta", "ta'", "tal", "u", "li", "fi", "f", "fil", "ma", "ma'", "mal", "bi", "b", "bil",
+  "lil", "lill", "minn", "mill", "għal", "għall", "utent", "l-utent", "tal-utent", "dan", "din",
+  "dawn", "hu", "hi", "huwa", "hija", "huma", "kien", "kienet", "għandu", "għandha", "għandhom",
+  "issa", "bħalissa", "riċentement", "total", "darba", "drabi", "kull", "madwar", "kważi", "aktar",
+  "inqas", "ukoll", "biss", "għadu", "diġà", "ġdid", "ġdida", "tiegħu", "tagħha", "tagħna",
+  "tagħhom", "fuq", "taħt", "xi",
+]
+identifier = [
+  "fattura", "ordni", "tikit", "biljett", "każ", "kont", "id", "nru", "numru", "ref", "referenza",
+  "verżjoni", "kamra", "titjira", "mejda", "siġġu", "gate", "pjattaforma", "rotta", "linja",
+  "mudell", "serjali", "oġġett", "sku", "problema", "bug", "appartament", "flat", "bini", "sular",
+  "kodiċi", "estensjoni",
+]
+quantity = [
+  "żero", "wieħed", "waħda", "tnejn", "żewġ", "tlieta", "tliet", "erbgħa", "erba'", "ħamsa",
+  "ħames", "sitta", "sitt", "sebgħa", "seba'", "tmienja", "tmien", "disgħa", "disa'", "għaxra",
+  "għaxar", "ħdax", "tnax", "tlettax", "erbatax", "ħmistax", "sittax", "sbatax", "tmintax",
+  "dsatax", "għoxrin", "tletin", "erbgħin", "ħamsin", "sittin", "sebgħin", "tmenin", "disgħin",
+  "mija", "elf", "miljun", "darba", "darbtejn", "nofs", "tużżana", "ftit", "diversi", "bosta",
+]
+# "l-1 ta' Marzu", "fit-3 ta' Ġunju"
+dates = [
+  "\\b\\d{1,2}\\s+ta['’]\\s+(?:jannar|frar|marzu|april|mejju|ġunju|lulju|awwissu|settembru|ottubru|novembru|diċembru)\\b",
+]
+
+[values.numbers]
+"żero" = 0
+"wieħed" = 1
+"waħda" = 1
+darba = 1
+tnejn = 2
+"żewġ" = 2
+darbtejn = 2
+tlieta = 3
+tliet = 3
+"erbgħa" = 4
+"erba'" = 4
+"ħamsa" = 5
+"ħames" = 5
+sitta = 6
+sitt = 6
+"sebgħa" = 7
+"seba'" = 7
+tmienja = 8
+tmien = 8
+"disgħa" = 9
+"disa'" = 9
+"għaxra" = 10
+"għaxar" = 10
+"ħdax" = 11
+tnax = 12
+"tużżana" = 12
+"għoxrin" = 20
+tletin = 30
+"ħamsin" = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = ["am", "pm"]
+# Most weekday names are also other words ("tnejn" two, "tlieta" three, "erbgħa" four, "ġimgħa"
+# week, "ħadd" nobody), so a weekday is read only after "nhar" or before "li għadda".
+weekdays = [
+  ["(?:it-)?tnejn"], ["(?:it-)?tlieta"], ["(?:l-)?erbgħa"], ["(?:il-)?ħamis"], ["(?:il-)?ġimgħa"],
+  ["(?:is-)?sibt"], ["(?:il-)?ħadd"],
+]
+months = [
+  ["jannar"], ["frar"], ["marzu"], ["april"], ["mejju"], ["ġunju"], ["lulju"], ["awwissu"],
+  ["settembru"], ["ottubru"], ["novembru"], ["diċembru"],
+]
+month_names = [
+  "jannar", "frar", "marzu", "april", "mejju", "ġunju", "lulju", "awwissu", "settembru", "ottubru",
+  "novembru", "diċembru",
+]
+# "tliet ġimgħat ilu", and the dual, which is one word: "ġimagħtejn ilu", "xahrejn ilu",
+# "sentejn ilu", "jumejn ilu" (the stem is the unit, the ending "-ejn" / "-tejn" is the number 2).
+ago = ["{num}\\s+{unit}\\s+ilu", "{unit}{num}\\s+ilu"]
+# "f'dan l-aħħar xahar", "fl-aħħar tliet xhur", "fl-aħħar ġimagħtejn", "ix-xahar li għadda"; and
+# "ġimgħa ilu" (a week ago, no number), read as the time since then. The first two entries have
+# no {unit}: they keep "tmiem il-ġimgħa li għadda" (last weekend) and "tliet ġimgħat ilu" (read
+# by `ago`) from also being read here.
+past = [
+  "tmiem\\s+il-ġimgħa\\s+li\\s+għadd(?:a|iet)",
+  "(?:\\d+|żewġt?|tliet|tlett|tlitt|ftit|erba['’]|erbat|ħamest?|sitt|seba['’]|sebat|tmien|tmint|disa['’]|disat|għaxart?)\\s+(?:jum|i?jiem|ġurnata|ġranet|ġimgħa|ġimgħat|xahar|xhur|sena|snin)\\s+ilu",
+  "\\w{0,3}l-aħħar\\s+(?:{num}\\s+)?{unit}",
+  "\\w{0,3}l-aħħar\\s+{unit}{num}",
+  "{unit}\\s+li\\s+għadd(?:a|iet|ew)",
+  "{unit}\\s+ilu",
+]
+# "ix-xahar li għadda" and "is-sena li għaddiet" are the previous calendar month and year.
+calendar = ["li\\s+għadd(?:a|iet|ew)$"]
+# "is-Sibt li għadda", "nhar is-Sibt", "nhar ta' Sibt". The first entry has no {weekday}: it
+# keeps "tmiem il-ġimgħa li għadda" (last weekend) from being read as "last Friday".
+last_weekday = [
+  "tmiem\\s+il-ġimgħa\\s+li\\s+għadd(?:a|iet)",
+  "nhar\\s+(?:ta['’]\\s+)?{weekday}(?:\\s+li\\s+għadda)?",
+  "{weekday}\\s+li\\s+għadda",
+]
+strictly_before = ["li\\s+għadda$"]
+last_weekend = ["tmiem\\s+il-ġimgħa\\s+li\\s+għadd(?:a|iet)", "weekend\\s+li\\s+għadda"]
+yesterday = ["(?:il-?|l-?)?bieraħ"]
+# "din il-ġimgħa", "dan ix-xahar", "din is-sena"
+this = ["(?:din|dan)\\s+\\w{1,2}-{unit}"]
+# "fi Frar", "fit-3 ta' Ġunju"
+in_month = ["(?:{day}\\s+ta['’]\\s+)?{month}"]
+
+[time.numbers]
+tejn = 2
+ejn = 2
+"żewġ" = 2
+"żewġt" = 2
+tliet = 3
+tlett = 3
+tlitt = 3
+ftit = 3
+"erba'" = 4
+erbat = 4
+"ħames" = 5
+"ħamest" = 5
+sitt = 6
+"seba'" = 7
+sebat = 7
+tmien = 8
+tmint = 8
+"disa'" = 9
+disat = 9
+"għaxar" = 10
+"għaxart" = 10
+
+# The last form of each unit is the stem of its dual ("ġimagħ-tejn", "xahr-ejn", "sen-tejn",
+# "jum-ejn").
+[time.units]
+day = ["jum", "i?jiem", "ġurnata", "ġranet"]
+week = ["ġimgħa", "ġimgħat", "ġimagħ"]
+month = ["xahar", "xhur", "xahr"]
+year = ["sena", "snin", "sen"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["jew"]
+or_not = ["jew le"]
+between = ["bejn\\s+(.+?)\\s+u\\s+(.+?)"]
+clause = ["meta", "qabel\\s+ma", "qabel", "wara\\s+li", "wara", "minn\\s+meta", "sakemm", "waqt\\s+li"]
+lead = [
+  "x['’]in(?:hu|hi|huma)", "x['’]", "f['’]liema", "liema", "ma['’]\\s+min", "ta['’]\\s+min", "lil\\s+min",
+  "min", "meta", "fejn", "kif", "għaliex", "għalfejn", "kemm(?:-il)?(?:\\s+(?:darba|drabi))?",
+]
+# The article is joined to its noun ("il-kelb"), so only the demonstratives are dropped.
+article = ["dan", "din", "dawn", "dak", "dik", "dawk"]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines
+# it). In Maltese the qualifier follows the noun ("l-istruzzjonijiet kollha ta' qabel").
+[injection]
+override = [
+  "\\b(?:injora(?:w)?|tagħtix kas|tagħtux kas|insa|insew|warrab|warrbu|aqbeż|ikser)\\b[^.\\n]{0,40}\\b(?:(?:kull|l-ebda) (?:istruzzjoni|regola|direttiva)|(?:istruzzjoni(?:jiet)?|regol[ia]|linji gwida|direttiv[ia]|ordnijiet)\\b[^.\\n]{0,25}\\b(?:kollha|ta['’] qabel|preċedenti|tiegħek|tagħkom|ta['’] fuq|li ngħatajt|li kellek))",
+]
+role_hijack = [
+  "\\b(?:issa (?:int|inti|intom)\\b|(?:int|inti|intom) issa\\b|minn (?:issa|hawn)(?: ['’]i?l quddiem)?,? (?:(?:int|inti|intom) )?(?:se|ser|trid|tridu|għandek|għandkom|tkun|tkunu)\\b|(?:aġixxi|ġib ruħek) (?:bħala|bħal) [^.\\n]{0,30}\\b(?:bla|mingħajr) (?:restrizzjoni(?:jiet)?|limiti|regoli)|agħmel tabirruħek li m['’]għandekx (?:regoli|restrizzjonijiet))",
+]
+system_prompt = [
+  "\\b(?:uri(?:ni|na|li)?|uru(?:ni|na)?|ikxef|ikxfu|ipprintja|agħti(?:ni|na)?|għid(?:li|ilna)?|żvela|ikteb)\\b[^.\\n]{0,40}\\b(?:system prompt|prompt tas-sistema|istruzzjonijiet tas-sistema|istruzzjonijiet (?:moħbija|sigrieti)|messaġġ tal-iżviluppatur)",
+]
+memory_directive = [
+  "\\b(?:dejjem|kull meta|kull darba|kull xħin)\\b[^.\\n]{0,60}\\b(?:ibgħat(?:u|hom|ha|li)?|ibagħtu|għaddi|għaddu|ifforwardja(?:w)?|ittrasferixxi|ittrasferixxu|tella|tellgħu)\\b[^.\\n]{0,80}(?:https?://|@|\\bkartiera\\b|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:ħaddem|ħaddmu|esegwixxi|esegwixxu|irrani|sejjaħ|sejħu|uża)\\b[^.\\n]{0,20}\\b(?:kmand|għodda|funzjoni|tool)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

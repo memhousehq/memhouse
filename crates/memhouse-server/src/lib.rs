@@ -26,6 +26,9 @@ use uuid::Uuid;
 /// Connect to Postgres, load models, run migrations: everything a transport needs.
 pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<Engine> {
     cfg.check_floor()?;
+    // Before anything is loaded or migrated: a language pack that does not validate stops the
+    // start with its file and line.
+    memhouse_core::lang::Languages::load(&cfg.language)?;
     let embedder = memhouse_models::build_embedder(&cfg, show_progress)?;
     if embedder.dim() != cfg.embedding.dim {
         anyhow::bail!("embedding model {} produces {} dimensions but embedding.dim is {}", embedder.id(), embedder.dim(), cfg.embedding.dim);
@@ -42,12 +45,17 @@ pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<En
     // Records name the policy that admitted them; the policy itself is kept with them (and the
     // active policy is compiled now, so a spec that no longer compiles is reported at start).
     engine.policy_for(&engine.cfg.memory.tenant).await?;
+    engine.check_languages().await?;
+    if let Some(w) = memhouse_core::lang::embedder_warning(&engine.languages.codes(), &engine.cfg.embedding.model) {
+        tracing::warn!("{w}");
+    }
     Ok(engine)
 }
 
 /// An engine on the configured embedder without the start-up identity check, for
 /// `memhouse reembed`, which exists to move a database from its old embedder to this one.
 pub async fn build_reembed_engine(cfg: Config, show_progress: bool) -> anyhow::Result<Engine> {
+    memhouse_core::lang::Languages::load(&cfg.language)?;
     let embedder = memhouse_models::build_embedder(&cfg, show_progress)?;
     if embedder.dim() != cfg.embedding.dim {
         anyhow::bail!("embedding model {} produces {} dimensions but embedding.dim is {}", embedder.id(), embedder.dim(), cfg.embedding.dim);

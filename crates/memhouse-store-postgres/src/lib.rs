@@ -1607,7 +1607,7 @@ impl Store for PgStore {
 
     async fn check_text_search(&self, configs: &[String]) -> anyhow::Result<()> {
         let known: Vec<String> = sqlx::query_scalar("SELECT cfgname::text FROM pg_ts_config").fetch_all(&self.pool).await?;
-        for c in configs.iter().filter(|c| !known.contains(c)) {
+        if let Some(c) = configs.iter().find(|c| !known.contains(c)) {
             anyhow::bail!("the database has no text-search configuration {c:?}, which an enabled language pack names (text_search); it has: {}", known.join(", "));
         }
         Ok(())
