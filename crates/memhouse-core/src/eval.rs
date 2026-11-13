@@ -526,8 +526,10 @@ impl Engine {
                 let id = match written {
                     Ok(r) => r.id,
                     // The policy refuses the write (a kind it forbids, a text over its limit):
-                    // that is an outcome to score, not a failed replay. Nothing was stored.
-                    Err(e) if crate::error::code_of(&e) == crate::error::ErrorCode::InvalidRequest => Uuid::nil(),
+                    // that is an outcome to score, not a failed replay. Nothing was stored. Only
+                    // an error raised as a refusal counts: a store or provider failure whose
+                    // message merely reads like one fails the replay.
+                    Err(e) if crate::error::coded(&e) == Some(crate::error::ErrorCode::InvalidRequest) => Uuid::nil(),
                     Err(e) => return Err(e),
                 };
                 // A write still queued when its wait ran out (a loaded machine) would be judged
@@ -624,7 +626,8 @@ impl Engine {
         // What each scored turn ended as: the same on every replay with pinned models (QUAL-10).
         let mut outcomes = vec![];
         for (turn, p) in c.sessions.iter().flat_map(|s| &s.turns).zip(&played) {
-            if p.expect != Expect::Ignore {
+            // A refused write is an outcome whatever was expected of the turn.
+            if p.expect != Expect::Ignore || p.id.is_nil() {
                 let status =
                     if p.id.is_nil() { "refused".to_string() } else { self.store.get(tenant, p.id).await?.map(|m| m.status.as_str().to_string()).unwrap_or_else(|| "gone".into()) };
                 outcomes.push(format!("{}:{}:{status}", c.id, &crate::engine::content_hash(&turn.say)[..12]));

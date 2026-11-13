@@ -166,7 +166,8 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     match memhouse_core::policy::compile(&strict, &e.cfg, TENANT, None) {
         Ok(policy) => match e.eval_replay(TENANT, &controlled(2), Some(std::sync::Arc::new(policy)), EvalTrigger::Manual).await {
             Ok(refused) => {
-                if refused.metrics.storage_recall != Some(0.0) || !refused.outcomes.iter().all(|o| o.ends_with(":refused")) {
+                // Every turn of the two conversations is refused, the small talk included (8 each).
+                if refused.metrics.storage_recall != Some(0.0) || refused.outcomes.len() != 16 || !refused.outcomes.iter().all(|o| o.ends_with(":refused")) {
                     problems.push(format!("under a policy that refuses the writes: storage recall {:?}, outcomes {:?}", refused.metrics.storage_recall, refused.outcomes.first()));
                 }
             }
