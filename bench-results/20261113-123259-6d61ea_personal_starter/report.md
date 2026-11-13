@@ -1,6 +1,6 @@
 # MemHouse benchmark: personal — starter
 
-Run `20261113-105829-bc7771` · 2026-11-13 10:58 UTC · 32 s wall time
+Run `20261113-123259-6d61ea` · 2026-11-13 12:32 UTC · 19 s wall time
 
 | Setting | Value |
 |---|---|
@@ -16,7 +16,7 @@ Run `20261113-105829-bc7771` · 2026-11-13 10:58 UTC · 32 s wall time
 
 20 synthetic personal conversations (facts, corrections, plans carried out or dropped, guesses, small talk).
 
-20 conversations, 323 turns, replayed under policy `gov-3b434d14ac4d` in 32.4 s (suite hash `4e63ecabdaad`). Percentages with 95% bootstrap intervals over conversations.
+20 conversations, 323 turns, replayed under policy `gov-3b434d14ac4d` in 18.8 s (suite hash `bbf3b126cfb5`). Percentages with 95% bootstrap intervals over conversations.
 
 | | Precision | Recall | F1 | Scored |
 |---|---|---|---|---|
@@ -26,7 +26,7 @@ Run `20261113-105829-bc7771` · 2026-11-13 10:58 UTC · 32 s wall time
 | Rate | Value | Scored |
 |---|---|---|
 | Stale facts returned | 84.9 [76.9–94.6] | 90 of 106 questions about a corrected fact |
-| Contamination | 0.0 [0.0–0.0] | 0 of 207 plans and guesses committed |
+| Contamination | 0.0 [0.0–0.0] | 0 of 196 plans and guesses committed |
 
 Storage precision: of the scored records committed and valid at a checkpoint, the part that are current facts. Storage recall: of the current facts, the part stored. Retrieval precision: the first hit is the current fact; recall: it is in the top 5.
 

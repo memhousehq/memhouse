@@ -11,7 +11,11 @@ metrics).
 - A **replay** writes a suite through the real write path into a scratch tenant, compares the
   store with the truth at every checkpoint, asks the questions through the real recall path,
   and erases the scratch tenant. Your tenant's memory is never touched, and no model is called
-  beyond what your write path is configured to call.
+  beyond what your write path is configured to call. The scratch tenant (its name contains
+  `~eval~`) runs the policy under evaluation: its queued writes are processed only by the
+  engine that replays, never by an intake worker, and no recall explanation is kept for it.
+  A write the policy refuses (a type it forbids, a text over its limit) is scored as not
+  stored; a store or model failure fails the replay, which is then not scored at all.
 - The **gate** replays a tenant's suites under the running policy and under a proposed one, on
   the same items, and refuses the approval if quality falls past the limits.
 
@@ -53,6 +57,7 @@ conversations:
 | `expect` | `commit`: a fact, a correction or a preference, which should be stored. `hold`: a plan or a guess, which must not become a fact. `ignore`: small talk, not scored |
 | `key` | what a `commit` turn states a value for. A later `commit` turn with the same key replaces it: from then on the earlier turn is **stale** |
 | `kind` | the memory type written (`semantic` when absent) |
+| `id`, `confirms` | a `hold` turn may have an `id`; a later `commit` turn that carries the plan out names it in `confirms` ("I plan to move to Porto" … "I moved to Porto"). The engine may then commit the plan's own record, rightly: from that turn on the plan is scored neither as held nor as contamination |
 | `ask` | the checkpoint after the session: each question names the `key` whose current value answers it |
 
 Instead of `conversations`, a suite can ask for generated ones:
@@ -111,6 +116,9 @@ memhouse bench run --suite bench/suites/support          # a file, or every suit
 memhouse bench run --suite my-suite.yaml --repeat 3      # also reports reproducibility
 ```
 
+A suite is replayed with the engine's own recall settings and is a run of its own: `--mode`,
+`--rerank` and `--dataset` are refused together with a suite file.
+
 For a tenant, stored in its database (QUAL-04):
 
 ```bash
@@ -123,8 +131,9 @@ memhouse eval remove my-suite
 ```
 
 Every replay is kept in `mh_eval_run` with the suite's hash, the policy version it ran under,
-why it ran (`manual`, `policy_change`, `model_change`) and the engine's fingerprint (version,
-embedder, classifier, reranker).
+why it ran (`manual`, `policy_change`, `model_change`), whether a gate passed with it, and the
+engine's fingerprint (version, embedder, classifier, reranker, and a hash of the `[intake]`
+settings, whose thresholds change what is stored without changing the policy).
 
 ## The regression gate
 
@@ -148,14 +157,17 @@ policy v2 is not approved: regression gate failed: policy-v2-5d0c… against pol
 FAIL controlled: stale_rate 0.0 -> 100.0 (+100.0 points, limit 1.0)
 ```
 
-The running policy's replay is reused when the same items were already replayed under it by the
-same engine. A replay takes about two seconds per conversation on a laptop, so size a tenant's
+The running policy's replay is reused when the same items were already replayed under it by an
+engine with the same fingerprint. If another version is activated while the gate runs, the
+approval answers `409` and asks to be made again, so that the comparison is always with the
+policy that is running. A replay takes about two seconds per conversation on a laptop, so size a tenant's
 gating suites with the approval in mind. The limits and the switch are in
 [`[eval]`](configuration.md#eval).
 
 **Engine and model changes.** `memhouse eval gate` replays every suite now and compares each
-with its last stored replay of the same items; it exits with status 1 if a limit is passed, so a
-deployment script can stop on it. Run it after an upgrade, or after changing the embedder, the
+with its last stored replay of the same items that did not itself fail a gate (so a failed gate
+fails again when it is run again); it exits with status 1 if a limit is passed, so a deployment
+script can stop on it. Run it after an upgrade, or after changing the embedder, the
 classifier or the reranker. The repository's own engine changes are gated by the benchmark
 guard, which replays `bench/suites/personal` against `bench/baselines.json`.
 

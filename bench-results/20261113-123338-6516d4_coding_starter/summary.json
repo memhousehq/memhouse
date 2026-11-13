@@ -1,9 +1,9 @@
 {
-  "run_id": "20261113-110003-f33fa5",
+  "run_id": "20261113-123338-6516d4",
   "label": "starter",
-  "dataset": "sales",
-  "created_at": "2026-11-13T11:00:03.845638Z",
-  "wall_seconds": 34.538313375,
+  "dataset": "coding",
+  "created_at": "2026-11-13T12:33:38.106670Z",
+  "wall_seconds": 18.510922333,
   "config": {
     "memhouse_version": "2.0.0",
     "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
@@ -24,8 +24,8 @@
     "host": "macos aarch64 · 8 CPU threads · embeddings on CPU"
   },
   "results": {
-    "questions": 279,
-    "scored": 279,
+    "questions": 270,
+    "scored": 270,
     "retrieval": {
       "eval/clean": {
         "mean": 1.0,
@@ -40,15 +40,15 @@
         "n": 20
       },
       "eval/retrieval_f1": {
-        "mean": 0.8025751072961373,
-        "lo": 0.7532467532467533,
-        "hi": 0.8626609442060086,
+        "mean": 0.8559322033898306,
+        "lo": 0.8018433179723502,
+        "hi": 0.911764705882353,
         "n": 20
       },
       "eval/retrieval_precision": {
-        "mean": 0.6702508960573477,
-        "lo": 0.6041666666666666,
-        "hi": 0.7584905660377359,
+        "mean": 0.7481481481481481,
+        "lo": 0.6692307692307692,
+        "hi": 0.8378378378378378,
         "n": 20
       },
       "eval/retrieval_recall": {
@@ -58,27 +58,27 @@
         "n": 20
       },
       "eval/stale_free": {
-        "mean": 0.14179104477611937,
-        "lo": 0.06766917293233088,
-        "hi": 0.23076923076923073,
+        "mean": 0.2447552447552448,
+        "lo": 0.13586956521739135,
+        "hi": 0.37857142857142856,
         "n": 20
       },
       "eval/stale_rate": {
-        "mean": 0.8582089552238806,
-        "lo": 0.7720588235294118,
-        "hi": 0.9347826086956522,
+        "mean": 0.7552447552447552,
+        "lo": 0.6230769230769231,
+        "hi": 0.8648648648648649,
         "n": 20
       },
       "eval/storage_f1": {
-        "mean": 0.8229426433915211,
-        "lo": 0.8009768009768009,
-        "hi": 0.8504326328800988,
+        "mean": 0.8201970443349753,
+        "lo": 0.7854785478547854,
+        "hi": 0.8626373626373627,
         "n": 20
       },
       "eval/storage_precision": {
-        "mean": 0.6991525423728814,
-        "lo": 0.6680244399185336,
-        "hi": 0.7397849462365591,
+        "mean": 0.6951983298538622,
+        "lo": 0.6467391304347826,
+        "hi": 0.7584541062801933,
         "n": 20
       },
       "eval/storage_recall": {
@@ -117,5 +117,5 @@
     "ingest_ms_total": 0.0,
     "rounds_per_second": 0.0
   },
-  "eval": "## Evaluation suite `sales-starter`\n\n20 synthetic sales conversations (facts, corrections, plans carried out or dropped, guesses, small talk).\n\n20 conversations, 328 turns, replayed under policy `gov-3b434d14ac4d` in 34.5 s (suite hash `bf53f97512d9`). Percentages with 95% bootstrap intervals over conversations.\n\n| | Precision | Recall | F1 | Scored |\n|---|---|---|---|---|\n| Storage | 69.9 [66.8–74.0] | 100.0 [100.0–100.0] | 82.3 [80.1–85.0] | 330 facts at checkpoints, 472 records |\n| Retrieval | 67.0 [60.4–75.8] | 100.0 [100.0–100.0] | 80.3 [75.3–86.3] | 279 questions, top 5 |\n\n| Rate | Value | Scored |\n|---|---|---|\n| Stale facts returned | 85.8 [77.2–93.5] | 115 of 134 questions about a corrected fact |\n| Contamination | 0.0 [0.0–0.0] | 0 of 211 plans and guesses committed |\n\nStorage precision: of the scored records committed and valid at a checkpoint, the part that are current facts. Storage recall: of the current facts, the part stored. Retrieval precision: the first hit is the current fact; recall: it is in the top 5.\n\n"
+  "eval": "## Evaluation suite `coding-starter`\n\n20 synthetic coding conversations (facts, corrections, plans carried out or dropped, guesses, small talk).\n\n20 conversations, 327 turns, replayed under policy `gov-3b434d14ac4d` in 18.5 s (suite hash `b7f7413404da`). Percentages with 95% bootstrap intervals over conversations.\n\n| | Precision | Recall | F1 | Scored |\n|---|---|---|---|---|\n| Storage | 69.5 [64.7–75.8] | 100.0 [100.0–100.0] | 82.0 [78.5–86.3] | 333 facts at checkpoints, 479 records |\n| Retrieval | 74.8 [66.9–83.8] | 100.0 [100.0–100.0] | 85.6 [80.2–91.2] | 270 questions, top 5 |\n\n| Rate | Value | Scored |\n|---|---|---|\n| Stale facts returned | 75.5 [62.3–86.5] | 108 of 143 questions about a corrected fact |\n| Contamination | 0.0 [0.0–0.0] | 0 of 148 plans and guesses committed |\n\nStorage precision: of the scored records committed and valid at a checkpoint, the part that are current facts. Storage recall: of the current facts, the part stored. Retrieval precision: the first hit is the current fact; recall: it is in the top 5.\n\n"
 }

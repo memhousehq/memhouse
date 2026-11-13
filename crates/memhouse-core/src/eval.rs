@@ -31,6 +31,11 @@ use uuid::Uuid;
 /// The suite format version this build reads and writes.
 pub const SUITE_FORMAT: u32 = 1;
 
+/// Part of every scratch tenant's name. A scratch tenant runs a policy pinned in the engine that
+/// replays into it, so the intake queue hands its proposals only to a caller that asks for them
+/// by tenant and subject (the replaying engine), never to a worker.
+pub const SCRATCH_MARK: &str = "~eval~";
+
 /// What should become of a turn.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +63,14 @@ pub struct SuiteTurn {
     /// The memory type written; semantic when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<MemoryKind>,
+    /// A name for the turn within its conversation, so a later turn can refer to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The `id` of an earlier `hold` turn that this turn carries out ("I plan to move to
+    /// Porto" … "I moved to Porto"). The engine may then commit the plan's own record, and
+    /// rightly so: from here on the plan is not scored, neither as held nor as contamination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirms: Option<String>,
 }
 
 /// A question asked at a checkpoint.
@@ -136,10 +149,30 @@ impl Suite {
                 return bad(format!("conversation id '{}' is empty or used twice", c.id));
             }
             let mut keys = std::collections::HashSet::new();
+            let mut plans = std::collections::HashSet::new();
+            let mut turn_ids = std::collections::HashSet::new();
             for (s, session) in c.sessions.iter().enumerate() {
                 for (t, turn) in session.turns.iter().enumerate() {
                     if turn.say.trim().is_empty() {
                         return bad(format!("conversation {}, session {}, turn {}: nothing is said", c.id, s + 1, t + 1));
+                    }
+                    if let Some(of) = &turn.confirms {
+                        if turn.expect != Expect::Commit || !plans.contains(of.as_str()) {
+                            return bad(format!(
+                                "conversation {}, session {}, turn {}: `confirms: {of}` must be on a commit turn and name an earlier hold turn's id",
+                                c.id,
+                                s + 1,
+                                t + 1
+                            ));
+                        }
+                    }
+                    if let Some(id) = &turn.id {
+                        if !turn_ids.insert(id.as_str()) {
+                            return bad(format!("conversation {}, session {}, turn {}: the turn id '{id}' is used twice", c.id, s + 1, t + 1));
+                        }
+                        if turn.expect == Expect::Hold {
+                            plans.insert(id.as_str());
+                        }
                     }
                     if let (Expect::Commit, Some(k)) = (turn.expect, &turn.key) {
                         keys.insert(k.as_str());
@@ -252,6 +285,10 @@ pub struct Fingerprint {
     pub embedder: String,
     pub classifier: String,
     pub reranker: Option<String>,
+    /// Hash of the write pipeline's settings (`[intake]`): thresholds such as
+    /// `correction_threshold` change what a replay stores without changing the policy.
+    #[serde(default)]
+    pub intake: String,
 }
 
 /// Why a suite was replayed.
@@ -300,6 +337,10 @@ pub struct EvalRun {
     pub outcomes: Vec<String>,
     pub took_ms: f64,
     pub created_at: DateTime<Utc>,
+    /// Set on a replay made for a gate: whether the gate passed with it. A replay that failed
+    /// its gate is kept for the record but is never the reference of a later comparison.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_passed: Option<bool>,
 }
 
 /// A suite a tenant registered (QUAL-04): replayed on demand and before a policy is approved.
@@ -380,7 +421,10 @@ pub fn compare(suite: &str, before: &EvalMetrics, after: &EvalMetrics, limits: &
 struct Played {
     expect: Expect,
     key: Option<String>,
+    /// The record the turn became; nil when the policy refused the write.
     id: Uuid,
+    /// The turn's own name in the suite, if it has one.
+    name: Option<String>,
 }
 
 impl Engine {
@@ -394,6 +438,7 @@ impl Engine {
                 crate::config::ClassifierKind::Llm => format!("llm:{}", self.cfg.intake.llm.model),
             },
             reranker: self.reranker.as_ref().filter(|_| self.cfg.rerank.enabled).map(|_| self.cfg.rerank.model.clone()),
+            intake: crate::engine::content_hash(&serde_json::to_string(&self.cfg.intake).unwrap_or_default())[..12].to_string(),
         }
     }
 
@@ -408,10 +453,13 @@ impl Engine {
             None => self.policy_for(tenant).await?,
         };
         let id = Uuid::now_v7();
-        let scratch = format!("{tenant}.eval-{}", &id.simple().to_string()[20..]);
+        let scratch = format!("{tenant}{SCRATCH_MARK}{}", &id.simple().to_string()[20..]);
         // The scratch tenant runs the policy being evaluated; its records carry that version.
         self.store.policy_put(&policy.line()).await?;
-        let engine = self.clone().with_policy_pin(&scratch, policy.clone());
+        // No recall explanation is kept: it is written off the request path and could land
+        // after the scratch tenant is erased.
+        let mut engine = self.clone().with_policy_pin(&scratch, policy.clone());
+        engine.explain_recalls = false;
         let replayed = futures::future::join_all(suite.conversations.chunks(suite.conversations.len().div_ceil(8).max(1)).map(|chunk| {
             let engine = &engine;
             let scratch = &scratch;
@@ -449,6 +497,7 @@ impl Engine {
             outcomes,
             took_ms: start.elapsed().as_secs_f64() * 1000.0,
             created_at: Utc::now(),
+            gate_passed: None,
         })
     }
 
@@ -457,9 +506,11 @@ impl Engine {
         let subject = format!("eval:{}", c.id);
         let mut counts = EvalCounts::default();
         let mut played: Vec<Played> = vec![];
+        // Plans carried out so far (by turn id): no longer scored.
+        let mut confirmed: std::collections::HashSet<String> = std::collections::HashSet::new();
         for session in &c.sessions {
             for turn in &session.turns {
-                let r = self
+                let written = self
                     .remember(RememberRequest {
                         tenant: Some(tenant.into()),
                         subject: Some(subject.clone()),
@@ -471,17 +522,27 @@ impl Engine {
                         wait: true,
                         ..Default::default()
                     })
-                    .await?;
+                    .await;
+                let id = match written {
+                    Ok(r) => r.id,
+                    // The policy refuses the write (a kind it forbids, a text over its limit):
+                    // that is an outcome to score, not a failed replay. Nothing was stored.
+                    Err(e) if crate::error::code_of(&e) == crate::error::ErrorCode::InvalidRequest => Uuid::nil(),
+                    Err(e) => return Err(e),
+                };
                 // A write still queued when its wait ran out (a loaded machine) would be judged
                 // by the next turn's gate as if it did not exist. Wait until it is settled: a
                 // replay that can't settle a write fails, it never scores a half-written state.
                 let mut tries = 0;
-                while self.intake.pending(tenant, r.id).await?.is_some() {
+                while !id.is_nil() && self.intake.pending(tenant, id).await?.is_some() {
                     tries += 1;
                     anyhow::ensure!(tries <= 30, "evaluation: the write of conversation {} did not settle; its replay is not scored", c.id);
-                    self.settle_record(tenant, r.id).await?;
+                    self.settle_record(tenant, id).await?;
                 }
-                played.push(Played { expect: turn.expect, key: turn.key.clone(), id: r.id });
+                if let Some(of) = &turn.confirms {
+                    confirmed.insert(of.clone());
+                }
+                played.push(Played { expect: turn.expect, key: turn.key.clone(), id, name: turn.id.clone() });
             }
             // The truth at this checkpoint: for each key, the newest commit turn is current and
             // the earlier ones are stale.
@@ -494,9 +555,11 @@ impl Engine {
             let is_current = |i: usize, p: &Played| p.expect == Expect::Commit && p.key.as_deref().is_none_or(|key| current.get(key) == Some(&i));
             let now = Utc::now();
             let mut live = std::collections::HashSet::new();
-            for p in &played {
+            // A plan that a later turn carried out is out of the scoring from then on.
+            let scored = |p: &Played| p.expect != Expect::Ignore && !(p.expect == Expect::Hold && p.name.as_ref().is_some_and(|n| confirmed.contains(n)));
+            for p in played.iter().filter(|p| !p.id.is_nil()) {
                 if let Some(m) = self.store.get(tenant, p.id).await? {
-                    if m.status == MemoryStatus::Committed && m.valid_to.is_none_or(|t| t > now) {
+                    if m.status == MemoryStatus::Committed && m.valid_to.is_none_or(|t| t > now) && m.expires_at.is_none_or(|t| t > now) {
                         live.insert(p.id);
                     }
                 }
@@ -505,11 +568,14 @@ impl Engine {
             // by the newest turn that produced it.
             let mut newest: HashMap<Uuid, usize> = HashMap::new();
             for (i, p) in played.iter().enumerate() {
-                if p.expect != Expect::Ignore {
+                if scored(p) && !p.id.is_nil() {
                     newest.insert(p.id, i);
                 }
             }
             for (i, p) in played.iter().enumerate() {
+                if !scored(p) {
+                    continue;
+                }
                 match p.expect {
                     Expect::Ignore => continue,
                     Expect::Hold => {
@@ -559,7 +625,8 @@ impl Engine {
         let mut outcomes = vec![];
         for (turn, p) in c.sessions.iter().flat_map(|s| &s.turns).zip(&played) {
             if p.expect != Expect::Ignore {
-                let status = self.store.get(tenant, p.id).await?.map(|m| m.status.as_str().to_string()).unwrap_or_else(|| "gone".into());
+                let status =
+                    if p.id.is_nil() { "refused".to_string() } else { self.store.get(tenant, p.id).await?.map(|m| m.status.as_str().to_string()).unwrap_or_else(|| "gone".into()) };
                 outcomes.push(format!("{}:{}:{status}", c.id, &crate::engine::content_hash(&turn.say)[..12]));
             }
         }
@@ -621,8 +688,11 @@ impl Engine {
                 Some(r) => r,
                 None => self.eval_record(tenant, &s.suite, Some(active.clone()), EvalTrigger::PolicyChange).await?,
             };
-            let after = self.eval_record(tenant, &s.suite, Some(candidate.clone()), EvalTrigger::PolicyChange).await?;
-            findings.extend(compare(&s.name, &before.metrics, &after.metrics, &limits));
+            let mut after = self.eval_replay(tenant, &s.suite, Some(candidate.clone()), EvalTrigger::PolicyChange).await?;
+            let found = compare(&s.name, &before.metrics, &after.metrics, &limits);
+            after.gate_passed = Some(found.iter().all(|f| f.passed));
+            self.store.eval_run_put(&after).await?;
+            findings.extend(found);
         }
         Ok(Some(GateReport { passed: findings.iter().all(|f| f.passed), before_policy: active.version.clone(), after_policy: candidate.version.clone(), findings }))
     }
@@ -636,12 +706,17 @@ impl Engine {
         let limits = self.cfg.eval.limits();
         let (mut findings, mut before_policy) = (vec![], None);
         for s in &suites {
-            let last = self.store.eval_runs(tenant, Some(&s.name), 50).await?.into_iter().find(|r| r.suite_hash == s.hash);
-            let now = self.eval_record(tenant, &s.suite, Some(policy.clone()), EvalTrigger::ModelChange).await?;
+            // The reference: the last replay of these items that did not itself fail a gate, so
+            // running a failed gate again fails again.
+            let last = self.store.eval_runs(tenant, Some(&s.name), 200).await?.into_iter().find(|r| r.suite_hash == s.hash && r.gate_passed != Some(false));
+            let mut now = self.eval_replay(tenant, &s.suite, Some(policy.clone()), EvalTrigger::ModelChange).await?;
             if let Some(last) = last {
-                findings.extend(compare(&s.name, &last.metrics, &now.metrics, &limits));
+                let found = compare(&s.name, &last.metrics, &now.metrics, &limits);
+                now.gate_passed = Some(found.iter().all(|f| f.passed));
+                findings.extend(found);
                 before_policy.get_or_insert(last.policy_version);
             }
+            self.store.eval_run_put(&now).await?;
         }
         Ok(before_policy.map(|b| GateReport { passed: findings.iter().all(|f| f.passed), before_policy: b, after_policy: policy.version.clone(), findings }))
     }

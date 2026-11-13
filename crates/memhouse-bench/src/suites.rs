@@ -156,11 +156,13 @@ pub fn estimates(run: &EvalRun) -> BTreeMap<String, Estimate> {
 /// Share of scored records that ended the same in every replay (QUAL-10), 0 to 1.
 pub fn agreement(runs: &[EvalRun]) -> f64 {
     let Some(first) = runs.first() else { return 1.0 };
-    if first.outcomes.is_empty() {
+    // Over the longest replay: a record one replay has and another lacks is a disagreement.
+    let n = runs.iter().map(|r| r.outcomes.len()).max().unwrap_or(0);
+    if n == 0 {
         return 1.0;
     }
-    let same = (0..first.outcomes.len()).filter(|i| runs.iter().all(|r| r.outcomes.get(*i) == first.outcomes.get(*i))).count();
-    same as f64 / first.outcomes.len() as f64
+    let same = (0..n).filter(|i| first.outcomes.get(*i).is_some() && runs.iter().all(|r| r.outcomes.get(*i) == first.outcomes.get(*i))).count();
+    same as f64 / n as f64
 }
 
 /// The report section of one suite's replay.
@@ -218,6 +220,31 @@ pub fn markdown(suite: &Suite, run: &EvalRun, repeats: Option<(usize, f64)>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agreement_counts_a_record_only_some_replays_have() {
+        let run = |outcomes: &[&str]| EvalRun {
+            id: uuid::Uuid::nil(),
+            tenant: String::new(),
+            suite: String::new(),
+            suite_hash: String::new(),
+            policy_version: String::new(),
+            fingerprint: Default::default(),
+            trigger: memhouse_core::eval::EvalTrigger::Manual,
+            counts: Default::default(),
+            metrics: Default::default(),
+            per_conversation: vec![],
+            outcomes: outcomes.iter().map(|s| s.to_string()).collect(),
+            took_ms: 0.0,
+            created_at: chrono::Utc::now(),
+            gate_passed: None,
+        };
+        assert_eq!(agreement(&[run(&["a", "b"]), run(&["a", "b"])]), 1.0);
+        assert_eq!(agreement(&[run(&["a"]), run(&["a", "b"])]), 0.5);
+        assert_eq!(agreement(&[run(&["a", "b"]), run(&["a"])]), 0.5);
+        assert_eq!(agreement(&[run(&["a", "b"]), run(&["a", "c"])]), 0.5);
+        assert_eq!(agreement(&[run(&[]), run(&[])]), 1.0);
+    }
 
     #[test]
     fn yaml_suites_parse_generate_and_report_errors_with_their_place() {

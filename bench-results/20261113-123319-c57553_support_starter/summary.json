@@ -1,9 +1,9 @@
 {
-  "run_id": "20261113-105903-8f7915",
+  "run_id": "20261113-123319-c57553",
   "label": "starter",
   "dataset": "support",
-  "created_at": "2026-11-13T10:59:03.289290Z",
-  "wall_seconds": 31.354835416,
+  "created_at": "2026-11-13T12:33:19.307116Z",
+  "wall_seconds": 18.202442542,
   "config": {
     "memhouse_version": "2.0.0",
     "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
@@ -117,5 +117,5 @@
     "ingest_ms_total": 0.0,
     "rounds_per_second": 0.0
   },
-  "eval": "## Evaluation suite `support-starter`\n\n20 synthetic support conversations (facts, corrections, plans carried out or dropped, guesses, small talk).\n\n20 conversations, 323 turns, replayed under policy `gov-3b434d14ac4d` in 31.4 s (suite hash `a8c70558f8e8`). Percentages with 95% bootstrap intervals over conversations.\n\n| | Precision | Recall | F1 | Scored |\n|---|---|---|---|---|\n| Storage | 68.1 [64.1–72.5] | 100.0 [100.0–100.0] | 81.0 [78.1–84.1] | 325 facts at checkpoints, 477 records |\n| Retrieval | 61.6 [53.2–70.8] | 99.3 [98.1–100.0] | 76.0 [69.3–82.7] | 271 questions, top 5 |\n\n| Rate | Value | Scored |\n|---|---|---|\n| Stale facts returned | 91.5 [82.6–98.6] | 130 of 142 questions about a corrected fact |\n| Contamination | 0.0 [0.0–0.0] | 0 of 201 plans and guesses committed |\n\nStorage precision: of the scored records committed and valid at a checkpoint, the part that are current facts. Storage recall: of the current facts, the part stored. Retrieval precision: the first hit is the current fact; recall: it is in the top 5.\n\n"
+  "eval": "## Evaluation suite `support-starter`\n\n20 synthetic support conversations (facts, corrections, plans carried out or dropped, guesses, small talk).\n\n20 conversations, 323 turns, replayed under policy `gov-3b434d14ac4d` in 18.2 s (suite hash `d186050449b9`). Percentages with 95% bootstrap intervals over conversations.\n\n| | Precision | Recall | F1 | Scored |\n|---|---|---|---|---|\n| Storage | 68.1 [64.1–72.5] | 100.0 [100.0–100.0] | 81.0 [78.1–84.1] | 325 facts at checkpoints, 477 records |\n| Retrieval | 61.6 [53.2–70.8] | 99.3 [98.1–100.0] | 76.0 [69.3–82.7] | 271 questions, top 5 |\n\n| Rate | Value | Scored |\n|---|---|---|\n| Stale facts returned | 91.5 [82.6–98.6] | 130 of 142 questions about a corrected fact |\n| Contamination | 0.0 [0.0–0.0] | 0 of 169 plans and guesses committed |\n\nStorage precision: of the scored records committed and valid at a checkpoint, the part that are current facts. Storage recall: of the current facts, the part stored. Retrieval precision: the first hit is the current fact; recall: it is in the top 5.\n\n"
 }

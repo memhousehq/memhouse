@@ -1,38 +1,39 @@
 {
-  "id": "01a1d490-1904-77bb-9c84-67ead4fb9801",
+  "id": "01a1d4e6-313b-71a4-b421-57a7ba5358af",
   "tenant": "bench",
   "suite": "coding-starter",
-  "suite_hash": "13e6a5701e7ad2f29947b9aed7548f5c9c2dd1b5b5f743de9981413b3019f970",
+  "suite_hash": "b7f7413404dab3245d5083973afbe4bdc245101dad578a72929a7f883b9a699e",
   "policy_version": "gov-3b434d14ac4d",
   "fingerprint": {
     "engine": "2.0.0",
     "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
     "classifier": "rules",
-    "reranker": null
+    "reranker": null,
+    "intake": "4ebf6c0b459c"
   },
   "trigger": "manual",
   "counts": {
     "truth": 333,
     "truth_stored": 333,
-    "stored": 488,
+    "stored": 479,
     "stored_true": 333,
     "questions": 270,
     "first_correct": 202,
     "found": 270,
     "corrected_questions": 143,
     "stale_returned": 108,
-    "held": 180,
-    "held_committed": 9
+    "held": 148,
+    "held_committed": 0
   },
   "metrics": {
-    "storage_precision": 0.6823770491803278,
+    "storage_precision": 0.6951983298538622,
     "storage_recall": 1.0,
-    "storage_f1": 0.8112058465286236,
+    "storage_f1": 0.8201970443349753,
     "retrieval_precision": 0.7481481481481481,
     "retrieval_recall": 1.0,
     "retrieval_f1": 0.8559322033898306,
     "stale_rate": 0.7552447552447552,
-    "contamination_rate": 0.05
+    "contamination_rate": 0.0
   },
   "per_conversation": [
     {
@@ -45,7 +46,7 @@
       "found": 15,
       "corrected_questions": 5,
       "stale_returned": 3,
-      "held": 15,
+      "held": 14,
       "held_committed": 0
     },
     {
@@ -71,7 +72,7 @@
       "found": 15,
       "corrected_questions": 6,
       "stale_returned": 3,
-      "held": 13,
+      "held": 11,
       "held_committed": 0
     },
     {
@@ -97,7 +98,7 @@
       "found": 17,
       "corrected_questions": 11,
       "stale_returned": 5,
-      "held": 11,
+      "held": 9,
       "held_committed": 0
     },
     {
@@ -110,7 +111,7 @@
       "found": 15,
       "corrected_questions": 9,
       "stale_returned": 9,
-      "held": 5,
+      "held": 1,
       "held_committed": 0
     },
     {
@@ -123,7 +124,7 @@
       "found": 18,
       "corrected_questions": 3,
       "stale_returned": 3,
-      "held": 18,
+      "held": 16,
       "held_committed": 0
     },
     {
@@ -162,34 +163,34 @@
       "found": 8,
       "corrected_questions": 4,
       "stale_returned": 4,
-      "held": 9,
+      "held": 8,
       "held_committed": 0
     },
     {
       "truth": 18,
       "truth_stored": 18,
-      "stored": 24,
+      "stored": 23,
       "stored_true": 18,
       "questions": 12,
       "first_correct": 8,
       "found": 12,
       "corrected_questions": 5,
       "stale_returned": 4,
-      "held": 5,
-      "held_committed": 1
+      "held": 4,
+      "held_committed": 0
     },
     {
       "truth": 16,
       "truth_stored": 16,
-      "stored": 33,
+      "stored": 29,
       "stored_true": 16,
       "questions": 13,
       "first_correct": 12,
       "found": 13,
       "corrected_questions": 11,
       "stale_returned": 11,
-      "held": 7,
-      "held_committed": 4
+      "held": 1,
+      "held_committed": 0
     },
     {
       "truth": 14,
@@ -201,7 +202,7 @@
       "found": 12,
       "corrected_questions": 7,
       "stale_returned": 5,
-      "held": 3,
+      "held": 2,
       "held_committed": 0
     },
     {
@@ -214,7 +215,7 @@
       "found": 14,
       "corrected_questions": 10,
       "stale_returned": 9,
-      "held": 11,
+      "held": 8,
       "held_committed": 0
     },
     {
@@ -253,7 +254,7 @@
       "found": 12,
       "corrected_questions": 5,
       "stale_returned": 4,
-      "held": 9,
+      "held": 4,
       "held_committed": 0
     },
     {
@@ -272,15 +273,15 @@
     {
       "truth": 16,
       "truth_stored": 16,
-      "stored": 32,
+      "stored": 28,
       "stored_true": 16,
       "questions": 15,
       "first_correct": 7,
       "found": 15,
       "corrected_questions": 9,
       "stale_returned": 9,
-      "held": 12,
-      "held_committed": 4
+      "held": 8,
+      "held_committed": 0
     },
     {
       "truth": 8,
@@ -546,6 +547,6 @@
     "coding-7-00019:35566a7853c0:candidate",
     "coding-7-00019:1e248cc0fd4a:candidate"
   ],
-  "took_ms": 27101.486458,
-  "created_at": "2026-11-13T11:00:02.914773Z"
+  "took_ms": 18509.80475,
+  "created_at": "2026-11-13T12:33:56.617630Z"
 }

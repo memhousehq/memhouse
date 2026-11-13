@@ -553,7 +553,8 @@ mod tests {
         assert!(!shares_content_word("The user likes jazz.", "The user now works at Globex."));
         // Letters outside ASCII: no cut inside a letter (this panicked), and stems still match.
         assert!(shares_content_word("Dana lives in Kraków.", "Correction: Dana lives in Kraków's old town now."));
-        assert!(shares_content_word("Ela mieszka w Krakówie.", "Ela mieszka teraz w Krakówku."));
+        assert!(shares_content_word("Krakówie", "Krakówku"));
+        assert!(!shares_content_word("Krakówie", "Krajobraz"));
         assert!(!shares_content_word("Jo likes Malmö.", "Jo now works at Škoda."));
     }
 

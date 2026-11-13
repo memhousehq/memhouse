@@ -1,14 +1,15 @@
 {
-  "id": "01a1d48f-1622-743e-a940-610c95f24454",
+  "id": "01a1d4e5-9bb3-77c3-8db4-9255e67b726b",
   "tenant": "bench",
   "suite": "personal-starter",
-  "suite_hash": "4e63ecabdaad5183a5ccfddc51e136f98ca847ae774af951d669a2fbb8098a6e",
+  "suite_hash": "bbf3b126cfb5f58bb0f641eaaf4a53b59f77abe38004f281f2a4b246ab3be811",
   "policy_version": "gov-3b434d14ac4d",
   "fingerprint": {
     "engine": "2.0.0",
     "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
     "classifier": "rules",
-    "reranker": null
+    "reranker": null,
+    "intake": "4ebf6c0b459c"
   },
   "trigger": "manual",
   "counts": {
@@ -21,7 +22,7 @@
     "found": 282,
     "corrected_questions": 106,
     "stale_returned": 90,
-    "held": 207,
+    "held": 196,
     "held_committed": 0
   },
   "metrics": {
@@ -45,7 +46,7 @@
       "found": 14,
       "corrected_questions": 6,
       "stale_returned": 6,
-      "held": 10,
+      "held": 9,
       "held_committed": 0
     },
     {
@@ -58,7 +59,7 @@
       "found": 12,
       "corrected_questions": 2,
       "stale_returned": 2,
-      "held": 9,
+      "held": 8,
       "held_committed": 0
     },
     {
@@ -71,7 +72,7 @@
       "found": 11,
       "corrected_questions": 5,
       "stale_returned": 5,
-      "held": 9,
+      "held": 6,
       "held_committed": 0
     },
     {
@@ -97,7 +98,7 @@
       "found": 18,
       "corrected_questions": 2,
       "stale_returned": 2,
-      "held": 27,
+      "held": 25,
       "held_committed": 0
     },
     {
@@ -188,7 +189,7 @@
       "found": 15,
       "corrected_questions": 1,
       "stale_returned": 1,
-      "held": 10,
+      "held": 9,
       "held_committed": 0
     },
     {
@@ -227,7 +228,7 @@
       "found": 12,
       "corrected_questions": 6,
       "stale_returned": 6,
-      "held": 8,
+      "held": 6,
       "held_committed": 0
     },
     {
@@ -266,7 +267,7 @@
       "found": 18,
       "corrected_questions": 2,
       "stale_returned": 2,
-      "held": 28,
+      "held": 27,
       "held_committed": 0
     },
     {
@@ -326,7 +327,7 @@
     "personal-7-00002:0038f6937bb6:committed",
     "personal-7-00002:dffd45e62b39:committed",
     "personal-7-00002:dfc289af0fde:committed",
-    "personal-7-00002:d7ceb6acc685:candidate",
+    "personal-7-00002:5a4063be4452:candidate",
     "personal-7-00002:6a3e00641a11:candidate",
     "personal-7-00002:f1b045bd9840:committed",
     "personal-7-00002:39657186c8eb:candidate",
@@ -342,7 +343,7 @@
     "personal-7-00003:de0fc0be5871:candidate",
     "personal-7-00003:3efc157288b0:candidate",
     "personal-7-00003:cf681bfa7e4d:candidate",
-    "personal-7-00003:6340c6f5ff7b:candidate",
+    "personal-7-00003:63ff3ec23b6c:candidate",
     "personal-7-00003:e4eb7bf7b72f:candidate",
     "personal-7-00004:219352e7a131:committed",
     "personal-7-00004:91b62ce6d173:committed",
@@ -382,7 +383,7 @@
     "personal-7-00006:916dd9b17a30:candidate",
     "personal-7-00006:ac6a2c9d93e8:candidate",
     "personal-7-00006:48373a63694c:committed",
-    "personal-7-00006:8ca647a940c3:candidate",
+    "personal-7-00006:eb1592b547be:candidate",
     "personal-7-00006:1ea6ca203924:candidate",
     "personal-7-00006:aa07bcd62647:superseded",
     "personal-7-00006:04bc0e34ef54:committed",
@@ -395,12 +396,12 @@
     "personal-7-00007:98eb386ff481:committed",
     "personal-7-00007:52a75eb2fbbd:candidate",
     "personal-7-00007:40e8637f02bc:committed",
-    "personal-7-00007:63ab9ebaf5bd:candidate",
+    "personal-7-00007:d50138db1196:candidate",
     "personal-7-00008:60cf7d015d67:committed",
     "personal-7-00008:756bab76f171:committed",
     "personal-7-00008:d8bb77f3c5af:committed",
     "personal-7-00008:24e2de03e49e:committed",
-    "personal-7-00008:b8533868d880:candidate",
+    "personal-7-00008:84db1d41e02b:candidate",
     "personal-7-00008:cf681bfa7e4d:candidate",
     "personal-7-00008:07b783c979cf:superseded",
     "personal-7-00008:d24ec99cce32:committed",
@@ -422,7 +423,7 @@
     "personal-7-00010:c0ac4bd684da:committed",
     "personal-7-00010:6604ae10443d:committed",
     "personal-7-00010:d3155865435e:superseded",
-    "personal-7-00010:2a897edcf103:candidate",
+    "personal-7-00010:368b4ca0119c:candidate",
     "personal-7-00010:fb6f746bb9c7:committed",
     "personal-7-00010:e94b6593c05b:candidate",
     "personal-7-00010:ef8a53d03a70:committed",
@@ -436,9 +437,9 @@
     "personal-7-00011:9f6b56ee2d85:candidate",
     "personal-7-00011:d3cb37339c59:committed",
     "personal-7-00011:37b144713281:committed",
-    "personal-7-00011:b8533868d880:candidate",
-    "personal-7-00011:49534ce63264:candidate",
-    "personal-7-00011:d2e06e117089:committed",
+    "personal-7-00011:84db1d41e02b:candidate",
+    "personal-7-00011:46fccb6b3a4f:candidate",
+    "personal-7-00011:505d34097ded:committed",
     "personal-7-00011:440d7d93dd95:candidate",
     "personal-7-00011:dd6ca92bcd7e:candidate",
     "personal-7-00012:ef8a53d03a70:committed",
@@ -448,7 +449,7 @@
     "personal-7-00012:56c2cb49dfd0:committed",
     "personal-7-00012:7ef195525db5:committed",
     "personal-7-00012:adfd7aa6b3ab:committed",
-    "personal-7-00012:8ca647a940c3:candidate",
+    "personal-7-00012:eb1592b547be:candidate",
     "personal-7-00012:a65cd4ec8d4d:committed",
     "personal-7-00013:1203972ac5ea:superseded",
     "personal-7-00013:0b8ec3cc3b4f:committed",
@@ -491,8 +492,8 @@
     "personal-7-00015:5d766ad08c21:superseded",
     "personal-7-00015:5dcc7bc69ac8:committed",
     "personal-7-00015:574f85876076:committed",
-    "personal-7-00015:3393e3e3bbd0:candidate",
-    "personal-7-00015:0aa136d2077a:candidate",
+    "personal-7-00015:708bff2b4084:candidate",
+    "personal-7-00015:546c9409ac82:candidate",
     "personal-7-00016:0bfb4432049f:committed",
     "personal-7-00016:d8f0542459cd:committed",
     "personal-7-00016:253e0d4d107c:committed",
@@ -503,7 +504,7 @@
     "personal-7-00016:ce9d86297a36:candidate",
     "personal-7-00016:4bac23d0b034:committed",
     "personal-7-00016:169d8619b989:committed",
-    "personal-7-00016:e255fa425331:candidate",
+    "personal-7-00016:f1efbe39cdf0:candidate",
     "personal-7-00016:adf33ac68123:committed",
     "personal-7-00017:e507e4b9a46c:committed",
     "personal-7-00017:ff9a6e6ca45b:committed",
@@ -527,7 +528,7 @@
     "personal-7-00018:47e1dbc47daa:committed",
     "personal-7-00018:e5e2c2a5ec25:committed",
     "personal-7-00018:e8d4f8976dbb:committed",
-    "personal-7-00018:8ca647a940c3:candidate",
+    "personal-7-00018:eb1592b547be:candidate",
     "personal-7-00018:46fd08c4a2e8:candidate",
     "personal-7-00018:756bab76f171:superseded",
     "personal-7-00018:b84f1daf1fa5:committed",
@@ -546,6 +547,6 @@
     "personal-7-00019:87e3abdf8d9f:candidate",
     "personal-7-00019:80bed236c9b6:candidate"
   ],
-  "took_ms": 32419.293125000004,
-  "created_at": "2026-11-13T10:59:01.958948Z"
+  "took_ms": 18828.419542,
+  "created_at": "2026-11-13T12:33:18.656255Z"
 }

@@ -1230,9 +1230,9 @@ which is named.
     suite and that nothing is left in the store; `eval_reproducible` replays a suite three
     times with 100% of 158 records ending the same. Governance: 59 of 59.
   - **The reference suite: 500 conversations** (seed 7, personal; 8,511 turns, 10,289 facts at
-    checkpoints, 7,196 questions): storage 76.6 / 100.0 / F1 86.7 [86.0–87.4], retrieval 82.2 /
-    99.8 / F1 90.1 [89.1–91.1], stale facts returned 76.2% [73.6–78.6], contamination 0.3%
-    (13 of 4,909). The five starter suites are in [benchmarks.md](benchmarks.md#synthetic-timeline-suites).
+    checkpoints, 7,196 questions): storage 76.7 / 100.0 / F1 86.8 [86.1–87.5], retrieval 82.7 /
+    99.8 / F1 90.4 [89.4–91.4], stale facts returned 76.2% [73.6–78.6], contamination 0.0%
+    (0 of 4,399; 2 of the 10,289 facts were not stored). The five starter suites are in [benchmarks.md](benchmarks.md#synthetic-timeline-suites).
   - **What the suites found.** Nothing that should be stored is lost and plans are held, but
     most corrections do not supersede what they correct: three quarters of the questions about
     a corrected fact still get a stale version in the top 5. The correction rule needs the two
@@ -1260,6 +1260,21 @@ which is named.
     runs (the console half of QUAL-11) move to G20, which builds the console. The suites are
     replayed with `remember`, as an agent writes; replaying them as ingested conversations with
     enrichment is for G14, which needs it for extraction.
+  - **Review fixes (2026-11-13, pull request 25):** a scratch tenant's queued writes are claimed
+    only by the engine that replays, by tenant and subject, never by an intake worker, which
+    would run them under the tenant's own policy (the scratch tenant's name carries `~eval~`);
+    no recall explanation is kept for a replay; a write the policy refuses is scored as not
+    stored instead of failing the replay; an expired record is not counted as stored; a plan
+    that a later turn carries out (`id` and `confirms` on turns) is out of the scoring from
+    then on, since the engine rightly commits it (the 13 "contaminations" of the first
+    reference run were such plans); the generator's sentences for a pet and a competitor
+    replace the value instead of adding another; the fingerprint includes a hash of `[intake]`;
+    a replay that failed a gate is never the reference of a later gate; an approval whose
+    running policy changed while the gate ran is refused and asked for again; agreement between
+    replays counts a record only some of them have; a suite file is refused together with
+    `--dataset`, `--mode` or `--rerank`; the gate on approval is recorded as an exception in
+    [api-stability.md](api-stability.md#recorded-exception-the-regression-gate-on-policy-approval-17).
+    Suites and published numbers were regenerated and re-measured.
 - **Guard:** T1 + its own suites. **Depends on:** G12.
 
 #### G36 — Language packs: word lists as data, several languages at once

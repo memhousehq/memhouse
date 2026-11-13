@@ -99,9 +99,9 @@ const PERSONAL: Profile = Profile {
             values: &["Rex", "Miso", "Biscuit", "Nala", "Pixel", "Olive", "Bruno", "Tofu"],
             fact: &["My dog is called {v}.", "I have a dog named {v}.", "Our dog's name is {v}."],
             change: &["Correction: the dog is called {v}, not {old}.", "Actually we renamed the dog, it is {v} now and no longer {old}."],
-            plan: &["I plan to name the next puppy {v}.", "We are going to call the new puppy {v}."],
-            guess: &["I might call a second dog {v}, maybe.", "Perhaps {v} would be a good name for a dog."],
-            outcome: &["We got the puppy and named it {v}.", "The new dog arrived; it is called {v}."],
+            plan: &["I plan to rename the dog to {v}.", "We are going to rename the dog to {v} next month."],
+            guess: &["I might rename the dog to {v}, maybe.", "Perhaps {v} would be a better name for the dog."],
+            outcome: &["We renamed the dog: it is called {v} now.", "The dog has its new name; it is called {v} now."],
             kind: None,
         },
         Attribute {
@@ -301,11 +301,11 @@ const SALES: Profile = Profile {
             key: "competitor",
             question: "Which competitor is the account also evaluating?",
             values: &["Corvid", "Lumenstack", "Parallax", "Quillon", "Tessera"],
-            fact: &["They are also evaluating {v}.", "The competitor in this deal is {v}.", "{v} is the other vendor on their shortlist."],
+            fact: &["The one competitor they are evaluating is {v}.", "The competitor in this deal is {v}.", "{v} is the only other vendor on their shortlist."],
             change: &["They are no longer evaluating {old}; the competitor is {v} now.", "Correction: the competitor is {v}, not {old}."],
-            plan: &["They plan to add {v} to the evaluation next month.", "Procurement is going to invite {v} to bid."],
-            guess: &["They might look at {v} too, maybe.", "Perhaps {v} will enter the deal."],
-            outcome: &["They added {v} to the shortlist this week.", "{v} entered the evaluation yesterday."],
+            plan: &["They plan to replace the competing vendor with {v} next month.", "Procurement is going to swap the other vendor for {v}."],
+            guess: &["They might swap the other vendor for {v}, maybe.", "Perhaps {v} will replace the competitor in the deal."],
+            outcome: &["They replaced the competing vendor: the competitor is {v} now.", "The other vendor was swapped out; the competitor in the deal is {v} now."],
             kind: None,
         },
         Attribute {
@@ -405,8 +405,8 @@ struct Slot {
     attr: usize,
     /// The value that is true now, if one was stated.
     value: Option<&'static str>,
-    /// A value planned and not yet carried out.
-    planned: Option<&'static str>,
+    /// A value planned and not yet carried out, and the id of the turn that planned it.
+    planned: Option<(&'static str, String)>,
     /// Corrected at least once: its questions measure the stale-fact rate.
     corrected: bool,
 }
@@ -425,7 +425,7 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
         // A fresh value for a slot: never the current one, nor the one planned.
         let fresh = |rng: &mut Rng, s: &Slot| loop {
             let v = rng.pick(p.attributes[s.attr].values);
-            if Some(v) != s.value && Some(v) != s.planned {
+            if Some(v) != s.value && Some(v) != s.planned.as_ref().map(|p| p.0) {
                 return v;
             }
         };
@@ -442,15 +442,18 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
                 let slot = slots[i].clone();
                 // The first session states facts; later ones mix every kind of event.
                 let roll = if s == 0 && e < 3 { 0 } else { rng.below(100) };
-                let (say, expect, key) = match (slot.value, slot.planned) {
+                let (mut plan_id, mut confirms) = (None, None);
+                let (say, expect, key) = match (slot.value, slot.planned.clone()) {
                     (None, None) if roll < 70 => {
                         let v = fresh(&mut rng, &slot);
                         slots[i].value = Some(v);
                         shape.facts += 1;
                         (fill(rng.pick(a.fact), v, None), Expect::Commit, true)
                     }
-                    (_, Some(planned)) if roll < 45 => {
-                        // The plan is carried out: a fact from now on.
+                    (_, Some((planned, planned_by))) if roll < 45 => {
+                        // The plan is carried out: a fact from now on, and the plan's own record
+                        // may rightly be committed with it.
+                        confirms = Some(planned_by);
                         let had = slot.value.is_some();
                         slots[i].value = Some(planned);
                         slots[i].planned = None;
@@ -467,7 +470,9 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
                     }
                     (_, None) if roll < 60 => {
                         let v = fresh(&mut rng, &slot);
-                        slots[i].planned = Some(v);
+                        let id = format!("plan-{}", shape.plans + 1);
+                        slots[i].planned = Some((v, id.clone()));
+                        plan_id = Some(id);
                         shape.plans += 1;
                         (fill(rng.pick(a.plan), v, None), Expect::Hold, false)
                     }
@@ -484,12 +489,12 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
                 if key {
                     touched.push(i);
                 }
-                turns.push(SuiteTurn { say, expect, key: key.then(|| a.key.to_string()), kind: a.kind.filter(|_| expect == Expect::Commit) });
+                turns.push(SuiteTurn { say, expect, key: key.then(|| a.key.to_string()), kind: a.kind.filter(|_| expect == Expect::Commit), id: plan_id, confirms });
             }
             if rng.chance(40) {
                 shape.small_talk += 1;
                 let at_turn = rng.below(turns.len() + 1);
-                turns.insert(at_turn, SuiteTurn { say: rng.pick(p.small_talk).to_string(), expect: Expect::Ignore, key: None, kind: None });
+                turns.insert(at_turn, SuiteTurn { say: rng.pick(p.small_talk).to_string(), expect: Expect::Ignore, key: None, kind: None, id: None, confirms: None });
             }
             // The checkpoint: what changed in this session, then what was corrected before,
             // then anything known, up to three questions.
@@ -560,6 +565,8 @@ mod tests {
             let (suite, shape) = generate(p, 3, 30, None).unwrap();
             suite.validate().unwrap();
             assert_eq!(suite.turns(), shape.turns, "{p}");
+            let carried_out = suite.conversations.iter().flat_map(|c| &c.sessions).flat_map(|s| &s.turns).filter(|t| t.confirms.is_some()).count();
+            assert_eq!(carried_out, shape.outcomes, "{p}");
             for c in &suite.conversations {
                 for s in &c.sessions {
                     assert!(s.at.is_some() && !s.turns.is_empty());
@@ -567,6 +574,9 @@ mod tests {
                         assert!(!t.say.contains('{') && !t.say.contains("  "), "{p}: {}", t.say);
                         // Only a turn that should commit sets a key; plans and guesses never do.
                         assert_eq!(t.key.is_some(), t.expect == Expect::Commit, "{p}: {}", t.say);
+                        // A plan has an id; only a turn that carries one out refers to it.
+                        assert!(t.id.is_none() || t.expect == Expect::Hold, "{p}: {}", t.say);
+                        assert!(t.confirms.is_none() || t.expect == Expect::Commit, "{p}: {}", t.say);
                     }
                 }
                 let dates: Vec<_> = c.sessions.iter().filter_map(|s| s.at).collect();

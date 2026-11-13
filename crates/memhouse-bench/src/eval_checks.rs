@@ -78,7 +78,7 @@ fn controlled(n: usize) -> Suite {
         .map(|i| {
             let (old, new, firm) = (CITIES[i % 12], CITIES[(i + 5) % 12], FIRMS[i % 12]);
             let who = format!("Member{i:02}");
-            let turn = |say: String, expect: Expect, key: Option<&str>| SuiteTurn { say, expect, key: key.map(String::from), kind: None };
+            let turn = |say: String, expect: Expect, key: Option<&str>| SuiteTurn { say, expect, key: key.map(String::from), kind: None, id: None, confirms: None };
             let ask = |q: String, key: &str| SuiteQuestion { q, key: key.into() };
             SuiteConversation {
                 id: format!("c{i:02}"),
@@ -97,12 +97,23 @@ fn controlled(n: usize) -> Suite {
                         turns: vec![
                             turn(format!("{who} plans to open a second office for the company next year."), Expect::Hold, None),
                             turn(format!("{who} might take a sabbatical at some point, maybe."), Expect::Hold, None),
+                            SuiteTurn { id: Some("office".into()), ..turn(format!("{who} plans to relocate the head office to Rotterdam next year."), Expect::Hold, None) },
                             turn(format!("Correction: {who} keeps a registered home address in the city of {new} with the family now."), Expect::Commit, Some("city")),
                         ],
                         ask: vec![
                             ask(format!("In which city is the registered home address of {who}?"), "city"),
                             ask(format!("At which company does {who} hold an engineering position?"), "employer"),
                         ],
+                    },
+                    // The plan is carried out: from here on it is no longer a held statement,
+                    // whether or not the engine commits the plan's own record.
+                    SuiteSession {
+                        at: Some(chrono::Utc::now() - chrono::Duration::days(5)),
+                        turns: vec![SuiteTurn {
+                            confirms: Some("office".into()),
+                            ..turn(format!("{who} relocated the head office to Rotterdam."), Expect::Commit, Some("office"))
+                        }],
+                        ask: vec![ask(format!("Where is the head office that {who} relocated?"), "office")],
                     },
                 ],
             }
@@ -117,11 +128,12 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     let suite = controlled(12);
     let run = e.eval_replay(TENANT, &suite, None, EvalTrigger::Manual).await?;
     let (c, m) = (&run.counts, &run.metrics);
-    // 12 conversations: after session one 2 current facts, after session two 2 current facts
-    // (the first city is stale); 2 held statements, seen at the second checkpoint; 3 questions.
-    if (c.truth, c.questions, c.held, c.corrected_questions) != (48, 36, 24, 12) {
+    // 12 conversations. Current facts: 2 after session one, 2 after session two (the first
+    // city is stale), 3 after session three. Held statements: 3 at the second checkpoint, 2 at
+    // the third (the plan that was carried out is out of the scoring). 4 questions.
+    if (c.truth, c.questions, c.held, c.corrected_questions) != (84, 48, 60, 12) {
         problems.push(format!(
-            "scored items: {} facts, {} questions, {} held, {} questions about a corrected fact; expected 48, 36, 24, 12",
+            "scored items: {} facts, {} questions, {} held, {} questions about a corrected fact; expected 84, 48, 60, 12",
             c.truth, c.questions, c.held, c.corrected_questions
         ));
     }
@@ -145,11 +157,37 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
             m.storage_f1, m.retrieval_recall, m.stale_rate, m.contamination_rate
         ));
     }
-    if run.per_conversation.len() != 12 || run.outcomes.len() != 12 * 5 {
+    if run.per_conversation.len() != 12 || run.outcomes.len() != 12 * 7 {
         problems.push(format!("{} conversations and {} record outcomes reported", run.per_conversation.len(), run.outcomes.len()));
     }
+    // A policy that refuses some of the writes is scored, not a failed replay: under one that
+    // forbids semantic memory nothing of this suite is stored.
+    let strict = parse_spec(&format!("name = \"no-facts\"\n[scope]\ntenant = \"{TENANT}\"\n[memory_types]\nallowed = [\"episodic\", \"working\"]"))?;
+    match memhouse_core::policy::compile(&strict, &e.cfg, TENANT, None) {
+        Ok(policy) => match e.eval_replay(TENANT, &controlled(2), Some(std::sync::Arc::new(policy)), EvalTrigger::Manual).await {
+            Ok(refused) => {
+                if refused.metrics.storage_recall != Some(0.0) || !refused.outcomes.iter().all(|o| o.ends_with(":refused")) {
+                    problems.push(format!("under a policy that refuses the writes: storage recall {:?}, outcomes {:?}", refused.metrics.storage_recall, refused.outcomes.first()));
+                }
+            }
+            Err(err) => problems.push(format!("a policy's refusals failed the replay instead of being scored: {err:#}")),
+        },
+        Err(v) => problems.push(format!("the strict policy does not compile: {v:?}")),
+    }
+    // Nothing of a replay outlives it: records, queued writes and recall explanations alike.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let mark = format!("%{}%", memhouse_core::eval::SCRATCH_MARK);
+    for table in ["mh_recall", "mh_intake"] {
+        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table} WHERE tenant LIKE $1"))).bind(&mark).fetch_one(pool).await?;
+        if n != 0 {
+            problems.push(format!("{n} rows of a scratch tenant are left in {table}"));
+        }
+    }
     // The replay ran in a scratch tenant, which is gone; the tenant itself was not written to.
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE tenant LIKE $1 OR subject LIKE 'eval:%'").bind(format!("{TENANT}.eval-%")).fetch_one(pool).await?;
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE tenant LIKE $1 OR subject LIKE 'eval:%'")
+        .bind(format!("{TENANT}{}%", memhouse_core::eval::SCRATCH_MARK))
+        .fetch_one(pool)
+        .await?;
     if left != 0 {
         problems.push(format!("{left} records of the replay are still stored"));
     }
@@ -169,7 +207,7 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
             m.stale_rate.unwrap_or(1.0) * 100.0,
             m.contamination_rate.unwrap_or(1.0) * 100.0
         ),
-        "12 scripted conversations: 48 facts at checkpoints, 36 questions, 24 held statements; nothing left in the store",
+        "12 scripted conversations: 84 facts at checkpoints, 48 questions, 60 held statements, a plan carried out, a policy's refusals scored; nothing left in the store",
     ))
 }
 

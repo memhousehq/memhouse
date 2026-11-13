@@ -1,14 +1,15 @@
 {
-  "id": "01a1d491-1392-70ac-aa7a-823d8784ebf8",
+  "id": "01a1d4e6-c4a4-76f2-8bfc-e422e6998f5b",
   "tenant": "bench",
   "suite": "success-starter",
-  "suite_hash": "795a0fc53645a95d088517a3707b4b990984d2d956b440f6f67c12c5fbe8e540",
+  "suite_hash": "1a7b85b6015855487655b7652a66fb15d1cc3311a4f375e842d2965820bb9a58",
   "policy_version": "gov-3b434d14ac4d",
   "fingerprint": {
     "engine": "2.0.0",
     "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
     "classifier": "rules",
-    "reranker": null
+    "reranker": null,
+    "intake": "4ebf6c0b459c"
   },
   "trigger": "manual",
   "counts": {
@@ -21,7 +22,7 @@
     "found": 280,
     "corrected_questions": 140,
     "stale_returned": 104,
-    "held": 202,
+    "held": 161,
     "held_committed": 0
   },
   "metrics": {
@@ -45,7 +46,7 @@
       "found": 14,
       "corrected_questions": 8,
       "stale_returned": 5,
-      "held": 7,
+      "held": 5,
       "held_committed": 0
     },
     {
@@ -58,7 +59,7 @@
       "found": 11,
       "corrected_questions": 8,
       "stale_returned": 6,
-      "held": 2,
+      "held": 0,
       "held_committed": 0
     },
     {
@@ -71,7 +72,7 @@
       "found": 15,
       "corrected_questions": 8,
       "stale_returned": 5,
-      "held": 14,
+      "held": 10,
       "held_committed": 0
     },
     {
@@ -84,7 +85,7 @@
       "found": 15,
       "corrected_questions": 8,
       "stale_returned": 8,
-      "held": 4,
+      "held": 3,
       "held_committed": 0
     },
     {
@@ -97,7 +98,7 @@
       "found": 18,
       "corrected_questions": 4,
       "stale_returned": 4,
-      "held": 20,
+      "held": 16,
       "held_committed": 0
     },
     {
@@ -110,7 +111,7 @@
       "found": 15,
       "corrected_questions": 10,
       "stale_returned": 8,
-      "held": 6,
+      "held": 5,
       "held_committed": 0
     },
     {
@@ -123,7 +124,7 @@
       "found": 16,
       "corrected_questions": 8,
       "stale_returned": 3,
-      "held": 17,
+      "held": 14,
       "held_committed": 0
     },
     {
@@ -149,7 +150,7 @@
       "found": 15,
       "corrected_questions": 3,
       "stale_returned": 1,
-      "held": 19,
+      "held": 18,
       "held_committed": 0
     },
     {
@@ -188,7 +189,7 @@
       "found": 15,
       "corrected_questions": 6,
       "stale_returned": 6,
-      "held": 12,
+      "held": 7,
       "held_committed": 0
     },
     {
@@ -201,7 +202,7 @@
       "found": 11,
       "corrected_questions": 7,
       "stale_returned": 7,
-      "held": 3,
+      "held": 1,
       "held_committed": 0
     },
     {
@@ -214,7 +215,7 @@
       "found": 15,
       "corrected_questions": 6,
       "stale_returned": 6,
-      "held": 8,
+      "held": 6,
       "held_committed": 0
     },
     {
@@ -227,7 +228,7 @@
       "found": 12,
       "corrected_questions": 2,
       "stale_returned": 2,
-      "held": 5,
+      "held": 3,
       "held_committed": 0
     },
     {
@@ -240,7 +241,7 @@
       "found": 18,
       "corrected_questions": 9,
       "stale_returned": 6,
-      "held": 20,
+      "held": 18,
       "held_committed": 0
     },
     {
@@ -253,7 +254,7 @@
       "found": 10,
       "corrected_questions": 7,
       "stale_returned": 7,
-      "held": 6,
+      "held": 4,
       "held_committed": 0
     },
     {
@@ -266,7 +267,7 @@
       "found": 17,
       "corrected_questions": 11,
       "stale_returned": 11,
-      "held": 26,
+      "held": 21,
       "held_committed": 0
     },
     {
@@ -279,7 +280,7 @@
       "found": 14,
       "corrected_questions": 10,
       "stale_returned": 5,
-      "held": 9,
+      "held": 6,
       "held_committed": 0
     },
     {
@@ -548,6 +549,6 @@
     "success-7-00019:cc0c239fb2bb:candidate",
     "success-7-00019:a8339ad6c913:candidate"
   ],
-  "took_ms": 39225.57375,
-  "created_at": "2026-11-13T11:01:19.180967Z"
+  "took_ms": 18350.066666,
+  "created_at": "2026-11-13T12:34:34.194628Z"
 }

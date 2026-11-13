@@ -448,6 +448,13 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
         summary.governance = Some(g);
     } else if let Some(s) = args.suite.as_deref().filter(|s| std::path::Path::new(s).exists()) {
         // Evaluation suites (G13): replayed through the real write and recall paths.
+        // A replay recalls as an agent does, in the default mode, and its values are the run's
+        // results: it is not combined with a dataset or run in another retrieval mode.
+        anyhow::ensure!(args.dataset.is_none(), "run an evaluation suite and a dataset in separate runs: each writes its own results");
+        anyhow::ensure!(
+            mode == RetrievalMode::Hybrid && !args.rerank,
+            "an evaluation suite is replayed with the engine's own recall settings: --mode and --rerank don't apply to it"
+        );
         let loaded = suites::load_all(std::path::Path::new(s))?;
         let tenant = engine.cfg.memory.tenant.clone();
         let mut sum = memhouse_core::eval::EvalCounts::default();
@@ -480,6 +487,7 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
             outcomes: vec![],
             took_ms: 0.0,
             created_at: chrono::Utc::now(),
+            gate_passed: None,
         };
         summary.results = Some(runner::Aggregate { questions: sum.questions as usize, scored: sum.questions as usize, retrieval: suites::estimates(&all), ..Default::default() });
         summary.eval = Some(sections);

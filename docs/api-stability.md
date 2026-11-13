@@ -70,8 +70,8 @@ Each operation in the OpenAPI document has `x-stability`:
 
 ## Known changes inside v1
 
-The roadmap already plans these. They are additive under the rules above, and they are written
-here so clients are ready for them:
+The roadmap already plans these. They are additive under the rules above, except where a row
+names a recorded exception, and they are written here so clients are ready for them:
 
 | When | Change | What a client should do now |
 |---|---|---|
@@ -85,7 +85,7 @@ here so clients are ready for them:
 | G11 (1.5) | A keyed preference (`structured.record_type = "preference"` with `attrs.key`) supersedes the same key in the same scope, and recall returns the one at the narrowest scope (user over team over org). A write deduplicates only against records of its own scope. | Nothing. |
 | G12 (1.6) | `token_budget` is a hard cap: the first hit is no longer returned when it alone exceeds the budget, and the `rendered` block counts against it too ([recorded exception](#recorded-exception-the-token-budget-is-a-hard-cap-16)). | Send a budget that fits at least one memory, and handle an empty `hits`. |
 | G12 (1.6) | Recall leaves out near-duplicates of a better-ranked hit (cosine 0.97 or text overlap 0.9 by default); they are listed in the explanation as `duplicate`. | Nothing; a policy with `[ranking] dedup = false` returns them. |
-| G13 (1.7) | Approving a policy version answers `409 conflict` when the tenant has evaluation suites and the version degrades them past the limits of `[eval]`; the version stays `proposed`. Tenants without suites are unaffected. | Read the report in the error message; fix the policy or the suite. |
+| G13 (1.7) | Approving a policy version answers `409 conflict` when the tenant has evaluation suites and the version degrades them past the limits of `[eval]`; the version stays `proposed`. Tenants without suites are unaffected ([recorded exception](#recorded-exception-the-regression-gate-on-policy-approval-17)). | Read the report in the error message; fix the policy or the suite. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ### Recorded exception: session working memory (1.5)
@@ -124,6 +124,26 @@ behaviour change needs a new major version. It was approved by the maintainer on
   token budget as a hard cap", 13 November 2026). The field's type and default are unchanged.
 - **What a client does.** Send a budget that fits at least one memory, and treat an empty `hits`
   with a budget as "nothing fits", not as "nothing known".
+
+### Recorded exception: the regression gate on policy approval (1.7)
+
+- **What changed.** `POST /v1/policies/{version}/approve` is a stable operation. Before 1.7 it
+  approved and activated any proposed version that compiled. From 1.7, for a tenant that has
+  stored evaluation suites, the version's suites are replayed first, and a version that
+  degrades them past the `[eval]` limits is refused with `409 conflict`; it stays `proposed`.
+  The `409` status already existed for this operation (a version approved twice); what is new
+  is that a valid, compiling version can be refused. An approval also takes as long as the
+  replays do.
+- **Who is affected.** A client that approves policies for a tenant whose operator has stored
+  suites with `memhouse eval add`. No tenant has suites until someone adds them, so no existing
+  deployment changes behaviour on upgrade; a tenant without suites approves exactly as before,
+  and `[eval] gate = false` turns the gate off.
+- **Why it was allowed inside v1.** The gate is requirement QUAL-05: a policy change that
+  degrades the tenant's own suites must not be promoted. It only acts once the tenant's operator
+  has opted in by storing a suite. The maintainer set it as the goal of G13 ("the regression
+  gate that blocks a policy, model or engine change that degrades them", 13 November 2026).
+- **What a client does.** Treat `409` from an approval as "not approved", read the report in the
+  message, and allow for a slower answer when the tenant has suites.
 
 No other exception has been made. The compatibility check below compares shapes, not this kind
 of behaviour, so behaviour changes are reviewed against this section by hand.

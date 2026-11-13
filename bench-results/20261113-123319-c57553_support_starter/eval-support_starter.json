@@ -1,14 +1,15 @@
 {
-  "id": "01a1d48f-99f9-72b9-a4e6-7945a7ed8aac",
+  "id": "01a1d4e5-e7cb-7536-b402-5e0637fa4e5b",
   "tenant": "bench",
   "suite": "support-starter",
-  "suite_hash": "a8c70558f8e8162fd813f15291900963c90c074a8549a03bcc19a8209b0f6609",
+  "suite_hash": "d186050449b97cd75170764dde3f0e3e632322dbf25a90b007c82d9770def108",
   "policy_version": "gov-3b434d14ac4d",
   "fingerprint": {
     "engine": "2.0.0",
     "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
     "classifier": "rules",
-    "reranker": null
+    "reranker": null,
+    "intake": "4ebf6c0b459c"
   },
   "trigger": "manual",
   "counts": {
@@ -21,7 +22,7 @@
     "found": 269,
     "corrected_questions": 142,
     "stale_returned": 130,
-    "held": 201,
+    "held": 169,
     "held_committed": 0
   },
   "metrics": {
@@ -45,7 +46,7 @@
       "found": 15,
       "corrected_questions": 5,
       "stale_returned": 5,
-      "held": 17,
+      "held": 15,
       "held_committed": 0
     },
     {
@@ -58,7 +59,7 @@
       "found": 11,
       "corrected_questions": 8,
       "stale_returned": 8,
-      "held": 4,
+      "held": 3,
       "held_committed": 0
     },
     {
@@ -71,7 +72,7 @@
       "found": 15,
       "corrected_questions": 5,
       "stale_returned": 5,
-      "held": 15,
+      "held": 13,
       "held_committed": 0
     },
     {
@@ -84,7 +85,7 @@
       "found": 13,
       "corrected_questions": 10,
       "stale_returned": 10,
-      "held": 10,
+      "held": 9,
       "held_committed": 0
     },
     {
@@ -97,7 +98,7 @@
       "found": 17,
       "corrected_questions": 11,
       "stale_returned": 7,
-      "held": 11,
+      "held": 9,
       "held_committed": 0
     },
     {
@@ -110,7 +111,7 @@
       "found": 15,
       "corrected_questions": 9,
       "stale_returned": 6,
-      "held": 14,
+      "held": 10,
       "held_committed": 0
     },
     {
@@ -123,7 +124,7 @@
       "found": 17,
       "corrected_questions": 7,
       "stale_returned": 7,
-      "held": 14,
+      "held": 6,
       "held_committed": 0
     },
     {
@@ -188,7 +189,7 @@
       "found": 14,
       "corrected_questions": 8,
       "stale_returned": 8,
-      "held": 5,
+      "held": 4,
       "held_committed": 0
     },
     {
@@ -201,7 +202,7 @@
       "found": 12,
       "corrected_questions": 7,
       "stale_returned": 7,
-      "held": 3,
+      "held": 2,
       "held_committed": 0
     },
     {
@@ -214,7 +215,7 @@
       "found": 14,
       "corrected_questions": 10,
       "stale_returned": 10,
-      "held": 11,
+      "held": 8,
       "held_committed": 0
     },
     {
@@ -227,7 +228,7 @@
       "found": 12,
       "corrected_questions": 3,
       "stale_returned": 3,
-      "held": 6,
+      "held": 3,
       "held_committed": 0
     },
     {
@@ -253,7 +254,7 @@
       "found": 12,
       "corrected_questions": 3,
       "stale_returned": 3,
-      "held": 13,
+      "held": 11,
       "held_committed": 0
     },
     {
@@ -279,7 +280,7 @@
       "found": 15,
       "corrected_questions": 8,
       "stale_returned": 7,
-      "held": 8,
+      "held": 6,
       "held_committed": 0
     },
     {
@@ -539,6 +540,6 @@
     "support-7-00019:fcbac03c1e95:candidate",
     "support-7-00019:a02cee394a4c:candidate"
   ],
-  "took_ms": 31353.365749999997,
-  "created_at": "2026-11-13T10:59:34.643827Z"
+  "took_ms": 18201.4065,
+  "created_at": "2026-11-13T12:33:37.509645Z"
 }

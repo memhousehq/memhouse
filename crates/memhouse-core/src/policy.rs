@@ -1313,6 +1313,12 @@ impl Engine {
         Ok(p)
     }
 
+    /// The running policy, read from the policy source now (not from this node's cache).
+    pub(crate) async fn policy_for_fresh(&self, tenant: &str) -> anyhow::Result<Arc<CompiledPolicy>> {
+        self.policies.invalidate(tenant);
+        self.policy_for(tenant).await
+    }
+
     fn compile_record(&self, r: &PolicySpecRecord) -> anyhow::Result<CompiledPolicy> {
         let spec: PolicySpec = serde_json::from_value(r.spec.clone()).map_err(|e| error::invalid(format!("stored spec v{} can't be read: {e}", r.version)))?;
         compile(&spec, &self.cfg, &r.tenant, Some(r.version)).map_err(|v| violations_error(&v))
@@ -1376,6 +1382,15 @@ impl Engine {
             if !report.passed {
                 self.store.audit(approver, "policy.refuse", tenant, None, None, json!({ "version": version, "reason": "regression_gate", "gate": detail })).await?;
                 return Err(error::conflict(format!("policy v{version} is not approved: {}", report.text(false))));
+            }
+            // The gate compared with the policy that was running when it started. If another
+            // version was activated meanwhile, that comparison is no longer the one that counts.
+            let running = self.policy_for_fresh(tenant).await?;
+            if running.version != report.before_policy {
+                return Err(error::conflict(format!(
+                    "policy v{version} is not approved: the running policy changed from {} to {} while the regression gate ran; approve it again to compare with the policy running now",
+                    report.before_policy, running.version
+                )));
             }
             self.store.audit(approver, "policy.gate", tenant, None, None, detail).await?;
         }

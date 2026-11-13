@@ -1278,7 +1278,7 @@ impl memhouse_core::IntakeQueue for PgStore {
             "UPDATE mh_intake j SET status = 'running', attempts = j.attempts + 1, locked_until = now() + make_interval(secs => $2) \
              WHERE j.id IN (SELECT c.id FROM mh_intake c \
                WHERE ((c.status = 'pending' AND c.run_after <= now()) OR (c.status = 'running' AND c.locked_until < now())) \
-                 AND ($3::text IS NULL OR (c.tenant = $3 AND c.subject = $4)) \
+                 AND (($3::text IS NULL AND position($5 in c.tenant) = 0) OR (c.tenant = $3 AND c.subject = $4)) \
                  AND NOT EXISTS (SELECT 1 FROM mh_intake o WHERE o.tenant = c.tenant AND o.subject = c.subject \
                                  AND o.status IN ('pending', 'running') AND o.seq < c.seq) \
                ORDER BY c.seq LIMIT $1 FOR UPDATE SKIP LOCKED) \
@@ -1288,6 +1288,9 @@ impl memhouse_core::IntakeQueue for PgStore {
         .bind(lease_secs as f64)
         .bind(subject.map(|s| s.0))
         .bind(subject.map(|s| s.1))
+        // An evaluation's scratch tenant runs a pinned policy that only the replaying engine
+        // knows: its proposals are claimed by that engine alone, by tenant and subject.
+        .bind(memhouse_core::eval::SCRATCH_MARK)
         .fetch_all(&self.pool)
         .await?;
         rows.iter()

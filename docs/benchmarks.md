@@ -324,18 +324,21 @@ retrieval are precision / recall / **F1**, in percent.
 |---|---|---|---|---|---|---|
 | `personal-starter` | 20 | 285 | 79.8 / 100.0 / **88.7** | 87.4 / 98.9 / **92.8** | 84.9 | 0.0 |
 | `support-starter` | 20 | 271 | 68.1 / 100.0 / **81.0** | 61.6 / 99.3 / **76.0** | 91.5 | 0.0 |
-| `coding-starter` | 20 | 270 | 68.2 / 100.0 / **81.1** | 74.8 / 100.0 / **85.6** | 75.5 | 5.0 |
-| `sales-starter` | 20 | 279 | 69.9 / 100.0 / **82.3** | 67.0 / 100.0 / **80.3** | 85.8 | 0.0 |
+| `coding-starter` | 20 | 270 | 69.5 / 100.0 / **82.0** | 74.8 / 100.0 / **85.6** | 75.5 | 0.0 |
+| `sales-starter` | 20 | 279 | 69.9 / 100.0 / **82.3** | 67.4 / 100.0 / **80.5** | 85.8 | 0.0 |
 | `success-starter` | 20 | 280 | 72.1 / 100.0 / **83.8** | 64.3 / 100.0 / **78.3** | 74.3 | 0.0 |
-| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 76.6 / 100.0 / **86.7** [86.0–87.4] | 82.2 / 99.8 / **90.1** [89.1–91.1] | 76.2 [73.6–78.6] | 0.3 [0.1–0.5] |
+| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 76.7 / 100.0 / **86.8** [86.1–87.5] | 82.7 / 99.8 / **90.4** [89.4–91.4] | 76.2 [73.6–78.6] | 0.0 |
 
-The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 7 minutes on a
+The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 8 minutes on a
 laptop that was busy with other work. Brackets are 95% bootstrap intervals over conversations.
 
 What they show:
 
-- **Nothing that should be stored is lost** (storage recall 100), and plans and guesses
-  are held (contamination 0, except one phrasing in the coding profile).
+- **Almost nothing that should be stored is lost**: storage recall is 99.98% on the reference
+  suite (2 of 10,289 facts at checkpoints not stored) and 100% on the starter suites. Plans and
+  guesses are held: none of the 4,399 on the reference suite was committed as a fact, and none
+  on the starter suites. A plan that a later turn carries out is not counted, since the engine
+  then rightly commits it.
 - **Corrections are the weak point.** Three quarters or more of the questions about a
   corrected fact still get a stale version among the top 5, and storage precision is 68 to 80
   because those stale records are still current. A correction supersedes the record it
@@ -344,7 +347,7 @@ What they show:
   close to "I live in Lisbon" for this embedder. The public datasets did not show this: they
   have few explicit corrections. It is what the first quality goal (G14) tunes, on these
   suites.
-- Retrieval finds the current fact almost always (recall 99 to 100); it is first less often
+- Retrieval finds the current fact almost always (recall 98.9 to 100); it is first less often
   where a stale version competes with it.
 
 ```bash
