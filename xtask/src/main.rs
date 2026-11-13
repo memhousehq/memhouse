@@ -24,7 +24,8 @@ tasks:
     --fix           apply rustfmt and add missing SPDX headers instead of checking them
     --skip-e2e      skip scripts/e2e.sh (no Docker needed)
     --skip-guard    skip the benchmark guard (no benchmark database needed)
-    --skip-latency  report the guard's timings without failing on them (a machine known to be busy)
+    --skip-latency  report the guard's timings without failing on them (a machine known to be busy);
+                    MEMHOUSE_CI_SKIP_LATENCY=1 does the same where no option can be passed (the pre-push hook)
   spdx [--fix]    check (or add) SPDX licence identifiers
   links           check relative links and #anchors in the Markdown docs
     --external      also list the external links (not fetched)
@@ -71,6 +72,11 @@ fn workspace_root() -> PathBuf {
 fn ci(root: &Path, args: &[String]) -> Result<(), String> {
     let mut tier = "1".to_string();
     let (mut fix, mut skip_e2e, mut skip_guard, mut skip_latency) = (false, false, false, false);
+    // The pre-push hook passes no options: on a machine known to be busy, the environment says so.
+    // Only timings stop gating; every quality metric and every other step still does.
+    if std::env::var("MEMHOUSE_CI_SKIP_LATENCY").is_ok_and(|v| v == "1") {
+        skip_latency = true;
+    }
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {

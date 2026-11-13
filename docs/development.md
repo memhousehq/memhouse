@@ -103,7 +103,9 @@ cargo xtask ci
 
 It takes about 5 minutes on a laptop. Options: `--tier 2` (adds LoCoMo with cached enrichment,
 about $0.01), `--fix` (apply rustfmt and add missing SPDX headers), `--skip-e2e` (no Docker), `--skip-guard` (no benchmark
-database). `scripts/ci.sh` is the same command.
+database), `--skip-latency` (report the guard's timings without failing on them, for a machine
+known to be busy; `MEMHOUSE_CI_SKIP_LATENCY=1` does the same for the pre-push hook, which passes no
+options). `scripts/ci.sh` is the same command.
 
 Hosted CI (`.github/workflows/ci.yml`) runs every step on each pull request except the benchmark
 guard: the e2e step there includes the governance suite. Benchmarks need the public datasets
