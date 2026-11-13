@@ -105,8 +105,9 @@ fn controlled(n: usize) -> Suite {
         .map(|i| {
             let (old, new, firm) = (CITIES[i % 12], CITIES[(i + 5) % 12], FIRMS[i % 12]);
             let who = format!("Member{i:02}");
-            let turn = |say: String, expect: Expect, key: Option<&str>| SuiteTurn { say, expect, key: key.map(String::from), kind: None, id: None, confirms: None };
-            let ask = |q: String, key: &str| SuiteQuestion { q, key: key.into() };
+            let turn =
+                |say: String, expect: Expect, key: Option<&str>| SuiteTurn { say, expect, key: key.map(String::from), kind: None, id: None, confirms: None, ..Default::default() };
+            let ask = |q: String, key: &str| SuiteQuestion { q, key: key.into(), ..Default::default() };
             SuiteConversation {
                 id: format!("c{i:02}"),
                 sessions: vec![
@@ -146,7 +147,7 @@ fn controlled(n: usize) -> Suite {
             }
         })
         .collect();
-    Suite { format: SUITE_FORMAT, name: "controlled".into(), description: String::new(), k: 3, conversations }
+    Suite { format: SUITE_FORMAT, name: "controlled".into(), description: String::new(), language: None, k: 3, conversations }
 }
 
 /// QUAL-03's acceptance test: separate storage and retrieval scores and a stale-fact rate.

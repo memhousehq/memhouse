@@ -35,6 +35,10 @@ Rules:
 Output format:
 {"facts": [{"text": "...", "kind": "event|fact|preference|plan", "date": "YYYY-MM-DD or null", "rounds": [1]}]}"#;
 
+/// Added for a server with more than one language (G36): facts stay in the language they were
+/// stated in, so the statement gate and the keyword search read them with the right pack.
+const ANY_LANGUAGE: &str = "\n\nThe conversation may be in any language. Write each fact's \"text\" in the language it was stated in (in that language, write the equivalent of \"the user\"); keep the JSON keys and the \"kind\" values in English.";
+
 #[derive(Debug, serde::Deserialize)]
 struct Extracted {
     #[serde(default)]
@@ -225,7 +229,9 @@ impl Engine {
         }
         let session_time = rounds.iter().find_map(|r| r.occurred_at);
         let date_line = session_time.map(|t| t.format("%Y-%m-%d (%A)").to_string()).unwrap_or_else(|| "unknown".into());
-        let prompt = format!("{INSTRUCTIONS}\n\nSession date: {date_line}\n\nConversation:\n{text}");
+        // With one language the prompt is unchanged, so what was extracted before stays cached.
+        let any_language = if self.languages.packs().len() > 1 { ANY_LANGUAGE } else { "" };
+        let prompt = format!("{INSTRUCTIONS}{any_language}\n\nSession date: {date_line}\n\nConversation:\n{text}");
         let key = cache_key(&model, &prompt);
         let answer = match self.store.llm_cache_get(&key).await? {
             Some(a) => {
@@ -338,6 +344,7 @@ impl Engine {
                     extractor: Some(model.to_string()),
                     extractor_config: Some(PROMPT_VERSION.to_string()),
                 },
+                language: None,
             };
             let mut it = Item::new(NewMemory::new(mem, hash), None, redactions);
             it.derived = true;
@@ -355,7 +362,7 @@ impl Engine {
             return Ok(0);
         }
         self.gate_stage(&policy, Entry::Commit, &mut items).await?;
-        Self::route_stage(&mut items);
+        self.route_stage(&mut items);
         self.embed_stage(&mut items).await?;
         let (supersede, confirm) = self.resolve_stage(&policy, &job.tenant, &job.subject, Entry::Commit, &mut items).await?;
         let count = |s: MemoryStatus| items.iter().filter(|i| i.rec.memory.status == s).count();

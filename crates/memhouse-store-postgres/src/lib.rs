@@ -36,6 +36,21 @@ pub struct PgStore {
     /// When the database's embedder was last compared with ours (recall checks every 5 s).
     checked: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     recheck: std::time::Duration,
+    /// The text-search configuration of each enabled language (G36), as the engine set it.
+    text_search: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+}
+
+impl PgStore {
+    /// The text-search configurations of the enabled languages, without repeats.
+    fn ts(&self) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for (_, cfg) in self.text_search.lock().unwrap().iter() {
+            if !out.contains(cfg) {
+                out.push(cfg.clone());
+            }
+        }
+        out
+    }
 }
 
 fn drop_next_columns() -> String {
@@ -55,7 +70,7 @@ const NEXT_COLS: [(&str, &str); 5] = [
 const COLS: &str = "m.id, m.tenant, m.subject, m.kind, m.status, m.content, m.session_id, m.turn_ref, \
     m.occurred_at, m.valid_from, m.valid_to, m.supersedes, m.labels, m.tags, m.source, m.confidence, \
     m.metadata, m.created_at, m.expires_at, m.scope_org, m.scope_team, m.scope_agent, m.scope_user, m.scope_session, \
-    m.prov_agent, m.prov_user, m.policy_version, m.request_key, m.extractor, m.extractor_config";
+    m.prov_agent, m.prov_user, m.policy_version, m.request_key, m.extractor, m.extractor_config, m.language";
 
 fn vec_literal(v: &[f32]) -> String {
     let mut s = String::with_capacity(v.len() * 10 + 2);
@@ -117,6 +132,7 @@ fn row_to_memory(r: &PgRow) -> anyhow::Result<Memory> {
             extractor: r.try_get("extractor")?,
             extractor_config: r.try_get("extractor_config")?,
         },
+        language: r.try_get("language")?,
     })
 }
 
@@ -160,6 +176,7 @@ fn row_to_record(r: &PgRow) -> anyhow::Result<RecordLine> {
         source: m.source,
         confidence: m.confidence,
         provenance: m.provenance,
+        language: m.language,
         alt_hash: r.try_get("alt_hash")?,
         structured: record_type.map(|t| Structured { record_type: t, attrs: attrs.unwrap_or_else(|| serde_json::json!({})) }),
         code_refs: serde_json::from_value(code_refs)?,
@@ -343,6 +360,24 @@ CREATE OR REPLACE TRIGGER mh_intake_embedder_guard BEFORE INSERT ON mh_intake FO
 
 /// v8 (G13): a tenant's evaluation suites and the result of each replay, kept with the policy
 /// version it ran under (QUAL-04). Neither is memory: they are not exported.
+/// Schema v9 (G36): the language of each record, and a keyword index in that language's
+/// text-search configuration. Expand-only: `tsv` (the `english` index) stays on every row;
+/// `tsv_lang` is filled, by the trigger, only for a record whose language has another
+/// configuration, so a server with English alone stores and computes nothing more.
+const SCHEMA_V9_DDL: &str = r#"
+ALTER TABLE mh_memory ADD COLUMN IF NOT EXISTS language text;
+ALTER TABLE mh_memory ADD COLUMN IF NOT EXISTS ts_config text;
+ALTER TABLE mh_memory ADD COLUMN IF NOT EXISTS tsv_lang tsvector;
+CREATE OR REPLACE FUNCTION mh_memory_tsv_lang() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.tsv_lang := to_tsvector(NEW.ts_config::regconfig, NEW.content);
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE TRIGGER mh_memory_tsv_lang BEFORE INSERT OR UPDATE OF content, ts_config ON mh_memory
+  FOR EACH ROW WHEN (NEW.ts_config IS NOT NULL) EXECUTE FUNCTION mh_memory_tsv_lang();
+CREATE INDEX IF NOT EXISTS mh_memory_tsv_lang_idx ON mh_memory USING gin (tsv_lang) WHERE tsv_lang IS NOT NULL;
+"#;
+
 const SCHEMA_V8_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS mh_eval_suite (
   tenant     text NOT NULL,
@@ -433,7 +468,7 @@ impl PgStore {
     async fn search_one(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         self.ensure_current().await?;
         let p = Probe::of(q);
-        let sql = search_sql(Variant::of(q));
+        let sql = search_sql(Variant::of(q), &self.ts());
         let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
@@ -529,6 +564,7 @@ impl PgStore {
             embedder_config: Default::default(),
             checked: Default::default(),
             recheck: std::time::Duration::from_secs(5),
+            text_search: Default::default(),
         })
     }
 
@@ -650,10 +686,10 @@ const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions supersede
 
 /// The recall statement. `filtered = false` drops every filter but tenant and subject: the
 /// candidates a recall explanation classifies (why each was excluded).
-fn search_sql_with(filtered: bool, v: Variant) -> String {
+fn search_sql_with(filtered: bool, v: Variant, ts: &[String]) -> String {
     let filters = if filtered { search_filters(v) } else { String::new() };
     let emb = if v.vectors { "m.embedding::real[]" } else { "NULL::real[]" };
-    format!(
+    let sql = format!(
         r#"
 WITH q AS (
   SELECT CASE WHEN $3 = '' THEN NULL ELSE to_tsquery('english', $3) END AS tsq
@@ -717,7 +753,25 @@ FROM top f CROSS JOIN LATERAL (
 ) m
 ORDER BY f.score DESC, f.sim DESC NULLS LAST
 "#
-    )
+    );
+    localize(sql, ts)
+}
+
+/// The recall statement for the text-search configurations of the enabled languages. With
+/// `english` alone it is unchanged: the statement the guard's baselines were measured with.
+/// Otherwise the question is parsed with every configuration, and each row is matched in the
+/// configuration of its own language (`tsv_lang`), or in `english` when it has none.
+fn localize(sql: String, ts: &[String]) -> String {
+    if ts.is_empty() || (ts.len() == 1 && ts[0] == "english") {
+        return sql;
+    }
+    // Configuration names come from validated packs (lower-case letters, digits and `_`).
+    let ts: Vec<&String> = ts.iter().filter(|c| c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')).collect();
+    let tsq = ts.iter().map(|c| format!("to_tsquery('{c}', $3)")).collect::<Vec<_>>().join(" || ");
+    let terms = ts.iter().map(|c| format!("tsvector_to_array(to_tsvector('{c}', $17))")).collect::<Vec<_>>().join(" || ");
+    sql.replace("to_tsquery('english', $3)", &format!("({tsq})"))
+        .replace("tsvector_to_array(to_tsvector('english', $17))", &format!("({terms})"))
+        .replace("SELECT m.id, m.tsv, m.embedding, m.embedding_alt", "SELECT m.id, coalesce(m.tsv_lang, m.tsv) AS tsv, m.embedding, m.embedding_alt")
 }
 
 /// The rows a `forget` by user, agent or source matches (`$2` is the value).
@@ -730,14 +784,14 @@ fn forget_condition(scope: ForgetScope) -> anyhow::Result<&'static str> {
     })
 }
 
-fn search_sql(v: Variant) -> String {
-    search_sql_with(true, v)
+fn search_sql(v: Variant, ts: &[String]) -> String {
+    search_sql_with(true, v, ts)
 }
 
 /// Several probes of one recall as one statement (PERF-02: one round trip): each probe's search,
 /// with its own parameters, under `UNION ALL`, rows tagged with the probe's position.
-fn multi_search_sql(n: usize, v: Variant) -> String {
-    let one = search_sql(v);
+fn multi_search_sql(n: usize, v: Variant, ts: &[String]) -> String {
+    let one = search_sql(v, ts);
     (0..n).map(|i| format!("({})", renumber(&one, i * SEARCH_PARAMS).replace("0 AS probe", &format!("{i} AS probe")))).collect::<Vec<_>>().join("\nUNION ALL\n")
 }
 
@@ -1060,8 +1114,10 @@ impl PgStore {
                 "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, embedding, embedding_alt, alt_hash, embedder, embedder_config, \
                  session_id, turn_ref, occurred_at, valid_from, valid_to, expires_at, supersedes, superseded_by, labels, tags, \
                  scope_org, scope_team, scope_agent, scope_user, scope_session, source, confidence, \
-                 prov_agent, prov_user, policy_version, request_key, extractor, extractor_config, metadata, created_at, updated_at) ",
+                 prov_agent, prov_user, policy_version, request_key, extractor, extractor_config, metadata, created_at, updated_at, \
+                 language, ts_config) ",
             );
+            let text_search = self.text_search.lock().unwrap().clone();
             qb.push_values(chunk, |mut b, w| {
                 let r = w.r;
                 let has_vec = w.embedding.is_some();
@@ -1104,7 +1160,11 @@ impl PgStore {
                     .push_bind(&r.provenance.extractor_config)
                     .push_bind(&r.metadata)
                     .push_bind(r.created_at)
-                    .push_bind(r.updated_at);
+                    .push_bind(r.updated_at)
+                    .push_bind(&r.language)
+                    // NULL keeps the `english` index every record has; another configuration
+                    // gets its own (`tsv_lang`, filled by a trigger).
+                    .push_bind(r.language.as_ref().and_then(|l| text_search.iter().find(|(code, _)| code == l)).map(|(_, cfg)| cfg.clone()).filter(|cfg| cfg != "english"));
             });
             if skip_existing {
                 qb.push(" ON CONFLICT (id) DO NOTHING");
@@ -1192,6 +1252,7 @@ impl PgStore {
                     source: m.source.clone(),
                     confidence: m.confidence,
                     provenance: m.provenance.clone(),
+                    language: m.language.clone(),
                     alt_hash: n.alt.as_ref().map(|(h, _)| h.clone()),
                     structured: n.structured.clone(),
                     code_refs: n.code_refs.clone(),
@@ -1497,6 +1558,7 @@ impl Store for PgStore {
         sqlx::raw_sql(SCHEMA_V6_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V7_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V8_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V9_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -1537,6 +1599,18 @@ impl Store for PgStore {
 
     fn intake_queue(&self) -> Option<std::sync::Arc<dyn memhouse_core::IntakeQueue>> {
         Some(std::sync::Arc::new(self.clone()))
+    }
+
+    fn set_languages(&self, text_search: &[(String, String)]) {
+        *self.text_search.lock().unwrap() = text_search.to_vec();
+    }
+
+    async fn check_text_search(&self, configs: &[String]) -> anyhow::Result<()> {
+        let known: Vec<String> = sqlx::query_scalar("SELECT cfgname::text FROM pg_ts_config").fetch_all(&self.pool).await?;
+        for c in configs.iter().filter(|c| !known.contains(c)) {
+            anyhow::bail!("the database has no text-search configuration {c:?}, which an enabled language pack names (text_search); it has: {}", known.join(", "));
+        }
+        Ok(())
     }
 
     #[tracing::instrument(name = "db.apply_intake", skip_all, fields(db.system = "postgresql", db.operation = "INSERT", rows = w.records.len()))]
@@ -1716,7 +1790,7 @@ impl Store for PgStore {
         self.ensure_current().await?;
         let probes: Vec<Probe> = qs.iter().map(Probe::of).collect();
         // The probes of one recall share its reader, so its variant.
-        let sql = multi_search_sql(qs.len(), qs.first().map(Variant::of).unwrap_or_default());
+        let sql = multi_search_sql(qs.len(), qs.first().map(Variant::of).unwrap_or_default(), &self.ts());
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for (q, p) in qs.iter().zip(&probes) {
             query = bind_search(query, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec);
@@ -1736,7 +1810,7 @@ impl Store for PgStore {
     #[tracing::instrument(name = "db.search_unfiltered", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn search_unfiltered(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         let p = Probe::of(q);
-        let sql = search_sql_with(false, Variant::default());
+        let sql = search_sql_with(false, Variant::default(), &self.ts());
         let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
@@ -1748,7 +1822,7 @@ impl Store for PgStore {
         let use_vec = q.mode != RetrievalMode::Keyword && q.embedding.is_some();
         let tsq = if use_kw { or_query(&q.text) } else { String::new() };
         let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
-        let sql = format!("EXPLAIN (FORMAT JSON) {}", search_sql(Variant::of(q)));
+        let sql = format!("EXPLAIN (FORMAT JSON) {}", search_sql(Variant::of(q), &self.ts()));
         let row = search_query(sql, q, &tsq, kinds, use_kw, use_vec).fetch_one(&self.pool).await?;
         Ok(Some(row.try_get::<serde_json::Value, _>(0)?))
     }

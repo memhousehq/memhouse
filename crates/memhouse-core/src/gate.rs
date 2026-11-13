@@ -2,6 +2,8 @@
 //! Write gate: redaction of PII and secrets, and prompt-injection screening.
 //! Runs on every write path before anything reaches the store (TR-IN-04, GOV-05, QUAL-02).
 //! These checks are deterministic so the safety gates in the benchmark never depend on a model.
+//! The injection phrases are data, one list per language ([`crate::lang`]); the PII and secret
+//! patterns vary by country, not by language, and stay here (GOV-05).
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -54,32 +56,6 @@ static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
     ]
 });
 
-static INJECTION: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
-    let r = |p: &str| Regex::new(&format!("(?i){p}")).expect("valid regex");
-    vec![
-        (
-            "override",
-            r(
-                r"\b(?:ignore|disregard|forget|override)\b[^.\n]{0,40}\b(?:previous|prior|above|earlier|all|any|your)\b[^.\n]{0,25}\b(?:instructions?|prompts?|rules?|guidelines?|directives?)",
-            ),
-        ),
-        (
-            "role_hijack",
-            r(r"\b(?:you are now|from now on,? you (?:are|will|must)|act as (?:an? )?(?:unrestricted|jailbroken|dan)\b|pretend (?:that )?you have no (?:rules|restrictions))"),
-        ),
-        ("system_prompt", r(r"\b(?:reveal|print|show|output|leak)\b[^.\n]{0,30}\b(?:system prompt|hidden instructions|developer message)")),
-        ("chat_markup", r(r"<\|(?:im_start|im_end|system|endoftext)\|>|\[/?INST\]|<<SYS>>|^\s*###\s*(?:system|instruction)s?\s*:")),
-        (
-            "memory_directive",
-            r(r"\b(?:always|whenever)\b[^.\n]{0,60}\b(?:send|forward|email|upload|transfer|exfiltrate)\b[^.\n]{0,60}\b(?:to|at)\b[^.\n]{0,40}(?:https?://|@|\bwallet\b)"),
-        ),
-        (
-            "tool_directive",
-            r(r"\b(?:run|execute|call)\b[^.\n]{0,20}\b(?:the )?(?:command|tool|function)\b[^.\n]{0,40}\b(?:rm -rf|curl [^ ]+\s*\|\s*(?:ba)?sh|transfer_funds|delete_all)"),
-        ),
-    ]
-});
-
 fn luhn_ok(s: &str) -> bool {
     let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
     if digits.len() < 13 || digits.len() > 19 {
@@ -108,16 +84,20 @@ fn luhn_ok(s: &str) -> bool {
 /// Every redaction category `screen` knows.
 pub const CATEGORIES: [&str; 7] = ["secret", "card", "ssn", "iban", "email", "phone", "ip"];
 
-/// Redact the configured categories and screen for injection.
+/// Redact the configured categories and screen for injection, with the built-in English
+/// phrases alone. The engine screens with every enabled language pack
+/// ([`crate::lang::Languages::injection`]).
 pub fn screen(content: &str, redact: &[String], check_injection: bool) -> GateOutcome {
     let (text, redactions) = redact_text(content, redact);
     let injection = if check_injection { injection(&text) } else { vec![] };
     GateOutcome { content: text, redactions, injection }
 }
 
-/// Reasons the text looks like an instruction aimed at the agent (the gate stage's check).
+/// Reasons the text looks like an instruction aimed at the agent, by the built-in English
+/// phrases and the chat-template markup: the floor of every server's screen. The phrases are
+/// data ([`crate::lang`]); the gate stage screens with every enabled pack's.
 pub fn injection(text: &str) -> Vec<String> {
-    INJECTION.iter().filter(|(_, re)| re.is_match(text)).map(|(name, _)| name.to_string()).collect()
+    crate::lang::Languages::english().injection(text)
 }
 
 /// The deterministic PII and secret detector (TR-MS-01): the rules above.

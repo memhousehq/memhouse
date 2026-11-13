@@ -49,7 +49,7 @@ pub enum Expect {
     Ignore,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SuiteTurn {
     /// What the user says; written as it would be by an agent calling `remember`.
@@ -71,16 +71,38 @@ pub struct SuiteTurn {
     /// rightly so: from here on the plan is not scored, neither as held nor as contamination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirms: Option<String>,
+    /// What the statement gate should read the turn as. Used by a language pack's test set
+    /// (`memhouse lang check --tests`); a replay does not score it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<Statement>,
+    /// The turn is an injection attempt: the gate must quarantine it. Such a turn is a `hold`
+    /// turn (it must not be committed).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub injection: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A question asked at a checkpoint.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SuiteQuestion {
     pub q: String,
     /// The key whose current value answers it: the record of the newest `commit` turn with this
-    /// key is the relevant one, and the records of the turns it replaced are stale.
+    /// key is the relevant one, and the records of the turns it replaced are stale. Empty for a
+    /// question that only tests how it is read (`covers`, `ids`); a replay does not ask it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key: String,
+    /// Days the question's time phrases must cover, read at the session's time ("two weeks
+    /// ago" asked on 1 July covers 17 June). Used by a language pack's test set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<chrono::NaiveDate>,
+    /// The identifiers the question names ("order A-1001" names `a-1001`). Used by a language
+    /// pack's test set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -113,6 +135,9 @@ pub struct Suite {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// The language the suite is written in, as a language-pack code: set on a pack's test set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// Hits a question's answer is looked for in (default 5).
     #[serde(default = "default_k")]
     pub k: usize,
@@ -177,8 +202,23 @@ impl Suite {
                     if let (Expect::Commit, Some(k)) = (turn.expect, &turn.key) {
                         keys.insert(k.as_str());
                     }
+                    let held = turn.statement.is_some_and(|st| st.held()) || turn.injection;
+                    if (turn.statement.is_some() || turn.injection) && held != (turn.expect == Expect::Hold) {
+                        return bad(format!(
+                            "conversation {}, session {}, turn {}: a plan, a guess and an injection attempt are `expect: hold` turns, and no other labelled statement is",
+                            c.id,
+                            s + 1,
+                            t + 1
+                        ));
+                    }
                 }
-                if let Some(q) = session.ask.iter().find(|q| !keys.contains(q.key.as_str())) {
+                if let Some(q) = session.ask.iter().find(|q| q.key.is_empty() && q.covers.is_empty() && q.ids.is_empty()) {
+                    return bad(format!("conversation {}, session {}: the question '{}' has no key, and tests nothing else (covers, ids)", c.id, s + 1, q.q));
+                }
+                if let Some(q) = session.ask.iter().find(|q| !q.covers.is_empty() && session.at.is_none()) {
+                    return bad(format!("conversation {}, session {}: the question '{}' has `covers`, so its session needs a time (`at`)", c.id, s + 1, q.q));
+                }
+                if let Some(q) = session.ask.iter().find(|q| !q.key.is_empty() && !keys.contains(q.key.as_str())) {
                     return bad(format!("conversation {}, session {}: the question '{}' asks for key '{}', which no earlier turn commits", c.id, s + 1, q.q, q.key));
                 }
             }
@@ -433,10 +473,15 @@ impl Engine {
         Fingerprint {
             engine: env!("CARGO_PKG_VERSION").to_string(),
             embedder: self.embedder.id().to_string(),
-            classifier: match self.cfg.intake.classifier {
-                crate::config::ClassifierKind::Rules => "rules".to_string(),
-                crate::config::ClassifierKind::Llm => format!("llm:{}", self.cfg.intake.llm.model),
-            },
+            // The language packs are the rules' data: other packs, other results.
+            classifier: format!(
+                "{}{}",
+                match self.cfg.intake.classifier {
+                    crate::config::ClassifierKind::Rules => "rules".to_string(),
+                    crate::config::ClassifierKind::Llm => format!("llm:{}", self.cfg.intake.llm.model),
+                },
+                if self.languages.tag().is_empty() { String::new() } else { format!("+lang:{}", self.languages.tag()) }
+            ),
             reranker: self.reranker.as_ref().filter(|_| self.cfg.rerank.enabled).map(|_| self.cfg.rerank.model.clone()),
             intake: crate::engine::content_hash(&serde_json::to_string(&self.cfg.intake).unwrap_or_default())[..12].to_string(),
         }

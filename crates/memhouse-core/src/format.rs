@@ -18,7 +18,7 @@ pub const FORMAT: &str = "memhouse.memory";
 /// The format version this build writes. Version 1 files (before schema v2) are still read.
 pub const VERSION: u32 = 2;
 /// The logical schema version (TR-CORE-04, `docs/schema.md`), recorded by every store.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 /// Policy version given to records written before policies were recorded.
 pub const LEGACY_POLICY: &str = "legacy-v1";
 
@@ -90,6 +90,9 @@ pub struct RecordLine {
     pub confidence: f32,
     #[serde(default, skip_serializing_if = "Provenance::is_empty")]
     pub provenance: Provenance,
+    /// The language the text was detected as (schema 9): a language-pack code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// Cache key of the round's second, user-only vector; its text is recovered from `content`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_hash: Option<String>,
@@ -140,6 +143,7 @@ impl RecordLine {
             expires_at: self.expires_at,
             scope: self.scope.clone(),
             provenance: self.provenance.clone(),
+            language: self.language.clone(),
         }
     }
 
@@ -324,6 +328,7 @@ fn from_v1(m: Memory) -> RecordLine {
         source: m.source,
         confidence: m.confidence,
         provenance,
+        language: m.language,
         alt_hash: None,
         structured: None,
         code_refs: vec![],

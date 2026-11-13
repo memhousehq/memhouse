@@ -161,6 +161,7 @@ mod tests {
             expires_at: None,
             scope,
             provenance: Provenance::default(),
+            language: None,
         }
     }
 
