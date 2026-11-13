@@ -2086,6 +2086,13 @@
             ],
             "description": "`auto` or `review`; `auto` only where governance doesn't require review."
           },
+          "corrections": {
+            "description": "Whether a correction, or the same statement with a changed value, supersedes what it\nupdates (QUAL-01; the default). With `false` both versions stay current: for tenants that\nkeep every statement as it was made. The regression gate measures what that costs.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "dedup_threshold": {
             "description": "Cosine similarity at which a new memory counts as a duplicate (0.5 to 1).",
             "format": "float",
@@ -2312,6 +2319,11 @@
         "properties": {
           "admission": {
             "$ref": "#/components/schemas/Admission"
+          },
+          "corrections": {
+            "default": true,
+            "description": "Corrections and changed values supersede what they update (QUAL-01).",
+            "type": "boolean"
           },
           "dedup_threshold": {
             "format": "float",
@@ -4085,7 +4097,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.6.0"
+    "version": "1.7.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

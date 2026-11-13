@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Starter evaluation suite for the success template: synthetic timelines with ground truth at
+# checkpoints (docs/evaluation.md). `memhouse bench run --suite bench/suites/success` replays it;
+# `memhouse eval add bench/suites/success/starter.yaml` makes it gate a tenant's policy changes.
+name: success-starter
+description: 20 synthetic success conversations (facts, corrections, plans carried out or dropped, guesses, small talk).
+generate: { profile: success, seed: 7, conversations: 20 }

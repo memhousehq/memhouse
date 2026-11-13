@@ -451,7 +451,7 @@ pub async fn run(engine: Engine, spec: RunSpec, mut sink: impl FnMut(&ItemResult
     Ok(results)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Aggregate {
     pub questions: usize,
     pub scored: usize,

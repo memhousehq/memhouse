@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Starter evaluation suite for the support template: synthetic timelines with ground truth at
+# checkpoints (docs/evaluation.md). `memhouse bench run --suite bench/suites/support` replays it;
+# `memhouse eval add bench/suites/support/starter.yaml` makes it gate a tenant's policy changes.
+name: support-starter
+description: 20 synthetic support conversations (facts, corrections, plans carried out or dropped, guesses, small talk).
+generate: { profile: support, seed: 7, conversations: 20 }

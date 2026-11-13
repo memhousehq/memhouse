@@ -1023,6 +1023,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // 54–56. Ranking by policy weights, near-duplicate removal and the token budget (G12).
     checks.extend(crate::pack_checks::run(engine).await);
 
+    // 57–59. The evaluation harness, the regression gate and reproducible replays (G13).
+    checks.extend(crate::eval_checks::run(engine).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;

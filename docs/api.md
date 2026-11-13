@@ -20,12 +20,13 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.6.0` (1.1 added principals, agent tokens, review and labels; 1.2
+This is **API v1**, version `1.7.0` (1.1 added principals, agent tokens, review and labels; 1.2
 added recall explanations and `/metrics`; 1.3 added policies; 1.4 the write pipeline: `wait`,
 `include_candidates`, exact recall, `degraded` and the `unavailable` code; 1.5 memory types:
 session working memory, scope inheritance and preferences, promotion and grants; 1.6 ranking and
 packing: `render_format`, the `duplicate` exclusion reason, score features in explanations, and
-the token budget as a hard cap). The machine-readable contract is the OpenAPI 3.1 document at
+the token budget as a hard cap; 1.7 the evaluation gate: `write_gate.corrections` in a policy
+spec, and an approval refused with `409` when the tenant's suites degrade). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -803,7 +804,7 @@ equivalents are in [policy.md](policy.md).
 | `POST /v1/policies/validate` `{"spec": {…}}` | `policy:read` | `{valid, compiled?, violations}`; stores nothing |
 | `POST /v1/policies/diff` `{"from"?, "to" \| "spec"}` | `policy:read` | the settings that differ, by dotted path |
 | `POST /v1/policies` `{"spec": {…}, "note"?}` | `policy:propose` | the stored version, `proposed`; a spec that doesn't compile is a 400 listing every violation |
-| `POST /v1/policies/{version}/approve` | `policy:approve` | the compiled policy now running; the caller is recorded as approver; 409 if already approved |
+| `POST /v1/policies/{version}/approve` | `policy:approve` | the compiled policy now running; the caller is recorded as approver; 409 if already approved, or if the tenant's evaluation suites degrade under it past the `[eval]` limits (the message is the gate's report; [evaluation.md](evaluation.md#the-regression-gate)) |
 | `POST /v1/policies/rollback` `{"to"?}` | `policy:approve` | the compiled policy now running; 403 for a version that is not approved |
 
 `from` and `to` take `default` or a version (`3` or `v3`); `from` defaults to the running policy.

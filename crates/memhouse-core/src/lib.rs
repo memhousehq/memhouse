@@ -8,6 +8,7 @@ pub mod config;
 pub mod engine;
 pub mod enrich;
 pub mod error;
+pub mod eval;
 pub mod explain;
 pub mod format;
 pub mod gate;

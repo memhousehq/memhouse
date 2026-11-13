@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 11 of 36 goals done, G12 built and waiting for its latency check ([goal tracker](#goal-tracker)) |
+| Progress | 12 of 36 goals done; G12 built and waiting for its latency check ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 56 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 59 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -61,6 +61,10 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - ranking that combines relevance, recency, confidence and validity with the compiled policy's
   weights; packing that leaves out near-duplicates and treats the token budget as a hard cap;
   the rendered block as plain text, Markdown or XML (G12, API 1.6);
+- an evaluation platform: suites of scripted conversations with ground truth at checkpoints, a
+  seeded generator of synthetic timelines, storage and retrieval F1 with the stale-fact and
+  contamination rates, a tenant's own suites, and a regression gate that refuses a policy that
+  degrades them (G13, API 1.7, schema v8);
 - docs: API, configuration, operations, governance, policy, development, architecture, benchmarks.
 
 Published results: LongMemEval_S QA **86.0** (GPT-4o), LoCoMo QA **83.7** (GPT-4o-mini), recall
@@ -72,7 +76,7 @@ are frozen (goals G04–G15), so it is written once against the final contracts 
 reworked.
 
 **What is missing from the code is the unbuilt part of each goal not ticked in the
-[goal tracker](#goal-tracker)** (G13 onwards, and G12's latency check; G25's re-embedding was done early). Some of those
+[goal tracker](#goal-tracker)** (G36 onwards, and G12's latency check; G25's re-embedding was done early). Some of those
 goals start from features that already work and are listed above, such as the v1 sales and
 success templates (G24). The largest gaps are relationship-based
 access (ACC), SDKs, the Lite store, the coding template's git-aware features, release
@@ -128,7 +132,7 @@ including the governance suite.
 
 | Tier | When | What runs | Cost | Time |
 |---|---|---|---|---|
-| **T1** | every goal, before each commit that touches the engine, store or models | build + unit tests; governance suite; LongMemEval_S retrieval, stride 10 (50 questions); LoCoMo retrieval (all 1,540 questions) | $0 | ~3 min |
+| **T1** | every goal, before each commit that touches the engine, store or models | build + unit tests; governance suite; LongMemEval_S retrieval, stride 10 (50 questions); LoCoMo retrieval (all 1,540 questions); the synthetic starter suite `bench/suites/personal` (from G13) | $0 | ~4 min |
 | **T2** | goals that touch enrichment, facts, ranking or the answer context | T1 + LoCoMo retrieval with `--enrich` (served from the LLM cache) | ~$0.01 | ~5 min |
 | **T3** | end of each stage (milestones), after quality goals | T2 + LoCoMo QA (`--qa --answer-model gpt-4o-mini --enrich`, `--max-cost-usd 1.5`) | ~$0.70 | ~20 min |
 | **T4** | releases only, **with the user's approval** | full LongMemEval_S QA with GPT-4o (`--max-cost-usd 10`) | ~$7.50 | ~1 h |
@@ -137,7 +141,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 56 / 56 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 59 / 59 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -148,6 +152,10 @@ including the governance suite.
 | | round recall_all@10 | 59.2 | drops by more than 1.0 |
 | | SQL search p50 | 9.0 ms | rises by more than 50% and 5 ms |
 | | recall p95 | 61 ms | doubles |
+| Synthetic personal starter (20 conversations, 13 November 2026) | storage F1 | 88.7 | drops by more than 2.0 |
+| | retrieval F1 | 92.8 | drops by more than 2.0 |
+| | questions about a corrected fact answered without a stale version | 15.1 | drops by more than 1.0 |
+| | plans and guesses not committed | 100.0 | drops by more than 1.0 |
 | LoCoMo + enrich (T2) | round recall_all@10 | 66.0 | drops by more than 1.0 |
 | | session recall_all@5 | 79.6 | drops by more than 1.0 |
 | LoCoMo QA (T3) | accuracy, GPT-4o-mini | 83.7 (81.8–85.5) | drops by more than 1.5 |
@@ -331,7 +339,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 - [x] [G10 — Write pipeline v2: intake queue, candidates, classification, routing](#g10--write-pipeline-v2-intake-queue-candidates-classification-routing) (6 November 2026)
 - [x] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion) (13 November 2026)
 - [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2) (built 13 November 2026; latency still to confirm on a quiet machine)
-- [ ] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate)
+- [x] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate) (13 November 2026)
 - [ ] [G36 — Language packs: word lists as data, several languages at once](#g36--language-packs-word-lists-as-data-several-languages-at-once)
 - [ ] [G14 — Quality iteration I: weak types and tiered extraction](#g14--quality-iteration-i-weak-types-and-tiered-extraction)
 
@@ -1174,7 +1182,7 @@ which is named.
 
 #### G13 — Evaluation platform: synthetic timelines, own suites, regression gate
 
-- [ ] **Done**
+- [x] **Done** (13 November 2026)
 
 > `/goal Build the evaluation platform: a synthetic timeline generator with checkpointed ground truth (500 conversations to start), customer-defined suites runnable on demand and on every policy or model change, storage and retrieval F1, stale-fact and contamination metrics, and the regression gate that blocks a policy, model or engine change that degrades them. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -1183,11 +1191,68 @@ which is named.
 - **Scope:** **QUAL-03**, **QUAL-04**, **QUAL-05** (completed: gates policy and model changes too),
   **QUAL-11**, **QUAL-10** reproducibility with pinned models.
 - **Deliverables:**
-  - [ ] `memhouse bench synth` generator (personas, events, corrections, plans, distractors) with seed
-  - [ ] a suite format (YAML) and runner; per-template suite folders
-  - [ ] storage F1 and retrieval F1, stale-fact rate, contamination rate in reports
-  - [ ] the policy approval in G08 runs the gate before activation
+  - [x] `memhouse bench synth` generator (personas, events, corrections, plans, distractors) with seed
+  - [x] a suite format (YAML) and runner; per-template suite folders
+  - [x] storage F1 and retrieval F1, stale-fact rate, contamination rate in reports
+  - [x] the policy approval in G08 runs the gate before activation
 - **Done when:** a policy that disables corrections is blocked by the gate with a clear report.
+- **Result (2026-11-13):**
+  - **Built.** *The harness* (`memhouse-core/src/eval.rs`, QUAL-03): a suite is a list of
+    multi-session conversations; each turn says what should become of it (`commit`, `hold`,
+    `ignore`) and which `key` it sets, and each session ends with a checkpoint of questions.
+    `Engine::eval_replay` writes a suite through the real write path into a scratch tenant
+    that runs the policy under evaluation, compares the store with the truth at every
+    checkpoint, asks the questions through the real recall path, and erases the scratch
+    tenant. *Metrics* (QUAL-11): storage precision, recall and F1; retrieval precision (first
+    hit), recall (top k) and F1; the stale-fact rate; the contamination rate; each with a 95%
+    bootstrap interval over conversations. *The generator* (`memhouse bench synth`,
+    `memhouse-bench/src/synth.rs`): a world model of what is true of a subject writes facts,
+    corrections, plans carried out or dropped, guesses and small talk, for five profiles
+    (personal, support, coding, sales, success), deterministic from a seed with its own random
+    numbers. *Suites as files* (YAML, `memhouse bench run --suite <file or folder>`,
+    `--repeat` for QUAL-10), with starter suites per template in `bench/suites/`. *A tenant's
+    suites* (QUAL-04): `memhouse eval add | list | remove | run | runs | gate`, stored in
+    `mh_eval_suite`, every replay kept in `mh_eval_run` with its policy version, trigger and
+    engine fingerprint (schema version 8). *The gate* (QUAL-05): `policy_approve` replays the
+    tenant's suites under the running policy and under the proposed one and refuses the
+    approval (`409`, `policy.refuse` with reason `regression_gate`, the version left
+    `proposed`) when storage or retrieval F1 falls by more than 2 points or the stale-fact or
+    contamination rate rises by more than 1 (`[eval]`); `memhouse eval gate` does the same for
+    an engine or model change, against the last stored replay. To have a policy that turns
+    corrections off, a spec gained `[write_gate] corrections` (default true). API 1.7.0.
+    Docs: [evaluation.md](evaluation.md), [configuration.md](configuration.md#eval),
+    [policy.md](policy.md), [schema.md](schema.md), [benchmarks.md](benchmarks.md#synthetic-timeline-suites).
+  - **Done when.** The governance check `eval_gate` proposes a policy with
+    `corrections = false` for a tenant that has a suite: the approval is refused with
+    "regression gate failed … stale_rate 0.0 -> 100.0 (+100.0 points, limit 1.0)", audited, and
+    the version stays proposed; a harmless policy passes and is activated, with both replays
+    stored under their policy versions. `eval_harness` checks the scored counts of a controlled
+    suite and that nothing is left in the store; `eval_reproducible` replays a suite three
+    times with 100% of 158 records ending the same. Governance: 59 of 59.
+  - **The reference suite: 500 conversations** (seed 7, personal; 8,511 turns, 10,289 facts at
+    checkpoints, 7,196 questions): storage 76.5 / 99.7 / F1 86.6 [85.8–87.3], retrieval 81.9 /
+    99.5 / F1 89.9 [88.8–90.9], stale facts returned 76.1% [73.5–78.6], contamination 0.3%
+    (13 of 4,909). The five starter suites are in [benchmarks.md](benchmarks.md#synthetic-timeline-suites).
+  - **What the suites found.** Nothing that should be stored is lost and plans are held, but
+    most corrections do not supersede what they correct: three quarters of the questions about
+    a corrected fact still get a stale version in the top 5. The correction rule needs the two
+    records to be 0.8 similar as vectors, and ordinary correction sentences are not. The
+    public datasets have few explicit corrections, so they never showed it. Not tuned here
+    (the ordering principles keep tuning for G14); a box is added to G14 for it.
+  - **Guard: T1, $0.** Passed with `--skip-latency` (another process still loaded the machine, as
+    during G12, whose latency box stays open): governance 59 of 59; LongMemEval_S 91.3 / 94.2 /
+    84.8; LoCoMo 78.8 / 78.7 / 59.2; and the new guard run, the synthetic personal starter suite:
+    storage F1 88.7, retrieval F1 92.8, 15.1% of questions about a corrected fact answered
+    without a stale version, 100% of plans and guesses not committed. Those four values are
+    now baselines in `bench/baselines.json`.
+  - **Differs from the plan.** The gate runs on the suites a tenant has stored, so a tenant
+    without suites approves as before. A replay takes about two seconds per conversation, and
+    the approval waits for it. A model change is gated by a command (`memhouse eval gate`), not
+    automatically: the automatic check before a re-embedding cut-over is G25's shadow
+    comparison, which can call the same gate. REST routes and the console page for suites and
+    runs (the console half of QUAL-11) move to G20, which builds the console. The suites are
+    replayed with `remember`, as an agent writes; replaying them as ingested conversations with
+    enrichment is for G14, which needs it for extraction.
 - **Guard:** T1 + its own suites. **Depends on:** G12.
 
 #### G36 — Language packs: word lists as data, several languages at once
@@ -1278,6 +1343,7 @@ which is named.
   - [ ] preference-aware fact extraction and recall (the cause of the 80.0 → 66.7 drop after the premise check)
   - [ ] multi-session aggregation (counting, dedup across sessions) at fact level
   - [ ] results added to `docs/benchmarks.md`
+  - [ ] corrections supersede what they correct: the stale-fact rate on the synthetic suites (76% on the 500-conversation reference suite, found by G13) brought down, and the suites replayed as ingested conversations with enrichment (added from G13, 13 November 2026)
 - **Done when:** LongMemEval_S QA (T4, with approval) ≥ 86.0 with preference ≥ 80; LoCoMo QA (T3) ≥ 84.5; large-model calls ≤ 30% of writes.
 - **Guard:** T2 per change, T3 at the end. **Depends on:** G13, G36. **Milestone:** engine complete.
 
@@ -1371,6 +1437,7 @@ which is named.
 - **Scope:** **PROF-09**, **GOV-11**, **PROF-11**.
 - **Deliverables:**
   - [ ] console pages; every action audited; works on Lite and Standard
+  - [ ] evaluation in the console: REST routes for a tenant's suites and runs, and the quality metrics with their trend by policy version (the console half of QUAL-11, moved from G13, which stores the runs and has the `memhouse eval` commands)
   - [ ] session login instead of a key in `localStorage`, a Content-Security-Policy without inline script, and a CORS origin allow-list (threat model T3)
 - **Done when:** each PROF-09 action works and is audited on both profiles; a quarantined candidate can be rejected or rephrased and approved.
 - **Guard:** T1. **Depends on:** G19.
@@ -1461,7 +1528,7 @@ which is named.
   - [ ] consolidation job with a provenance-preserving summary and rollback
   - [ ] taxonomic memory in use: terms matched exactly in questions and offered to extraction (moved from G11, which stores taxonomic memory as candidates that only an administrator approves, MEM-03's acceptance test)
   - [x] `memhouse reembed` in place: staged columns, resumable backfill while serving, one-transaction cut-over, abort, old-model processes refused; governance check `reembed` (done early, 2 November 2026, at the user's request)
-  - [ ] re-embedding under synthetic load with zero recall errors, and the T1 guard on the new model before cut-over (shadow comparison)
+  - [ ] re-embedding under synthetic load with zero recall errors, and the T1 guard on the new model before cut-over (shadow comparison), with the tenant's evaluation suites gated too (`Engine::eval_gate_now`, from G13)
   - [ ] shadow mode and holdout configuration; value report
 - **Done when:** a re-embedding under synthetic load has zero recall errors and passes the guard before cut-over.
 - **Guard:** T2. **Depends on:** G24.
@@ -1668,7 +1735,7 @@ current code already meets it and the named goal re-verifies it; it isn't reopen
 | Core operations | CORE-01 G05 · CORE-02 G04/G10 · CORE-03 G05 · CORE-04 G05 · CORE-05 G05 · CORE-06 G04/G05 |
 | Memory types | MEM-01 G11 · MEM-02 G19 (storage and gate G11) · MEM-03 G25 (storage and gate G11) · MEM-04 G11 (strict session reads for every type: G37) · MEM-05 G11 · MEM-06 G25 |
 | Hybrid retrieval | HYB-01 G10 · HYB-02 G10 · HYB-03 G10 · HYB-04 G04 · HYB-05 G12 · HYB-06 G10 · HYB-07 G35 · HYB-08 G35 |
-| Quality | QUAL-01 G10 (done, verified) · QUAL-02 G10 · QUAL-03 G13 · QUAL-04 G13 · QUAL-05 G01/G13 · QUAL-06 G25 · QUAL-07 G07 · QUAL-08 G04 · QUAL-09 G05 · QUAL-10 G13 · QUAL-11 G13 |
+| Quality | QUAL-01 G10 (done, verified) · QUAL-02 G10 · QUAL-03 G13 · QUAL-04 G13 · QUAL-05 G01/G13 · QUAL-06 G25 · QUAL-07 G07 · QUAL-08 G04 · QUAL-09 G05 · QUAL-10 G13 · QUAL-11 G13 (console page G20) |
 | Policy | POL-01 G08 · POL-02 G24 · POL-03 G08 · POL-04 G08 · POL-05 G24 · POL-06 G24 · POL-07 G35 · POL-08 G08 |
 | Governance | GOV-01 G06 · GOV-02 G06/G27 · GOV-03 G08 · GOV-04 G07 · GOV-05 G22 (done, verified) · GOV-06 G22 · GOV-07 G22 · GOV-08 G06 · GOV-09 G22 · GOV-10 G22 · GOV-11 G20 · GOV-12 G22 · GOV-13 G06/G29 · GOV-14 G27 · GOV-15 G22 · GOV-16 G22 |
 | Access | ACC-01 G27 · ACC-02 G27 · ACC-03 G27 · ACC-04 G27 · ACC-05 G28 · ACC-06 G27 · ACC-07 G27 · ACC-08 G28 · ACC-09 G27 · ACC-10 G11 |

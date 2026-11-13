@@ -999,7 +999,11 @@ impl Engine {
                         m.metadata["duplicate_of"] = json!(dup);
                         it.duplicate_of = Some(dup);
                         it.note = Some(format!("near-duplicate of an existing memory (similarity {sim:.3})"));
-                    } else if comparable && m.status == MemoryStatus::Committed && class.is_some_and(|c| !matches!(c, Statement::Instruction)) {
+                    } else if comparable
+                        && policy.policy.write_gate.corrections
+                        && m.status == MemoryStatus::Committed
+                        && class.is_some_and(|c| !matches!(c, Statement::Instruction))
+                    {
                         // QUAL-01: a correction, or the same statement with a changed value,
                         // supersedes what it updates: the old version stays, superseded and linked.
                         for (old, sim) in near.iter().copied().filter(|(_, s)| *s >= icfg.correction_threshold) {

@@ -341,6 +341,31 @@ ALTER TABLE mh_intake ADD COLUMN IF NOT EXISTS embedder text;
 CREATE OR REPLACE TRIGGER mh_intake_embedder_guard BEFORE INSERT ON mh_intake FOR EACH ROW EXECUTE FUNCTION mh_memory_embedder_guard();
 "#;
 
+/// v8 (G13): a tenant's evaluation suites and the result of each replay, kept with the policy
+/// version it ran under (QUAL-04). Neither is memory: they are not exported.
+const SCHEMA_V8_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS mh_eval_suite (
+  tenant     text NOT NULL,
+  name       text NOT NULL,
+  hash       text NOT NULL,
+  suite      jsonb NOT NULL,
+  created_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant, name)
+);
+CREATE TABLE IF NOT EXISTS mh_eval_run (
+  id             uuid PRIMARY KEY,
+  tenant         text NOT NULL,
+  suite          text NOT NULL,
+  suite_hash     text NOT NULL,
+  policy_version text NOT NULL,
+  trigger        text NOT NULL,
+  run            jsonb NOT NULL,
+  created_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mh_eval_run_suite_idx ON mh_eval_run (tenant, suite, created_at DESC);
+"#;
+
 /// v7 (G11): grants between agents (INT-06), and an index for the links a promoted record keeps
 /// to its sources (MEM-05), so deleting a source finds what was promoted from it.
 const SCHEMA_V7_DDL: &str = r#"
@@ -1468,6 +1493,7 @@ impl Store for PgStore {
         sqlx::raw_sql(SCHEMA_V5_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V6_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V7_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V8_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -2395,6 +2421,8 @@ impl Store for PgStore {
         sqlx::query("DELETE FROM mh_intake WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_link WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_grant WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM mh_eval_suite WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM mh_eval_run WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_recall WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 RETURNING cache_key) DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key")
@@ -2728,6 +2756,68 @@ impl Store for PgStore {
         .execute(&self.pool)
         .await?
         .rows_affected())
+    }
+
+    async fn eval_suite_put(&self, st: &memhouse_core::eval::StoredSuite) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO mh_eval_suite (tenant, name, hash, suite, created_by, created_at) VALUES ($1,$2,$3,$4,$5,$6) \
+             ON CONFLICT (tenant, name) DO UPDATE SET hash = EXCLUDED.hash, suite = EXCLUDED.suite, created_by = EXCLUDED.created_by, created_at = EXCLUDED.created_at",
+        )
+        .bind(&st.tenant)
+        .bind(&st.name)
+        .bind(&st.hash)
+        .bind(serde_json::to_value(&st.suite)?)
+        .bind(&st.created_by)
+        .bind(st.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn eval_suites(&self, tenant: &str) -> anyhow::Result<Vec<memhouse_core::eval::StoredSuite>> {
+        let rows =
+            sqlx::query("SELECT tenant, name, hash, suite, created_by, created_at FROM mh_eval_suite WHERE tenant = $1 ORDER BY name").bind(tenant).fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|r| {
+                Ok(memhouse_core::eval::StoredSuite {
+                    tenant: r.try_get("tenant")?,
+                    name: r.try_get("name")?,
+                    hash: r.try_get("hash")?,
+                    suite: serde_json::from_value(r.try_get("suite")?)?,
+                    created_by: r.try_get("created_by")?,
+                    created_at: r.try_get("created_at")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn eval_suite_delete(&self, tenant: &str, name: &str) -> anyhow::Result<bool> {
+        Ok(sqlx::query("DELETE FROM mh_eval_suite WHERE tenant = $1 AND name = $2").bind(tenant).bind(name).execute(&self.pool).await?.rows_affected() > 0)
+    }
+
+    async fn eval_run_put(&self, r: &memhouse_core::eval::EvalRun) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO mh_eval_run (id, tenant, suite, suite_hash, policy_version, trigger, run, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(r.id)
+            .bind(&r.tenant)
+            .bind(&r.suite)
+            .bind(&r.suite_hash)
+            .bind(&r.policy_version)
+            .bind(r.trigger.as_str())
+            .bind(serde_json::to_value(r)?)
+            .bind(r.created_at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn eval_runs(&self, tenant: &str, suite: Option<&str>, limit: usize) -> anyhow::Result<Vec<memhouse_core::eval::EvalRun>> {
+        let rows = sqlx::query("SELECT run FROM mh_eval_run WHERE tenant = $1 AND ($2::text IS NULL OR suite = $2) ORDER BY created_at DESC, id DESC LIMIT $3")
+            .bind(tenant)
+            .bind(suite)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(|r| Ok(serde_json::from_value(r.try_get("run")?)?)).collect()
     }
 
     async fn grant_put(&self, g: &Grant, audit: &memhouse_core::intake::AuditEntry) -> anyhow::Result<()> {

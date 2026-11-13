@@ -53,6 +53,14 @@ path from 0.x data other than export and import.
   `markdown`, `xml`). API 1.6.0; `[memory] relevance_weight`, `confidence_weight`,
   `validity_weight` and `recall_dedup*` settings. The budget change for 1.5 clients is recorded in
   [docs/api-stability.md](docs/api-stability.md).
+- Evaluation platform: suites of scripted conversations with ground truth at checkpoints (YAML),
+  replayed through the real write and recall paths in a scratch tenant and scored for storage
+  and retrieval precision, recall and F1, the stale-fact rate and the contamination rate;
+  `memhouse bench synth` generates them from a seed for five profiles; `memhouse eval` stores a
+  tenant's suites and replays; the regression gate replays them before a policy is approved and
+  refuses one that degrades them (`[eval]` settings, `policy.gate` and `policy.refuse` audit
+  events); `[write_gate] corrections` in a policy spec. API 1.7.0, schema version 8
+  (`mh_eval_suite`, `mh_eval_run`). See [docs/evaluation.md](docs/evaluation.md).
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early
   (`memhouse recall ... | head`).

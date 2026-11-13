@@ -102,6 +102,11 @@ pub struct SpecWriteGate {
     /// Always on (security baseline); may be stated, never turned off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quarantine_injection: Option<bool>,
+    /// Whether a correction, or the same statement with a changed value, supersedes what it
+    /// updates (QUAL-01; the default). With `false` both versions stay current: for tenants that
+    /// keep every statement as it was made. The regression gate measures what that costs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrections: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -481,6 +486,13 @@ pub struct WriteGate {
     pub dedup_threshold: f32,
     pub max_content_chars: usize,
     pub quarantine_injection: bool,
+    /// Corrections and changed values supersede what they update (QUAL-01).
+    #[serde(default = "yes")]
+    pub corrections: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -684,7 +696,13 @@ fn governance(cfg: &Config, tenant: &str) -> CompiledBody {
         spec: None,
         memory_types: MemoryTypes { allowed: MemoryKind::ALL.to_vec() },
         types: TypePolicies::defaults(g.episodic_retention_days, cfg.memory.working_ttl_secs),
-        write_gate: WriteGate { admission: cfg.access.admission, dedup_threshold: cfg.memory.dedup_threshold, max_content_chars: g.max_content_chars, quarantine_injection: true },
+        write_gate: WriteGate {
+            admission: cfg.access.admission,
+            dedup_threshold: cfg.memory.dedup_threshold,
+            max_content_chars: g.max_content_chars,
+            quarantine_injection: true,
+            corrections: true,
+        },
         retention: Retention { episodic_days: g.episodic_retention_days, working_ttl_secs: cfg.memory.working_ttl_secs },
         redaction: Redaction { categories: ordered_categories(&redact) },
         recall: RecallRules { denied_labels: sorted(&g.denied_labels), audit_reads: g.audit_reads },
@@ -762,6 +780,9 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
                 );
             }
             b.write_gate.max_content_chars = n;
+        }
+        if let Some(c) = w.corrections {
+            b.write_gate.corrections = c;
         }
         if w.quarantine_injection == Some(false) {
             err("write_gate.quarantine_injection", "baseline", "the injection screen is part of the security baseline and can't be turned off (TR-CORE-05)".into());
@@ -1263,6 +1284,11 @@ impl Engine {
     /// governance (logged as an error: governance always wins). Recorded in `mh_policy` before
     /// any record can carry its version.
     pub async fn policy_for(&self, tenant: &str) -> anyhow::Result<Arc<CompiledPolicy>> {
+        if let Some((t, p)) = self.policy_pin.as_deref() {
+            if t == tenant {
+                return Ok(p.clone());
+            }
+        }
         if let Some(p) = self.policies.fresh(tenant) {
             return Ok(p);
         }
@@ -1344,6 +1370,15 @@ impl Engine {
             }
         };
         self.store.policy_put(&compiled.line()).await?;
+        // QUAL-05: a policy that degrades the tenant's suites is not promoted.
+        if let Some(report) = self.eval_gate_policy(tenant, Arc::new(compiled.clone())).await? {
+            let detail = json!({ "version": version, "compiled": compiled.version, "against": report.before_policy, "passed": report.passed, "findings": report.findings });
+            if !report.passed {
+                self.store.audit(approver, "policy.refuse", tenant, None, None, json!({ "version": version, "reason": "regression_gate", "gate": detail })).await?;
+                return Err(error::conflict(format!("policy v{version} is not approved: {}", report.text(false))));
+            }
+            self.store.audit(approver, "policy.gate", tenant, None, None, detail).await?;
+        }
         if !self.policy_source.approve(tenant, version, approver, &compiled.version).await? {
             return Err(error::conflict(format!("policy v{version} was approved meanwhile")));
         }

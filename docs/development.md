@@ -56,7 +56,7 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (56 checks); the API, identity, intake, schema, telemetry, policy, memory-type and packing checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (59 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing and evaluation checks are in `*_checks.rs` next to it |
 
 ## Build
 
@@ -139,7 +139,8 @@ memhouse bench guard --tier 2     # adds cached enrichment
 ```
 
 It runs the governance suite (every check must pass, and there must be at least as many checks as
-the baseline), LongMemEval_S on a 50-question sample, and LoCoMo, then prints a table of each
+the baseline), LongMemEval_S on a 50-question sample, LoCoMo, and the synthetic starter suite
+`bench/suites/personal` ([evaluation.md](evaluation.md)), then prints a table of each
 metric against its baseline and threshold (see
 [roadmap section 3](roadmap.md#3-the-benchmark-guard)). The
 report is also written to `bench-results/guard/`.

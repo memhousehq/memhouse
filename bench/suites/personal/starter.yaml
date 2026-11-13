@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Starter evaluation suite for the personal template: synthetic timelines with ground truth at
+# checkpoints (docs/evaluation.md). `memhouse bench run --suite bench/suites/personal` replays it;
+# `memhouse eval add bench/suites/personal/starter.yaml` makes it gate a tenant's policy changes.
+name: personal-starter
+description: 20 synthetic personal conversations (facts, corrections, plans carried out or dropped, guesses, small talk).
+generate: { profile: personal, seed: 7, conversations: 20 }

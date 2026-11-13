@@ -5,11 +5,12 @@ This is the data model every MemHouse store holds, independent of how a store la
 (TR-CORE-04). The Postgres store maps it to the tables at the end; the Lite store (G16) will map
 the same model to SQLite. Exports carry exactly this model ([Memory Format v2](memory-format.md)).
 
-Schema version **7** (`mh_meta.schema_version`). Version 1 to 6 databases upgrade in place on
+Schema version **8** (`mh_meta.schema_version`). Version 1 to 7 databases upgrade in place on
 start-up; see [Upgrading from v1](#upgrading-from-v1). Version 3 added the identity tables
 (principals, API keys, token signing keys), version 4 the recall explanations, version 5 the
-policy specs and their activations, version 6 the write pipeline's intake queue and version 7
-the grants between agents; none of them is memory, so none is exported. Version 7 also added the
+policy specs and their activations, version 6 the write pipeline's intake queue, version 7
+the grants between agents and version 8 the evaluation suites and their runs; none of them is
+memory, so none is exported. Version 7 also added the
 `taxonomic` kind and made a record's scope part of its deduplication key.
 
 ## Entities
@@ -172,6 +173,7 @@ key arrives with the intake queue (G10).
 | Recall explanations (v4, not exported) | `mh_recall` (id, tenant, subject, principal, acting user, time, the recall record as JSON); erased with the subject, tenant or user, purged after `explanation_retention_days` |
 | Policy specs (v5, not exported) | `mh_policy_spec` (tenant, version, spec as JSON, status `proposed` or `approved`, proposer, approver), `mh_policy_activation` (which version, or the default, runs from when, by whom; a trigger refuses a version that is not approved) |
 | Intake queue (v6, not exported) | `mh_intake` (the proposal's id, a `seq` for per-subject order, tenant, subject, record ids, writer, user, source and scope for erasure, `status` `pending`, `running`, `done` or `dead`, attempts, lease, the redacted proposal as JSON until it is stored, its outcome, error, embedder with the same guard trigger as `mh_memory`); erased with the subject or tenant, by user, agent or source, pruned after `intake.keep_done_secs` |
+| Evaluation (v8, not exported) | `mh_eval_suite` (tenant, name, hash, the suite as JSON, who added it) and `mh_eval_run` (id, tenant, suite, suite hash, policy version, trigger, the run as JSON: counts, metrics, per-conversation counts, record outcomes, engine fingerprint); erased with the tenant ([evaluation.md](evaluation.md)) |
 | Grants (v7, not exported) | `mh_grant` (id, tenant, grantor and grantee agents, subject pattern, kinds, who created it, expiry, revocation); erased with the tenant. v7 also adds two partial indexes on `mh_memory`: on `metadata -> 'promoted_from'` (what was promoted from a record) and on `(tenant, subject, scope_session)` (a session's records) |
 | Identity (v3, not exported) | `mh_principal` (kind, tenant, subjects, kinds, denied labels, org, team, `can_commit`, `act_as`), `mh_api_key` (sha256 of the secret, permissions, expiry, revocation), `mh_signing_key` (token signing secrets) |
 

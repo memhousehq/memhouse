@@ -101,6 +101,7 @@ partition = "author"          # a user's own preferences are stored with the use
 | `write_gate.dedup_threshold` | above 0.5, at most 1 | |
 | `write_gate.max_content_chars` | at least 1 | at most `[governance] max_content_chars` |
 | `write_gate.quarantine_injection` | `true` | can't be `false` (security baseline) |
+| `write_gate.corrections` | `true` (default), `false` | with `false` a correction or a changed value no longer supersedes what it updates: both versions stay current. For tenants that keep every statement as made; the [regression gate](evaluation.md#the-regression-gate) measures what it costs and refuses it for a tenant whose suites it degrades |
 | `retention.episodic_days` | days, 0 = keep | where governance purges: 1 to its days |
 | `retention.working_ttl_secs` | 1 second to 30 days | |
 | `types.<kind>.*` | per-type rules, [below](#per-type-sections) | a type's rules may be tightened, never loosened |

@@ -6,7 +6,7 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.6.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.7.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
 `forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
 (preview); 1.3 added the policy operations under `/v1/policies`; 1.4 made admission asynchronous
@@ -16,7 +16,8 @@ and added `include_candidates`, `exact`, `degraded`, `statement`, `route`, `queu
 `GET /v1/subjects/{subject}/preferences`, `/v1/grants`, `working` on a hit, `scope` in
 `/v1/whoami`, the `overridden` exclusion reason and the `grant:manage` permission); 1.6 added
 `render_format`, the `duplicate` exclusion reason, `features` on an explanation's returned records
-and the ranking fields of a compiled policy. Its contract is [`api/openapi.json`](../api/openapi.json), served at
+and the ranking fields of a compiled policy; 1.7 added `write_gate.corrections` to a policy spec
+and its compiled form. Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -84,6 +85,7 @@ here so clients are ready for them:
 | G11 (1.5) | A keyed preference (`structured.record_type = "preference"` with `attrs.key`) supersedes the same key in the same scope, and recall returns the one at the narrowest scope (user over team over org). A write deduplicates only against records of its own scope. | Nothing. |
 | G12 (1.6) | `token_budget` is a hard cap: the first hit is no longer returned when it alone exceeds the budget, and the `rendered` block counts against it too ([recorded exception](#recorded-exception-the-token-budget-is-a-hard-cap-16)). | Send a budget that fits at least one memory, and handle an empty `hits`. |
 | G12 (1.6) | Recall leaves out near-duplicates of a better-ranked hit (cosine 0.97 or text overlap 0.9 by default); they are listed in the explanation as `duplicate`. | Nothing; a policy with `[ranking] dedup = false` returns them. |
+| G13 (1.7) | Approving a policy version answers `409 conflict` when the tenant has evaluation suites and the version degrades them past the limits of `[eval]`; the version stays `proposed`. Tenants without suites are unaffected. | Read the report in the error message; fix the policy or the suite. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ### Recorded exception: session working memory (1.5)

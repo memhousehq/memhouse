@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Starter evaluation suite for the coding template: synthetic timelines with ground truth at
+# checkpoints (docs/evaluation.md). `memhouse bench run --suite bench/suites/coding` replays it;
+# `memhouse eval add bench/suites/coding/starter.yaml` makes it gate a tenant's policy changes.
+name: coding-starter
+description: 20 synthetic coding conversations (facts, corrections, plans carried out or dropped, guesses, small talk).
+generate: { profile: coding, seed: 7, conversations: 20 }

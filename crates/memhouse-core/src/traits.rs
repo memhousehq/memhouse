@@ -183,6 +183,27 @@ pub trait Store: Send + Sync {
         Ok(0)
     }
 
+    // Evaluation suites and runs (QUAL-04).
+    /// Store a tenant's suite, replacing one of the same name.
+    async fn eval_suite_put(&self, _s: &crate::eval::StoredSuite) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no evaluation suites")
+    }
+    /// A tenant's suites, by name.
+    async fn eval_suites(&self, _tenant: &str) -> anyhow::Result<Vec<crate::eval::StoredSuite>> {
+        Ok(vec![])
+    }
+    async fn eval_suite_delete(&self, _tenant: &str, _name: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+    /// Keep the result of a replay, with the policy version it ran under.
+    async fn eval_run_put(&self, _r: &crate::eval::EvalRun) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no evaluation runs")
+    }
+    /// A tenant's replays, newest first, of one suite or of all.
+    async fn eval_runs(&self, _tenant: &str, _suite: Option<&str>, _limit: usize) -> anyhow::Result<Vec<crate::eval::EvalRun>> {
+        Ok(vec![])
+    }
+
     // Grants between agents (INT-06).
     /// Store a grant and its audit event in one transaction: no grant is ever active unaudited.
     async fn grant_put(&self, _g: &Grant, _audit: &crate::intake::AuditEntry) -> anyhow::Result<()> {
