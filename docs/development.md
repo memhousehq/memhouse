@@ -123,6 +123,9 @@ cargo xtask install-hooks
 | commit-msg | requires a DCO `Signed-off-by` line (`git commit -s`, see [CONTRIBUTING.md](../CONTRIBUTING.md)) | — |
 | pre-push | `cargo xtask ci` | `git push --no-verify` |
 
+The hooks check the checkout git is working on: in a worktree they build `xtask` from that
+worktree and check its tree, not the main checkout's.
+
 `cargo xtask install-hooks --repo ../other-repo` installs the pre-commit and commit-msg hooks in
 another repository.
 

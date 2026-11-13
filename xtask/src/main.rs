@@ -263,13 +263,18 @@ fn install_hooks(root: &Path, args: &[String]) -> Result<(), String> {
     }
     let dir = repo.join(String::from_utf8_lossy(&out.stdout).trim());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // Hooks call back into this checkout, so they work for any repository.
-    let xtask = format!("cargo run --quiet --manifest-path \"{}/Cargo.toml\" --package xtask --", root.display());
+    // A hook runs in the checkout git is working on: the repository's own directory or one of
+    // its worktrees. The product's hooks build xtask from that checkout and check that tree, so
+    // a push from a worktree is checked as it is, not as the main checkout happens to be. Another
+    // repository's hooks call back into this checkout for xtask and scan their own tree.
+    let top = "\"$(git rev-parse --show-toplevel)\"";
+    let xtask = if product {
+        "cargo run --quiet --manifest-path \"$(git rev-parse --show-toplevel)/Cargo.toml\" --package xtask --".to_string()
+    } else {
+        format!("cargo run --quiet --manifest-path \"{}/Cargo.toml\" --package xtask --", root.display())
+    };
     let mut hooks = vec![
-        (
-            "pre-commit",
-            format!("# Secret scan of staged changes. Bypass only for a false positive: git commit --no-verify\nexec {xtask} secrets --repo \"{}\" --staged\n", repo.display()),
-        ),
+        ("pre-commit", format!("# Secret scan of staged changes. Bypass only for a false positive: git commit --no-verify\nexec {xtask} secrets --repo {top} --staged\n")),
         (
             "commit-msg",
             "# DCO: every commit is signed off (git commit -s). See CONTRIBUTING.md.\n\
