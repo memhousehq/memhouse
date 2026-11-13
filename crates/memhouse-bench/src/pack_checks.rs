@@ -230,9 +230,37 @@ async fn packing_dedup(e: &Engine) -> Outcome {
             }
         }
     }
-    // Each rule is proved on its own: the reversed twins can only go by cosine.
-    if by_cosine < topics.len() {
-        problems.push(format!("only {by_cosine} duplicates were removed by the cosine rule; each of the {} reversed twins must be", topics.len()));
+    // The cosine rule proved on its own, on one pair tracked by id: the same words in reverse
+    // order have the same vector and no shingle in common, so only the cosine rule can remove
+    // one of them.
+    let pair = "customer:dedup-cosine";
+    let (first, second) = ("Note: the gym locker code changed after the spring maintenance weekend", "Note: weekend maintenance spring the after changed code locker gym the");
+    let (a, b) = (e.remember(write(pair, first, MemoryKind::Semantic)).await?.id, e.remember(write(pair, second, MemoryKind::Document)).await?.id);
+    let vectors = e.embed_passages(&[first.to_string(), second.to_string()]).await?;
+    let comparable = vectors.len() == 2 && !vectors[0].is_empty() && vectors[0].len() == vectors[1].len() && vectors.iter().all(|v| v.iter().any(|x| *x != 0.0));
+    let (c, o) = (if comparable { cosine(&vectors[0], &vectors[1]) } else { 0.0 }, overlap(&shingles(first), &shingles(second)));
+    if !comparable || c < rank.dedup_cosine || o >= rank.dedup_overlap {
+        problems.push(format!(
+            "the cosine-only pair is not one: vectors comparable {comparable}, cosine {c:.3} (threshold {}), overlap {o:.3} (threshold {})",
+            rank.dedup_cosine, rank.dedup_overlap
+        ));
+    }
+    let r = e.recall(RecallRequest { subject: Some(pair.into()), query: "gym locker code maintenance".into(), k: Some(5), analyze: Some(false), ..Default::default() }).await?;
+    let cut = match r.recall_id {
+        Some(id) => e.recall_record(TENANT, id).await?.map(|x| x.cut).unwrap_or_default(),
+        None => vec![],
+    };
+    let kept: Vec<Uuid> = r.hits.iter().map(|h| h.memory.id).collect();
+    let gone: Vec<&ExcludedRecord> = cut.iter().filter(|x| x.reason == ExclusionReason::Duplicate).collect();
+    let by_rule = kept.len() == 1
+        && [a, b].contains(&kept[0])
+        && gone.len() == 1
+        && [a, b].contains(&gone[0].id)
+        && gone[0].id != kept[0]
+        && gone[0].detail.starts_with("cosine")
+        && gone[0].detail.contains(&kept[0].to_string());
+    if !by_rule {
+        problems.push(format!("the cosine-only pair: {} returned, excluded as duplicates: {:?}", kept.len(), gone.iter().map(|x| x.detail.as_str()).collect::<Vec<_>>()));
     }
     if removed == 0 {
         problems.push("no near-duplicate was removed: the corpus was not seeded as intended".into());
