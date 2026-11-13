@@ -61,6 +61,8 @@ path from 0.x data other than export and import.
   refuses one that degrades them (`[eval]` settings, `policy.gate` and `policy.refuse` audit
   events); `[write_gate] corrections` in a policy spec. API 1.7.0, schema version 8
   (`mh_eval_suite`, `mh_eval_run`). See [docs/evaluation.md](docs/evaluation.md).
+- Fixed: a correction containing a word with letters outside ASCII ("Kraków") made its intake
+  job panic and the write was set aside; the shared-word check now cuts between letters.
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early
   (`memhouse recall ... | head`).

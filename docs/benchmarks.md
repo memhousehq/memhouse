@@ -327,14 +327,14 @@ retrieval are precision / recall / **F1**, in percent.
 | `coding-starter` | 20 | 270 | 68.2 / 100.0 / **81.1** | 74.8 / 100.0 / **85.6** | 75.5 | 5.0 |
 | `sales-starter` | 20 | 279 | 69.9 / 100.0 / **82.3** | 67.0 / 100.0 / **80.3** | 85.8 | 0.0 |
 | `success-starter` | 20 | 280 | 72.1 / 100.0 / **83.8** | 64.3 / 100.0 / **78.3** | 74.3 | 0.0 |
-| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 76.5 / 99.7 / **86.6** [85.8–87.3] | 81.9 / 99.5 / **89.9** [88.8–90.9] | 76.1 [73.5–78.6] | 0.3 [0.1–0.5] |
+| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 76.6 / 100.0 / **86.7** [86.0–87.4] | 82.2 / 99.8 / **90.1** [89.1–91.1] | 76.2 [73.6–78.6] | 0.3 [0.1–0.5] |
 
-The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 10 minutes on a
+The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 7 minutes on a
 laptop that was busy with other work. Brackets are 95% bootstrap intervals over conversations.
 
 What they show:
 
-- **Nothing that should be stored is lost** (storage recall 99 to 100), and plans and guesses
+- **Nothing that should be stored is lost** (storage recall 100), and plans and guesses
   are held (contamination 0, except one phrasing in the coding profile).
 - **Corrections are the weak point.** Three quarters or more of the questions about a
   corrected fact still get a stale version among the top 5, and storage precision is 68 to 80

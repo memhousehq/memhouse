@@ -472,6 +472,15 @@ impl Engine {
                         ..Default::default()
                     })
                     .await?;
+                // A write still queued when its wait ran out (a loaded machine) would be judged
+                // by the next turn's gate as if it did not exist. Wait until it is settled: a
+                // replay that can't settle a write fails, it never scores a half-written state.
+                let mut tries = 0;
+                while self.intake.pending(tenant, r.id).await?.is_some() {
+                    tries += 1;
+                    anyhow::ensure!(tries <= 30, "evaluation: the write of conversation {} did not settle; its replay is not scored", c.id);
+                    self.settle_record(tenant, r.id).await?;
+                }
                 played.push(Played { expect: turn.expect, key: turn.key.clone(), id: r.id });
             }
             // The truth at this checkpoint: for each key, the newest commit turn is current and

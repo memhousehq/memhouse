@@ -1,6 +1,6 @@
 # MemHouse benchmark: synth-personal-7-500 — reference-500
 
-Run `20261113-105819-bd721e` · 2026-11-13 10:58 UTC · 616 s wall time
+Run `20261113-114135-c7eab4` · 2026-11-13 11:41 UTC · 409 s wall time
 
 | Setting | Value |
 |---|---|
@@ -16,16 +16,16 @@ Run `20261113-105819-bd721e` · 2026-11-13 10:58 UTC · 616 s wall time
 
 Synthetic personal timelines: 500 conversations from seed 7 (memhouse bench synth --profile personal --seed 7 --conversations 500).
 
-500 conversations, 8511 turns, replayed under policy `gov-3b434d14ac4d` in 615.5 s (suite hash `b2b767094c15`). Percentages with 95% bootstrap intervals over conversations.
+500 conversations, 8511 turns, replayed under policy `gov-3b434d14ac4d` in 409.4 s (suite hash `b2b767094c15`). Percentages with 95% bootstrap intervals over conversations.
 
 | | Precision | Recall | F1 | Scored |
 |---|---|---|---|---|
-| Storage | 76.5 [75.3–77.6] | 99.7 [99.4–99.9] | 86.6 [85.8–87.3] | 10289 facts at checkpoints, 13421 records |
-| Retrieval | 81.9 [80.3–83.6] | 99.5 [99.1–99.8] | 89.9 [88.8–90.9] | 7196 questions, top 5 |
+| Storage | 76.6 [75.4–77.7] | 100.0 [99.9–100.0] | 86.7 [86.0–87.4] | 10289 facts at checkpoints, 13437 records |
+| Retrieval | 82.2 [80.5–83.8] | 99.8 [99.6–99.9] | 90.1 [89.1–91.1] | 7196 questions, top 5 |
 
 | Rate | Value | Scored |
 |---|---|---|
-| Stale facts returned | 76.1 [73.5–78.6] | 2508 of 3296 questions about a corrected fact |
+| Stale facts returned | 76.2 [73.6–78.6] | 2511 of 3296 questions about a corrected fact |
 | Contamination | 0.3 [0.1–0.5] | 13 of 4909 plans and guesses committed |
 
 Storage precision: of the scored records committed and valid at a checkpoint, the part that are current facts. Storage recall: of the current facts, the part stored. Retrieval precision: the first hit is the current fact; recall: it is in the top 5.

@@ -1230,8 +1230,8 @@ which is named.
     suite and that nothing is left in the store; `eval_reproducible` replays a suite three
     times with 100% of 158 records ending the same. Governance: 59 of 59.
   - **The reference suite: 500 conversations** (seed 7, personal; 8,511 turns, 10,289 facts at
-    checkpoints, 7,196 questions): storage 76.5 / 99.7 / F1 86.6 [85.8–87.3], retrieval 81.9 /
-    99.5 / F1 89.9 [88.8–90.9], stale facts returned 76.1% [73.5–78.6], contamination 0.3%
+    checkpoints, 7,196 questions): storage 76.6 / 100.0 / F1 86.7 [86.0–87.4], retrieval 82.2 /
+    99.8 / F1 90.1 [89.1–91.1], stale facts returned 76.2% [73.6–78.6], contamination 0.3%
     (13 of 4,909). The five starter suites are in [benchmarks.md](benchmarks.md#synthetic-timeline-suites).
   - **What the suites found.** Nothing that should be stored is lost and plans are held, but
     most corrections do not supersede what they correct: three quarters of the questions about
@@ -1239,6 +1239,13 @@ which is named.
     records to be 0.8 similar as vectors, and ordinary correction sentences are not. The
     public datasets have few explicit corrections, so they never showed it. Not tuned here
     (the ordering principles keep tuning for G14); a box is added to G14 for it.
+  - **A bug the suites found, fixed here.** A correction whose text has a word with letters
+    outside ASCII ("Kraków") made the intake job panic: `classify::shares_content_word` cut the
+    word at a byte, inside a letter. The write was then retried and set aside, and a replay
+    scored differently from run to run depending on when it looked (the pre-push guard caught
+    that: 86.4 against 88.7 on the same suite). The word is now cut between letters, and a
+    replay waits for every write to settle and fails rather than score a half-written state.
+    Five replays of the starter suite then gave identical values.
   - **Guard: T1, $0.** Passed with `--skip-latency` (another process still loaded the machine, as
     during G12, whose latency box stays open): governance 59 of 59; LongMemEval_S 91.3 / 94.2 /
     84.8; LoCoMo 78.8 / 78.7 / 59.2; and the new guard run, the synthetic personal starter suite:
