@@ -1,0 +1,382 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Latvian language pack. Draft: it passes its test set (languages/tests/lv.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "lv"
+name = "Latvian"
+status = "draft"
+text_search = "simple"
+
+[detect]
+words = [
+  "un", "ir", "ka", "ar", "no", "uz", "par", "tas", "tā", "to", "es", "tu", "viņš", "viņa", "mēs",
+  "jūs", "viņi", "kas", "ko", "kur", "kad", "kā", "vai", "bet", "nav", "bija", "būs", "arī", "vēl",
+  "jau", "tikai", "ļoti", "pie", "pēc", "pirms", "līdz", "bez", "caur", "starp", "mans", "mana",
+  "tavs", "savs", "savu", "mūsu", "viņu", "šis", "šī", "šo", "tie", "tās", "lai", "ja", "tad",
+  "tāpēc", "kāpēc", "nē", "jā", "var", "gan", "pa", "tagad", "esmu", "lietotājs", "lietotāja",
+]
+letters = "āčēģīķļņšūž"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "varbūt",
+  "iespējams",
+  "laikam",
+  "droši vien",
+  "visticamāk",
+  "šķiet",
+  "izskatās",
+  "liekas",
+  "varētu",
+  "var būt",
+  "varēja būt",
+  "domāju",
+  "pieļauju",
+  "nojaušu",
+  "nezinu,? vai",
+  "neesmu pārliecināt[sa]",
+  "nav skaidrs,? vai",
+  "baum(?:as|o|u|ām)",
+  "runā,? ka",
+  "it kā",
+  "esot",
+  "acīmredzot",
+  "teorētiski",
+  "hipotētiski",
+  "apsver(?:u|am)?",
+  "prāto(?:ju|jam)?",
+  "domā(?:ju|jam)? par",
+  "ja (?:\\w+ ){0,5}(?:būtu|gribētu)",
+]
+# A change to something stored before. Past forms only for "moved" and "switched": the
+# infinitive appears in plans ("plāno pārcelties").
+correction = [
+  "patiesībā",
+  "īstenībā",
+  "labojums",
+  "precizējums",
+  "kļūdījos",
+  "vairs",
+  "tā vietā",
+  "nevis",
+  "mainīj(?:ās|ies|usies|ušies)",
+  "nomainīj(?:a|u|ām)",
+  "pārgāj(?:a|u|ām) (?:uz|pie)",
+  "pārcēl(?:ās|os|āmies)",
+  "pārcēl(?:ies|usies|ušies)",
+  "pārvāc(?:ās|os|āmies)",
+  "pārvāc(?:ies|ušies)",
+  "pārvākusies",
+  "izvāc(?:ās|os|āmies)",
+  "tagad",
+  "atjaunināt[sa] uz",
+  "aizstāt[sa] ar",
+  "agrāk",
+]
+# An intention not yet carried out. The future tense is one word in Latvian ("sāks"), so the
+# common verbs are listed with their future endings. The debitive ("jānopērk") is left out: it
+# also states standing rules ("vienmēr jābūt").
+plan = [
+  "plāno(?:ju|jam|jat)?",
+  "plānots",
+  "ieplānoj(?:a|u|is|usi|uši)",
+  "ieplānot[sa]",
+  "grib(?:u|i|am|at)?",
+  "gribētu",
+  "vēl(?:as|os|amies)",
+  "vēlētos",
+  "iecerēj(?:a|u|is|usi|uši)",
+  "nodom(?:s|u|ā)",
+  "gras(?:ās|os|āmies)",
+  "tais(?:ās|os|āmies)",
+  "gatavoj(?:as|os|amies)",
+  "cer(?:u|am)?",
+  "mērķis ir",
+  "(?:sāk|apmeklē|pārcel|brauk|aizbrauk|lido|ie|aizie|pārie|do|pirk|nopirk|parakstī|izlaidī|pievieno|piezvanī|nosūtī|tik|satik|piedalī|mēģinā|pamēģinā|rezervē|pagarinā|atcel|atjauninā|pārskatī|izlem|pabeig|beig|pārdo|atgriezī)(?:s|šu|si|sim|siet|sies|šos|simies)",
+  "(?:nākam|nākoš)\\w+ (?:nedēļ\\w+|mēne\\w+|gad\\w+|ceturksn\\w+|(?:pirm|otr|treš|ceturt|piekt|sest|svēt)dien\\w*|nedēļas nogal\\w+|pavasar\\w+|vasar\\w+|ruden\\w+|ziem\\w+)",
+  "nākamnedēļ",
+  "nākammēnes",
+  "nākamgad",
+  "nākošgad",
+  "rīt",
+  "parīt",
+  "drīzumā",
+  "vēlāk (?:šonedēļ|šomēnes|šogad|šajā nedēļā|šajā mēnesī|šajā gadā)",
+  "neaizmirsti(?:et)?",
+  "atceries",
+]
+preference = [
+  "priekšrok\\w+",
+  "patīk",
+  "nepatīk",
+  "patika",
+  "garšo",
+  "negaršo",
+  "mīl(?:u|am)?",
+  "dievin(?:a|u|ām)",
+  "ienīst(?:u|am)?",
+  "necieš(?:u|am)?",
+  "nevar(?:u|am)? ciest",
+  "mīļāk\\w+",
+  "iecienīt\\w+",
+  "labprāt(?:āk)?",
+  "alerģisk\\w+",
+  "alerģija pret",
+  "aizraujas ar",
+]
+# Only at the start of the statement. "ne…i" / "ne…iet" is the negative imperative ("nesūti").
+instruction_start = [
+  "vienmēr", "nekad", "nekādā gadījumā", "pārliecinies", "pārliecinieties", "lūdzu", "noteikti",
+  "obligāti", "izvairies", "izvairieties", "izmanto(?:jiet)?", "lieto(?:jiet)?", "nedrīkst",
+  "ne\\w{2,}(?:i|iet)",
+]
+instruction = [
+  "vienmēr (?:ir )?jā\\w+",
+  "jā\\w+ vienmēr",
+  "vienmēr (?:vajag|vajadzētu)",
+  "nekad (?:nedrīkst|nevajag|nevajadzētu)",
+  "(?:nedrīkst|nevajag|nevajadzētu) nekad",
+]
+# Past events: a dated reference or a completed action (third person, first person, plural).
+event = [
+  "vakar",
+  "aizvakar",
+  "pērn",
+  "pagājuš\\w+ (?:nedēļ\\w+|mēne\\w+|gad\\w+|nakt\\w+|(?:pirm|otr|treš|ceturt|piekt|sest|svēt)dien\\w*|pavasar\\w+|vasar\\w+|ruden\\w+|ziem\\w+)",
+  "pagājušonedēļ",
+  "pagājušogad",
+  "pirms \\d+ (?:dien\\w+|nedēļ\\w+|mēneš\\w+|gad\\w+)",
+  "pirms (?:\\w+ )?(?:dienas|dienām|nedēļas|nedēļām|mēneša|mēnešiem|gada|gadiem)",
+  "(?:nopirk|pirk|pārdev|apciemoj|apmeklēj|aizgāj|aizbrauc|adoptēj|sāk|uzsāk|pabeidz|beidz|absolvēj|parakstīj|pamet|satik|saņēm|izlaid|piegādāj|pagarināj|atcēl|samaksāj|rezervēj|pasūtīj|atgriez|ceļoj|uzvarēj|zaudēj|pazaudēj|iedev|paņēm|izdarīj|piedzim|nomir|svinēj|nosvinēj|atlaid|publicēj|nosūtīj|atjaunināj)(?:a|u|ām)",
+  "(?:dev|pievienoj|satik|tik|piedalīj|apprecēj|atgriez|iegādāj|ierad)(?:ās|os|āmies)",
+]
+
+[relations]
+# The person related to comes first, in the genitive: "Dana ir Jāņa vadītāja".
+relationship = [
+  "\\b(?:ir|bija|kļuva par) (?:tagad )?(?:\\w+ ){1,2}(?:vadītāj[sa]|priekšnie(?:ks|ce)|kolēģ(?:is|e)|sieva|vīrs|partner(?:is|e)|draugs|draudzene|brālis|māsa|māte|mamma|tēvs|tētis|dēls|meita|brālēns|māsīca|onkulis|tante|kaimiņ(?:š|iene)|mentor[se]|klient[se]|piegādātāj[sa]|īpašnie(?:ks|ce)|dibinātāj[sa]|direktor[se])\\b",
+  "\\b(?:atskaitās|ir pakļaut[sa]|strādā pie|strādā ar|strādā kopā ar|ir precēj\\w+ ar|ir saderināj\\w+ ar)\\b",
+]
+people = [
+  "māsa", "māsas", "māsu", "brālis", "brāļa", "brāli", "māte", "mātes", "mamma", "mammas", "tēvs",
+  "tēva", "tētis", "vecāki", "vecāku", "vecākus", "sieva", "sievas", "vīrs", "vīra", "partneris",
+  "partnere", "dēls", "dēla", "meita", "meitas", "bērns", "bērni", "bērnu", "draugs", "drauga",
+  "draudzene", "draugi", "kolēģis", "kolēģe", "priekšnieks", "priekšniece", "vadītājs", "vadītāja",
+  "komanda", "kaimiņš", "kaimiņiene", "brālēns", "māsīca", "onkulis", "tante", "vecmāmiņa",
+  "vectēvs", "suns", "suņa", "suni", "kaķis", "kaķa", "kaķi", "mājdzīvnieks",
+]
+
+[values]
+stop = [
+  "lietotājs", "lietotāja", "lietotājam", "lietotāju", "lietotāji", "kurš", "kura", "kuru", "bija",
+  "būtu", "tagad", "viņa", "viņš", "viņu", "viņi", "viņas", "savs", "savu", "savus", "mans", "mana",
+  "mūsu", "jūsu", "tavs", "tikai", "ļoti", "vēl", "arī", "citi", "cits", "vairāk", "pirms", "starp",
+  "līdz", "caur", "patiesībā", "īstenībā", "labojums", "precizējums", "vairs", "nevis", "vietā",
+  "agrāk", "pārcēlās", "pārgāja", "pašlaik", "šobrīd", "tāpēc", "kāpēc",
+]
+value_stop = [
+  "lietotājs", "lietotāja", "lietotājam", "lietotāju", "viņš", "viņa", "viņi", "viņu", "tas", "tā",
+  "to", "šis", "šī", "šo", "ar", "no", "uz", "par", "pie", "ir", "bija", "ieguva", "saņēma",
+  "tagad", "pašlaik", "šobrīd", "nesen", "kopā", "reizi", "reizes", "reižu", "un", "apmēram",
+  "aptuveni", "gandrīz", "virs", "zem", "vairāk", "mazāk", "nekā", "arī", "tikai", "vēl", "jau",
+  "jauns", "jauna", "jaunu", "savs", "sava", "savu", "mūsu", "mans", "mana", "pa", "pēc", "līdz",
+  "kā", "bet",
+]
+identifier = [
+  "rēķins", "rēķina", "rēķinu", "rēķinam", "pasūtījums", "pasūtījuma", "pasūtījumu",
+  "pasūtījumam", "pieteikums", "pieteikuma", "pieteikumu", "pieteikumam", "biļete", "biļetes",
+  "biļeti", "lieta", "lietas", "lietu", "konts", "konta", "kontu", "id", "nr", "numurs", "numura",
+  "numuru", "atsauce", "atsauces", "versija", "versijas", "versiju", "istaba", "istabas", "istabu",
+  "telpa", "telpas", "reiss", "reisa", "reisu", "galds", "galda", "vieta", "vietas", "vārti",
+  "perons", "maršruts", "maršruta", "autobuss", "autobusa", "līnija", "līnijas", "modelis",
+  "modeļa", "sērija", "prece", "preces", "sku", "kļūda", "kļūdas", "kļūdu", "dzīvoklis",
+  "dzīvokļa", "ēka", "ēkas", "stāvs", "kods", "koda", "kodu",
+]
+quantity = [
+  "nulle", "viens", "viena", "vienu", "divi", "divas", "divus", "trīs", "četri", "četras",
+  "četrus", "pieci", "piecas", "piecus", "seši", "sešas", "sešus", "septiņi", "septiņas",
+  "septiņus", "astoņi", "astoņas", "astoņus", "deviņi", "deviņas", "deviņus", "desmit",
+  "vienpadsmit", "divpadsmit", "trīspadsmit", "četrpadsmit", "piecpadsmit", "sešpadsmit",
+  "septiņpadsmit", "astoņpadsmit", "deviņpadsmit", "divdesmit", "trīsdesmit", "četrdesmit",
+  "piecdesmit", "sešdesmit", "septiņdesmit", "astoņdesmit", "deviņdesmit", "simts", "simt",
+  "tūkstotis", "tūkstoš", "miljons", "vienreiz", "divreiz", "trīsreiz", "puse", "pusi", "ducis",
+  "duci", "dubultā", "vairāki", "vairākas", "vairākus", "daži", "dažas", "dažus", "pāris",
+]
+# "1. marts", "3. jūnijā", "2027. gada 1. martā"
+dates = [
+  "\\b\\d{1,2}\\.\\s*(?:janvār|februār|mart|aprīl|maij|jūnij|jūlij|august|septembr|oktobr|novembr|decembr)\\w*",
+  "\\b\\d{1,2}\\.\\d{1,2}\\.(?:\\d{2,4})?",
+]
+
+[values.numbers]
+nulle = 0
+viens = 1
+viena = 1
+vienu = 1
+vienreiz = 1
+divi = 2
+divas = 2
+divus = 2
+divreiz = 2
+"dubultā" = 2
+"trīs" = 3
+"trīsreiz" = 3
+"četri" = 4
+"četras" = 4
+"četrus" = 4
+pieci = 5
+piecas = 5
+piecus = 5
+"seši" = 6
+"sešas" = 6
+"sešus" = 6
+"septiņi" = 7
+"septiņas" = 7
+"astoņi" = 8
+"astoņas" = 8
+"deviņi" = 9
+"deviņas" = 9
+desmit = 10
+vienpadsmit = 11
+divpadsmit = 12
+ducis = 12
+divdesmit = 20
+"trīsdesmit" = 30
+piecdesmit = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# Ordinals are written with a full stop ("3."); "3-ajā".
+number_suffixes = ["\\.", "-?(?:ais|ajā|ajam|ā|o|os)"]
+# "sestdien" (on Saturday) is the adverb; the other forms are the noun's cases.
+weekdays = [
+  ["pirmdien(?:a|ā|u|as)?"], ["otrdien(?:a|ā|u|as)?"], ["trešdien(?:a|ā|u|as)?"],
+  ["ceturtdien(?:a|ā|u|as)?"], ["piektdien(?:a|ā|u|as)?"], ["sestdien(?:a|ā|u|as)?"],
+  ["svētdien(?:a|ā|u|as)?"],
+]
+# The genitives "marta" and "maija" are left out: Marta and Maija are also women's names.
+months = [
+  ["janvār(?:is|ī|a|i)"], ["februār(?:is|ī|a|i)"], ["mart(?:s|ā|u)"], ["aprīl(?:is|ī|i)", "aprīļa"],
+  ["maij(?:s|ā|u)"], ["jūnij(?:s|ā|a|u)"], ["jūlij(?:s|ā|a|u)"], ["august(?:s|ā|a|u)"],
+  ["septembr(?:is|ī|a|i)"], ["oktobr(?:is|ī|a|i)"], ["novembr(?:is|ī|a|i)"], ["decembr(?:is|ī|a|i)"],
+]
+month_names = [
+  "janvāris", "janvārī", "janvāra", "februāris", "februārī", "februāra", "marts", "martā", "marta",
+  "aprīlis", "aprīlī", "aprīļa", "maijs", "maijā", "maija", "jūnijs", "jūnijā", "jūnija", "jūlijs",
+  "jūlijā", "jūlija", "augusts", "augustā", "augusta", "septembris", "septembrī", "septembra",
+  "oktobris", "oktobrī", "oktobra", "novembris", "novembrī", "novembra", "decembris", "decembrī",
+  "decembra",
+]
+# "pirms divām nedēļām"
+ago = ["pirms\\s+{num}\\s+{unit}"]
+# "pēdējā mēneša laikā", "pēdējo trīs mēnešu laikā", "pagājušajā nedēļā", "pagājušogad"; and
+# "pirms nedēļas" (a week ago, no number), read as the time since then. The first entry has no
+# {unit}: it keeps "pagājušajā nedēļas nogalē" (last weekend) from being read as "last week".
+past = [
+  "(?:(?:pagājuš|aizvadīt|iepriekšēj|pēdēj)\\w+|pirms)\\s+nedēļas\\s+nogal\\w+",
+  "(?:pēdēj\\w+|pagājuš\\w+|aizvadīt\\w+|iepriekšēj\\w+)\\s+(?:{num}\\s+)?{unit}",
+  "pagājušo{unit}",
+  "pirms\\s+{unit}",
+]
+# "pagājušajā mēnesī" and "pagājušajā gadā" are the previous calendar month and year.
+calendar = ["^(?:pagājuš|iepriekšēj)"]
+# "pagājušajā sestdienā", "šo sestdien", and the bare "sestdien" (on Saturday).
+last_weekday = ["(?:(?:pagājuš\\w+|aizvadīt\\w+|šo|šajā)\\s+)?{weekday}"]
+strictly_before = ["^(?:pagājuš|aizvadīt)"]
+last_weekend = ["(?:pagājuš\\w+|aizvadīt\\w+)\\s+(?:nedēļas\\s+nogal\\w+|brīvdien\\w+)"]
+yesterday = ["vakar"]
+# "šajā nedēļā", and the one-word adverbs "šonedēļ", "šomēnes", "šogad".
+this = ["(?:šajā|šī|šo|šai|šīs)\\s+{unit}", "šo{unit}"]
+# "februārī", "3. jūnijā"
+in_month = ["(?:{day}\\.\\s*)?{month}"]
+
+[time.numbers]
+vienas = 1
+viena = 1
+"divām" = 2
+diviem = 2
+divas = 2
+divi = 2
+divu = 2
+"pāris" = 2
+trim = 3
+"trīs" = 3
+triju = 3
+"dažām" = 3
+"dažiem" = 3
+"dažas" = 3
+"daži" = 3
+"dažu" = 3
+"četriem" = 4
+"četrām" = 4
+"četri" = 4
+"četras" = 4
+"četru" = 4
+pieciem = 5
+"piecām" = 5
+pieci = 5
+piecas = 5
+piecu = 5
+"sešiem" = 6
+"sešām" = 6
+"seši" = 6
+"sešas" = 6
+"sešu" = 6
+"septiņiem" = 7
+"septiņām" = 7
+"septiņi" = 7
+"septiņas" = 7
+"septiņu" = 7
+"astoņiem" = 8
+"astoņām" = 8
+"astoņi" = 8
+"astoņas" = 8
+"astoņu" = 8
+"deviņiem" = 9
+"deviņām" = 9
+"deviņi" = 9
+"deviņas" = 9
+"deviņu" = 9
+desmit = 10
+vienpadsmit = 11
+divpadsmit = 12
+
+# The bare stems serve the one-word adverbs ("šonedēļ", "šomēnes", "šogad", "pagājušogad").
+[time.units]
+day = ["dien(?:a|as|u|ām|ā)"]
+week = ["nedēļ(?:a|as|u|ām|ā)?"]
+month = ["mēnes(?:is|i|ī)?", "mēneš(?:a|i|u|iem|os)"]
+year = ["gad(?:s|a|u|i|iem|ā|os)?"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["vai"]
+or_not = ["vai ne", "vai nē"]
+between = ["starp\\s+(.+?)\\s+un\\s+(.+?)"]
+clause = ["kad", "pēc tam,? kad", "pirms tam,? kad", "kopš", "kamēr", "līdz"]
+lead = [
+  "ar\\s+ko", "kur(?:š|a|u|i|as|us|am|ai|ā|iem|ām|os|ās)?", "kād(?:s|a|u|i|as|us|am|ai|ā)", "kas",
+  "ko", "kam", "kā", "kad", "kāpēc", "cik\\s+(?:daudz|ilgi|bieži)?", "vai",
+]
+article = ["mans", "mana", "manu", "mani", "manas", "mūsu", "savs", "savu", "tas", "tā", "to", "tie", "tās", "šis", "šī", "šo"]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:ignorē(?:jiet|t)?|neņem(?:iet)? vērā|aizmirsti(?:et)?|neievēro(?:jiet)?|atmet(?:iet)?|pārraksti(?:et)?)\\b[^.\\n]{0,40}\\b(?:iepriekšēj\\w+|agrāk\\w+|līdzšinēj\\w+|augstāk\\w*|vis(?:us|as|u|iem|ām)|sav(?:us|as|u|iem|ām)|tav(?:us|as|u|iem|ām)|jūsu|jebkur\\w+)\\b[^.\\n]{0,25}\\b(?:norādījum\\w+|instrukcij\\w+|noteikum\\w+|vadlīnij\\w+|uzvedn\\w+|rīkojum\\w+|prompt\\w*)",
+]
+role_hijack = [
+  "\\b(?:tu tagad esi|tagad tu esi|jūs tagad esat|tagad jūs esat|(?:turpmāk|no š[īā] brīža|no šī mirkļa|no šodienas),? (?:tu|jūs|atbildi(?:et)?|runā(?:jiet)?|raksti(?:et)?|uzvedies|rīkojies)\\b|(?:uzvedies|uzvedieties|rīkojies|rīkojieties|izliecies|izliecieties) kā (?:\\w+ )?(?:neierobežot\\w+|necenzēt\\w+|bez ierobežojumiem)|izliecies,? ka tev nav (?:nekādu )?(?:noteikumu|ierobežojumu))",
+]
+system_prompt = [
+  "\\b(?:parādi(?:et)?|atklāj(?:iet)?|izdrukā(?:jiet)?|izvadi(?:et)?|pasaki(?:et)?|nosauc(?:iet)?|uzraksti(?:et)?|nopludini(?:et)?)\\b[^.\\n]{0,40}\\b(?:sistēmas (?:uzvedn\\w+|instrukcij\\w+|norādījum\\w+|ziņojum\\w+|prompt\\w*)|system prompt\\w*|slēpt\\w+ (?:instrukcij\\w+|norādījum\\w+)|izstrādātāja ziņojum\\w+)",
+]
+memory_directive = [
+  "\\b(?:vienmēr|kad vien|katru reizi|ikreiz|ik reizi)\\b[^.\\n]{0,60}\\b(?:(?:pār|no|aiz|iz)?sūti(?:et)?|pārsūtīt|nosūtīt|pārraidi(?:et)?|augšupielādē(?:jiet)?|pārskaiti(?:et)?|nodod(?:iet)?)\\b[^.\\n]{0,80}(?:https?://|@|\\b(?:kripto)?mak(?:s|u|am|ā)\\b|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:izpildi(?:et)?|izpildīt|palaid(?:iet)?|palaist|izsauc(?:iet)?|izsaukt)\\b[^.\\n]{0,30}\\b(?:komand\\w+|rīk\\w+|funkcij\\w+)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

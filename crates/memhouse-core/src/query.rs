@@ -2,10 +2,12 @@
 //! Query analysis without an LLM: time windows ("two weeks ago", "last Saturday", "in February",
 //! "the past three months") resolved against the time of the question, and sub-queries for
 //! questions that compare or combine several things ("A or B", "between A and B", quoted titles,
-//! "... when ..." clauses). Recall runs one extra probe restricted to the windows and fuses it with
+//! "... when ..." clauses). The phrases are data: they come from the language pack of the
+//! question ([`crate::lang`]). Recall runs one extra probe restricted to the windows and fuses it with
 //! the main query. Sub-query probes are available but off by default (`memory.subquery_weight`):
 //! on LongMemEval they found the second event no better than BM25 plus the user-only vector.
 
+use crate::lang::{Detected, Pack, Unit};
 use chrono::{DateTime, Datelike, Duration, Months, NaiveDate, TimeZone, Utc, Weekday};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -32,28 +34,45 @@ pub struct QueryPlan {
     pub exact: Vec<String>,
 }
 
-pub fn analyze(text: &str, now: DateTime<Utc>) -> QueryPlan {
-    QueryPlan { windows: time_windows(text, now), subqueries: subqueries(text), exact: vec![] }
+/// The plan of a question in one language.
+pub fn analyze(pack: &Pack, text: &str, now: DateTime<Utc>) -> QueryPlan {
+    QueryPlan { windows: time_windows(pack, text, now), subqueries: subqueries(pack, text), exact: vec![] }
 }
 
-static IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"#?\b[A-Za-z]{0,12}[-_/]?\d[\w\-/]*\b|\b[A-Za-z]+\d[\w\-]*\b").expect("valid regex"));
-static DATE_LIKE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^(?:(?:19|20)\d{2}(?:[-/]\d{1,2}){0,2}|\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?|\d{1,2}(?:st|nd|rd|th|am|pm|s)|\d+(?:k|m|h|d|y|kg|km|mi|min|ms|gb|mb|x|%))$")
-        .expect("valid regex")
-});
+/// The plan of a question whose language was detected (or not): the detected pack's reading,
+/// and, when the detection was not sure, the time windows any other enabled pack finds too.
+pub fn analyze_detected(lang: &Detected, text: &str, now: DateTime<Utc>) -> QueryPlan {
+    let mut plan = analyze(&lang.pack, text, now);
+    for other in &lang.others {
+        for w in time_windows(other, text, now) {
+            if !plan.windows.iter().any(|x| x.start == w.start && x.end == w.end) {
+                plan.windows.push(w);
+            }
+        }
+        if plan.subqueries.is_empty() {
+            plan.subqueries = subqueries(other, text);
+        }
+    }
+    plan
+}
+
+// Letters of any script: an identifier may start with "Č" or "Ж" as well as "A".
+static IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"#?\b\p{L}{0,12}[-_/]?\d[\w\-/]*\b|\b\p{L}+\d[\w\-]*\b").expect("valid regex"));
 
 /// Record identifiers in a question, for the exact probe: tokens with a digit that are not dates,
 /// years, times, ordinals, amounts with a unit, or short numbers (plain numbers need 5 digits).
-pub fn identifiers(text: &str) -> Vec<String> {
+pub fn identifiers(pack: &Pack, text: &str) -> Vec<String> {
     let mut out: Vec<String> = vec![];
     for m in IDENT.find_iter(text) {
         let t = m.as_str().trim_start_matches('#').trim_matches(|c: char| c == '-' || c == '/' || c == '_');
         let lower = t.to_lowercase();
-        let has_alpha = t.chars().any(|c| c.is_ascii_alphabetic());
+        let has_alpha = t.chars().any(|c| c.is_alphabetic());
         let digits = t.chars().filter(|c| c.is_ascii_digit()).count();
+        let len = t.chars().count();
         // A `#` marks an identifier however short ("#77"); otherwise at least three characters.
         let hashed = m.as_str().starts_with('#');
-        let ok = (t.len() >= 3 || (hashed && t.len() >= 2)) && !DATE_LIKE.is_match(&lower) && (has_alpha || digits >= 5 || hashed);
+        let date_like = pack.time.date_like.as_ref().is_some_and(|re| re.is_match(&lower));
+        let ok = (len >= 3 || (hashed && len >= 2)) && !date_like && (has_alpha || digits >= 5 || hashed);
         if ok && !out.contains(&lower) {
             out.push(lower);
         }
@@ -64,47 +83,25 @@ pub fn identifiers(text: &str) -> Vec<String> {
     out
 }
 
-const NUM: &str = r"(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a couple of|couple of|a few|few|several)";
-const UNIT: &str = r"(day|week|month|year)s?";
-const MONTHS: [&str; 12] = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
-
-fn num(s: &str) -> Option<i64> {
-    Some(match s {
-        "a" | "an" | "one" => 1,
-        "two" | "a couple of" | "couple of" => 2,
-        "three" | "a few" | "few" | "several" => 3,
-        "four" => 4,
-        "five" => 5,
-        "six" => 6,
-        "seven" => 7,
-        "eight" => 8,
-        "nine" => 9,
-        "ten" => 10,
-        "eleven" => 11,
-        "twelve" => 12,
-        d => d.parse().ok()?,
-    })
-}
-
 fn day_start(d: NaiveDate) -> DateTime<Utc> {
     Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap())
 }
 
-fn back(now: DateTime<Utc>, n: i64, unit: &str) -> DateTime<Utc> {
+fn back(now: DateTime<Utc>, n: i64, unit: Unit) -> DateTime<Utc> {
     match unit {
-        "day" => now - Duration::days(n),
-        "week" => now - Duration::weeks(n),
-        "month" => now.checked_sub_months(Months::new(n.clamp(0, 1200) as u32)).unwrap_or(now),
-        _ => now.checked_sub_months(Months::new((n * 12).clamp(0, 1200) as u32)).unwrap_or(now),
+        Unit::Day => now - Duration::days(n),
+        Unit::Week => now - Duration::weeks(n),
+        Unit::Month => now.checked_sub_months(Months::new(n.clamp(0, 1200) as u32)).unwrap_or(now),
+        Unit::Year => now.checked_sub_months(Months::new((n * 12).clamp(0, 1200) as u32)).unwrap_or(now),
     }
 }
 
-fn unit_days(unit: &str) -> f64 {
+fn unit_days(unit: Unit) -> f64 {
     match unit {
-        "day" => 1.0,
-        "week" => 7.0,
-        "month" => 30.0,
-        _ => 365.0,
+        Unit::Day => 1.0,
+        Unit::Week => 7.0,
+        Unit::Month => 30.0,
+        Unit::Year => 365.0,
     }
 }
 
@@ -119,34 +116,14 @@ fn month_range(month: u32, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>)
     (day_start(start), day_start(end))
 }
 
-fn weekday(s: &str) -> Option<Weekday> {
-    Some(match s {
-        "monday" => Weekday::Mon,
-        "tuesday" => Weekday::Tue,
-        "wednesday" => Weekday::Wed,
-        "thursday" => Weekday::Thu,
-        "friday" => Weekday::Fri,
-        "saturday" => Weekday::Sat,
-        _ => Weekday::Sun,
-    })
-}
-
-static AGO: Lazy<Regex> = Lazy::new(|| Regex::new(&format!(r"\b{NUM}\s+{UNIT}\s+ago\b")).unwrap());
-static PAST: Lazy<Regex> = Lazy::new(|| Regex::new(&format!(r"\b(?:past|last|previous)\s+(?:{NUM}\s+)?{UNIT}\b")).unwrap());
-static LAST_WEEKDAY: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(last|this past|this|on)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b").unwrap());
-static LAST_WEEKEND: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(last|this past) weekend\b").unwrap());
-static YESTERDAY: Lazy<Regex> = Lazy::new(|| Regex::new(r"\byesterday\b").unwrap());
-static THIS: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bthis\s+(week|month|year)\b").unwrap());
-static MONTH: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b(january|february|march|april|june|july|august|september|october|november|december|(?:in|during|of|since|early|mid|late|until|by|through)\s+may|may\s+\d)\b(?:\s+(\d{1,2})(?:st|nd|rd|th)?\b)?").unwrap()
-});
 static ISO_DATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b").unwrap());
 
-/// Time windows mentioned in `text`, relative to `now`. Windows are deliberately generous: people
-/// say "two weeks ago" for anything from ten days to three weeks, and the conversation that
-/// mentions an event usually comes a little after it.
-pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
+/// Time windows mentioned in `text`, relative to `now`, read with the time phrases of `pack`.
+/// Windows are deliberately generous: people say "two weeks ago" for anything from ten days to
+/// three weeks, and the conversation that mentions an event usually comes a little after it.
+pub fn time_windows(pack: &Pack, text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
     let t = text.to_lowercase();
+    let r = &pack.time;
     let mut out: Vec<TimeWindow> = vec![];
     let fmt = |d: NaiveDate| d.format("%Y-%m-%d (%a)").to_string();
     let mut push = |start: DateTime<Utc>, end: DateTime<Utc>, phrase: &str, meaning: String| {
@@ -154,74 +131,91 @@ pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
             out.push(TimeWindow { start, end, phrase: phrase.to_string(), meaning });
         }
     };
-    for c in AGO.captures_iter(&t) {
-        let (Some(n), unit) = (num(&c[1]), &c[2]) else { continue };
-        let centre = back(now, n, unit);
-        let slack_days = (n as f64 * unit_days(unit) * 0.35).max(if unit == "day" { 1.5 } else { 4.0 });
-        let slack = Duration::seconds((slack_days * 86_400.0) as i64);
-        push(centre - slack, (centre + slack).min(now + Duration::days(1)), &c[0], format!("about {}", fmt(centre.date_naive())));
+    if let Some(tp) = &r.ago {
+        for c in tp.re.captures_iter(&t) {
+            let (Some(n), Some(unit)) = (tp.get(&c, 'n').and_then(|s| r.num(s)), tp.get(&c, 'u').and_then(|s| r.unit(s))) else { continue };
+            let centre = back(now, n, unit);
+            let slack_days = (n as f64 * unit_days(unit) * 0.35).max(if unit == Unit::Day { 1.5 } else { 4.0 });
+            let slack = Duration::seconds((slack_days * 86_400.0) as i64);
+            push(centre - slack, (centre + slack).min(now + Duration::days(1)), &c[0], format!("about {}", fmt(centre.date_naive())));
+        }
     }
-    for c in PAST.captures_iter(&t) {
-        let unit = &c[2];
-        let n = c.get(1).and_then(|m| num(m.as_str())).unwrap_or(1);
-        // "last month" / "last year" also mean the previous calendar period.
-        if c.get(1).is_none() && c[0].starts_with("last") && (unit == "month" || unit == "year") {
+    if let Some(tp) = &r.past {
+        for c in tp.re.captures_iter(&t) {
+            let Some(unit) = tp.get(&c, 'u').and_then(|s| r.unit(s)) else { continue };
+            let stated = tp.get(&c, 'n');
+            let n = stated.and_then(|s| r.num(s)).unwrap_or(1);
+            // "last month" / "last year" also mean the previous calendar period.
+            if stated.is_none() && r.calendar.as_ref().is_some_and(|re| re.is_match(&c[0])) && (unit == Unit::Month || unit == Unit::Year) {
+                let today = now.date_naive();
+                let (s, e) = if unit == Unit::Month {
+                    let first = today.with_day(1).unwrap();
+                    (first.checked_sub_months(Months::new(1)).unwrap(), first)
+                } else {
+                    (NaiveDate::from_ymd_opt(today.year() - 1, 1, 1).unwrap(), NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap())
+                };
+                let pad = Duration::days(if unit == Unit::Month { 7 } else { 30 });
+                let meaning = if unit == Unit::Month { s.format("%B %Y").to_string() } else { s.format("%Y").to_string() };
+                push(day_start(s) - pad, (day_start(e) + pad).min(now + Duration::days(1)), &c[0], meaning);
+                continue;
+            }
+            let pad = Duration::days(if unit == Unit::Day { 1 } else { 3 });
+            push(back(now, n, unit) - pad, now + Duration::days(1), &c[0], format!("since {}", fmt(back(now, n, unit).date_naive())));
+        }
+    }
+    if let Some(tp) = &r.last_weekday {
+        for c in tp.re.captures_iter(&t) {
+            let Some(wd) = tp.get(&c, 'w').and_then(|s| r.weekday(s)) else { continue };
             let today = now.date_naive();
-            let (s, e) = if unit == "month" {
-                let first = today.with_day(1).unwrap();
-                (first.checked_sub_months(Months::new(1)).unwrap(), first)
-            } else {
-                (NaiveDate::from_ymd_opt(today.year() - 1, 1, 1).unwrap(), NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap())
+            let mut d = today - Duration::days(1);
+            while d.weekday() != wd {
+                d -= Duration::days(1);
+            }
+            // "this Saturday" asked on a Saturday may mean today.
+            let strictly_before = r.strictly_before.as_ref().is_some_and(|re| re.is_match(&c[0]));
+            if !strictly_before && today.weekday() == wd {
+                d = today;
+            }
+            push(day_start(d) - Duration::days(1), day_start(d) + Duration::days(3), &c[0], fmt(d));
+        }
+    }
+    if let Some(tp) = &r.last_weekend {
+        for c in tp.re.captures_iter(&t) {
+            let mut d = now.date_naive() - Duration::days(1);
+            while d.weekday() != Weekday::Sat {
+                d -= Duration::days(1);
+            }
+            push(day_start(d) - Duration::days(1), day_start(d) + Duration::days(4), &c[0], format!("{} to {}", fmt(d), fmt(d + Duration::days(1))));
+        }
+    }
+    if let Some(tp) = &r.yesterday {
+        for c in tp.re.captures_iter(&t) {
+            let d = now.date_naive() - Duration::days(1);
+            push(day_start(d) - Duration::days(1), now + Duration::days(1), &c[0], fmt(d));
+        }
+    }
+    if let Some(tp) = &r.this {
+        for c in tp.re.captures_iter(&t) {
+            let today = now.date_naive();
+            let s = match tp.get(&c, 'u').and_then(|s| r.unit(s)) {
+                Some(Unit::Week) => today - Duration::days(today.weekday().num_days_from_monday() as i64),
+                Some(Unit::Month) => today.with_day(1).unwrap(),
+                Some(Unit::Year) => NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap(),
+                // "this day" is today: no window worth a probe.
+                _ => continue,
             };
-            let pad = Duration::days(if unit == "month" { 7 } else { 30 });
-            let meaning = if unit == "month" { s.format("%B %Y").to_string() } else { s.format("%Y").to_string() };
-            push(day_start(s) - pad, (day_start(e) + pad).min(now + Duration::days(1)), &c[0], meaning);
-            continue;
+            push(day_start(s) - Duration::days(2), now + Duration::days(1), &c[0], format!("since {}", fmt(s)));
         }
-        let pad = Duration::days(if unit == "day" { 1 } else { 3 });
-        push(back(now, n, unit) - pad, now + Duration::days(1), &c[0], format!("since {}", fmt(back(now, n, unit).date_naive())));
     }
-    for c in LAST_WEEKDAY.captures_iter(&t) {
-        let wd = weekday(&c[2]).unwrap();
-        let today = now.date_naive();
-        let mut d = today - Duration::days(1);
-        while d.weekday() != wd {
-            d -= Duration::days(1);
-        }
-        // "this Saturday" asked on a Saturday may mean today.
-        if &c[1] != "last" && today.weekday() == wd {
-            d = today;
-        }
-        push(day_start(d) - Duration::days(1), day_start(d) + Duration::days(3), &c[0], fmt(d));
-    }
-    for c in LAST_WEEKEND.captures_iter(&t) {
-        let mut d = now.date_naive() - Duration::days(1);
-        while d.weekday() != Weekday::Sat {
-            d -= Duration::days(1);
-        }
-        push(day_start(d) - Duration::days(1), day_start(d) + Duration::days(4), &c[0], format!("{} to {}", fmt(d), fmt(d + Duration::days(1))));
-    }
-    for c in YESTERDAY.captures_iter(&t) {
-        let d = now.date_naive() - Duration::days(1);
-        push(day_start(d) - Duration::days(1), now + Duration::days(1), &c[0], fmt(d));
-    }
-    for c in THIS.captures_iter(&t) {
-        let today = now.date_naive();
-        let s = match &c[1] {
-            "week" => today - Duration::days(today.weekday().num_days_from_monday() as i64),
-            "month" => today.with_day(1).unwrap(),
-            _ => NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap(),
-        };
-        push(day_start(s) - Duration::days(2), now + Duration::days(1), &c[0], format!("since {}", fmt(s)));
-    }
-    for c in MONTH.captures_iter(&t) {
-        let word = c[1].split_whitespace().find(|w| MONTHS.contains(w)).unwrap_or("may");
-        let m = MONTHS.iter().position(|x| *x == word).unwrap() as u32 + 1;
-        let (s, e) = month_range(m, now);
-        let day = c.get(2).and_then(|d| d.as_str().parse::<u32>().ok()).filter(|d| (1..=31).contains(d));
-        match day.and_then(|d| NaiveDate::from_ymd_opt(s.year(), m, d)) {
-            Some(d) => push(day_start(d) - Duration::days(2), day_start(d) + Duration::days(5), &c[0], fmt(d)),
-            None => push(s - Duration::days(3), e + Duration::days(7), &c[0], s.format("%B %Y").to_string()),
+    if let Some(tp) = &r.in_month {
+        for c in tp.re.captures_iter(&t) {
+            let Some(m) = tp.get(&c, 'm').and_then(|s| r.month(s)) else { continue };
+            let (s, e) = month_range(m, now);
+            let day = tp.get(&c, 'd').and_then(|d| d.parse::<u32>().ok()).filter(|d| (1..=31).contains(d));
+            match day.and_then(|d| NaiveDate::from_ymd_opt(s.year(), m, d)) {
+                Some(d) => push(day_start(d) - Duration::days(2), day_start(d) + Duration::days(5), &c[0], fmt(d)),
+                None => push(s - Duration::days(3), e + Duration::days(7), &c[0], s.format("%B %Y").to_string()),
+            }
         }
     }
     for c in ISO_DATE.captures_iter(&t) {
@@ -232,16 +226,14 @@ pub fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
     out
 }
 
-static QUOTED: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:^|[\s(])['"‘“]([^'"‘’“”]{3,80})['"’”](?:[\s,.?!:;)]|$)"#).unwrap());
-static BETWEEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bbetween\s+(.+?)\s+and\s+(.+?)\s*(?:[?!]|\.\s*$|$)").unwrap());
-static CLAUSE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\s+(?:when|before|after|since|while|until)\s+").unwrap());
-static LEAD: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^(?:which|what|who|whom|whose|when|where|how\s+(?:many\s+\w+|much|long|old|often)?|did|do|does|was|were|is|are|had|have|has)\b\s*").unwrap());
-static ARTICLE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)^(?:the|a|an|my|our|that|those)\s+").unwrap());
+static QUOTED: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?:^|[\s(])['"‘“„«]([^'"‘’“”„«»]{3,80})['"’”“»](?:[\s,.?!:;)]|$)"#).unwrap());
 
-fn clean(s: &str) -> String {
+fn clean(pack: &Pack, s: &str) -> String {
     let s = s.trim().trim_matches(|c: char| c == '?' || c == '.' || c == '!' || c == ',' || c.is_whitespace());
-    ARTICLE.replace(s, "").trim().to_string()
+    match &pack.query.article {
+        Some(re) => re.replace(s, "").trim().to_string(),
+        None => s.to_string(),
+    }
 }
 
 fn words(s: &str) -> usize {
@@ -249,47 +241,61 @@ fn words(s: &str) -> usize {
 }
 
 /// Sub-queries for questions about several things at once. Empty for ordinary questions.
-pub fn subqueries(text: &str) -> Vec<String> {
+pub fn subqueries(pack: &Pack, text: &str) -> Vec<String> {
+    let r = &pack.query;
     let mut out: Vec<String> = vec![];
     let mut push = |s: String| {
         if words(&s) >= 1 && s.len() >= 3 && !out.iter().any(|o| o.eq_ignore_ascii_case(&s)) && out.len() < 4 {
             out.push(s);
         }
     };
+    let lead = |s: &str| match &r.lead {
+        Some(re) => re.replace(s, "").to_string(),
+        None => s.to_string(),
+    };
+    let alternatives = |s: &str| -> Vec<String> {
+        match &r.or {
+            Some(re) => re.split(s).map(String::from).collect(),
+            None => vec![s.to_string()],
+        }
+    };
     let q = text.trim();
     for c in QUOTED.captures_iter(q) {
         push(c[1].trim().to_string());
     }
+    let has_or = r.or.as_ref().is_some_and(|re| re.is_match(q));
+    let or_not = r.or_not.iter().any(|p| q.contains(&format!(" {p}")));
     // "Which X did I do first, the A or the B?"
     if let Some((head, tail)) = q.rsplit_once(',') {
-        let alts: Vec<&str> = tail.split(" or ").collect();
+        let alts = alternatives(tail);
         if alts.len() >= 2 {
-            let head = LEAD.replace(head.trim(), "").to_string();
+            let head = lead(head.trim());
             for a in alts {
-                let a = clean(a);
+                let a = clean(pack, &a);
                 if !a.is_empty() {
                     push(format!("{head} {a}"));
                 }
             }
         }
-    } else if q.contains(" or ") && !q.contains(" or not") {
+    } else if has_or && !or_not {
         // "Did I buy the A or the B first?"
-        let body = LEAD.replace(q, "").to_string();
-        let parts: Vec<&str> = body.split(" or ").collect();
-        if parts.len() == 2 && words(parts[0]) <= 12 && words(parts[1]) <= 12 {
-            push(clean(parts[0]));
-            push(clean(parts[1]));
+        let parts = alternatives(&lead(q));
+        if parts.len() == 2 && words(&parts[0]) <= 12 && words(&parts[1]) <= 12 {
+            push(clean(pack, &parts[0]));
+            push(clean(pack, &parts[1]));
         }
     }
-    if let Some(c) = BETWEEN.captures(q) {
-        push(clean(&c[1]));
-        push(clean(&c[2]));
+    if let Some(c) = r.between.iter().find_map(|re| re.captures(q)) {
+        push(clean(pack, &c[1]));
+        push(clean(pack, &c[2]));
     }
     // "How long had I been a member of X when I attended the meetup?"
-    let parts: Vec<&str> = CLAUSE.split(q).collect();
-    if parts.len() == 2 && words(parts[0]) >= 3 && words(parts[1]) >= 3 {
-        push(clean(&LEAD.replace(parts[0], "")));
-        push(clean(parts[1]));
+    if let Some(clause) = &r.clause {
+        let parts: Vec<&str> = clause.split(q).collect();
+        if parts.len() == 2 && words(parts[0]) >= 3 && words(parts[1]) >= 3 {
+            push(clean(pack, &lead(parts[0])));
+            push(clean(pack, parts[1]));
+        }
     }
     out
 }
@@ -297,6 +303,22 @@ pub fn subqueries(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn en() -> std::sync::Arc<Pack> {
+        crate::lang::Languages::english().default_pack().clone()
+    }
+
+    fn identifiers(text: &str) -> Vec<String> {
+        super::identifiers(&en(), text)
+    }
+
+    fn time_windows(text: &str, now: DateTime<Utc>) -> Vec<TimeWindow> {
+        super::time_windows(&en(), text, now)
+    }
+
+    fn subqueries(text: &str) -> Vec<String> {
+        super::subqueries(&en(), text)
+    }
 
     #[test]
     fn finds_record_identifiers_not_dates() {

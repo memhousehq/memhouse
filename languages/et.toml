@@ -1,0 +1,378 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Estonian language pack. Draft: it passes its test set (languages/tests/et.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+# Estonian inflects by suffix: markers are stems with a bounded class of endings, and the time
+# templates take the unit, weekday and month in the case the phrase needs ("kaks nädalat tagasi",
+# "eelmisel kuul", "laupäeval", "veebruaris"). Postgres has no Estonian stemmer: text search is
+# "simple".
+format = 1
+language = "et"
+name = "Estonian"
+status = "draft"
+text_search = "simple"
+
+[detect]
+words = [
+  "ja", "on", "ei", "et", "kui", "ka", "see", "ta", "ma", "sa", "me", "te", "nad", "mis", "kes",
+  "kus", "millal", "miks", "kuidas", "või", "aga", "ning", "oli", "ole", "olen", "oled", "olid",
+  "selle", "tema", "minu", "sinu", "meie", "nende", "mida", "mille", "kas", "siis", "veel", "juba",
+  "nüüd", "ainult", "väga", "nagu", "sest", "kuid", "vaid", "koos", "ilma", "pärast", "enne",
+  "kuni", "üle", "kohta", "oma", "seda", "need", "neid", "mul", "tal", "pole", "kasutaja",
+  "kasutajal",
+]
+letters = "äöõüšž"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# "võib" alone (may, is allowed to) is left out: only "võib-olla" and "võib juhtuda" are hedges.
+speculation = [
+  "võib[- ]olla",
+  "võib juhtuda",
+  "võimalik,? et",
+  "vist",
+  "vististi",
+  "ilmselt",
+  "tõenäoliselt",
+  "arvatavasti",
+  "oletatavasti",
+  "eeldatavasti",
+  "küllap",
+  "arvan",
+  "ma usun",
+  "usun,? et",
+  "kahtlustan",
+  "ma pakun",
+  "mulle tundub",
+  "tundub,? et",
+  "paistab,? et",
+  "näib,? et",
+  "(?:ei ole|pole) kindel",
+  "ei tea,? kas",
+  "kuuluju(?:tt|tu|tud|ttu|ttude|tte)",
+  "kuuldavasti",
+  "kuulu järgi",
+  "väidetavalt",
+  "nähtavasti",
+  "hüpoteetiliselt",
+  "teoreetiliselt",
+  "kaalu(?:b|vad|n|me) (?:\\w+ ){0,3}\\w+mist",
+  "mõtle(?:b|vad|n|me) (?:\\w+ ){0,3}\\w+mise(?:le|st)",
+  "kui (?:\\w+ ){0,4}(?:oleks|saaks|võiks|peaks|tahaks|läheks|teeks|tuleks)(?:in|id|ime|ite)?",
+]
+# A change to something stored before.
+correction = [
+  "tegelikult",
+  "õigupoolest",
+  "parandus",
+  "täpsustus",
+  "eksisin",
+  "(?:ei|pole|ega) (?:\\w+ ){0,3}enam",
+  "enam (?:ei|pole)",
+  "asemel",
+  "on muutunud",
+  "muutus",
+  "muutusid",
+  "muutis",
+  "vaheta(?:s|sid|nud)",
+  "läks(?:id)? üle",
+  "üle läinud",
+  "läinud üle",
+  "koli(?:s|sid|sin|sime|nud)",
+  "nüüd",
+  "nüüdsest",
+  "praeguseks",
+  "vahepeal",
+  "uuendatud",
+  "asendatud",
+  "asendati",
+  "varem",
+  "varemalt",
+  "vanasti",
+  "enne (?:elas|töötas|oli|kasutas)",
+]
+# An intention not yet carried out.
+plan = [
+  "plaani(?:b|vad|n|me|s|sid)",
+  "plaanis",
+  "kavatse(?:b|vad|n|me|s|sid)",
+  "kavas",
+  "kavatsus",
+  "taha(?:b|vad|n|me)",
+  "tahaks(?:in|id|ime)?",
+  "soovi(?:b|vad|n|me)",
+  "sooviks(?:in|id|ime)?",
+  "looda(?:b|vad|n|me)",
+  "hakka(?:b|vad|n|me)",
+  "eesmärk on",
+  "järgmi(?:sel|ses|se|ne) (?:nädalal|nädala|nädal|kuul|kuu|aastal|aasta|kvartalis|kvartal|esmaspäeval|teisipäeval|kolmapäeval|neljapäeval|reedel|laupäeval|pühapäeval|nädalavahetusel|kevadel|suvel|sügisel|talvel)",
+  "tuleva(?:l)? (?:nädalal|nädala|kuul|kuu|aastal|aasta|esmaspäeval|teisipäeval|kolmapäeval|neljapäeval|reedel|laupäeval|pühapäeval|nädalavahetusel)",
+  "homme",
+  "ülehomme",
+  "hiljem (?:sel nädalal|sel kuul|sel aastal)",
+  "lähiajal",
+  "(?:peab|peavad|tuleb) veel",
+  "on vaja",
+  "vaja on",
+  "pea(?:ge)? meeles",
+  "ära unusta",
+  "ärge unustage",
+]
+preference = [
+  "eelista(?:b|vad|n|me|s|sid)",
+  "eelistus\\w*",
+  "meeldi(?:b|vad|s|sid)",
+  "armasta(?:b|vad|n|me)",
+  "naudi(?:b|vad|n|me)",
+  "vihka(?:b|vad|n|me)",
+  "ei (?:talu|salli|kannata|seedi)",
+  "lemmik\\w*",
+  "pigem",
+  "meelsasti",
+  "kõige meelsamini",
+  "allergili(?:ne|sed)",
+]
+# Only at the start of the statement.
+instruction_start = [
+  "alati", "mitte kunagi", "ära", "ärge", "palun", "veendu(?:ge)?", "hoolitse(?:ge)?", "väldi",
+  "vältige", "kasuta(?:ge)?", "käivita(?:ge)?", "jälgi(?:ge)?", "kontrolli(?:ge)?", "eelista(?:ge)?",
+]
+instruction = [
+  "(?:peab|peavad|tuleb) alati",
+  "alati (?:peab|peavad|tuleb)",
+  "ei (?:tohi|või) (?:mitte )?kunagi",
+  "kunagi ei (?:tohi|või)",
+]
+# Past events: a dated reference or a completed action.
+event = [
+  "eile",
+  "üleeile",
+  "(?:eelmi(?:sel|ses|ne)|möödunud|läinud) (?:nädalal|kuul|aastal|ööl|nädalavahetusel|esmaspäeval|teisipäeval|kolmapäeval|neljapäeval|reedel|laupäeval|pühapäeval|kevadel|suvel|sügisel|talvel)",
+  "\\d+ (?:päeva|nädalat|kuud|aastat) tagasi",
+  "(?:paar|kaks|kolm|neli|viis|kuus|mõni|mitu) (?:päeva|nädalat|kuud|aastat) tagasi",
+  "(?:päev|nädal|kuu|aasta) tagasi",
+  "ost(?:is|sid|sin|sime|nud)",
+  "müü(?:s|sid|sin|sime|nud)",
+  "külasta(?:s|sid|sin|sime|nud)",
+  "käi(?:s|sid|sin|sime|nud)",
+  "läks(?:id|in|ime)?",
+  "läinud",
+  "adopteeri(?:s|sid|sin|sime|nud)",
+  "võt(?:tis|sid|sin|sime|nud)",
+  "alusta(?:s|sid|sin|sime|nud)",
+  "lõpeta(?:s|sid|sin|sime|nud)",
+  "allkirjasta(?:s|sid|sin|sime|nud)",
+  "liitu(?:s|sid|sin|sime|nud)",
+  "lahku(?:s|sid|sin|sime|nud)",
+  "kohtu(?:s|sid|sin|sime|nud)",
+  "osale(?:s|sid|sin|sime|nud)",
+  "abiellu(?:s|sid|sin|sime|nud)",
+  "sai(?:d|n|me)?",
+  "saanud",
+  "and(?:is|sid|sin|sime|nud)",
+  "teg(?:i|id|in|ime)",
+  "teinud",
+  "tarni(?:s|sid|nud)",
+  "pikenda(?:s|sid|sin|sime|nud)",
+  "tühista(?:s|sid|sin|sime|nud)",
+  "maks(?:is|id|in|ime|nud)",
+  "broneeri(?:s|sid|sin|sime|nud)",
+  "telli(?:s|sid|sin|sime|nud)",
+  "tagasta(?:s|sid|sin|sime|nud)",
+  "reisi(?:s|sid|sin|sime|nud)",
+  "sõit(?:is|sid|sin|sime|nud)",
+  "võit(?:is|sid|sin|sime|nud)",
+  "kaota(?:s|sid|sin|sime|nud)",
+  "sündi(?:s|sid|nud)",
+  "sur(?:i|id|nud)",
+  "tähista(?:s|sid|sin|sime|nud)",
+  "palka(?:s|sid|sin|sime|nud)",
+  "vallanda(?:s|sid|ti|tud)",
+  "jäi(?:d)? pensionile",
+  "soeta(?:s|sid|sin|sime|nud)",
+  "uuenda(?:s|sid|sin|sime|nud)",
+  "avalda(?:s|sid|sin|sime|nud)",
+  # The impersonal past, verb by verb ("leping allkirjastati").
+  "(?:osteti|müüdi|allkirjastati|avaldati|tarniti|tühistati|pikendati|broneeriti|telliti|tagastati|lõpetati|alustati|uuendati|maksti|tehti|anti|võeti|palgati|asutati)",
+]
+
+[relations]
+# The possessor comes first, in the genitive (which has no ending of its own): "Dana on Bobi juht".
+relationship = [
+  "\\b(?:on|oli|olid|sai) (?:nüüd )?\\p{L}+[aeiouõäöü] (?:uus )?(?:juht|ülemus|kolleeg|töökaaslane|naine|abikaasa|mees|elukaaslane|partner|tüdruksõber|poiss-sõber|vend|õde|ema|isa|poeg|tütar|sõber|nõbu|onu|tädi|naaber|mentor|klient|tarnija|omanik|asutaja|tegevjuht|kontaktisik|sponsor)\\b",
+  "\\b(?:allub \\p{L}+|töötab \\p{L}+ (?:heaks|juures|alluvuses)|on abielus|on kihlatud|on sugulane)\\b",
+]
+people = [
+  "õde", "õe", "vend", "venna", "ema", "isa", "vanem", "vanemad", "naine", "naise", "abikaasa",
+  "mees", "mehe", "elukaaslane", "partner", "poeg", "poja", "tütar", "tütre", "laps", "lapse",
+  "lapsed", "sõber", "sõbra", "sõbrad", "sõbranna", "kolleeg", "töökaaslane", "ülemus", "juht",
+  "meeskond", "tiim", "naaber", "nõbu", "onu", "tädi", "vanaema", "vanaisa", "tüdruksõber",
+  "poiss-sõber", "koer", "koera", "kass", "kassi", "lemmikloom",
+]
+
+[values]
+stop = [
+  "kasutaja", "kasutajal", "kasutajale", "kasutajat", "selle", "seda", "need", "neid", "koos",
+  "olid", "olnud", "olema", "nende", "neil", "tema", "temal", "seal", "siin", "siis", "millal",
+  "mille", "mida", "milline", "samuti", "ainult", "väga", "mõned", "rohkem", "enamik", "teised",
+  "teie", "meie", "sinu", "minu", "enam", "tegelikult", "asemel", "kolis", "kolinud", "vahetas",
+  "muutis", "muutus", "uuendatud", "varem", "nüüd", "praegu", "parandus", "kuid", "sest", "nagu",
+  "pole",
+]
+value_stop = [
+  "kasutaja", "kasutajal", "kasutajale", "ta", "tema", "tal", "nad", "nende", "neil", "see",
+  "selle", "seda", "need", "koos", "on", "oli", "olid", "olnud", "sai", "saab", "nüüd", "praegu",
+  "hiljuti", "äsja", "kokku", "korda", "kord", "aeg", "ja", "ning", "umbes", "ligikaudu",
+  "peaaegu", "üle", "alla", "rohkem", "kui", "ka", "ainult", "veel", "juba", "uus", "uue", "uut",
+  "oma", "meie", "sinu", "minu", "ei", "et",
+]
+identifier = [
+  "arve", "arvega", "arvele", "tellimus", "tellimuse", "tellimusega", "pilet", "pileti",
+  "pöördumine", "pöördumise", "pöördumisega", "juhtum", "juhtumi", "konto", "id", "nr", "number",
+  "viide", "viite", "versioon", "versiooni", "tuba", "toa", "ruum", "ruumi", "lend", "lennu", "laud",
+  "koht", "värav", "perroon", "marsruut", "buss", "liin", "mudel", "seerianumber", "toode",
+  "artikkel", "sku", "probleem", "viga", "korter", "hoone", "korrus", "sihtnumber", "postiindeks",
+  "kood",
+]
+quantity = [
+  "null", "üks", "kaks", "kolm", "neli", "viis", "kuus", "seitse", "kaheksa", "üheksa", "kümme",
+  "üksteist", "kaksteist", "kolmteist", "neliteist", "viisteist", "kuusteist", "seitseteist",
+  "kaheksateist", "üheksateist", "kakskümmend", "kolmkümmend", "nelikümmend", "viiskümmend",
+  "kuuskümmend", "seitsekümmend", "kaheksakümmend", "üheksakümmend", "sada", "tuhat", "miljon",
+  "korra", "kord", "kahekordne", "kolmekordne", "pool", "tosin", "paar", "mitu", "mõni", "vähe",
+]
+dates = [
+  "\\b\\d{1,2}\\.\\s*(?:jaan|veebr|märts|apr|mai|juun|juul|aug|sept|okt|nov|dets)\\w*\\.?",
+  "\\b\\d{1,2}\\.\\d{1,2}\\.(?:\\d{2,4})?",
+]
+
+[values.numbers]
+null = 0
+"üks" = 1
+korra = 1
+kaks = 2
+paar = 2
+kolm = 3
+neli = 4
+viis = 5
+kuus = 6
+seitse = 7
+kaheksa = 8
+"üheksa" = 9
+"kümme" = 10
+"üksteist" = 11
+kaksteist = 12
+tosin = 12
+"kakskümmend" = 20
+"kolmkümmend" = 30
+"viiskümmend" = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# Amounts written onto a number: "5a" (years), "3tk" (pieces).
+number_suffixes = ["a", "tk"]
+# Stems: the templates add the case ending ("laupäeval", "reedel").
+weekdays = [
+  ["esmaspäev"], ["teisipäev"], ["kolmapäev"], ["neljapäev"], ["reede"], ["laupäev"], ["pühapäev"],
+]
+months = [
+  ["jaanuar(?:i|is|il|ist|ini)?"], ["veebruar(?:i|is|il|ist|ini)?"], ["märts(?:i|is|il|ist|ini)?"],
+  ["aprill(?:i|is|il|ist|ini)?"], ["mai(?:s|l|st|ni)?"], ["juuni(?:s|l|st|ni)?"],
+  ["juuli(?:s|l|st|ni)?"], ["august(?:i|is|il|ist|ini)?"], ["septemb(?:er|ri|ris|ril|rist|rini)"],
+  ["oktoob(?:er|ri|ris|ril|rist|rini)"], ["novemb(?:er|ri|ris|ril|rist|rini)"],
+  ["detsemb(?:er|ri|ris|ril|rist|rini)"],
+]
+month_names = [
+  "jaanuar", "jaanuari", "jaanuaris", "jaanuaril", "veebruar", "veebruari", "veebruaris",
+  "veebruaril", "märts", "märtsi", "märtsis", "märtsil", "aprill", "aprilli", "aprillis",
+  "aprillil", "mai", "mais", "mail", "juuni", "juunis", "juunil", "juuli", "juulis", "juulil",
+  "august", "augusti", "augustis", "augustil", "september", "septembri", "septembris",
+  "septembril", "oktoober", "oktoobri", "oktoobris", "oktoobril", "november", "novembri",
+  "novembris", "novembril", "detsember", "detsembri", "detsembris", "detsembril",
+]
+# "kaks nädalat tagasi": the postposition follows.
+ago = ["{num}\\s+{unit}\\s+(?:tagasi|eest)"]
+# "viimase kolme kuu jooksul", "eelmisel nädalal"
+past = ["(?:viimase|viimaste|viimasel|viimastel|eelmi(?:sel|se|ne)|möödunud|läinud)\\s+(?:{num}\\s+)?{unit}"]
+# "eelmisel kuul" and "eelmisel aastal" are the previous calendar month and year; "viimase kuu
+# jooksul" is the last thirty days.
+calendar = ["^(?:eelmi|möödunud|läinud)"]
+# "eelmisel laupäeval", "sel laupäeval", "laupäeval"
+last_weekday = ["(?:eelmi(?:sel|se|ne)|möödunud|läinud|sel|sellel)\\s+{weekday}(?:al|l|a)?", "{weekday}(?:al|l)"]
+strictly_before = ["^(?:eelmi|möödunud|läinud)"]
+last_weekend = ["(?:eelmi(?:sel|se|ne)|möödunud|läinud)\\s+nädalavahetus(?:el|e)?"]
+yesterday = ["eile", "eilne", "eilse", "eilsel"]
+# "sel nädalal", "see kuu", "käesoleval aastal"
+this = ["(?:sel|sellel|selle|see|käesoleva|käesoleval|jooksva|jooksval)\\s+{unit}"]
+# "veebruaris", "3. juunil"
+in_month = ["(?:{day}\\.\\s*)?{month}"]
+
+[time.numbers]
+"üks" = 1
+"ühe" = 1
+kaks = 2
+kahe = 2
+paar = 2
+paari = 2
+kolm = 3
+kolme = 3
+"mõni" = 3
+"mõne" = 3
+mitu = 3
+mitme = 3
+neli = 4
+nelja = 4
+viis = 5
+viie = 5
+kuus = 6
+kuue = 6
+seitse = 7
+seitsme = 7
+kaheksa = 8
+"üheksa" = 9
+"kümme" = 10
+"kümne" = 10
+"üksteist" = 11
+kaksteist = 12
+
+[time.units]
+day = ["päev(?:a|al|ad|ade|adel)?"]
+week = ["nädal(?:a|at|al|as|ad|ate|atel)?"]
+month = ["kuu(?:d|l|s|de|del)?"]
+year = ["aasta(?:t|l|s|d|te|tel)?"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["või"]
+or_not = ["või mitte", "või ei"]
+# "A ja B vahel": the postposition follows, so each side is one word.
+between = ["(\\S+)\\s+ja\\s+(\\S+)\\s+vahel"]
+clause = ["kui", "enne kui", "pärast seda,? kui", "pärast", "alates", "kuni", "sellal kui", "samal ajal kui"]
+lead = [
+  "mis", "mida", "mille", "millega", "millist?", "millised", "milliseid", "millistel", "kes",
+  "keda", "kelle", "kellega", "millal", "kus", "kuhu", "kust",
+  "kui\\s+(?:palju|kaua|vana|tihti|sageli)",
+  "mitu\\s+\\w+", "kuidas", "kas", "miks",
+]
+article = ["minu", "mu", "meie", "see", "selle", "too", "need", "nende"]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:eira(?:ke)?|ignoreeri(?:ge)?|unusta(?:ge)?|tühista(?:ge)?|ära (?:arvesta|järgi|pööra tähelepanu)|ärge (?:arvestage|järgige))\\b[^.\\n]{0,40}\\b(?:eelnev\\w*|varasem\\w*|eelmi\\w+|senis\\w+|kõik|kõiki|kõigi|ülaltoodud|oma|enda|sinu)\\b[^.\\n]{0,25}\\b(?:juhis\\w*|juhend\\w*|reegl\\w+|korraldus\\w*|käsk\\w*|käsu\\w*|viip\\w*|viiba\\w*|prompt\\w*)",
+  "\\bjäta(?:ke)?\\b[^.\\n]{0,60}\\b(?:juhis\\w*|juhend\\w*|reegl\\w+|korraldus\\w*)\\b[^.\\n]{0,20}\\btähelepanuta\\b",
+  "\\bjäta(?:ke)? tähelepanuta\\b[^.\\n]{0,40}\\b(?:juhis\\w*|juhend\\w*|reegl\\w+|korraldus\\w*)",
+]
+role_hijack = [
+  "\\b(?:(?:sa )?oled nüüd|(?:nüüdsest|edaspidi|sellest hetkest)(?: peale| alates)?,? (?:sa )?(?:oled|vastad|räägid|pead|käitud|tegutsed)|käitu (?:nagu|kui) (?:piiranguteta|piiramatu|tsenseerimata)|teeskle,? et sul (?:ei ole|pole) (?:mingeid |ühtegi )?(?:reegleid|piiranguid))",
+]
+system_prompt = [
+  "\\b(?:näita(?:ke)?|avalda(?:ge)?|paljasta(?:ge)?|prindi|printige|väljasta(?:ge)?|ütle|öelge|kirjuta(?:ge)?|lekita(?:ge)?)\\b[^.\\n]{0,40}\\b(?:süsteemi ?viip\\w*|süsteemi ?viiba\\w*|süsteemi ?prompt\\w*|system prompt\\w*|süsteemijuhis\\w*|(?:peidetud|varjatud) juhis\\w*|arendaja ?sõnum\\w*)",
+]
+memory_directive = [
+  "\\b(?:alati|iga kord|millal iganes|kui tahes)\\b[^.\\n]{0,60}\\b(?:saada|saatke|edasta(?:ge)?|suuna(?:ke)?|laadi(?:ge)?|kanna|kandke|meili(?:ge)?)\\b[^.\\n]{0,80}(?:https?://|@|\\brahakot\\w+|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:käivita(?:ge)?|jooksuta(?:ge)?|täida|täitke|kutsu(?:ge)?)\\b[^.\\n]{0,30}\\b(?:käsk|käsu|käsklus\\w*|tööriist\\w*|funktsioon\\w*)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

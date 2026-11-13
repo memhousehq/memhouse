@@ -25,6 +25,29 @@ pub struct Config {
     pub intake: IntakeConfig,
     /// Evaluation suites and the regression gate (G13).
     pub eval: EvalConfig,
+    /// The enabled languages and the operator's own language packs (G36).
+    pub language: LanguageConfig,
+}
+
+/// Languages (G36): which language packs the server reads statements, questions and injection
+/// attempts with. The packs hold every word list and phrase pattern; see `docs/languages.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LanguageConfig {
+    /// The languages the server reads, as pack codes (`["en", "de", "fr"]`). With more than
+    /// one, the language of each write and question is detected among them.
+    pub enabled: Vec<String>,
+    /// The language of text whose language cannot be told; empty means the first of `enabled`.
+    pub default: String,
+    /// A folder of the operator's own packs (`*.toml`): each adds a language or replaces the
+    /// built-in pack of the same code. Empty means built-in packs only.
+    pub packs_dir: String,
+}
+
+impl Default for LanguageConfig {
+    fn default() -> Self {
+        LanguageConfig { enabled: vec!["en".into()], default: String::new(), packs_dir: String::new() }
+    }
 }
 
 /// Evaluation (QUAL-04, QUAL-05): a tenant's suites are replayed before a policy is approved,
@@ -572,6 +595,12 @@ impl Config {
         }
         if let Some(v) = var("MEMHOUSE_TENANT") {
             self.memory.tenant = v;
+        }
+        if let Some(v) = var("MEMHOUSE_LANGUAGES") {
+            self.language.enabled = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+        if let Some(v) = var("MEMHOUSE_LANGUAGE_PACKS_DIR") {
+            self.language.packs_dir = v;
         }
         if let Some(v) = var("MEMHOUSE_BIND") {
             self.server.bind = v;

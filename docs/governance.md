@@ -488,7 +488,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-59 checks pass on the current release. The core ones:
+62 checks pass on the current release. The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -530,6 +530,9 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `eval_harness` | a replayed suite is scored for storage and retrieval separately, with the stale-fact and contamination rates, and leaves nothing in the store (QUAL-03) |
 | `eval_gate` | a tenant's suite runs before a policy is approved, with results stored per policy version; a policy that stops corrections from superseding is refused with a report, audited and left proposed (QUAL-04, QUAL-05) |
 | `eval_reproducible` | three replays of a suite end the same for every scored record (QUAL-10) |
+| `language_packs` | every built-in language pack validates and passes its labelled test set (at least 95% of the statements read as labelled, no plan or guess read as something to commit, every injection attempt caught, no ordinary statement quarantined, every time and identifier question read); with all 24 languages enabled at once no plan or guess of any pack is read as something to commit; an operator's pack replaces a built-in one and adds a language, and one that does not validate stops the start with its file and line (G36) |
+| `injection_languages` | every pack's injection attempts are quarantined with every language enabled, also in mixed-language text and around text in a language that is not enabled; the English attempts are quarantined with only German enabled, for a tenant narrowed to German, and under an operator's English pack that has no injection phrases; a policy can't name a language the server has not enabled (G36, TR-CORE-05) |
+| `language_recall` | writes in French, German and English are detected and indexed with their own text-search configuration; a German correction supersedes the French fact it corrects and is what a recall returns (with a stand-in multilingual embedder); a keyword search finds a German word by its stem; a German question's time phrase is read (G36) |
 | `partitions` | 1,000 mixed writes, direct and through an agent: notes in the patient's partition, own preferences and procedures in the clinician's, each with the right author |
 
 Run it in CI and keep the reports: they are audit evidence for every release.

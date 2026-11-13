@@ -489,12 +489,20 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
                 if key {
                     touched.push(i);
                 }
-                turns.push(SuiteTurn { say, expect, key: key.then(|| a.key.to_string()), kind: a.kind.filter(|_| expect == Expect::Commit), id: plan_id, confirms });
+                turns.push(SuiteTurn {
+                    say,
+                    expect,
+                    key: key.then(|| a.key.to_string()),
+                    kind: a.kind.filter(|_| expect == Expect::Commit),
+                    id: plan_id,
+                    confirms,
+                    ..Default::default()
+                });
             }
             if rng.chance(40) {
                 shape.small_talk += 1;
                 let at_turn = rng.below(turns.len() + 1);
-                turns.insert(at_turn, SuiteTurn { say: rng.pick(p.small_talk).to_string(), expect: Expect::Ignore, key: None, kind: None, id: None, confirms: None });
+                turns.insert(at_turn, SuiteTurn { say: rng.pick(p.small_talk).to_string(), expect: Expect::Ignore, ..Default::default() });
             }
             // The checkpoint: what changed in this session, then what was corrected before,
             // then anything known, up to three questions.
@@ -506,7 +514,7 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
                 .into_iter()
                 .filter(|i| seen.insert(*i))
                 .take(3)
-                .map(|i| SuiteQuestion { q: p.attributes[slots[i].attr].question.to_string(), key: p.attributes[slots[i].attr].key.to_string() })
+                .map(|i| SuiteQuestion { q: p.attributes[slots[i].attr].question.to_string(), key: p.attributes[slots[i].attr].key.to_string(), ..Default::default() })
                 .collect();
             shape.turns += turns.len();
             shape.questions += ask.len();
@@ -523,6 +531,7 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
             "Synthetic {} timelines: {conversations} conversations from seed {seed} (memhouse bench synth --profile {} --seed {seed} --conversations {conversations}).",
             p.name, p.name
         ),
+        language: None,
         k: 5,
         conversations: out,
     };

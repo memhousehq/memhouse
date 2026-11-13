@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+# Corrections across languages. Replay with a multilingual embedding model and the three
+# languages enabled:
+#   MEMHOUSE_LANGUAGES=en,de,fr memhouse bench run --suite bench/suites/languages --embedding-model multilingual-e5-small
+format: 1
+name: multilingual-correction
+description: A German correction of a French fact, and an English one of a German fact.
+conversations:
+  - id: dana
+    sessions:
+      - at: 2026-05-01T10:00:00Z
+        turns:
+          - {say: "Dana Novak habite à Porto.", key: city}
+          - {say: "Le chien de Dana Novak s'appelle Biscuit.", key: dog}
+      - at: 2026-06-01T10:00:00Z
+        turns:
+          - {say: "Korrektur: Dana Novak wohnt jetzt in Berlin.", key: city}
+        ask:
+          - {q: "Wo wohnt Dana Novak?", key: city}
+          - {q: "Where does Dana Novak live?", key: city}
+          - {q: "Comment s'appelle le chien de Dana Novak ?", key: dog}
+  - id: omar
+    sessions:
+      - at: 2026-05-01T10:00:00Z
+        turns:
+          - {say: "Omar Haddad arbeitet bei Initech in München.", key: employer}
+      - at: 2026-06-01T10:00:00Z
+        turns:
+          - {say: "Omar Haddad no longer works at Initech; he now works at Globex in Munich.", key: employer}
+        ask:
+          - {q: "Où travaille Omar Haddad ?", key: employer}

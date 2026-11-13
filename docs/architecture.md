@@ -69,6 +69,18 @@ model is described in [memory-types.md](memory-types.md).
 
 The query embedding and the SQL statement are the whole hot path. On a laptop, p50 recall is a few milliseconds plus query embedding. The recall's explanation record (`mh_recall`) is written off that path, after the response.
 
+## Language packs
+
+The rules that read text (the statement gate, query analysis, the injection screen) hold no
+words of their own. Every word list and phrase pattern comes from a **language pack**
+(`core/src/lang.rs`, [languages.md](languages.md)): one TOML file per language, built into the
+binary for the 24 official EU languages, replaceable from `[language] packs_dir`. Packs are
+validated and compiled to regular expressions once, at start. With several languages enabled,
+the language of each write and question is detected from the packs' own function words (no
+model), recorded on the record, and picks the markers, the time phrases and the Postgres
+text-search configuration. The injection screen ignores the detection: it applies every enabled
+pack's phrases, and the built-in English ones, to every write.
+
 ## Write path
 
 Every write (`remember`, `revise`, `ingest`, and the facts enrichment extracts) goes through one

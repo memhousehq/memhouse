@@ -1,0 +1,434 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Danish language pack. Draft: it passes its test set (languages/tests/da.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "da"
+name = "Danish"
+status = "draft"
+text_search = "danish"
+
+[detect]
+words = [
+  "og", "i", "at", "det", "er", "en", "et", "den", "til", "på", "de", "med", "for", "af", "ikke",
+  "der", "som", "har", "han", "hun", "jeg", "vi", "du", "var", "sig", "men", "om", "fra", "eller",
+  "hvad", "hvem", "hvor", "hvornår", "når", "kan", "skal", "vil", "blev", "have", "min", "mit",
+  "sin", "sit", "deres", "vores", "også", "efter", "ved", "så", "nu", "over", "da", "mange",
+  "meget", "noget", "nogle", "denne", "dette", "hos", "brugeren", "kun", "selv",
+]
+letters = "æøå"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "måske",
+  "muligvis",
+  "eventuelt",
+  "sandsynligvis",
+  "formentlig",
+  "formodentlig",
+  "antagelig(?:t|vis)?",
+  "kunne (?:godt )?(?:tænkes|være)",
+  "kan være,? at",
+  "kan tænkes",
+  "jeg tror",
+  "jeg tænker",
+  "jeg formoder",
+  "jeg gætter på",
+  "gad vide",
+  "ikke sikker",
+  "usikker på",
+  "rygte(?:r|t|rne)?",
+  "rygtes",
+  "angiveligt",
+  "efter sigende",
+  "tilsyneladende",
+  "åbenbart",
+  "øjensynlig(?:t)?",
+  "hypotetisk",
+  "i teorien",
+  "teoretisk",
+  "overvejer",
+  "overveje",
+  "overvejede",
+  "tænker på at",
+  "leger med tanken",
+  "hvis (?:vi|jeg|de|han|hun|du) (?:\\w+ ){0,6}(?:ville|havde|kunne|var)",
+]
+# A change to something stored before.
+# "nu" (now) is a marker, as "jetzt" is in the German pack.
+correction = [
+  "faktisk",
+  "rettelse",
+  "korrektion",
+  "berigtigelse",
+  "jeg tog fejl",
+  "tog fejl",
+  "passer ikke længere",
+  "ikke længere",
+  "ikke mere",
+  "i stedet",
+  "har ændret sig",
+  "ændret",
+  "ændrede",
+  "skiftet",
+  "skiftede",
+  "flyttet",
+  "flyttede",
+  "nu",
+  "nu om dage",
+  "i mellemtiden",
+  "opdateret",
+  "erstattet (?:af|med)",
+  "tidligere",
+  "før i tiden",
+  "plejede at",
+]
+# An intention not yet carried out.
+# "på fredag" is the coming Friday ("i fredags" is the last one). "skal" alone is left out: it is
+# also "must" ("skal altid").
+plan = [
+  "planlægger",
+  "planlægge",
+  "planlagt",
+  "har planer om",
+  "plan(?:en|er) om",
+  "har tænkt sig",
+  "har i sinde",
+  "har til hensigt",
+  "hensigten er",
+  "agter",
+  "vil",
+  "ville gerne",
+  "ønsker at",
+  "håber",
+  "kommer til at",
+  "næste (?:uge|måned|år|kvartal|mandag|tirsdag|onsdag|torsdag|fredag|lørdag|søndag|weekend|forår|sommer|efterår|vinter)",
+  "(?:den |det )?kommende (?:uge|måned|år|kvartal|mandag|tirsdag|onsdag|torsdag|fredag|lørdag|søndag|weekend|forår|sommer|efterår|vinter)",
+  "på (?:mandag|tirsdag|onsdag|torsdag|fredag|lørdag|søndag)",
+  "i morgen",
+  "i overmorgen",
+  "snart",
+  "senere (?:i denne uge|på ugen|i denne måned|på måneden|i år|på året)",
+  "husk at",
+  "mangler (?:stadig )?at",
+  "skal (?:stadig|lige|snart)",
+  "målet er",
+]
+preference = [
+  "foretrækker",
+  "foretrak",
+  "foretrukne?",
+  "præference",
+  "kan (?:\\w+ ){0,2}godt lide",
+  "kan lide",
+  "ikke lide",
+  "holder (?:(?:meget|rigtig|virkelig) ){0,2}af",
+  "elsker",
+  "nyder",
+  "hader",
+  "yndlings\\w+",
+  "favorit\\w*",
+  "hellere",
+  "helst",
+  "gerne",
+  "ikke (?:fordrage|udstå|tåle)",
+  "allergisk over ?for",
+  "vild med",
+  "glad for",
+]
+# Only at the start of the statement.
+# Danish puts the verb second, so "altid", "aldrig" or "ikke" as the second word means the first
+# word is an imperative ("Kør altid …", "Send ikke …").
+instruction_start = [
+  "altid",
+  "aldrig",
+  "sørg for",
+  "undgå",
+  "undlad",
+  "brug",
+  "benyt",
+  "kør",
+  "tjek",
+  "vær sikker på",
+  "\\w+ (?:altid|aldrig|ikke)",
+]
+instruction = [
+  "skal altid",
+  "bør altid",
+  "skal aldrig",
+  "bør aldrig",
+  "må aldrig",
+]
+# Past events: a dated reference or a completed action.
+# "tog" alone is also the noun (a train); "ansat" alone is also a state ("er ansat hos").
+event = [
+  "i ?går",
+  "i forgårs",
+  "i (?:mandags|tirsdags|onsdags|torsdags|fredags|lørdags|søndags)",
+  "(?:sidste|forrige) (?:uge|måned|år|nat|weekend|mandag|tirsdag|onsdag|torsdag|fredag|lørdag|søndag|forår|sommer|efterår|vinter)",
+  "for (?:\\w+ ){1,3}siden",
+  "købte",
+  "købt",
+  "solgte",
+  "solgt",
+  "besøgte",
+  "besøgt",
+  "tog (?:til|på|hen|af sted)",
+  "adopterede",
+  "adopteret",
+  "startede",
+  "startet",
+  "begyndte",
+  "begyndt",
+  "afsluttede",
+  "afsluttet",
+  "færdiggjorde",
+  "færdiggjort",
+  "færdiguddannet",
+  "dimitterede",
+  "dimitteret",
+  "underskrev",
+  "underskrevet",
+  "skrev under",
+  "skrevet under",
+  "tiltrådte",
+  "forlod",
+  "forladt",
+  "mødte",
+  "mødtes",
+  "deltog",
+  "deltaget",
+  "blev gift",
+  "giftede sig",
+  "modtog",
+  "modtaget",
+  "fik",
+  "fået",
+  "lancerede",
+  "lanceret",
+  "udgav",
+  "udgivet",
+  "leverede",
+  "leveret",
+  "fornyede",
+  "fornyet",
+  "opsagde",
+  "opsagt",
+  "annullerede",
+  "annulleret",
+  "aflyste",
+  "aflyst",
+  "betalte",
+  "betalt",
+  "bookede",
+  "booket",
+  "bestilte",
+  "bestilt",
+  "returnerede",
+  "returneret",
+  "rejste",
+  "rejst",
+  "vandt",
+  "vundet",
+  "tabte",
+  "tabt",
+  "mistede",
+  "mistet",
+  "gav",
+  "givet",
+  "lavede",
+  "gjorde",
+  "blev født",
+  "døde",
+  "fejrede",
+  "fejret",
+  "ansatte",
+  "blev ansat",
+  "fyrede",
+  "fyret",
+  "sagde op",
+  "gik på pension",
+  "anskaffede",
+  "opgraderede",
+  "opgraderet",
+]
+
+[relations]
+relationship = [
+  "\\b(?:er|var|blev|bliver) (?:nu )?(?:den |det |en |et |deres |hans |hendes |vores |min |mit )?(?:nye? )?(?:chef|leder|kollega|holdkammerat|kone|hustru|mand|ægtemand|partner|ægtefælle|kæreste|bror|søster|mor|far|søn|datter|ven|veninde|fætter|kusine|onkel|tante|nabo|mentor|kunde|klient|leverandør|ejer|grundlægger|stifter|direktør|ceo|cto|cfo|sponsor|kontaktperson|kundeansvarlig) (?:for|til|hos|i|af)\\b",
+  "\\b(?:refererer til|rapporterer til|arbejder for|arbejder sammen med|gift med|forlovet med|er i familie med|ledes af)\\b",
+]
+people = [
+  "søster", "bror", "mor", "far", "forælder", "forældre", "kone", "hustru", "mand", "ægtemand",
+  "partner", "ægtefælle", "kæreste", "søn", "datter", "barn", "børn", "ven", "veninde", "venner",
+  "kollega", "chef", "leder", "team", "hold", "nabo", "fætter", "kusine", "onkel", "tante",
+  "bedstemor", "mormor", "farmor", "bedstefar", "morfar", "farfar", "hund", "kat", "kæledyr",
+]
+
+[values]
+stop = [
+  "bruger", "brugeren", "brugerens", "brugere", "denne", "dette", "disse", "have", "havde", "deres",
+  "været", "over", "også", "bare", "meget", "nogle", "mere", "mest", "andre", "sådan", "jeres",
+  "vores", "ikke", "faktisk", "længere", "stedet", "ændret", "skiftet", "flyttet", "opdateret",
+  "tidligere", "plejede", "rettelse", "aktuelt", "lige", "blev", "bliver", "efter", "eller",
+  "fordi", "hvad", "hvilken", "hvilket", "hvilke", "hvor", "hvornår", "ville", "skal", "skulle",
+  "kunne", "hans", "hendes", "inden", "under", "uden", "mellem", "omkring",
+]
+value_stop = [
+  "den", "det", "de", "en", "et", "bruger", "brugeren", "brugerens", "deres", "dem", "denne",
+  "dette", "med", "fra", "har", "have", "havde", "var", "er", "blev", "fik", "får", "nu", "aktuelt",
+  "nylig", "alt", "gange", "gang", "tid", "pr", "per", "for", "og", "omkring", "cirka", "ca",
+  "næsten", "knap", "over", "under", "mere", "end", "også", "kun", "bare", "stadig", "allerede",
+  "ny", "nyt", "nye", "sin", "sit", "sine", "hans", "hendes", "vores", "din", "dit", "i", "på",
+  "til", "af", "ved", "som", "at", "om", "hos",
+]
+identifier = [
+  "faktura", "ordre", "bestilling", "ticket", "sag", "konto", "kto", "id", "nr", "nummer", "ref",
+  "reference", "version", "værelse", "lokale", "fly", "flyvning", "bord", "plads", "sæde", "gate",
+  "perron", "spor", "rute", "bus", "linje", "model", "serienummer", "vare", "varenummer", "sku",
+  "fejl", "bug", "enhed", "lejlighed", "bygning", "etage", "sal", "postnummer", "kode",
+  "lokalnummer",
+]
+quantity = [
+  "nul", "én", "ét", "to", "tre", "fire", "fem", "seks", "syv", "otte", "ni", "ti", "elleve",
+  "tolv", "tretten", "fjorten", "femten", "seksten", "sytten", "atten", "nitten", "tyve", "tredive",
+  "fyrre", "halvtreds", "tres", "halvfjerds", "firs", "halvfems", "hundrede", "tusind", "tusinde",
+  "million", "halv", "halvt", "halve", "dusin", "dobbelt", "tredobbelt", "flere", "adskillige",
+  "nogle",
+]
+dates = [
+  "\\b\\d{1,2}\\.\\s*(?:jan|feb|mar|apr|maj|jun|jul|aug|sep|sept|okt|nov|dec)[a-z]*\\.?",
+  "\\b\\d{1,2}\\.\\d{1,2}\\.(?:\\d{2,4})?",
+  "\\b\\d{1,2}/\\d{1,2}[-/ ]\\d{2,4}\\b",
+]
+
+[values.numbers]
+nul = 0
+"én" = 1
+"ét" = 1
+to = 2
+dobbelt = 2
+tre = 3
+tredobbelt = 3
+fire = 4
+fem = 5
+seks = 6
+syv = 7
+otte = 8
+ni = 9
+ti = 10
+elleve = 11
+tolv = 12
+dusin = 12
+tyve = 20
+tredive = 30
+halvtreds = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = ["er", "erne", "ende"]
+weekdays = [
+  ["mandag"],
+  ["tirsdag"],
+  ["onsdag"],
+  ["torsdag"],
+  ["fredag"],
+  ["lørdag"],
+  ["søndag"],
+]
+months = [
+  ["januar"],
+  ["februar"],
+  ["marts"],
+  ["april"],
+  ["maj"],
+  ["juni"],
+  ["juli"],
+  ["august"],
+  ["september"],
+  ["oktober"],
+  ["november"],
+  ["december"],
+]
+month_names = [
+  "januar", "februar", "marts", "april", "maj", "juni", "juli", "august", "september", "oktober",
+  "november", "december",
+]
+ago = ["for\\s+{num}\\s+{unit}\\s+siden"]
+past = ["(?:sidste|seneste|forrige|forløbne|forgangne)\\s+(?:{num}\\s+)?{unit}"]
+# "sidste måned" and "sidste år" are the previous calendar month and year; "den seneste måned" is
+# the last thirty days.
+calendar = ["^(?:sidste|forrige)"]
+# "i lørdags" is the last Saturday.
+last_weekday = ["i\\s+{weekday}s", "(?:sidste|forrige)\\s+{weekday}"]
+strictly_before = ["^(?:i|sidste|forrige)\\s"]
+last_weekend = ["(?:sidste|forrige|seneste)\\s+weekend"]
+yesterday = ["i\\s*går"]
+this = ["(?:denne|dette|den\\s+her|det\\s+her)\\s+{unit}"]
+in_month = ["(?:{day}\\.\\s*)?{month}"]
+
+[time.numbers]
+en = 1
+et = 1
+"én" = 1
+"ét" = 1
+to = 2
+"et par" = 2
+tre = 3
+nogle = 3
+"nogle få" = 3
+flere = 3
+adskillige = 3
+fire = 4
+fem = 5
+seks = 6
+syv = 7
+otte = 8
+ni = 9
+ti = 10
+elleve = 11
+tolv = 12
+
+[time.units]
+day = ["dag", "dage", "dagen", "dagene"]
+week = ["uge", "uger", "ugen", "ugerne"]
+month = ["måned", "måneder", "måneden", "månederne"]
+year = ["år", "året", "årene"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["eller"]
+or_not = ["eller ej", "eller ikke"]
+between = ["mellem\\s+(.+?)\\s+og\\s+(.+?)"]
+clause = [
+  "da", "før", "inden", "efter", "siden", "mens", "indtil", "når",
+]
+lead = [
+  "hvilke[nt]?", "hvad", "hvem", "hvis", "hvornår", "hvorhen",
+  "hvor\\s+(?:mange\\s+\\w+|meget|længe|gammel|ofte|tit)?", "hvor", "har", "havde", "var", "er",
+  "blev", "gjorde", "fik",
+]
+article = [
+  "den", "det", "de", "en", "et", "min", "mit", "mine", "vores", "denne", "dette", "disse",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:ignor[eé]r|ignorere|se bort fra|tilsidesæt|overskriv|omgå)\\b[^.\\n]{0,40}\\b(?:tidligere|forrige|foregående|ovenstående|alle|dine|jeres)\\b[^.\\n]{0,25}\\b(?:instruktion(?:er|erne)?|instruks(?:er|erne)?|anvisninger(?:ne)?|regler(?:ne)?|retningslinjer(?:ne)?|prompts?)",
+  "\\bglem\\s+(?:alt\\s+om\\s+)?(?:alle|dine|jeres)\\b[^.\\n]{0,30}\\b(?:instruktion(?:er|erne)?|instruks(?:er|erne)?|anvisninger(?:ne)?|regler(?:ne)?|retningslinjer(?:ne)?|prompts?)",
+]
+role_hijack = [
+  "\\b(?:du er (?:nu|fra nu af|herefter)|(?:fra nu af|fra nu|herefter|fremover),? (?:er|skal|vil|svarer|må|opfører|taler|skriver|agerer) du|(?:opfør dig|ag[eé]r|optræd) som (?:en )?(?:ubegrænset|ucensureret|ufiltreret)|lad som om du ikke har (?:nogen )?(?:regler|begrænsninger|restriktioner))",
+]
+system_prompt = [
+  "\\b(?:vis|afslør|udskriv|print|giv|fortæl|del|læk)\\b[^.\\n]{0,40}\\b(?:system-?prompt(?:en)?|system prompt|systeminstruktion(?:er|erne)?|skjulte instruktioner|udviklerbesked(?:en)?)",
+]
+memory_directive = [
+  "\\b(?:altid|hver gang|når som helst|så snart)\\b[^.\\n]{0,60}\\b(?:send|sende|sender|videresend|videresende|videresender|mail|maile|upload|uploade|overfør|overføre)\\b[^.\\n]{0,60}\\b(?:til|på)\\b[^.\\n]{0,40}(?:https?://|@|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:kør|køre|udfør|udføre|eksekv[eé]r|kald)\\b[^.\\n]{0,30}\\b(?:kommando(?:en)?|værktøj(?:et)?|funktion(?:en)?|tool)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

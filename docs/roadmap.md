@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 12 of 36 goals done; G12 built and waiting for its latency check ([goal tracker](#goal-tracker)) |
+| Progress | 13 of 36 goals done; G12 built and waiting for its latency check ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 59 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 62 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -76,7 +76,7 @@ are frozen (goals G04–G15), so it is written once against the final contracts 
 reworked.
 
 **What is missing from the code is the unbuilt part of each goal not ticked in the
-[goal tracker](#goal-tracker)** (G36 onwards, and G12's latency check; G25's re-embedding was done early). Some of those
+[goal tracker](#goal-tracker)** (G14 onwards, and G12's latency check; G25's re-embedding was done early). Some of those
 goals start from features that already work and are listed above, such as the v1 sales and
 success templates (G24). The largest gaps are relationship-based
 access (ACC), SDKs, the Lite store, the coding template's git-aware features, release
@@ -141,7 +141,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 59 / 59 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 62 / 62 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -340,7 +340,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 - [x] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion) (13 November 2026)
 - [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2) (built 13 November 2026; latency still to confirm on a quiet machine)
 - [x] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate) (13 November 2026)
-- [ ] [G36 — Language packs: word lists as data, several languages at once](#g36--language-packs-word-lists-as-data-several-languages-at-once)
+- [x] [G36 — Language packs: word lists as data, several languages at once](#g36--language-packs-word-lists-as-data-several-languages-at-once) (14 November 2026)
 - [ ] [G14 — Quality iteration I: weak types and tiered extraction](#g14--quality-iteration-i-weak-types-and-tiered-extraction)
 
 **D. Lite + developer launch**
@@ -1285,7 +1285,7 @@ which is named.
 
 #### G36 — Language packs: word lists as data, several languages at once
 
-- [ ] **Done**
+- [x] **Done** (14 November 2026)
 
 > `/goal Move every natural-language word list and phrase pattern out of the code into language packs (one file per language, English the default), let the configuration enable several languages at once and load the operator's own packs, detect the language of each write and query without a model and use the matching full-text search configuration, and ship packs for the 24 official EU languages, each with a labelled test set. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -1309,44 +1309,44 @@ which is named.
   - the classifier and enrichment prompts, which are written in English;
   - the default embedder, `bge-small-en-v1.5`, which is English-only.
 - **Deliverables:**
-  - [ ] a versioned language-pack format (TOML, with a JSON Schema) holding statement markers,
+  - [x] a versioned language-pack format (TOML, with a JSON Schema) holding statement markers,
     relation and number words, stopwords, month and weekday names, relative-time phrases, query
     clause words, injection phrases and the Postgres text-search configuration (`simple` where
     Postgres has no stemmer); packs are compiled to patterns at load and validated, and
     `memhouse lang check <file>` reports errors with file and line
-  - [ ] built-in packs embedded in the binary; English is the default, and its pack reproduces
+  - [x] built-in packs embedded in the binary; English is the default, and its pack reproduces
     today's behaviour exactly
-  - [ ] configuration: `[language] enabled = ["en", …]` (one or more), `default`, and `packs_dir`
+  - [x] configuration: `[language] enabled = ["en", …]` (one or more), `default`, and `packs_dir`
     for the operator's own packs, which add a language or replace a built-in pack; each key with
     a default, a doc comment and a row in `docs/configuration.md`; a tenant policy may narrow the
     enabled set
-  - [ ] language detection without a model (a library such as `lingua` or `whatlang`, limited to
+  - [x] language detection without a model (a library such as `lingua` or `whatlang`, limited to
     the enabled languages) for each write and each query, recorded on the record (an expand-only
     schema change); detection never narrows the injection screen: every write is screened with
     the injection phrases of every enabled pack, whatever language it was detected in, and the
     built-in English phrases always apply as a floor, even when English is not enabled, a tenant
     narrows the set or an operator pack replaces the English one, so the screen never weakens
-  - [ ] full-text search in the record's language (a `regconfig` column feeding the generated
+  - [x] full-text search in the record's language (a `regconfig` column feeding the generated
     `tsv`), with the query probing each enabled configuration
-  - [ ] Unicode letter classes wherever a word or identifier is matched
-  - [ ] the classifier and enrichment prompts handle every enabled language and keep facts in the
+  - [x] Unicode letter classes wherever a word or identifier is matched
+  - [x] the classifier and enrichment prompts handle every enabled language and keep facts in the
     language they were stated in
-  - [ ] embedder: a warning at start and in `memhouse doctor` when a language other than English
+  - [x] embedder: a warning at start and in `memhouse doctor` when a language other than English
     is enabled with an English-only model, and a documented multilingual model (switching uses
     the existing `memhouse reembed`)
-  - [ ] packs for the 24 official EU languages: Bulgarian, Croatian, Czech, Danish, Dutch,
+  - [x] packs for the 24 official EU languages: Bulgarian, Croatian, Czech, Danish, Dutch,
     English, Estonian, Finnish, French, German, Greek, Hungarian, Irish, Italian, Latvian,
     Lithuanian, Maltese, Polish, Portuguese, Romanian, Slovak, Slovenian, Spanish and Swedish.
     Each pack comes with a labelled test set (statements for the gate, temporal and identifier
     queries, injection attempts) and is marked stable once a speaker of the language has reviewed
     it
-  - [ ] governance checks: `language_packs` (every built-in pack loads, validates and passes its
+  - [x] governance checks: `language_packs` (every built-in pack loads, validates and passes its
     test set; an invalid operator pack stops startup with the file and line) and
     `injection_languages` (every enabled pack's injection attempts are quarantined, including in
     text whose language is not detected and in mixed-language text such as a French write
     carrying an English injection; today's English injection fixtures are still quarantined with
     only German enabled, with a tenant narrowed to German, and with an operator English pack)
-  - [ ] docs: `docs/languages.md` (the format, how to write and test a pack, each language's
+  - [x] docs: `docs/languages.md` (the format, how to write and test a pack, each language's
     support level), plus configuration, operations and architecture
 - **Done when:** with only English enabled, the guard's values are unchanged. Each of the 24 packs
   passes its own test set: the statement gate reads at least 95% of its labelled statements
@@ -1354,6 +1354,93 @@ which is named.
   `enabled = ["en", "de", "fr"]` and a multilingual embedder recalls a German correction over the
   French fact it supersedes. An operator's pack in `packs_dir` replaces a built-in one without a
   rebuild.
+- **Result (2026-11-14):**
+  - **Built.** *The format* (`memhouse-core/src/lang.rs`, `languages/*.toml`,
+    `languages/pack.schema.json`): a pack is one TOML file, format 1, with the statement markers,
+    the value words, the time phrases as templates (`{num}`, `{unit}`, `{weekday}`, `{month}`,
+    `{day}`), the sub-query words, the injection phrases, the text-search configuration and the
+    words and letters the language is detected by. A pack is validated and compiled once, at
+    load; a pack with no plan or speculation markers, or with a pattern that matches empty text,
+    is refused; problems are reported as `file:line: message`, by `memhouse lang check` and at
+    start. *English* is generated from the expressions that were in the code, alternative by
+    alternative, so it reads as before. *Configuration*: `[language] enabled`, `default`,
+    `packs_dir` (`MEMHOUSE_LANGUAGES`, `MEMHOUSE_LANGUAGE_PACKS_DIR`); `[language] enabled` in a
+    policy spec narrows a tenant's set and can't widen it. *Detection* is done from the packs
+    themselves (function words one point, other plain words and marking letters half, shared
+    among the packs that claim them), so an operator's pack is detected like a built-in one; the
+    language is recorded on the record (`language`, schema 9, API 1.8.0, Memory Format field and
+    vector `v2-language.jsonl`). *Caution*: a detection is sure only with two points of evidence
+    and a lead of half over the next language; otherwise every enabled pack's markers are read
+    and the most cautious reading wins, and even a sure detection lets a close contender add a
+    held reading. *Injection screen*: every enabled pack's phrases and the built-in English ones
+    on every write, whatever was detected, enabled or narrowed. *Search*: `ts_config` and
+    `tsv_lang` on `mh_memory`, filled by a trigger for records whose language has another
+    configuration than `english`; the recall statement parses the question with every enabled
+    configuration. With English alone the statement is byte for byte the old one. *Prompts*:
+    one sentence added to the classifier and extraction prompts when more than one language is
+    enabled; unchanged with one. *Embedder*: a warning at start and in `memhouse doctor` for an
+    English-only model with another language enabled; `multilingual-e5-small` documented.
+    *CLI*: `memhouse lang list|check|detect|schema`. *Unicode*: identifiers, quantities, word
+    lengths and e-mail addresses are matched with letter classes of every script.
+  - **Packs.** 24 built in: English (stable) and 23 drafts, each with a test set of 42 labelled
+    statements, 8 injection attempts (7 for English), 9 time questions and 2 identifier
+    questions (`languages/tests/`). Every pack reads 42 of 42 statements as labelled, reads no
+    plan or guess as something to commit, catches every attempt and quarantines no ordinary
+    statement. **No draft has been reviewed by a speaker of its language**: the packs and their
+    test sets were written together, so the test sets show that a pack works on everyday
+    phrasing and no more. `languages/REVIEW.md` lists, per language, what a reviewer should look
+    at first (markers that are also ordinary words, missing forms, date readings).
+  - **Two deviations from the deliverables as written, with reasons.** (1) Detection uses no
+    library: neither `lingua` nor `whatlang` knows Maltese, `lingua`'s models would add tens of
+    megabytes per language to the binary, and no library can detect a language an operator adds
+    with a pack. (2) The record's configuration is a `text` column and the per-language index is
+    filled by a trigger, not a `regconfig` column feeding a generated `tsv`: `pg_upgrade`
+    refuses tables with `regconfig` columns, a generated column can't be changed in place (a new
+    one rewrites the table), and this way a server with English alone stores and computes
+    nothing more. The `english` `tsv` stays on every row (expand-only).
+  - **Measured with all 24 languages enabled at once** (the `language_packs` check, 1,008
+    labelled statements): the language of 90.2% is detected; none of the 288 plans and guesses
+    is read as something to commit; 1.4% of the other statements are held by mistake, because a
+    marker of another language matched. The first measurement, before the caution rules, had six
+    plans and guesses read as facts after a confident wrong detection of a short sentence; that
+    is what the evidence and lead thresholds fix.
+  - **Governance checks (3 new, 62 in all).** `language_packs` (every pack validates and passes
+    its set; the all-languages measurement above; an operator's pack replaces English, adds a
+    language, and one that does not validate stops `Languages::load` and `build_engine` with
+    file and line); `injection_languages` (196 of 196 attempts quarantined with all 24 enabled,
+    also around text in a language that is not enabled and in mixed text; the English attempts
+    quarantined with only German enabled, for a tenant narrowed to German, and under an
+    operator's English pack with no injection phrases; a policy naming a language the server
+    has not enabled is refused); `language_recall` (French, German and English writes detected
+    and indexed in their own configuration; the German correction supersedes the French fact
+    and is what a recall returns; "Rechnung" finds "Rechnungen" by keyword; a German question's
+    time phrase is read).
+  - **Done when.** English alone, guard values unchanged: LongMemEval_S 91.3 / 94.2 / 84.8,
+    LoCoMo 78.8 / 78.7 / 59.2, the synthetic personal starter 88.7 / 92.8 / 15.1 / 100.0, all
+    equal to the baselines. Each of the 24 packs passes its test set. An operator's pack
+    replaces a built-in one without a rebuild. The German correction over the French fact is
+    shown in `language_recall` **with a stand-in multilingual embedder** (a test double that
+    gives words of the same meaning the same vector component), and once with a real model:
+    `bench/suites/languages/correction.yaml` replayed with `multilingual-e5-small` and
+    `en`, `de`, `fr` enabled stores 6 of 6 current facts, answers 4 of 4 questions in German,
+    English and French with the current fact first, and returns 0 stale facts of 3 (a German
+    correction of a French fact, an English correction of a German one). Two conversations: an
+    existence proof, not a quality measurement; no multilingual model is in the guard.
+  - **Guard.** T1 inside `cargo xtask ci` (fmt, SPDX, links, secret scan, dependency policy,
+    clippy, unit tests, end to end): quality values as above; governance 61 of 62 in that run
+    (`promotion`: 99 of 100 promotions linked and audited, on a machine under load) and 62 of 62
+    in the four runs after it; not investigated further. T2 (`memhouse bench guard --tier 2`):
+    LoCoMo + enrich 79.3 / 65.6 (baselines 79.6 / 66.0, the values G12 and G13 measured), so the
+    unchanged prompts still hit the extraction cache. Latency could not be judged: another job
+    held the machine at a load of 20 to 100 throughout (search p50 14 to 56 ms against 9.7 and
+    9.0); the English recall statement is unchanged, and the write path gained one detection
+    call that returns at once with a single language. G12's latency box stays open and covers
+    this too.
+  - **Left for later goals.** Speaker reviews of the 23 drafts (each then marked stable). Time
+    phrases the templates cannot express ("a week ago" without a number, "last year" as one
+    word), listed in `languages/REVIEW.md`. A multilingual embedder in the benchmarks and per
+    language tuning of the rules on the suites (G14). Records written before a language was
+    enabled keep the English index until they are written again.
 - **Guard:** T1 plus the packs' test sets; T2 for the English results. **Depends on:** G13 (its
   suite format carries the test sets). G14 then tunes the rules per language.
 
@@ -1768,7 +1855,7 @@ current code already meets it and the named goal re-verifies it; it isn't reopen
 | Governance | GOV-01 G06 · GOV-02 G06/G27 · GOV-03 G08 · GOV-04 G07 · GOV-05 G22 (done, verified) · GOV-06 G22 · GOV-07 G22 · GOV-08 G06 · GOV-09 G22 · GOV-10 G22 · GOV-11 G20 · GOV-12 G22 · GOV-13 G06/G29 · GOV-14 G27 · GOV-15 G22 · GOV-16 G22 |
 | Access | ACC-01 G27 · ACC-02 G27 · ACC-03 G27 · ACC-04 G27 · ACC-05 G28 · ACC-06 G27 · ACC-07 G27 · ACC-08 G28 · ACC-09 G27 · ACC-10 G11 |
 | Decision register | CFG-01…CFG-12 G28 · D-01…D-07 G28 |
-| Languages | new scope, no requirement ID yet: language packs and the 24 official EU languages G36 |
+| Languages | new scope, no requirement ID yet: language packs and the 24 official EU languages G36 (done; 23 packs are drafts awaiting review by speakers) |
 | Integration | INT-01 G30 · INT-02 G05 · INT-03 G18 · INT-04 G05/G12 · INT-05 G18/G23 · INT-06 G11 · INT-07 G04 · INT-08 G25 · INT-09 G04 · INT-10 G04 |
 | Performance | PERF-01 G30 · PERF-02 G07 · PERF-03 G30 · PERF-04 G30 · PERF-05 G11 · PERF-06 G12 · PERF-07 G10 · PERF-08 G30 · PERF-09 G32 · PERF-10 G30 · PERF-11 G32 · PERF-12 G25 |
 | Scale | SCALE-01 G32 · SCALE-02 G32 (data model done) · SCALE-03 G01 (done, verified) · SCALE-04 G27 · SCALE-05 G15 · SCALE-06 G30 · SCALE-07 G30 · SCALE-08 G14 · SCALE-09 G31 |

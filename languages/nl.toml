@@ -1,0 +1,426 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Dutch language pack. Draft: it passes its test set (languages/tests/nl.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "nl"
+name = "Dutch"
+status = "draft"
+text_search = "dutch"
+
+[detect]
+words = [
+  "de", "het", "een", "en", "van", "in", "is", "dat", "op", "te", "zijn", "voor", "met", "die",
+  "niet", "aan", "er", "om", "ook", "als", "dan", "maar", "bij", "of", "uit", "nog", "naar", "door",
+  "over", "ze", "zij", "hij", "ik", "je", "we", "wij", "u", "heeft", "hebben", "was", "werd",
+  "wordt", "kan", "zal", "worden", "deze", "dit", "mijn", "haar", "hun", "ons", "onze", "wat",
+  "wie", "waar", "wanneer", "hoe", "geen", "wel", "al", "nu", "tot", "gebruiker",
+]
+letters = "ëï"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# Hedges, rumours and hypotheticals. "mogelijk" is left out: it is also the adjective in
+# "zo snel mogelijk".
+speculation = [
+  "misschien",
+  "wellicht",
+  "mogelijkerwijs",
+  "waarschijnlijk",
+  "vermoedelijk",
+  "vermoed(?:t|en)?",
+  "zou(?:den)? (?:\\w+ ){0,5}kunnen",
+  "kan zijn dat",
+  "ik denk",
+  "ik geloof",
+  "ik gok",
+  "ik vraag me af",
+  "volgens mij",
+  "niet zeker",
+  "onzeker of",
+  "gerucht(?:en)?",
+  "naar verluidt",
+  "schijnt (?:te|dat)",
+  "blijkbaar",
+  "kennelijk",
+  "schijnbaar",
+  "klaarblijkelijk",
+  "hypothetisch",
+  "in theorie",
+  "theoretisch",
+  "overweeg",
+  "overweegt",
+  "overwegen",
+  "overwoog",
+  "denk(?:t|en)? erover",
+  "denk(?:t|en) eraan om",
+  "speelt met het idee",
+  "als (?:we|wij|ik|ze|zij|hij|je|jij) (?:\\w+ ){0,6}(?:zou(?:den)?|had(?:den)?|kon(?:den)?|was|waren)",
+]
+# A change to something stored before.
+# "nu" (now) is a marker, as "jetzt" is in the German pack.
+correction = [
+  "eigenlijk",
+  "correctie",
+  "rectificatie",
+  "ik had het mis",
+  "ik vergiste me",
+  "heb me vergist",
+  "klopt niet meer",
+  "niet meer",
+  "niet langer",
+  "geen \\w+ meer",
+  "in plaats van",
+  "in plaats daarvan",
+  "veranderd",
+  "gewijzigd",
+  "overgestapt",
+  "stapte(?:n)? over",
+  "overgeschakeld",
+  "gewisseld",
+  "verhuisd",
+  "verhuisde(?:n)?",
+  "nu",
+  "tegenwoordig",
+  "inmiddels",
+  "intussen",
+  "bijgewerkt",
+  "vervangen door",
+  "vroeger",
+  "voorheen",
+]
+# An intention not yet carried out.
+# "plant" alone is also the noun (a plant): it needs "om" or a "te" clause.
+plan = [
+  "van plan",
+  "plan(?:t|nen)? om",
+  "plant (?:\\w+ ){1,6}te",
+  "gepland",
+  "voornemens?",
+  "neemt zich voor",
+  "nemen ons voor",
+  "de bedoeling",
+  "wil",
+  "wilt",
+  "willen",
+  "zou(?:den)? graag",
+  "hoopt",
+  "hopen",
+  "ik hoop",
+  "zal",
+  "zullen",
+  "zult",
+  "ga(?:at|an)? (?:\\w+ ){0,6}(?:bezoeken|beginnen|starten|verhuizen|reizen|rijden|vliegen|kopen|verkopen|tekenen|ondertekenen|lanceren|uitbrengen|leveren|verlaten|bellen|sturen|verzenden|ontmoeten|deelnemen|proberen|nemen|halen|boeken|verlengen|opzeggen|overstappen|migreren|upgraden|beoordelen|beslissen|afronden|trouwen|leren)",
+  "volgende? (?:week|maand|jaar|kwartaal|maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag|weekend|voorjaar|lente|zomer|herfst|najaar|winter)",
+  "komende? (?:week|maand|jaar|kwartaal|maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag|weekend|voorjaar|lente|zomer|herfst|najaar|winter)",
+  "aanstaande",
+  "morgen",
+  "overmorgen",
+  "binnenkort",
+  "later (?:deze week|deze maand|dit jaar)",
+  "denk eraan",
+  "vergeet niet",
+  "moet(?:en)? nog",
+  "het doel is",
+  "streeft ernaar",
+]
+preference = [
+  "voorkeur",
+  "verkiest",
+  "verkiezen",
+  "prefereert",
+  "prefereren",
+  "houd(?:t|en)? (?:(?:heel|erg|veel|niet|echt|ook) ){0,2}van",
+  "hou (?:(?:heel|erg|veel|niet|echt|ook) ){0,2}van",
+  "dol op",
+  "gek op",
+  "geniet(?:en)? van",
+  "haat",
+  "haten",
+  "hekel aan",
+  "lievelings\\w+",
+  "favoriete?",
+  "liever",
+  "liefst",
+  "graag",
+  "niet uitstaan",
+  "niet verdragen",
+  "k[au]n(?:nen)? (?:er )?niet tegen",
+  "allergisch voor",
+]
+# Only at the start of the statement.
+# Dutch puts the verb second, so "altijd", "nooit" or "geen" as the second word means the first
+# word is an imperative ("Draai altijd …", "Stuur geen …").
+instruction_start = [
+  "altijd",
+  "nooit",
+  "zorg",
+  "let op",
+  "let erop",
+  "vermijd",
+  "gebruik",
+  "voer",
+  "draai",
+  "run",
+  "controleer",
+  "\\w+ (?:altijd|nooit|geen)",
+]
+instruction = [
+  "moet(?:en)? altijd",
+  "moet(?:en)? nooit",
+  "mag nooit",
+  "mogen nooit",
+  "dien(?:t|en) altijd",
+  "hoor(?:t|en) altijd",
+  "moet(?:en)? te allen tijde",
+]
+# Past events: a dated reference or a completed action.
+event = [
+  "gisteren",
+  "eergisteren",
+  "vorige? (?:week|maand|jaar|nacht|weekend|maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag|voorjaar|lente|zomer|herfst|najaar|winter)",
+  "afgelopen (?:week|maand|jaar|nacht|weekend|maandag|dinsdag|woensdag|donderdag|vrijdag|zaterdag|zondag|voorjaar|lente|zomer|herfst|najaar|winter)",
+  "\\d+ (?:dag(?:en)?|weken?|maand(?:en)?|jaar|jaren) geleden",
+  "geleden",
+  "gekocht",
+  "kocht",
+  "verkocht",
+  "bezocht",
+  "gegaan",
+  "ging",
+  "geadopteerd",
+  "adopteerde",
+  "begonnen",
+  "begon",
+  "gestart",
+  "startte",
+  "afgerond",
+  "voltooid",
+  "afgemaakt",
+  "getekend",
+  "ondertekend",
+  "tekende",
+  "toegetreden",
+  "aangesloten",
+  "vertrokken",
+  "verlaten",
+  "ontmoet",
+  "ontmoette",
+  "bijgewoond",
+  "deelgenomen",
+  "afgestudeerd",
+  "studeerde af",
+  "getrouwd",
+  "trouwde",
+  "ontvangen",
+  "ontving",
+  "gekregen",
+  "kreeg",
+  "gelanceerd",
+  "uitgebracht",
+  "bracht uit",
+  "uitgeleverd",
+  "geleverd",
+  "verlengd",
+  "opgezegd",
+  "geannuleerd",
+  "betaald",
+  "geboekt",
+  "besteld",
+  "teruggestuurd",
+  "geretourneerd",
+  "gereisd",
+  "gewonnen",
+  "won",
+  "verloren",
+  "verloor",
+  "gegeven",
+  "gaf",
+  "genomen",
+  "nam",
+  "gemaakt",
+  "gedaan",
+  "geboren",
+  "overleden",
+  "gevierd",
+  "aangenomen",
+  "ontslagen",
+  "gestopt",
+  "met pensioen gegaan",
+  "aangeschaft",
+  "geüpgraded",
+]
+
+[relations]
+relationship = [
+  "\\b(?:is|was|zijn|waren|werd|wordt) (?:nu )?(?:de |het |een |hun |zijn |haar |onze |ons |mijn )?(?:nieuwe )?(?:manager|baas|leidinggevende|collega|teamgenoot|vrouw|echtgenote|man|echtgenoot|partner|vriend|vriendin|broer|zus|moeder|vader|zoon|dochter|neef|nicht|oom|tante|buurman|buurvrouw|mentor|klant|leverancier|eigenaar|oprichter|directeur|ceo|cto|cfo|sponsor|contactpersoon|accountmanager) (?:van|voor|bij)\\b",
+  "\\b(?:rapporteert aan|werkt voor|werkt samen met|getrouwd met|verloofd met|is familie van|wordt aangestuurd door)\\b",
+]
+people = [
+  "zus", "broer", "moeder", "mama", "vader", "papa", "ouder", "ouders", "vrouw", "echtgenote",
+  "man", "echtgenoot", "partner", "zoon", "dochter", "kind", "kinderen", "vriend", "vriendin",
+  "vrienden", "collega", "baas", "manager", "team", "buurman", "buurvrouw", "neef", "nicht", "oom",
+  "tante", "oma", "grootmoeder", "opa", "grootvader", "hond", "kat", "huisdier",
+]
+
+[values]
+stop = [
+  "gebruiker", "gebruikers", "deze", "heeft", "hebben", "hadden", "daar", "waren", "geweest",
+  "over", "toen", "wanneer", "welke", "zullen", "zouden", "zeer", "heel", "enkele", "meer", "meest",
+  "andere", "alleen", "zulke", "jouw", "onze", "niet", "eigenlijk", "langer", "plaats", "veranderd",
+  "gewijzigd", "overgestapt", "verhuisd", "bijgewerkt", "vroeger", "voorheen", "momenteel",
+  "tegenwoordig", "inmiddels", "correctie", "zijn", "haar", "wordt", "werd", "naar", "voor", "door",
+  "maar", "omdat", "geen", "want", "even",
+]
+value_stop = [
+  "de", "het", "een", "gebruiker", "gebruikers", "hun", "zij", "ze", "hij", "hen", "dit", "dat",
+  "deze", "die", "met", "van", "heeft", "hebben", "had", "hadden", "was", "waren", "is", "zijn",
+  "werd", "kreeg", "krijgt", "nu", "momenteel", "onlangs", "recent", "totaal", "keer", "tijd",
+  "per", "voor", "en", "ongeveer", "circa", "rond", "bijna", "ruim", "meer", "minder", "dan",
+  "over", "onder", "ook", "slechts", "alleen", "nog", "al", "reeds", "nieuw", "nieuwe", "haar",
+  "ons", "onze", "je", "jouw", "in", "op", "aan", "naar", "bij", "om", "te", "als", "door", "er",
+]
+identifier = [
+  "factuur", "bestelling", "order", "ticket", "zaak", "dossier", "rekening", "account", "id", "nr",
+  "nummer", "ref", "referentie", "versie", "kamer", "vlucht", "tafel", "stoel", "gate", "perron",
+  "spoor", "route", "bus", "lijn", "model", "serienummer", "artikel", "sku", "issue", "bug",
+  "melding", "eenheid", "appartement", "gebouw", "verdieping", "postcode", "code", "toestel",
+]
+quantity = [
+  "nul", "één", "twee", "drie", "vier", "vijf", "zes", "zeven", "acht", "negen", "tien", "elf",
+  "twaalf", "dertien", "veertien", "vijftien", "zestien", "zeventien", "achttien", "negentien",
+  "twintig", "dertig", "veertig", "vijftig", "zestig", "zeventig", "tachtig", "negentig", "honderd",
+  "duizend", "miljoen", "eenmaal", "tweemaal", "driemaal", "half", "halve", "dozijn", "dubbel",
+  "dubbele", "driedubbel", "meerdere", "enkele",
+]
+dates = [
+  "\\b\\d{1,2}\\s+(?:jan|feb|mrt|maa|apr|mei|jun|jul|aug|sep|sept|okt|nov|dec)[a-z]*\\.?",
+  "\\b\\d{1,2}-\\d{1,2}-\\d{2,4}\\b",
+]
+
+[values.numbers]
+nul = 0
+"één" = 1
+eenmaal = 1
+twee = 2
+tweemaal = 2
+dubbel = 2
+drie = 3
+driemaal = 3
+vier = 4
+vijf = 5
+zes = 6
+zeven = 7
+acht = 8
+negen = 9
+tien = 10
+elf = 11
+twaalf = 12
+dozijn = 12
+twintig = 20
+dertig = 30
+vijftig = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = ["e", "de", "ste", "u"]
+weekdays = [
+  ["maandag"],
+  ["dinsdag"],
+  ["woensdag"],
+  ["donderdag"],
+  ["vrijdag"],
+  ["zaterdag"],
+  ["zondag"],
+]
+months = [
+  ["januari"],
+  ["februari"],
+  ["maart"],
+  ["april"],
+  ["mei"],
+  ["juni"],
+  ["juli"],
+  ["augustus"],
+  ["september"],
+  ["oktober"],
+  ["november"],
+  ["december"],
+]
+month_names = [
+  "januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september",
+  "oktober", "november", "december",
+]
+ago = ["{num}\\s+{unit}\\s+geleden"]
+past = ["(?:afgelopen|voorbije|laatste|vorige?)\\s+(?:{num}\\s+)?{unit}"]
+# "vorige maand" and "vorig jaar" are the previous calendar month and year; "de afgelopen maand" is
+# read as the last thirty days.
+calendar = ["^vorig"]
+last_weekday = ["(?:afgelopen|vorige|laatste|deze|op)\\s+{weekday}"]
+strictly_before = ["^(?:afgelopen|vorige|laatste)"]
+last_weekend = ["(?:afgelopen|vorige?|laatste)\\s+weekend"]
+yesterday = ["gisteren"]
+this = ["(?:deze|dit)\\s+{unit}"]
+in_month = ["(?:{day}\\s+)?{month}"]
+
+[time.numbers]
+een = 1
+"één" = 1
+twee = 2
+"een paar" = 2
+drie = 3
+enkele = 3
+"een aantal" = 3
+meerdere = 3
+vier = 4
+vijf = 5
+zes = 6
+zeven = 7
+acht = 8
+negen = 9
+tien = 10
+elf = 11
+twaalf = 12
+
+[time.units]
+day = ["dag", "dagen"]
+week = ["week", "weken"]
+month = ["maand", "maanden"]
+year = ["jaar", "jaren"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["of"]
+or_not = ["of niet"]
+between = ["tussen\\s+(.+?)\\s+en\\s+(.+?)"]
+clause = [
+  "toen", "voordat", "nadat", "sinds", "terwijl", "totdat", "wanneer",
+]
+lead = [
+  "welke?", "wat", "wie", "wiens", "wanneer", "waarheen", "waar", "hoeveel(?:\\s+\\w+)?",
+  "hoe\\s+(?:lang|oud|vaak|veel)?", "heb", "heeft", "hebben", "had", "hadden", "was", "waren", "is",
+  "zijn", "ben", "werd",
+]
+article = [
+  "de", "het", "een", "mijn", "onze", "ons", "die", "dat", "deze", "dit",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:negeer|negeert|negeren|veronachtzaam|overschrijf|omzeil)\\b[^.\\n]{0,40}\\b(?:vorige|voorgaande|eerdere|bovenstaande|alle|je|jouw|uw|jullie)\\b[^.\\n]{0,25}\\b(?:instructies?|aanwijzingen|opdrachten|regels|richtlijnen|voorschriften|prompts?)",
+  "\\bvergeet\\s+(?:nu\\s+|maar\\s+|gewoon\\s+)?(?:al\\s+)?(?:alle|je|jouw|uw|jullie)\\b[^.\\n]{0,30}\\b(?:instructies?|aanwijzingen|opdrachten|regels|richtlijnen|voorschriften|prompts?)",
+]
+role_hijack = [
+  "\\b(?:(?:je|jij|u) bent (?:nu|vanaf nu|voortaan)|vanaf (?:nu|vandaag|dit moment)(?: af| aan)?,? (?:ben|antwoord|moet|zul|zal|gedraag|spreek|schrijf|reageer|praat) (?:je|jij)|vanaf (?:nu|vandaag|dit moment)(?: af| aan)?,? (?:bent|antwoordt|moet|zult|gedraagt|spreekt|schrijft|reageert) u|voortaan (?:ben|antwoord|moet|zul|gedraag|spreek|schrijf|reageer) (?:je|jij)|gedraag (?:je|u) als (?:een )?(?:onbeperkte?|ongecensureerde?|ongefilterde?|onbegrensde?)|doe alsof (?:je|u) geen (?:regels|beperkingen|restricties) (?:hebt|heeft))",
+]
+system_prompt = [
+  "\\b(?:toon|tonen|laat|geef|onthul|print|vertel|deel|lek)\\b[^.\\n]{0,40}\\b(?:systeem-?prompt|system prompt|systeeminstructies?|verborgen instructies|ontwikkelaarsbericht)",
+]
+memory_directive = [
+  "\\b(?:altijd|telkens|steeds|elke keer|iedere keer)\\b[^.\\n]{0,60}\\b(?:stuur|sturen|stuurt|verstuur|verzend|zend|mail|e-mail|upload|draag)\\b[^.\\n]{0,60}\\b(?:naar|aan|op)\\b[^.\\n]{0,40}(?:https?://|@|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:voer|voeren|draai|run|start|roep)\\b[^.\\n]{0,30}\\b(?:commando|opdracht|tool|functie)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

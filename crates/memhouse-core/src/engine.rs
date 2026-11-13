@@ -54,6 +54,8 @@ pub struct Engine {
     pub working: Arc<crate::working::WorkingCache>,
     /// Grants between agents, as last read from the store (INT-06); see [`crate::sharing`].
     pub(crate) grants: Arc<crate::sharing::GrantCache>,
+    /// The enabled language packs (G36): statement markers, time phrases, injection phrases.
+    pub languages: Arc<crate::lang::Languages>,
 }
 
 /// Who recalls, and the read constraints of their authorization decision.
@@ -140,6 +142,11 @@ impl Engine {
         let policy_source = Arc::new(crate::policy::StorePolicies(store.clone()));
         let intake = store.intake_queue().unwrap_or_else(|| Arc::new(crate::intake::NoQueue));
         let working = Arc::new(crate::working::WorkingCache::new(cfg.memory.working_cache_secs, cfg.memory.working_cache_sessions, cfg.memory.working_cache_items));
+        // A server validates its packs before it builds an engine (`Languages::load`, which names
+        // the file and line of a problem); a configuration that reaches here unchecked and is
+        // wrong must not run with other packs than the ones it names.
+        let languages = Arc::new(crate::lang::Languages::load(&cfg.language).unwrap_or_else(|e| panic!("language packs: {e:#}")));
+        store.set_languages(&languages.packs().iter().map(|p| (p.code().to_string(), p.file.text_search.clone())).collect::<Vec<_>>());
         Engine {
             store,
             auth,
@@ -159,7 +166,14 @@ impl Engine {
             inline_intake: true,
             working,
             grants: Default::default(),
+            languages,
         }
+    }
+
+    /// Fails when the database lacks a text-search configuration an enabled language pack
+    /// names. Run once at start, and by `memhouse doctor`.
+    pub async fn check_languages(&self) -> anyhow::Result<()> {
+        self.store.check_text_search(&self.languages.text_search()).await
     }
 
     /// Replace the statement classifier (a small model, `intake.classifier = "llm"`).
@@ -554,6 +568,7 @@ impl Engine {
             expires_at,
             scope,
             provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
+            language: None,
         };
         let proposal = Proposal {
             id,
@@ -702,6 +717,7 @@ impl Engine {
                     expires_at: None,
                     scope: req.scope.clone().unwrap_or_default(),
                     provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
+                    language: None,
                 },
                 content_hash: hash,
                 redactions,
@@ -850,7 +866,9 @@ impl Engine {
         let plan = if working_only {
             None
         } else if req.analyze.unwrap_or(rank.query_analysis) {
-            let mut p = query::analyze(&req.query, now);
+            // The question's language, among those the tenant reads (G36).
+            let lang = self.languages.detect(&req.query, policy.policy.languages.as_deref());
+            let mut p = query::analyze_detected(&lang, &req.query, now);
             // A probe with no weight is not run at all.
             if rank.window_weight <= 0.0 {
                 p.windows.clear();
@@ -859,7 +877,7 @@ impl Engine {
                 p.subqueries.clear();
             }
             // Identifiers in the question ("order A-1001") get an exact structured probe (HYB-03).
-            p.exact = query::identifiers(&req.query);
+            p.exact = query::identifiers(&lang.pack, &req.query);
             Some(p).filter(|p| !p.windows.is_empty() || !p.subqueries.is_empty() || !p.exact.is_empty())
         } else {
             None

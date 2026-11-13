@@ -1,0 +1,426 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Swedish language pack. Draft: it passes its test set (languages/tests/sv.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "sv"
+name = "Swedish"
+status = "draft"
+text_search = "swedish"
+
+[detect]
+words = [
+  "och", "i", "att", "det", "är", "en", "ett", "den", "till", "på", "de", "med", "för", "av",
+  "inte", "som", "har", "han", "hon", "jag", "vi", "du", "var", "sig", "men", "om", "från", "eller",
+  "vad", "vem", "när", "kan", "ska", "vill", "blev", "hade", "min", "mitt", "sin", "sitt", "deras",
+  "vår", "också", "efter", "vid", "så", "nu", "över", "då", "många", "mycket", "något", "några",
+  "denna", "detta", "hos", "användaren", "bara", "själv", "där", "här", "än", "hur",
+]
+letters = "åäö"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "kanske",
+  "möjligen",
+  "möjligtvis",
+  "eventuellt",
+  "förmodligen",
+  "troligen",
+  "troligtvis",
+  "antagligen",
+  "sannolikt",
+  "skulle kunna",
+  "kan tänkas",
+  "kan vara så",
+  "jag tror",
+  "jag antar",
+  "jag misstänker",
+  "jag gissar",
+  "jag undrar",
+  "inte säker",
+  "osäker på",
+  "rykte(?:t|n|na)?",
+  "ryktas",
+  "påstås",
+  "enligt uppgift",
+  "tydligen",
+  "uppenbarligen",
+  "till synes",
+  "hypotetiskt",
+  "i teorin",
+  "teoretiskt",
+  "överväger",
+  "överväga",
+  "övervägde",
+  "funderar på",
+  "funderade på",
+  "tänker på att",
+  "leker med tanken",
+  "om (?:vi|jag|de|han|hon|du) (?:\\w+ ){0,6}(?:skulle|hade|kunde|vore)",
+]
+# A change to something stored before.
+# "nu" (now) is a marker, as "jetzt" is in the German pack.
+correction = [
+  "faktiskt",
+  "egentligen",
+  "rättelse",
+  "korrigering",
+  "jag hade fel",
+  "hade fel",
+  "stämmer inte längre",
+  "inte längre",
+  "inte mer",
+  "i stället",
+  "istället",
+  "ändrat",
+  "ändrade",
+  "ändrats",
+  "bytt",
+  "bytte",
+  "flyttat",
+  "flyttade",
+  "nu",
+  "numera",
+  "nuförtiden",
+  "uppdaterat",
+  "uppdaterad",
+  "ersatt(?:s)? (?:av|med)",
+  "tidigare",
+  "förut",
+  "förr",
+  "brukade",
+]
+# An intention not yet carried out.
+# "på fredag" is the coming Friday ("i fredags" is the last one). "ska" needs a verb of action:
+# alone it is also "must" ("ska alltid"). "tänker" is "intends to"; "tänker på att" is speculation.
+plan = [
+  "planerar",
+  "planera",
+  "har planer på",
+  "har för avsikt",
+  "avsikten är",
+  "avser att",
+  "ämnar",
+  "tänker",
+  "vill",
+  "skulle vilja",
+  "önskar",
+  "hoppas",
+  "kommer att",
+  "ska(?:ll)? (?:\\w+ ){0,3}(?:besöka|börja|flytta|resa|åka|köpa|sälja|skriva|lansera|släppa|leverera|lämna|ringa|skicka|träffa|delta|försöka|hämta|boka|förnya|säga upp|byta|migrera|uppgradera|granska|bestämma|avsluta|gifta)",
+  "nästa (?:vecka|månad|år|kvartal|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|helg|vår|sommar|höst|vinter)",
+  "kommande (?:vecka|månad|år|kvartal|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|helg|vår|sommar|höst|vinter)",
+  "på (?:måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)",
+  "i ?morgon",
+  "i övermorgon",
+  "snart",
+  "senare (?:i veckan|den här veckan|i månaden|den här månaden|i år)",
+  "kom ihåg att",
+  "glöm inte att",
+  "målet är",
+]
+preference = [
+  "föredrar",
+  "föredrog",
+  "preferens",
+  "gillar",
+  "tycker (?:(?:verkligen|mycket|inte|väldigt|bäst|mest) ){0,2}om",
+  "älskar",
+  "njuter av",
+  "hatar",
+  "avskyr",
+  "ogillar",
+  "favorit\\w*",
+  "älsklings\\w+",
+  "hellre",
+  "helst",
+  "gärna",
+  "står inte ut med",
+  "tål inte",
+  "allergisk mot",
+  "förtjust i",
+]
+# Only at the start of the statement.
+# Swedish puts the verb second, so "alltid", "aldrig" or "inte" as the second word means the
+# first word is an imperative ("Kör alltid …", "Mejla inte …").
+instruction_start = [
+  "alltid",
+  "aldrig",
+  "se till",
+  "undvik",
+  "använd",
+  "kör",
+  "kontrollera",
+  "låt bli",
+  "\\w+ (?:alltid|aldrig|inte)",
+]
+instruction = [
+  "ska(?:ll)? alltid",
+  "bör alltid",
+  "måste alltid",
+  "ska(?:ll)? aldrig",
+  "bör aldrig",
+  "får aldrig",
+]
+# Past events: a dated reference or a completed action.
+event = [
+  "i ?går",
+  "i förrgår",
+  "i (?:måndags|tisdags|onsdags|torsdags|fredags|lördags|söndags)",
+  "förra (?:veckan|månaden|året|natten|helgen|måndagen|tisdagen|onsdagen|torsdagen|fredagen|lördagen|söndagen|våren|sommaren|hösten|vintern)",
+  "i (?:våras|somras|höstas|vintras)",
+  "i fjol",
+  "för (?:\\w+ ){1,3}se(?:da)?n",
+  "köpte",
+  "köpt",
+  "sålde",
+  "sålt",
+  "besökte",
+  "besökt",
+  "hälsade på",
+  "åkte",
+  "gick",
+  "adopterade",
+  "adopterat",
+  "började",
+  "börjat",
+  "startade",
+  "avslutade",
+  "avslutat",
+  "slutförde",
+  "slutfört",
+  "tog examen",
+  "tagit examen",
+  "skrev på",
+  "skrivit på",
+  "skrev under",
+  "skrivit under",
+  "undertecknade",
+  "undertecknat",
+  "lämnade",
+  "lämnat",
+  "träffade",
+  "träffat",
+  "deltog",
+  "deltagit",
+  "gifte sig",
+  "fick",
+  "fått",
+  "tog emot",
+  "lanserade",
+  "lanserat",
+  "släppte",
+  "släppt",
+  "levererade",
+  "levererat",
+  "förnyade",
+  "förnyat",
+  "sa(?:de)? upp",
+  "sagt upp",
+  "avbokade",
+  "ställde in",
+  "betalade",
+  "betalat",
+  "bokade",
+  "bokat",
+  "beställde",
+  "beställt",
+  "returnerade",
+  "reste",
+  "vann",
+  "vunnit",
+  "förlorade",
+  "förlorat",
+  "tappade",
+  "gav",
+  "gett",
+  "tog",
+  "tagit",
+  "gjorde",
+  "gjort",
+  "föddes",
+  "avled",
+  "gick bort",
+  "firade",
+  "firat",
+  "anställde",
+  "sparkade",
+  "slutade",
+  "gick i pension",
+  "skaffade",
+  "uppgraderade",
+  "uppgraderat",
+]
+
+[relations]
+relationship = [
+  "\\b(?:är|var|blev|blir) (?:nu )?(?:den |det |en |ett |deras |hans |hennes |vår |vårt |min |mitt )?(?:nya? )?(?:chef|kollega|lagkamrat|fru|hustru|man|make|maka|partner|sambo|flickvän|pojkvän|bror|syster|mamma|pappa|mor|far|son|dotter|vän|kusin|farbror|morbror|faster|moster|granne|mentor|kund|klient|leverantör|ägare|grundare|vd|cto|cfo|sponsor|kontaktperson|kundansvarig) (?:för|till|på|hos|åt|i)\\b",
+  "\\b(?:rapporterar till|arbetar för|jobbar för|arbetar med|jobbar med|gift med|förlovad med|är släkt med|leds av)\\b",
+]
+people = [
+  "syster", "bror", "mamma", "mor", "pappa", "far", "förälder", "föräldrar", "fru", "hustru", "man",
+  "make", "maka", "partner", "sambo", "son", "dotter", "barn", "vän", "vänner", "kompis", "kollega",
+  "chef", "team", "lag", "granne", "kusin", "farbror", "morbror", "faster", "moster", "mormor",
+  "farmor", "morfar", "farfar", "flickvän", "pojkvän", "hund", "katt", "husdjur",
+]
+
+[values]
+stop = [
+  "användare", "användaren", "användarens", "användarna", "denna", "detta", "dessa", "från", "hade",
+  "deras", "där", "varit", "över", "också", "bara", "mycket", "några", "mera", "mest", "andra",
+  "endast", "sådan", "våra", "inte", "faktiskt", "egentligen", "längre", "stället", "istället",
+  "ändrat", "bytt", "flyttat", "uppdaterat", "tidigare", "förut", "brukade", "rättelse", "numera",
+  "just", "blev", "blir", "efter", "eller", "eftersom", "vilken", "vilket", "vilka", "skulle",
+  "kunde", "hans", "hennes", "innan", "under", "utan", "mellan", "omkring", "till", "sina", "sitt",
+]
+value_stop = [
+  "den", "det", "de", "en", "ett", "användare", "användaren", "användarens", "deras", "dem",
+  "denna", "detta", "med", "från", "har", "hade", "var", "är", "blev", "fick", "får", "nu", "just",
+  "nyligen", "totalt", "gånger", "gång", "tid", "per", "för", "och", "ungefär", "cirka", "ca",
+  "runt", "nästan", "knappt", "över", "under", "mer", "än", "också", "bara", "endast",
+  "fortfarande", "redan", "ny", "nytt", "nya", "sin", "sitt", "sina", "hans", "hennes", "vår",
+  "vårt", "din", "ditt", "i", "på", "till", "av", "vid", "som", "att", "om", "hos",
+]
+identifier = [
+  "faktura", "order", "beställning", "ärende", "ticket", "konto", "id", "nr", "nummer", "ref",
+  "referens", "version", "rum", "flyg", "flight", "bord", "plats", "säte", "gate", "spår",
+  "perrong", "rutt", "buss", "linje", "modell", "serienummer", "artikel", "artikelnummer", "sku",
+  "fel", "bugg", "bug", "enhet", "lägenhet", "byggnad", "våning", "postnummer", "kod", "anknytning",
+]
+quantity = [
+  "noll", "två", "tre", "fyra", "fem", "sex", "sju", "åtta", "nio", "tio", "elva", "tolv",
+  "tretton", "fjorton", "femton", "sexton", "sjutton", "arton", "nitton", "tjugo", "trettio",
+  "fyrtio", "femtio", "sextio", "sjuttio", "åttio", "nittio", "hundra", "tusen", "miljon", "halv",
+  "halvt", "halva", "dussin", "dubbel", "dubbelt", "tredubbel", "flera", "åtskilliga", "några",
+]
+dates = [
+  "\\b\\d{1,2}(?::[ae])?\\s+(?:jan|feb|mar|apr|maj|jun|jul|aug|sep|sept|okt|nov|dec)[a-z]*\\.?",
+  "\\b\\d{1,2}/\\d{1,2}[-/ ]\\d{4}\\b",
+]
+
+[values.numbers]
+noll = 0
+"två" = 2
+dubbel = 2
+dubbelt = 2
+tre = 3
+tredubbel = 3
+fyra = 4
+fem = 5
+sex = 6
+sju = 7
+"åtta" = 8
+nio = 9
+tio = 10
+elva = 11
+tolv = 12
+dussin = 12
+tjugo = 20
+trettio = 30
+femtio = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = [":?[ae]", "st"]
+weekdays = [
+  ["måndag", "måndagen"],
+  ["tisdag", "tisdagen"],
+  ["onsdag", "onsdagen"],
+  ["torsdag", "torsdagen"],
+  ["fredag", "fredagen"],
+  ["lördag", "lördagen"],
+  ["söndag", "söndagen"],
+]
+months = [
+  ["januari"],
+  ["februari"],
+  ["mars"],
+  ["april"],
+  ["maj"],
+  ["juni"],
+  ["juli"],
+  ["augusti"],
+  ["september"],
+  ["oktober"],
+  ["november"],
+  ["december"],
+]
+month_names = [
+  "januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober",
+  "november", "december",
+]
+ago = ["för\\s+{num}\\s+{unit}\\s+se(?:da)?n"]
+past = ["(?:senaste|sista|förra|föregående|gångna)\\s+(?:{num}\\s+)?{unit}"]
+# "förra månaden" and "förra året" are the previous calendar month and year; "den senaste
+# månaden" is the last thirty days.
+calendar = ["^(?:förra|föregående)"]
+# "i lördags" is the last Saturday.
+last_weekday = ["i\\s+{weekday}s", "(?:förra|senaste)\\s+{weekday}"]
+strictly_before = ["^(?:i|förra|senaste)\\s"]
+last_weekend = ["(?:förra|senaste)\\s+helgen", "förra\\s+veckoslutet"]
+yesterday = ["i\\s*går"]
+this = ["(?:den\\s+här|det\\s+här|denna|detta)\\s+{unit}"]
+in_month = ["(?:{day}(?::[ae])?\\s+)?{month}"]
+
+[time.numbers]
+en = 1
+ett = 1
+"två" = 2
+"ett par" = 2
+tre = 3
+"några" = 3
+flera = 3
+fyra = 4
+fem = 5
+sex = 6
+sju = 7
+"åtta" = 8
+nio = 9
+tio = 10
+elva = 11
+tolv = 12
+
+[time.units]
+day = ["dag", "dagar", "dagen", "dagarna"]
+week = ["vecka", "veckan", "veckor", "veckorna"]
+month = ["månad", "månaden", "månader", "månaderna"]
+year = ["år", "året", "åren"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["eller"]
+or_not = ["eller inte", "eller ej"]
+between = ["mellan\\s+(.+?)\\s+och\\s+(.+?)"]
+clause = [
+  "när", "innan", "före", "efter", "sedan", "medan", "tills",
+]
+lead = [
+  "vilke[nt]", "vilka", "vad", "vems", "vem", "när", "vart", "var",
+  "hur\\s+(?:många\\s+\\w+|mycket|länge|gammal|ofta)?", "har", "hade", "är", "blev", "gjorde",
+  "fick",
+]
+article = [
+  "den", "det", "de", "en", "ett", "min", "mitt", "mina", "vår", "vårt", "våra", "denna", "detta",
+  "dessa",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:ignorera|bortse från|strunta i|åsidosätt|skriv över|kringgå)\\b[^.\\n]{0,40}\\b(?:tidigare|föregående|ovanstående|alla|dina|era)\\b[^.\\n]{0,25}\\b(?:instruktion(?:er|erna)?|anvisningar(?:na)?|regler(?:na)?|riktlinjer(?:na)?|direktiv(?:en)?|prompt(?:ar|arna|en|s)?)",
+  "\\bglöm\\s+(?:bort\\s+)?(?:alla|dina|era)\\b[^.\\n]{0,30}\\b(?:instruktion(?:er|erna)?|anvisningar(?:na)?|regler(?:na)?|riktlinjer(?:na)?|direktiv(?:en)?|prompt(?:ar|arna|en|s)?)",
+]
+role_hijack = [
+  "\\b(?:du är (?:nu|från och med nu|hädanefter)|(?:från och med nu|hädanefter|framöver),? (?:är|ska|skall|kommer|svarar|måste|talar|skriver|beter) du|(?:uppträd|bete dig|agera) som (?:en )?(?:obegränsad|ocensurerad|ofiltrerad)|låtsas (?:att |som om )?du inte har några (?:regler|begränsningar|restriktioner))",
+]
+system_prompt = [
+  "\\b(?:visa|avslöja|skriv ut|ge|berätta|dela|läck)\\b[^.\\n]{0,40}\\b(?:system-?prompt(?:en)?|system prompt|systeminstruktion(?:er|erna)?|dolda instruktioner|utvecklarmeddelande(?:t)?)",
+]
+memory_directive = [
+  "\\b(?:alltid|varje gång|närhelst|så fort)\\b[^.\\n]{0,60}\\b(?:skicka|skickar|vidarebefordra|vidarebefordrar|mejla|maila|mejlar|ladda upp|för över|överför|sänd)\\b[^.\\n]{0,60}\\b(?:till|på)\\b[^.\\n]{0,40}(?:https?://|@|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:kör|köra|exekvera|anropa|utför)\\b[^.\\n]{0,30}\\b(?:kommando(?:t)?|verktyg(?:et)?|funktion(?:en)?|tool)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

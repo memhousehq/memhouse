@@ -67,6 +67,20 @@ pub struct PolicySpec {
     /// Per-type rules (MEM-01): one optional section per memory type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub types: Option<SpecTypes>,
+    /// The languages the tenant's text is read in (G36).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<SpecLanguage>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "PolicySpecLanguage")]
+pub struct SpecLanguage {
+    /// Some of the server's enabled languages (`[language] enabled`): the tenant's writes and
+    /// questions are detected among these only. It narrows what statements are read as, never
+    /// the injection screen, which always applies every enabled language's phrases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<Vec<String>>,
 }
 
 /// What the policy governs. v1: one tenant (layers by org, team and agent come in G24).
@@ -601,6 +615,9 @@ pub struct CompiledBody {
     pub ranking: Ranking,
     /// Access-decision values (D-01…D-07), from the decision register in G28.
     pub decisions: Value,
+    /// The languages the tenant's text is detected among; absent means every enabled one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub languages: Option<Vec<String>>,
 }
 
 /// A compiled policy and the version records and traces are stamped with.
@@ -708,6 +725,7 @@ fn governance(cfg: &Config, tenant: &str) -> CompiledBody {
         recall: RecallRules { denied_labels: sorted(&g.denied_labels), audit_reads: g.audit_reads },
         ranking: Ranking::from_config(&cfg.memory),
         decisions: json!({}),
+        languages: None,
     }
 }
 
@@ -750,6 +768,21 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
             err("memory_types.allowed", "range", "allows no kind at all; leave it out to allow every kind".into());
         }
         b.memory_types.allowed = MemoryKind::ALL.into_iter().filter(|k| allowed.contains(k)).collect();
+    }
+
+    if let Some(langs) = spec.language.as_ref().and_then(|l| l.enabled.as_ref()) {
+        if langs.is_empty() {
+            err("language.enabled", "range", "names no language at all; leave it out to read every enabled language".into());
+        }
+        for l in langs.iter().filter(|l| !cfg.language.enabled.contains(l)) {
+            err(
+                "language.enabled",
+                "range",
+                format!("{l:?} is not a language this server has enabled ([language] enabled = {:?}); a policy can only narrow that list", cfg.language.enabled),
+            );
+        }
+        // In the server's order, so equal policies compile to equal bodies.
+        b.languages = Some(cfg.language.enabled.iter().filter(|l| langs.contains(l)).cloned().collect());
     }
 
     if let Some(w) = &spec.write_gate {
