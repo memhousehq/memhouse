@@ -1,0 +1,121 @@
+{
+  "run_id": "20261113-123319-c57553",
+  "label": "starter",
+  "dataset": "support",
+  "created_at": "2026-11-13T12:33:19.307116Z",
+  "wall_seconds": 18.202442542,
+  "config": {
+    "memhouse_version": "2.0.0",
+    "embedder": "local:Qdrant/bge-small-en-v1.5-onnx-Q",
+    "reranker": null,
+    "mode": "hybrid",
+    "candidates_per_retriever": 100,
+    "rrf_k": 60.0,
+    "keyword_weight": 1.0,
+    "vector_weight": 1.0,
+    "query_analysis": "window w=0.15, top 3 +1, sub-query w=0",
+    "concurrency": 4,
+    "selection": "limit=all stride=1 offset=0 types=all",
+    "answer_model": null,
+    "judge_model": null,
+    "answer_k": null,
+    "answer_prompt": null,
+    "enrich_model": null,
+    "host": "macos aarch64 · 8 CPU threads · embeddings on CPU"
+  },
+  "results": {
+    "questions": 271,
+    "scored": 271,
+    "retrieval": {
+      "eval/clean": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 20
+      },
+      "eval/contamination_rate": {
+        "mean": 0.0,
+        "lo": 0.0,
+        "hi": 0.0,
+        "n": 20
+      },
+      "eval/retrieval_f1": {
+        "mean": 0.7604015030975998,
+        "lo": 0.693451292114278,
+        "hi": 0.8273729363060502,
+        "n": 20
+      },
+      "eval/retrieval_precision": {
+        "mean": 0.6162361623616236,
+        "lo": 0.532258064516129,
+        "hi": 0.7084870848708487,
+        "n": 20
+      },
+      "eval/retrieval_recall": {
+        "mean": 0.992619926199262,
+        "lo": 0.9812734082397003,
+        "hi": 1.0,
+        "n": 20
+      },
+      "eval/stale_free": {
+        "mean": 0.08450704225352113,
+        "lo": 0.014814814814814836,
+        "hi": 0.17391304347826086,
+        "n": 20
+      },
+      "eval/stale_rate": {
+        "mean": 0.9154929577464789,
+        "lo": 0.8260869565217391,
+        "hi": 0.9859154929577465,
+        "n": 20
+      },
+      "eval/storage_f1": {
+        "mean": 0.8104738154613467,
+        "lo": 0.7812895069532239,
+        "hi": 0.840506329113924,
+        "n": 20
+      },
+      "eval/storage_precision": {
+        "mean": 0.6813417190775681,
+        "lo": 0.6410788381742739,
+        "hi": 0.7248908296943232,
+        "n": 20
+      },
+      "eval/storage_recall": {
+        "mean": 1.0,
+        "lo": 1.0,
+        "hi": 1.0,
+        "n": 20
+      }
+    },
+    "by_type": {},
+    "recall_latency": {
+      "n": 0,
+      "mean_ms": 0.0,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "max_ms": 0.0
+    },
+    "search_latency": {
+      "n": 0,
+      "mean_ms": 0.0,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "max_ms": 0.0
+    },
+    "query_embed_latency": {
+      "n": 0,
+      "mean_ms": 0.0,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "max_ms": 0.0
+    },
+    "ingest_rounds": 0,
+    "ingest_ms_total": 0.0,
+    "rounds_per_second": 0.0
+  },
+  "eval": "## Evaluation suite `support-starter`\n\n20 synthetic support conversations (facts, corrections, plans carried out or dropped, guesses, small talk).\n\n20 conversations, 323 turns, replayed under policy `gov-3b434d14ac4d` in 18.2 s (suite hash `d186050449b9`). Percentages with 95% bootstrap intervals over conversations.\n\n| | Precision | Recall | F1 | Scored |\n|---|---|---|---|---|\n| Storage | 68.1 [64.1–72.5] | 100.0 [100.0–100.0] | 81.0 [78.1–84.1] | 325 facts at checkpoints, 477 records |\n| Retrieval | 61.6 [53.2–70.8] | 99.3 [98.1–100.0] | 76.0 [69.3–82.7] | 271 questions, top 5 |\n\n| Rate | Value | Scored |\n|---|---|---|\n| Stale facts returned | 91.5 [82.6–98.6] | 130 of 142 questions about a corrected fact |\n| Contamination | 0.0 [0.0–0.0] | 0 of 169 plans and guesses committed |\n\nStorage precision: of the scored records committed and valid at a checkpoint, the part that are current facts. Storage recall: of the current facts, the part stored. Retrieval precision: the first hit is the current fact; recall: it is in the top 5.\n\n"
+}

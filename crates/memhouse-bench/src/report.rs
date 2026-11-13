@@ -45,6 +45,9 @@ pub struct Summary {
     pub results: Option<Aggregate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance: Option<GovernanceReport>,
+    /// Evaluation suites (G13): the report sections of their replays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval: Option<String>,
 }
 
 fn pct(e: &Estimate) -> String {
@@ -87,6 +90,10 @@ pub fn markdown(s: &Summary) -> String {
     }
     let _ = writeln!(o, "| Host | {} |\n", c.host);
 
+    if let Some(e) = &s.eval {
+        o.push_str(e);
+        return o;
+    }
     if let Some(a) = &s.results {
         let _ = writeln!(o, "## Retrieval quality\n");
         let _ = writeln!(o, "{} questions, {} scored against ground-truth evidence (abstention / adversarial questions are not scored for retrieval). Values are percentages with 95% bootstrap confidence intervals.\n", a.questions, a.scored);

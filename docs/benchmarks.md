@@ -309,6 +309,53 @@ memhouse bench run --dataset locomo --qa --enrich --llm-base-url https://openrou
   --answer-model openai/gpt-4o-mini --judge-model openai/gpt-4o-mini --enrich-max-cost-usd 0.3 --max-cost-usd 2
 ```
 
+## Synthetic timeline suites
+
+MemHouse's own suites: scripted conversations with ground truth at every checkpoint, replayed
+through the real write and recall paths ([evaluation.md](evaluation.md)). They measure what the
+public datasets can't: whether what should be stored is stored, whether a corrected fact still
+comes back, and whether a plan is ever committed as a fact. No model is called except the local
+embedder; a replay costs nothing.
+
+13 November 2026, `bge-small-en-v1.5-onnx-Q`, rule classifier, default policy. Storage and
+retrieval are precision / recall / **F1**, in percent.
+
+| Suite | Conversations | Questions | Storage | Retrieval (top 5) | Stale facts returned | Contamination |
+|---|---|---|---|---|---|---|
+| `personal-starter` | 20 | 285 | 79.8 / 100.0 / **88.7** | 87.4 / 98.9 / **92.8** | 84.9 | 0.0 |
+| `support-starter` | 20 | 271 | 68.1 / 100.0 / **81.0** | 61.6 / 99.3 / **76.0** | 91.5 | 0.0 |
+| `coding-starter` | 20 | 270 | 69.5 / 100.0 / **82.0** | 74.8 / 100.0 / **85.6** | 75.5 | 0.0 |
+| `sales-starter` | 20 | 279 | 69.9 / 100.0 / **82.3** | 67.4 / 100.0 / **80.5** | 85.8 | 0.0 |
+| `success-starter` | 20 | 280 | 72.1 / 100.0 / **83.8** | 64.3 / 100.0 / **78.3** | 74.3 | 0.0 |
+| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 76.7 / 100.0 / **86.8** [86.1–87.5] | 82.7 / 99.8 / **90.4** [89.4–91.4] | 76.2 [73.6–78.6] | 0.0 |
+
+The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 8 minutes on a
+laptop that was busy with other work. Brackets are 95% bootstrap intervals over conversations.
+
+What they show:
+
+- **Almost nothing that should be stored is lost**: storage recall is 99.98% on the reference
+  suite (2 of 10,289 facts at checkpoints not stored) and 100% on the starter suites. Plans and
+  guesses are held: none of the 4,399 on the reference suite was committed as a fact, and none
+  on the starter suites. A plan that a later turn carries out is not counted, since the engine
+  then rightly commits it.
+- **Corrections are the weak point.** Three quarters or more of the questions about a
+  corrected fact still get a stale version among the top 5, and storage precision is 68 to 80
+  because those stale records are still current. A correction supersedes the record it
+  corrects only when the two are close enough as vectors (`[intake] correction_threshold`,
+  0.8), and sentences such as "I no longer live in Lisbon; I now live in Porto" are not that
+  close to "I live in Lisbon" for this embedder. The public datasets did not show this: they
+  have few explicit corrections. It is what the first quality goal (G14) tunes, on these
+  suites.
+- Retrieval finds the current fact almost always (recall 98.9 to 100); it is first less often
+  where a stale version competes with it.
+
+```bash
+memhouse bench run --suite bench/suites --embedding-model bge-small-en-v1.5-onnx-Q
+memhouse bench synth --profile personal --seed 7 --conversations 500 --out reference.yaml
+memhouse bench run --suite reference.yaml --embedding-model bge-small-en-v1.5-onnx-Q
+```
+
 ## Governance suite
 
 `memhouse bench run --suite governance` runs 18 checks; all pass:

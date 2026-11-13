@@ -95,6 +95,13 @@ pub fn unavailable(message: impl Into<String>) -> anyhow::Error {
 
 /// The code of an error: its [`Coded`] when it has one, else read from validation messages that
 /// predate the codes (and from JSON decoding), else `internal`.
+/// The code an error was raised with, if it was raised with one. Unlike [`code_of`] this never
+/// reads the message: a store or provider error whose text happens to say "expected" or "empty"
+/// has no code. Use it where a refusal must be told from a failure.
+pub fn coded(e: &anyhow::Error) -> Option<ErrorCode> {
+    e.chain().find_map(|c| c.downcast_ref::<Coded>()).map(|c| c.code)
+}
+
 pub fn code_of(e: &anyhow::Error) -> ErrorCode {
     if let Some(c) = e.chain().find_map(|c| c.downcast_ref::<Coded>()) {
         return c.code;
@@ -119,6 +126,16 @@ pub fn body_of(e: &anyhow::Error) -> ErrorBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_error_raised_with_a_code_is_coded() {
+        assert_eq!(coded(&invalid("kind document is not allowed").context("remember")), Some(ErrorCode::InvalidRequest));
+        // A store error that merely reads like a bad request: classified for the HTTP answer,
+        // but it carries no code of its own.
+        let store = anyhow::anyhow!("error communicating with database: unexpected end of file");
+        assert_eq!((code_of(&store), coded(&store)), (ErrorCode::InvalidRequest, None));
+        assert_eq!(coded(&anyhow::anyhow!("the pool is empty")), None);
+    }
 
     #[test]
     fn codes_survive_context() {

@@ -34,6 +34,9 @@ pub struct Engine {
     pub policies: Arc<crate::policy::PolicyCache>,
     /// Where policy specs and their activations live (the `PolicySource` seam).
     pub policy_source: Arc<dyn crate::policy::PolicySource>,
+    /// One tenant run under a fixed policy whatever is active: the scratch tenant of an
+    /// evaluation replay (QUAL-05).
+    pub(crate) policy_pin: Option<Arc<(String, Arc<CompiledPolicy>)>>,
     /// Record an explanation for every recall (GOV-04). Off only to measure what it costs.
     pub explain_recalls: bool,
     /// The latest recall records, so an explanation can be read before its row is written.
@@ -147,6 +150,7 @@ impl Engine {
             cfg,
             policies: Default::default(),
             policy_source,
+            policy_pin: None,
             explain_recalls: true,
             recent: Default::default(),
             intake,
@@ -167,6 +171,12 @@ impl Engine {
     /// Replace the intake queue (tests; the durable log in G31).
     pub fn with_intake(mut self, q: Arc<dyn crate::traits::IntakeQueue>) -> Engine {
         self.intake = q;
+        self
+    }
+
+    /// Run `tenant` under `policy` whatever policy is active for it (an evaluation's scratch tenant).
+    pub fn with_policy_pin(mut self, tenant: &str, policy: Arc<CompiledPolicy>) -> Engine {
+        self.policy_pin = Some(Arc::new((tenant.to_string(), policy)));
         self
     }
 

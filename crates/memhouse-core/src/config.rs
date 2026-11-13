@@ -23,6 +23,35 @@ pub struct Config {
     pub telemetry: TelemetryConfig,
     /// The write pipeline: intake queue, workers and the statement gate (G10).
     pub intake: IntakeConfig,
+    /// Evaluation suites and the regression gate (G13).
+    pub eval: EvalConfig,
+}
+
+/// Evaluation (QUAL-04, QUAL-05): a tenant's suites are replayed before a policy is approved,
+/// and the approval is refused when quality falls past these limits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EvalConfig {
+    /// Run the regression gate before a policy is approved, for tenants that have suites.
+    pub gate: bool,
+    /// Points (hundredths) storage F1 or retrieval F1 may fall by on a suite.
+    pub max_f1_drop: f64,
+    /// Points the stale-fact rate may rise by.
+    pub max_stale_rise: f64,
+    /// Points the contamination rate (plans and guesses committed as facts) may rise by.
+    pub max_contamination_rise: f64,
+}
+
+impl Default for EvalConfig {
+    fn default() -> Self {
+        EvalConfig { gate: true, max_f1_drop: 2.0, max_stale_rise: 1.0, max_contamination_rise: 1.0 }
+    }
+}
+
+impl EvalConfig {
+    pub fn limits(&self) -> crate::eval::GateLimits {
+        crate::eval::GateLimits { max_f1_drop: self.max_f1_drop, max_stale_rise: self.max_stale_rise, max_contamination_rise: self.max_contamination_rise }
+    }
 }
 
 /// Which statement classifier the write gate uses (QUAL-02, TR-MS-01).

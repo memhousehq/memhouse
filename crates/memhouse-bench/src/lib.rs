@@ -6,6 +6,7 @@
 mod api_checks;
 pub mod baselines;
 pub mod datasets;
+mod eval_checks;
 pub mod governance;
 pub mod guard;
 mod identity_checks;
@@ -16,6 +17,8 @@ mod policy_checks;
 pub mod report;
 pub mod runner;
 mod schema_checks;
+pub mod suites;
+pub mod synth;
 mod telemetry_checks;
 mod type_checks;
 
@@ -38,8 +41,25 @@ pub enum BenchCmd {
         #[arg(long)]
         force: bool,
     },
-    /// Run a benchmark dataset and/or the governance suite
+    /// Run a benchmark dataset, the governance suite or an evaluation suite file
     Run(Box<RunArgs>),
+    /// Generate a synthetic evaluation suite with ground truth at checkpoints
+    Synth {
+        /// personal, support, coding, sales or success
+        #[arg(long, default_value = "personal")]
+        profile: String,
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
+        /// Number of conversations (500 is the reference size)
+        #[arg(long, default_value_t = 500)]
+        conversations: usize,
+        /// The suite's name (default: synth-<profile>-<seed>-<conversations>)
+        #[arg(long)]
+        name: Option<String>,
+        /// Write the suite here as YAML (default: standard output)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Regression guard: run the benchmark tiers and compare them with bench/baselines.json
     Guard(guard::GuardArgs),
     /// Rebuild report.md for a results directory, or compare several runs
@@ -54,9 +74,12 @@ pub struct RunArgs {
     /// Dataset to run (see `memhouse bench list`)
     #[arg(long)]
     pub dataset: Option<String>,
-    /// Suite to run: governance
+    /// Suite to run: `governance`, or an evaluation suite file or folder (YAML; see docs/evaluation.md)
     #[arg(long)]
     pub suite: Option<String>,
+    /// Evaluation suites: replay this many times and report how many records ended the same (QUAL-10)
+    #[arg(long, default_value_t = 1)]
+    pub repeat: usize,
     /// Maximum number of conversations
     #[arg(long)]
     pub limit: Option<usize>,
@@ -234,6 +257,30 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        BenchCmd::Synth { profile, seed, conversations, name, out } => {
+            let (suite, shape) = synth::generate(&profile, seed, conversations, name.as_deref())?;
+            let yaml = suites::to_yaml(&suite)?;
+            match &out {
+                Some(p) => std::fs::write(p, &yaml).with_context(|| format!("writing {}", p.display()))?,
+                None => print!("{yaml}"),
+            }
+            eprintln!(
+                "{}: {} conversations, {} sessions, {} turns ({} facts, {} corrections, {} plans, {} carried out, {} guesses, {} small talk), {} checkpoint questions; hash {}",
+                suite.name,
+                shape.conversations,
+                shape.sessions,
+                shape.turns,
+                shape.facts,
+                shape.corrections,
+                shape.plans,
+                shape.outcomes,
+                shape.guesses,
+                shape.small_talk,
+                shape.questions,
+                &suite.hash()[..12]
+            );
+            Ok(())
+        }
         BenchCmd::Guard(args) => guard::run(args, cfg).await,
     }
 }
@@ -315,7 +362,10 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
         engine
     };
     let run_id = format!("{}-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"), &uuid::Uuid::new_v4().to_string()[..6]);
-    let name = args.dataset.clone().unwrap_or_else(|| args.suite.clone().unwrap_or_default());
+    // A suite given as a file or folder is named after it, not after its whole path.
+    let suite_name =
+        args.suite.as_deref().map(|s| std::path::Path::new(s).file_stem().and_then(|n| n.to_str()).filter(|_| std::path::Path::new(s).exists()).unwrap_or(s).to_string());
+    let name = args.dataset.clone().unwrap_or_else(|| suite_name.unwrap_or_default());
     let out_dir = args.out.clone().unwrap_or_else(|| PathBuf::from("bench-results")).join(format!(
         "{}_{}{}",
         run_id,
@@ -386,6 +436,7 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
         },
         results: None,
         governance: None,
+        eval: None,
     };
 
     if args.suite.as_deref() == Some("governance") {
@@ -395,8 +446,53 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
             eprintln!("  {} {:<22} {}", if c.passed { "✓" } else { "✗" }, c.id, c.value);
         }
         summary.governance = Some(g);
+    } else if let Some(s) = args.suite.as_deref().filter(|s| std::path::Path::new(s).exists()) {
+        // Evaluation suites (G13): replayed through the real write and recall paths.
+        // A replay recalls as an agent does, in the default mode, and its values are the run's
+        // results: it is not combined with a dataset or run in another retrieval mode.
+        anyhow::ensure!(args.dataset.is_none(), "run an evaluation suite and a dataset in separate runs: each writes its own results");
+        anyhow::ensure!(
+            mode == RetrievalMode::Hybrid && !args.rerank,
+            "an evaluation suite is replayed with the engine's own recall settings: --mode and --rerank don't apply to it"
+        );
+        let loaded = suites::load_all(std::path::Path::new(s))?;
+        let tenant = engine.cfg.memory.tenant.clone();
+        let mut sum = memhouse_core::eval::EvalCounts::default();
+        let mut per = vec![];
+        let mut sections = String::new();
+        for suite in &loaded {
+            eprintln!("Replaying evaluation suite {} ({} conversations, {} turns) ...", suite.name, suite.conversations.len(), suite.turns());
+            let mut runs = vec![];
+            for _ in 0..args.repeat.max(1) {
+                runs.push(engine.eval_replay(&tenant, suite, None, memhouse_core::eval::EvalTrigger::Manual).await?);
+            }
+            let repeats = (runs.len() > 1).then(|| (runs.len(), suites::agreement(&runs)));
+            let run = &runs[0];
+            sum.add(&run.counts);
+            per.extend(run.per_conversation.iter().copied());
+            sections.push_str(&suites::markdown(suite, run, repeats));
+            std::fs::write(out_dir.join(format!("eval-{}.json", slug(&suite.name))), serde_json::to_string_pretty(run)?)?;
+        }
+        let all = memhouse_core::eval::EvalRun {
+            id: uuid::Uuid::now_v7(),
+            tenant,
+            suite: name.clone(),
+            suite_hash: String::new(),
+            policy_version: String::new(),
+            fingerprint: engine.fingerprint(),
+            trigger: memhouse_core::eval::EvalTrigger::Manual,
+            counts: sum,
+            metrics: sum.metrics(),
+            per_conversation: per,
+            outcomes: vec![],
+            took_ms: 0.0,
+            created_at: chrono::Utc::now(),
+            gate_passed: None,
+        };
+        summary.results = Some(runner::Aggregate { questions: sum.questions as usize, scored: sum.questions as usize, retrieval: suites::estimates(&all), ..Default::default() });
+        summary.eval = Some(sections);
     } else if let Some(s) = &args.suite {
-        anyhow::bail!("unknown suite '{s}'");
+        anyhow::bail!("unknown suite '{s}': give `governance` or the path of an evaluation suite file or folder");
     }
 
     if let Some(ds) = &args.dataset {

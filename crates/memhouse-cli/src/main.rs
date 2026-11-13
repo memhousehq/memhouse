@@ -19,6 +19,7 @@ macro_rules! println {
 }
 
 mod connect;
+mod eval;
 mod policy;
 mod principals;
 mod up;
@@ -126,6 +127,14 @@ enum Cmd {
     Principal {
         #[command(subcommand)]
         cmd: principals::PrincipalCmd,
+    },
+    /// Evaluation suites: add, list, replay, and the regression gate
+    Eval {
+        /// Tenant (default: the configured one)
+        #[arg(long, global = true)]
+        tenant: Option<String>,
+        #[command(subcommand)]
+        cmd: eval::EvalCmd,
     },
     /// Behaviour policy: validate, diff, propose, approve and roll back specs
     Policy {
@@ -499,6 +508,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Key { cmd: Some(c) } => principals::key(&engine(Config::load(cfg_path.as_deref())?).await?, c).await?,
         Cmd::Principal { cmd } => principals::principal(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
         Cmd::Policy { tenant, cmd: policy::PolicyCmd::Validate { file } } => policy::validate(&Config::load(cfg_path.as_deref())?, tenant, &file)?,
+        Cmd::Eval { tenant, cmd } => eval::run(&engine(Config::load(cfg_path.as_deref())?).await?, tenant, cmd).await?,
         Cmd::Policy { tenant, cmd } => policy::run(&engine(Config::load(cfg_path.as_deref())?).await?, tenant, cmd).await?,
         Cmd::Grant { cmd } => principals::grant(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
         Cmd::Remember { content, subject, kind, tags, session } => {

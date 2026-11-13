@@ -284,7 +284,18 @@ pub fn shares_content_word(a: &str, b: &str) -> bool {
             .collect()
     };
     let (wa, wb) = (words(a), words(b));
-    wa.iter().any(|w| wb.contains(w) || wb.iter().any(|x| x.len() >= 5 && w.len() >= 5 && (x.starts_with(&w[..5]) || w.starts_with(&x[..5]))))
+    // The same stem: five letters in common at the start. Counted in characters, so a word with
+    // letters outside ASCII ("Kraków") is cut between letters, never inside one.
+    let stem = |w: &str| w.char_indices().nth(5).map(|(i, _)| w[..i].to_string()).or_else(|| (w.chars().count() == 5).then(|| w.to_string()));
+    wa.iter().any(|w| {
+        wb.contains(w)
+            || stem(w).is_some_and(|sw| {
+                wb.iter().any(|x| match stem(x) {
+                    Some(sx) => x.starts_with(&sw) || w.starts_with(&sx),
+                    None => false,
+                })
+            })
+    })
 }
 
 static DATES: Lazy<Regex> = Lazy::new(|| {
@@ -540,6 +551,11 @@ mod tests {
         assert!(shares_content_word("The user lives in Lisbon.", "The user now lives in Porto."));
         assert!(shares_content_word("The user has three bikes.", "The user now has four bikes."));
         assert!(!shares_content_word("The user likes jazz.", "The user now works at Globex."));
+        // Letters outside ASCII: no cut inside a letter (this panicked), and stems still match.
+        assert!(shares_content_word("Dana lives in Kraków.", "Correction: Dana lives in Kraków's old town now."));
+        assert!(shares_content_word("Krakówie", "Krakówku"));
+        assert!(!shares_content_word("Krakówie", "Krajobraz"));
+        assert!(!shares_content_word("Jo likes Malmö.", "Jo now works at Škoda."));
     }
 
     #[test]

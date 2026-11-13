@@ -488,7 +488,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-56 checks pass on the current release. The core ones:
+59 checks pass on the current release. The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -527,6 +527,9 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `ranking_weights` | on a controlled set, changing the relevance, recency, confidence or validity weight in the policy changes the order as specified (HYB-05) |
 | `packing_dedup` | over a corpus seeded with duplicates, no two returned memories reach the configured cosine or text-overlap threshold, and the freed places are filled (ECON-03) |
 | `token_budget` | 500 recalls with budgets from 200 to 8,000 tokens: none over its budget, in the hits or in the plain, markdown or xml block (PERF-06) |
+| `eval_harness` | a replayed suite is scored for storage and retrieval separately, with the stale-fact and contamination rates, and leaves nothing in the store (QUAL-03) |
+| `eval_gate` | a tenant's suite runs before a policy is approved, with results stored per policy version; a policy that stops corrections from superseding is refused with a report, audited and left proposed (QUAL-04, QUAL-05) |
+| `eval_reproducible` | three replays of a suite end the same for every scored record (QUAL-10) |
 | `partitions` | 1,000 mixed writes, direct and through an agent: notes in the patient's partition, own preferences and procedures in the clinician's, each with the right author |
 
 Run it in CI and keep the reports: they are audit evidence for every release.

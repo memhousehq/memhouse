@@ -297,6 +297,27 @@ The fused part is multiplied by `relevance_weight`. A tenant's policy can set ev
 (`[ranking]` in a [policy spec](policy.md)); the formula and the packing rules are in the
 [API reference](api.md#ranking-four-features-weights-from-the-policy).
 
+## `[eval]`
+
+Evaluation suites and the regression gate (G13; [evaluation.md](evaluation.md)). A tenant's
+suites are replayed before a policy version is approved; the approval is refused when a metric
+passes one of these limits. Limits are in points (hundredths).
+
+```toml
+[eval]
+gate = true
+max_f1_drop = 2.0
+max_stale_rise = 1.0
+max_contamination_rise = 1.0
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `gate` | true | run the regression gate before a policy is approved, for tenants that have suites (`memhouse eval add`); `false` approves without replaying them |
+| `max_f1_drop` | 2.0 | points storage F1 or retrieval F1 may fall by on a suite (QUAL-05) |
+| `max_stale_rise` | 1.0 | points the stale-fact rate may rise by |
+| `max_contamination_rise` | 1.0 | points the contamination rate (plans and guesses committed as facts) may rise by |
+
 ## `[intake]`
 
 The write pipeline (G10; [architecture.md](architecture.md#write-path)). A write is authorized and
