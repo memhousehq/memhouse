@@ -743,11 +743,13 @@ impl Engine {
             }
             replays.push((now, compared));
         }
-        // One decision over all suites; a replay with nothing to compare with is a first
-        // reference and stays one.
+        // One decision over all suites; a replay with nothing to compare with becomes a first
+        // reference only if the gate as a whole did not fail.
         let passed = findings.iter().all(|f| f.passed);
         for (mut run, compared) in replays {
-            run.gate_passed = compared.then_some(passed);
+            // A first replay made while the gate failed is of the engine that failed it: it is
+            // not a reference either.
+            run.gate_passed = if compared || !passed { Some(passed) } else { None };
             self.store.eval_run_put(&run).await?;
         }
         Ok(before_policy.map(|b| GateReport { passed: findings.iter().all(|f| f.passed), before_policy: b, after_policy: policy.version.clone(), findings }))

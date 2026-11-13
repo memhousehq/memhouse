@@ -224,6 +224,21 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
             Ok(run) => problems.push(format!("failing {what} were scored instead of failing the replay: {:?}", run.metrics)),
         }
     }
+    // The same for the store: a database error on a write, with a message that reads like a
+    // bad request, fails the replay; it is not a refusal by policy.
+    sqlx::raw_sql(
+        "CREATE FUNCTION eval_check_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'unexpected storage failure, expected none'; END $$; \
+         CREATE TRIGGER eval_check_fail BEFORE INSERT ON mh_intake FOR EACH ROW WHEN (NEW.subject = 'eval:c00') EXECUTE FUNCTION eval_check_fail();",
+    )
+    .execute(pool)
+    .await?;
+    let store_down = e.eval_replay(TENANT, &controlled(1), None, EvalTrigger::Manual).await;
+    sqlx::raw_sql("DROP TRIGGER eval_check_fail ON mh_intake; DROP FUNCTION eval_check_fail();").execute(pool).await?;
+    match store_down {
+        Err(err) if format!("{err:#}").contains("unexpected storage failure") => {}
+        Err(err) => problems.push(format!("a store error on a write: the replay failed with another error: {err:#}")),
+        Ok(run) => problems.push(format!("a store error on a write was scored instead of failing the replay: outcomes {:?}", run.outcomes.first())),
+    }
     // Claim isolation: a write queued for a scratch tenant is not handed to a worker (which
     // claims without naming a tenant and knows no pinned policy), only to the engine that asks
     // for it by tenant and subject; a normal tenant's queued write is handed to a worker.
@@ -380,6 +395,38 @@ async fn eval_gate(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         problems.push(format!("with [eval] gate = false the approval was still refused: {err:#}"));
     }
     e.policy_rollback(TENANT, Some(memhouse_core::policy::PolicyTarget::Default), "Dana Reviewer").await?;
+    // The gate for an engine change, on another tenant with two suites. The first run stores
+    // the reference of suite one. Then the engine is degraded (no correction is ever close
+    // enough to supersede) and a second suite is added, which has no reference yet: the gate
+    // fails on suite one, and the first replay of suite two, made by the failing engine, must
+    // not become its reference.
+    let other = "gate-now";
+    // Built once: the sessions are dated from now, so a suite built again is another suite.
+    let (one, two) = (Suite { name: "one".into(), ..controlled(4) }, Suite { name: "two".into(), ..controlled(3) });
+    e.eval_suite_put(other, &one, "bench").await?;
+    if e.eval_gate_now(other).await?.is_some() {
+        problems.push("the first engine gate reported a comparison without a reference".into());
+    }
+    let mut worse = (*e.cfg).clone();
+    worse.intake.correction_threshold = 1.01;
+    let degraded = e.clone().reconfigure(worse);
+    degraded.eval_suite_put(other, &two, "bench").await?;
+    for round in 1..=2 {
+        match degraded.eval_gate_now(other).await? {
+            Some(report) if !report.passed && report.findings.iter().all(|f| f.suite == "one") => {}
+            Some(report) => problems.push(format!("engine gate, round {round}: {}", report.text(true))),
+            None => problems.push(format!("engine gate, round {round}: no comparison was made")),
+        }
+    }
+    let flags: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT suite, run ->> 'gate_passed' FROM mh_eval_run WHERE tenant = $1 ORDER BY created_at, id").bind(other).fetch_all(pool).await?;
+    let two_flags: Vec<Option<&str>> = flags.iter().filter(|(s, _)| s == "two").map(|(_, g)| g.as_deref()).collect();
+    if two_flags != [Some("false"), Some("false")] || e.store.eval_reference(other, "two", &two.hash()).await?.is_some() {
+        problems.push(format!("the replays of a suite first run during a failed gate are flagged {two_flags:?} and may serve as its reference"));
+    }
+    if e.store.eval_reference(other, "one", &one.hash()).await?.and_then(|r| r.metrics.stale_rate) != Some(0.0) {
+        problems.push("after two failed gates the reference of the first suite is no longer its original replay".into());
+    }
     let stale = report.split("stale_rate ").nth(1).and_then(|s| s.split(" (").next()).unwrap_or("?").to_string();
     Ok(verdict(
         problems,
