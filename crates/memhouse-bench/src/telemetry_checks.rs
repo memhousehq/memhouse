@@ -392,6 +392,11 @@ fn holds(v: &str, w: &str) -> bool {
     if !w.bytes().all(|c| c.is_ascii_digit()) {
         return v.contains(&w);
     }
+    // Record ids are random hexadecimal: four digits of one can equal the number by chance
+    // (about one run in ten did). An id is not content, so ids are taken out first.
+    static UUID: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").expect("a valid pattern"));
+    let v = UUID.replace_all(&v, "<id>").into_owned();
     v.match_indices(&w).any(|(i, _)| {
         let before = v[..i].chars().next_back().is_some_and(|c| c.is_ascii_digit());
         let after = v[i + w.len()..].chars().next().is_some_and(|c| c.is_ascii_digit());
@@ -619,5 +624,7 @@ mod tests {
         assert!(!holds("0.000987666", "9876"));
         assert!(!holds("elapsed 19876 ms", "9876"));
         assert!(holds("19876 or 9876", "9876"));
+        assert!(!holds("ids 01a1d4c3-631d-71d9-9876-69e5b6caf129,01a1d4c3-6304-70c7-88e7-594ee926a7dd", "9876"));
+        assert!(holds("01a1d4c3-631d-71d9-9876-69e5b6caf129 renewed at 9876", "9876"));
     }
 }
