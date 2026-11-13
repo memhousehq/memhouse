@@ -71,6 +71,59 @@ pub enum KeyCmd {
     },
 }
 
+#[derive(Subcommand)]
+pub enum GrantCmd {
+    /// Let GRANTEE read GRANTOR's agent-scoped memory (INT-06)
+    Add {
+        /// The agent whose memory is shared
+        grantor: String,
+        /// The agent that may read it
+        grantee: String,
+        /// Subjects covered: an exact name, a prefix ending in *, or * (default)
+        #[arg(long)]
+        subjects: Option<String>,
+        /// Kinds covered; repeatable. Default: all
+        #[arg(long = "kind")]
+        kinds: Vec<String>,
+        /// Lifetime, e.g. 30d, 12h (default: until revoked)
+        #[arg(long)]
+        expires: Option<String>,
+    },
+    /// List grants, revoked and expired ones included
+    List,
+    /// Revoke a grant now
+    Revoke { id: String },
+}
+
+pub async fn grant(eng: &Engine, cmd: GrantCmd) -> anyhow::Result<()> {
+    let tenant = eng.cfg.memory.tenant.clone();
+    match cmd {
+        GrantCmd::Add { grantor, grantee, subjects, kinds, expires } => {
+            let kinds = kinds.iter().map(|k| MemoryKind::parse(k).ok_or_else(|| anyhow::anyhow!("unknown kind '{k}'"))).collect::<anyhow::Result<_>>()?;
+            let expires_at = expires.as_deref().map(duration).transpose()?.map(|d| chrono::Utc::now() + d);
+            let g = eng.grant_create(&tenant, &memhouse_core::types::GrantRequest { grantor, grantee, subjects, kinds, expires_at }, "cli").await?;
+            println!("{}", serde_json::to_string_pretty(&g)?);
+        }
+        GrantCmd::List => {
+            let now = chrono::Utc::now();
+            for g in eng.grant_list(&tenant).await? {
+                let kinds = if g.kinds.is_empty() { "all kinds".to_string() } else { g.kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(",") };
+                let state = match (g.revoked_at, g.active(now)) {
+                    (Some(_), _) => "revoked",
+                    (None, false) => "expired",
+                    (None, true) => "active",
+                };
+                println!("{}  {} -> {}  subjects {}  {kinds}  {state}", g.id, g.grantor, g.grantee, g.subjects);
+            }
+        }
+        GrantCmd::Revoke { id } => {
+            eng.grant_revoke(&tenant, uuid::Uuid::parse_str(&id)?, "cli").await?;
+            println!("revoked {id}");
+        }
+    }
+    Ok(())
+}
+
 pub fn duration(s: &str) -> anyhow::Result<chrono::Duration> {
     let (n, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
     let n: i64 = n.parse().map_err(|_| anyhow::anyhow!("expected a duration like 90d, 12h or 30m, got '{s}'"))?;

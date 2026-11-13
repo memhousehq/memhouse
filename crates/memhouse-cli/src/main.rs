@@ -135,6 +135,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: policy::PolicyCmd,
     },
+    /// Share one agent's agent-scoped memory with another: add, list and revoke grants
+    Grant {
+        #[command(subcommand)]
+        cmd: principals::GrantCmd,
+    },
     /// Store a memory
     Remember {
         content: String,
@@ -144,12 +149,33 @@ enum Cmd {
         kind: String,
         #[arg(long = "tag", short = 't')]
         tags: Vec<String>,
+        /// The session the memory belongs to (working memory is visible only inside it)
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Promote memories to another type (working to semantic, episodic to procedural, ...)
+    Promote {
+        /// Ids of the memories to promote
+        #[arg(required = true)]
+        ids: Vec<String>,
+        /// The type of the new memory: semantic, preference, procedural, taxonomic or episodic
+        #[arg(long, short)]
+        kind: String,
+        /// Its text (required for several sources; default: the source's text)
+        #[arg(long, short)]
+        content: Option<String>,
+        /// Why, for the audit log
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Search memory
     Recall {
         query: String,
         #[arg(long, short)]
         subject: Option<String>,
+        /// Recall inside this session: its working memory comes first
+        #[arg(long)]
+        session: Option<String>,
         #[arg(short, default_value_t = 10)]
         k: usize,
         #[arg(long)]
@@ -474,25 +500,36 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Principal { cmd } => principals::principal(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
         Cmd::Policy { tenant, cmd: policy::PolicyCmd::Validate { file } } => policy::validate(&Config::load(cfg_path.as_deref())?, tenant, &file)?,
         Cmd::Policy { tenant, cmd } => policy::run(&engine(Config::load(cfg_path.as_deref())?).await?, tenant, cmd).await?,
-        Cmd::Remember { content, subject, kind, tags } => {
+        Cmd::Grant { cmd } => principals::grant(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
+        Cmd::Remember { content, subject, kind, tags, session } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;
-            let r = eng.remember(RememberRequest { subject, content, kind: Some(kind), tags, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
+            let scope = session.map(|s| Scope { session: Some(s), ..Default::default() });
+            let r = eng.remember(RememberRequest { subject, content, kind: Some(kind), tags, scope, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
-        Cmd::Recall { query, subject, k, rerank, json } => {
+        Cmd::Promote { ids, kind, content, reason } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;
+            let sources = ids.iter().map(|i| uuid::Uuid::parse_str(i)).collect::<Result<Vec<_>, _>>()?;
+            let r = eng.promote(PromoteRequest { sources, kind, content, reason, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+        }
+        Cmd::Recall { query, subject, session, k, rerank, json } => {
             let mut cfg = Config::load(cfg_path.as_deref())?;
             if rerank {
                 cfg.rerank.enabled = true;
             }
             let eng = engine(cfg).await?;
-            let r = eng.recall(RecallRequest { subject, query, k: Some(k), actor: Some("cli".into()), ..Default::default() }).await?;
+            let scope = session.map(|s| Scope { session: Some(s), ..Default::default() });
+            let r = eng.recall(RecallRequest { subject, query, k: Some(k), scope, actor: Some("cli".into()), ..Default::default() }).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r)?);
             } else {
                 for (i, h) in r.hits.iter().enumerate() {
                     let m = &h.memory;
-                    println!("{:>2}. [{:.3}] ({}, {}) {}", i + 1, h.score, m.kind, m.occurred_at.unwrap_or(m.created_at).format("%Y-%m-%d"), m.content.replace('\n', " ⏎ "));
+                    let score = if h.working { "session".to_string() } else { format!("{:.3}", h.score) };
+                    println!("{:>2}. [{score}] ({}, {}) {}", i + 1, m.kind, m.occurred_at.unwrap_or(m.created_at).format("%Y-%m-%d"), m.content.replace('\n', " ⏎ "));
                     println!("    id {}", m.id);
                 }
                 println!("{} results in {:.1} ms", r.hits.len(), r.took_ms);

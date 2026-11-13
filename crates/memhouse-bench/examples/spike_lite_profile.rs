@@ -95,6 +95,8 @@ fn rss_mb() -> f64 {
 }
 
 fn open(path: &std::path::Path, durable: bool) -> anyhow::Result<rusqlite::Connection> {
+    // `build` and `run` are two processes: each checks the directory before it opens the store.
+    private_dir(path.parent().expect("the store has a directory"))?;
     let db = rusqlite::Connection::open(path)?;
     db.execute_batch(if durable {
         // Power-loss durable on macOS: fsync the WAL with F_FULLFSYNC on every commit.
@@ -147,7 +149,9 @@ fn vec_of_half(b: &[u8]) -> Vec<f32> {
 }
 
 fn store_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("memhouse-spike-lite-profile").join("memhouse.db")
+    // Under the MemHouse home, in a directory `open` checks to be this user's own and closed
+    // to others (RUSTSEC-2026-0459, see deny.toml).
+    memhouse_core::config::home_dir().join("spike-lite-profile").join("memhouse.db")
 }
 
 fn config() -> anyhow::Result<Config> {
@@ -169,8 +173,11 @@ fn config() -> anyhow::Result<Config> {
 async fn build() -> anyhow::Result<()> {
     let embedder = memhouse_models::build_embedder(&config()?, false)?;
     let path = store_path();
-    let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    std::fs::create_dir_all(path.parent().unwrap())?;
+    let dir = path.parent().expect("the store has a directory");
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    std::fs::create_dir_all(dir)?;
     let mut rng = StdRng::seed_from_u64(7);
     let db = open(&path, false)?;
     db.execute_batch(
@@ -379,4 +386,23 @@ type Job = (i64, i64, String, Option<Vec<u8>>, f64);
 
 fn now_s() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64()
+}
+
+/// A directory only this user can use: created if missing, then checked to be the user's own
+/// and closed to everyone else, so nobody can plant a database or a `-wal` file in it
+/// (RUSTSEC-2026-0459, see deny.toml). `MEMHOUSE_HOME` may point anywhere; this does not trust it.
+fn private_dir(dir: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let meta = std::fs::symlink_metadata(dir)?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        anyhow::ensure!(meta.is_dir() && meta.uid() == me, "{} is not a directory owned by this user; the spike won't open a database there", dir.display());
+        if meta.mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(())
 }

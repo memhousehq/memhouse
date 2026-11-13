@@ -223,14 +223,25 @@ async fn main() -> anyhow::Result<()> {
         let lit = format!("[{}]", q.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
         for (j, (_, sql)) in pg_sql.iter().enumerate() {
             let t = Instant::now();
-            let got: Vec<String> = sqlx::query_scalar(sql).bind(subject).bind(&lit).fetch_all(&pg).await?;
+            let got: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_string())).bind(subject).bind(&lit).fetch_all(&pg).await?;
             pg_stats[j].add(&truth, &got, t.elapsed().as_secs_f64() * 1e3);
         }
     }
 
     // ---- 2. SQLite + FTS5, in-process scoring ----
-    let file = std::env::temp_dir().join("memhouse-spike-lite.db");
-    let _ = std::fs::remove_file(&file);
+    // A directory checked to be this user's own and closed to others, emptied of any left-over
+    // database files first.
+    let dir = memhouse_core::config::home_dir().join("spike");
+    private_dir(&dir)?;
+    let file = dir.join("memhouse-spike-lite.db");
+    for stale in ["", "-wal", "-shm"] {
+        let path = dir.join(format!("memhouse-spike-lite.db{stale}"));
+        // Whatever is at the path goes, a dangling symlink included (`exists` follows links
+        // and would miss one, and SQLite would then create the database at its target).
+        if std::fs::symlink_metadata(&path).is_ok() {
+            std::fs::remove_file(&path)?;
+        }
+    }
     let mut db = rusqlite::Connection::open(&file)?;
     db.execute_batch(
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;
@@ -351,6 +362,8 @@ async fn main() -> anyhow::Result<()> {
             vector_weight: 1.0,
             windows: vec![],
             scope: Default::default(),
+            include_candidates: false,
+            shared_agents: vec![],
         };
         let pgk = store.search(&sq).await?;
         let session_of: HashMap<&str, &str> = rounds.iter().map(|r| (r.id.as_str(), r.session.as_str())).collect();
@@ -463,5 +476,24 @@ async fn main() -> anyhow::Result<()> {
     println!();
     println!("**Process RSS at the end:** {:.0} MB (includes the embedding model and all {} rounds in memory twice).", rss_kb as f64 / 1024.0, n_rounds);
     sqlx::raw_sql("DROP TABLE spike_vec").execute(&pg).await?;
+    Ok(())
+}
+
+/// A directory only this user can use: created if missing, then checked to be the user's own
+/// and closed to everyone else, so nobody can plant a database or a `-wal` file in it
+/// (RUSTSEC-2026-0459, see deny.toml). `MEMHOUSE_HOME` may point anywhere; this does not trust it.
+fn private_dir(dir: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let meta = std::fs::symlink_metadata(dir)?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        anyhow::ensure!(meta.is_dir() && meta.uid() == me, "{} is not a directory owned by this user; the spike won't open a database there", dir.display());
+        if meta.mode() & 0o077 != 0 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
     Ok(())
 }

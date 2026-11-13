@@ -10,6 +10,7 @@ use crate::config::Admission;
 use crate::engine::{Engine, Entry, Page};
 use crate::error;
 use crate::identity::{perm, Identity, PrincipalKind, TokenResponse, Via};
+use crate::policy::{Approver, Partition, TypeGate};
 use crate::policy::{
     CompiledPolicy, PolicyDiff, PolicyDiffRequest, PolicySpec, PolicySpecRecord, PolicySpecRequest, PolicyStatus, PolicyTarget, PolicyValidation, RollbackRequest,
 };
@@ -108,39 +109,137 @@ impl Caller {
         self.decide(&AccessRequest::new(op)).await?;
         // A write still in the intake queue reads as a candidate (CORE-02).
         let m = self.engine.get_record(self.tenant(), id).await?.ok_or_else(missing)?;
-        let req = AccessRequest::new(op).record(&m);
+        let mut req = AccessRequest::new(op).record(&m);
+        req.own_partition = self.own(&m);
+        // A record of another agent that was shared with this one (INT-06) is read as shared,
+        // not as a claim to that agent's scope. Reads only: a grant gives nothing else.
+        let shared =
+            if op.is_read() && self.who.principal.kind == PrincipalKind::Agent { self.engine.shared_agents(self.tenant(), self.who.id(), &m.subject).await? } else { vec![] };
+        if let Some(agent) = m.scope.agent.as_deref().filter(|a| shared.contains(&shared_key(a, None)) || shared.contains(&shared_key(a, Some(m.kind)))) {
+            if let Some(s) = req.scope.as_mut().filter(|s| s.agent.as_deref() == Some(agent)) {
+                s.agent = None;
+            }
+        }
         let d = self.engine.authorizer.authorize(&self.who, &req).await;
         if !d.allowed {
             self.denied(&req, &d).await;
             // Missing permission is no secret; subject, label, kind and scope rules are.
             return Err(if d.rule == "permission" { error::forbidden(d.reasons.join("; ")) } else { missing() });
         }
-        let d = self.with_policy(&AccessRequest::new(op), d).await?;
+        let mut d = self.with_policy(&AccessRequest::new(op), d).await?;
+        d.shared_agents = shared;
         if !d.visible(&m) {
             return Err(missing());
         }
         Ok((m, d))
     }
 
-    /// How a write enters: the tenant's policy decides whether proposals wait for review.
-    async fn entry(&self, d: &Decision) -> anyhow::Result<Entry> {
-        let admission = self.engine.policy_for(&d.tenant).await?.policy.write_gate.admission;
-        Ok(match (d.propose_only, admission) {
-            (false, _) => Entry::Commit,
-            (true, Admission::Auto) => Entry::ProposeAdmit,
-            (true, Admission::Review) => Entry::Propose,
+    /// A record in the caller's own partition that the caller wrote (ACC-10): the id a write
+    /// returned stays readable, revisable and forgettable by its author.
+    fn own(&self, m: &Memory) -> bool {
+        self.who.user.as_ref().is_some_and(|u| *u == m.subject && m.provenance.user.as_ref() == Some(u))
+    }
+
+    /// Reads by an agent also return what other agents shared with it (INT-06).
+    async fn with_grants(&self, d: &mut Decision, subject: &str) -> anyhow::Result<()> {
+        if self.who.principal.kind == PrincipalKind::Agent {
+            d.shared_agents = self.engine.shared_agents(&d.tenant, self.who.id(), subject).await?;
+        }
+        Ok(())
+    }
+
+    /// How a write of a kind enters (MEM-01): the type's gate decides who commits, and the
+    /// tenant's policy whether ordinary proposals wait for review.
+    async fn entry(&self, d: &Decision, kind: MemoryKind) -> anyhow::Result<Entry> {
+        let policy = self.engine.policy_for(&d.tenant).await?;
+        let rules = policy.of(kind);
+        let proposed = match policy.policy.write_gate.admission {
+            Admission::Auto => Entry::ProposeAdmit,
+            Admission::Review => Entry::Propose,
+        };
+        Ok(match rules.gate {
+            // Committed as written or on a verified source: nothing for a reviewer to judge.
+            TypeGate::None | TypeGate::Source => {
+                if d.propose_only {
+                    Entry::ProposeAdmit
+                } else {
+                    Entry::Commit
+                }
+            }
+            TypeGate::Full | TypeGate::Explicit => {
+                if d.propose_only {
+                    proposed
+                } else {
+                    Entry::Commit
+                }
+            }
+            // A proposal waits for explicit confirmation, whatever the admission setting (MEM-02).
+            TypeGate::Confirmation => {
+                if d.propose_only {
+                    Entry::Propose
+                } else {
+                    Entry::Commit
+                }
+            }
+            // Only the type's approver commits; everyone else proposes (MEM-03).
+            TypeGate::Approval => {
+                if self.approves(rules.access.approver) {
+                    Entry::Commit
+                } else {
+                    Entry::Propose
+                }
+            }
         })
     }
 
+    /// A revision stays in its record's subject, so it may not turn the record into a type that
+    /// is kept in its author's partition unless it is already there (ACC-10).
+    async fn keeps_partition(&self, kind: MemoryKind, subject: &str) -> anyhow::Result<()> {
+        let policy = self.engine.policy_for(self.tenant()).await?;
+        match &self.who.user {
+            Some(u) if policy.of(kind).access.partition == Partition::Author && u != subject => {
+                Err(error::invalid(format!("{kind} memory is kept in its author's partition ({u}); a revision stays in its record's subject, so write it with remember")))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn approves(&self, approver: Approver) -> bool {
+        self.who.has(perm::REVIEW) && (approver == Approver::Reviewer || self.who.is_admin())
+    }
+
+    /// An agent's writes of a type that is private to its agent are scoped to it (INT-06).
+    fn agent_private(&self, policy: &CompiledPolicy, kind: MemoryKind, scope: &mut Option<Scope>) {
+        if policy.of(kind).access.agent_private && self.who.principal.kind == PrincipalKind::Agent {
+            let s = scope.get_or_insert_with(Scope::default);
+            if s.agent.is_none() {
+                s.agent = Some(self.who.id().to_string());
+            }
+        }
+    }
+
     pub async fn remember(&self, mut req: RememberRequest) -> anyhow::Result<RememberResult> {
-        let subject = self.engine.subject(&req.subject);
-        let mut a = AccessRequest::new(Operation::Remember).subject(&subject).tenant(&req.tenant);
-        a.kinds = vec![req.kind.unwrap_or(MemoryKind::Semantic)];
+        let kind = req.kind.unwrap_or(MemoryKind::Semantic);
+        let policy = self.engine.policy_for(self.tenant()).await?;
+        let mut subject = self.engine.subject(&req.subject);
+        let mut a = AccessRequest::new(Operation::Remember);
+        // ACC-10: a type kept in its author's partition is stored with the verified user it is
+        // written for, whatever subject the request named; the author is on the record either way.
+        if policy.of(kind).access.partition == Partition::Author && req.supersedes.is_none() {
+            if let Some(u) = &self.who.user {
+                subject = u.clone();
+                a.own_partition = true;
+            }
+        }
+        self.agent_private(&policy, kind, &mut req.scope);
+        let mut a = a.subject(&subject).tenant(&req.tenant);
+        a.kinds = vec![kind];
         a.labels = req.labels.clone();
         a.scope = req.scope.clone();
         a.user = req.user.clone();
         let d = self.decide(&a).await?;
         if let Some(old) = req.supersedes {
+            self.keeps_partition(kind, &subject).await?;
             let (m, _) = self.visible(Operation::Revise, old).await?;
             if m.subject != subject {
                 return Err(error::invalid("supersedes names a memory of another subject"));
@@ -150,13 +249,86 @@ impl Caller {
         req.subject = Some(subject);
         req.actor = Some(self.who.id().into());
         req.user = self.who.user.clone();
-        self.engine.remember_with(req, self.entry(&d).await?).await
+        self.engine.remember_with(req, self.entry(&d, kind).await?).await
+    }
+
+    /// Promote records to another type (MEM-05): the caller must see every source and may write
+    /// the target type, with the sources' labels, at the target scope.
+    pub async fn promote(&self, mut req: PromoteRequest) -> anyhow::Result<RememberResult> {
+        let kind = req.kind;
+        if req.sources.is_empty() || req.sources.len() > crate::promote::MAX_SOURCES {
+            return Err(error::invalid(format!("a promotion names 1 to {} source records", crate::promote::MAX_SOURCES)));
+        }
+        let mut sources = Vec::with_capacity(req.sources.len());
+        for id in &req.sources {
+            sources.push(self.visible(Operation::Promote, *id).await?.0);
+        }
+        let policy = self.engine.policy_for(self.tenant()).await?;
+        // ACC-10: a type kept in its author's partition is not promoted into another subject's.
+        if policy.of(kind).access.partition == Partition::Author {
+            if let Some(u) = self.who.user.as_ref().filter(|u| **u != sources[0].subject) {
+                return Err(error::invalid(format!("{kind} memory is kept in its author's partition ({u}); a promotion stays in its sources' subject, so write it with remember")));
+            }
+        }
+        let mut scope = match req.scope.take() {
+            Some(s) => Some(s),
+            None => Some(Engine::promotion_scope(&sources)?).filter(|s| !s.is_empty()),
+        };
+        self.agent_private(&policy, kind, &mut scope);
+        let mut a = AccessRequest::new(Operation::Promote).subject(&sources[0].subject).tenant(&req.tenant);
+        a.kinds = vec![kind];
+        a.labels = sources.iter().flat_map(|m| m.labels.iter().cloned()).chain(req.labels.iter().cloned()).collect();
+        a.scope = scope.clone();
+        a.user = req.user.clone();
+        let d = self.decide(&a).await?;
+        req.tenant = Some(d.tenant.clone());
+        req.scope = Some(scope.unwrap_or_default());
+        req.actor = Some(self.who.id().into());
+        req.user = self.who.user.clone();
+        self.engine.promote_with(req, self.entry(&d, kind).await?).await
+    }
+
+    /// The preferences of a subject as they apply to the caller (MEM-04): per key, the one at the
+    /// narrowest scope the caller is in. `session` adds that session's own preferences.
+    pub async fn preferences(&self, subject: &str, key: Option<&str>, session: Option<String>) -> anyhow::Result<Vec<EffectivePreference>> {
+        let mut a = AccessRequest::new(Operation::Recall).subject(subject);
+        a.kinds = vec![MemoryKind::Preference];
+        a.scope = session.map(|s| Scope { session: Some(s), ..Default::default() });
+        let mut d = self.decide(&a).await?;
+        self.with_grants(&mut d, subject).await?;
+        let reader = crate::preference::Reader { scope: &d.scope, denied_labels: &d.denied_labels, shared_agents: &d.shared_agents };
+        self.engine.effective_preferences(&d.tenant, subject, key, &reader).await
+    }
+
+    /// Share one agent's agent-scoped memory with another (INT-06).
+    pub async fn grant_create(&self, req: &GrantRequest) -> anyhow::Result<Grant> {
+        self.decide(&AccessRequest::new(Operation::GrantManage)).await?;
+        self.engine.grant_create(self.tenant(), req, self.who.id()).await
+    }
+
+    pub async fn grants(&self) -> anyhow::Result<Vec<Grant>> {
+        self.decide(&AccessRequest::new(Operation::GrantManage)).await?;
+        self.engine.grant_list(self.tenant()).await
+    }
+
+    pub async fn grant_revoke(&self, id: Uuid) -> anyhow::Result<()> {
+        self.decide(&AccessRequest::new(Operation::GrantManage)).await?;
+        self.engine.grant_revoke(self.tenant(), id, self.who.id()).await
     }
 
     pub async fn revise(&self, mut req: ReviseRequest) -> anyhow::Result<RememberResult> {
         let (old, _) = self.visible(Operation::Revise, req.id).await?;
+        let kind = req.kind.unwrap_or(old.kind);
+        self.keeps_partition(kind, &old.subject).await?;
+        // A scope given with the revision is completed like a new write's: an agent's revision of
+        // an agent-private type stays the agent's. Without one the old scope is inherited.
+        if req.scope.is_some() {
+            let policy = self.engine.policy_for(self.tenant()).await?;
+            self.agent_private(&policy, kind, &mut req.scope);
+        }
         let mut a = AccessRequest::new(Operation::Revise).record(&old).tenant(&req.tenant);
-        a.kinds = vec![req.kind.unwrap_or(old.kind)];
+        a.own_partition = self.own(&old);
+        a.kinds = vec![kind];
         a.labels = req.labels.clone().unwrap_or(old.labels.clone());
         if let Some(s) = &req.scope {
             a.scope = Some(s.clone());
@@ -166,11 +338,13 @@ impl Caller {
         req.tenant = Some(d.tenant.clone());
         req.actor = Some(self.who.id().into());
         req.user = self.who.user.clone();
-        self.engine.revise_with(req, self.entry(&d).await?).await
+        self.engine.revise_with(req, self.entry(&d, kind).await?).await
     }
 
     pub async fn ingest(&self, mut req: IngestRequest) -> anyhow::Result<IngestResult> {
         let subject = self.engine.subject(&req.subject);
+        let policy = self.engine.policy_for(self.tenant()).await?;
+        self.agent_private(&policy, MemoryKind::Episodic, &mut req.scope);
         let mut a = AccessRequest::new(Operation::Ingest).subject(&subject).tenant(&req.tenant);
         a.kinds = vec![MemoryKind::Episodic];
         a.labels = req.labels.clone();
@@ -181,7 +355,10 @@ impl Caller {
         req.subject = Some(subject);
         req.actor = Some(self.who.id().into());
         req.user = self.who.user.clone();
-        self.engine.ingest_with(req, if d.propose_only { Entry::Propose } else { Entry::Commit }).await
+        // The episodic gate decides, like any type's: under its own gate (`source`) rounds are
+        // admitted by the engine; a tenant that raised it to confirmation or approval gets review.
+        let entry = self.entry(&d, MemoryKind::Episodic).await?;
+        self.engine.ingest_with(req, entry).await
     }
 
     pub async fn recall(&self, mut req: RecallRequest) -> anyhow::Result<RecallResult> {
@@ -189,7 +366,8 @@ impl Caller {
         let mut a = AccessRequest::new(Operation::Recall).subject(&subject).tenant(&req.tenant);
         a.kinds = req.kinds.clone().unwrap_or_default();
         a.scope = req.scope.clone();
-        let d = self.decide(&a).await?;
+        let mut d = self.decide(&a).await?;
+        self.with_grants(&mut d, &subject).await?;
         req.tenant = Some(d.tenant.clone());
         req.subject = Some(subject);
         req.scope = Some(d.scope.clone()).filter(|s| !s.is_empty());
@@ -202,6 +380,7 @@ impl Caller {
             user: self.who.user.clone(),
             denied_labels: d.denied_labels,
             authorizer: self.engine.authorizer.name().into(),
+            shared_agents: d.shared_agents,
         };
         self.engine.recall_with(req, ctx).await
     }
@@ -226,9 +405,10 @@ impl Caller {
     pub async fn list(&self, subject: String, kinds: Option<Vec<MemoryKind>>, include_inactive: bool, limit: usize, cursor: Option<&str>) -> anyhow::Result<MemoryPage> {
         let mut a = AccessRequest::new(Operation::List).subject(&subject);
         a.kinds = kinds.clone().unwrap_or_default();
-        let d = self.decide(&a).await?;
+        let mut d = self.decide(&a).await?;
+        self.with_grants(&mut d, &subject).await?;
         let kinds = kinds.or_else(|| Some(d.kinds.clone()).filter(|k| !k.is_empty()));
-        let page = Page { kinds, include_inactive, limit, denied_labels: d.denied_labels.clone(), scope: d.scope.clone() };
+        let page = Page { kinds, include_inactive, limit, denied_labels: d.denied_labels.clone(), scope: d.scope.clone(), shared_agents: d.shared_agents.clone() };
         self.engine.list_page_with(Some(d.tenant), subject, page, cursor).await
     }
 
@@ -238,7 +418,10 @@ impl Caller {
         let mut a = AccessRequest::new(Operation::List);
         a.subject = Some(subject.clone().unwrap_or_else(|| "*".into()));
         a.kinds = kinds.clone().unwrap_or_default();
-        let d = self.decide(&a).await?;
+        let mut d = self.decide(&a).await?;
+        if let Some(s) = &subject {
+            self.with_grants(&mut d, s).await?;
+        }
         let q = ListQuery {
             tenant: d.tenant.clone(),
             subject,
@@ -249,6 +432,10 @@ impl Caller {
             before: None,
             denied_labels: d.denied_labels.clone(),
             scope: d.scope.clone(),
+            shared_agents: d.shared_agents.clone(),
+            session: None,
+            tags: None,
+            live_at: None,
         };
         self.engine.store.list(&q).await
     }
@@ -274,7 +461,10 @@ impl Caller {
             ForgetScope::Record => {
                 let id = req.id.expect("named");
                 match self.visible(Operation::Forget(ForgetScope::Record), id).await {
-                    Ok((m, _)) => a = a.record(&m),
+                    Ok((m, _)) => {
+                        a.own_partition = self.own(&m);
+                        a = a.record(&m);
+                    }
                     // A keyed retry of a forget that succeeded finds the record gone: the engine
                     // answers it from the stored response (or with `not_found`).
                     Err(e) if req.request_key.is_some() && error::code_of(&e) == error::ErrorCode::NotFound => {}
@@ -302,13 +492,24 @@ impl Caller {
             return Err(error::invalid("labels must be 1 to 80 characters"));
         }
         self.engine.store.set_labels(self.tenant(), m.id, &labels).await?;
+        self.engine.working.drop_record(m.id);
         self.engine.store.audit(self.who.id(), "memory.relabel", self.tenant(), Some(&m.subject), Some(m.id), json!({ "from": m.labels, "to": labels })).await?;
         self.engine.store.get(self.tenant(), m.id).await?.ok_or_else(|| error::not_found(format!("memory {} not found", m.id)))
     }
 
     pub async fn review(&self, req: ReviewRequest) -> anyhow::Result<ReviewResult> {
         let (m, _) = self.visible(Operation::Review, req.id).await?;
-        self.decide(&AccessRequest::new(Operation::Review).record(&m)).await?;
+        let a = AccessRequest::new(Operation::Review).record(&m);
+        let mut d = self.decide(&a).await?;
+        // The type says who settles its candidates: taxonomic terms are an administrator's (MEM-03).
+        let approver = self.engine.policy_for(&d.tenant).await?.of(m.kind).access.approver;
+        if !self.approves(approver) {
+            d.allowed = false;
+            d.rule = "approver".into();
+            d.reasons = vec![format!("{} memory is approved by an administrator", m.kind)];
+            self.denied(&a, &d).await;
+            return Err(error::forbidden(d.reasons.join("; ")));
+        }
         let (status, superseded) = match req.action {
             ReviewAction::Commit => self.engine.admit(self.tenant(), m.id, self.who.id()).await?,
             ReviewAction::Reject => (self.engine.reject(self.tenant(), m.id, self.who.id(), req.reason.as_deref().unwrap_or("rejected by a reviewer")).await?, None),
@@ -386,6 +587,10 @@ impl Caller {
             subjects: p.subjects.clone(),
             denied_labels: d.denied_labels,
             propose_only: d.propose_only,
+            scope: {
+                let own = |v: &Option<String>| v.clone().filter(|x| x != crate::access::NOBODY);
+                Scope { org: own(&d.scope.org), team: own(&d.scope.team), agent: own(&d.scope.agent), user: own(&d.scope.user), session: None }
+            },
             via: via.into(),
             expires_at: self.who.expires_at,
         })

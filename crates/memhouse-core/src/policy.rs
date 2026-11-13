@@ -64,6 +64,9 @@ pub struct PolicySpec {
     pub recall: Option<SpecRecall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ranking: Option<SpecRanking>,
+    /// Per-type rules (MEM-01): one optional section per memory type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub types: Option<SpecTypes>,
 }
 
 /// What the policy governs. v1: one tenant (layers by org, team and agent come in G24).
@@ -166,6 +169,281 @@ pub struct SpecRanking {
     pub subquery_weight: Option<f32>,
 }
 
+/// What a write of a type must pass before it is committed (MEM-01), loosest first. The
+/// injection screen and redaction are not part of it: they apply to every type (security
+/// baseline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeGate {
+    /// Committed as written: no statement gate, no duplicate check, no review (working memory).
+    None,
+    /// Committed when its source is verified: the writer is an authenticated principal and the
+    /// record says where it came from (episodic memory). What was said is not judged.
+    Source,
+    /// The statement gate (QUAL-02): plans and speculation are held, duplicates rejected,
+    /// corrections supersede (semantic memory).
+    Full,
+    /// The statement gate, and only explicit statements commit: a write marked as an inferred
+    /// signal (`metadata.signal`) is held until the same signal has been seen
+    /// `intake.preference_signals` times (preferences).
+    Explicit,
+    /// The statement gate, and a proposal waits for explicit confirmation by a reviewer even
+    /// where proposals are otherwise admitted automatically (procedural memory, MEM-02).
+    Confirmation,
+    /// The statement gate, and only the type's approver commits: everyone else proposes
+    /// (taxonomic memory, MEM-03).
+    Approval,
+}
+
+impl TypeGate {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TypeGate::None => "none",
+            TypeGate::Source => "source",
+            TypeGate::Full => "full",
+            TypeGate::Explicit => "explicit",
+            TypeGate::Confirmation => "confirmation",
+            TypeGate::Approval => "approval",
+        }
+    }
+
+    /// How much must happen before a write commits; a policy may only raise it (PR-1).
+    pub fn strictness(&self) -> u8 {
+        match self {
+            TypeGate::None => 0,
+            TypeGate::Source => 1,
+            TypeGate::Full | TypeGate::Explicit => 2,
+            TypeGate::Confirmation => 3,
+            TypeGate::Approval => 4,
+        }
+    }
+
+    /// Whether an inferred signal (`metadata.signal`) is held until it repeats: under `explicit`
+    /// and under every stricter gate, so tightening a type never drops the requirement.
+    pub fn holds_signals(&self) -> bool {
+        matches!(self, TypeGate::Explicit | TypeGate::Confirmation | TypeGate::Approval)
+    }
+
+    /// Whether a proposal waits for a reviewer whatever the admission setting.
+    pub fn needs_review(&self) -> bool {
+        self.strictness() >= 3
+    }
+
+    /// Whether the statement classifier, the duplicate check and corrections apply.
+    pub fn judges_statements(&self) -> bool {
+        self.strictness() >= 2
+    }
+}
+
+/// How a type is retrieved (MEM-01). Set by the engine per type; shown in the compiled policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Retrieval {
+    /// A session's records come first in its recalls, newest first, from the session cache
+    /// (PERF-05); outside a session they are found by hybrid search until they expire.
+    SessionCache,
+    /// Hybrid search with a probe for the time the question names.
+    HybridTime,
+    /// Hybrid search plus exact lookup of structured records.
+    HybridExact,
+    /// Hybrid search, then the same preference at a narrower scope replaces the broader one;
+    /// `GET /v1/subjects/{subject}/preferences` lists them in scope order.
+    ScopeOrdered,
+    /// Matched to the task at hand (from G19); hybrid search until then.
+    TaskMatched,
+    /// Exact lookup of the term's structured form; also found by hybrid search.
+    Exact,
+    Hybrid,
+}
+
+/// Whose partition a write of a type lands in (ACC-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Partition {
+    /// The subject the write names: a note about a patient is stored with the patient.
+    Subject,
+    /// The verified user the write is made for: their own preferences and procedures are stored
+    /// with them, whatever subject the conversation was about.
+    Author,
+}
+
+/// Who commits a candidate of a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Approver {
+    /// Any principal with `memory:review`.
+    Reviewer,
+    /// An admin principal with `memory:review`.
+    Admin,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "PolicyTypeAccess")]
+pub struct TypeAccess {
+    /// An agent's writes of this type are scoped to that agent: other agents read them only with
+    /// a grant (INT-06).
+    pub agent_private: bool,
+    pub partition: Partition,
+    pub approver: Approver,
+}
+
+/// The rules of one memory type (MEM-01).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "PolicyType")]
+pub struct TypePolicy {
+    pub gate: TypeGate,
+    /// Days after which records of the type are purged; 0 keeps them until superseded or deleted.
+    pub retention_days: u32,
+    /// Working memory: seconds a record lives after its session's last write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
+    pub retrieval: Retrieval,
+    pub access: TypeAccess,
+}
+
+/// The rules of every memory type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "PolicyTypes")]
+pub struct TypePolicies {
+    pub working: TypePolicy,
+    pub episodic: TypePolicy,
+    pub semantic: TypePolicy,
+    pub preference: TypePolicy,
+    pub procedural: TypePolicy,
+    pub commitment: TypePolicy,
+    pub document: TypePolicy,
+    pub taxonomic: TypePolicy,
+}
+
+impl TypePolicies {
+    pub fn of(&self, kind: MemoryKind) -> &TypePolicy {
+        match kind {
+            MemoryKind::Working => &self.working,
+            MemoryKind::Episodic => &self.episodic,
+            MemoryKind::Semantic => &self.semantic,
+            MemoryKind::Preference => &self.preference,
+            MemoryKind::Procedural => &self.procedural,
+            MemoryKind::Commitment => &self.commitment,
+            MemoryKind::Document => &self.document,
+            MemoryKind::Taxonomic => &self.taxonomic,
+        }
+    }
+
+    fn of_mut(&mut self, kind: MemoryKind) -> &mut TypePolicy {
+        match kind {
+            MemoryKind::Working => &mut self.working,
+            MemoryKind::Episodic => &mut self.episodic,
+            MemoryKind::Semantic => &mut self.semantic,
+            MemoryKind::Preference => &mut self.preference,
+            MemoryKind::Procedural => &mut self.procedural,
+            MemoryKind::Commitment => &mut self.commitment,
+            MemoryKind::Document => &mut self.document,
+            MemoryKind::Taxonomic => &mut self.taxonomic,
+        }
+    }
+
+    /// The defaults of each type: its own gate, retention, retrieval method and access rules.
+    fn defaults(episodic_days: u32, working_ttl_secs: u64) -> TypePolicies {
+        let t = |gate, retrieval| TypePolicy {
+            gate,
+            retention_days: 0,
+            ttl_secs: None,
+            retrieval,
+            access: TypeAccess { agent_private: false, partition: Partition::Subject, approver: Approver::Reviewer },
+        };
+        let mut working = t(TypeGate::None, Retrieval::SessionCache);
+        working.ttl_secs = Some(working_ttl_secs);
+        // A scratchpad belongs to the agent that keeps it.
+        working.access.agent_private = true;
+        let mut episodic = t(TypeGate::Source, Retrieval::HybridTime);
+        episodic.retention_days = episodic_days;
+        let mut taxonomic = t(TypeGate::Approval, Retrieval::Exact);
+        taxonomic.access.approver = Approver::Admin;
+        TypePolicies {
+            working,
+            episodic,
+            semantic: t(TypeGate::Full, Retrieval::HybridExact),
+            preference: t(TypeGate::Explicit, Retrieval::ScopeOrdered),
+            procedural: t(TypeGate::Confirmation, Retrieval::TaskMatched),
+            commitment: t(TypeGate::Full, Retrieval::Hybrid),
+            document: t(TypeGate::Full, Retrieval::Hybrid),
+            taxonomic,
+        }
+    }
+}
+
+/// One type's section of a spec (`[types.semantic]`): what it leaves out keeps the type's default.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "PolicySpecType")]
+pub struct SpecType {
+    /// A gate at least as strict as the type's own (`none` < `source` < `full` = `explicit` <
+    /// `confirmation` < `approval`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<TypeGate>,
+    /// Days after which records of the type are purged; 0 keeps them. For `episodic`, within
+    /// governance's limit. Not for `working`, which expires by `ttl_secs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_days: Option<u32>,
+    /// `working` only: seconds a record lives after its session's last write (1 second to 30 days).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<SpecTypeAccess>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "PolicySpecTypeAccess")]
+pub struct SpecTypeAccess {
+    /// Scope agents' writes of this type to the writing agent. May be turned on, not off where it
+    /// is the type's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_private: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition: Option<Partition>,
+    /// `admin` anywhere; `reviewer` only where it is the type's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver: Option<Approver>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "PolicySpecTypes")]
+pub struct SpecTypes {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working: Option<SpecType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episodic: Option<SpecType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<SpecType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preference: Option<SpecType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedural: Option<SpecType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commitment: Option<SpecType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<SpecType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taxonomic: Option<SpecType>,
+}
+
+impl SpecTypes {
+    fn of(&self, kind: MemoryKind) -> Option<&SpecType> {
+        match kind {
+            MemoryKind::Working => self.working.as_ref(),
+            MemoryKind::Episodic => self.episodic.as_ref(),
+            MemoryKind::Semantic => self.semantic.as_ref(),
+            MemoryKind::Preference => self.preference.as_ref(),
+            MemoryKind::Procedural => self.procedural.as_ref(),
+            MemoryKind::Commitment => self.commitment.as_ref(),
+            MemoryKind::Document => self.document.as_ref(),
+            MemoryKind::Taxonomic => self.taxonomic.as_ref(),
+        }
+    }
+}
+
 /// The approved spec a compiled policy came from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "PolicySpecRef")]
@@ -262,7 +540,11 @@ pub struct CompiledBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spec: Option<SpecRef>,
     pub memory_types: MemoryTypes,
+    /// Each type's gate, retention, retrieval method and access rules (MEM-01).
+    pub types: TypePolicies,
     pub write_gate: WriteGate,
+    /// `episodic_days` and `working_ttl_secs` repeat `types.episodic.retention_days` and
+    /// `types.working.ttl_secs`.
     pub retention: Retention,
     pub redaction: Redaction,
     pub recall: RecallRules,
@@ -300,6 +582,11 @@ impl CompiledPolicy {
     /// Whether writes of this kind are allowed.
     pub fn allows(&self, kind: MemoryKind) -> bool {
         self.policy.memory_types.allowed.contains(&kind)
+    }
+
+    /// The rules of a memory type (MEM-01).
+    pub fn of(&self, kind: MemoryKind) -> &TypePolicy {
+        self.policy.types.of(kind)
     }
 
     /// The refusal for a write of a kind the policy doesn't allow.
@@ -358,6 +645,7 @@ fn governance(cfg: &Config, tenant: &str) -> CompiledBody {
         tenant: tenant.to_string(),
         spec: None,
         memory_types: MemoryTypes { allowed: MemoryKind::ALL.to_vec() },
+        types: TypePolicies::defaults(g.episodic_retention_days, cfg.memory.working_ttl_secs),
         write_gate: WriteGate { admission: cfg.access.admission, dedup_threshold: cfg.memory.dedup_threshold, max_content_chars: g.max_content_chars, quarantine_injection: true },
         retention: Retention { episodic_days: g.episodic_retention_days, working_ttl_secs: cfg.memory.working_ttl_secs },
         redaction: Redaction { categories: ordered_categories(&redact) },
@@ -442,25 +730,91 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
         }
     }
 
-    if let Some(r) = &spec.retention {
-        if let Some(d) = r.episodic_days {
-            let g = gov.retention.episodic_days;
-            if g > 0 && d == 0 {
-                err(
-                    "retention.episodic_days",
-                    LOOSEN,
-                    format!("0 keeps episodic memory forever, but governance purges it after {g} days ([governance] episodic_retention_days); {pr1}"),
-                );
-            } else if g > 0 && d > g {
-                err("retention.episodic_days", LOOSEN, format!("{d} days is longer than the {g} days governance allows ([governance] episodic_retention_days); {pr1}"));
-            }
-            b.retention.episodic_days = d;
+    // Episodic retention and the working TTL can be given in `[retention]` (G08) or in the
+    // type's own section; both places must agree.
+    let typed = |k: MemoryKind| spec.types.as_ref().and_then(|t| t.of(k));
+    let episodic_days = match (spec.retention.as_ref().and_then(|r| r.episodic_days), typed(MemoryKind::Episodic).and_then(|t| t.retention_days)) {
+        (Some(a), Some(b)) if a != b => {
+            err("types.episodic.retention_days", "range", format!("{b} disagrees with retention.episodic_days = {a}; give one of them"));
+            None
         }
-        if let Some(t) = r.working_ttl_secs {
-            if !(1..=30 * 86_400).contains(&t) {
-                err("retention.working_ttl_secs", "range", format!("{t} is outside 1 second to 30 days"));
+        (a, b) => a.map(|d| ("retention.episodic_days", d)).or(b.map(|d| ("types.episodic.retention_days", d))),
+    };
+    if let Some((path, d)) = episodic_days {
+        let g = gov.retention.episodic_days;
+        if g > 0 && d == 0 {
+            err(path, LOOSEN, format!("0 keeps episodic memory forever, but governance purges it after {g} days ([governance] episodic_retention_days); {pr1}"));
+        } else if g > 0 && d > g {
+            err(path, LOOSEN, format!("{d} days is longer than the {g} days governance allows ([governance] episodic_retention_days); {pr1}"));
+        }
+        b.retention.episodic_days = d;
+        b.types.episodic.retention_days = d;
+    }
+    let working_ttl = match (spec.retention.as_ref().and_then(|r| r.working_ttl_secs), typed(MemoryKind::Working).and_then(|t| t.ttl_secs)) {
+        (Some(a), Some(b)) if a != b => {
+            err("types.working.ttl_secs", "range", format!("{b} disagrees with retention.working_ttl_secs = {a}; give one of them"));
+            None
+        }
+        (a, b) => a.map(|t| ("retention.working_ttl_secs", t)).or(b.map(|t| ("types.working.ttl_secs", t))),
+    };
+    if let Some((path, t)) = working_ttl {
+        if !(1..=30 * 86_400).contains(&t) {
+            err(path, "range", format!("{t} is outside 1 second to 30 days"));
+        }
+        b.retention.working_ttl_secs = t;
+        b.types.working.ttl_secs = Some(t);
+    }
+
+    // Per-type sections (MEM-01): a type's rules may be tightened, never loosened below its own.
+    for kind in MemoryKind::ALL {
+        let Some(t) = typed(kind) else { continue };
+        let name = kind.as_str();
+        let own = gov.types.of(kind).clone();
+        let slot = b.types.of_mut(kind);
+        if let Some(g) = t.gate {
+            // `full` is as strict as `explicit` on statements but commits a first inferred
+            // signal, so it is not a replacement for it.
+            let drops_signals = own.gate.holds_signals() && !g.holds_signals();
+            if g.strictness() < own.gate.strictness() || drops_signals {
+                err(
+                    &format!("types.{name}.gate"),
+                    LOOSEN,
+                    format!("\"{}\" is looser than the {name} gate (\"{}\"); a type's gate may only be made stricter (PR-1)", g.as_str(), own.gate.as_str()),
+                );
             }
-            b.retention.working_ttl_secs = t;
+            slot.gate = g;
+        }
+        if let Some(d) = t.retention_days.filter(|_| kind != MemoryKind::Episodic) {
+            if kind == MemoryKind::Working {
+                err(&format!("types.{name}.retention_days"), "range", "working memory expires by ttl_secs, not by days".into());
+            } else if d > 36_500 {
+                err(&format!("types.{name}.retention_days"), "range", format!("{d} is outside 0 to 36500"));
+            }
+            slot.retention_days = d;
+        }
+        if t.ttl_secs.is_some() && kind != MemoryKind::Working {
+            err(&format!("types.{name}.ttl_secs"), "range", "only working memory has a ttl_secs; other types use retention_days".into());
+        }
+        if let Some(a) = &t.access {
+            if let Some(p) = a.agent_private {
+                if !p && own.access.agent_private {
+                    err(
+                        &format!("types.{name}.access.agent_private"),
+                        LOOSEN,
+                        format!("{name} memory is private to the agent that writes it; share it with a grant, not by policy (PR-1)"),
+                    );
+                }
+                slot.access.agent_private = p;
+            }
+            if let Some(p) = a.partition {
+                slot.access.partition = p;
+            }
+            if let Some(p) = a.approver {
+                if p == Approver::Reviewer && own.access.approver == Approver::Admin {
+                    err(&format!("types.{name}.access.approver"), LOOSEN, format!("{name} memory is approved by an administrator (MEM-03); {pr1}"));
+                }
+                slot.access.approver = p;
+            }
         }
     }
 
@@ -1095,6 +1449,70 @@ mod tests {
         let v = compile(&spec("[retention]\nepisodic_days = 0\n[recall]\naudit_reads = false\n[ranking]\nrrf_k = -1"), &cfg, "acme", None).unwrap_err();
         assert_eq!(v.len(), 3);
         assert!(violations_error(&v).to_string().contains("3 problems"));
+    }
+
+    /// MEM-01: each type compiles to its own gate, retention, retrieval method and access rules.
+    #[test]
+    fn every_type_has_its_own_rules() {
+        let mut cfg = Config::default();
+        cfg.governance.episodic_retention_days = 365;
+        let p = default_policy(&cfg, "acme");
+        let row = |k| {
+            let t = p.of(k);
+            (t.gate, t.retention_days, t.ttl_secs, t.retrieval)
+        };
+        assert_eq!(row(MemoryKind::Working), (TypeGate::None, 0, Some(86_400), Retrieval::SessionCache));
+        assert_eq!(row(MemoryKind::Episodic), (TypeGate::Source, 365, None, Retrieval::HybridTime));
+        assert_eq!(row(MemoryKind::Semantic), (TypeGate::Full, 0, None, Retrieval::HybridExact));
+        assert_eq!(row(MemoryKind::Preference), (TypeGate::Explicit, 0, None, Retrieval::ScopeOrdered));
+        assert_eq!(row(MemoryKind::Procedural), (TypeGate::Confirmation, 0, None, Retrieval::TaskMatched));
+        assert_eq!(row(MemoryKind::Taxonomic), (TypeGate::Approval, 0, None, Retrieval::Exact));
+        assert!(p.of(MemoryKind::Working).access.agent_private && !p.of(MemoryKind::Semantic).access.agent_private);
+        assert_eq!(p.of(MemoryKind::Taxonomic).access.approver, Approver::Admin);
+        assert!(MemoryKind::ALL.iter().all(|k| p.allows(*k) && p.of(*k).access.partition == Partition::Subject));
+        // The gates in order of strictness; only the judging ones classify statements.
+        let order = [TypeGate::None, TypeGate::Source, TypeGate::Full, TypeGate::Confirmation, TypeGate::Approval];
+        assert!(order.windows(2).all(|w| w[0].strictness() < w[1].strictness()));
+        assert!(!TypeGate::None.judges_statements() && !TypeGate::Source.judges_statements() && TypeGate::Explicit.judges_statements());
+    }
+
+    /// A type's section tightens its rules; loosening any of them fails with PR-1, per type.
+    #[test]
+    fn type_sections_tighten_only() {
+        let cfg = strict();
+        let ok = "[types.semantic]\ngate = \"confirmation\"\nretention_days = 730\n[types.semantic.access]\nagent_private = true\napprover = \"admin\"\n\
+                  [types.preference.access]\npartition = \"author\"\n[types.working]\nttl_secs = 3600\ngate = \"full\"\n[types.episodic]\nretention_days = 30";
+        let p = compile(&spec(ok), &cfg, "acme", None).unwrap();
+        let sem = p.of(MemoryKind::Semantic);
+        assert_eq!((sem.gate, sem.retention_days, sem.access.agent_private, sem.access.approver), (TypeGate::Confirmation, 730, true, Approver::Admin));
+        assert_eq!(p.of(MemoryKind::Preference).access.partition, Partition::Author);
+        // The typed settings and the `[retention]` section stay one value.
+        assert_eq!((p.of(MemoryKind::Working).ttl_secs, p.policy.retention.working_ttl_secs), (Some(3600), 3600));
+        assert_eq!((p.of(MemoryKind::Episodic).retention_days, p.policy.retention.episodic_days), (30, 30));
+        let same = compile(&spec("[retention]\nepisodic_days = 30\nworking_ttl_secs = 3600"), &cfg, "acme", None).unwrap();
+        assert_eq!((same.of(MemoryKind::Episodic).retention_days, same.of(MemoryKind::Working).ttl_secs), (30, Some(3600)));
+        let cases = [
+            ("[types.semantic]\ngate = \"none\"", "types.semantic.gate", "PR-1"),
+            ("[types.semantic]\ngate = \"source\"", "types.semantic.gate", "PR-1"),
+            ("[types.episodic]\ngate = \"none\"", "types.episodic.gate", "PR-1"),
+            ("[types.procedural]\ngate = \"full\"", "types.procedural.gate", "PR-1"),
+            ("[types.preference]\ngate = \"full\"", "types.preference.gate", "PR-1"),
+            ("[types.taxonomic]\ngate = \"confirmation\"", "types.taxonomic.gate", "PR-1"),
+            ("[types.taxonomic.access]\napprover = \"reviewer\"", "types.taxonomic.access.approver", "PR-1"),
+            ("[types.working.access]\nagent_private = false", "types.working.access.agent_private", "PR-1"),
+            ("[types.episodic]\nretention_days = 0", "types.episodic.retention_days", "PR-1"),
+            ("[types.episodic]\nretention_days = 400", "types.episodic.retention_days", "PR-1"),
+            ("[types.episodic]\nretention_days = 30\n[retention]\nepisodic_days = 60", "types.episodic.retention_days", "range"),
+            ("[types.working]\nretention_days = 7", "types.working.retention_days", "range"),
+            ("[types.working]\nttl_secs = 0", "types.working.ttl_secs", "range"),
+            ("[types.semantic]\nttl_secs = 60", "types.semantic.ttl_secs", "range"),
+        ];
+        for (extra, path, rule) in cases {
+            let v = compile(&spec(extra), &cfg, "acme", None).expect_err(extra);
+            assert!(v.iter().any(|v| v.path == path && v.rule == rule), "{extra}: {v:?}");
+        }
+        assert!(parse_spec("name = \"t\"\n[scope]\ntenant = \"acme\"\n[types.semantic]\nretrieval = \"exact\"").unwrap_err().to_string().contains("unknown field"));
+        assert!(parse_spec("name = \"t\"\n[scope]\ntenant = \"acme\"\n[types.gossip]\ngate = \"full\"").unwrap_err().to_string().contains("unknown field"));
     }
 
     #[test]

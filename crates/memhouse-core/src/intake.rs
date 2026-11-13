@@ -29,7 +29,7 @@ use crate::error;
 use crate::gate;
 use crate::metrics;
 use crate::policy::CompiledPolicy;
-use crate::traits::IntakeQueue;
+use crate::traits::{Held, IntakeQueue};
 use crate::types::*;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -60,6 +60,8 @@ pub enum Op {
     Remember,
     Revise,
     Ingest,
+    /// A promotion between types (MEM-05): a write whose metadata names its source records.
+    Promote,
 }
 
 /// A write between intake and the gate. It only ever holds redacted text (TR-IN-04).
@@ -134,6 +136,12 @@ pub struct IntakeWrite {
     /// Held candidates a completed event confirms: committed, their expiry cleared, with the
     /// confirming record's id in `metadata.confirmed_by`.
     pub confirm: Vec<(Uuid, Uuid)>,
+    /// Held signals seen again: (held record, the repeat, commit). The held record's count goes
+    /// up by one, and with `commit` it is committed and its expiry cleared.
+    pub signals: Vec<(Uuid, Uuid, bool)>,
+    /// Records that must still be stored when this is written (a promotion's sources): checked
+    /// and locked inside the insert's transaction, so an erasure can't be outrun.
+    pub requires: Vec<Uuid>,
     pub audit: Vec<AuditEntry>,
     /// Queue enrichment for these rounds: (subject, session id, round ids).
     pub enrich: Option<(String, String, Vec<Uuid>)>,
@@ -301,6 +309,11 @@ pub(crate) struct Item {
     pub duplicate_of: Option<Uuid>,
     pub superseded: Option<Uuid>,
     pub confirms: Vec<Uuid>,
+    /// The held signal this record repeats, its new count, and whether that commits it.
+    pub signal: Option<(Uuid, u32, bool)>,
+    /// Queued under another policy than the one in force now: what its writer was allowed to
+    /// commit then says nothing about a gate that has since been raised.
+    pub policy_changed: bool,
 }
 
 impl Item {
@@ -318,8 +331,42 @@ impl Item {
             duplicate_of: None,
             superseded: None,
             confirms: vec![],
+            signal: None,
+            policy_changed: false,
         }
     }
+}
+
+/// The key of a preference (MEM-04): `structured.attrs.key` of a `preference` record. The same
+/// key at a narrower scope overrides it at a broader one; in the same scope a new value
+/// supersedes the old.
+pub fn preference_key(structured: Option<&Structured>) -> Option<String> {
+    let st = structured.filter(|s| s.record_type == "preference")?;
+    st.attrs.get("key").and_then(|k| k.as_str()).map(str::trim).filter(|k| !k.is_empty()).map(String::from)
+}
+
+/// What a promotion's text becomes when a source of it was erased before it was written.
+pub const SOURCE_ERASED: &str = "(removed: a source of this promotion was deleted)";
+
+/// The sources that must still be stored when these records are written: those of every
+/// promotion that still carries its content, whatever its state (a rejected row is stored too).
+fn required_sources<'a>(records: impl Iterator<Item = &'a NewMemory>) -> Vec<Uuid> {
+    records.filter(|r| r.memory.content != SOURCE_ERASED).flat_map(|r| promoted_from(&r.memory)).collect()
+}
+
+/// The source records a promoted record names (`metadata.promoted_from`).
+pub fn promoted_from(m: &Memory) -> Vec<Uuid> {
+    promoted_from_in(&m.metadata)
+}
+
+/// The source ids in a record's metadata.
+pub(crate) fn promoted_from_in(metadata: &serde_json::Value) -> Vec<Uuid> {
+    metadata.get("promoted_from").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok())).collect()).unwrap_or_default()
+}
+
+/// The held signals a batch of records repeats (see [`IntakeWrite::signals`]).
+pub(crate) fn signals_of(items: &[Item]) -> Vec<(Uuid, Uuid, bool)> {
+    items.iter().filter_map(|i| i.signal.map(|(held, _, commit)| (held, i.rec.memory.id, commit))).collect()
 }
 
 /// The record ids a write produced, and their state (for `wait`).
@@ -498,7 +545,12 @@ impl Engine {
                 tracing::error!("intake of {} failed (attempt {}{}): {msg}", p.id, job.attempts, if dead { ", set aside" } else { "" });
                 metrics::inc("memhouse_intake_total", &[("outcome", if dead { "dead" } else { "retry" })], 1.0);
                 if dead {
-                    let stored = self.quarantine_poison(p, &msg).await;
+                    // Once more if the insert lost a race (a promotion's source deleted meanwhile):
+                    // the second pass sees the deletion and stores the record without its content.
+                    let mut stored = self.quarantine_poison(p, &msg).await;
+                    if stored.is_err() {
+                        stored = self.quarantine_poison(p, &msg).await;
+                    }
                     if let Err(qe) = &stored {
                         tracing::error!("poison proposal {} could not be stored as quarantined: {qe:#}", p.id);
                     }
@@ -533,11 +585,38 @@ impl Engine {
             let mut rec = NewMemory::new(m, r.content_hash.clone());
             rec.structured = r.structured.clone();
             rec.code_refs = r.code_refs.clone();
+            // The erasure guarantee of a promotion holds on this path too.
+            self.without_erased_sources(&p.tenant, &mut rec).await?;
             records.push(rec);
         }
-        let w =
-            IntakeWrite { proposal: Some(p.id), tenant: p.tenant.clone(), records, audit, dead: Some(error.to_string()), outcome: json!({ "dead": true }), ..Default::default() };
+        let w = IntakeWrite {
+            proposal: Some(p.id),
+            tenant: p.tenant.clone(),
+            requires: required_sources(records.iter()),
+            records,
+            audit,
+            dead: Some(error.to_string()),
+            outcome: json!({ "dead": true }),
+            ..Default::default()
+        };
         self.store.apply_intake(&w).await
+    }
+
+    /// A promotion whose source was erased is never stored with its content (MEM-05, GOV-07),
+    /// whatever else happens to it (rejected by its gate or policy, or set aside as poison): the
+    /// record is kept as `rejected` with nothing derived from the source. Returns whether it was.
+    async fn without_erased_sources(&self, tenant: &str, rec: &mut NewMemory) -> anyhow::Result<bool> {
+        let sources = promoted_from(&rec.memory);
+        if sources.is_empty() || self.store.get_many(tenant, &sources).await?.len() == sources.len() {
+            return Ok(false);
+        }
+        rec.memory.status = MemoryStatus::Rejected;
+        rec.memory.content = SOURCE_ERASED.into();
+        rec.structured = None;
+        rec.code_refs = vec![];
+        rec.embedding = None;
+        rec.alt = None;
+        Ok(true)
     }
 
     /// Stages 4 to 7 for one proposal. Returns the outcome kept on the finished proposal.
@@ -559,6 +638,7 @@ impl Engine {
         // policy activated meanwhile holds for what is stored (and sent to the embedder).
         for it in items.iter_mut() {
             if it.rec.memory.provenance.policy_version.as_deref() != Some(policy.version.as_str()) {
+                it.policy_changed = true;
                 self.reredact(&policy, it).await?;
             }
         }
@@ -571,7 +651,16 @@ impl Engine {
                 it.note = Some(format!("rejected: policy {} no longer allows {} memories", policy.version, m.kind.as_str()));
             }
         }
-        self.gate_stage(p.entry, &mut items).instrument(tracing::info_span!("intake.gate")).await?;
+        // A promotion whose source was erased while it was queued is not written (MEM-05, GOV-07):
+        // rejected here, before any model sees its content, and checked again inside the insert.
+        // Also for one the policy has already rejected: a rejected row is stored too.
+        for it in items.iter_mut() {
+            if self.without_erased_sources(&p.tenant, &mut it.rec).await? {
+                it.focus = None;
+                it.note = Some("rejected: a source of the promotion was deleted before it was written".into());
+            }
+        }
+        self.gate_stage(&policy, p.entry, &mut items).instrument(tracing::info_span!("intake.gate")).await?;
         Self::route_stage(&mut items);
         self.embed_stage(&mut items).instrument(tracing::info_span!("intake.embed")).await?;
         let (supersede, confirm) = self.resolve_stage(&policy, &p.tenant, &p.subject, p.entry, &mut items).instrument(tracing::info_span!("intake.resolve")).await?;
@@ -612,9 +701,12 @@ impl Engine {
             audit = self.record_audit(&items, &p.subject);
         }
         let outcome = outcome_json(&items);
+        let generation = self.working.generation();
         let w = IntakeWrite {
             proposal: Some(p.id),
             tenant: p.tenant.clone(),
+            signals: signals_of(&items),
+            requires: required_sources(items.iter().map(|i| &i.rec)),
             records: items.into_iter().map(|i| i.rec).collect(),
             supersede,
             confirm,
@@ -627,6 +719,17 @@ impl Engine {
         if applied {
             for r in &w.records {
                 metrics::inc("memhouse_writes_total", &[("status", r.memory.status.as_str())], 1.0);
+                // Whichever task stored it (the request's own, or a worker after a slow gate),
+                // the session cache follows: a new note goes in front, anything else (a
+                // revision, a quarantined note) makes the session read from the store again.
+                let m = &r.memory;
+                if let Some(s) = m.scope.session.as_deref().filter(|_| m.kind == MemoryKind::Working) {
+                    if m.status == MemoryStatus::Committed && m.supersedes.is_none() {
+                        self.working.wrote(generation, m, s, None);
+                    } else {
+                        self.working.drop_session(&m.tenant, &m.subject, s);
+                    }
+                }
             }
         }
         Ok(outcome)
@@ -661,21 +764,32 @@ impl Engine {
         Ok(())
     }
 
-    /// Stage 4: the injection check, then the statement classifier, then the state each record
-    /// takes (QUAL-02). Conversation rounds are a record of what was said: they are screened for
-    /// injection but not classified.
-    pub(crate) async fn gate_stage(&self, entry: Entry, items: &mut [Item]) -> anyhow::Result<()> {
+    /// Stage 4: the injection check, then the gate of the record's type (MEM-01), then the state
+    /// the record takes. Working memory is committed as written and episodic memory when its
+    /// source is verified: both are a record of what was noted or said, screened for injection
+    /// but not judged. The other types go through the statement classifier (QUAL-02).
+    pub(crate) async fn gate_stage(&self, policy: &CompiledPolicy, entry: Entry, items: &mut [Item]) -> anyhow::Result<()> {
+        use crate::policy::TypeGate;
         for it in items.iter_mut() {
             let m = &mut it.rec.memory;
             if m.status == MemoryStatus::Rejected {
                 continue;
             }
-            // `held` is the gate's own mark (a revision may carry its predecessor's metadata).
+            let type_gate = policy.of(m.kind).gate;
+            // The gate's own marks (a revision may carry its predecessor's metadata).
             if let Some(o) = m.metadata.as_object_mut() {
                 o.remove("held");
+                o.remove("signals");
+                o.remove("review");
+                o.remove("pref_key");
+            }
+            if m.kind == MemoryKind::Preference {
+                if let Some(k) = preference_key(it.rec.structured.as_ref()) {
+                    m.metadata["pref_key"] = json!(k);
+                }
             }
             let reasons = gate::injection(&m.content);
-            if m.kind != MemoryKind::Episodic {
+            if type_gate.judges_statements() {
                 let mut c = self.classifier.classify(&m.content, m.kind).await?;
                 // The extractor's reading wins over a plain "fact" or "event" from the rules.
                 if let Some(h) = it.hint.filter(|h| *h != c.statement && (matches!(c.statement, Statement::Fact | Statement::Event) || *h == Statement::Plan)) {
@@ -688,11 +802,41 @@ impl Engine {
             let statement = it.class.as_ref().map(|c| c.statement);
             // An open item the caller chose to track is a commitment, not a claim about now.
             let open_item = m.kind == MemoryKind::Commitment && !it.derived;
+            // "Source verified": an authenticated writer and a source label are on the record.
+            let unsourced = type_gate == TypeGate::Source && (m.provenance.agent.as_deref().is_none_or(|a| a.trim().is_empty()) || m.source.trim().is_empty());
+            // An inferred preference is a signal, not a statement: held until it repeats.
+            let signal = type_gate.holds_signals() && m.metadata.get("signal").and_then(|v| v.as_bool()) == Some(true) && self.cfg.intake.preference_signals > 1;
+            // A proposal waits for its reviewer; and under a gate that always needs one, so does
+            // anything that was not let through under the policy in force now: a proposal queued
+            // as "admit at once", or any write queued before the policy changed.
+            let reviewed = (entry == Entry::Propose && type_gate.judges_statements()) || (type_gate.needs_review() && (entry != Entry::Commit || it.policy_changed));
             m.status = if !reasons.is_empty() {
                 m.metadata["quarantine_reasons"] = json!(reasons);
                 it.note = Some(format!("quarantined: looks like an instruction to the agent ({})", reasons.join(", ")));
                 MemoryStatus::Quarantined
-            } else if entry == Entry::Propose && m.kind != MemoryKind::Episodic {
+            } else if unsourced {
+                it.note = Some(format!("rejected: {} memory needs a verified source (the writing principal and a source label)", m.kind.as_str()));
+                MemoryStatus::Rejected
+            } else if signal {
+                if m.expires_at.is_none() {
+                    m.expires_at = Some(m.created_at + chrono::Duration::days(self.cfg.intake.plan_ttl_days.max(1) as i64));
+                }
+                m.metadata["held"] = json!("signal");
+                m.metadata["signals"] = json!(1);
+                if reviewed {
+                    // Counted like any signal, so repeats land on this record instead of piling
+                    // up; but only a reviewer commits it, however often it is seen.
+                    m.metadata["review"] = json!(true);
+                    it.note = Some(format!("held as a candidate: an inferred {} that also waits for a reviewer; repeats are counted", m.kind.as_str()));
+                } else {
+                    it.note = Some(format!(
+                        "held as a candidate: an inferred {} is committed once it has been seen {} times (or stated explicitly)",
+                        m.kind.as_str(),
+                        self.cfg.intake.preference_signals
+                    ));
+                }
+                MemoryStatus::Candidate
+            } else if reviewed {
                 it.note = Some("waiting for a reviewer".into());
                 MemoryStatus::Candidate
             } else if statement.is_some_and(|s| s.held()) && !open_item {
@@ -770,15 +914,32 @@ impl Engine {
     ) -> anyhow::Result<(Vec<(Uuid, Uuid)>, Vec<(Uuid, Uuid)>)> {
         let mut supersede = vec![];
         let mut confirm = vec![];
+        let mut items_signalled: Vec<Uuid> = vec![];
         let icfg = &self.cfg.intake;
         for it in items.iter_mut() {
             let m = &mut it.rec.memory;
             let class = it.class.as_ref().map(|c| c.statement);
             let actor = m.provenance.agent.clone().unwrap_or_else(|| m.source.clone());
-            if m.kind == MemoryKind::Episodic {
-                continue;
-            }
-            if let Some(old) = m.supersedes {
+            // Working and episodic memory are not judged against what is stored (MEM-01).
+            let judged = policy.of(m.kind).gate.judges_statements();
+            // In one scope a preference has one value per key: a new one supersedes the old.
+            let keyed: Vec<Uuid> = match m.metadata.get("pref_key").and_then(|k| k.as_str()) {
+                Some(key) if judged && m.supersedes.is_none() && m.status == MemoryStatus::Committed => {
+                    let ids: Vec<Uuid> = self.store.structured_query(tenant, subject, "preference", &json!({ "key": key })).await?.into_iter().map(|(id, _)| id).collect();
+                    let mut same: Vec<Memory> = self.store.get_many(tenant, &ids).await?;
+                    same.retain(|o| o.status == MemoryStatus::Committed && o.kind == m.kind && o.scope == m.scope && o.id != m.id);
+                    same.sort_by_key(|o| std::cmp::Reverse((o.created_at, o.id)));
+                    same.into_iter().map(|o| o.id).collect()
+                }
+                _ => vec![],
+            };
+            if let Some(newest) = keyed.first().copied() {
+                m.supersedes = Some(newest);
+                m.metadata["supersedes_because"] = json!("preference_key");
+                supersede.extend(keyed.iter().map(|old| (*old, m.id)));
+                it.superseded = Some(newest);
+                it.note = Some(format!("replaces {newest}, the same preference in the same scope"));
+            } else if let Some(old) = m.supersedes {
                 // Explicit revision (CORE-04). A proposal waiting for review supersedes on admission.
                 if m.status == MemoryStatus::Committed {
                     match self.store.get(tenant, old).await? {
@@ -792,9 +953,45 @@ impl Engine {
                         }
                     }
                 }
-            } else if m.status != MemoryStatus::Quarantined {
+            } else if m.metadata.get("held").and_then(|h| h.as_str()) == Some("signal") {
+                // The same signal again, in the same scope: the held one counts it; at the
+                // threshold it is committed. The repeat itself is not stored twice.
                 if let Some(emb) = it.rec.embedding.clone() {
-                    let near = self.store.nearest_many(tenant, subject, m.kind, &emb, 5).await?;
+                    for (held, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "signal", kind: Some(m.kind), scope: &m.scope }).await? {
+                        let Some(h) = self.store.get(tenant, held).await? else { continue };
+                        // The same preference: same scope and kind, and the same key if keyed
+                        // (two keys with similar wording are two preferences).
+                        let same = h.scope == m.scope && h.kind == m.kind && h.metadata.get("pref_key") == m.metadata.get("pref_key");
+                        let open = h.expires_at.is_none_or(|t| t > Utc::now()) && same;
+                        if open && sim >= icfg.confirm_threshold && !items_signalled.contains(&held) {
+                            let seen = h.metadata.get("signals").and_then(|n| n.as_u64()).unwrap_or(1) as u32 + 1;
+                            // A held signal that also waits for a reviewer is counted, never
+                            // committed by its repeats.
+                            let commits = seen >= icfg.preference_signals && h.metadata.get("review").and_then(|r| r.as_bool()) != Some(true);
+                            // Committed by this repeat, a keyed preference replaces the value
+                            // its scope held, as a stated one would.
+                            if let Some(key) = h.metadata.get("pref_key").and_then(|k| k.as_str()).filter(|_| commits) {
+                                let ids: Vec<Uuid> =
+                                    self.store.structured_query(tenant, subject, "preference", &json!({ "key": key })).await?.into_iter().map(|(id, _)| id).collect();
+                                let old = self.store.get_many(tenant, &ids).await?;
+                                supersede.extend(
+                                    old.iter().filter(|o| o.status == MemoryStatus::Committed && o.kind == h.kind && o.scope == h.scope && o.id != held).map(|o| (o.id, held)),
+                                );
+                            }
+                            m.status = MemoryStatus::Rejected;
+                            m.metadata["duplicate_of"] = json!(held);
+                            m.metadata.as_object_mut().map(|o| o.remove("held"));
+                            it.duplicate_of = Some(held);
+                            it.signal = Some((held, seen, commits));
+                            it.note = Some(format!("the same signal as {held}, now seen {seen} times"));
+                            items_signalled.push(held);
+                            break;
+                        }
+                    }
+                }
+            } else if judged && m.status != MemoryStatus::Quarantined {
+                if let Some(emb) = it.rec.embedding.clone() {
+                    let near = self.store.nearest_many(tenant, subject, m.kind, &emb, 5, &m.scope).await?;
                     // A structured record is told apart by its attributes, not its wording.
                     let comparable = it.route != Route::Structured;
                     if let Some((dup, sim)) = near.first().copied().filter(|(_, s)| comparable && *s >= policy.policy.write_gate.dedup_threshold) {
@@ -832,7 +1029,7 @@ impl Engine {
                     if class == Some(Statement::Event) && m.status == MemoryStatus::Committed {
                         // Held plans only (a guess is not "done" by a similar event), unexpired, in
                         // the event's own scope.
-                        for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3).await? {
+                        for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope }).await? {
                             let Some(pm) = self.store.get(tenant, plan).await? else { continue };
                             let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope;
                             if open && sim >= icfg.confirm_threshold && classify::shares_content_word(&pm.content, &m.content) && !confirm.iter().any(|(p, _)| *p == plan) {
@@ -889,6 +1086,32 @@ impl Engine {
                     }
                 }
                 out.push(AuditEntry { actor: actor.clone(), action: (*action).into(), subject: Some(subject.to_string()), memory_id: Some(m.id), detail });
+            }
+            // MEM-05: a promotion is its own event, naming the sources it keeps a link to.
+            if let Some(from) = m.metadata.get("promoted_from").filter(|f| f.is_array()) {
+                out.push(AuditEntry {
+                    actor: m.provenance.agent.clone().unwrap_or_else(|| m.source.clone()),
+                    action: "memory.promote".into(),
+                    subject: Some(subject.to_string()),
+                    memory_id: Some(m.id),
+                    detail: json!({
+                        "from": from,
+                        "from_kinds": m.metadata.get("promoted_from_kinds"),
+                        "to": m.kind.as_str(),
+                        "status": m.status.as_str(),
+                        "scope": m.scope,
+                        "reason": m.metadata.get("promotion_reason"),
+                    }),
+                });
+            }
+            if let Some((held, seen, commit)) = it.signal {
+                out.push(AuditEntry {
+                    actor: "engine".into(),
+                    action: if commit { "memory.admit" } else { "memory.signal" }.into(),
+                    subject: Some(subject.to_string()),
+                    memory_id: Some(held),
+                    detail: json!({ "signals": seen, "seen_in": m.id, "reason": if commit { "a repeated signal confirms the preference" } else { "signal seen again" } }),
+                });
             }
             for plan in &it.confirms {
                 out.push(AuditEntry {

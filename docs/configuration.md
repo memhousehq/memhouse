@@ -91,7 +91,10 @@ query_analysis = true
 window_weight = 0.15
 window_top = 3
 window_top_weight = 1.0
-working_ttl_secs = 86400               # working memory without expires_at lives this long
+working_ttl_secs = 86400               # working memory lives this long after its session's last write
+working_cache_secs = 5                 # a session's working memory is cached this long (0 = off)
+working_cache_sessions = 1000
+working_cache_items = 50
 subquery_weight = 0.0
 
 [enrich]
@@ -259,7 +262,10 @@ restart, and can only tighten governance.
 | `query_analysis` | true | date-aware recall (time-window probe) |
 | `window_weight` | 0.15 | fusion weight of every in-window hit |
 | `window_top`, `window_top_weight` | 3, 1.0 | extra weight for the top N in-window hits |
-| `working_ttl_secs` | 86400 | lifetime of `working` memory written without `expires_at` |
+| `working_ttl_secs` | 86400 | lifetime of `working` memory written without `expires_at`; in a session, counted from the session's last working-memory write ([memory types](memory-types.md#working-memory-and-sessions)) |
+| `working_cache_secs` | 5 | seconds a session's working memory is served from the process's cache before it is read from the database again (PERF-05). Changes made through the same process show at once, through another process within this time; 0 turns the cache off |
+| `working_cache_sessions` | 1000 | sessions kept in the cache; the least recently used is evicted |
+| `working_cache_items` | 50 | working-memory records kept per session, newest first; older ones are found by search |
 | `subquery_weight` | 0.0 | weight of "A or B" sub-query probes (off: added noise on LongMemEval) |
 | `recall_timeout_ms` | 450 | retrieval (policy read, query embedding, search, exact probe) that fails or takes longer answers an empty result flagged `degraded` instead of an error (PERF-07): the default leaves room to answer within 500 ms; 0 waits as long as it takes |
 
@@ -291,7 +297,8 @@ answer, and workers pick up whatever a crash or a failure left behind.
 | `llm` | `gpt-4o-mini`, 60 tokens | an `LlmConfig` table, as `[enrich.llm]`; used only with `classifier = "llm"` |
 | `plan_ttl_days` | 90 | a held plan or speculation without `valid_to` expires after this many days unconfirmed |
 | `correction_threshold` | 0.8 | cosine at or above which a correction supersedes the closest record of its kind (they must also share a content word) |
-| `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word and the scope; speculation is never confirmed) |
+| `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word and the scope; speculation is never confirmed), and at which an inferred preference counts as the same signal again |
+| `preference_signals` | 2 | times an inferred preference (a write with `metadata.signal = true`) must be seen, in the same scope, before it is committed; 1 commits it at once |
 
 ## `[enrich]`
 

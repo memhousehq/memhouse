@@ -354,7 +354,7 @@ impl Engine {
         if items.is_empty() {
             return Ok(0);
         }
-        self.gate_stage(Entry::Commit, &mut items).await?;
+        self.gate_stage(&policy, Entry::Commit, &mut items).await?;
         Self::route_stage(&mut items);
         self.embed_stage(&mut items).await?;
         let (supersede, confirm) = self.resolve_stage(&policy, &job.tenant, &job.subject, Entry::Commit, &mut items).await?;
@@ -374,7 +374,17 @@ impl Engine {
             },
         );
         let n = items.len();
-        let w = IntakeWrite { proposal: None, tenant: job.tenant.clone(), records: items.into_iter().map(|i| i.rec).collect(), supersede, confirm, audit, ..Default::default() };
+        let signals = crate::intake::signals_of(&items);
+        let w = IntakeWrite {
+            proposal: None,
+            tenant: job.tenant.clone(),
+            records: items.into_iter().map(|i| i.rec).collect(),
+            supersede,
+            confirm,
+            signals,
+            audit,
+            ..Default::default()
+        };
         self.store.apply_intake(&w).await?;
         Ok(n)
     }

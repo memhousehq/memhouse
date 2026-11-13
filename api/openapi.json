@@ -49,6 +49,21 @@
           }
         ]
       },
+      "Approver": {
+        "description": "Who commits a candidate of a type.",
+        "oneOf": [
+          {
+            "const": "reviewer",
+            "description": "Any principal with `memory:review`.",
+            "type": "string"
+          },
+          {
+            "const": "admin",
+            "description": "An admin principal with `memory:review`.",
+            "type": "string"
+          }
+        ]
+      },
       "AuditEvent": {
         "properties": {
           "action": {
@@ -154,7 +169,8 @@
             "$ref": "#/components/schemas/PolicyRedaction"
           },
           "retention": {
-            "$ref": "#/components/schemas/PolicyRetention"
+            "$ref": "#/components/schemas/PolicyRetention",
+            "description": "`episodic_days` and `working_ttl_secs` repeat `types.episodic.retention_days` and\n`types.working.ttl_secs`."
           },
           "spec": {
             "anyOf": [
@@ -170,6 +186,10 @@
           "tenant": {
             "type": "string"
           },
+          "types": {
+            "$ref": "#/components/schemas/PolicyTypes",
+            "description": "Each type's gate, retention, retrieval method and access rules (MEM-01)."
+          },
           "write_gate": {
             "$ref": "#/components/schemas/PolicyWriteGate"
           }
@@ -177,12 +197,45 @@
         "required": [
           "tenant",
           "memory_types",
+          "types",
           "write_gate",
           "retention",
           "redaction",
           "recall",
           "ranking",
           "decisions"
+        ],
+        "type": "object"
+      },
+      "EffectivePreference": {
+        "description": "A preference as it applies to a reader (`GET /v1/subjects/{subject}/preferences`, MEM-04):\nfor each key, the one set at the narrowest scope the reader is in.",
+        "properties": {
+          "key": {
+            "description": "The preference's key (`structured.attrs.key` of a `preference` record); absent for a\npreference written as text only, which overrides nothing.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "$ref": "#/components/schemas/ScopeLevel",
+            "description": "The scope level it is set at."
+          },
+          "memory": {
+            "$ref": "#/components/schemas/Memory"
+          },
+          "overrides": {
+            "description": "The same preference at broader levels, which this one overrides.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "level",
+          "memory"
         ],
         "type": "object"
       },
@@ -347,6 +400,11 @@
             "type": "string"
           },
           {
+            "const": "overridden",
+            "description": "A preference overridden by the same preference at a narrower scope (MEM-04).",
+            "type": "string"
+          },
+          {
             "const": "budget",
             "description": "Cut by the token budget.",
             "type": "string"
@@ -484,6 +542,122 @@
         ],
         "type": "string"
       },
+      "Grant": {
+        "description": "One agent's agent-scoped memory made readable to another agent (INT-06). Without a grant an\nagent never reads records scoped to another agent.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantee": {
+            "description": "The agent that may read it.",
+            "type": "string"
+          },
+          "grantor": {
+            "description": "The agent whose memory is shared.",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kinds": {
+            "default": [],
+            "description": "Kinds the grant covers; empty is all.",
+            "items": {
+              "$ref": "#/components/schemas/MemoryKind"
+            },
+            "type": "array"
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subjects": {
+            "description": "Subjects the grant covers: an exact name, a prefix ending in `*`, or `*` for all.",
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant",
+          "grantor",
+          "grantee",
+          "subjects",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "GrantRequest": {
+        "additionalProperties": false,
+        "description": "Create a grant (`POST /v1/grants`).",
+        "properties": {
+          "expires_at": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantee": {
+            "type": "string"
+          },
+          "grantor": {
+            "type": "string"
+          },
+          "kinds": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MemoryKind"
+            },
+            "type": "array"
+          },
+          "subjects": {
+            "default": null,
+            "description": "Defaults to `*`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "grantor",
+          "grantee"
+        ],
+        "type": "object"
+      },
+      "GrantRevoked": {
+        "description": "The answer to `DELETE /v1/grants/{id}`.",
+        "properties": {
+          "revoked": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "type": "object"
+      },
       "Health": {
         "description": "Health check body.",
         "properties": {
@@ -548,6 +722,10 @@
               "integer",
               "null"
             ]
+          },
+          "working": {
+            "description": "From the working memory of the recall's session (MEM-01): listed first, newest first, not\nranked against the query.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -882,6 +1060,11 @@
             "const": "document",
             "description": "Reference documents or snippets.",
             "type": "string"
+          },
+          {
+            "const": "taxonomic",
+            "description": "The organisation's own terms and classifications: agents propose, an administrator\napproves (MEM-03).",
+            "type": "string"
           }
         ]
       },
@@ -973,6 +1156,21 @@
           "content"
         ],
         "type": "object"
+      },
+      "Partition": {
+        "description": "Whose partition a write of a type lands in (ACC-10).",
+        "oneOf": [
+          {
+            "const": "subject",
+            "description": "The subject the write names: a note about a patient is stored with the patient.",
+            "type": "string"
+          },
+          {
+            "const": "author",
+            "description": "The verified user the write is made for: their own preferences and procedures are stored\nwith them, whatever subject the conversation was about.",
+            "type": "string"
+          }
+        ]
       },
       "PolicyActivation": {
         "description": "One activation: what ran from then on.",
@@ -1297,6 +1495,17 @@
           "scope": {
             "$ref": "#/components/schemas/PolicySpecScope"
           },
+          "types": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecTypes"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-type rules (MEM-01): one optional section per memory type."
+          },
           "write_gate": {
             "anyOf": [
               {
@@ -1619,6 +1828,172 @@
           }
         ]
       },
+      "PolicySpecType": {
+        "additionalProperties": false,
+        "description": "One type's section of a spec (`[types.semantic]`): what it leaves out keeps the type's default.",
+        "properties": {
+          "access": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecTypeAccess"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TypeGate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A gate at least as strict as the type's own (`none` < `source` < `full` = `explicit` <\n`confirmation` < `approval`)."
+          },
+          "retention_days": {
+            "description": "Days after which records of the type are purged; 0 keeps them. For `episodic`, within\ngovernance's limit. Not for `working`, which expires by `ttl_secs`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "ttl_secs": {
+            "description": "`working` only: seconds a record lives after its session's last write (1 second to 30 days).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicySpecTypeAccess": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_private": {
+            "description": "Scope agents' writes of this type to the writing agent. May be turned on, not off where it\nis the type's default.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "approver": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Approver"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`admin` anywhere; `reviewer` only where it is the type's default."
+          },
+          "partition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Partition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PolicySpecTypes": {
+        "additionalProperties": false,
+        "properties": {
+          "commitment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "episodic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "procedural": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "semantic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "taxonomic": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "working": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "PolicySpecWriteGate": {
         "additionalProperties": false,
         "properties": {
@@ -1708,6 +2083,102 @@
         ],
         "type": "object"
       },
+      "PolicyType": {
+        "description": "The rules of one memory type (MEM-01).",
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/PolicyTypeAccess"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/TypeGate"
+          },
+          "retention_days": {
+            "description": "Days after which records of the type are purged; 0 keeps them until superseded or deleted.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retrieval": {
+            "$ref": "#/components/schemas/Retrieval"
+          },
+          "ttl_secs": {
+            "description": "Working memory: seconds a record lives after its session's last write.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "gate",
+          "retention_days",
+          "retrieval",
+          "access"
+        ],
+        "type": "object"
+      },
+      "PolicyTypeAccess": {
+        "properties": {
+          "agent_private": {
+            "description": "An agent's writes of this type are scoped to that agent: other agents read them only with\na grant (INT-06).",
+            "type": "boolean"
+          },
+          "approver": {
+            "$ref": "#/components/schemas/Approver"
+          },
+          "partition": {
+            "$ref": "#/components/schemas/Partition"
+          }
+        },
+        "required": [
+          "agent_private",
+          "partition",
+          "approver"
+        ],
+        "type": "object"
+      },
+      "PolicyTypes": {
+        "description": "The rules of every memory type.",
+        "properties": {
+          "commitment": {
+            "$ref": "#/components/schemas/PolicyType"
+          },
+          "document": {
+            "$ref": "#/components/schemas/PolicyType"
+          },
+          "episodic": {
+            "$ref": "#/components/schemas/PolicyType"
+          },
+          "preference": {
+            "$ref": "#/components/schemas/PolicyType"
+          },
+          "procedural": {
+            "$ref": "#/components/schemas/PolicyType"
+          },
+          "semantic": {
+            "$ref": "#/components/schemas/PolicyType"
+          },
+          "taxonomic": {
+            "$ref": "#/components/schemas/PolicyType"
+          },
+          "working": {
+            "$ref": "#/components/schemas/PolicyType"
+          }
+        },
+        "required": [
+          "working",
+          "episodic",
+          "semantic",
+          "preference",
+          "procedural",
+          "commitment",
+          "document",
+          "taxonomic"
+        ],
+        "type": "object"
+      },
       "PolicyValidation": {
         "description": "Whether a spec compiles for the caller's tenant, and to what.",
         "properties": {
@@ -1782,6 +2253,123 @@
           "dedup_threshold",
           "max_content_chars",
           "quarantine_injection"
+        ],
+        "type": "object"
+      },
+      "PromoteRequest": {
+        "description": "Promote memories to another type (`POST /v1/promote`, MEM-05): a new record of `kind` in the\nsame subject, through that type's own gate, linked to its sources (`metadata.promoted_from`)\nand audited (`memory.promote`). The sources stay as they are.",
+        "properties": {
+          "actor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content": {
+            "default": null,
+            "description": "The promoted memory's text. Required for several sources; for one it defaults to the\nsource's text.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind",
+            "description": "The type of the new record: `semantic`, `preference`, `procedural` or `taxonomic`, or\n`episodic` for working memory."
+          },
+          "labels": {
+            "default": [],
+            "description": "Labels added to the sources' own, which the new record always keeps.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reason": {
+            "default": null,
+            "description": "Why, for the audit log.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_key": {
+            "default": null,
+            "description": "Idempotency key, as for `remember`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The new record's scope. Defaults to the sources' common scope without its session, so\npromoting out of a session's working memory makes the memory visible to the session's user."
+          },
+          "sources": {
+            "description": "The records promoted: 1 to 50 committed records of one subject.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "structured": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Structured"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenant": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wait": {
+            "description": "Wait for the write gate, as for `remember`.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sources",
+          "kind"
         ],
         "type": "object"
       },
@@ -1970,6 +2558,13 @@
             "$ref": "#/components/schemas/Scope",
             "description": "The scope filter applied (the caller's own, merged with the request's)."
           },
+          "shared_agents": {
+            "description": "Agents whose memory the caller was granted when it recalled (INT-06).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "stages": {
             "$ref": "#/components/schemas/RecallStages"
           },
@@ -2143,7 +2738,7 @@
               }
             ],
             "default": null,
-            "description": "Only memories visible in this scope: each scope field the request sets matches records\nwith the same value or none. Unset fields don't filter."
+            "description": "Only memories visible in this scope: each scope field the request sets matches records\nwith the same value or none (scope inheritance, MEM-04). `scope.session` names the session\nthe recall runs in: its working memory comes first, and records of other sessions are never\nreturned."
           },
           "subject": {
             "default": null,
@@ -2568,6 +3163,47 @@
         ],
         "type": "object"
       },
+      "Retrieval": {
+        "description": "How a type is retrieved (MEM-01). Set by the engine per type; shown in the compiled policy.",
+        "oneOf": [
+          {
+            "enum": [
+              "hybrid"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "session_cache",
+            "description": "A session's records come first in its recalls, newest first, from the session cache\n(PERF-05); outside a session they are found by hybrid search until they expire.",
+            "type": "string"
+          },
+          {
+            "const": "hybrid_time",
+            "description": "Hybrid search with a probe for the time the question names.",
+            "type": "string"
+          },
+          {
+            "const": "hybrid_exact",
+            "description": "Hybrid search plus exact lookup of structured records.",
+            "type": "string"
+          },
+          {
+            "const": "scope_ordered",
+            "description": "Hybrid search, then the same preference at a narrower scope replaces the broader one;\n`GET /v1/subjects/{subject}/preferences` lists them in scope order.",
+            "type": "string"
+          },
+          {
+            "const": "task_matched",
+            "description": "Matched to the task at hand (from G19); hybrid search until then.",
+            "type": "string"
+          },
+          {
+            "const": "exact",
+            "description": "Exact lookup of the term's structured form; also found by hybrid search.",
+            "type": "string"
+          }
+        ]
+      },
       "RetrievalMode": {
         "enum": [
           "hybrid",
@@ -2887,7 +3523,7 @@
       },
       "Scope": {
         "additionalProperties": false,
-        "description": "Narrower visibility inside a subject (MEM-04). All empty means the whole subject; resolution\norder (user over team over org) is applied by recall from G11.",
+        "description": "Narrower visibility inside a subject (MEM-04). All empty means the whole subject (the tenant\nlevel). Levels inherit broadest to narrowest: tenant, org, team, agent, user, session; a\npreference set at a narrower level overrides the same preference at a broader one.",
         "properties": {
           "agent": {
             "type": [
@@ -2921,6 +3557,18 @@
           }
         },
         "type": "object"
+      },
+      "ScopeLevel": {
+        "description": "The levels of a scope, broadest first (MEM-04). Each level inherits from those before it.",
+        "enum": [
+          "tenant",
+          "org",
+          "team",
+          "agent",
+          "user",
+          "session"
+        ],
+        "type": "string"
       },
       "Statement": {
         "description": "What a statement asserts, as the write gate reads it (QUAL-02). Plans and speculation stay\ncandidates until confirmed or expired (PR-7); a correction supersedes what it corrects.",
@@ -3158,6 +3806,41 @@
         ],
         "type": "object"
       },
+      "TypeGate": {
+        "description": "What a write of a type must pass before it is committed (MEM-01), loosest first. The\ninjection screen and redaction are not part of it: they apply to every type (security\nbaseline).",
+        "oneOf": [
+          {
+            "const": "none",
+            "description": "Committed as written: no statement gate, no duplicate check, no review (working memory).",
+            "type": "string"
+          },
+          {
+            "const": "source",
+            "description": "Committed when its source is verified: the writer is an authenticated principal and the\nrecord says where it came from (episodic memory). What was said is not judged.",
+            "type": "string"
+          },
+          {
+            "const": "full",
+            "description": "The statement gate (QUAL-02): plans and speculation are held, duplicates rejected,\ncorrections supersede (semantic memory).",
+            "type": "string"
+          },
+          {
+            "const": "explicit",
+            "description": "The statement gate, and only explicit statements commit: a write marked as an inferred\nsignal (`metadata.signal`) is held until the same signal has been seen\n`intake.preference_signals` times (preferences).",
+            "type": "string"
+          },
+          {
+            "const": "confirmation",
+            "description": "The statement gate, and a proposal waits for explicit confirmation by a reviewer even\nwhere proposals are otherwise admitted automatically (procedural memory, MEM-02).",
+            "type": "string"
+          },
+          {
+            "const": "approval",
+            "description": "The statement gate, and only the type's approver commits: everyone else proposes\n(taxonomic memory, MEM-03).",
+            "type": "string"
+          }
+        ]
+      },
       "WhoAmI": {
         "description": "Who the API sees (`GET /v1/whoami`).",
         "properties": {
@@ -3184,6 +3867,10 @@
           "propose_only": {
             "description": "Writes enter as candidates (GOV-08).",
             "type": "boolean"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope",
+            "description": "The caller's own scope (MEM-04): its org, team, agent and user. Reads return records of\nthese and of broader levels. Empty for an admin, who reads every scope."
           },
           "scopes": {
             "items": {
@@ -3246,7 +3933,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.4.0"
+    "version": "1.5.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -3563,6 +4250,236 @@
         "summary": "Delete memories by record, subject, user, agent, source or tenant",
         "tags": [
           "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/grants": {
+      "get": {
+        "description": "Every grant of the tenant, newest first, revoked and expired ones included (INT-06). Needs `grant:manage`.",
+        "operationId": "listGrants",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Grant"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Grants between agents",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      },
+      "post": {
+        "description": "Records scoped to an agent (`scope.agent`; working memory always is) are read by that agent only. A grant lets `grantee` read `grantor`'s agent-scoped records in the subjects and kinds it names, until it expires or is revoked; it gives no right to revise, forget or promote them. Applies within 2 seconds on every node. Audited as `grant.create`. Needs `grant:manage`.",
+        "operationId": "createGrant",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Grant"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Share one agent's memory with another",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/grants/{id}": {
+      "delete": {
+        "description": "The grantee stops reading the grantor's agent-scoped records within 2 seconds. Audited as `grant.revoke`. Needs `grant:manage`.",
+        "operationId": "revokeGrant",
+        "parameters": [
+          {
+            "description": "The grant's id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantRevoked"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "Revoke a grant",
+        "tags": [
+          "identity"
         ],
         "x-stability": "stable"
       }
@@ -4850,6 +5767,129 @@
         "x-stability": "stable"
       }
     },
+    "/v1/promote": {
+      "post": {
+        "description": "Writes a new record of `kind` in the sources' subject, through that type's own gate, and answers like `remember`. The new record names its sources in `metadata.promoted_from` and keeps their labels; the sources stay as they are. Audited as `memory.promote` (MEM-05). Working memory may become any durable type; nothing is promoted into working memory. Deleting a source also deletes what was promoted from it. Needs `memory:write` and sight of every source.",
+        "operationId": "promote",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RememberResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Promote memories to another type",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
     "/v1/recall": {
       "post": {
         "description": "Ranked memories of one subject with ids and provenance, filtered by scope, kind, tags and as-of time, cut to a token budget; with `render` also as a text block for a prompt.",
@@ -5133,7 +6173,7 @@
     },
     "/v1/review": {
       "post": {
-        "description": "For proposals that wait for review (`access.admission = \"review\"`). Needs `memory:review`. A revision whose predecessor is no longer current is rejected instead of committed.",
+        "description": "For proposals that wait for review: every agent proposal where `access.admission = \"review\"`, and always procedural memory proposed by an agent and taxonomic memory proposed by anyone but an administrator. Needs `memory:review`; taxonomic memory also needs an admin principal. A revision whose predecessor is no longer current is rejected instead of committed.",
         "operationId": "review",
         "parameters": [
           {
@@ -5656,6 +6696,104 @@
           }
         },
         "summary": "List a subject's memories, newest first",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/subjects/{subject}/preferences": {
+      "get": {
+        "description": "Scope-ordered lookup (MEM-04). For each preference key (`structured.attrs.key` of a `preference` record) the one set at the narrowest scope the caller is in: session, then user, agent, team, org, tenant; `overrides` lists the broader ones it replaces. Preferences without a key are listed as they are. Needs `memory:read`.",
+        "operationId": "preferences",
+        "parameters": [
+          {
+            "description": "Whose preferences.",
+            "in": "path",
+            "name": "subject",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only this preference key.",
+            "in": "query",
+            "name": "key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Also the preferences set in this session.",
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EffectivePreference"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          }
+        },
+        "summary": "The preferences that apply to the caller",
         "tags": [
           "memory"
         ],

@@ -63,7 +63,7 @@ Fields in this order; optional fields are left out when empty.
 |---|---|---|---|
 | `id` | UUID | yes | |
 | `tenant`, `subject` | text | yes | not empty |
-| `kind` | `working` `episodic` `semantic` `preference` `procedural` `commitment` `document` | yes | |
+| `kind` | `working` `episodic` `semantic` `preference` `procedural` `commitment` `document` `taxonomic` | yes | `taxonomic` from schema 7 |
 | `status` | `candidate` `committed` `superseded` `quarantined` `rejected` `expired` | yes | `superseded` needs `superseded_by` |
 | `content` | text | yes | not empty |
 | `content_hash` | lowercase sha256 hex | yes | see below |
@@ -94,11 +94,12 @@ source did:
 
 | Record | Hash input |
 |---|---|
-| episodic round (`metadata.round` present) | `episodic␟<session_id>␟<round>␟<content>` |
+| episodic round (`metadata.round` present) | `episodic␟<session_id>␟<round>␟<content>`, then `␟scope␟<scope>` for a round with a scope |
 | derived fact (`metadata.derived = true`) | `fact␟<session_id>␟<content>` |
-| any other | `<kind>␟<content>` |
+| any other | `<kind>␟<content>`, then `␟<record_type>␟<attrs>` for a structured record, then `␟scope␟<scope>` for a record with a scope (the scope as canonical JSON, fields in the order above) |
 
-`␟` is U+001F. Readers don't recompute it for v2 files; v1 files didn't carry it, so it is
+`␟` is U+001F. The scope is part of the key from schema 7, so the same words noted in two
+scopes are two records. Readers don't recompute it for v2 files; v1 files didn't carry it, so it is
 computed on import.
 
 ### Second vector

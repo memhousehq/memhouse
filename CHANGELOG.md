@@ -35,6 +35,16 @@ path from 0.x data other than export and import.
   exact query; workers resume proposals after a crash and set poison ones aside; failed
   retrieval answers empty and flagged, a write that can't be queued is refused as retryable
   (`503 unavailable`). API 1.4.0, schema version 6 (`mh_intake`), `[intake]` settings.
+- Memory types: each type has its own write gate, retention, retrieval method and access rules,
+  set per type in the compiled policy (`[types.<kind>]` sections tighten them). Working memory is
+  a session's scratchpad, served first from a per-session cache; scopes inherit from tenant to
+  session and a keyed preference resolves user over team over org
+  (`GET /v1/subjects/{subject}/preferences`); `POST /v1/promote` writes an audited, linked record
+  of another type; agents read each other's agent-scoped memory only with a grant
+  (`/v1/grants`, `memhouse grant`); procedural memory waits for confirmation and the new
+  `taxonomic` kind for an administrator's approval. API 1.5.0, schema version 7 (`mh_grant`),
+  `[memory] working_cache_*` and `[intake] preference_signals` settings. Behaviour changes for
+  1.4 clients are listed in [docs/api-stability.md](docs/api-stability.md).
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early
   (`memhouse recall ... | head`).

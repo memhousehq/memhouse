@@ -53,8 +53,10 @@ replace the defaults without touching the engine.
 | `core/src/config.rs` | every config key, its default and its environment override |
 | `store-postgres/src/lib.rs` | schema, the single-statement hybrid search, the audit chain, cascading deletes |
 | `server/src/lib.rs` / `mcp.rs` | routes, auth middleware, MCP tools |
-| `core/src/policy.rs` | policy specs, the compiler and its precedence checks, versions, diff, approval and rollback |
-| `bench/src/governance.rs` | the governance suite (47 checks); the API, identity, intake, schema, telemetry and policy checks are in `*_checks.rs` next to it |
+| `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
+| `core/src/working.rs` | the session cache of working memory |
+| `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
+| `bench/src/governance.rs` | the governance suite (53 checks); the API, identity, intake, schema, telemetry, policy and memory-type checks are in `*_checks.rs` next to it |
 
 ## Build
 

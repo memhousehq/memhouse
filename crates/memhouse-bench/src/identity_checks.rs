@@ -230,6 +230,8 @@ async fn routes(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Resu
             "/v1/policies" | "/v1/policies/validate" => json!({"spec": {"name": "x", "scope": {"tenant": "default"}}}),
             "/v1/policies/diff" => json!({"to": "default"}),
             "/v1/policies/rollback" => json!({}),
+            "/v1/promote" => json!({"sources": [id], "kind": "semantic"}),
+            "/v1/grants" => json!({"grantor": "agent:a", "grantee": "agent:trusted"}),
             _ => return None,
         })
     };
@@ -418,6 +420,7 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
         windows: vec![],
         scope: Scope::default(),
         include_candidates: false,
+        shared_agents: vec![],
     };
     let plan = e.store.search_plan(&q).await?.unwrap_or_default();
     if !scan_filters_labels(&plan) {

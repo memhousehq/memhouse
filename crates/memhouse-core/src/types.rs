@@ -24,11 +24,22 @@ pub enum MemoryKind {
     Commitment,
     /// Reference documents or snippets.
     Document,
+    /// The organisation's own terms and classifications: agents propose, an administrator
+    /// approves (MEM-03).
+    Taxonomic,
 }
 
 impl MemoryKind {
-    pub const ALL: [MemoryKind; 7] =
-        [MemoryKind::Working, MemoryKind::Episodic, MemoryKind::Semantic, MemoryKind::Preference, MemoryKind::Procedural, MemoryKind::Commitment, MemoryKind::Document];
+    pub const ALL: [MemoryKind; 8] = [
+        MemoryKind::Working,
+        MemoryKind::Episodic,
+        MemoryKind::Semantic,
+        MemoryKind::Preference,
+        MemoryKind::Procedural,
+        MemoryKind::Commitment,
+        MemoryKind::Document,
+        MemoryKind::Taxonomic,
+    ];
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -39,6 +50,20 @@ impl MemoryKind {
             MemoryKind::Procedural => "procedural",
             MemoryKind::Commitment => "commitment",
             MemoryKind::Document => "document",
+            MemoryKind::Taxonomic => "taxonomic",
+        }
+    }
+
+    /// Whether a record of this kind may be promoted to `to` (MEM-05). Promotion moves towards
+    /// durable memory: never into working memory, never to the same kind (that is `revise`), and
+    /// only working memory becomes episodic. Commitments and documents are sources, not targets.
+    pub fn promotable_to(&self, to: MemoryKind) -> bool {
+        use MemoryKind::*;
+        match to {
+            _ if *self == to => false,
+            Working | Commitment | Document => false,
+            Episodic => *self == Working,
+            Semantic | Preference | Procedural | Taxonomic => true,
         }
     }
 
@@ -205,8 +230,9 @@ pub struct IntakeStatus {
     pub oldest_pending_secs: Option<f64>,
 }
 
-/// Narrower visibility inside a subject (MEM-04). All empty means the whole subject; resolution
-/// order (user over team over org) is applied by recall from G11.
+/// Narrower visibility inside a subject (MEM-04). All empty means the whole subject (the tenant
+/// level). Levels inherit broadest to narrowest: tenant, org, team, agent, user, session; a
+/// preference set at a narrower level overrides the same preference at a broader one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Scope {
@@ -225,6 +251,73 @@ pub struct Scope {
 impl Scope {
     pub fn is_empty(&self) -> bool {
         *self == Scope::default()
+    }
+
+    /// The narrowest level the scope names; `tenant` when it names none.
+    pub fn level(&self) -> ScopeLevel {
+        ScopeLevel::NARROWEST_FIRST.into_iter().find(|l| self.get(*l).is_some()).unwrap_or(ScopeLevel::Tenant)
+    }
+
+    /// The value at a level (`tenant` has none here: the tenant is the record's own field).
+    pub fn get(&self, level: ScopeLevel) -> Option<&String> {
+        match level {
+            ScopeLevel::Tenant => None,
+            ScopeLevel::Org => self.org.as_ref(),
+            ScopeLevel::Team => self.team.as_ref(),
+            ScopeLevel::Agent => self.agent.as_ref(),
+            ScopeLevel::User => self.user.as_ref(),
+            ScopeLevel::Session => self.session.as_ref(),
+        }
+    }
+
+    /// Scope inheritance (MEM-04), the one rule every read applies: a reader in this scope sees a
+    /// record whose scope names, at every level, either nothing (the record belongs to a broader
+    /// level) or the reader's own value. So a session sees its own records and those of its user,
+    /// agent, team, org and tenant. `shared` holds the agents whose memory was granted to the
+    /// reader (INT-06), as `agent`, or `agent` for one kind.
+    ///
+    /// The session level has one exception, kept for API v1: a reader that names no session
+    /// (its session is [`crate::access::NOBODY`]) still sees session-scoped records, as it did
+    /// before 1.5, except working memory, which is session-local (MEM-01). A reader that names
+    /// a session never sees another session's records.
+    pub fn sees(&self, record: &Scope, kind: MemoryKind, shared: &[String]) -> bool {
+        let field = |mine: &Option<String>, theirs: &Option<String>| mine.is_none() || theirs.is_none() || mine == theirs;
+        let session = field(&self.session, &record.session) || (self.session.as_deref() == Some(crate::access::NOBODY) && kind != MemoryKind::Working);
+        let agent =
+            field(&self.agent, &record.agent) || record.agent.as_ref().is_some_and(|a| shared.contains(&shared_key(a, None)) || shared.contains(&shared_key(a, Some(kind))));
+        field(&self.org, &record.org) && field(&self.team, &record.team) && agent && field(&self.user, &record.user) && session
+    }
+}
+
+/// The key a grant puts in a read's `shared` list: the granting agent, for every kind (`*`) or one.
+pub fn shared_key(agent: &str, kind: Option<MemoryKind>) -> String {
+    format!("{agent}\u{1f}{}", kind.map(|k| k.as_str()).unwrap_or("*"))
+}
+
+/// The levels of a scope, broadest first (MEM-04). Each level inherits from those before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeLevel {
+    Tenant,
+    Org,
+    Team,
+    Agent,
+    User,
+    Session,
+}
+
+impl ScopeLevel {
+    pub const NARROWEST_FIRST: [ScopeLevel; 6] = [ScopeLevel::Session, ScopeLevel::User, ScopeLevel::Agent, ScopeLevel::Team, ScopeLevel::Org, ScopeLevel::Tenant];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ScopeLevel::Tenant => "tenant",
+            ScopeLevel::Org => "org",
+            ScopeLevel::Team => "team",
+            ScopeLevel::Agent => "agent",
+            ScopeLevel::User => "user",
+            ScopeLevel::Session => "session",
+        }
     }
 }
 
@@ -741,7 +834,9 @@ pub struct RecallRequest {
     #[serde(default)]
     pub tags: Option<Vec<String>>,
     /// Only memories visible in this scope: each scope field the request sets matches records
-    /// with the same value or none. Unset fields don't filter.
+    /// with the same value or none (scope inheritance, MEM-04). `scope.session` names the session
+    /// the recall runs in: its working memory comes first, and records of other sessions are never
+    /// returned.
     #[serde(default)]
     pub scope: Option<Scope>,
     /// Recall what was true at this time (validity and event-time filter).
@@ -810,6 +905,10 @@ pub struct Hit {
     /// Found by an exact structured-record match (HYB-02), not by similarity.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exact: bool,
+    /// From the working memory of the recall's session (MEM-01): listed first, newest first, not
+    /// ranked against the query.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub working: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -868,6 +967,8 @@ pub struct SearchQuery {
     pub scope: Scope,
     /// Candidates too (PR-7: only when the caller asks).
     pub include_candidates: bool,
+    /// Agents whose agent-scoped records the reader was granted (INT-06): `shared_key` values.
+    pub shared_agents: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -887,6 +988,18 @@ pub struct ListQuery {
     /// Only records visible in this scope (see `RecallRequest::scope`).
     #[serde(default)]
     pub scope: Scope,
+    /// Agents whose agent-scoped records the reader was granted (INT-06): `shared_key` values.
+    #[serde(default)]
+    pub shared_agents: Vec<String>,
+    /// Only records scoped to exactly this session (a session's working memory).
+    #[serde(default)]
+    pub session: Option<String>,
+    /// Only records with at least one of these tags.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    /// Only records valid and unexpired at this time.
+    #[serde(default)]
+    pub live_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1035,6 +1148,10 @@ pub struct WhoAmI {
     pub denied_labels: Vec<String>,
     /// Writes enter as candidates (GOV-08).
     pub propose_only: bool,
+    /// The caller's own scope (MEM-04): its org, team, agent and user. Reads return records of
+    /// these and of broader levels. Empty for an admin, who reads every scope.
+    #[serde(default, skip_serializing_if = "Scope::is_empty")]
+    pub scope: Scope,
     /// `key`, `token`, `bootstrap` or `operator`.
     pub via: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1056,6 +1173,8 @@ pub enum ExclusionReason {
     Validity,
     /// Outside the request's own filters: kinds, tags or time window.
     Filter,
+    /// A preference overridden by the same preference at a narrower scope (MEM-04).
+    Overridden,
     /// Cut by the token budget.
     Budget,
     /// Ranked below the `k` returned.
@@ -1070,6 +1189,7 @@ impl ExclusionReason {
             ExclusionReason::Label => "label",
             ExclusionReason::Validity => "validity",
             ExclusionReason::Filter => "filter",
+            ExclusionReason::Overridden => "overridden",
             ExclusionReason::Budget => "budget",
             ExclusionReason::Rank => "rank",
         }
@@ -1143,6 +1263,9 @@ pub struct RecallRecord {
     /// The scope filter applied (the caller's own, merged with the request's).
     #[serde(default, skip_serializing_if = "Scope::is_empty")]
     pub scope: Scope,
+    /// Agents whose memory the caller was granted when it recalled (INT-06).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_agents: Vec<String>,
     pub denied_labels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_of: Option<DateTime<Utc>>,
@@ -1175,4 +1298,137 @@ pub struct RecallExplanation {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub hidden: std::collections::BTreeMap<String, u64>,
     pub replayed_at: DateTime<Utc>,
+}
+
+/// Promote memories to another type (`POST /v1/promote`, MEM-05): a new record of `kind` in the
+/// same subject, through that type's own gate, linked to its sources (`metadata.promoted_from`)
+/// and audited (`memory.promote`). The sources stay as they are.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PromoteRequest {
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// The records promoted: 1 to 50 committed records of one subject.
+    pub sources: Vec<Uuid>,
+    /// The type of the new record: `semantic`, `preference`, `procedural` or `taxonomic`, or
+    /// `episodic` for working memory.
+    pub kind: MemoryKind,
+    /// The promoted memory's text. Required for several sources; for one it defaults to the
+    /// source's text.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Why, for the audit log.
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Labels added to the sources' own, which the new record always keeps.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// The new record's scope. Defaults to the sources' common scope without its session, so
+    /// promoting out of a session's working memory makes the memory visible to the session's user.
+    #[serde(default)]
+    pub scope: Option<Scope>,
+    #[serde(default)]
+    pub structured: Option<Structured>,
+    #[serde(default)]
+    pub valid_to: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Idempotency key, as for `remember`.
+    #[serde(default)]
+    pub request_key: Option<String>,
+    /// Wait for the write gate, as for `remember`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wait: bool,
+}
+
+impl Default for PromoteRequest {
+    /// For struct-update syntax in Rust callers; on the wire `kind` is required.
+    fn default() -> Self {
+        PromoteRequest {
+            tenant: None,
+            sources: vec![],
+            kind: MemoryKind::Semantic,
+            content: None,
+            reason: None,
+            tags: vec![],
+            labels: vec![],
+            scope: None,
+            structured: None,
+            valid_to: None,
+            actor: None,
+            user: None,
+            request_key: None,
+            wait: false,
+        }
+    }
+}
+
+/// One agent's agent-scoped memory made readable to another agent (INT-06). Without a grant an
+/// agent never reads records scoped to another agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Grant {
+    pub id: Uuid,
+    pub tenant: String,
+    /// The agent whose memory is shared.
+    pub grantor: String,
+    /// The agent that may read it.
+    pub grantee: String,
+    /// Subjects the grant covers: an exact name, a prefix ending in `*`, or `*` for all.
+    pub subjects: String,
+    /// Kinds the grant covers; empty is all.
+    #[serde(default)]
+    pub kinds: Vec<MemoryKind>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+impl Grant {
+    pub fn active(&self, now: DateTime<Utc>) -> bool {
+        self.revoked_at.is_none() && self.expires_at.is_none_or(|t| t > now)
+    }
+
+    pub fn covers(&self, subject: &str) -> bool {
+        match self.subjects.strip_suffix('*') {
+            Some(prefix) => subject.starts_with(prefix),
+            None => self.subjects == subject,
+        }
+    }
+}
+
+/// Create a grant (`POST /v1/grants`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GrantRequest {
+    pub grantor: String,
+    pub grantee: String,
+    /// Defaults to `*`.
+    #[serde(default)]
+    pub subjects: Option<String>,
+    #[serde(default)]
+    pub kinds: Vec<MemoryKind>,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// A preference as it applies to a reader (`GET /v1/subjects/{subject}/preferences`, MEM-04):
+/// for each key, the one set at the narrowest scope the reader is in.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EffectivePreference {
+    /// The preference's key (`structured.attrs.key` of a `preference` record); absent for a
+    /// preference written as text only, which overrides nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The scope level it is set at.
+    pub level: ScopeLevel,
+    pub memory: Memory,
+    /// The same preference at broader levels, which this one overrides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<Uuid>,
 }

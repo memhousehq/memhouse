@@ -15,11 +15,15 @@ pub mod identity;
 pub mod intake;
 pub mod metrics;
 pub mod policy;
+pub mod preference;
+pub mod promote;
 pub mod query;
 pub mod reembed;
+pub mod sharing;
 pub mod templates;
 pub mod traits;
 pub mod types;
+pub mod working;
 
 pub use config::Config;
 pub use engine::Engine;

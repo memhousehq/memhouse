@@ -279,11 +279,18 @@ by user for that user's recalls. Retention purges them after `explanation_retent
 episodic_retention_days = 365
 ```
 
+Retention is per memory type (MEM-01): working memory expires after its session's last write
+plus `[memory] working_ttl_secs` and is never recalled past that; episodic memory is purged after
+`episodic_retention_days`; the other types are kept until superseded or deleted, unless a policy
+gives a type its own `retention_days` (`[types.semantic] retention_days = 730`).
+
 `memhouse serve` purges episodic memories (conversation rounds) older than this every hour, and
 `memhouse retention` does it on demand. Each purge writes a `retention.purge` audit event with the
-record count. A purge cascades exactly like a deletion: the rounds' cached vectors, the facts
+record count. A purge cascades like a deletion: the rounds' cached vectors, the facts
 extracted from them, their enrichment jobs and cached extractions go too, and every purged round
-gets a `retention` row in the deletion ledger. Facts you stored explicitly (`semantic`,
+gets a `retention` row in the deletion ledger. One difference: a record someone
+[promoted](memory-types.md#promotion) from a round is kept under its own type's retention when
+the round ages out; `forget` removes it with its source. Facts you stored explicitly (`semantic`,
 `preference`, …) are kept. Use `valid_to` for those that should expire.
 
 ## Audit log
@@ -365,7 +372,8 @@ flowchart LR
 
 **Keys.** `memhouse key create <principal>` prints a key once; only a hash of its secret is
 stored. A key carries permissions (`memory:read`, `memory:write`, `memory:forget`,
-`memory:erase`, `memory:label`, `memory:review`, `token:issue`, `ops:read`, `audit:read`) within
+`memory:erase`, `memory:label`, `memory:review`, `token:issue`, `ops:read`, `audit:read`,
+`policy:read`, `policy:propose`, `policy:approve`, `grant:manage`) within
 what the principal's kind allows. A key without permissions is refused everywhere. `memhouse key
 rotate` issues a replacement and lets the old key work for a grace period; `memhouse key revoke`
 ends it. Revocations and disabled principals take effect within 5 seconds.
@@ -401,6 +409,28 @@ can't commit its own proposal, and an attempt is refused and audited. A direct-c
 (`memhouse principal add agent:x --commit`) is explicit and recorded. Conversation rounds
 (`ingest`) are always admitted by the engine. The audit trail shows `memory.propose` by the agent
 and `memory.admit` by the engine or the reviewer.
+
+**Each memory type has its own gate (MEM-01).** Working memory is committed as written and never
+waits for review; procedural memory proposed by an agent always waits for a reviewer; taxonomic
+memory (the organisation's terms) is committed only by an administrator. A policy may make any
+type's gate stricter, never looser ([memory-types.md](memory-types.md#the-types)).
+
+**Scopes inherit, and working memory is session-local (MEM-04, MEM-01).** A reader sees a record
+only when every scope level the record names (org, team, agent, user, session) is the reader's
+own, so a team's records are not read from another team and one session's from another. A
+session's working memory is not returned to a search outside it. (Within API v1 a search that
+names no session still returns session-scoped records of the other types, as before 1.5.)
+A write is deduplicated against, and supersedes, only records of its own scope.
+
+**Agents share memory only by grant (INT-06).** A record scoped to an agent is read by that agent
+alone; an agent's working memory always is. An admin with `grant:manage` can let another agent
+read it, for named subjects and kinds, until the grant expires or is revoked
+(`memhouse grant add`, `POST /v1/grants`). A grant gives read access only, and every grant and
+revocation is audited (`grant.create`, `grant.revoke`).
+
+**Promotion is audited (MEM-05).** Turning a note or a run of events into a durable memory
+(`POST /v1/promote`) writes a new record through the target type's gate, linked to its sources,
+with a `memory.promote` event. Forgetting a source also removes what was promoted from it.
 
 **Audit.** The actor of every event is the principal id. Failed authentications are recorded as
 `auth.failed`, denials as `access.denied` (identifiers and reasons, never content).
@@ -457,7 +487,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-47 checks pass on the current release. The core ones:
+53 checks pass on the current release. The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -488,6 +518,12 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `statement_gate` | of a labelled set, 0 plans or speculation committed (≤ 2%), every fact committed; held candidates recalled only on request; a correction supersedes with the old version kept; a plan is confirmed by its event or expires |
 | `exact_recall` | 300 orders written as JSON are routed to the structured table; questions naming an order get it first, exactly, 50 of 50 |
 | `degradation` | with the model hanging or failing, or the database gone, recall answers empty and flagged within 500 ms; a refused caller gets no data; a write that can't be queued is refused as retryable |
+| `memory_types` | the type-specific scenario suite: working memory committed without the statement gate or review, session-local and private to its agent; episodic memory committed on its source and purged after its retention; semantic memory through the full gate; an inferred preference held until it repeats; procedural and taxonomic memory held until confirmed or approved; a policy can only tighten a type's rules |
+| `working_session` | a session's working memory is served from the session cache (p95 well under 20 ms, no database statement), first in the session's recalls, with read-your-writes, deletions and expiry honoured |
+| `scope_inheritance` | 20 preferences set at org, team and user level in every order resolve to the most specific one for every reader; readers inherit broader scopes only; no deduplication across scopes |
+| `promotion` | 100 promotions each link to their sources and have an audit entry; promotion into working memory, across subjects or of unseen records is refused; the target type's gate still applies |
+| `agent_grants` | an agent reads another agent's memory only with a grant covering the subject and kind, read-only, until revoked or expired |
+| `partitions` | 1,000 mixed writes, direct and through an agent: notes in the patient's partition, own preferences and procedures in the clinician's, each with the right author |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 
@@ -517,6 +553,11 @@ reviewers don't have to find them:
   D-01..D-07) arrives in G27, behind the same `Authorizer` seam.
 - **No SSO or SCIM yet** (GOV-13 for people). Users are principals with keys; OIDC and SAML arrive
   in G29.
+- **Expired working memory is kept as `expired`** (never recalled, readable by id) until the
+  deletion workflow of G22 purges it.
+- **Procedural and taxonomic memory are stored and gated, not yet used specially**: promotion of a
+  procedure after repeated confirmation, task-matched retrieval and term matching arrive in G19
+  and G25.
 - **Retention is by write time** (`created_at`), not event time. An imported or backfilled
   conversation is kept for the full period from when it was imported.
 - **Ledger re-application after a restore is a manual SQL procedure.**

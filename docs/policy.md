@@ -79,6 +79,16 @@ recency_weight = 0.3
 recency_half_life_days = 30
 keyword_weight = 1.0
 vector_weight = 1.2
+
+[types.semantic]
+gate = "confirmation"         # every agent's fact waits for a reviewer
+retention_days = 730
+
+[types.semantic.access]
+agent_private = true          # an agent's facts are its own until granted
+
+[types.preference.access]
+partition = "author"          # a user's own preferences are stored with the user
 ```
 
 | Field | Values | Governance limit |
@@ -93,6 +103,7 @@ vector_weight = 1.2
 | `write_gate.quarantine_injection` | `true` | can't be `false` (security baseline) |
 | `retention.episodic_days` | days, 0 = keep | where governance purges: 1 to its days |
 | `retention.working_ttl_secs` | 1 second to 30 days | |
+| `types.<kind>.*` | per-type rules, [below](#per-type-sections) | a type's rules may be tightened, never loosened |
 | `redaction.categories` | `secret`, `card`, `ssn`, `iban`, `email`, `phone`, `ip` | must include `secret` and every governance category |
 | `recall.denied_labels` | labels never read, and refused on writes through the API | must include every `[governance] denied_labels` label |
 | `recall.audit_reads` | `true`, `false` | can't be `false` where governance audits reads |
@@ -100,6 +111,37 @@ vector_weight = 1.2
 
 The meaning of each ranking weight is in the [configuration reference](configuration.md). Unknown
 sections and fields are errors, so a typo is never silently ignored.
+
+### Per-type sections
+
+Each memory type has its own gate, retention, retrieval method and access rules
+([memory-types.md](memory-types.md#the-types)). A section `[types.<kind>]`, for `working`,
+`episodic`, `semantic`, `preference`, `procedural`, `commitment`, `document` or `taxonomic`,
+tightens the rules of that type:
+
+| Field | Values | Limit |
+|---|---|---|
+| `types.<kind>.gate` | `none`, `source`, `full`, `explicit`, `confirmation`, `approval` | at least as strict as the type's own gate (`none` < `source` < `full` = `explicit` < `confirmation` < `approval`) |
+| `types.<kind>.retention_days` | days after which records of the type are purged, 0 = keep | `episodic`: within governance's limit, and the same value as `retention.episodic_days` if both are given; not for `working` |
+| `types.working.ttl_secs` | 1 second to 30 days | the same value as `retention.working_ttl_secs` if both are given |
+| `types.<kind>.access.agent_private` | `true`: an agent's writes of the type are scoped to that agent and read by others only with a [grant](memory-types.md#sharing-across-agents) | can't be `false` for `working` |
+| `types.<kind>.access.partition` | `subject` (default), `author`: stored in the partition of the verified user the write is made for ([partitions](memory-types.md#partitions)) | |
+| `types.<kind>.access.approver` | `reviewer` (any principal with `memory:review`), `admin` | can't be `reviewer` for `taxonomic` |
+
+The retrieval method of a type is fixed by the engine and shown in the compiled policy
+(`types.<kind>.retrieval`); a spec can't set it.
+
+The defaults, as `memhouse policy show` prints them:
+
+| Type | `gate` | Retention | `retrieval` | `agent_private` | `approver` |
+|---|---|---|---|---|---|
+| `working` | `none` | `ttl_secs` = `[memory] working_ttl_secs` | `session_cache` | true | reviewer |
+| `episodic` | `source` | `retention_days` = `[governance] episodic_retention_days` | `hybrid_time` | false | reviewer |
+| `semantic` | `full` | kept | `hybrid_exact` | false | reviewer |
+| `preference` | `explicit` | kept | `scope_ordered` | false | reviewer |
+| `procedural` | `confirmation` | kept | `task_matched` | false | reviewer |
+| `taxonomic` | `approval` | kept | `exact` | false | admin |
+| `commitment`, `document` | `full` | kept | `hybrid` | false | reviewer |
 
 ## Lifecycle
 

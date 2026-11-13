@@ -341,6 +341,27 @@ ALTER TABLE mh_intake ADD COLUMN IF NOT EXISTS embedder text;
 CREATE OR REPLACE TRIGGER mh_intake_embedder_guard BEFORE INSERT ON mh_intake FOR EACH ROW EXECUTE FUNCTION mh_memory_embedder_guard();
 "#;
 
+/// v7 (G11): grants between agents (INT-06), and an index for the links a promoted record keeps
+/// to its sources (MEM-05), so deleting a source finds what was promoted from it.
+const SCHEMA_V7_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS mh_grant (
+  id         uuid PRIMARY KEY,
+  tenant     text NOT NULL,
+  grantor    text NOT NULL,
+  grantee    text NOT NULL,
+  subjects   text NOT NULL DEFAULT '*',
+  kinds      text[] NOT NULL DEFAULT '{}',
+  created_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz,
+  revoked_at timestamptz,
+  CHECK (grantor <> grantee)
+);
+CREATE INDEX IF NOT EXISTS mh_grant_grantee_idx ON mh_grant (tenant, grantee) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS mh_memory_promoted_idx ON mh_memory USING gin ((metadata -> 'promoted_from')) WHERE metadata ? 'promoted_from';
+CREATE INDEX IF NOT EXISTS mh_memory_session_idx ON mh_memory (tenant, subject, scope_session) WHERE scope_session IS NOT NULL;
+"#;
+
 const SCHEMA_V5_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS mh_policy_spec (
   tenant      text NOT NULL,
@@ -387,7 +408,7 @@ impl PgStore {
     async fn search_one(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         self.ensure_current().await?;
         let p = Probe::of(q);
-        let sql = search_sql();
+        let sql = search_sql(Variant::of(q));
         let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
@@ -544,6 +565,43 @@ pub fn redact_url(url: &str) -> String {
     }
 }
 
+/// The scope filter on the agent level. A reader with grants (INT-06) gets its own statement,
+/// so the statement of every other recall stays exactly the one the guard's latency baselines
+/// were measured with.
+const AGENT_FILTER: &str = "    AND ($22::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $22)\n";
+/// Another agent's records only with a grant: for every kind (`*`), or for the record's kind.
+const AGENT_FILTER_SHARED: &str = "    AND ($22::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $22\n         \
+     OR (m.scope_agent || chr(31) || '*') = ANY($26::text[]) OR (m.scope_agent || chr(31) || m.kind) = ANY($26::text[]))\n";
+
+/// The scope filter on the session level: records of the session the reader names, and
+/// unscoped ones.
+const SESSION_FILTER: &str = "    AND ($24::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $24)\n";
+/// For a reader marked as naming no session (`$24` is `access::NOBODY`): every session's
+/// records as in API 1.4, except working memory, which is session-local (MEM-01).
+const SESSION_FILTER_NONE: &str = "    AND ($24::text IS NOT NULL AND (m.scope_session IS NULL OR m.kind <> 'working'))\n";
+
+/// Which statement a recall runs: the common one, or one for a reader with grants (`shared`)
+/// and one for a reader that names no session (`no_session`).
+#[derive(Clone, Copy, Default)]
+struct Variant {
+    shared: bool,
+    no_session: bool,
+}
+
+impl Variant {
+    fn of(q: &SearchQuery) -> Variant {
+        Variant { shared: !q.shared_agents.is_empty(), no_session: q.scope.session.as_deref() == Some(memhouse_core::access::NOBODY) }
+    }
+}
+
+/// The filters of a recall. The default variant is the statement the guard's baselines were
+/// measured with.
+fn search_filters(v: Variant) -> String {
+    SEARCH_FILTERS
+        .replace("{AGENT}\n", if v.shared { AGENT_FILTER_SHARED } else { AGENT_FILTER })
+        .replace("{SESSION}\n", if v.no_session { SESSION_FILTER_NONE } else { SESSION_FILTER })
+}
+
 /// The single-statement hybrid recall (keyword + vector candidates fused by RRF, section 4.5).
 const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions superseded since; validity below keeps the one true then.
     AND (m.status = 'committed' OR ($7::timestamptz IS NOT NULL AND m.status = 'superseded') OR ($25::bool AND m.status = 'candidate'))
@@ -554,9 +612,9 @@ const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions supersede
     AND (m.expires_at IS NULL OR m.expires_at > $16)
     AND ($20::text IS NULL OR m.scope_org IS NULL OR m.scope_org = $20)
     AND ($21::text IS NULL OR m.scope_team IS NULL OR m.scope_team = $21)
-    AND ($22::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $22)
+{AGENT}
     AND ($23::text IS NULL OR m.scope_user IS NULL OR m.scope_user = $23)
-    AND ($24::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $24)
+{SESSION}
     AND ($7::timestamptz IS NULL OR m.occurred_at IS NULL OR m.occurred_at <= $7)
     AND (cardinality($18::timestamptz[]) = 0 OR EXISTS (
       SELECT 1 FROM unnest($18::timestamptz[], $19::timestamptz[]) w(s, e)
@@ -565,8 +623,8 @@ const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions supersede
 
 /// The recall statement. `filtered = false` drops every filter but tenant and subject: the
 /// candidates a recall explanation classifies (why each was excluded).
-fn search_sql_with(filtered: bool) -> String {
-    let filters = if filtered { SEARCH_FILTERS } else { "" };
+fn search_sql_with(filtered: bool, v: Variant) -> String {
+    let filters = if filtered { search_filters(v) } else { String::new() };
     format!(
         r#"
 WITH q AS (
@@ -644,19 +702,20 @@ fn forget_condition(scope: ForgetScope) -> anyhow::Result<&'static str> {
     })
 }
 
-fn search_sql() -> String {
-    search_sql_with(true)
+fn search_sql(v: Variant) -> String {
+    search_sql_with(true, v)
 }
 
 /// Several probes of one recall as one statement (PERF-02: one round trip): each probe's search,
 /// with its own parameters, under `UNION ALL`, rows tagged with the probe's position.
-fn multi_search_sql(n: usize) -> String {
-    let one = search_sql();
+fn multi_search_sql(n: usize, v: Variant) -> String {
+    let one = search_sql(v);
     (0..n).map(|i| format!("({})", renumber(&one, i * SEARCH_PARAMS).replace("0 AS probe", &format!("{i} AS probe")))).collect::<Vec<_>>().join("\nUNION ALL\n")
 }
 
-/// Parameters of one recall statement.
-const SEARCH_PARAMS: usize = 25;
+/// Parameters of one recall statement (the last, the granting agents, is only read by the
+/// statement of a reader that has grants).
+const SEARCH_PARAMS: usize = 26;
 
 /// Shift every `$N` in `sql` by `by`.
 fn renumber(sql: &str, by: usize) -> String {
@@ -723,6 +782,7 @@ fn row_to_hit(r: &PgRow) -> anyhow::Result<Hit> {
         similarity: r.try_get::<Option<f64>, _>("sim")?.map(|s| s as f32),
         rerank_score: None,
         exact: false,
+        working: false,
     })
 }
 
@@ -761,6 +821,7 @@ fn bind_search<'a>(
         .bind(&q.scope.user)
         .bind(&q.scope.session)
         .bind(q.include_candidates)
+        .bind(&q.shared_agents)
 }
 
 /// The schema as it was at version 1, kept verbatim: `migrate` runs it, then the v2 additions,
@@ -1114,6 +1175,12 @@ impl PgStore {
 }
 
 /// The SQL that supersedes `$2` by `$3` (see `set_superseded`).
+/// Serializes, per tenant and subject, the writes that add a promotion link with the deletions
+/// that follow those links (MEM-05). A deletion's cascade reads one snapshot: without this, a
+/// promotion of a dependent that commits while the cascade waits on a row would be missed.
+/// `$1` is the tenant, `$2` the subject; held until the transaction ends.
+pub const SUBJECT_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock(7270002, hashtext($1 || chr(31) || $2))";
+
 const SUPERSEDE_SQL: &str = "UPDATE mh_memory SET status = 'superseded', superseded_by = $3, \
      valid_to = least(COALESCE(valid_to, 'infinity'), greatest(COALESCE((SELECT n.valid_from FROM mh_memory n WHERE n.tenant = $1 AND n.id = $3), now()), valid_from)), \
      updated_at = greatest(now(), created_at) \
@@ -1133,6 +1200,20 @@ impl memhouse_core::IntakeQueue for PgStore {
     async fn enqueue(&self, p: &memhouse_core::intake::Proposal) -> anyhow::Result<()> {
         let first = p.records.first().map(|r| &r.memory);
         let embedder = self.embedder.lock().unwrap().clone();
+        let mut tx = self.pool.begin().await?;
+        // A promotion is queued under its subject's lock with its sources checked (MEM-05): a
+        // deletion that ran since they were read either sees this row and removes it, or has
+        // already removed a source, and then nothing is queued.
+        let sources: Vec<Uuid> = p.records.iter().flat_map(|r| memhouse_core::intake::promoted_from(&r.memory)).collect();
+        if !sources.is_empty() {
+            sqlx::query(SUBJECT_LOCK_SQL).bind(&p.tenant).bind(&p.subject).execute(&mut *tx).await?;
+            let there: i64 =
+                sqlx::query_scalar("SELECT count(DISTINCT id) FROM mh_memory WHERE tenant = $1 AND id = ANY($2)").bind(&p.tenant).bind(&sources).fetch_one(&mut *tx).await?;
+            let distinct: std::collections::HashSet<&Uuid> = sources.iter().collect();
+            if there as usize != distinct.len() {
+                return Err(memhouse_core::error::conflict("a source of the promotion was deleted; nothing was queued"));
+            }
+        }
         // Durable on return: the insert commits with synchronous_commit (TR-LT-05).
         let r = sqlx::query(
             "INSERT INTO mh_intake (id, tenant, subject, record_ids, agent, acting_user, source, scope_agent, scope_user, payload, enqueued_at, embedder) \
@@ -1150,10 +1231,10 @@ impl memhouse_core::IntakeQueue for PgStore {
         .bind(serde_json::to_value(p)?)
         .bind(p.enqueued_at)
         .bind(embedder)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await;
         match r {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(tx.commit().await?),
             Err(e) if e.to_string().contains("is now embedded with") => Err(memhouse_core::error::conflict(e.to_string())),
             Err(e) => Err(e.into()),
         }
@@ -1319,8 +1400,19 @@ impl memhouse_core::IntakeQueue for PgStore {
                 .bind(tenant)
                 .execute(&mut *tx)
                 .await?;
+            // A promotion of this record that is still queued (or set aside with its content)
+            // goes with it (MEM-05): it is no longer readable by its id, and never written.
+            let promoted = sqlx::query(
+                "DELETE FROM mh_intake WHERE tenant = $1 AND payload IS NOT NULL \
+                 AND jsonb_path_exists(payload, '$.records[*].memory.metadata.promoted_from[*] ? (@ == $id)', jsonb_build_object('id', $2::text))",
+            )
+            .bind(tenant)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
             tx.commit().await?;
-            return Ok(n);
+            return Ok(n + promoted);
         }
         let filter = match scope {
             ForgetScope::Subject => "subject = $2",
@@ -1370,6 +1462,7 @@ impl Store for PgStore {
         sqlx::raw_sql(SCHEMA_V4_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V5_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V6_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V7_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -1382,7 +1475,7 @@ impl Store for PgStore {
         if stored_version.is_some_and(|v| v < 2) {
             self.backfill_v2(embedder_id, &config).await?;
         }
-        // v3 to v6 only add tables.
+        // v3 to v7 only add tables and indexes.
         sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
             .bind(SCHEMA_VERSION.to_string())
             .bind(SCHEMA_VERSION as i32)
@@ -1415,6 +1508,11 @@ impl Store for PgStore {
     #[tracing::instrument(name = "db.apply_intake", skip_all, fields(db.system = "postgresql", db.operation = "INSERT", rows = w.records.len()))]
     async fn apply_intake(&self, w: &memhouse_core::intake::IntakeWrite) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
+        // A promotion takes its subject's lock before any row lock (the order a deletion takes
+        // them in), so the two never wait on each other.
+        if let Some(first) = w.records.first().filter(|_| !w.requires.is_empty()) {
+            sqlx::query(SUBJECT_LOCK_SQL).bind(&w.tenant).bind(&first.memory.subject).execute(&mut *tx).await?;
+        }
         if let Some(pid) = w.proposal {
             // Locks the proposal: an erasure that deletes it waits for this insert, then removes
             // what it wrote; a proposal already erased writes nothing.
@@ -1447,6 +1545,16 @@ impl Store for PgStore {
                 .collect();
             self.write_rows_in(&mut tx, &rows, false).await?;
         }
+        if !w.requires.is_empty() {
+            // The sources of a promotion, locked until this commits: a `forget` of one waits,
+            // then finds and removes what was promoted from it; one already gone stops the insert.
+            let there: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2) FOR SHARE) s")
+                .bind(&w.tenant)
+                .bind(&w.requires)
+                .fetch_one(&mut *tx)
+                .await?;
+            anyhow::ensure!(there as usize == w.requires.len(), "a source of a promotion was deleted while it was being written");
+        }
         for (old, new) in &w.supersede {
             let n = sqlx::query(SUPERSEDE_SQL).bind(&w.tenant).bind(old).bind(new).execute(&mut *tx).await?.rows_affected();
             // The pipeline checked it was current; another write got there first: retry the
@@ -1467,6 +1575,24 @@ impl Store for PgStore {
             .await?
             .rows_affected();
             anyhow::ensure!(n == 1, "plan {plan} stopped being a held candidate while {by} was being written");
+        }
+        for (held, by, commit) in &w.signals {
+            // Still a held, unexpired signal at commit time; otherwise retry, which then sees it.
+            let n = sqlx::query(
+                "UPDATE mh_memory SET status = CASE WHEN $4 THEN 'committed' ELSE status END, expires_at = CASE WHEN $4 THEN NULL ELSE expires_at END, \
+                 metadata = (CASE WHEN $4 THEN metadata - 'held' ELSE metadata END) \
+                   || jsonb_build_object('signals', coalesce((metadata ->> 'signals')::int, 1) + 1, 'last_signal', $3::text), \
+                 updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2 AND status = 'candidate' AND metadata ->> 'held' = 'signal' \
+                 AND (expires_at IS NULL OR expires_at > now())",
+            )
+            .bind(&w.tenant)
+            .bind(held)
+            .bind(by.to_string())
+            .bind(commit)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            anyhow::ensure!(n == 1, "signal {held} stopped being a held candidate while {by} was being written");
         }
         if let Some((subject, session, rounds)) = &w.enrich {
             sqlx::query("INSERT INTO mh_enrich_job (tenant, subject, session_id, round_ids) VALUES ($1, $2, $3, $4)")
@@ -1501,13 +1627,14 @@ impl Store for PgStore {
         let p = Probe::of(q);
         // The recall filters (status, labels, validity, scope) with the recall's own parameters,
         // then the exact match on the structured row.
+        let filters = search_filters(Variant::of(q));
         let sql = format!(
             "SELECT {COLS}, 1.0::float8 AS score, NULL::int AS krk, NULL::int AS vrk, NULL::float8 AS sim, 0 AS probe \
              FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id \
              WHERE s.tenant = $1 AND s.subject = $2 AND m.tenant = $1 AND m.subject = $2 \
-             {SEARCH_FILTERS} \
-             AND ($26::text IS NULL OR s.record_type = $26) AND ($27::jsonb IS NULL OR s.attrs @> $27) \
-             AND (cardinality($28::text[]) = 0 OR EXISTS (SELECT 1 FROM jsonb_each_text(s.attrs) e WHERE lower(e.value) = ANY($28))) \
+             {filters} \
+             AND ($27::text IS NULL OR s.record_type = $27) AND ($28::jsonb IS NULL OR s.attrs @> $28) \
+             AND (cardinality($29::text[]) = 0 OR EXISTS (SELECT 1 FROM jsonb_each_text(s.attrs) e WHERE lower(e.value) = ANY($29))) \
              ORDER BY m.created_at DESC, m.id LIMIT $15"
         );
         let lower: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
@@ -1515,16 +1642,28 @@ impl Store for PgStore {
         rows.iter().map(row_to_hit).collect()
     }
 
-    async fn nearest_held(&self, tenant: &str, subject: &str, embedding: &[f32], limit: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+    async fn nearest_held(&self, tenant: &str, subject: &str, embedding: &[f32], limit: usize, which: &memhouse_core::traits::Held<'_>) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        let (held, kind, scope) = (which.reason, which.kind, which.scope);
         let rows: Vec<(Uuid, f64)> = sqlx::query_as(
             "SELECT id, 1 - (embedding <=> $3::vector) AS sim FROM mh_memory \
              WHERE tenant = $1 AND subject = $2 AND status = 'candidate' AND embedding IS NOT NULL \
-             AND metadata ->> 'held' = 'plan' AND (expires_at IS NULL OR expires_at > now()) ORDER BY embedding <=> $3::vector LIMIT $4",
+             AND metadata ->> 'held' = $5 AND (expires_at IS NULL OR expires_at > now()) \
+             AND ($6::text IS NULL OR kind = $6) \
+             AND scope_org IS NOT DISTINCT FROM $7 AND scope_team IS NOT DISTINCT FROM $8 AND scope_agent IS NOT DISTINCT FROM $9 \
+             AND scope_user IS NOT DISTINCT FROM $10 AND scope_session IS NOT DISTINCT FROM $11 \
+             ORDER BY embedding <=> $3::vector LIMIT $4",
         )
         .bind(tenant)
         .bind(subject)
         .bind(vec_literal(embedding))
         .bind(limit as i64)
+        .bind(held)
+        .bind(kind.map(|k| k.as_str()))
+        .bind(&scope.org)
+        .bind(&scope.team)
+        .bind(&scope.agent)
+        .bind(&scope.user)
+        .bind(&scope.session)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id, s)| (id, s as f32)).collect())
@@ -1542,7 +1681,8 @@ impl Store for PgStore {
         }
         self.ensure_current().await?;
         let probes: Vec<Probe> = qs.iter().map(Probe::of).collect();
-        let sql = multi_search_sql(qs.len());
+        // The probes of one recall share its reader, so its variant.
+        let sql = multi_search_sql(qs.len(), qs.first().map(Variant::of).unwrap_or_default());
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for (q, p) in qs.iter().zip(&probes) {
             query = bind_search(query, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec);
@@ -1562,7 +1702,7 @@ impl Store for PgStore {
     #[tracing::instrument(name = "db.search_unfiltered", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn search_unfiltered(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         let p = Probe::of(q);
-        let sql = search_sql_with(false);
+        let sql = search_sql_with(false, Variant::default());
         let rows = search_query(sql, q, &p.tsq, p.kinds.clone(), p.use_kw, p.use_vec).fetch_all(&self.pool).await?;
         rows.iter().map(row_to_hit).collect()
     }
@@ -1574,7 +1714,7 @@ impl Store for PgStore {
         let use_vec = q.mode != RetrievalMode::Keyword && q.embedding.is_some();
         let tsq = if use_kw { or_query(&q.text) } else { String::new() };
         let kinds: Option<Vec<String>> = q.kinds.as_ref().map(|ks| ks.iter().map(|k| k.as_str().to_string()).collect());
-        let sql = format!("EXPLAIN (FORMAT JSON) {}", search_sql());
+        let sql = format!("EXPLAIN (FORMAT JSON) {}", search_sql(Variant::of(q)));
         let row = search_query(sql, q, &tsq, kinds, use_kw, use_vec).fetch_one(&self.pool).await?;
         Ok(Some(row.try_get::<serde_json::Value, _>(0)?))
     }
@@ -1595,9 +1735,13 @@ impl Store for PgStore {
              AND NOT (m.labels && $9::text[]) \
              AND ($10::text IS NULL OR m.scope_org IS NULL OR m.scope_org = $10) \
              AND ($11::text IS NULL OR m.scope_team IS NULL OR m.scope_team = $11) \
-             AND ($12::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $12) \
+             AND ($12::text IS NULL OR m.scope_agent IS NULL OR m.scope_agent = $12 \
+                  OR (m.scope_agent || chr(31) || '*') = ANY($15::text[]) OR (m.scope_agent || chr(31) || m.kind) = ANY($15::text[])) \
              AND ($13::text IS NULL OR m.scope_user IS NULL OR m.scope_user = $13) \
-             AND ($14::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $14) \
+             AND ($14::text IS NULL OR m.scope_session IS NULL OR m.scope_session = $14 OR ($14 = $17 AND m.kind <> 'working')) \
+             AND ($16::text IS NULL OR m.scope_session = $16) \
+             AND ($18::text[] IS NULL OR m.tags && $18) \
+             AND ($19::timestamptz IS NULL OR (m.valid_from <= $19 AND (m.valid_to IS NULL OR m.valid_to > $19) AND (m.expires_at IS NULL OR m.expires_at > $19))) \
              ORDER BY m.created_at DESC, m.id DESC LIMIT $5 OFFSET $6"
         ))
         .bind(&q.tenant)
@@ -1614,6 +1758,11 @@ impl Store for PgStore {
         .bind(&q.scope.agent)
         .bind(&q.scope.user)
         .bind(&q.scope.session)
+        .bind(&q.shared_agents)
+        .bind(&q.session)
+        .bind(memhouse_core::access::NOBODY)
+        .bind(&q.tags)
+        .bind(q.live_at)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_memory).collect()
@@ -1644,10 +1793,12 @@ impl Store for PgStore {
     }
 
     #[tracing::instrument(name = "db.nearest", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
-    async fn nearest_many(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32], n: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+    async fn nearest_many(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32], n: usize, scope: &Scope) -> anyhow::Result<Vec<(Uuid, f32)>> {
         let rows: Vec<(Uuid, f64)> = sqlx::query_as(
             "SELECT id, 1 - (embedding <=> $4::vector) AS sim FROM mh_memory \
              WHERE tenant = $1 AND subject = $2 AND kind = $3 AND status = 'committed' AND embedding IS NOT NULL \
+             AND scope_org IS NOT DISTINCT FROM $6 AND scope_team IS NOT DISTINCT FROM $7 AND scope_agent IS NOT DISTINCT FROM $8 \
+             AND scope_user IS NOT DISTINCT FROM $9 AND scope_session IS NOT DISTINCT FROM $10 \
              ORDER BY embedding <=> $4::vector LIMIT $5",
         )
         .bind(tenant)
@@ -1655,6 +1806,11 @@ impl Store for PgStore {
         .bind(kind.as_str())
         .bind(vec_literal(embedding))
         .bind(n as i64)
+        .bind(&scope.org)
+        .bind(&scope.team)
+        .bind(&scope.agent)
+        .bind(&scope.user)
+        .bind(&scope.session)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id, s)| (id, s as f32)).collect())
@@ -1705,6 +1861,12 @@ impl Store for PgStore {
     #[tracing::instrument(name = "db.delete", skip_all, fields(db.system = "postgresql", db.operation = "DELETE"))]
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
+        // No promotion in this subject is in flight while its links are followed below.
+        let Some(of): Option<String> = sqlx::query_scalar("SELECT subject FROM mh_memory WHERE tenant = $1 AND id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?
+        else {
+            return Ok(false);
+        };
+        sqlx::query(SUBJECT_LOCK_SQL).bind(tenant).bind(&of).execute(&mut *tx).await?;
         let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING subject, content, alt_hash").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
         let Some(row) = row else { return Ok(false) };
         let subject: String = row.try_get("subject")?;
@@ -1717,15 +1879,41 @@ impl Store for PgStore {
             .bind(alt_hash)
             .execute(&mut *tx)
             .await?;
-        // Facts derived from this record go with it, with their cached vectors, and so does the
-        // cached extraction of every session job that read it.
-        sqlx::query(
-            "WITH d AS (DELETE FROM mh_memory WHERE tenant = $1 AND metadata -> 'source_ids' ? $2 RETURNING content) \
-             DELETE FROM mh_embed_cache c USING d WHERE c.hash = encode(sha256(convert_to($3 || d.content, 'UTF8')), 'hex')",
+        // Facts derived from this record and records promoted from it (MEM-05) go with it, and
+        // so does everything promoted from those in turn (a note promoted to a fact, the fact to
+        // a procedure), with their cached vectors; and the cached extraction of every session
+        // job that read it.
+        let dependents: Vec<(Uuid, String)> = sqlx::query_as(
+            "WITH RECURSIVE dep(id) AS ( \
+               SELECT id FROM mh_memory WHERE tenant = $1 AND (metadata -> 'source_ids' ? $2 \
+                 OR (metadata ? 'promoted_from' AND metadata -> 'promoted_from' ? $2)) \
+               UNION \
+               SELECT m.id FROM dep JOIN mh_memory m ON m.tenant = $1 AND m.metadata ? 'promoted_from' AND m.metadata -> 'promoted_from' ? dep.id::text) \
+             DELETE FROM mh_memory WHERE tenant = $1 AND id IN (SELECT id FROM dep) RETURNING id, content",
         )
         .bind(tenant)
         .bind(id.to_string())
-        .bind(&self.passage_prefix)
+        .fetch_all(&mut *tx)
+        .await?;
+        let contents: Vec<&str> = dependents.iter().map(|(_, c)| c.as_str()).collect();
+        sqlx::query("DELETE FROM mh_embed_cache WHERE hash IN (SELECT encode(sha256(convert_to($1 || c, 'UTF8')), 'hex') FROM unnest($2::text[]) c)")
+            .bind(&self.passage_prefix)
+            .bind(&contents)
+            .execute(&mut *tx)
+            .await?;
+        // Promotions of this record, or of anything that went with it, that are still queued
+        // (or set aside with their payload): gone with it on every erasure path, single or
+        // bulk, so none is readable by its id or written later.
+        let gone: Vec<String> = std::iter::once(id).chain(dependents.iter().map(|(d, _)| *d)).map(|u| u.to_string()).collect();
+        sqlx::query(
+            "DELETE FROM mh_intake q WHERE q.tenant = $1 AND q.payload IS NOT NULL AND EXISTS ( \
+               SELECT 1 FROM jsonb_array_elements(q.payload -> 'records') r, \
+                             jsonb_array_elements_text(CASE WHEN jsonb_typeof(r -> 'memory' -> 'metadata' -> 'promoted_from') = 'array' \
+                                                            THEN r -> 'memory' -> 'metadata' -> 'promoted_from' ELSE '[]'::jsonb END) s \
+               WHERE s = ANY($2::text[]))",
+        )
+        .bind(tenant)
+        .bind(&gone)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
@@ -1792,7 +1980,7 @@ impl Store for PgStore {
         Ok(n)
     }
 
-    async fn purge_episodic_older_than(&self, tenant: &str, days: u32) -> anyhow::Result<u64> {
+    async fn purge_older_than(&self, tenant: &str, kind: MemoryKind, days: u32) -> anyhow::Result<u64> {
         // Same cascade as `delete`, in batches so a large purge never holds one huge transaction:
         // the rounds, their cached vectors, facts derived from them (and their vectors), the jobs
         // that read them (and their cached extractions), and a ledger row per round.
@@ -1800,11 +1988,12 @@ impl Store for PgStore {
         loop {
             let mut tx = self.pool.begin().await?;
             let rows = sqlx::query(
-                "DELETE FROM mh_memory WHERE id IN (SELECT id FROM mh_memory WHERE tenant = $1 AND kind = 'episodic' \
+                "DELETE FROM mh_memory WHERE id IN (SELECT id FROM mh_memory WHERE tenant = $1 AND kind = $3 \
                  AND created_at < now() - make_interval(days => $2) LIMIT 1000) RETURNING id, subject, content, alt_hash",
             )
             .bind(tenant)
             .bind(days as i32)
+            .bind(kind.as_str())
             .fetch_all(&mut *tx)
             .await?;
             if rows.is_empty() {
@@ -2200,6 +2389,7 @@ impl Store for PgStore {
         // What is left without a record: links, remembered responses, queued jobs and writes.
         sqlx::query("DELETE FROM mh_intake WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_link WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM mh_grant WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_recall WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 RETURNING cache_key) DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key")
@@ -2519,6 +2709,144 @@ impl Store for PgStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn session_extend(&self, tenant: &str, subject: &str, session: &str, until: DateTime<Utc>) -> anyhow::Result<u64> {
+        Ok(sqlx::query(
+            "UPDATE mh_memory SET expires_at = $4, updated_at = greatest(now(), created_at) WHERE tenant = $1 AND subject = $2 AND scope_session = $3 \
+             AND kind = 'working' AND status = 'committed' AND metadata ->> 'ttl' = 'session' AND expires_at < $4 AND expires_at > now()",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .bind(session)
+        .bind(until)
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
+    async fn grant_put(&self, g: &Grant, audit: &memhouse_core::intake::AuditEntry) -> anyhow::Result<()> {
+        let kinds: Vec<&str> = g.kinds.iter().map(|k| k.as_str()).collect();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT INTO mh_grant (id, tenant, grantor, grantee, subjects, kinds, created_by, created_at, expires_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+            .bind(g.id)
+            .bind(&g.tenant)
+            .bind(&g.grantor)
+            .bind(&g.grantee)
+            .bind(&g.subjects)
+            .bind(&kinds)
+            .bind(&g.created_by)
+            .bind(g.created_at)
+            .bind(g.expires_at)
+            .bind(g.revoked_at)
+            .execute(&mut *tx)
+            .await?;
+        self.audit_in(&mut tx, &g.tenant, audit).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn promotion_merge(
+        &self,
+        tenant: &str,
+        id: Uuid,
+        sources: &[Uuid],
+        kinds: &[String],
+        labels: &[String],
+        audit: &memhouse_core::intake::AuditEntry,
+    ) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        // The subject's lock first, then the record's row: the order a deletion takes them in.
+        let Some(subject): Option<String> =
+            sqlx::query_scalar("SELECT subject FROM mh_memory WHERE tenant = $1 AND id = $2").bind(tenant).bind(id).fetch_optional(&mut *tx).await?
+        else {
+            return Ok(false);
+        };
+        sqlx::query(SUBJECT_LOCK_SQL).bind(tenant).bind(&subject).execute(&mut *tx).await?;
+        // It must (still) be a promotion.
+        let row: Option<(serde_json::Value, Vec<String>)> =
+            sqlx::query_as("SELECT metadata, labels FROM mh_memory WHERE tenant = $1 AND id = $2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
+        let Some((mut metadata, mut all_labels)) = row.filter(|(m, _)| m.get("promoted_from").is_some_and(|f| f.is_array())) else { return Ok(false) };
+        // As for a new promotion: the sources are locked, so a `forget` of one waits and then
+        // finds this record through the link added here.
+        let there: i64 = sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = ANY($2) FOR SHARE) s")
+            .bind(tenant)
+            .bind(sources)
+            .fetch_one(&mut *tx)
+            .await?;
+        anyhow::ensure!(there as usize == sources.len(), "a source of a promotion was deleted while it was being written");
+        // Sources and their kinds are parallel lists: merged as pairs, a source once.
+        let strings = |v: Option<&serde_json::Value>| -> Vec<String> { v.and_then(|a| a.as_array()).into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect() };
+        let mut from = strings(metadata.get("promoted_from"));
+        let mut from_kinds = strings(metadata.get("promoted_from_kinds"));
+        from_kinds.resize(from.len(), String::new());
+        for (i, source) in sources.iter().enumerate() {
+            let source = source.to_string();
+            if !from.contains(&source) {
+                from.push(source);
+                from_kinds.push(kinds.get(i).cloned().unwrap_or_default());
+            }
+        }
+        metadata["promoted_from"] = serde_json::json!(from);
+        metadata["promoted_from_kinds"] = serde_json::json!(from_kinds);
+        all_labels.extend(labels.iter().cloned());
+        all_labels.sort();
+        all_labels.dedup();
+        sqlx::query("UPDATE mh_memory SET metadata = $3, labels = $4, updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2")
+            .bind(tenant)
+            .bind(id)
+            .bind(&metadata)
+            .bind(&all_labels)
+            .execute(&mut *tx)
+            .await?;
+        self.audit_in(&mut tx, tenant, audit).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    async fn grants(&self, tenant: &str, grantee: Option<&str>) -> anyhow::Result<Vec<Grant>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant, grantor, grantee, subjects, kinds, created_by, created_at, expires_at, revoked_at FROM mh_grant \
+             WHERE tenant = $1 AND ($2::text IS NULL OR (grantee = $2 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()))) \
+             ORDER BY created_at DESC, id DESC LIMIT CASE WHEN $2::text IS NULL THEN 1000 END",
+        )
+        .bind(tenant)
+        .bind(grantee)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                let kinds: Vec<String> = r.try_get("kinds")?;
+                Ok(Grant {
+                    id: r.try_get("id")?,
+                    tenant: r.try_get("tenant")?,
+                    grantor: r.try_get("grantor")?,
+                    grantee: r.try_get("grantee")?,
+                    subjects: r.try_get("subjects")?,
+                    kinds: kinds.iter().filter_map(|k| MemoryKind::parse(k)).collect(),
+                    created_by: r.try_get("created_by")?,
+                    created_at: r.try_get("created_at")?,
+                    expires_at: r.try_get("expires_at")?,
+                    revoked_at: r.try_get("revoked_at")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn grant_revoke(&self, tenant: &str, id: Uuid, audit: &memhouse_core::intake::AuditEntry) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        let n = sqlx::query("UPDATE mh_grant SET revoked_at = now() WHERE tenant = $1 AND id = $2 AND revoked_at IS NULL")
+            .bind(tenant)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if n == 0 {
+            return Ok(false);
+        }
+        self.audit_in(&mut tx, tenant, audit).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn expire_due(&self, tenant: &str) -> anyhow::Result<u64> {

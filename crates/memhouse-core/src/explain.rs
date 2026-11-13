@@ -18,19 +18,14 @@ pub fn classify(m: &Memory, r: &RecallRecord) -> (ExclusionReason, String) {
     if !recallable {
         return (ExclusionReason::Status, format!("status {}", m.status.as_str()));
     }
-    let fields = [
-        ("org", &r.scope.org, &m.scope.org),
-        ("team", &r.scope.team, &m.scope.team),
-        ("agent", &r.scope.agent, &m.scope.agent),
-        ("user", &r.scope.user, &m.scope.user),
-        ("session", &r.scope.session, &m.scope.session),
-    ];
-    for (name, want, have) in fields {
-        if let (Some(w), Some(h)) = (want, have) {
-            if w != h {
-                return (ExclusionReason::Access, format!("scope.{name} is not the caller's"));
-            }
-        }
+    if !r.scope.sees(&m.scope, m.kind, &r.shared_agents) {
+        // Name the broadest level that differs (the agent level counts grants).
+        let differs = |l: &ScopeLevel| match (r.scope.get(*l), m.scope.get(*l)) {
+            (Some(w), Some(h)) => w != h,
+            _ => false,
+        };
+        let name = ScopeLevel::NARROWEST_FIRST.iter().rev().find(|l| differs(l)).map(|l| l.as_str()).unwrap_or("agent");
+        return (ExclusionReason::Access, format!("scope.{name} is not the caller's"));
     }
     if let Some(l) = m.labels.iter().find(|l| r.denied_labels.contains(l)) {
         return (ExclusionReason::Label, format!("label {l}"));
@@ -87,6 +82,7 @@ impl Engine {
             windows: vec![],
             scope: Scope::default(),
             include_candidates: false,
+            shared_agents: vec![],
         };
         let candidates = self.store.search_unfiltered(&q).await?;
         let returned: HashSet<_> = record.returned.iter().map(|r| r.id).collect();
@@ -142,6 +138,7 @@ mod tests {
             kinds: Some(vec![MemoryKind::Semantic]),
             tags: None,
             scope: Scope { user: Some(crate::access::NOBODY.into()), ..Default::default() },
+            shared_agents: vec![],
             denied_labels: vec!["hr".into()],
             as_of: None,
             valid_at: Utc::now(),

@@ -91,6 +91,17 @@ pub trait IntakeQueue: Send + Sync {
     async fn discard(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64>;
 }
 
+/// Which held candidates a write is compared with (see [`Store::nearest_held`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Held<'a> {
+    /// `metadata.held`: `plan` or `signal`.
+    pub reason: &'a str,
+    /// Only this kind, if given.
+    pub kind: Option<MemoryKind>,
+    /// Only records of exactly this scope.
+    pub scope: &'a Scope,
+}
+
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()>;
@@ -114,9 +125,12 @@ pub trait Store: Send + Sync {
     async fn structured_lookup(&self, _q: &SearchQuery, _record_type: Option<&str>, _attrs: Option<&serde_json::Value>, _values: &[String]) -> anyhow::Result<Vec<Hit>> {
         Ok(vec![])
     }
-    /// Unexpired plans of a subject the gate holds as candidates (`metadata.held = "plan"`), most
-    /// similar first (plan confirmation; candidates waiting for a reviewer are not among them).
-    async fn nearest_held(&self, _tenant: &str, _subject: &str, _embedding: &[f32], _limit: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+    /// Unexpired records of a subject the gate holds as candidates for the reason `held`
+    /// (`metadata.held`: `plan` for plans awaiting their event, `signal` for inferred preferences
+    /// awaiting a repeat), most similar first. Candidates waiting for a reviewer are not among them.
+    /// Only records of exactly `scope`, and of `kind` if given: filtered before the limit, so
+    /// closer candidates of other scopes never hide one of the write's own.
+    async fn nearest_held(&self, _tenant: &str, _subject: &str, _embedding: &[f32], _limit: usize, _which: &Held<'_>) -> anyhow::Result<Vec<(Uuid, f32)>> {
         Ok(vec![])
     }
     /// One hybrid statement per subject: keyword + vector candidates fused by RRF.
@@ -147,12 +161,10 @@ pub trait Store: Send + Sync {
     async fn existing_hashes(&self, tenant: &str, subject: &str, hashes: &[String]) -> anyhow::Result<std::collections::HashSet<String>>;
     /// Most similar committed record of the same kind (near-dup check).
     async fn nearest(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32]) -> anyhow::Result<Option<(Uuid, f32)>>;
-    /// The `n` most similar committed records of the same kind, most similar first (the gate's
-    /// correction and update candidates).
-    async fn nearest_many(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32], n: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
-        let _ = n;
-        Ok(self.nearest(tenant, subject, kind, embedding).await?.into_iter().collect())
-    }
+    /// The `n` most similar committed records of the same kind and exactly the same scope, most
+    /// similar first (the gate's duplicate, correction and update candidates). A write never
+    /// deduplicates against or supersedes a record of another scope (MEM-04).
+    async fn nearest_many(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32], n: usize, scope: &Scope) -> anyhow::Result<Vec<(Uuid, f32)>>;
     async fn set_superseded(&self, tenant: &str, id: Uuid, by: Uuid) -> anyhow::Result<bool>;
     async fn set_status(&self, tenant: &str, id: Uuid, status: MemoryStatus) -> anyhow::Result<bool>;
     /// Hard delete of one record and every derived representation; records the deletion in the ledger.
@@ -160,10 +172,48 @@ pub trait Store: Send + Sync {
     /// Erase everything held about a subject. Returns the number of records removed.
     /// `purge_cache` also removes the subject's cached vectors (always true for erasure requests).
     async fn delete_subject(&self, tenant: &str, subject: &str, actor: &str, purge_cache: bool) -> anyhow::Result<u64>;
-    /// Retention: delete episodic rounds written more than `days` ago, with the same cascade as
-    /// `delete` (cached vectors, derived facts, enrichment jobs, cached extractions, ledger rows).
-    /// Returns rounds plus derived facts removed.
-    async fn purge_episodic_older_than(&self, tenant: &str, days: u32) -> anyhow::Result<u64>;
+    /// Retention (MEM-01): delete records of a kind written more than `days` ago, with the same
+    /// cascade as `delete` (cached vectors, derived facts, enrichment jobs, cached extractions,
+    /// ledger rows). Records promoted from them stay. Returns records plus derived facts removed.
+    async fn purge_older_than(&self, tenant: &str, kind: MemoryKind, days: u32) -> anyhow::Result<u64>;
+    /// A session wrote working memory: its committed working records that follow the session
+    /// (`metadata.ttl = "session"`) now expire at `until`, if that is later (MEM-01: end of
+    /// session plus the TTL). Returns how many moved.
+    async fn session_extend(&self, _tenant: &str, _subject: &str, _session: &str, _until: chrono::DateTime<chrono::Utc>) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+
+    // Grants between agents (INT-06).
+    /// Store a grant and its audit event in one transaction: no grant is ever active unaudited.
+    async fn grant_put(&self, _g: &Grant, _audit: &crate::intake::AuditEntry) -> anyhow::Result<()> {
+        anyhow::bail!("this store has no grants")
+    }
+    /// Grants of a tenant, newest first. For one agent (`grantee`): every grant given to it that
+    /// is active now, however many (what authorization reads). Without: the newest 1,000 in any
+    /// state (a listing).
+    async fn grants(&self, _tenant: &str, _grantee: Option<&str>) -> anyhow::Result<Vec<Grant>> {
+        Ok(vec![])
+    }
+    /// Revoke a grant now, with its audit event in the same transaction. False, writing
+    /// nothing, if it doesn't exist or was revoked already.
+    async fn grant_revoke(&self, _tenant: &str, _id: Uuid, _audit: &crate::intake::AuditEntry) -> anyhow::Result<bool> {
+        anyhow::bail!("this store has no grants")
+    }
+    /// A promotion whose text and scope equal an existing promoted record's: add its sources,
+    /// their kinds and labels to that record, with the `memory.promote` event, in one
+    /// transaction that also checks the sources are still stored. False if `id` is not a
+    /// promoted record (nothing is changed).
+    async fn promotion_merge(
+        &self,
+        _tenant: &str,
+        _id: Uuid,
+        _sources: &[Uuid],
+        _kinds: &[String],
+        _labels: &[String],
+        _audit: &crate::intake::AuditEntry,
+    ) -> anyhow::Result<bool> {
+        anyhow::bail!("this store can't merge promotions")
+    }
     async fn embed_cache_get(&self, model: &str, hashes: &[String]) -> anyhow::Result<Vec<(String, Vec<f32>)>>;
     async fn embed_cache_put(&self, model: &str, items: &[(String, Vec<f32>)]) -> anyhow::Result<()>;
     async fn audit(&self, actor: &str, action: &str, tenant: &str, subject: Option<&str>, memory_id: Option<Uuid>, detail: serde_json::Value) -> anyhow::Result<()>;
