@@ -199,6 +199,11 @@ pub trait Store: Send + Sync {
     async fn eval_run_put(&self, _r: &crate::eval::EvalRun) -> anyhow::Result<()> {
         anyhow::bail!("this store keeps no evaluation runs")
     }
+    /// The newest replay of a suite's items (by hash) that did not belong to a failed gate: the
+    /// reference a gate compares with. Looked up as such, not within a page of recent runs.
+    async fn eval_reference(&self, tenant: &str, suite: &str, suite_hash: &str) -> anyhow::Result<Option<crate::eval::EvalRun>> {
+        Ok(self.eval_runs(tenant, Some(suite), usize::MAX >> 1).await?.into_iter().find(|r| r.suite_hash == suite_hash && r.gate_passed != Some(false)))
+    }
     /// A tenant's replays, newest first, of one suite or of all.
     async fn eval_runs(&self, _tenant: &str, _suite: Option<&str>, _limit: usize) -> anyhow::Result<Vec<crate::eval::EvalRun>> {
         Ok(vec![])

@@ -68,6 +68,32 @@ async fn suites(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     out
 }
 
+/// An embedder whose provider fails, for questions or for writes, with a message that reads
+/// like a bad request.
+struct Failing {
+    inner: crate::governance::StubEmbedder,
+    queries: bool,
+    passages: bool,
+}
+
+#[async_trait::async_trait]
+impl memhouse_core::Embedder for Failing {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+    async fn embed(&self, texts: &[String], kind: memhouse_core::traits::EmbedKind) -> anyhow::Result<Vec<Vec<f32>>> {
+        let fail = match kind {
+            memhouse_core::traits::EmbedKind::Query => self.queries,
+            memhouse_core::traits::EmbedKind::Passage => self.passages,
+        };
+        anyhow::ensure!(!fail, "embedding provider: unexpected end of stream, expected a vector");
+        self.inner.embed(texts, kind).await
+    }
+}
+
 const CITIES: [&str; 12] = ["Lisbon", "Porto", "Berlin", "Vienna", "Tallinn", "Dublin", "Lyon", "Bologna", "Utrecht", "Malmo", "Ghent", "Split"];
 const FIRMS: [&str; 12] = ["Northwind", "Globex", "Initech", "Umbra", "Fenwhistle", "Brightwater", "Kestrel", "Halcyon", "Corvid", "Tessera", "Quillon", "Parallax"];
 
@@ -183,6 +209,19 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table} WHERE tenant LIKE $1"))).bind(&mark).fetch_one(pool).await?;
         if n != 0 {
             problems.push(format!("{n} rows of a scratch tenant are left in {table}"));
+        }
+    }
+    // A failure is never scored. With an embedder that fails for questions, every write is
+    // stored and every recall degrades to an empty answer: the replay must fail, not report a
+    // retrieval score of zero. With one that fails for writes, with a message that reads like
+    // a bad request, the replay must fail too, not count the writes as refused by policy.
+    for (what, queries, passages) in [("recalls", true, false), ("writes", false, true)] {
+        let mut broken = e.clone();
+        broken.embedder = std::sync::Arc::new(Failing { inner: crate::governance::StubEmbedder { id: "stub:e".into(), dim: 256 }, queries, passages });
+        match broken.eval_replay(TENANT, &controlled(1), None, EvalTrigger::Manual).await {
+            Err(err) if format!("{err:#}").contains("unexpected") || format!("{err:#}").contains("not scored") => {}
+            Err(err) => problems.push(format!("failing {what}: the replay failed with another error: {err:#}")),
+            Ok(run) => problems.push(format!("failing {what} were scored instead of failing the replay: {:?}", run.metrics)),
         }
     }
     // Claim isolation: a write queued for a scratch tenant is not handed to a worker (which

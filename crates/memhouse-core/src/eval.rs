@@ -460,6 +460,11 @@ impl Engine {
         // after the scratch tenant is erased.
         let mut engine = self.clone().with_policy_pin(&scratch, policy.clone());
         engine.explain_recalls = false;
+        // A replay measures quality, not speed: a recall is given the time it needs, and one
+        // that still fails is an error of the replay, never an empty answer to score.
+        let mut cfg = (*engine.cfg).clone();
+        cfg.memory.recall_timeout_ms = 0;
+        engine.cfg = Arc::new(cfg);
         let replayed = futures::future::join_all(suite.conversations.chunks(suite.conversations.len().div_ceil(8).max(1)).map(|chunk| {
             let engine = &engine;
             let scratch = &scratch;
@@ -541,6 +546,15 @@ impl Engine {
                     anyhow::ensure!(tries <= 30, "evaluation: the write of conversation {} did not settle; its replay is not scored", c.id);
                     self.settle_record(tenant, id).await?;
                 }
+                // A write the pipeline gave up on (set aside after its attempts failed: a model
+                // or the store was down) says nothing about quality: the replay fails.
+                if !id.is_nil() {
+                    let gave_up = self.store.get(tenant, id).await?.is_some_and(|m| {
+                        m.status == MemoryStatus::Quarantined
+                            && m.metadata.get("quarantine_reasons").and_then(|r| r.as_array()).is_some_and(|r| r.iter().any(|x| x == "intake_failed"))
+                    });
+                    anyhow::ensure!(!gave_up, "evaluation: the write pipeline failed on a write of conversation {}; its replay is not scored", c.id);
+                }
                 if let Some(of) = &turn.confirms {
                     confirmed.insert(of.clone());
                 }
@@ -613,6 +627,9 @@ impl Engine {
                         ..Default::default()
                     })
                     .await?;
+                if let Some(why) = &r.degraded {
+                    anyhow::bail!("evaluation: a recall of conversation {} failed ({why:?}); its replay is not scored", c.id);
+                }
                 let ids: Vec<Uuid> = r.hits.iter().map(|h| h.memory.id).collect();
                 counts.questions += 1;
                 counts.first_correct += u64::from(ids.first() == Some(&played[answer].id));
@@ -683,19 +700,25 @@ impl Engine {
         let active = self.policy_for(tenant).await?;
         let limits = self.cfg.eval.limits();
         let fingerprint = self.fingerprint();
-        let mut findings = vec![];
+        let (mut findings, mut replays) = (vec![], vec![]);
         for s in &suites {
             // The active policy's replay of these items by this engine is reused when it exists.
             let known = self.store.eval_runs(tenant, Some(&s.name), 50).await?;
-            let before = match known.into_iter().find(|r| r.suite_hash == s.hash && r.policy_version == active.version && r.fingerprint == fingerprint) {
+            let reusable = |r: &EvalRun| r.suite_hash == s.hash && r.policy_version == active.version && r.fingerprint == fingerprint && r.gate_passed != Some(false);
+            let before = match known.into_iter().find(reusable) {
                 Some(r) => r,
                 None => self.eval_record(tenant, &s.suite, Some(active.clone()), EvalTrigger::PolicyChange).await?,
             };
-            let mut after = self.eval_replay(tenant, &s.suite, Some(candidate.clone()), EvalTrigger::PolicyChange).await?;
-            let found = compare(&s.name, &before.metrics, &after.metrics, &limits);
-            after.gate_passed = Some(found.iter().all(|f| f.passed));
-            self.store.eval_run_put(&after).await?;
-            findings.extend(found);
+            let after = self.eval_replay(tenant, &s.suite, Some(candidate.clone()), EvalTrigger::PolicyChange).await?;
+            findings.extend(compare(&s.name, &before.metrics, &after.metrics, &limits));
+            replays.push(after);
+        }
+        // The gate is one decision over all suites: every replay made for it carries that
+        // decision, so none of a refused change's replays is a reference later.
+        let passed = findings.iter().all(|f| f.passed);
+        for mut run in replays {
+            run.gate_passed = Some(passed);
+            self.store.eval_run_put(&run).await?;
         }
         Ok(Some(GateReport { passed: findings.iter().all(|f| f.passed), before_policy: active.version.clone(), after_policy: candidate.version.clone(), findings }))
     }
@@ -707,19 +730,25 @@ impl Engine {
         let suites = self.store.eval_suites(tenant).await?;
         let policy = self.policy_for(tenant).await?;
         let limits = self.cfg.eval.limits();
-        let (mut findings, mut before_policy) = (vec![], None);
+        let (mut findings, mut before_policy, mut replays) = (vec![], None, vec![]);
         for s in &suites {
-            // The reference: the last replay of these items that did not itself fail a gate, so
-            // running a failed gate again fails again.
-            let last = self.store.eval_runs(tenant, Some(&s.name), 200).await?.into_iter().find(|r| r.suite_hash == s.hash && r.gate_passed != Some(false));
-            let mut now = self.eval_replay(tenant, &s.suite, Some(policy.clone()), EvalTrigger::ModelChange).await?;
+            // The reference: the last replay of these items that did not belong to a failed
+            // gate, however many failed ones came after it, so a failed gate fails again.
+            let last = self.store.eval_reference(tenant, &s.name, &s.hash).await?;
+            let now = self.eval_replay(tenant, &s.suite, Some(policy.clone()), EvalTrigger::ModelChange).await?;
+            let compared = last.is_some();
             if let Some(last) = last {
-                let found = compare(&s.name, &last.metrics, &now.metrics, &limits);
-                now.gate_passed = Some(found.iter().all(|f| f.passed));
-                findings.extend(found);
+                findings.extend(compare(&s.name, &last.metrics, &now.metrics, &limits));
                 before_policy.get_or_insert(last.policy_version);
             }
-            self.store.eval_run_put(&now).await?;
+            replays.push((now, compared));
+        }
+        // One decision over all suites; a replay with nothing to compare with is a first
+        // reference and stays one.
+        let passed = findings.iter().all(|f| f.passed);
+        for (mut run, compared) in replays {
+            run.gate_passed = compared.then_some(passed);
+            self.store.eval_run_put(&run).await?;
         }
         Ok(before_policy.map(|b| GateReport { passed: findings.iter().all(|f| f.passed), before_policy: b, after_policy: policy.version.clone(), findings }))
     }

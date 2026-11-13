@@ -1274,7 +1274,13 @@ which is named.
     replays counts a record only some of them have; a suite file is refused together with
     `--dataset`, `--mode` or `--rerank`; the gate on approval is recorded as an exception in
     [api-stability.md](api-stability.md#recorded-exception-the-regression-gate-on-policy-approval-17).
-    Suites and published numbers were regenerated and re-measured.
+    Suites and published numbers were regenerated and re-measured. Second round: a write is
+    taken as refused only when the error was raised as a refusal (`error::coded`); a recall that
+    degrades, or a write the pipeline gave up on, fails the replay instead of being scored
+    (found by injecting a failing embedder in `eval_harness`), and a replay's recalls are not
+    cut off by the recall timeout; a gate is one decision over all suites, carried by every
+    replay made for it, and its reference is looked up as such, not among recent runs; tenant
+    names containing `~eval~` are reserved, with claim isolation tested.
 - **Guard:** T1 + its own suites. **Depends on:** G12.
 
 #### G36 — Language packs: word lists as data, several languages at once

@@ -2813,6 +2813,19 @@ impl Store for PgStore {
         Ok(())
     }
 
+    async fn eval_reference(&self, tenant: &str, suite: &str, suite_hash: &str) -> anyhow::Result<Option<memhouse_core::eval::EvalRun>> {
+        let row = sqlx::query(
+            "SELECT run FROM mh_eval_run WHERE tenant = $1 AND suite = $2 AND suite_hash = $3 AND (run ->> 'gate_passed') IS DISTINCT FROM 'false' \
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(tenant)
+        .bind(suite)
+        .bind(suite_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|r| Ok(serde_json::from_value(r.try_get("run")?)?)).transpose()
+    }
+
     async fn eval_runs(&self, tenant: &str, suite: Option<&str>, limit: usize) -> anyhow::Result<Vec<memhouse_core::eval::EvalRun>> {
         let rows = sqlx::query("SELECT run FROM mh_eval_run WHERE tenant = $1 AND ($2::text IS NULL OR suite = $2) ORDER BY created_at DESC, id DESC LIMIT $3")
             .bind(tenant)

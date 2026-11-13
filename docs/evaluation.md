@@ -17,7 +17,9 @@ metrics).
   Tenant names containing `~eval~` are reserved for this: a write to one from anything but a
   replay is refused.
   A write the policy refuses (a type it forbids, a text over its limit) is scored as not
-  stored; a store or model failure fails the replay, which is then not scored at all.
+  stored. A failure is never scored: if a write can't be processed (a model or the store is
+  down), or a recall fails, the replay ends with an error and no result. A recall in a replay
+  is not cut off by `recall_timeout_ms`: a replay measures quality, not speed.
 - The **gate** replays a tenant's suites under the running policy and under a proposed one, on
   the same items, and refuses the approval if quality falls past the limits.
 
@@ -167,8 +169,9 @@ gating suites with the approval in mind. The limits and the switch are in
 [`[eval]`](configuration.md#eval).
 
 **Engine and model changes.** `memhouse eval gate` replays every suite now and compares each
-with its last stored replay of the same items that did not itself fail a gate (so a failed gate
-fails again when it is run again); it exits with status 1 if a limit is passed, so a deployment
+with its last stored replay of the same items that did not belong to a failed gate (a gate is
+one decision over all the tenant's suites, so a failed gate fails again when it is run again,
+however often); it exits with status 1 if a limit is passed, so a deployment
 script can stop on it. Run it after an upgrade, or after changing the embedder, the
 classifier or the reranker. The repository's own engine changes are gated by the benchmark
 guard, which replays `bench/suites/personal` against `bench/baselines.json`.
