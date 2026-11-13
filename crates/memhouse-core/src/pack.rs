@@ -144,6 +144,8 @@ pub fn dedup(hits: Vec<Hit>, reserve: Vec<Hit>, k: usize, rank: &Ranking, cut: &
     }
     let head = hits.len();
     let mut kept: Vec<(Hit, HashSet<u64>)> = Vec::with_capacity(head);
+    // Reserve hits passed over because no place was free: a replacement below may free one.
+    let mut passed: Vec<(Hit, HashSet<u64>)> = vec![];
     for (i, h) in hits.into_iter().chain(reserve).enumerate() {
         // The reserve only fills places that removing duplicates freed. Once they are filled it
         // can still give the confirmed record of a candidate that was kept, never a new place.
@@ -157,7 +159,7 @@ pub fn dedup(hits: Vec<Hit>, reserve: Vec<Hit>, k: usize, rank: &Ranking, cut: &
             _ => h,
         };
         match twin {
-            None if full => {}
+            None if full => passed.push((h, sh)),
             None => kept.push((h, sh)),
             Some(_) if h.exact && !full => kept.push((h, sh)),
             Some((j, why)) => {
@@ -189,6 +191,20 @@ pub fn dedup(hits: Vec<Hit>, reserve: Vec<Hit>, k: usize, rank: &Ranking, cut: &
                     cut.push(ExcludedRecord { id: h.memory.id, reason: ExclusionReason::Duplicate, detail: why });
                 }
             }
+        }
+    }
+    // A confirmed record that replaced a candidate may have removed hits kept below it, after
+    // reserve hits were passed over for want of a place: those fill the places now, in order.
+    for (h, sh) in passed {
+        if kept.len() >= head.min(k) {
+            break;
+        }
+        if !kept.iter().any(|(o, o_sh)| duplicate_of(o, o_sh, &h, &sh, rank).is_some()) {
+            let h = match kept.last() {
+                Some((above, _)) if h.score > above.score => Hit { score: above.score, ..h },
+                _ => h,
+            };
+            kept.push((h, sh));
         }
     }
     kept.into_iter().map(|(h, _)| h).collect()
@@ -507,6 +523,25 @@ mod tests {
         // C replaces its unconfirmed twin A; B, a duplicate of C but not of A, gives way.
         assert_eq!(out.iter().map(|h| h.memory.id).collect::<Vec<_>>(), [c.memory.id]);
         assert_eq!(cut.iter().map(|x| x.id).collect::<Vec<_>>(), [a.memory.id, b.memory.id]);
+    }
+
+    #[test]
+    fn a_place_freed_by_a_replacement_is_refilled_from_the_reserve_passed_over() {
+        let r = Ranking { dedup: true, dedup_cosine: 0.97, dedup_overlap: 0.9, ..ranking() };
+        let with = |text: &str, v: [f32; 3], score: f32| {
+            let mut h = hit(text, score);
+            h.embedding = Some(v.to_vec());
+            h
+        };
+        let mut a = with("alpha one two three", [1.0, 0.0, 0.0], 0.9);
+        a.memory.status = MemoryStatus::Candidate;
+        let b = with("bravo four five six", [0.96, 0.28, 0.0], 0.8);
+        let d = with("delta ten eleven twelve", [0.0, 0.0, 1.0], 0.7);
+        let c = with("charlie seven eight nine", [0.99, 0.14, 0.0], 0.6);
+        // D is passed over while A and B fill both places; C then replaces A and removes B.
+        let out = dedup(vec![a, b], vec![d.clone(), c.clone()], 2, &r, &mut vec![]);
+        assert_eq!(out.iter().map(|h| h.memory.id).collect::<Vec<_>>(), [c.memory.id, d.memory.id]);
+        assert!(out[1].score <= out[0].score);
     }
 
     #[test]
