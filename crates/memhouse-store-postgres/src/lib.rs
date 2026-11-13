@@ -586,11 +586,13 @@ const SESSION_FILTER_NONE: &str = "    AND ($24::text IS NOT NULL AND (m.scope_s
 struct Variant {
     shared: bool,
     no_session: bool,
+    /// The statement also returns each row's vector (near-duplicate removal, ECON-03).
+    vectors: bool,
 }
 
 impl Variant {
     fn of(q: &SearchQuery) -> Variant {
-        Variant { shared: !q.shared_agents.is_empty(), no_session: q.scope.session.as_deref() == Some(memhouse_core::access::NOBODY) }
+        Variant { shared: !q.shared_agents.is_empty(), no_session: q.scope.session.as_deref() == Some(memhouse_core::access::NOBODY), vectors: q.with_vectors }
     }
 }
 
@@ -625,6 +627,7 @@ const SEARCH_FILTERS: &str = r#"    -- As-of recall also sees versions supersede
 /// candidates a recall explanation classifies (why each was excluded).
 fn search_sql_with(filtered: bool, v: Variant) -> String {
     let filters = if filtered { search_filters(v) } else { String::new() };
+    let emb = if v.vectors { "m.embedding::real[]" } else { "NULL::real[]" };
     format!(
         r#"
 WITH q AS (
@@ -683,7 +686,7 @@ fused AS (
 top AS (
   SELECT * FROM fused ORDER BY score DESC, sim DESC NULLS LAST LIMIT $15
 )
-SELECT {COLS}, f.score, f.krk, f.vrk, f.sim, m.embedding::real[] AS emb, 0 AS probe
+SELECT {COLS}, f.score, f.krk, f.vrk, f.sim, {emb} AS emb, 0 AS probe
 FROM top f CROSS JOIN LATERAL (
   SELECT * FROM mh_memory x WHERE x.id = f.id AND x.tenant = $1 AND x.subject = $2 LIMIT 1
 ) m

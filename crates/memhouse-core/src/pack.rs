@@ -145,10 +145,9 @@ pub fn dedup(hits: Vec<Hit>, reserve: Vec<Hit>, k: usize, rank: &Ranking, cut: &
     let head = hits.len();
     let mut kept: Vec<(Hit, HashSet<u64>)> = Vec::with_capacity(head);
     for (i, h) in hits.into_iter().chain(reserve).enumerate() {
-        // The reserve only fills places that removing duplicates freed.
-        if i >= head && kept.len() >= head.min(k) {
-            break;
-        }
+        // The reserve only fills places that removing duplicates freed. Once they are filled it
+        // can still give the confirmed record of a candidate that was kept, never a new place.
+        let full = i >= head && kept.len() >= head.min(k);
         let sh = shingles(&h.memory.content);
         let twin = kept.iter().enumerate().find_map(|(j, (o, o_sh))| duplicate_of(o, o_sh, &h, &sh, rank).map(|why| (j, why)));
         // A hit from the reserve ranked below every hit of the recall proper: it never shows a
@@ -158,8 +157,9 @@ pub fn dedup(hits: Vec<Hit>, reserve: Vec<Hit>, k: usize, rank: &Ranking, cut: &
             _ => h,
         };
         match twin {
+            None if full => {}
             None => kept.push((h, sh)),
-            Some((_, _)) if h.exact => kept.push((h, sh)),
+            Some(_) if h.exact && !full => kept.push((h, sh)),
             Some((j, why)) => {
                 let other = &kept[j].0;
                 if other.memory.status == MemoryStatus::Candidate && h.memory.status == MemoryStatus::Committed && !other.exact && !other.working {
@@ -171,7 +171,21 @@ pub fn dedup(hits: Vec<Hit>, reserve: Vec<Hit>, k: usize, rank: &Ranking, cut: &
                         detail: format!("unconfirmed; {}", why.replace(&other.memory.id.to_string(), &h.memory.id.to_string())),
                     });
                     kept[j] = (Hit { score, ..h }, sh);
-                } else {
+                    // The candidate was not a duplicate of the hits kept beside it; its
+                    // replacement may be. Those below it give way to it, those above it stay
+                    // and were already compared (the twin found is the first).
+                    let mut n = j + 1;
+                    while n < kept.len() {
+                        let (keeper, later) = (&kept[j], &kept[n]);
+                        match duplicate_of(&keeper.0, &keeper.1, &later.0, &later.1, rank) {
+                            Some(why) if !later.0.exact => {
+                                cut.push(ExcludedRecord { id: later.0.memory.id, reason: ExclusionReason::Duplicate, detail: why });
+                                kept.remove(n);
+                            }
+                            _ => n += 1,
+                        }
+                    }
+                } else if !full || i < head {
                     cut.push(ExcludedRecord { id: h.memory.id, reason: ExclusionReason::Duplicate, detail: why });
                 }
             }
@@ -466,6 +480,36 @@ mod tests {
     }
 
     #[test]
+    fn a_confirmed_twin_in_the_reserve_replaces_a_kept_candidate_without_taking_a_place() {
+        let r = Ranking { dedup: true, dedup_cosine: 0.97, dedup_overlap: 0.9, ..ranking() };
+        let mut held = hit("Dana will move to Berlin next year.", 0.9);
+        held.memory.status = MemoryStatus::Candidate;
+        let confirmed = hit("Dana will move to Berlin next year", 0.2);
+        let unrelated = hit("Rex is the dog", 0.3);
+        let out = dedup(vec![held.clone()], vec![unrelated, confirmed.clone()], 1, &r, &mut vec![]);
+        assert_eq!(out.iter().map(|h| h.memory.id).collect::<Vec<_>>(), [confirmed.memory.id]);
+    }
+
+    #[test]
+    fn a_replacement_is_compared_with_the_hits_kept_beside_the_candidate() {
+        let r = Ranking { dedup: true, dedup_cosine: 0.97, dedup_overlap: 0.9, ..ranking() };
+        let with = |text: &str, v: [f32; 2], score: f32| {
+            let mut h = hit(text, score);
+            h.embedding = Some(v.to_vec());
+            h
+        };
+        let mut a = with("alpha one two three", [1.0, 0.0], 0.9);
+        a.memory.status = MemoryStatus::Candidate;
+        let b = with("bravo four five six", [0.96, 0.28], 0.8);
+        let c = with("charlie seven eight nine", [0.99, 0.14], 0.7);
+        let mut cut = vec![];
+        let out = dedup(vec![a.clone(), b.clone(), c.clone()], vec![], 5, &r, &mut cut);
+        // C replaces its unconfirmed twin A; B, a duplicate of C but not of A, gives way.
+        assert_eq!(out.iter().map(|h| h.memory.id).collect::<Vec<_>>(), [c.memory.id]);
+        assert_eq!(cut.iter().map(|x| x.id).collect::<Vec<_>>(), [a.memory.id, b.memory.id]);
+    }
+
+    #[test]
     fn budget_passes_over_what_does_not_fit_and_caps_the_block() {
         let big = hit(&"x".repeat(400), 0.9);
         let small = hit("short note", 0.5);
@@ -542,9 +586,21 @@ mod tests {
             k in 1usize..20,
         ) {
             let texts = ["Dana moved to Berlin in March 2024", "dana moved to berlin in march 2024!", "Acme renews its contract in June", "The gym locker code is 4417", "Acme renews its contract in June.", "Rex is the dog"];
-            let vectors = [vec![1.0, 0.0, 0.0], vec![0.99, 0.1, 0.0], vec![0.0, 1.0, 0.0], vec![0.0, 0.0, 1.0]];
-            let r = Ranking { dedup: true, dedup_cosine: 0.95, dedup_overlap: 0.85, ..ranking() };
-            let all: Vec<Hit> = picks.iter().enumerate().map(|(i, (t, v))| { let mut h = hit(texts[*t], 1.0 - i as f32 / 100.0); h.embedding = Some(vectors[*v].clone()); h }).collect();
+            let vectors = [vec![1.0, 0.0, 0.0], vec![0.96, 0.28, 0.0], vec![0.99, 0.14, 0.0], vec![0.0, 0.0, 1.0]];
+            let r = Ranking { dedup: true, dedup_cosine: 0.97, dedup_overlap: 0.85, ..ranking() };
+            // Every third hit is a candidate, so a confirmed twin replaces some of them.
+            let all: Vec<Hit> = picks
+                .iter()
+                .enumerate()
+                .map(|(i, (t, v))| {
+                    let mut h = hit(texts[*t], 1.0 - i as f32 / 100.0);
+                    h.embedding = Some(vectors[*v].clone());
+                    if (t + v + i) % 3 == 0 {
+                        h.memory.status = MemoryStatus::Candidate;
+                    }
+                    h
+                })
+                .collect();
             let split = all.len().min(k);
             let (head, reserve) = (all[..split].to_vec(), all[split..].to_vec());
             let out = dedup(head, reserve, k, &r, &mut vec![]);

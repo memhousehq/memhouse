@@ -83,6 +83,7 @@ impl Engine {
             scope: Scope::default(),
             include_candidates: false,
             shared_agents: vec![],
+            with_vectors: false,
         };
         let candidates = self.store.search_unfiltered(&q).await?;
         let returned: HashSet<_> = record.returned.iter().map(|r| r.id).collect();

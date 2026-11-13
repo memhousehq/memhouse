@@ -168,12 +168,17 @@ async fn packing_dedup(e: &Engine) -> Outcome {
         originals.push(e.remember(write(subj, &format!("Note: {t}."), MemoryKind::Semantic)).await?.id);
         // The same statement again, as other record types and in other clothes: a different
         // content hash each time, the same words.
+        // The first twin has the same words in reverse order: the same vector (the stand-in
+        // embedder is a bag of words) and no shingle in common, so only the cosine rule can
+        // remove it. The others keep the word order, which the overlap rule also sees.
+        let reversed = format!("Note: {}", t.split(' ').rev().collect::<Vec<_>>().join(" "));
         let twins = [
+            (MemoryKind::Document, reversed),
             (MemoryKind::Episodic, format!("NOTE - {}!", t.to_uppercase())),
             (MemoryKind::Document, format!("Note: {t}. Ok, so be it.")),
             (MemoryKind::Episodic, format!("note {t} ok")),
         ];
-        for (kind, text) in twins.into_iter().take(2 + i % 2) {
+        for (kind, text) in twins.into_iter().take(3 + i % 2) {
             e.remember(write(subj, &text, kind)).await?;
             seeded += 1;
         }
@@ -184,7 +189,7 @@ async fn packing_dedup(e: &Engine) -> Outcome {
     let policy = e.policy_for(TENANT).await?;
     let rank = &policy.policy.ranking;
     let mut worst = (0f32, 0f32);
-    let mut removed = 0;
+    let (mut removed, mut by_cosine, mut by_overlap) = (0, 0, 0);
     for (q, k) in [
         ("Acme renewal seats annual plan premium support", 7),
         ("Acme billing contact finance team", 5),
@@ -194,10 +199,13 @@ async fn packing_dedup(e: &Engine) -> Outcome {
         let r = e.recall(RecallRequest { subject: Some(subj.into()), query: q.into(), k: Some(k), analyze: Some(false), ..Default::default() }).await?;
         for (i, a) in r.hits.iter().enumerate() {
             for b in &r.hits[i + 1..] {
-                let c = match (&a.embedding, &b.embedding) {
-                    (Some(x), Some(y)) => cosine(x, y),
-                    _ => 0.0,
+                // Every hit here comes from the search statement, which returns its vector: a
+                // hit without one could not have been compared, so it fails the check.
+                let (Some(x), Some(y)) = (&a.embedding, &b.embedding) else {
+                    problems.push(format!("'{q}' returned {} or {} without its vector: the cosine rule could not compare them", a.memory.id, b.memory.id));
+                    continue;
                 };
+                let c = cosine(x, y);
                 let o = overlap(&shingles(&a.memory.content), &shingles(&b.memory.content));
                 worst = (worst.0.max(c), worst.1.max(o));
                 if c >= rank.dedup_cosine || o >= rank.dedup_overlap {
@@ -215,10 +223,16 @@ async fn packing_dedup(e: &Engine) -> Outcome {
         if let Some(id) = r.recall_id {
             let cut = e.recall_record(TENANT, id).await?.map(|x| x.cut).unwrap_or_default();
             removed += cut.iter().filter(|c| c.reason == ExclusionReason::Duplicate).count();
+            by_cosine += cut.iter().filter(|c| c.reason == ExclusionReason::Duplicate && c.detail.starts_with("cosine")).count();
+            by_overlap += cut.iter().filter(|c| c.reason == ExclusionReason::Duplicate && c.detail.starts_with("text overlap")).count();
             if cut.iter().any(|c| c.reason == ExclusionReason::Duplicate && topics.iter().any(|t| c.detail.contains(&t[..20]))) {
                 problems.push("a duplicate's exclusion detail carries content".into());
             }
         }
+    }
+    // Each rule is proved on its own: the reversed twins can only go by cosine.
+    if by_cosine < topics.len() {
+        problems.push(format!("only {by_cosine} duplicates were removed by the cosine rule; each of the {} reversed twins must be", topics.len()));
     }
     if removed == 0 {
         problems.push("no near-duplicate was removed: the corpus was not seeded as intended".into());
@@ -245,7 +259,7 @@ async fn packing_dedup(e: &Engine) -> Outcome {
         problems,
         format!("0 pairs at a threshold; highest cosine {:.3}, overlap {:.3}", worst.0, worst.1),
         &format!(
-            "{seeded} duplicates seeded over {} statements; {removed} removed across 4 recalls (thresholds: cosine {}, overlap {})",
+            "{seeded} duplicates seeded over {} statements; {removed} removed across 4 recalls, {by_cosine} by cosine and {by_overlap} by text overlap (thresholds: cosine {}, overlap {})",
             originals.len(),
             rank.dedup_cosine,
             rank.dedup_overlap

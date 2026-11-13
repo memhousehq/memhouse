@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 12 of 36 goals done ([goal tracker](#goal-tracker)) |
+| Progress | 11 of 36 goals done, G12 built and waiting for its latency check ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -72,7 +72,7 @@ are frozen (goals G04–G15), so it is written once against the final contracts 
 reworked.
 
 **What is missing from the code is the unbuilt part of each goal not ticked in the
-[goal tracker](#goal-tracker)** (G13 onwards; G25's re-embedding was done early). Some of those
+[goal tracker](#goal-tracker)** (G13 onwards, and G12's latency check; G25's re-embedding was done early). Some of those
 goals start from features that already work and are listed above, such as the v1 sales and
 success templates (G24). The largest gaps are relationship-based
 access (ACC), SDKs, the Lite store, the coding template's git-aware features, release
@@ -330,7 +330,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 - [x] [G08 — Policy engine v1 (structured specs, approval, versions)](#g08--policy-engine-v1-structured-specs-approval-versions) (4 November 2026)
 - [x] [G10 — Write pipeline v2: intake queue, candidates, classification, routing](#g10--write-pipeline-v2-intake-queue-candidates-classification-routing) (6 November 2026)
 - [x] [G11 — Memory types, scopes and promotion](#g11--memory-types-scopes-and-promotion) (13 November 2026)
-- [x] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2) (13 November 2026)
+- [ ] [G12 — Ranking and packing v2](#g12--ranking-and-packing-v2) (built 13 November 2026; latency still to confirm on a quiet machine)
 - [ ] [G13 — Evaluation platform: synthetic timelines, own suites, regression gate](#g13--evaluation-platform-synthetic-timelines-own-suites-regression-gate)
 - [ ] [G36 — Language packs: word lists as data, several languages at once](#g36--language-packs-word-lists-as-data-several-languages-at-once)
 - [ ] [G14 — Quality iteration I: weak types and tiered extraction](#g14--quality-iteration-i-weak-types-and-tiered-extraction)
@@ -1095,7 +1095,7 @@ which is named.
 
 #### G12 — Ranking and packing v2
 
-- [x] **Done** (13 November 2026)
+- [ ] **Done** (built 13 November 2026; one box open: the latency check)
 
 > `/goal Make ranking combine relevance, recency, confidence and validity with weights from compiled policy, make packing remove near-duplicates and treat the token budget as a hard cap, and return a rendered text block alongside structured hits; tune only within the guard. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -1104,6 +1104,7 @@ which is named.
   - [x] ranking function reading policy weights; recency and confidence features
   - [x] near-duplicate removal (cosine and text shingles) in packing
   - [x] rendered block templates (plain, markdown, XML-ish) chosen per request
+  - [ ] the guard's latency gates passed on a quiet machine with near-duplicate removal on (added 13 November 2026: every run of this goal was made while another process loaded the machine, so the timings were reported, not gated)
 - **Done when:** the token budget is never exceeded (property test); T2 is equal or better.
 - **Result (2026-11-13):**
   - **Built.** `memhouse-core/src/pack.rs` holds the last steps of a recall, with no model and
@@ -1117,7 +1118,9 @@ which is named.
     vectors are at least `dedup_cosine` similar (0.97) or whose texts share at least
     `dedup_overlap` of their three-word shingles (0.9), only the best-ranked is returned; the
     places freed are filled from a reserve of up to 20 candidates ranked just below, fetched in
-    the same statement (the search statement now returns each row's vector). A committed record
+    the same statement by the main probe (with removal on, the search statement also returns
+    each row's vector; with it off the statement is the one of G11). A keyed preference never
+    fills a place from the reserve, since only returned preferences are resolved by scope. A committed record
     is preferred to a candidate that says the same, an exact structured match is never dropped,
     and two episodic records of different sessions are different events and both stay. The
     removed records are in the explanation with the new reason `duplicate`. *Budget* (PERF-06):
@@ -1135,15 +1138,20 @@ which is named.
     specified), `packing_dedup` (10 duplicates seeded over 7 statements, 0 pairs at a
     threshold, places refilled, off by policy returns them) and `token_budget` (500 recalls,
     budgets 200 to 8,000 tokens, plain, Markdown and XML: 0 over).
-  - **Guard: T2, $0 spent (enrichment served from the cache).** Run with `--skip-latency`:
-    another process held the machine at a load average of 13 to 24 throughout. Quality at the
-    current values: LongMemEval_S 91.3 / 94.2 / 84.8, LoCoMo 78.8 / 78.6 / 59.2, LoCoMo with
-    enrichment 79.3 / 65.6. The last pair is below the 1 November baseline (79.6 / 66.0) and
-    inside its limit; the same run with near-duplicate removal turned off gives the same 79.3 /
-    65.6, so the difference predates this goal. Latency, measured as an A/B under the same load
-    (LoCoMo, k = 100, two runs each): SQL search p50 26.3 and 26.1 ms with removal, 23.7 and
-    24.7 ms without, about 2 ms for the reserve rows and the vectors; to be confirmed against
-    the 9.0 ms baseline on a quiet machine.
+  - **Guard: T2, $0 spent (enrichment served from the cache); quality passed, latency open.**
+    Quality with removal on: LongMemEval_S 91.3 / 94.2 / 84.8; LoCoMo 78.8 / 78.7 / 59.2;
+    LoCoMo with enrichment 79.4 / 65.6. "Equal or better" is measured against the engine as G11
+    left it, which is the same build with removal turned off: LoCoMo round recall_all@10 is
+    59.18 off and 59.24 on, and the enrichment run is 79.3 / 65.6 off. The enrichment pair is
+    below the 1 November baseline (79.6 / 66.0), inside its limit, with removal on or off: that
+    difference predates this goal. **Latency is not confirmed.** Another process held the
+    machine at a load average of 11 to 28 during every run, and the same build measured a SQL
+    search p50 anywhere from 16 to 46 ms (baseline 9.0 ms). A/B runs under that load (LoCoMo,
+    k = 100) put removal at 2 to 6 ms of search time, for up to 20 reserve rows and the
+    vectors of the rows returned; a recall with the default k of 10 fetches far fewer. The runs
+    were made with `--skip-latency`, so the timings were reported and not gated. The open box
+    above stays until the gated guard passes on a quiet machine; if it does not, the cost is
+    reduced in this goal.
   - **Tuned within the guard.** The first thresholds tried (cosine 0.95, overlap 0.85) cost one
     LoCoMo question (round recall_all@10 59.1), so the defaults are 0.97 (the write gate's own
     duplicate threshold) and 0.9, which change no guard value. The first version also removed
@@ -1155,6 +1163,13 @@ which is named.
     [api-stability.md](api-stability.md#recorded-exception-the-token-budget-is-a-hard-cap-16).
     Confidence can't yet be set on a write through the API (extracted facts carry it; explicit
     writes are 1.0): the confidence score on extracted facts is G14's.
+  - **Review fixes (2026-11-13, pull request 24):** each retriever returns at least as many
+    candidates as the recall fetches, so the reserve is not empty when `candidates` is no
+    larger than `k`; a confirmed record in the reserve replaces a kept candidate that says the
+    same even when no place is free; a confirmed record that replaces a candidate is compared
+    with the hits kept below it, which give way if they duplicate it; `packing_dedup` seeds a
+    twin with the same words in reverse order, which only the cosine rule can remove, and
+    fails on a hit returned without its vector.
 - **Guard:** T2. **Depends on:** G11.
 
 #### G13 — Evaluation platform: synthetic timelines, own suites, regression gate

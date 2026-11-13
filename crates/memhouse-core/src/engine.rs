@@ -940,7 +940,9 @@ impl Engine {
             as_of: req.as_of,
             valid_at: now_valid,
             mode,
-            per_retriever: rank.candidates.max(fused_limit),
+            // Each retriever returns at least what is fetched, or the reserve would be empty
+            // whenever `candidates` is no larger than k.
+            per_retriever: rank.candidates.max(fetch_limit),
             limit: fetch_limit,
             rrf_k: rank.rrf_k,
             keyword_weight: rank.keyword_weight,
@@ -949,6 +951,7 @@ impl Engine {
             scope: scope.clone(),
             include_candidates: req.include_candidates,
             shared_agents: ctx.shared_agents.clone(),
+            with_vectors: rank.dedup,
         };
         // Extra probes: the same query inside the time windows it mentions, and one per sub-query.
         let mut probes: Vec<(SearchQuery, f32)> = vec![];
@@ -956,12 +959,15 @@ impl Engine {
             if !p.windows.is_empty() {
                 let mut w = q.clone();
                 w.windows = p.windows.iter().map(|w| (w.start, w.end)).collect();
+                // The reserve comes from the main probe alone.
+                w.limit = fused_limit;
                 probes.push((w, rank.window_weight));
             }
             for (sq, emb) in p.subqueries.iter().zip(embeddings.into_iter().skip(1)) {
                 let mut s = q.clone();
                 s.text = sq.clone();
                 s.embedding = emb;
+                s.limit = fused_limit;
                 probes.push((s, rank.subquery_weight));
             }
         }
@@ -1106,7 +1112,9 @@ impl Engine {
         let mut cut: Vec<ExcludedRecord> = vec![];
         if rank.dedup {
             let ids: std::collections::HashSet<Uuid> = hits.iter().map(|h| h.memory.id).collect();
-            reserve.retain(|h| !ids.contains(&h.memory.id));
+            // A keyed preference is resolved by scope before it is returned (MEM-04); the
+            // reserve was not, so it never fills a place with one.
+            reserve.retain(|h| !ids.contains(&h.memory.id) && !keyed(h));
             crate::pack::score(&mut reserve, rank, req.as_of.unwrap_or(present), present);
             hits = crate::pack::dedup(hits, reserve, k, rank, &mut cut);
         }

@@ -736,6 +736,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             scope: Default::default(),
             include_candidates: false,
             shared_agents: vec![],
+            with_vectors: false,
         };
         let scoped = SearchQuery { scope: Scope { team: Some("support".into()), user: Some("ana".into()), ..Default::default() }, ..probe(RetrievalMode::Hybrid, vec![], None) };
         let variants = [
@@ -838,6 +839,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 scope: Default::default(),
                 include_candidates: false,
                 shared_agents: vec![],
+                with_vectors: false,
             };
             let hits = engine.store.search(&q).await?;
             let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();

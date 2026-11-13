@@ -1022,6 +1022,8 @@ pub struct SearchQuery {
     pub include_candidates: bool,
     /// Agents whose agent-scoped records the reader was granted (INT-06): `shared_key` values.
     pub shared_agents: Vec<String>,
+    /// Also return each hit's vector (`Hit::embedding`), for near-duplicate removal (ECON-03).
+    pub with_vectors: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
