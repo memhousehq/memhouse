@@ -86,6 +86,12 @@ vector_weight = 1.0
 dedup_threshold = 0.97
 recency_weight = 0.0
 recency_half_life_days = 90.0
+relevance_weight = 1.0
+confidence_weight = 0.0
+validity_weight = 0.0
+recall_dedup = true
+recall_dedup_cosine = 0.97
+recall_dedup_overlap = 0.9
 assistant_chars = 1200
 query_analysis = true
 window_weight = 0.15
@@ -258,6 +264,12 @@ restart, and can only tighten governance.
 | `dedup_threshold` | 0.97 | cosine above which a new explicit memory counts as a duplicate |
 | `recency_weight` | 0.0 | bonus `w / (1 + age_days / half_life)`; templates for support, sales and success set 0.05 |
 | `recency_half_life_days` | 90 | |
+| `relevance_weight` | 1.0 | weight of the relevance score (the fused ranks, or the reranker's score) in the final score; 0 ranks by the other features alone |
+| `confidence_weight` | 0.0 | weight of a record's confidence (0 to 1) in the final score |
+| `validity_weight` | 0.0 | weight of a record's validity in the final score: 1 committed and valid now, 0.5 a candidate, 0 no longer valid (an `as_of` recall) |
+| `recall_dedup` | true | leave near-duplicates out of a recall, keeping the best-ranked of each group (ECON-03) |
+| `recall_dedup_cosine` | 0.97 | two returned memories whose vectors are at least this similar are near-duplicates |
+| `recall_dedup_overlap` | 0.9 | two returned memories that share at least this part of their three-word shingles (Jaccard) are near-duplicates |
 | `assistant_chars` | 1200 | assistant text kept per episodic round |
 | `query_analysis` | true | date-aware recall (time-window probe) |
 | `window_weight` | 0.15 | fusion weight of every in-window hit |
@@ -277,7 +289,13 @@ flowchart LR
     V["vector rank r_v"] -->|"vector_weight / (rrf_k + r_v)"| S
     W["window-probe rank r_w"] -->|"window_weight / (rrf_k + r_w)<br/>+ window_top_weight if r_w ≤ window_top"| S
     A["age"] -->|"recency_weight / (1 + age / half_life)"| S
+    C["confidence"] -->|"confidence_weight × confidence"| S
+    L["validity"] -->|"validity_weight × validity"| S
 ```
+
+The fused part is multiplied by `relevance_weight`. A tenant's policy can set every one of these
+(`[ranking]` in a [policy spec](policy.md)); the formula and the packing rules are in the
+[API reference](api.md#ranking-four-features-weights-from-the-policy).
 
 ## `[intake]`
 

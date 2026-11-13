@@ -107,9 +107,11 @@ partition = "author"          # a user's own preferences are stored with the use
 | `redaction.categories` | `secret`, `card`, `ssn`, `iban`, `email`, `phone`, `ip` | must include `secret` and every governance category |
 | `recall.denied_labels` | labels never read, and refused on writes through the API | must include every `[governance] denied_labels` label |
 | `recall.audit_reads` | `true`, `false` | can't be `false` where governance audits reads |
-| `ranking.*` | `default_k` (1–200), `candidates` (1–1000), `rrf_k` (above 0), `keyword_weight`, `vector_weight`, `recency_weight`, `window_weight`, `window_top_weight`, `subquery_weight` (0–100), `recency_half_life_days` (above 0), `window_top` (0–100), `query_analysis` | `keyword_weight` and `vector_weight` can't both be 0 |
+| `ranking.*` | `default_k` (1–200), `candidates` (1–1000), `rrf_k` (above 0), `keyword_weight`, `vector_weight`, `recency_weight`, `relevance_weight`, `confidence_weight`, `validity_weight`, `window_weight`, `window_top_weight`, `subquery_weight` (0–100), `recency_half_life_days` (above 0), `window_top` (0–100), `query_analysis`, `dedup`, `dedup_cosine`, `dedup_overlap` (above 0, at most 1) | `keyword_weight` and `vector_weight` can't both be 0 |
 
-The meaning of each ranking weight is in the [configuration reference](configuration.md). Unknown
+The meaning of each ranking weight is in the [configuration reference](configuration.md); how
+relevance, recency, confidence and validity combine into the score, and how `dedup` packs a
+recall, is in the [API reference](api.md#ranking-four-features-weights-from-the-policy). Unknown
 sections and fields are errors, so a typo is never silently ignored.
 
 ### Per-type sections

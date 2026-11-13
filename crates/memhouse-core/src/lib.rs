@@ -14,6 +14,7 @@ pub mod gate;
 pub mod identity;
 pub mod intake;
 pub mod metrics;
+pub mod pack;
 pub mod policy;
 pub mod preference;
 pub mod promote;

@@ -258,6 +258,7 @@ curl -s localhost:7077/v1/recalls/01a19b40-…/explanation -H "authorization: Be
 | `label` | carries a label denied to the caller |
 | `validity` | was not valid at the recall's time (`valid_to`, `expires_at`, or after `as_of`) |
 | `filter` | is outside the request's kinds or tags |
+| `duplicate` | was a near-duplicate of a better-ranked memory in the same recall |
 | `budget` | was cut by the token budget |
 | `rank` | ranked below the `k` returned |
 
@@ -265,7 +266,7 @@ The explanation also holds the principal, the verified user, the policy version,
 labels and scope applied, the parameters, and the time per stage. The principal that recalled may
 read its own explanations, but records excluded for status, access or labels are only counted
 there, never listed, so an explanation can't reveal what the caller may not see. Principals with
-`audit:read` see every id. The budget and rank cuts are recorded as they happened. The other
+`audit:read` see every id. The duplicate, budget and rank cuts are recorded as they happened. The other
 reasons are recomputed when the explanation is read (`replayed_at`), from the stored query against
 the subject's records as they are then.
 
@@ -487,7 +488,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-53 checks pass on the current release. The core ones:
+56 checks pass on the current release. The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -523,6 +524,9 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `scope_inheritance` | 20 preferences set at org, team and user level in every order resolve to the most specific one for every reader; readers inherit broader scopes only; no deduplication across scopes |
 | `promotion` | 100 promotions each link to their sources and have an audit entry; promotion into working memory, across subjects or of unseen records is refused; the target type's gate still applies |
 | `agent_grants` | an agent reads another agent's memory only with a grant covering the subject and kind, read-only, until revoked or expired |
+| `ranking_weights` | on a controlled set, changing the relevance, recency, confidence or validity weight in the policy changes the order as specified (HYB-05) |
+| `packing_dedup` | over a corpus seeded with duplicates, no two returned memories reach the configured cosine or text-overlap threshold, and the freed places are filled (ECON-03) |
+| `token_budget` | 500 recalls with budgets from 200 to 8,000 tokens: none over its budget, in the hits or in the plain, markdown or xml block (PERF-06) |
 | `partitions` | 1,000 mixed writes, direct and through an agent: notes in the patient's partition, own preferences and procedures in the clinician's, each with the right author |
 
 Run it in CI and keep the reports: they are audit evidence for every release.

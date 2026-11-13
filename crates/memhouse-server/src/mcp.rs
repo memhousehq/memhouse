@@ -111,7 +111,7 @@ fn build_tools() -> Value {
             "name": "recall",
             "title": "Recall memories",
             "description": "Search long-term memory for anything relevant to a question or task. Call this before answering questions that may depend on earlier conversations, the user's preferences, or project knowledge. Returns the most relevant memories with ids, dates, kinds and provenance. Pass scope.session to recall inside a session: its working notes come first.",
-            "inputSchema": input_schema::<RecallRequest>(&["query", "subject", "k", "kinds", "tags", "scope", "as_of", "token_budget", "include_candidates", "exact"], &["query"],
+            "inputSchema": input_schema::<RecallRequest>(&["query", "subject", "k", "kinds", "tags", "scope", "as_of", "token_budget", "render_format", "include_candidates", "exact"], &["query"],
                 json!({"k": {"minimum": 1, "maximum": 50, "description": "Number of memories to return (default 10)."}, "as_of": {"description": format!("Recall what was true at this time. {DATE_HINT}")}})),
             "outputSchema": inline_schema::<RecallResult>(),
             "annotations": {"readOnlyHint": true}

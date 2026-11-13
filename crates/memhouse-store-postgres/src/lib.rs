@@ -683,7 +683,7 @@ fused AS (
 top AS (
   SELECT * FROM fused ORDER BY score DESC, sim DESC NULLS LAST LIMIT $15
 )
-SELECT {COLS}, f.score, f.krk, f.vrk, f.sim, 0 AS probe
+SELECT {COLS}, f.score, f.krk, f.vrk, f.sim, m.embedding::real[] AS emb, 0 AS probe
 FROM top f CROSS JOIN LATERAL (
   SELECT * FROM mh_memory x WHERE x.id = f.id AND x.tenant = $1 AND x.subject = $2 LIMIT 1
 ) m
@@ -783,6 +783,8 @@ fn row_to_hit(r: &PgRow) -> anyhow::Result<Hit> {
         rerank_score: None,
         exact: false,
         working: false,
+        embedding: r.try_get::<Option<Vec<f32>>, _>("emb").unwrap_or(None),
+        features: None,
     })
 }
 

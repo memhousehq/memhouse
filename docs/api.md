@@ -20,10 +20,12 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.5.0` (1.1 added principals, agent tokens, review and labels; 1.2
+This is **API v1**, version `1.6.0` (1.1 added principals, agent tokens, review and labels; 1.2
 added recall explanations and `/metrics`; 1.3 added policies; 1.4 the write pipeline: `wait`,
 `include_candidates`, exact recall, `degraded` and the `unavailable` code; 1.5 memory types:
-session working memory, scope inheritance and preferences, promotion and grants). The machine-readable contract is the OpenAPI 3.1 document at
+session working memory, scope inheritance and preferences, promotion and grants; 1.6 ranking and
+packing: `render_format`, the `duplicate` exclusion reason, score features in explanations, and
+the token budget as a hard cap). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -291,8 +293,9 @@ A write the intake queue can't take (the database is down) is refused with `503 
 | `tags` | string[] | any | records with at least one of them |
 | `scope` | object | none | see [Scopes](#conventions) |
 | `as_of` | time | now | "what did we know then": filters validity and event time, and finds versions superseded since |
-| `token_budget` | int | none | stop adding hits once about this many tokens are returned (the first hit is always kept) |
+| `token_budget` | int | none | a hard cap, in approximate tokens (4 bytes each), on the content of the returned memories and on the `rendered` block: a memory that doesn't fit is left out and smaller ones below it may still be returned. See [Packing](#packing-duplicates-and-the-token-budget) |
 | `render` | bool | false | also return the hits as a text block for a prompt (`rendered`) |
+| `render_format` | `plain` \| `markdown` \| `xml` | `plain` | the form of the block; naming one also asks for it |
 | `reference_time` | time | `as_of`, else now | the "now" used to read "two weeks ago" in the query; filters nothing |
 | `mode` | `hybrid` \| `dense` \| `keyword` | `hybrid` | |
 | `rerank` | bool | config | cross-encoder rerank (+~0.9 s on CPU) |
@@ -350,9 +353,17 @@ Response, with the second hit shortened:
 Every response has a `recall_id`: the key of its [explanation](#get-v1recallsidexplanation-why-a-recall-returned-what-it-did).
 
 The response is model-neutral (INT-04). `hits` is structured JSON with each record's id and
-provenance. `rendered` is the same hits as plain text, one line per memory with its id, kind,
+provenance. `rendered` is the same hits as text, one entry per memory with its id, kind,
 date and tags, to paste into any model's prompt as it is; a candidate returned with
-`include_candidates` says so on its line (`unconfirmed plan`). MCP tools return both.
+`include_candidates` says so on its entry (`unconfirmed plan`). MCP tools return both.
+
+`render_format` picks the form of the block:
+
+| `render_format` | The block |
+|---|---|
+| `plain` (default) | `N memories of <subject> (most relevant first):` then `- [id] (kind, date #tags) text` per memory |
+| `markdown` | a `## Memories of <subject>` heading and a numbered list: `1. **kind** · date · `` `id` `` ` then the text |
+| `xml` | `<memories subject="…" count="N">` with one `<memory id="…" kind="…" date="…" tags="…">text</memory>` per memory; `&`, `<`, `>` and `"` in the text are escaped, so a memory can't close its own element |
 
 How to read a hit:
 
@@ -399,8 +410,49 @@ flowchart TB
     K2 & V2 --> F2[RRF]
     F1 -->|weight 1.0| F[fuse probes]
     F2 -->|"0.15 each, +1.0 for its top 3"| F
-    F --> RR[optional rerank] --> B[token budget] --> H[hits + rendered]
+    F --> RR[optional rerank] --> SC[score: policy weights] --> DD[near-duplicates out] --> B[token budget] --> H[hits + rendered]
 ```
+
+#### Ranking: four features, weights from the policy
+
+After fusion (and reranking, when it runs) each candidate gets its final score (HYB-05):
+
+```text
+score = relevance_weight × relevance + recency_weight × recency
+      + confidence_weight × confidence + validity_weight × validity
+```
+
+| Feature | Value |
+|---|---|
+| relevance | the fused score (or the reranker's) |
+| recency | `1 / (1 + age_days / recency_half_life_days)`, from the recall's time (`as_of`, or now) to the memory's event time |
+| confidence | the record's `confidence`, 0 to 1 |
+| validity | 1 for a committed record valid now; 0.5 for a candidate (`include_candidates`); 0 for a version that an `as_of` recall found and that is no longer valid today |
+
+The weights come from the tenant's compiled policy (`[ranking]` in a [policy spec](policy.md),
+defaults from `[memory]` in the [configuration](configuration.md#memory)). The defaults are 1, 0,
+0, 0: relevance alone. Fused scores are small (about 0.03 for a first place), so a weight of 0.05
+on another feature already reorders close results. The recall's explanation lists each returned
+record's four features.
+
+#### Packing: duplicates and the token budget
+
+- **Near-duplicates are left out** (ECON-03). Of memories that say the same thing, only the
+  best-ranked is returned: two memories are near-duplicates when their vectors are at least
+  `dedup_cosine` similar (0.97) or their texts share at least `dedup_overlap` of their three-word
+  shingles (0.9). The places this frees are filled from the candidates ranked just below. A
+  committed record is preferred to a candidate that says the same; an exact structured match is
+  never dropped; two episodic records of different sessions are different events and both stay.
+  `dedup = false` in the policy turns it off.
+- **`token_budget` is a hard cap** (PERF-06). Tokens are estimated at 4 bytes each. Memories are
+  taken in rank order while their content fits; one that doesn't fit is passed over, and smaller
+  ones below it may still fit. With `render` or `render_format`, the block as a whole also stays
+  within the budget: the lowest-ranked memories are dropped until it does. A budget too small for
+  any memory returns no hits, and one too small even for the block's "no memories" line returns
+  an empty `rendered`. Before 1.6 the first hit was returned even when it alone exceeded the
+  budget ([what changed](api-stability.md#recorded-exception-the-token-budget-is-a-hard-cap-16)).
+
+Both cuts are listed in the recall's explanation, with the reasons `duplicate` and `budget`.
 
 **Recipes**
 
@@ -437,6 +489,7 @@ The explanation of a recall (GOV-04), by its `recall_id`. It holds:
 | `label` | a label denied to the caller (`detail`: which) |
 | `validity` | not valid at the recall's time (`detail`: `valid_to`, `expires_at` or `occurred_at` and the time) |
 | `filter` | outside the request's kinds or tags |
+| `duplicate` | a near-duplicate of a better-ranked memory in the same recall (`detail`: the measure, the other record's id and the threshold) |
 | `budget` | cut by `token_budget` |
 | `rank` | below the `k` returned |
 
@@ -445,10 +498,11 @@ The explanation of a recall (GOV-04), by its `recall_id`. It holds:
             "policy_version": "gov-6efbc1d9b265", "query": "renewal pricing", "k": 4, "token_budget": 150,
             "denied_labels": ["hr"], "scope": {"agent": "agent:support-bot", "user": "user:ana", "…": "…"},
             "returned": [{"id": "01a19b40-…", "rank": 1, "score": 0.0328, "keyword_rank": 1, "vector_rank": 1,
-                          "similarity": 0.81, "tokens": 112}],
+                          "similarity": 0.81, "tokens": 112,
+                          "features": {"relevance": 0.0328, "recency": 0.93, "confidence": 1.0, "validity": 1.0}}],
             "stages": {"embed_ms": 21.4, "search_ms": 3.9, "rerank_ms": 0.0, "total_ms": 25.8, "statements": 1, "probes": 1}},
  "excluded": [{"id": "01a19b40-…", "reason": "validity", "detail": "valid_to 2026-11-01T08:00:00+00:00 is not after 2026-11-02T08:00:00+00:00"},
-              {"id": "01a19b40-…", "reason": "budget", "detail": "~110 tokens over the 150-token budget (112 used)"}],
+              {"id": "01a19b40-…", "reason": "budget", "detail": "~110 tokens do not fit the 150-token budget (112 used)"}],
  "hidden": {"label": 3, "access": 1, "status": 1},
  "replayed_at": "2026-11-02T08:00:05Z"}
 ```
@@ -820,7 +874,7 @@ also accepted. Notifications (messages without an `id`) get `202 Accepted` and n
 
 | Tool | Arguments (a subset of the REST body) | Returns (`structuredContent`) |
 |---|---|---|
-| `recall` | `query`\*, `subject`, `k` (1–50), `kinds`, `tags`, `scope`, `as_of`, `token_budget` | `RecallResult` |
+| `recall` | `query`\*, `subject`, `k` (1–50), `kinds`, `tags`, `scope`, `as_of`, `token_budget`, `render_format` | `RecallResult` |
 | `remember` | `content`\*, `kind`, `subject`, `tags`, `occurred_at`, `valid_to`, `expires_at`, `labels`, `scope`, `request_key` | `RememberResult` |
 | `revise` | `id`\*, `content`\*, `kind`, `tags`, `valid_to`, `request_key` | `RememberResult` |
 | `forget` | one of `id`, `subject`, `user`, `agent`, `source`; `dry_run`, `request_key` | `ForgetResult` |

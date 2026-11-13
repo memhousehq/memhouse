@@ -165,7 +165,18 @@ mod tests {
     }
 
     fn hit(m: &Memory, score: f32) -> Hit {
-        Hit { memory: m.clone(), score, keyword_rank: Some(1), vector_rank: None, similarity: None, rerank_score: None, exact: false, working: false }
+        Hit {
+            memory: m.clone(),
+            score,
+            keyword_rank: Some(1),
+            vector_rank: None,
+            similarity: None,
+            rerank_score: None,
+            exact: false,
+            working: false,
+            embedding: None,
+            features: None,
+        }
     }
 
     /// MEM-04: user over team over org, whatever order they were written in.

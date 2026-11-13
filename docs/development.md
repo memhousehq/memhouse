@@ -56,7 +56,7 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (53 checks); the API, identity, intake, schema, telemetry, policy and memory-type checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (56 checks); the API, identity, intake, schema, telemetry, policy, memory-type and packing checks are in `*_checks.rs` next to it |
 
 ## Build
 
@@ -179,11 +179,12 @@ sequenceDiagram
         E->>S: SearchQuery {windows}
     end
     S-->>E: fused hits per probe
-    E->>E: fuse probes (window_weight, window_top), recency
+    E->>E: fuse probes (window_weight, window_top)
     opt rerank enabled
         E->>R: rerank(query, top candidates)
     end
-    E->>E: token budget, optional audit (audit_reads)
+    E->>E: score by policy weights, drop near-duplicates, token budget, render (pack.rs)
+    E->>E: optional audit (audit_reads)
     E-->>H: RecallResult {hits, timings, plan}
 ```
 

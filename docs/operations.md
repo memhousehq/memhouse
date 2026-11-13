@@ -608,7 +608,7 @@ any `memhouse_recall_degraded_total`; `memhouse_enrich_queue_lag_seconds > 600`;
 **Recall explanations (GOV-04).** Every recall response has a `recall_id`, and
 `GET /v1/recalls/{id}/explanation` says why it returned what it did. You get the results with
 their ranking signals, and every other record that matched the query with the reason it was left
-out: status, access, label, validity, filter, budget or rank. See the
+out: status, access, label, validity, filter, duplicate, budget or rank. See the
 [API reference](api.md#get-v1recallsidexplanation-why-a-recall-returned-what-it-did). The records
 are kept in `mh_recall` for `[telemetry] explanation_retention_days` (30 by default; the hourly
 retention pass purges older ones). They are erased with their subject, their tenant and, for

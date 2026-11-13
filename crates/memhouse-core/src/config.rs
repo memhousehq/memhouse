@@ -343,6 +343,22 @@ pub struct MemoryConfig {
     /// Recency bonus weight (0 disables). Applied as w / (1 + age_days / half_life_days).
     pub recency_weight: f32,
     pub recency_half_life_days: f32,
+    /// Weight of the relevance score (keyword and vector ranks fused, or the reranker's score)
+    /// in the final ranking score (HYB-05). 0 ranks by the other features alone.
+    pub relevance_weight: f32,
+    /// Weight of a record's confidence (0 to 1) in the final ranking score (0 disables).
+    pub confidence_weight: f32,
+    /// Weight of a record's validity in the final ranking score (0 disables): 1 for a confirmed
+    /// record that is valid now, 0.5 for a candidate, 0 for one superseded or expired since the
+    /// recall's `as_of` time.
+    pub validity_weight: f32,
+    /// Leave near-duplicates out of a recall, keeping the best-ranked of each group (ECON-03).
+    pub recall_dedup: bool,
+    /// Two returned memories whose vectors are at least this similar (cosine) are near-duplicates.
+    pub recall_dedup_cosine: f32,
+    /// Two returned memories whose texts share at least this part of their three-word shingles
+    /// (Jaccard overlap) are near-duplicates.
+    pub recall_dedup_overlap: f32,
     /// Characters of assistant text kept when indexing an episodic round.
     pub assistant_chars: usize,
     /// Read time expressions ("two weeks ago", "in March") and comparisons ("A or B") from the
@@ -387,6 +403,12 @@ impl Default for MemoryConfig {
             dedup_threshold: 0.97,
             recency_weight: 0.0,
             recency_half_life_days: 90.0,
+            relevance_weight: 1.0,
+            confidence_weight: 0.0,
+            validity_weight: 0.0,
+            recall_dedup: true,
+            recall_dedup_cosine: 0.97,
+            recall_dedup_overlap: 0.9,
             assistant_chars: 1200,
             query_analysis: true,
             window_weight: 0.15,
