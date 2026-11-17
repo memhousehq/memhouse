@@ -1,0 +1,367 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Croatian language pack. Draft: it passes its test set (languages/tests/hr.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "hr"
+name = "Croatian"
+status = "draft"
+text_search = "simple"
+
+[detect]
+words = [
+  "i", "u", "je", "se", "na", "da", "su", "za", "od", "s", "sa", "a", "o", "koji", "koja", "koje",
+  "što", "to", "ne", "nije", "kao", "ali", "ili", "iz", "do", "po", "će", "bi", "sam", "smo", "ste",
+  "bio", "bila", "bilo", "biti", "ima", "još", "već", "samo", "kako", "kada", "gdje", "tko", "zašto",
+  "on", "ona", "oni", "mi", "vi", "ja", "ti", "moj", "moja", "njegov", "njezin", "naš", "ovaj", "ova",
+  "ovo", "taj", "li", "pri", "kod", "nakon", "prije", "između", "jer", "ako", "nego", "korisnik",
+]
+letters = "čćžšđ"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "možda",
+  "vjerojatno",
+  "najvjerojatnije",
+  "valjda",
+  "eventualno",
+  "po svoj prilici",
+  "po svemu sudeći",
+  "moguće(?: je)? da",
+  "postoji mogućnost",
+  "(?:mogao|mogla|moglo|mogli|mogle) bi(?:h|smo|ste)?",
+  "bi(?:h|smo|ste)? (?:\\w+ )?(?:mogao|mogla|moglo|mogli|mogle)",
+  "misl(?:im|iš|i|imo|ite|e) da",
+  "mislim",
+  "vjerujem",
+  "pretpostavlja(?:m|mo)",
+  "sumnjam",
+  "pitam se",
+  "čini (?:mi |nam |joj |mu )?se",
+  "izgleda da",
+  "nisam sigur(?:an|na)",
+  "nismo sigurni",
+  "nije sigurno",
+  "priča se",
+  "šuška se",
+  "govori se",
+  "glasin(?:a|e|u|ama)",
+  "navodno",
+  "tobože",
+  "hipotetski",
+  "teoretski",
+  "u teoriji",
+  "razmišlja(?:m|š|mo|te|ju)? (?:o|da)",
+  "razmatra(?:m|š|mo|te|ju)?",
+  "dvoumi(?:m|š|mo|te)? se",
+  "se dvoum(?:i|im|iš|imo|ite|e)",
+  "(?:kad|kada|ako) bi(?:h|smo|ste)?",
+]
+# A change to something stored before.
+correction = [
+  "zapravo",
+  "ustvari",
+  "u stvari",
+  "ispravak",
+  "ispravka",
+  "da ispravim",
+  "pogriješi(?:o|la|li|le)",
+  "bi(?:o|la|li) (?:sam |smo )?u krivu",
+  "više (?:ne|nije|nisu|nisam|nismo|nema|nemaju|nemam|nemamo)",
+  "(?:ne|nije|nisu|nema|nemaju) (?:\\w+ )?više",
+  "umjesto",
+  "namjesto",
+  "promijeni(?:o|la|lo|li|le)",
+  "(?:pre|od|do)seli(?:o|la|lo|li|le)",
+  "prebaci(?:o|la|lo|li|le) (?:se )?(?:na|u)",
+  "preš(?:ao|la|lo|li|le) (?:je |su )?(?:na|u|iz|s|sa|k|kod)",
+  "sada? (?:ima|imaju|živi|žive|radi|rade|stanuje|stanuju|koristi|koriste|je|su|vozi|voze|preferira|preferiraju)",
+  "(?:ima|imaju|živi|žive|radi|rade|stanuje|stanuju|koristi|koriste|je|su) sada?",
+  "odnedavno",
+  "ažurira(?:n|na|no|ni|ne|o|la|li)",
+  "zamijenjen(?:a|o|i|e)?",
+  "zamijeni(?:o|la|lo|li|le)",
+  "nekada?",
+  "nekoć",
+  "svojedobno",
+  "(?:prije|ranije) (?:je |su )?(?:živi|živje|radi|ima|bi|koristi|stanova|posjedova|voli|volje)(?:o|la|lo|li|le)",
+]
+# An intention not yet carried out. The future auxiliary (ću, ćeš, će …) is a marker: Croatian
+# has no other use for it.
+plan = [
+  "planira(?:m|š|mo|te|ju|o|la|li|le)?",
+  "u planu",
+  "plan je",
+  "namjerava(?:m|š|mo|te|ju)?",
+  "ima(?:m|š|mo|te|ju)? namjeru",
+  "kani(?:m|š|mo|te)?",
+  "ću",
+  "ćeš",
+  "će",
+  "ćemo",
+  "ćete",
+  "žel(?:im|iš|i|imo|ite|e)",
+  "hoć(?:u|eš|e|emo|ete)",
+  "(?:volio|voljela|voljeli|voljele|htio|htjela|htjeli|htjele|želio|željela|željeli|željele) bi(?:h|smo|ste)?",
+  "bi(?:h|smo|ste)? (?:volio|voljela|voljeli|voljele|htio|htjela|htjeli|htjele|želio|željela|željeli|željele)",
+  "nada(?:m|š|mo|te|ju)? se",
+  "se nada(?:m|š|mo|te|ju)?",
+  "sprema(?:m|š|mo|te|ju)? se",
+  "se sprema(?:m|š|mo|te|ju)?",
+  "cilj je",
+  "(?:sljedeć|iduć|nadolazeć)(?:i|e|a|u|eg|ega|em|emu|oj|ih|im) (?:tjed(?:an|na|nu)|mjesec(?:a|u)?|godin(?:a|e|u|i)|tromjesečj(?:e|a|u)|kvartal(?:a|u)?|ponedjelj(?:ak|ka|ku)|utor(?:ak|ka|ku)|srijed(?:a|e|u|i)|četvrt(?:ak|ka|ku)|pet(?:ak|ka|ku)|subot(?:a|e|u|i)|nedjelj(?:a|e|u|i)|vikend(?:a|u)?|proljeć(?:e|a|u)|ljet(?:o|a|u)|jesen(?:i)?|zim(?:a|e|u|i))",
+  "dogodine",
+  "sutra",
+  "prekosutra",
+  "uskoro",
+  "kasnije (?:ovaj|ovog|ovoga|ove) (?:tjedan|tjedna|mjesec|mjeseca|godine)",
+  "ne zaboravi(?:te)?",
+  "sjeti(?:te)? se",
+  "(?:još )?(?:mora|treba)(?:m|š|mo|te|ju)? još",
+  "još (?:mora|treba)(?:m|š|mo|te|ju)?",
+]
+preference = [
+  "preferira(?:m|š|mo|te|ju)?",
+  "radije",
+  "najradije",
+  "rado",
+  "vol(?:im|iš|i|imo|ite|e)",
+  "obožava(?:m|š|mo|te|ju)?",
+  "uživa(?:m|š|mo|te|ju)? u",
+  "mrz(?:im|iš|i|imo|ite|e)",
+  "ne podnos(?:im|iš|i|imo|ite|e)",
+  "ne (?:može|mogu|možemo) (?:podnijeti|smisliti)",
+  "ne voli",
+  "omiljen(?:i|a|o|e|u|og|oga|om|oj|ih|im)?",
+  "najdraž(?:i|a|e|u|eg|ega|em|oj|ih|im)",
+  "draž(?:i|a|e|u) (?:mu|joj|im|mi|nam) (?:je|su)",
+  "sviđa(?:ju)? (?:mu|joj|im|mi|nam) se",
+  "(?:mu|joj|im|mi|nam) se sviđa(?:ju)?",
+  "sklon(?:a|i|e)?",
+  "alergič(?:an|na|no|ni|ne) na",
+]
+# Only at the start of the statement.
+instruction_start = [
+  "uvijek", "nikada?", "nemoj(?:te|mo)?", "pobrini(?:te)? se", "provjeri(?:te)?", "pazi(?:te)?",
+  "obavezno", "obvezno", "izbjegavaj(?:te)?", "koristi(?:te)?", "upotrijebi(?:te)?", "pokreni(?:te)?",
+  "molim",
+]
+instruction = [
+  "uvijek (?:mora|moraju|treba|trebaju|morate|moraš|trebate|trebaš)",
+  "(?:mora|moraju|treba|trebaju|morate|moraš|trebate|trebaš) uvijek",
+  "nikada? ne (?:smije|smiju|smiješ|smijete)",
+  "ne (?:smije|smiju|smiješ|smijete) nikada?",
+  "ni u kojem slučaju",
+]
+# Past events: a dated reference or a completed action (the past participle in -o, -la, -li …).
+event = [
+  "jučer",
+  "prekjučer",
+  "sinoć",
+  "lani",
+  "preklani",
+  "prošl(?:i|e|a|u|og|oga|oj|om|ih) (?:tjed(?:an|na|nu)|mjesec(?:a|u)?|godin(?:a|e|u|i)|noć(?:i)?|vikend(?:a|u)?|ponedjelj(?:ak|ka|ku)|utor(?:ak|ka|ku)|srijed(?:a|e|u|i)|četvrt(?:ak|ka|ku)|pet(?:ak|ka|ku)|subot(?:a|e|u|i)|nedjelj(?:a|e|u|i)|proljeć(?:e|a|u)|ljet(?:o|a|u)|jesen(?:i)?|zim(?:a|e|u|i))",
+  "prije \\d+ (?:dan(?:a|e)?|tjed(?:an|na|ana)|mjesec(?:a|i)?|godin(?:a|e|u))",
+  "prije (?:jedan|jednu|dva|dvije|tri|četiri|pet|šest|nekoliko|par) (?:dan(?:a|e)?|tjed(?:an|na|ana)|mjesec(?:a|i)?|godin(?:a|e|u))",
+  "prije (?:tjedan|mjesec|godinu)(?: dana)?",
+  "(?:kupi|proda|posjeti|udomi|posvoji|nabavi)(?:o|la|lo|li|le)",
+  "(?:oti|i|sti|doš|pro)š(?:ao|la|lo|li|le)",
+  "(?:poče|započe|uze|sre|susre)(?:o|la|lo|li|le)",
+  "(?:završi|dovrši|potpisa|pridruži|učlani|napusti|upozna|sudjelova|prisustvova|diplomira|magistrira|doktorira)(?:o|la|lo|li|le)",
+  "(?:oženi|vjenča|zaruči|razve)(?:o|la|lo|li|le)",
+  "udala",
+  "(?:primi|dobi|lansira|pokrenu|isporuči|objavi|obnovi|produži|produlji|otkaza|plati|rezervira|naruči|vrati|putova|otputova)(?:o|la|lo|li|le)",
+  "(?:pobijedi|osvoji|izgubi|napravi|proslavi|zaposli|otpusti|umirovi|nadogradi|rodi|preminu)(?:o|la|lo|li|le)",
+  "rođen(?:a|o|i|e)?",
+  "umr(?:o|la|lo|li|le)",
+  "da(?:o|la|li|le) otkaz",
+]
+
+[relations]
+relationship = [
+  "\\b(?:je|su|bio je|bila je|postao je|postala je) (?:sada? )?(?:(?:njegov|njezin|njihov|naš|moj)\\w{0,2} )?(?:nov[ia] )?(?:menadžer(?:ica)?|šef(?:ica)?|voditelj(?:ica)?|kolega|kolegica|suprug(?:a)?|žena|muž|partner(?:ica)?|djevojka|dečko|brat|sestra|majka|otac|mama|tata|sin|kći|kćer|prijatelj(?:ica)?|rođak(?:inja)?|ujak|stric|teta|susjed(?:a)?|mentor(?:ica)?|kupac|klijent(?:ica)?|dobavljač|vlasni(?:k|ca)|osnivač(?:ica)?|direktor(?:ica)?|sponzor|kontakt) (?:od |u |za |kod |tvrtke |(?-i:\\p{Lu}))",
+  "\\b(?:podređen(?:a)? je|odgovara izravno|radi za|radi sa?|u braku (?:je )?sa?|oženjen (?:je )?(?:sa?|za)|udana (?:je )?za|zaručen(?:a)? (?:je )?(?:sa?|za)|u rodu (?:je )?sa?|u srodstvu (?:je )?sa?)\\b",
+]
+people = [
+  "sestra", "sestre", "sestri", "sestru", "brat", "brata", "bratu", "majka", "majke", "majci", "mama",
+  "otac", "oca", "ocu", "tata", "roditelj", "roditelji", "žena", "supruga", "muž", "suprug",
+  "partner", "partnerica", "sin", "kći", "kćer", "dijete", "djeca", "prijatelj", "prijateljica",
+  "prijatelji", "kolega", "kolegica", "šef", "šefica", "tim", "susjed", "susjeda", "rođak", "ujak",
+  "stric", "teta", "baka", "djed", "djevojka", "dečko", "pas", "psa", "mačka", "mačke", "ljubimac",
+]
+
+[values]
+stop = [
+  "korisnik", "korisnika", "korisniku", "korisnica", "korisnice", "korisnikov", "korisnikova",
+  "korisnikovo", "koji", "koja", "koje", "ovaj", "ovog", "ovoj", "imaju", "imao", "imala", "sada",
+  "njegov", "njegova", "njezin", "njezina", "njihov", "njihova", "tamo", "ovdje", "bili", "bila",
+  "bilo", "biti", "nije", "nisu", "jest", "jesu", "preko", "nego", "onda", "kada", "kako", "zato",
+  "također", "samo", "vrlo", "jako", "neki", "neke", "neka", "više", "drugi", "druga", "druge",
+  "svoj", "svoja", "svoje", "svoju", "zapravo", "ustvari", "ispravak", "umjesto", "promijenio",
+  "promijenila", "preselio", "preselila", "prešao", "prešla", "ažurirano", "nekad", "nekada",
+  "prije", "ranije", "trenutno", "jedan", "jedna", "jedno", "između",
+]
+value_stop = [
+  "korisnik", "korisnika", "korisniku", "korisnica", "korisnikov", "korisnikova", "njegov",
+  "njezin", "njihov", "on", "ona", "oni", "to", "taj", "ta", "ovaj", "ova", "ovo", "s", "sa", "od",
+  "iz", "ima", "imaju", "imao", "imala", "bio", "bila", "bilo", "bili", "je", "su", "se", "dobio",
+  "dobila", "sada", "sad", "trenutno", "nedavno", "ukupno", "puta", "put", "po", "za", "i", "a",
+  "oko", "otprilike", "približno", "gotovo", "skoro", "preko", "ispod", "više", "nego", "također",
+  "samo", "još", "već", "novi", "nova", "novo", "svoj", "svoja", "svoje", "naš", "vaš", "u", "na",
+  "o", "do", "pri", "kod", "k", "li", "da", "ne",
+]
+identifier = [
+  "račun", "računa", "računu", "računom", "faktura", "fakture", "fakturu", "fakturom", "narudžba",
+  "narudžbe", "narudžbu", "narudžbi", "narudžbom", "tiket", "tiketa", "tiketu", "tiketom", "zahtjev",
+  "zahtjeva", "zahtjevu", "predmet", "predmeta", "slučaj", "slučaja", "id", "br", "broj", "broja",
+  "brojem", "ref", "referenca", "reference", "verzija", "verzije", "verziju", "soba", "sobe", "sobu",
+  "sobi", "let", "leta", "letu", "stol", "stola", "sjedalo", "mjesto", "izlaz", "peron", "kolosijek",
+  "ruta", "rute", "autobus", "tramvaj", "linija", "linije", "liniju", "model", "modela", "serijski",
+  "artikl", "artikla", "stavka", "stavke", "sku", "problem", "bug", "greška", "greške", "stan",
+  "stana", "zgrada", "zgrade", "kat", "kata", "kod", "koda", "šifra", "šifre", "šifru", "kućni",
+]
+quantity = [
+  "nula", "jedan", "jedna", "jedno", "dva", "dvije", "tri", "četiri", "pet", "šest", "sedam", "osam",
+  "devet", "deset", "jedanaest", "dvanaest", "trinaest", "četrnaest", "petnaest", "šesnaest",
+  "sedamnaest", "osamnaest", "devetnaest", "dvadeset", "trideset", "četrdeset", "pedeset",
+  "šezdeset", "sedamdeset", "osamdeset", "devedeset", "sto", "stotinu", "tisuću", "tisuća",
+  "milijun", "jednom", "dvaput", "triput", "pola", "tucet", "dvostruko", "trostruko", "nekoliko",
+  "par",
+]
+dates = [
+  "\\b\\d{1,2}\\.\\s*(?:siječ|velj|ožuj|trav|svib|lip|srp|kolovoz|ruj|listopad|studen|prosin)[a-zčćžšđ]*",
+  "\\b\\d{1,2}\\.\\s?\\d{1,2}\\.(?:\\s?\\d{2,4}\\.?)?",
+]
+
+[values.numbers]
+nula = 0
+jedan = 1
+jedna = 1
+jedno = 1
+jednom = 1
+dva = 2
+dvije = 2
+dvaput = 2
+dvostruko = 2
+tri = 3
+triput = 3
+trostruko = 3
+"četiri" = 4
+pet = 5
+"šest" = 6
+sedam = 7
+osam = 8
+devet = 9
+deset = 10
+jedanaest = 11
+dvanaest = 12
+tucet = 12
+dvadeset = 20
+trideset = 30
+pedeset = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# "15h", "90-ih", "3-eg"
+number_suffixes = ["h", "-?ih", "-?og", "-?eg", "-?om", "-?oj", "-?im"]
+# The case forms a question uses: "u subotu", "prošle subote". The instrumental ("subotom", on
+# Saturdays) is habitual, not a date, and is left out.
+weekdays = [
+  ["ponedjelj(?:ak|ka|ku)"], ["utor(?:ak|ka|ku)"], ["srijed(?:a|e|u|i)"], ["četvrt(?:ak|ka|ku)"],
+  ["pet(?:ak|ka|ku)"], ["subot(?:a|e|u|i)"], ["nedjelj(?:a|e|u|i)"],
+]
+# The Croatian month names, in the nominative, genitive ("3. lipnja") and locative ("u lipnju").
+months = [
+  ["siječ(?:anj|nja|nju|njem)"], ["veljač(?:a|e|i|u|om)"], ["ožuj(?:ak|ka|ku|kom)"],
+  ["trav(?:anj|nja|nju|njem)"], ["svib(?:anj|nja|nju|njem)"], ["lip(?:anj|nja|nju|njem)"],
+  ["srp(?:anj|nja|nju|njem)"], ["kolovoz(?:a|u|om)?"], ["ruj(?:an|na|nu|nom)"],
+  ["listopad(?:a|u|om)?"], ["studen(?:i|og|oga|om|ome|im)"], ["prosin(?:ac|ca|cu|cem)"],
+]
+month_names = [
+  "siječanj", "siječnja", "siječnju", "veljača", "veljače", "veljači", "veljaču", "ožujak", "ožujka",
+  "ožujku", "travanj", "travnja", "travnju", "svibanj", "svibnja", "svibnju", "lipanj", "lipnja",
+  "lipnju", "srpanj", "srpnja", "srpnju", "kolovoz", "kolovoza", "kolovozu", "rujan", "rujna",
+  "rujnu", "listopad", "listopada", "listopadu", "studeni", "studenog", "studenoga", "studenom",
+  "prosinac", "prosinca", "prosincu",
+]
+# "prije dva tjedna"
+ago = ["prije\\s+{num}\\s+{unit}"]
+# "u posljednja tri mjeseca", "u posljednjih mjesec dana", "prošli tjedan"; "prije tjedan dana"
+# (no number) is read as the week up to now.
+past = [
+  "(?:prošl|protekl|posljednj|zadnj)\\w{1,3}\\s+(?:{num}\\s+)?{unit}",
+  "prije\\s+{unit}\\s+dana",
+]
+# "prošli mjesec" and "prošle godine" are the previous calendar month and year.
+calendar = ["^prošl"]
+last_weekday = ["(?:prošl\\w{1,3}|protekl\\w{1,3}|ov(?:aj|og|oga|e|u|a)|u|na)\\s+{weekday}"]
+strictly_before = ["^(?:prošl|protekl)"]
+last_weekend = ["(?:prošl|protekl)\\w{1,3}\\s+vikend(?:a|u)?"]
+yesterday = ["jučer"]
+this = ["ov(?:aj|og|oga|e|u|om|oj|a)\\s+{unit}"]
+# "u veljači", "3. lipnja"
+in_month = ["(?:{day}\\.\\s*)?{month}"]
+
+[time.numbers]
+jedan = 1
+jedna = 1
+jedno = 1
+jednu = 1
+dva = 2
+dvije = 2
+par = 2
+tri = 3
+nekoliko = 3
+"četiri" = 4
+pet = 5
+"šest" = 6
+sedam = 7
+osam = 8
+devet = 9
+deset = 10
+jedanaest = 11
+dvanaest = 12
+
+[time.units]
+day = ["dan(?:a|e|i|u|ima)?"]
+week = ["tjed(?:an|na|ana|nu|ne|ni|nima)", "sedmic(?:a|e|u|i)"]
+month = ["mjesec(?:a|i|u|e|ima)?"]
+year = ["godin(?:a|e|u|i|ama)"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["ili"]
+or_not = ["ili ne"]
+between = ["između\\s+(.+?)\\s+i\\s+(.+?)"]
+clause = ["kada?", "prije nego(?: što)?", "nakon što", "otkako", "otkada?", "dok"]
+lead = [
+  "koj(?:i|a|e|eg|ega|em|u|oj|ih|im|om)", "što", "šta", "tko", "koga", "kome", "komu", "čij(?:i|a|e|u|eg|em|oj|ih)",
+  "kada?", "gdje", "kamo", "kuda", "odakle",
+  "koliko\\s+(?:dugo|često|puta)?",
+  "kako", "kakav", "kakva", "kakvo", "je li", "jesam li", "jesu li", "jesmo li", "da li", "sam", "si",
+  "je", "su", "smo",
+]
+article = [
+  "moj(?:a|e|u|eg|em|oj|ih|im)?", "naš(?:a|e|u|eg|em|oj|ih|im)?", "taj", "ta", "to", "te", "tog", "tom",
+  "tu", "onaj", "ona", "ono", "one",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:zanemari(?:te|ti)?|ignoriraj(?:te)?|ignorirati|zaboravi(?:te|ti)?|ne obaziri(?:te)? se na|odbaci(?:te|ti)?|poništi(?:te|ti)?|zaobiđi(?:te)?|prekrši(?:te|ti)?)\\b[^.\\n]{0,40}\\b(?:prethodn\\w{1,3}|ranij\\w{1,3}|prijašnj\\w{1,3}|dosadašnj\\w{1,3}|gornj\\w{1,3}|sv[eaiu]|svih|svoj\\w{0,3}|tvoj\\w{0,3}|vaš\\w{0,3})\\b[^.\\n]{0,25}\\b(?:uput\\w{1,4}|instrukcij\\w{1,3}|naredb\\w{1,3}|pravil\\w{1,3}|smjernic\\w{1,3}|prompt\\w{0,3})",
+]
+role_hijack = [
+  "\\b(?:(?:od sada?|odsada?|ubuduće)(?: pa)?(?: nadalje)?,? (?:ti |vi )?(?:ćeš|ćete|moraš|morate|odgovaraj(?:te)?|budi(?:te)?|ponašaj(?:te)? se)\\b|ti si (?:sada?|odsada?|od sada?)\\b|vi ste (?:sada?|odsada?|od sada?)\\b|(?:ponašaj(?:te)? se|se ponašaj(?:te)?|djeluj(?:te)?) kao (?:\\w+ )?(?:neograničen|necenzuriran)\\w{0,3}|(?:pretvaraj(?:te)? se|glumi(?:te)?) da (?:nemaš|nemate) (?:nikakv\\w{1,3} )?(?:pravila|ograničenja))",
+]
+system_prompt = [
+  "\\b(?:otkrij(?:te)?|pokaži(?:te)?|prikaži(?:te)?|ispiši(?:te)?|napiši(?:te)?|odaj(?:te)?|reci(?:te)?|daj(?:te)?|pošalji(?:te)?|objavi(?:te)?)\\b[^.\\n]{0,40}\\b(?:(?:sistemsk|sustavsk)\\w{1,3} (?:prompt\\w{0,2}|uput\\w{1,3}|poruk\\w{1,3})|system prompt\\w{0,2}|skriven\\w{1,3} uput\\w{1,3}|poruk\\w{1,3} razvojnog programera)",
+]
+memory_directive = [
+  "\\b(?:uvijek|svaki put|kada? god|čim)\\b[^.\\n]{0,60}\\b(?:pošalji(?:te)?|šalji(?:te)?|proslijedi(?:te)?|prosljeđuj(?:te)?|prenesi(?:te)?|prebaci(?:te)?|učitaj(?:te)?|kopiraj(?:te)?|poslati|slati|proslijediti)\\b[^.\\n]{0,60}\\b(?:na|u|prema|za)\\b[^.\\n]{0,40}(?:https?://|@|\\bnovčanik\\w{0,2}\\b|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:pokreni(?:te)?|pokrenuti|izvrši(?:te|ti)?|pozovi(?:te)?|pozvati)\\b[^.\\n]{0,30}\\b(?:naredb\\w{1,3}|komand\\w{1,3}|alat\\w{0,3}|funkcij\\w{1,3}|skript\\w{1,3})\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

@@ -1,0 +1,331 @@
+# SPDX-License-Identifier: Apache-2.0
+# The English language pack: the default, and the reference for every other pack.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "en"
+name = "English"
+status = "stable"
+text_search = "english"
+
+[detect]
+words = [
+  "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with", "from", "by",
+  "is", "are", "was", "were", "be", "been", "has", "have", "had", "do", "does", "did", "will",
+  "would", "can", "could", "should", "not", "this", "that", "these", "those", "it", "its", "he",
+  "she", "they", "we", "you", "i", "my", "your", "his", "her", "their", "our", "what", "which",
+  "who", "when", "where", "how", "why", "there", "about", "as", "if", "than", "then", "so",
+]
+letters = ""
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# Hedges, rumours and hypotheticals. Checked first: a hedged correction must not supersede.
+speculation = [
+  "might",
+  "maybe",
+  "perhaps",
+  "possibly",
+  "probably",
+  "presumably",
+  "could be",
+  "may be",
+  "may have",
+  "might have",
+  "i think",
+  "i guess",
+  "i suspect",
+  "i wonder",
+  "wondering whether",
+  "wondering if",
+  "not sure",
+  "unsure whether",
+  "rumou?red",
+  "rumou?rs?",
+  "supposedly",
+  "allegedly",
+  "apparently",
+  "hypothetically",
+  "in theory",
+  "considering (?:whether|switching|moving|leaving|buying)",
+  "thinking (?:about|of) (?:switching|moving|leaving|buying|getting|selling)",
+  "if (?:we|i|they|he|she|you) (?:were|had|could|would)",
+]
+# A change to something stored before.
+correction = [
+  "actually",
+  "correction",
+  "to correct",
+  "i was wrong",
+  "was wrong about",
+  "no longer",
+  "not anymore",
+  "any ?more\\b",
+  "instead of",
+  "has changed",
+  "have changed",
+  "changed (?:to|from|jobs?|address|teams?|roles?|(?:her|his|their|its|my|our|the) )",
+  "switched (?:to|from|over)",
+  "moved (?:to|from|out|back|away)",
+  "relocated",
+  "now (?:lives?|living|works?|working|has|have|owns?|uses?|using|prefers?|is|are|at|in|on)",
+  "(?:is|are|was) now",
+  "updated (?:to|from)",
+  "replaced (?:by|with)",
+  "used to (?:be|live|work|have|own|use|prefer)",
+]
+# An intention not yet carried out.
+plan = [
+  "plans? to",
+  "planning to",
+  "planned to",
+  "plans? (?:a|an|the|on)",
+  "going to",
+  "gonna",
+  "intends? to",
+  "intending to",
+  "intention (?:is|was) to",
+  "will (?:be (?:going|visiting|starting|moving|traveling|travelling)|visit|start|move|travel|go|buy|sign|launch|ship|join|leave|call|send|meet|attend|try|take|get|book|renew|cancel|switch|upgrade|review|decide|finish|begin)",
+  "(?:i|we|he|she|they)'ll",
+  "wants? to",
+  "would like to",
+  "hopes? to",
+  "hoping to",
+  "aims? to",
+  "aiming to",
+  "next (?:week|month|year|quarter|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|spring|summer|autumn|fall|winter)",
+  "tomorrow",
+  "later this (?:week|month|year)",
+  "this coming",
+  "remember to",
+  "needs? to",
+  "has to",
+  "have to",
+]
+preference = [
+  "prefers?",
+  "preferred",
+  "preference",
+  "likes?",
+  "loves?",
+  "enjoys?",
+  "hates?",
+  "dislikes?",
+  "favou?rite",
+  "rather than",
+  "can'?t stand",
+  "fond of",
+  "allergic to",
+]
+# Only at the start of the statement.
+instruction_start = [
+  "always", "never", "do not", "don'?t", "make sure", "be sure", "use", "run", "avoid", "ensure",
+  "prefer",
+]
+instruction = ["should always", "must always", "should never", "must never"]
+# Past events: a dated reference or a completed action.
+event = [
+  "yesterday",
+  "last (?:week|month|year|night|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday|spring|summer|autumn|fall|winter)",
+  "\\d+ (?:days?|weeks?|months?|years?) ago",
+  "ago\\b",
+  "bought",
+  "sold",
+  "visited",
+  "went",
+  "adopted",
+  "started",
+  "finished",
+  "completed",
+  "signed",
+  "joined",
+  "left",
+  "met",
+  "attended",
+  "graduated",
+  "married",
+  "received",
+  "launched",
+  "shipped",
+  "renewed",
+  "cancell?ed",
+  "paid",
+  "booked",
+  "ordered",
+  "returned",
+  "travell?ed",
+  "won",
+  "lost",
+  "got",
+  "gave",
+  "took",
+  "made",
+  "did",
+  "had",
+  "was born",
+  "passed away",
+  "celebrated",
+  "hired",
+  "fired",
+  "quit",
+  "retired",
+  "purchased",
+  "upgraded",
+  "downgraded",
+]
+
+[relations]
+relationship = [
+  "\\b(?:is|was|are|were|became) (?:now )?(?:the |a |an |their |his |her |our |my )?(?:new )?(?:manager|boss|colleague|co-?worker|teammate|wife|husband|partner|spouse|girlfriend|boyfriend|brother|sister|mother|father|mom|dad|son|daughter|friend|cousin|uncle|aunt|neighbou?r|mentor|customer|client|vendor|supplier|owner|founder|ceo|cto|cfo|champion|sponsor|contact|account manager) (?:of|for|at|to)\\b",
+  "\\b(?:reports to|works for|works with|married to|engaged to|is related to|is managed by)\\b",
+]
+people = [
+  "sister", "brother", "mother", "mom", "father", "dad", "parent", "parents", "wife", "husband",
+  "partner", "spouse", "son", "daughter", "kid", "kids", "child", "children", "friend", "friends",
+  "colleague", "coworker", "boss", "manager", "team", "neighbor", "neighbour", "cousin", "uncle",
+  "aunt", "grandmother", "grandfather", "girlfriend", "boyfriend", "dog", "cat", "pet",
+]
+
+[values]
+stop = [
+  "the", "user", "users", "that", "this", "with", "from", "have", "has", "had", "now", "they",
+  "their", "them", "there", "were", "been", "being", "about", "into", "than", "then", "when",
+  "what", "which", "will", "would", "also", "just", "very", "some", "more", "most", "other", "only",
+  "over", "such", "your", "yours", "ours", "longer", "actually", "anymore", "instead", "changed",
+  "switched", "moved", "updated", "used", "currently",
+]
+value_stop = [
+  "the", "user", "users", "their", "they", "them", "this", "that", "with", "from", "have", "has",
+  "had", "was", "were", "been", "being", "got", "gets", "get", "now", "currently", "recently",
+  "total", "times", "time", "per", "for", "and", "about", "around", "approximately", "roughly",
+  "nearly", "almost", "over", "under", "more", "than", "into", "onto", "also", "just", "still",
+  "already", "new", "set", "its", "his", "her", "our", "your", "are", "is", "a", "an", "of", "to",
+  "in", "on", "at", "as", "by", "it",
+]
+identifier = [
+  "invoice", "order", "ticket", "case", "account", "acct", "id", "no", "number", "ref", "reference",
+  "version", "room", "flight", "table", "seat", "gate", "platform", "route", "bus", "line", "model",
+  "serial", "item", "sku", "po", "issue", "bug", "unit", "apartment", "apt", "suite", "building",
+  "floor", "zip", "code", "extension", "ext",
+]
+quantity = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+  "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+  "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+  "thousand", "million", "once", "twice", "thrice", "half", "dozen", "single", "double", "triple",
+  "several", "few",
+]
+dates = [
+  "\\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b",
+  "\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\b",
+]
+
+[values.numbers]
+zero = 0
+one = 1
+single = 1
+once = 1
+two = 2
+twice = 2
+double = 2
+three = 3
+thrice = 3
+triple = 3
+four = 4
+five = 5
+six = 6
+seven = 7
+eight = 8
+nine = 9
+ten = 10
+eleven = 11
+twelve = 12
+dozen = 12
+twenty = 20
+thirty = 30
+fifty = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = ["st", "nd", "rd", "th", "am", "pm", "s"]
+weekdays = [["monday"], ["tuesday"], ["wednesday"], ["thursday"], ["friday"], ["saturday"], ["sunday"]]
+# "may" is also a verb: it is a month only with a preposition or a day.
+months = [
+  ["january"], ["february"], ["march"], ["april"],
+  ["(?:in|during|of|since|early|mid|late|until|by|through)\\s+may", "may\\s+\\d"],
+  ["june"], ["july"], ["august"], ["september"], ["october"], ["november"], ["december"],
+]
+month_names = [
+  "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+  "november", "december",
+]
+ago = ["{num}\\s+{unit}\\s+ago"]
+past = ["(?:past|last|previous)\\s+(?:{num}\\s+)?{unit}"]
+# "last month" and "last year" are the previous calendar month and year.
+calendar = ["^last"]
+last_weekday = ["(?:last|this past|this|on)\\s+{weekday}"]
+# "this Saturday", asked on a Saturday, may mean today; "last Saturday" never does.
+strictly_before = ["^last\\s"]
+last_weekend = ["(?:last|this past) weekend"]
+yesterday = ["yesterday"]
+this = ["this\\s+{unit}"]
+in_month = ["{month}\\b(?:\\s+{day}(?:st|nd|rd|th)?\\b)?"]
+
+[time.numbers]
+a = 1
+an = 1
+one = 1
+two = 2
+"a couple of" = 2
+"couple of" = 2
+three = 3
+"a few" = 3
+few = 3
+several = 3
+four = 4
+five = 5
+six = 6
+seven = 7
+eight = 8
+nine = 9
+ten = 10
+eleven = 11
+twelve = 12
+
+[time.units]
+day = ["days?"]
+week = ["weeks?"]
+month = ["months?"]
+year = ["years?"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["or"]
+or_not = ["or not"]
+between = ["between\\s+(.+?)\\s+and\\s+(.+?)"]
+clause = ["when", "before", "after", "since", "while", "until"]
+lead = [
+  "which", "what", "who", "whom", "whose", "when", "where",
+  "how\\s+(?:many\\s+\\w+|much|long|old|often)?",
+  "did", "do", "does", "was", "were", "is", "are", "had", "have", "has",
+]
+article = ["the", "a", "an", "my", "our", "that", "those"]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines
+# it). These English phrases apply on every server, whatever languages it enables.
+[injection]
+override = [
+  "\\b(?:ignore|disregard|forget|override)\\b[^.\\n]{0,40}\\b(?:previous|prior|above|earlier|all|any|your)\\b[^.\\n]{0,25}\\b(?:instructions?|prompts?|rules?|guidelines?|directives?)",
+]
+role_hijack = [
+  "\\b(?:you are now|from now on,? you (?:are|will|must)|act as (?:an? )?(?:unrestricted|jailbroken|dan)\\b|pretend (?:that )?you have no (?:rules|restrictions))",
+]
+system_prompt = [
+  "\\b(?:reveal|print|show|output|leak)\\b[^.\\n]{0,30}\\b(?:system prompt|hidden instructions|developer message)",
+]
+memory_directive = [
+  "\\b(?:always|whenever)\\b[^.\\n]{0,60}\\b(?:send|forward|email|upload|transfer|exfiltrate)\\b[^.\\n]{0,60}\\b(?:to|at)\\b[^.\\n]{0,40}(?:https?://|@|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:run|execute|call)\\b[^.\\n]{0,20}\\b(?:the )?(?:command|tool|function)\\b[^.\\n]{0,40}\\b(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

@@ -373,6 +373,7 @@ mod tests {
             expires_at: None,
             scope: Default::default(),
             provenance: Default::default(),
+            language: None,
         };
         Hit { memory, score, keyword_rank: None, vector_rank: None, similarity: None, rerank_score: None, exact: false, working: false, embedding: None, features: None }
     }

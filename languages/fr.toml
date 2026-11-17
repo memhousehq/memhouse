@@ -1,0 +1,356 @@
+# SPDX-License-Identifier: Apache-2.0
+# The French language pack. Draft: it passes its test set (languages/tests/fr.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "fr"
+name = "French"
+status = "draft"
+text_search = "french"
+
+[detect]
+words = [
+  "le", "la", "les", "un", "une", "des", "du", "de", "et", "est", "sont", "à", "au", "aux", "en",
+  "dans", "pour", "par", "sur", "avec", "sans", "chez", "ne", "pas", "plus", "que", "qui", "où",
+  "quand", "comment", "je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "on", "ce", "cette",
+  "ces", "son", "sa", "ses", "mon", "ma", "mes", "leur", "notre", "ai", "ont", "était", "été",
+  "mais", "ou", "donc", "si", "comme", "très", "aussi", "utilisateur",
+]
+letters = "àâæçéèêëîïôœùûüÿ"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "peut-être",
+  "possiblement",
+  "éventuellement",
+  "probablement",
+  "vraisemblablement",
+  "sans doute",
+  "sûrement",
+  "pourr(?:ais|ait|aient|ions|iez)",
+  "il se peut",
+  "se pourrait",
+  "je crois",
+  "je pense",
+  "je suppose",
+  "j['’]imagine",
+  "je soupçonne",
+  "je me demande",
+  "pas (?:sûre?s?|certaine?s?)",
+  "ne sai[st] pas si",
+  "rumeurs?",
+  "il para[iî]t",
+  "para[iî]t-il",
+  "apparemment",
+  "soi-disant",
+  "prétendument",
+  "supposément",
+  "sembl(?:e|ent|ait|aient)",
+  "on dirait",
+  "hypothétiquement",
+  "théoriquement",
+  "en théorie",
+  "envisag(?:e|es|ent|eons|ez|eait|eaient|é)",
+  "song(?:e|ent|eait) à",
+  "réfléchi(?:s|t|ssent|ssons|ssait) à",
+  # "pense à acheter": thinking of doing something.
+  "pens(?:e|es|ent|ons|ait) à \\w+(?:er|ir|re)",
+  "hésit(?:e|es|ent|ons|ait) (?:à|entre)",
+  # "si" with the imperfect: a hypothesis ("si elle avait", "s'il pouvait").
+  "(?:si (?:nous|je|on|elle|elles|tu|vous) |si j['’]|s['’]ils? )(?:(?:ne|n['’]|y|en) ?)?(?:av|ét|pouv|voul|dev|fall|fais|all|ven|sav|pren|décid|chang|part|déménage|gagn|trouv|achet|vend|perd|obten|recev|quitt)ai(?:s|t|ent)",
+]
+# A change to something stored before.
+correction = [
+  "en fait",
+  "en réalité",
+  "à vrai dire",
+  "finalement",
+  "correction",
+  "rectifi(?:cation|catif|e|ons)",
+  "correctif",
+  "me suis trompée?",
+  "c['’]était faux",
+  # "ne travaille plus", "n'habite plus", "n'y travaille plus"; the word before "plus" is a verb,
+  # not an article ("n'est pas le plus cher" is a superlative).
+  "n(?:e |['’])(?:[\\w'’-]+ )?(?:[\\w'’-]{3,}|a|ai|as|es|va|y) plus",
+  "au lieu (?:de|du|des|d['’]\\w+)",
+  "à la place (?:de|du|des|d['’]\\w+)",
+  "changé(?:e|s|es)?",
+  # "est passée à l'équipe de nuit"
+  "(?:suis|es|est|sommes|êtes|sont) passée?s? (?:à|au|aux|en|dans|chez|sur|sous)",
+  "déménagé(?:e|s|es)?",
+  "emménagé(?:e|s|es)?",
+  "maintenant",
+  "désormais",
+  "dorénavant",
+  "à présent",
+  "mis(?:e|es)? à jour",
+  "remplacé(?:e|s|es)? par",
+  "(?:arrêté|cessé) (?:de|d['’]\\w+)",
+  "autrefois",
+  "auparavant",
+  "anciennement",
+  "jadis",
+]
+# An intention not yet carried out.
+plan = [
+  "prévoi(?:s|t|ent)",
+  "prévoy(?:ons|ez|ait|aient)",
+  "prévu(?:e|s|es)? (?:de|pour|d['’]\\w+)",
+  "planifi(?:e|es|ent|ons|ez|é|ée|és|ées)",
+  "projett(?:e|es|ent) (?:de|d['’]\\w+)",
+  # The near future: "va déménager", "allons migrer", "vont s'installer".
+  "(?:vais|vas|va|allons|allez|vont) (?:(?:ne|pas|bientôt|y|en|se|me|te|le|la|les|lui|leur|nous|vous|donc|aussi) ){0,3}(?:[smtln]['’])?\\w+(?:er|ir|re)",
+  "veu[xt]",
+  "veulent",
+  "voul(?:ons|ez|ait|aient)",
+  "voudr(?:ais|ait|aient|ions|iez)",
+  "aimer(?:ais|ait|aient|ions|iez)",
+  "souhait(?:e|es|ent|ons|ez|erait|eraient)",
+  "intention (?:de|d['’]\\w+)",
+  "esp[èé]r(?:e|es|ent|ons|ez|ait|aient)",
+  "a hâte",
+  # The future tense of common verbs: "commencera", "partiront".
+  "(?:commenc|début|démarr|visit|déménag|emménag|voyag|sign|lanc|livr|quitt|rencontr|assist|réserv|annul|chang|pass|décid|termin|essai|migr|achèt|appell|rappell|renouvell|rentr|retourn|arriv|rest|travaill|particip|contact|pai|publi|déploi|install|organis|présent|envoi)er(?:ai|as|a|ons|ez|ont)",
+  "(?:ir|fer|ser|aur|viendr|reviendr|deviendr|prendr|reprendr|rejoindr|partir|finir|sortir|enverr|pourr|devr|vendr|rendr|mettr|recevr|verr|saur|faudr|voudr|tiendr|obtiendr|choisir|ouvrir|suivr|vivr|écrir|dir)(?:ai|as|a|ons|ez|ont)",
+  "(?:semaine|année|fois|rentrée) prochaine",
+  "(?:mois|an|trimestre|semestre|week-?end|été|hiver|printemps|automne|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche) prochain",
+  "prochaine?s? (?:semaines?|mois|années?|trimestres?|semestres?|week-?ends?|jours)",
+  "demain",
+  "après-demain",
+  # "dans deux semaines": in two weeks.
+  "dans (?:\\d+|une?|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|quinze|quelques) (?:jours?|semaines?|mois|ans?)",
+  "bientôt",
+  "prochainement",
+  "d['’]ici peu",
+  "plus tard (?:cette semaine|ce mois-ci|cette année|dans)",
+  "n['’]oublie(?:z)? pas (?:de|d['’]\\w+)",
+  "ne pas oublier (?:de|d['’]\\w+)",
+  "(?:ai|as|a|avons|avez|ont) besoin (?:de |d['’])\\w+(?:er|ir|re)",
+  "doi(?:s|t|vent) encore",
+  "il faut encore",
+]
+preference = [
+  "préf[èé]r(?:e|es|ent|ons|ez|ait|aient|é|ée|és|ées)",
+  "préférences?",
+  "aim(?:e|es|ent|ons|ez|ait|aient)",
+  "ador(?:e|es|ent|ons|ez|ait|aient)",
+  "raffol(?:e|es|ent)",
+  "appréci(?:e|es|ent|ons|ez)",
+  "détest(?:e|es|ent|ons|ez|ait|aient)",
+  "horreur (?:de|du|des|d['’]\\w+)",
+  "favori(?:s|te|tes)?",
+  "plutôt que",
+  "ne support(?:e|es|ent|ons) (?:pas|plus)",
+  "fans? (?:de|du|des|d['’]\\w+)",
+  "passionnée?s? (?:de|du|des|par|d['’]\\w+)",
+  "allergiques? (?:à|au|aux)",
+  "de préférence",
+]
+# Only at the start of the statement. A statement that opens with "ne" or "n'" is a negative
+# imperative: French does not drop the subject.
+instruction_start = [
+  "toujours", "jamais", "ne", "n['’]\\w+", "veille(?:z)? à", "assure(?:z)?-(?:toi|vous)",
+  "vérifie(?:z)?", "évite(?:z|r)?", "utilise(?:z|r)?", "lance(?:z)?", "exécute(?:z)?",
+  "privilégie(?:z|r)?", "merci de", "prière de", "veuillez", "il faut", "il ne faut",
+  "interdit de", "interdiction de",
+]
+instruction = [
+  "doi(?:t|vent) (?:\\w+ )?(?:toujours|systématiquement|impérativement|obligatoirement)",
+  "ne doi(?:t|vent) (?:jamais|en aucun cas)",
+  "devr(?:ait|aient) toujours",
+  "ne devr(?:ait|aient) jamais",
+  "il faut toujours",
+  "il ne faut jamais",
+]
+# Past events: a dated reference or a completed action (the passé composé).
+event = [
+  "hier",
+  "avant-hier",
+  "(?:semaine|année|nuit|fois) (?:dernière|passée)",
+  "(?:mois|an|week-?end|été|hiver|printemps|automne|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche) (?:dernier|passé)",
+  "il y a (?:\\d+|une?|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|quinze|quelques|plusieurs) (?:jours?|semaines?|mois|ans?|années?)",
+  # avoir + a participle in -é: "a acheté", "ont déjà signé".
+  "(?:ai|as|a|avons|avez|ont|avait|avaient) (?:(?:déjà|bien|enfin|aussi|récemment|juste|donc|ensuite|également) )?\\w+é",
+  "(?:ai|as|a|avons|avez|ont|avait|avaient) (?:(?:déjà|bien|enfin|aussi|récemment|juste|donc|ensuite|également) )?(?:fini|choisi|réussi|vendu|perdu|reçu|obtenu|rendu|pris|appris|repris|mis|fait|dit|écrit|ouvert|eu|vu|lu|rejoint|conduit|couru|vécu|offert|rempli|suivi|servi|grandi|investi|construit|produit|traduit|atteint|résolu|tenu|connu|bu|battu|répondu|attendu|entendu|rompu)",
+  # être + a participle of movement or change: "est allée", "sont partis", "est né".
+  "(?:suis|es|est|sommes|êtes|sont|était|étaient) (?:(?:déjà|bien|enfin|aussi|récemment) )?(?:allé|venu|parti|arrivé|entré|sorti|né|mort|décédé|resté|retourné|rentré|revenu|devenu|tombé|monté|descendu)(?:e|s|es)?",
+  # Reflexive verbs in the passé composé: "s'est mariée", "se sont installés".
+  "s['’]est",
+  "se sont",
+  "me suis",
+  "s['’]étai(?:t|ent)",
+]
+
+[relations]
+relationship = [
+  "\\b(?:est|était|sont|étaient|devient|est devenue?) (?:maintenant |désormais )?(?:le |la |l['’]|un |une |son |sa |leur |notre |mon |ma )?(?:nouveau |nouvelle |nouvel )?(?:responsable|manager|chef(?:fe)?|patron(?:ne)?|collègue|épouse|femme|mari|époux|partenaire|conjointe?|compagnon|compagne|copain|copine|frère|sœur|soeur|mère|père|fils|fille|amie?|cousine?|oncle|tante|voisine?|mentor|cliente?|fournisseur|propriétaire|fondat(?:eur|rice)|pdg|directeur|directrice|sponsor|contact|interlocut(?:eur|rice)) (?:(?:de|du|des|chez|pour)\\b|d['’])",
+  "\\b(?:rend compte à|travaille pour|travaille avec|mariée? (?:à|avec)|fiancée? (?:à|avec)|est dirigée? par|est de la famille de)\\b",
+]
+people = [
+  "sœur", "soeur", "frère", "mère", "maman", "père", "papa", "parent", "parents", "femme", "épouse",
+  "mari", "époux", "partenaire", "conjoint", "conjointe", "compagnon", "compagne", "fils", "fille",
+  "enfant", "enfants", "ami", "amie", "amis", "copain", "copine", "collègue", "collègues", "patron",
+  "patronne", "chef", "responsable", "équipe", "voisin", "voisine", "cousin", "cousine", "oncle",
+  "tante", "grand-mère", "grand-père", "chien", "chat", "animal",
+]
+
+[values]
+stop = [
+  "utilisateur", "utilisatrice", "utilisateurs", "cette", "avec", "dans", "pour", "sont", "était",
+  "étaient", "avait", "avaient", "avoir", "être", "leur", "leurs", "elle", "elles", "nous", "vous",
+  "mais", "donc", "comme", "aussi", "très", "plus", "quel", "quelle", "quels", "quelles", "quand",
+  "alors", "même", "autre", "autres", "tout", "tous", "toute", "toutes", "votre", "notre", "chez",
+  "sans", "sous", "entre", "depuis", "encore", "déjà", "seulement", "maintenant", "désormais",
+  "dorénavant", "réalité", "finalement", "correction", "rectification", "changé", "déménagé",
+  "passé", "passée", "autrefois", "auparavant", "anciennement", "actuellement",
+]
+value_stop = [
+  "le", "la", "les", "un", "une", "des", "du", "de", "utilisateur", "utilisatrice", "son", "sa",
+  "ses", "leur", "leurs", "il", "elle", "ils", "elles", "ce", "cet", "cette", "ces", "avec", "ont",
+  "avait", "est", "sont", "était", "été", "maintenant", "désormais", "actuellement", "récemment",
+  "total", "fois", "par", "pour", "et", "environ", "presque", "près", "plus", "moins", "que", "qui",
+  "aussi", "juste", "encore", "déjà", "nouveau", "nouvelle", "nouvel", "notre", "votre", "mon",
+  "mes", "nos", "vos", "en", "au", "aux", "dans", "sur", "sous", "chez", "pas",
+]
+identifier = [
+  "facture", "commande", "ticket", "billet", "dossier", "compte", "id", "identifiant", "n°", "nº",
+  "no", "numéro", "num", "réf", "référence", "version", "chambre", "salle", "vol", "table", "siège",
+  "place", "porte", "quai", "voie", "ligne", "bus", "modèle", "série", "article", "sku", "incident",
+  "bug", "anomalie", "unité", "appartement", "appt", "bâtiment", "étage", "code", "poste", "colis",
+  "contrat", "devis",
+]
+# "neuf" is left out: it is also the adjective "new" ("un vélo neuf").
+quantity = [
+  "zéro", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "dix", "onze", "douze",
+  "treize", "quatorze", "quinze", "seize", "vingt", "trente", "quarante", "cinquante", "soixante",
+  "cent", "cents", "mille", "million", "millions", "demi", "demie", "moitié", "douzaine", "dizaine",
+  "double", "triple", "plusieurs", "quelques",
+]
+dates = [
+  "\\b(?:1er|\\d{1,2})\\s+(?:janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre|janv|févr|fév|avr|juil|sept|oct|nov|déc)\\b\\.?(?:\\s+\\d{4})?",
+  "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b",
+]
+
+[values.numbers]
+"zéro" = 0
+deux = 2
+double = 2
+trois = 3
+triple = 3
+quatre = 4
+cinq = 5
+six = 6
+sept = 7
+huit = 8
+dix = 10
+onze = 11
+douze = 12
+douzaine = 12
+quinze = 15
+vingt = 20
+trente = 30
+cinquante = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = ["er", "ère", "re", "e", "ème", "nde?", "h(?:\\d{2})?"]
+weekdays = [["lundi"], ["mardi"], ["mercredi"], ["jeudi"], ["vendredi"], ["samedi"], ["dimanche"]]
+months = [
+  ["janvier"], ["février", "fevrier"], ["mars"], ["avril"], ["mai"], ["juin"], ["juillet"],
+  ["août", "aout"], ["septembre"], ["octobre"], ["novembre"], ["décembre", "decembre"],
+]
+month_names = [
+  "janvier", "février", "fevrier", "mars", "avril", "mai", "juin", "juillet", "août", "aout",
+  "septembre", "octobre", "novembre", "décembre", "decembre",
+]
+# "il y a deux semaines"
+ago = ["il y a\\s+{num}\\s+{unit}", "(?:voici|voilà)\\s+{num}\\s+{unit}"]
+# "au cours du dernier mois", "les trois derniers mois", "la semaine dernière"
+past = [
+  "(?:{num}\\s+)?(?:derni(?:er|ers|ère|ères)|passée?s?)\\s+{unit}",
+  "{unit}\\s+(?:derni(?:er|ère)|passée?|précédente?)",
+]
+# "le mois dernier" and "l'année dernière" are the previous calendar month and year; "le dernier
+# mois" is the last thirty days.
+calendar = ["(?:derni(?:er|ère)|passée?|précédente?)$"]
+# "samedi dernier", "le samedi", "samedi"
+last_weekday = ["(?:(?:le|ce)\\s+)?{weekday}(?:\\s+(?:dernier|passé))?"]
+strictly_before = ["(?:dernier|passé)$"]
+last_weekend = [
+  "(?:week-?end|fin de semaine)\\s+(?:dernier|dernière|passée?)",
+  "dernier\\s+week-?end",
+  "dernière\\s+fin de semaine",
+]
+yesterday = ["hier"]
+this = ["(?:ce|cet|cette)\\s+{unit}"]
+# "en février", "le 3 juin", "le 1er juin"
+in_month = ["(?:{day}(?:er)?\\s+)?{month}"]
+
+[time.numbers]
+un = 1
+une = 1
+deux = 2
+"une paire de" = 2
+trois = 3
+quelques = 3
+plusieurs = 3
+quatre = 4
+cinq = 5
+six = 6
+sept = 7
+huit = 8
+neuf = 9
+dix = 10
+onze = 11
+douze = 12
+quinze = 15
+
+[time.units]
+day = ["jours?"]
+week = ["semaines?"]
+month = ["mois"]
+year = ["ans?", "années?"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["ou"]
+or_not = ["ou non", "ou pas"]
+between = ["entre\\s+(.+?)\\s+et\\s+(.+?)"]
+clause = ["quand", "lorsque", "avant", "après", "depuis", "pendant que", "jusqu['’]à"]
+lead = [
+  "quel(?:le)?s?", "lequel", "laquelle", "lesquel(?:le)?s", "qu['’]est-ce (?:que|qui)", "que",
+  "qui", "quoi", "quand", "où",
+  "combien(?:\\s+de\\s+\\w+)?", "comment", "pourquoi", "est-ce que",
+  "ai-je", "suis-je", "avais-je", "étais-je", "a-t-(?:il|elle|on)", "est-(?:il|elle|ce)",
+]
+article = [
+  "le", "la", "les", "un", "une", "des", "mon", "ma", "mes", "notre", "nos", "ce", "cet", "cette",
+  "ces",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  # A qualifier before the noun: "ignore toutes les instructions", "oublie tes règles".
+  "\\b(?:ignor(?:e|es|ez|er|ons)|oubli(?:e|es|ez|er|ons)|néglige[zr]?|outrepasse[zr]?|contourne[zr]?|ne (?:tiens|tenez|tenir) (?:pas |plus )?compte|fai(?:s|tes) abstraction)\\b[^.\\n]{0,40}\\b(?:toutes?|tous|tes|ton|vos|votre|aucune?|précédente?s?|antérieure?s?)\\b[^.\\n]{0,25}\\b(?:instructions?|consignes?|règles?|directives?|prompts?|ordres?|restrictions?)",
+  # A qualifier after the noun: "ignore les instructions précédentes".
+  "\\b(?:ignor(?:e|es|ez|er|ons)|oubli(?:e|es|ez|er|ons)|néglige[zr]?|outrepasse[zr]?|contourne[zr]?|ne (?:tiens|tenez|tenir) (?:pas |plus )?compte|fai(?:s|tes) abstraction)\\b[^.\\n]{0,40}\\b(?:instructions?|consignes?|règles?|directives?|prompts?|ordres?)\\s+(?:précédentes?|antérieures?|ci-dessus|initiales?|d['’]avant|d['’]origine|reçues)",
+]
+role_hijack = [
+  "\\b(?:tu es|t['’]es|vous êtes) (?:maintenant|désormais|dorénavant|à présent)\\b",
+  "\\b(?:à partir de maintenant|à compter de maintenant|dès maintenant|désormais|dorénavant),? (?:tu|vous) (?:es|êtes|vas|allez|dois|devez|ne|n['’]\\w+|\\w+(?:ras|rez)|réponds|répondez|agis|agissez|parles|parlez)\\b",
+  "\\b(?:agis|agissez|comporte-toi|comportez-vous|réponds|répondez)\\b[^.\\n]{0,10}\\b(?:comme|en tant qu(?:e|['’]))[^.\\n]{0,40}\\b(?:sans (?:aucune |la moindre )?(?:restriction|limite|règle|filtre|censure|contrainte)s?|non (?:censurée?|bridée?|restreinte?|filtrée?)|débridée?|jailbreak\\w*|dan)\\b",
+  "\\bfai(?:s|tes) comme si (?:tu|vous) n['’]av(?:ais|iez) (?:aucune|pas de|plus de|plus aucune) (?:règle|restriction|limite|contrainte)s?",
+]
+system_prompt = [
+  "\\b(?:révèles?|révélez|révéler|montre[zr]?|affiche[zr]?|imprime[zr]?|donne[zr]?|divulgue[zr]?|dévoile[zr]?|répète|répétez|répéter|écris|écrivez|écrire|communique[zr]?|partage[zr]?|dis|dites|cite[zr]?|recopie[zr]?)\\b[^.\\n]{0,40}\\b(?:prompts? (?:du )?système|prompt-système|invite (?:du )?système|message (?:du )?système|(?:instructions?|consignes?) (?:du système|système|cachées?|secrètes?|initiales?)|message (?:du |de )?développeur|system prompt)",
+]
+memory_directive = [
+  "\\b(?:toujours|chaque fois|à chaque (?:fois|message|demande|question)|dès que|systématiquement)\\b[^.\\n]{0,60}\\b(?:envoie[sz]?|envoyez|envoyer|transf[èé]re[sz]?|transférez|transférer|transmets|transmettez|transmettre|fai(?:s|tes) suivre|faire suivre|expédie[zr]?|téléverse[zr]?|copie[zr]?|redirige[zr]?)\\b[^.\\n]{0,60}\\b(?:à|au|aux|vers|sur|chez)\\b[^.\\n]{0,40}(?:https?://|@|\\bwallet\\b|\\bportefeuille\\b)",
+]
+tool_directive = [
+  "\\b(?:exécute[sz]?|exécuter|lance[sz]?|lancer|appelle[sz]?|appelez|appeler|invoque[zr]?|fai(?:s|tes) tourner)\\b[^.\\n]{0,30}\\b(?:commande|outil|fonction|script)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

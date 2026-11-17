@@ -1,0 +1,402 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Hungarian language pack. Draft: it passes its test set (languages/tests/hu.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+# Hungarian inflects by suffix and verbs take prefixes: markers are stems with a bounded class of
+# endings (both conjugations), and the time templates take the unit, weekday and month in the case
+# the phrase needs ("két héttel ezelőtt", "múlt hónapban", "szombaton", "februárban").
+format = 1
+language = "hu"
+name = "Hungarian"
+status = "draft"
+text_search = "hungarian"
+
+[detect]
+words = [
+  "a", "az", "és", "hogy", "nem", "is", "egy", "van", "volt", "de", "meg", "már", "még", "csak",
+  "ez", "azt", "ezt", "mint", "ha", "vagy", "én", "te", "ő", "mi", "ti", "ők", "mit", "ki", "hol",
+  "mikor", "miért", "hogyan", "melyik", "aki", "ami", "amely", "volna", "lesz", "lehet", "kell",
+  "majd", "pedig", "mert", "így", "úgy", "ott", "itt", "akkor", "most", "után", "előtt", "alatt",
+  "között", "szerint", "minden", "nagyon", "nincs", "sem", "el", "be", "fel", "le", "felhasználó",
+]
+letters = "áéíóöőúüű"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# The potential suffix ("költözhetett", might have moved) is not a marker: "-hat/-het" is too
+# common an ending to read as a hedge.
+speculation = [
+  "talán",
+  "esetleg",
+  "lehet,? hogy",
+  "lehetséges,? hogy",
+  "elképzelhető",
+  "valószínűleg",
+  "valószínű,? hogy",
+  "feltehetően",
+  "feltehetőleg",
+  "vélhetően",
+  "alighanem",
+  "bizonyára",
+  "szerintem",
+  "azt hiszem",
+  "úgy hiszem",
+  "úgy gondolom",
+  "úgy vélem",
+  "gyanítom",
+  "sejtem",
+  "tippem szerint",
+  "nem (?:vagyok )?biztos",
+  "nem tudom,? hogy",
+  "kíváncsi vagyok,? hogy",
+  "pletyk\\w+",
+  "híresztelés\\w*",
+  "úgy hírlik",
+  "állítólag",
+  "úgy tűnik",
+  "úgy látszik",
+  "látszólag",
+  "hipotetikusan",
+  "elméletileg",
+  "elvileg",
+  "fontolgat\\w*",
+  "mérlegel(?:i|ik|em|jük)",
+  "gondolkod(?:ik|nak|om|unk)",
+  "gondolkoz(?:ik|nak|om|unk)",
+  "ha (?:\\w+ ){0,5}(?:lenn[eé]\\w{0,3}|voln[aá]\\w{0,3}|tudn[aá]\\w{0,3}|akarn[aá]\\w{0,3}|lehetne|kellene)",
+]
+# A change to something stored before.
+correction = [
+  "valójában",
+  "igazából",
+  "helyesbít\\w*",
+  "kiigazítás",
+  "pontosítás",
+  "tévedtem",
+  "rosszul tudtam",
+  "már nem",
+  "már nincs(?:en|enek)?",
+  "többé",
+  "helyett",
+  "ehelyett",
+  "megváltoz(?:ott|tak)",
+  "megváltoztat(?:ta|ták)",
+  "(?:át)?vált(?:ott|ottak|ottam|ottunk)",
+  "(?:el|át|be|ki|vissza|össze|oda|haza)?költöz(?:ött|tek|tem|tünk)",
+  "áttért(?:ek|em|ünk)?",
+  "átállt(?:ak|am|unk)?",
+  "most",
+  "mostanra",
+  "mostanában",
+  "immár",
+  "időközben",
+  "frissítve",
+  "frissült",
+  "lecserél(?:te|ték|tem|tük)",
+  "felváltotta",
+  "korábban",
+  "régebben",
+  "azelőtt",
+  "régen",
+]
+# An intention not yet carried out.
+plan = [
+  "tervez(?:i|ik|em|ek|nek|ünk|zük|te|ték|tem|tük)?",
+  "terv(?:e|ei|ük|em|ünk)? (?:az,? hogy|szerint)",
+  "tervben van",
+  "szándék\\w*",
+  "akar(?:ja|ják|om|ok|unk|juk|nak|sz)?",
+  "szeretn(?:e|é|ék|ének|énk)",
+  "remél(?:i|ik|em|ek|jük|nek|ünk)?",
+  # The future: "fog" with an infinitive in "-ni", in either order.
+  "fog(?:ja|ják|ok|om|unk|juk|nak)? (?:\\w+ ){0,3}\\w+ni",
+  "\\w+ni fog(?:ja|ják|ok|om|unk|juk|nak)?",
+  "készül (?:\\w+ ){0,3}\\w+ni",
+  "(?:a )?jövő (?:héten|hónapban|évben|negyedévben|hétvégén|hétfőn|kedden|szerdán|csütörtökön|pénteken|szombaton|vasárnap|tavasszal|nyáron|ősszel|télen)",
+  "jövőre",
+  "(?:a )?következő (?:héten|hónapban|évben|negyedévben|hétvégén|hétfőn|kedden|szerdán|csütörtökön|pénteken|szombaton|vasárnap|tavasszal|nyáron|ősszel|télen)",
+  "holnap",
+  "holnapután",
+  "hamarosan",
+  "később (?:a héten|ebben a hónapban|idén|az idén)",
+  "ne felejts\\w*",
+  "kell még",
+  "még (?:\\w+ ){0,2}kell",
+  "a cél(?:ja|unk)? az",
+]
+preference = [
+  "előnyben részesít\\w*",
+  "részesít\\w* (?:\\w+ ){0,3}előnyben",
+  "preferál\\w*",
+  "preferenci\\w*",
+  "szeret(?:i|ik|em|ek|jük|ünk|nek)?",
+  "imád(?:ja|ják|om|ok|unk|juk|nak)?",
+  "kedvel(?:i|ik|em|ek|jük|nek)?",
+  "élvez(?:i|ik|em|ek|zük|nek)?",
+  "utál(?:ja|ják|om|ok|juk|nak)?",
+  "gyűlöl(?:i|ik|öm|ök|jük|nek)?",
+  "rajong(?:ok|unk|anak)?",
+  "kedvenc\\w*",
+  "inkább",
+  "szívesen",
+  "szívesebben",
+  "legszívesebben",
+  "ki nem állhat\\w*",
+  "nem bírja",
+  "allergiás(?:ak)?",
+]
+# Only at the start of the statement.
+instruction_start = [
+  "mindig", "soha", "sose", "sohase", "ne", "kérlek", "kérem", "győződj(?:ön)? meg", "ügyelj(?:en)?",
+  "figyelj(?:en)?", "kerüld", "kerülje", "használd", "használja", "használj(?:on)?", "futtasd",
+  "futtassa", "futtass(?:on)?", "tilos", "kötelező",
+]
+instruction = [
+  "mindig (?:\\w+ ){0,3}kell",
+  "kell mindig",
+  "soha(?:sem)? ne",
+  "soha(?:sem)? (?:\\w+ ){0,2}(?:szabad|lehet)",
+  "mindig kötelező",
+]
+# Past events: a dated reference or a completed action. Verbs: optional prefix, the past stem and
+# the endings of both conjugations.
+event = [
+  "tegnap",
+  "tegnapelőtt",
+  "(?:a )?múlt (?:héten|hónapban|évben|éjjel|hétvégén|hétfőn|kedden|szerdán|csütörtökön|pénteken|szombaton|vasárnap|tavasszal|nyáron|ősszel|télen)",
+  "tavaly",
+  "ezelőtt",
+  "\\d+ (?:nappal|héttel|hónappal|évvel) korábban",
+  "(?:meg|fel|át|ki|el|be|le)?vett(?:e|ek|ék|em|ünk|ük)?",
+  "(?:meg)?vásárolt(?:a|ak|ák|am|unk|uk)?",
+  "elad(?:ott|ta|tak|ták|tam|tuk)",
+  "(?:meg)?látogat(?:ott|ta|tak|ták|tam|tuk)",
+  "(?:el|ki|be|fel|le|át|haza)?ment(?:ek|em|ünk)?",
+  "járt(?:ak|am|unk)?",
+  "örökbe fogad(?:ott|ta|tak|ták|tam|tuk)",
+  "(?:el|meg)?kezd(?:ett|te|tek|ték|tem|tük)",
+  "befejez(?:ett|te|tek|ték|tem|tük)",
+  "elvégez(?:te|ték|tem|tük)",
+  "végzett",
+  "aláír(?:t|ta|tak|ták|tam|tuk)",
+  "csatlakoz(?:ott|tak|tam|tunk)",
+  "(?:be|ki)lép(?:ett|tek|tem|tünk)",
+  "távoz(?:ott|tak)",
+  "elhagy(?:ta|ták|tam|tuk)",
+  "találkoz(?:ott|tak|tam|tunk)",
+  "diplomáz(?:ott|tak|tam|tunk)",
+  "(?:össze|meg)?házasod(?:ott|tak|tam|tunk)",
+  "(?:meg)?kap(?:ott|ta|tak|ták|tam|tuk)",
+  "(?:el)?indít(?:ott|otta|ottak|ották|ottam|ottuk)",
+  "kiad(?:ott|ta|tak|ták|tam|tuk)",
+  "(?:le|ki)?szállít(?:ott|otta|ottak|ották|ottam|ottuk)",
+  "megújít(?:ott|otta|ották|ottam|ottuk)",
+  "lemond(?:ott|ta|tak|ták|tam|tuk)",
+  "törölt(?:e|ék|em|ük)",
+  "(?:ki|be)?fizet(?:ett|te|tek|ték|tem|tük)",
+  "lefoglal(?:t|ta|tak|ták|tam|tuk)",
+  "(?:meg)?rendel(?:t|te|tek|ték|tem|tük)",
+  "visszaküld(?:ött|te|ték|tem|tük)",
+  "visszaad(?:ott|ta|ták|tam|tuk)",
+  "(?:el)?utaz(?:ott|tak|tam|tunk)",
+  "(?:meg)?nyer(?:t|te|tek|ték|tem|tük)",
+  "(?:el)?veszít(?:ett|ette|ették|ettem|ettük)",
+  "elveszt(?:ette|ették|ettem|ettük)",
+  "ad(?:ta|tak|ták|tam|tuk)",
+  "(?:meg)?csinál(?:t|ta|tak|ták|tam|tuk)",
+  "szület(?:ett|tek|tem)",
+  "meghalt",
+  "elhunyt",
+  "(?:meg)?ünnepel(?:t|te|tek|ték|tem|tük)",
+  "kirúg(?:ta|ták|tam|tuk)",
+  "felmond(?:ott|tak|tam|tunk)",
+  "nyugdíjba (?:ment|vonult)",
+  "beszerez(?:te|ték|tem|tük)",
+  "frissít(?:ett|ette|ették|ettem|ettük)",
+]
+
+[relations]
+# The possessed noun carries the suffix and there is no copula: "Dana Bob főnöke." A statement
+# that ends on such a noun, or gives the possessor in the dative, states a relationship.
+relationship = [
+  "\\b(?:főnöke|vezetője|menedzsere|kollégája|munkatársa|felesége|férje|párja|házastársa|barátnője|barátja|testvére|bátyja|öccse|nővére|húga|anyja|édesanyja|apja|édesapja|fia|lánya|unokatestvére|nagybátyja|nagynénje|szomszédja|mentora|ügyfele|beszállítója|tulajdonosa|alapítója|vezérigazgatója|kapcsolattartója|szponzora)(?:\\s+(?:volt|lett))?\\s*(?:[.!]|$)",
+  "\\b\\p{L}+(?:nak|nek) (?:a |az )?(?:új )?(?:főnöke|vezetője|menedzsere|kollégája|munkatársa|felesége|férje|párja|barátnője|barátja|testvére|bátyja|öccse|nővére|húga|anyja|apja|fia|lánya|szomszédja|mentora|ügyfele|beszállítója|tulajdonosa|alapítója|kapcsolattartója)\\b",
+  "\\b(?:\\p{L}+(?:nak|nek) jelent|\\p{L}+(?:nál|nél) dolgozik|együtt dolgozik|házasok|házasságban él|jegyben jár|rokona)\\b",
+]
+people = [
+  "nővér", "nővére", "húg", "húga", "testvér", "testvére", "báty", "bátyja", "öccs", "öccse",
+  "anya", "anyja", "édesanya", "édesanyja", "anyu", "apa", "apja", "édesapa", "édesapja", "apu",
+  "szülő", "szülei", "szülők", "feleség", "felesége", "férj", "férje", "párja", "házastárs", "fia",
+  "lánya", "gyerek", "gyereke", "gyerekei", "gyerekek", "barát", "barátja", "barátnő", "barátnője",
+  "barátai", "kolléga", "kollégája", "munkatárs", "főnök", "főnöke", "csapat", "szomszéd",
+  "szomszédja", "unokatestvér", "nagybácsi", "nagynéni", "nagymama", "nagypapa", "kutya",
+  "kutyája", "macska", "macskája", "háziállat",
+]
+
+[values]
+stop = [
+  "felhasználó", "felhasználónak", "felhasználót", "hogy", "ezek", "azok", "ennek", "annak",
+  "volt", "voltak", "lesz", "vannak", "ahol", "akkor", "amikor", "mikor", "melyik", "amely",
+  "amelyik", "szintén", "csak", "nagyon", "néhány", "több", "legtöbb", "másik", "többi",
+  "valójában", "igazából", "helyett", "többé", "költözött", "váltott", "frissítve", "korábban",
+  "régebben", "jelenleg", "most", "mostanra", "helyesbítés", "vagy", "pedig", "mert", "mint",
+  "nincs", "egyik", "minden",
+]
+value_stop = [
+  "a", "az", "egy", "felhasználó", "felhasználónak", "ő", "ők", "ez", "azt", "ezt", "és", "van",
+  "volt", "vannak", "voltak", "lett", "kapott", "most", "jelenleg", "nemrég", "nemrégiben",
+  "összesen", "alkalommal", "alkalom", "idő", "per", "körülbelül", "kb", "nagyjából", "majdnem",
+  "közel", "több", "mint", "alatt", "fölött", "felett", "is", "csak", "még", "már", "új", "hogy",
+  "nem", "meg",
+]
+identifier = [
+  "számla", "számlával", "számlán", "rendelés", "rendelést", "megrendelés", "jegy", "jeggyel",
+  "hibajegy", "ügy", "fiók", "azonosító", "id", "sz", "szám", "számú", "hivatkozás", "ref",
+  "verzió", "szoba", "terem", "járat", "asztal", "ülés", "hely", "kapu", "vágány", "útvonal",
+  "busz", "vonal", "modell", "sorozatszám", "cikk", "cikkszám", "tétel", "sku", "hiba", "bug",
+  "egység", "lakás", "épület", "emelet", "irányítószám", "kód", "mellék",
+]
+quantity = [
+  "nulla", "egy", "kettő", "két", "három", "négy", "öt", "hat", "hét", "nyolc", "kilenc", "tíz",
+  "tizenegy", "tizenkettő", "tizenkét", "tizenhárom", "tizennégy", "tizenöt", "tizenhat",
+  "tizenhét", "tizennyolc", "tizenkilenc", "húsz", "harminc", "negyven", "ötven", "hatvan",
+  "hetven", "nyolcvan", "kilencven", "száz", "ezer", "millió", "egyszer", "kétszer", "háromszor",
+  "fél", "tucat", "dupla", "tripla", "több", "néhány", "pár", "kevés",
+]
+# "június 3-án", "2026. június 3."
+dates = [
+  "\\b(?:jan|feb|márc|ápr|máj|jún|júl|aug|szept|okt|nov|dec)\\w*\\.?\\s+\\d{1,2}(?:-?(?:án|én|jén|ján|ai|ei|a|e|i))?",
+  "\\b\\d{4}\\.\\s?\\d{1,2}\\.\\s?\\d{1,2}\\.?",
+]
+
+[values.numbers]
+nulla = 0
+egy = 1
+egyszer = 1
+"kettő" = 2
+"két" = 2
+"kétszer" = 2
+dupla = 2
+"három" = 3
+"háromszor" = 3
+tripla = 3
+"négy" = 4
+"öt" = 5
+hat = 6
+"hét" = 7
+nyolc = 8
+kilenc = 9
+"tíz" = 10
+tizenegy = 11
+"tizenkettő" = 12
+"tizenkét" = 12
+tucat = 12
+"húsz" = 20
+harminc = 30
+"ötven" = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# The case endings written onto a day number: "3-án", "5-én", "12-i", "3-ig".
+number_suffixes = ["-?(?:án|én|jén|ján|ai|ei|a|e|i|ig|től|tól|kor|ra|re|as|es|os|ös)"]
+# Stems: the templates add the ending ("szombaton", "szerdán").
+weekdays = [["hétfő"], ["kedd"], ["szerd[aá]"], ["csütörtök"], ["péntek"], ["szombat"], ["vasárnap"]]
+months = [
+  ["január(?:ban|i|tól|ig|ra)?"], ["február(?:ban|i|tól|ig|ra)?"], ["március(?:ban|i|tól|ig|ra)?"],
+  ["április(?:ban|i|tól|ig|ra)?"], ["május(?:ban|i|tól|ig|ra)?"], ["június(?:ban|i|tól|ig|ra)?"],
+  ["július(?:ban|i|tól|ig|ra)?"], ["augusztus(?:ban|i|tól|ig|ra)?"],
+  ["szeptember(?:ben|i|től|ig|re)?"], ["október(?:ben|i|től|ig|re)?"],
+  ["november(?:ben|i|től|ig|re)?"], ["december(?:ben|i|től|ig|re)?"],
+]
+month_names = [
+  "január", "januárban", "januári", "február", "februárban", "februári", "március", "márciusban",
+  "márciusi", "április", "áprilisban", "áprilisi", "május", "májusban", "májusi", "június",
+  "júniusban", "júniusi", "július", "júliusban", "júliusi", "augusztus", "augusztusban",
+  "augusztusi", "szeptember", "szeptemberben", "szeptemberi", "október", "októberben", "októberi",
+  "november", "novemberben", "novemberi", "december", "decemberben", "decemberi",
+]
+# "két héttel ezelőtt": the postposition follows. "két hete", "három napja", "egy éve": the unit
+# with a possessive ending says the same (the unit stems "het", "nap", "hónap", "év" plus e/ja).
+ago = ["{num}\\s+{unit}\\s+(?:ezelőtt|korábban)", "{num}\\s+{unit}(?:e|ja)"]
+# "az elmúlt három hónapban", "múlt héten"
+past = ["(?:elmúlt|utóbbi|utolsó|legutóbbi|múlt|előző)\\s+(?:{num}\\s+)?{unit}"]
+# "múlt hónapban" and "múlt évben" are the previous calendar month and year; "az elmúlt hónapban"
+# is the last thirty days.
+calendar = ["^(?:múlt|előző)"]
+# "múlt szombaton", "szombaton". A bare "vasárnap" (it takes no ending) is not read.
+last_weekday = ["(?:múlt|előző|elmúlt|most)\\s+(?:hét\\s+)?{weekday}(?:n|en|on|ön)?", "{weekday}(?:n|en|on|ön)"]
+strictly_before = ["^(?:múlt|előző|elmúlt)"]
+last_weekend = ["(?:múlt|előző|elmúlt)\\s+hétvég(?:én|e|i)"]
+yesterday = ["tegnap", "tegnapi"]
+# "ezen a héten", "ebben a hónapban", "ebben az évben"; "a héten" alone also means this week.
+this = ["(?:ezen\\s+a|ezen\\s+az|ebben\\s+a|ebben\\s+az|e|a\\s+mostani|a\\s+jelenlegi)\\s+{unit}", "a\\s+{unit}en"]
+# "februárban", "június 3-án"
+in_month = ["{month}(?:\\s+{day}\\b)?"]
+
+[time.numbers]
+egy = 1
+"két" = 2
+"kettő" = 2
+"pár" = 2
+"három" = 3
+"néhány" = 3
+"négy" = 4
+"öt" = 5
+hat = 6
+"hét" = 7
+nyolc = 8
+kilenc = 9
+"tíz" = 10
+tizenegy = 11
+"tizenkét" = 12
+"tizenkettő" = 12
+
+[time.units]
+day = ["nap(?:pal|ot|on|ig|ban|ok|okban)?"]
+week = ["hét(?:tel|en|ben|et|ig)?", "het(?:ek|ekben|ekkel)?"]
+month = ["hónap(?:pal|ban|ot|ig|ok|okban)?"]
+year = ["év(?:vel|ben|et|ig|ek|ekben)?"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["vagy"]
+or_not = ["vagy nem", "vagy sem"]
+# "A és B között": the postposition follows, so each side is one word.
+between = ["(\\S+)\\s+és\\s+(\\S+)\\s+között"]
+clause = ["amikor", "mielőtt", "miután", "mióta", "amíg", "miközben"]
+lead = [
+  "mi", "mit", "milyen", "melyik", "mely", "melyek", "ki", "kit", "kivel", "kinek", "kik", "mikor",
+  "hol", "hová", "hova", "honnan",
+  "hány\\s+\\w+", "mennyi(?:\\s+(?:ideig|idős))?", "milyen\\s+(?:gyakran|régen|sokáig)",
+  "hogyan", "miért",
+]
+article = ["a", "az", "egy", "az én", "a mi", "ez", "ezek", "azok"]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+# The verb can come first or last: "hagyd figyelmen kívül az összes korábbi utasítást", "az összes
+# korábbi utasítást hagyd figyelmen kívül".
+override = [
+  "\\b(?:hagy(?:d|ja|játok) figyelmen kívül|felejts(?:d|e|étek)? el|ne törőd\\w+|ne ve(?:dd|gye|gyétek) figyelembe|ignorál(?:d|ja|játok)|bírál(?:d|ja) felül|ír(?:d|ja) felül|tekints\\w* el)\\b[^.\\n]{0,50}\\b(?:korábbi|előző|eddigi|fenti|összes|minden|valamennyi)\\b[^.\\n]{0,25}\\b(?:utasítás\\w*|szabály\\w*|irányelv\\w*|előírás\\w*|parancs\\w*|prompt\\w*)",
+  "\\b(?:korábbi|előző|eddigi|fenti|összes|minden|valamennyi)\\b[^.\\n]{0,25}\\b(?:utasítás\\w*|szabály\\w*|irányelv\\w*|előírás\\w*)\\b[^.\\n]{0,30}\\b(?:hagy(?:d|ja|játok) figyelmen kívül|felejts(?:d|e|étek)? el|ignorál(?:d|ja|játok))",
+]
+# "vagy" is both "you are" and "or": the phrase needs the pronoun "te".
+role_hijack = [
+  "\\b(?:mostantól|mától fogva|mától kezdve|ezentúl|innentől(?: kezdve)?)\\b[^.\\n]{0,40}\\b(?:leszel|válaszolsz|válaszolj|beszélsz|beszélj|viselkedsz|viselkedj|fogsz|kell \\w+n[ae]d)\\b",
+  "\\bte (?:most(?:antól)?|mától)(?: már)? (?:egy |a |az )?[\\w-]+(?: [\\w-]+)? vagy\\b",
+  "\\bmost(?:antól)?(?: már)? te (?:egy |a |az )?[\\w-]+(?: [\\w-]+)? vagy\\b",
+  "\\b(?:viselkedj|válaszolj) (?:úgy,? mint (?:egy )?)?(?:korlátozás(?:ok)? nélküli|korlátlan|cenzúrázatlan)",
+  "\\b(?:tégy|tegyél) úgy,? mintha nem lennének (?:szabályaid|korlátozásaid|korlátaid)",
+]
+system_prompt = [
+  "\\b(?:mutas(?:d|sa|s)|áruld el|árulja el|fedd fel|fedje fel|ír(?:d|ja) (?:ki|le)|nyomtasd ki|add ki|adja ki|szivárogtasd ki|közöld)\\b[^.\\n]{0,40}\\b(?:rendszer ?prompt\\w*|rendszerüzenet\\w*|rendszerutasítás\\w*|system prompt\\w*|rejtett utasítás\\w*|fejlesztői üzenet\\w*)",
+]
+memory_directive = [
+  "\\b(?:mindig|valahányszor|minden alkalommal|bármikor|amikor csak)\\b[^.\\n]{0,60}\\b(?:küld(?:d|j|je|jél|jed|jétek)|továbbít(?:sd|s|sa|sátok)|tölts(?:d|e)? fel|másol(?:d|j)|juttas(?:d|s))\\b[^.\\n]{0,80}(?:https?://|@|\\btárc\\w+|\\bwallet\\b)",
+]
+# The noun can follow the command: "futtasd le az rm -rf / parancsot".
+tool_directive = [
+  "\\b(?:futtas(?:d|sa|s)|hajts(?:d|a)? végre|hív(?:d|ja) meg|indíts(?:d|a)?)\\b[^.\\n]{0,40}\\b(?:parancs\\w*|eszköz\\w*|függvény\\w*|tool\\w*)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+  "\\b(?:futtas(?:d|sa|s)|hajts(?:d|a)? végre|hív(?:d|ja) meg|indíts(?:d|a)?)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)[^\\n]{0,30}\\b(?:parancs\\w*|eszköz\\w*|függvény\\w*)",
+]

@@ -30,6 +30,8 @@ memhouse doctor          # shows which config file was loaded and checks every p
 - [`[embedding]`](#embedding)
 - [`[rerank]`](#rerank)
 - [`[memory]`](#memory): recall tuning
+- [`[eval]`](#eval): the regression gate
+- [`[language]`](#language): the enabled languages and your own language packs
 - [`[intake]`](#intake): the write pipeline: queue workers and the statement gate
 - [`[enrich]`](#enrich): asynchronous LLM fact extraction
 - [`[governance]`](#governance)
@@ -318,6 +320,31 @@ max_contamination_rise = 1.0
 | `max_stale_rise` | 1.0 | points the stale-fact rate may rise by |
 | `max_contamination_rise` | 1.0 | points the contamination rate (plans and guesses committed as facts) may rise by |
 
+## `[language]`
+
+The languages the server reads (G36; [languages.md](languages.md)). Every word list and phrase
+pattern of the statement gate, query planning and the injection screen comes from a language
+pack; packs for the 24 official EU languages are built in.
+
+```toml
+[language]
+enabled = ["en"]
+default = ""
+packs_dir = ""
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `["en"]` | the languages the server reads, as pack codes (`["en", "de", "fr"]`). With more than one, the language of each write and question is detected among them, and each record's text is indexed with its language's text-search configuration. Every enabled pack's injection phrases apply to every write; the built-in English ones always do |
+| `default` | empty: the first of `enabled` | the language of text whose language cannot be told; one of `enabled` |
+| `packs_dir` | empty | a folder of your own packs (`*.toml`): each adds a language or replaces the built-in pack of the same code. Every file in it must validate (`memhouse lang check`), or the server does not start and reports the file and line |
+
+`MEMHOUSE_LANGUAGES` (comma separated) and `MEMHOUSE_LANGUAGE_PACKS_DIR` override `enabled` and
+`packs_dir`. A tenant's policy may narrow `enabled` (`[language] enabled` in a [policy spec](policy.md)).
+With another language than English enabled, use a multilingual embedding model
+([languages.md](languages.md#the-embedding-model)); the server warns at start when the model is
+known to be English-only.
+
 ## `[intake]`
 
 The write pipeline (G10; [architecture.md](architecture.md#write-path)). A write is authorized and
@@ -457,6 +484,8 @@ metrics and setting up a backend.
 | `MEMHOUSE_SUBJECT` | `memory.default_subject` |
 | `MEMHOUSE_BIND` | `server.bind` |
 | `MEMHOUSE_API_KEY` | adds a bootstrap key to `server.api_keys` |
+| `MEMHOUSE_LANGUAGES` | `language.enabled`, comma separated (`en,de,fr`) |
+| `MEMHOUSE_LANGUAGE_PACKS_DIR` | `language.packs_dir` |
 | `MEMHOUSE_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) | `telemetry.otlp_endpoint` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | exporter headers, `k=v,k2=v2` (credentials go here) |
 | `OTEL_SERVICE_NAME` | `telemetry.service_name` |

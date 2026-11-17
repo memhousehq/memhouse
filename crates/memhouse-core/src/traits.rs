@@ -48,7 +48,7 @@ pub trait PiiDetector: Send + Sync {
 #[async_trait]
 pub trait Classifier: Send + Sync {
     fn id(&self) -> String;
-    async fn classify(&self, text: &str, kind: MemoryKind) -> anyhow::Result<crate::classify::Classification>;
+    async fn classify(&self, text: &str, kind: MemoryKind, lang: &crate::lang::Detected) -> anyhow::Result<crate::classify::Classification>;
 }
 
 /// The intake queue (ADR 0004, TR-LT-05): a write is acknowledged once its redacted proposal is
@@ -108,6 +108,16 @@ pub trait Store: Send + Sync {
     async fn insert(&self, records: &[NewMemory]) -> anyhow::Result<()>;
     /// The intake queue kept in this store, if it has one (Postgres: a table in the same
     /// database, so a proposal's insert and its completion commit together).
+    /// The enabled languages and the text-search configuration of each (G36): the store indexes
+    /// a record's text with the configuration of its language, and a recall's keyword search
+    /// probes every configuration.
+    fn set_languages(&self, _text_search: &[(String, String)]) {}
+
+    /// Fails, naming the configuration, when the database lacks one a language pack names.
+    async fn check_text_search(&self, _configs: &[String]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn intake_queue(&self) -> Option<std::sync::Arc<dyn IntakeQueue>> {
         None
     }

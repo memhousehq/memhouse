@@ -20,13 +20,13 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.7.0` (1.1 added principals, agent tokens, review and labels; 1.2
+This is **API v1**, version `1.8.0` (1.1 added principals, agent tokens, review and labels; 1.2
 added recall explanations and `/metrics`; 1.3 added policies; 1.4 the write pipeline: `wait`,
 `include_candidates`, exact recall, `degraded` and the `unavailable` code; 1.5 memory types:
 session working memory, scope inheritance and preferences, promotion and grants; 1.6 ranking and
 packing: `render_format`, the `duplicate` exclusion reason, score features in explanations, and
 the token budget as a hard cap; 1.7 the evaluation gate: `write_gate.corrections` in a policy
-spec, and an approval refused with `409` when the tenant's suites degrade). The machine-readable contract is the OpenAPI 3.1 document at
+spec, and an approval refused with `409` when the tenant's suites degrade; 1.8 languages: `language` on a record and `language.enabled` in a policy spec). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -183,6 +183,7 @@ ignored.
 | `expires_at` | After this the memory is not recalled (working memory always has one). |
 | `scope` | `{org, team, agent, user, session}`, see [Scopes](#conventions). |
 | `provenance` | `agent` (writer), `user` (acting user), `policy_version` (the policy that admitted it), `request_key`, and for extracted facts `extractor` and `extractor_config`. |
+| `language` | The language the text was detected as, among the server's enabled ones: a [language pack](languages.md) code such as `en` or `de`. Absent on records written before API 1.8. |
 
 Fields that are empty or unset are left out of the JSON.
 

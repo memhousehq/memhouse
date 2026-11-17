@@ -1,0 +1,378 @@
+# SPDX-License-Identifier: Apache-2.0
+# The German language pack. Draft: it passes its test set (languages/tests/de.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "de"
+name = "German"
+status = "draft"
+text_search = "german"
+
+[detect]
+words = [
+  "der", "die", "das", "und", "ist", "nicht", "ein", "eine", "einen", "dem", "den", "des", "mit",
+  "auf", "für", "von", "zu", "im", "sich", "auch", "es", "ich", "er", "sie", "wir", "ihr", "hat",
+  "haben", "war", "wird", "sind", "bei", "nach", "aus", "wie", "was", "wer", "wo", "wann", "oder",
+  "aber", "wenn", "als", "noch", "nur", "schon", "sehr", "mein", "meine", "sein", "seine", "unser",
+  "zum", "zur", "über", "am", "um", "dass", "kann", "wurde", "jetzt", "nutzer", "in", "an", "vom",
+  "ihre", "diese", "dieser", "einer", "einem", "bin",
+]
+letters = "äöüß"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "vielleicht",
+  "möglicherweise",
+  "eventuell",
+  "womöglich",
+  "wahrscheinlich",
+  "vermutlich",
+  "voraussichtlich",
+  "könnte[nt]?",
+  "dürfte[nt]?",
+  "ich glaube",
+  "ich denke",
+  "ich vermute",
+  "ich schätze",
+  "ich frage mich",
+  "nicht sicher",
+  "unsicher,? ob",
+  "gerüchte?n?",
+  "gerüchteweise",
+  "angeblich",
+  "anscheinend",
+  "offenbar",
+  "scheinbar",
+  "hypothetisch",
+  "theoretisch",
+  "überlegt",
+  "überlegen",
+  "denkt darüber nach",
+  "denken darüber nach",
+  "spielt mit dem gedanken",
+  "wenn (?:wir|ich|sie|er|du) (?:\\w+ ){0,6}(?:würde[nt]?|hätte[nt]?|könnte[nt]?|wäre[nt]?)",
+]
+# A change to something stored before.
+correction = [
+  "eigentlich",
+  "korrektur",
+  "berichtigung",
+  "ich habe mich geirrt",
+  "habe mich geirrt",
+  "stimmt nicht mehr",
+  "nicht mehr",
+  "kein(?:e|en|em|er)? \\w+ mehr",
+  "statt",
+  "stattdessen",
+  "anstatt",
+  "anstelle",
+  "hat sich geändert",
+  "haben sich geändert",
+  "geändert",
+  "gewechselt",
+  "wechselte",
+  "umgezogen",
+  "weggezogen",
+  "ausgezogen",
+  "zog (?:nach|um|weg|aus)",
+  "jetzt",
+  "inzwischen",
+  "mittlerweile",
+  "nunmehr",
+  "aktualisiert",
+  "ersetzt durch",
+  "ersetzt (?:worden|wurde)",
+  "früher",
+]
+# An intention not yet carried out.
+plan = [
+  "plant",
+  "plane",
+  "planen",
+  "geplant",
+  "hat vor",
+  "haben vor",
+  "habe vor",
+  "vorhaben",
+  "beabsichtigt",
+  "beabsichtigen",
+  "die absicht",
+  "möchte[nt]?",
+  "will",
+  "wollen",
+  "würde[nt]? gerne?",
+  "hofft",
+  "hoffen",
+  "hoffe",
+  "werde",
+  "werden wir",
+  "wird (?:\\w+ ){0,6}(?:besuchen|beginnen|anfangen|umziehen|reisen|fahren|fliegen|gehen|kaufen|unterschreiben|starten|liefern|beitreten|verlassen|anrufen|senden|schicken|treffen|teilnehmen|versuchen|nehmen|holen|buchen|verlängern|kündigen|wechseln|aktualisieren|prüfen|entscheiden|beenden|abschließen|ziehen)",
+  "nächste[nrsm]? (?:woche|monat|jahr|quartal|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonnabend|sonntag|wochenende|frühjahr|frühling|sommer|herbst|winter)",
+  "kommende[nrsm]? (?:woche|monat|jahr|quartal|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|wochenende)",
+  "übermorgen",
+  "ab morgen",
+  "bis morgen",
+  "morgen (?:früh|mittag|nachmittag|abend)",
+  "demnächst",
+  "später (?:diese woche|diesen monat|dieses jahr|in diesem jahr)",
+  "denk(?:e|t)? daran",
+  "muss noch",
+  "müssen noch",
+  "das ziel ist",
+]
+preference = [
+  "bevorzugt",
+  "bevorzugen",
+  "bevorzuge",
+  "zieht (?:\\w+ ){1,6}vor",
+  "präferenz",
+  "vorliebe",
+  "mag",
+  "mögen",
+  "liebt",
+  "lieben",
+  "liebe",
+  "genießt",
+  "genießen",
+  "hasst",
+  "hassen",
+  "hasse",
+  "lieblings\\w+",
+  "am liebsten",
+  "lieber",
+  "gerne?",
+  "nicht (?:leiden|ausstehen)",
+  "allergisch (?:gegen|auf)",
+]
+# Only at the start of the statement.
+instruction_start = [
+  "immer", "nie", "niemals", "bitte", "stelle? sicher", "achte darauf", "vermeide", "verwende",
+  "benutze", "nutze", "führe", "keine?",
+]
+instruction = ["sollten? immer", "muss immer", "müssen immer", "sollten? nie(?:mals)?", "darf nie(?:mals)?", "dürfen nie(?:mals)?"]
+# Past events: a dated reference or a completed action.
+event = [
+  "gestern",
+  "vorgestern",
+  "letzte[nrsm]? (?:woche|monat|jahr|nacht|wochenende|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonnabend|sonntag|frühjahr|frühling|sommer|herbst|winter)",
+  "vor \\d+ (?:tagen?|wochen?|monaten?|jahren?)",
+  "vor (?:einem|einer|zwei|drei|vier|fünf|sechs|einigen|ein paar) (?:tag(?:en)?|wochen?|monat(?:en)?|jahr(?:en)?)",
+  "gekauft",
+  "kaufte",
+  "verkauft",
+  "verkaufte",
+  "besucht",
+  "besuchte",
+  "gegangen",
+  "ging",
+  "adoptiert",
+  "adoptierte",
+  "angefangen",
+  "begonnen",
+  "begann",
+  "beendet",
+  "beendete",
+  "abgeschlossen",
+  "unterschrieben",
+  "unterzeichnet",
+  "beigetreten",
+  "verlassen",
+  "getroffen",
+  "traf",
+  "teilgenommen",
+  "geheiratet",
+  "heiratete",
+  "erhalten",
+  "erhielt",
+  "bekommen",
+  "bekam",
+  "gestartet",
+  "ausgeliefert",
+  "geliefert",
+  "verlängert",
+  "gekündigt",
+  "storniert",
+  "bezahlt",
+  "gebucht",
+  "bestellt",
+  "zurückgegeben",
+  "gereist",
+  "gewonnen",
+  "gewann",
+  "verloren",
+  "verlor",
+  "gegeben",
+  "genommen",
+  "gemacht",
+  "geboren",
+  "gestorben",
+  "gefeiert",
+  "feierte",
+  "eingestellt",
+  "entlassen",
+  "in rente gegangen",
+  "erworben",
+  "veröffentlicht",
+]
+
+[relations]
+relationship = [
+  "\\b(?:ist|war|sind|waren|wurde) (?:jetzt |nun )?(?:der |die |das |ein |eine |ihr |ihre |sein |seine |unser |unsere |mein |meine )?(?:neue[rs]? )?(?:manager(?:in)?|chef(?:in)?|vorgesetzte[rn]?|kolleg(?:e|in)|ehefrau|frau|ehemann|mann|partner(?:in)?|freund(?:in)?|bruder|schwester|mutter|vater|sohn|tochter|cousin|cousine|onkel|tante|nachbar(?:in)?|mentor(?:in)?|kund(?:e|in)|lieferant|eigentümer(?:in)?|gründer(?:in)?|geschäftsführer(?:in)?|ansprechpartner(?:in)?|sponsor) (?:von|für|bei|des|der)\\b",
+  "\\b(?:berichtet an|arbeitet für|arbeitet mit|verheiratet mit|verlobt mit|ist verwandt mit|wird geleitet von)\\b",
+]
+people = [
+  "schwester", "bruder", "mutter", "mama", "vater", "papa", "eltern", "frau", "ehefrau", "mann",
+  "ehemann", "partner", "partnerin", "sohn", "tochter", "kind", "kinder", "freund", "freundin",
+  "freunde", "kollege", "kollegin", "chef", "chefin", "team", "nachbar", "nachbarin", "cousin",
+  "cousine", "onkel", "tante", "großmutter", "oma", "großvater", "opa", "hund", "katze", "haustier",
+]
+
+[values]
+stop = [
+  "nutzer", "nutzerin", "benutzer", "dass", "dies", "diese", "dieser", "dieses", "diesen", "haben",
+  "hatte", "hatten", "jetzt", "ihre", "ihren", "ihrem", "ihrer", "dort", "waren", "gewesen", "über",
+  "dann", "wenn", "welche", "welcher", "welches", "wird", "würde", "auch", "noch", "sehr", "einige",
+  "mehr", "andere", "eure", "unsere", "nicht", "eigentlich", "stattdessen", "geändert", "gewechselt",
+  "umgezogen", "aktualisiert", "früher", "derzeit", "aktuell", "eine", "einen", "einem", "einer",
+  "sind", "inzwischen", "mittlerweile", "korrektur",
+]
+value_stop = [
+  "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "nutzer",
+  "benutzer", "ihr", "ihre", "sie", "er", "es", "dies", "diese", "mit", "von", "vom", "hat", "haben",
+  "hatte", "war", "waren", "ist", "sind", "wurde", "bekam", "jetzt", "derzeit", "aktuell",
+  "kürzlich", "insgesamt", "mal", "zeit", "pro", "für", "und", "etwa", "ungefähr", "rund", "circa",
+  "fast", "über", "unter", "mehr", "als", "auch", "nur", "noch", "schon", "bereits", "neu", "neue",
+  "sein", "seine", "unser", "in", "im", "an", "am", "auf", "zu", "zum", "zur", "bei", "um",
+]
+identifier = [
+  "rechnung", "bestellung", "auftrag", "ticket", "fall", "vorgang", "konto", "kto", "id", "nr",
+  "nummer", "ref", "referenz", "version", "zimmer", "raum", "flug", "tisch", "platz", "sitz", "gate",
+  "gleis", "route", "bus", "linie", "modell", "seriennummer", "artikel", "sku", "problem", "bug",
+  "einheit", "wohnung", "gebäude", "etage", "stock", "plz", "code", "durchwahl",
+]
+quantity = [
+  "null", "eins", "zwei", "drei", "vier", "fünf", "sechs", "sieben", "acht", "neun", "zehn", "elf",
+  "zwölf", "dreizehn", "vierzehn", "fünfzehn", "sechzehn", "siebzehn", "achtzehn", "neunzehn",
+  "zwanzig", "dreißig", "vierzig", "fünfzig", "sechzig", "siebzig", "achtzig", "neunzig", "hundert",
+  "tausend", "million", "einmal", "zweimal", "dreimal", "halb", "halbe", "dutzend", "doppelt",
+  "dreifach", "mehrere", "einige", "wenige",
+]
+dates = [
+  "\\b\\d{1,2}\\.\\s*(?:jan|feb|mär|maer|apr|mai|jun|jul|aug|sep|sept|okt|nov|dez)[a-zä]*\\.?",
+  "\\b\\d{1,2}\\.\\d{1,2}\\.(?:\\d{2,4})?",
+]
+
+[values.numbers]
+null = 0
+eins = 1
+einmal = 1
+zwei = 2
+zweimal = 2
+doppelt = 2
+drei = 3
+dreimal = 3
+dreifach = 3
+vier = 4
+"fünf" = 5
+sechs = 6
+sieben = 7
+acht = 8
+neun = 9
+zehn = 10
+elf = 11
+"zwölf" = 12
+dutzend = 12
+zwanzig = 20
+"dreißig" = 30
+"fünfzig" = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = ["er", "ern", "te[nrs]?"]
+weekdays = [["montag"], ["dienstag"], ["mittwoch"], ["donnerstag"], ["freitag"], ["samstag", "sonnabend"], ["sonntag"]]
+months = [
+  ["januar", "jänner"], ["februar"], ["märz"], ["april"], ["mai"], ["juni"], ["juli"], ["august"],
+  ["september"], ["oktober"], ["november"], ["dezember"],
+]
+month_names = [
+  "januar", "jänner", "februar", "märz", "april", "mai", "juni", "juli", "august", "september",
+  "oktober", "november", "dezember",
+]
+# "vor zwei Wochen"
+ago = ["vor\\s+{num}\\s+{unit}"]
+# "in den letzten drei Monaten", "letzte Woche"
+past = ["(?:letzte[nrsm]?|vergangene[nrsm]?|vorige[nrsm]?)\\s+(?:{num}\\s+)?{unit}"]
+# "letzten Monat" and "letztes Jahr" are the previous calendar month and year.
+calendar = ["^(?:letzte|vergangene|vorige)"]
+last_weekday = ["(?:letzte[nrsm]?|vergangene[nrsm]?|diese[nrsm]?|am)\\s+{weekday}"]
+strictly_before = ["^(?:letzte|vergangene)"]
+last_weekend = ["(?:letzte[ns]?|vergangene[ns]?)\\s+wochenende"]
+yesterday = ["gestern"]
+this = ["diese[rsmn]?\\s+{unit}"]
+# "im Februar", "am 3. Juni"
+in_month = ["(?:{day}\\.\\s*)?{month}"]
+
+[time.numbers]
+ein = 1
+eine = 1
+einem = 1
+einer = 1
+einen = 1
+zwei = 2
+"ein paar" = 3
+drei = 3
+einigen = 3
+einige = 3
+mehreren = 3
+mehrere = 3
+vier = 4
+"fünf" = 5
+sechs = 6
+sieben = 7
+acht = 8
+neun = 9
+zehn = 10
+elf = 11
+"zwölf" = 12
+
+[time.units]
+day = ["tag(?:e|en|es)?"]
+week = ["wochen?"]
+month = ["monat(?:e|en|s)?"]
+year = ["jahr(?:e|en|es)?"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["oder"]
+or_not = ["oder nicht"]
+between = ["zwischen\\s+(.+?)\\s+und\\s+(.+?)"]
+clause = ["als", "bevor", "nachdem", "seit", "seitdem", "während", "bis"]
+lead = [
+  "welche[rsmn]?", "was", "wer", "wen", "wem", "wessen", "wann", "wo", "wohin", "woher",
+  "wie\\s+(?:viele?\\s+\\w+|lange|alt|oft|viel)?",
+  "hat", "habe", "haben", "hatte", "hatten", "war", "waren", "ist", "sind", "bin", "wurde",
+]
+article = [
+  "der", "die", "das", "den", "dem", "ein", "eine", "einen", "einem", "einer", "mein", "meine",
+  "meinen", "meinem", "meiner", "unser", "unsere", "jene[rsmn]?", "diese[rsmn]?",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:ignorier(?:e|en|t)?|missachte[nt]?|vergiss|vergessen sie|vergesst|übergeh(?:e|en)?|überschreib(?:e|en)?)\\b[^.\\n]{0,40}\\b(?:vorherigen?|vorigen?|früheren?|bisherigen?|obigen?|alle[nr]?|sämtliche[nr]?|deine[nr]?|ihre[nr]?|eure[nr]?)\\b[^.\\n]{0,25}\\b(?:anweisung(?:en)?|instruktion(?:en)?|befehle?n?|regeln?|richtlinien?|vorgaben?|prompts?)",
+]
+role_hijack = [
+  "\\b(?:du bist (?:jetzt|nun|ab sofort)|sie sind (?:jetzt|nun|ab sofort)|ab (?:jetzt|sofort),? (?:bist|wirst|musst|sollst|antwortest) du|von nun an (?:bist|wirst|musst|sollst|antwortest) du|verhalte dich wie (?:eine? )?(?:uneingeschränkte[rs]?|unzensierte[rs]?)|handle als (?:eine? )?(?:uneingeschränkte[rs]?|unzensierte[rs]?)|tu so,? als hättest du keine (?:regeln|einschränkungen|beschränkungen))",
+]
+system_prompt = [
+  "\\b(?:zeig(?:e|en)?|verrat(?:e|en)?|gib|geben sie|drucke|nenne|offenbare|enthülle)\\b[^.\\n]{0,40}\\b(?:system-?prompt|systemanweisung(?:en)?|versteckten? anweisungen|entwickler-?nachricht)",
+]
+memory_directive = [
+  "\\b(?:immer|jedes ?mal|wann immer|sobald)\\b[^.\\n]{0,60}\\b(?:send(?:e|en|est)|schick(?:e|en|st)|weiterleite[nt]?|leite[nt]?|mail(?:e|en)?|lade[nt]?|übertrag(?:e|en)?|übermittel[nt]?)\\b[^.\\n]{0,60}\\b(?:an|zu|nach|auf)\\b[^.\\n]{0,40}(?:https?://|@|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:führ(?:e|en)?|starte[nt]?|ruf(?:e|en)?)\\b[^.\\n]{0,30}\\b(?:befehl|kommando|tool|werkzeug|funktion)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

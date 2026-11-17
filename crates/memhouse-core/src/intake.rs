@@ -26,7 +26,6 @@
 use crate::classify::{self, Classification};
 use crate::engine::{content_hash, Engine};
 use crate::error;
-use crate::gate;
 use crate::metrics;
 use crate::policy::CompiledPolicy;
 use crate::traits::{Held, IntakeQueue};
@@ -661,7 +660,7 @@ impl Engine {
             }
         }
         self.gate_stage(&policy, p.entry, &mut items).instrument(tracing::info_span!("intake.gate")).await?;
-        Self::route_stage(&mut items);
+        self.route_stage(&mut items);
         self.embed_stage(&mut items).instrument(tracing::info_span!("intake.embed")).await?;
         let (supersede, confirm) = self.resolve_stage(&policy, &p.tenant, &p.subject, p.entry, &mut items).instrument(tracing::info_span!("intake.resolve")).await?;
         let mut audit = vec![];
@@ -788,9 +787,14 @@ impl Engine {
                     m.metadata["pref_key"] = json!(k);
                 }
             }
-            let reasons = gate::injection(&m.content);
+            // The language, among those the tenant reads (G36). It picks the statement markers
+            // and the text-search configuration; it never narrows the injection screen, which
+            // applies the phrases of every enabled pack and the built-in English ones.
+            let lang = self.languages.detect(&m.content, policy.policy.languages.as_deref());
+            m.language = Some(lang.pack.code().to_string());
+            let reasons = self.languages.injection(&m.content);
             if type_gate.judges_statements() {
-                let mut c = self.classifier.classify(&m.content, m.kind).await?;
+                let mut c = self.classifier.classify(&m.content, m.kind, &lang).await?;
                 // The extractor's reading wins over a plain "fact" or "event" from the rules.
                 if let Some(h) = it.hint.filter(|h| *h != c.statement && (matches!(c.statement, Statement::Fact | Statement::Event) || *h == Statement::Plan)) {
                     c = Classification { statement: h, confidence: c.confidence, reason: format!("extractor: {}", h.as_str()) };
@@ -859,10 +863,11 @@ impl Engine {
     }
 
     /// Stage 5: the representation of each record (HYB-01).
-    pub(crate) fn route_stage(items: &mut [Item]) {
+    pub(crate) fn route_stage(&self, items: &mut [Item]) {
         for it in items.iter_mut() {
             let m = &mut it.rec.memory;
-            it.route = classify::route(m.kind, &m.content, it.rec.structured.is_some(), !it.rec.code_refs.is_empty());
+            let pack = m.language.as_deref().and_then(|l| self.languages.pack(l)).unwrap_or(self.languages.default_pack());
+            it.route = classify::route(pack, m.kind, &m.content, it.rec.structured.is_some(), !it.rec.code_refs.is_empty());
             if m.kind != MemoryKind::Episodic {
                 m.metadata["route"] = json!(it.route.as_str());
             }
@@ -1014,10 +1019,10 @@ impl Engine {
                             if o.status != MemoryStatus::Committed || !older || !derived_ok || !fresh {
                                 continue;
                             }
-                            let corrects = class == Some(Statement::Correction) && classify::shares_content_word(&o.content, &m.content);
+                            let corrects = class == Some(Statement::Correction) && self.languages.values().shares_content_word(&o.content, &m.content);
                             // An event is a new occurrence unless it restates the old one exactly.
                             let overlap = if class == Some(Statement::Event) { 0.9 } else { 0.6 };
-                            let updates = !corrects && classify::value_update(&o.content, &m.content, overlap);
+                            let updates = !corrects && self.languages.values().value_update(&o.content, &m.content, overlap);
                             if corrects || updates {
                                 let how = if corrects { "correction" } else { "value_update" };
                                 m.supersedes = Some(old);
@@ -1036,7 +1041,11 @@ impl Engine {
                         for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope }).await? {
                             let Some(pm) = self.store.get(tenant, plan).await? else { continue };
                             let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope;
-                            if open && sim >= icfg.confirm_threshold && classify::shares_content_word(&pm.content, &m.content) && !confirm.iter().any(|(p, _)| *p == plan) {
+                            if open
+                                && sim >= icfg.confirm_threshold
+                                && self.languages.values().shares_content_word(&pm.content, &m.content)
+                                && !confirm.iter().any(|(p, _)| *p == plan)
+                            {
                                 confirm.push((plan, m.id));
                                 it.confirms.push(plan);
                             }

@@ -37,6 +37,8 @@ pub struct SuiteFile {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     #[serde(default = "k")]
     pub k: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,7 +65,7 @@ pub fn parse(text: &str, origin: &str) -> anyhow::Result<Suite> {
         (Some(_), false) => anyhow::bail!("{origin}: a suite has either `generate` or `conversations`, not both"),
         (None, true) => anyhow::bail!("{origin}: a suite needs `conversations` or `generate`"),
     };
-    let suite = Suite { format: f.format, name: f.name, description: f.description, k: f.k, conversations };
+    let suite = Suite { format: f.format, name: f.name, description: f.description, language: f.language, k: f.k, conversations };
     suite.validate().with_context(|| origin.to_string())?;
     Ok(suite)
 }

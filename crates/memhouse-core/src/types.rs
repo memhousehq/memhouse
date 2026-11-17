@@ -433,6 +433,10 @@ pub struct Memory {
     pub scope: Scope,
     #[serde(default, skip_serializing_if = "Provenance::is_empty")]
     pub provenance: Provenance,
+    /// The language the text was detected as, among the enabled ones (a language-pack code
+    /// such as `en` or `de`); absent on records written before languages were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// A record ready to be inserted (embedding already computed).

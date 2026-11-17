@@ -63,6 +63,18 @@ path from 0.x data other than export and import.
   (`mh_eval_suite`, `mh_eval_run`). See [docs/evaluation.md](docs/evaluation.md).
 - Fixed: a correction containing a word with letters outside ASCII ("Kraków") made its intake
   job panic and the write was set aside; the shared-word check now cuts between letters.
+- Language packs: every word list and phrase pattern of the statement gate, query planning and
+  the injection screen is data, one TOML file per language, validated and compiled at start.
+  Packs for the 24 official EU languages are built in (English stable, the others drafts until
+  a speaker reviews them), each with a labelled test set; `[language] enabled` turns on several
+  at once, `packs_dir` loads your own, and a tenant's policy may narrow the set. The language of
+  each write and question is detected without a model and recorded on the record; each record
+  is indexed with its language's Postgres text-search configuration. The injection screen is
+  never narrowed: every enabled pack's phrases and the built-in English ones apply to every
+  write. With English alone, behaviour is unchanged. `memhouse lang list|check|detect|schema`;
+  API 1.8.0 (`language` on a record, `language.enabled` in a policy spec), schema version 9.
+  See [docs/languages.md](docs/languages.md).
+- Identifiers and words are matched with Unicode letter classes ("Č-1001" is an identifier).
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early
   (`memhouse recall ... | head`).

@@ -20,6 +20,7 @@ macro_rules! println {
 
 mod connect;
 mod eval;
+mod lang;
 mod policy;
 mod principals;
 mod up;
@@ -135,6 +136,11 @@ enum Cmd {
         tenant: Option<String>,
         #[command(subcommand)]
         cmd: eval::EvalCmd,
+    },
+    /// Language packs: list them, check a pack file against its test set, detect a text's language
+    Lang {
+        #[command(subcommand)]
+        cmd: lang::LangCmd,
     },
     /// Behaviour policy: validate, diff, propose, approve and roll back specs
     Policy {
@@ -508,6 +514,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Key { cmd: Some(c) } => principals::key(&engine(Config::load(cfg_path.as_deref())?).await?, c).await?,
         Cmd::Principal { cmd } => principals::principal(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
         Cmd::Policy { tenant, cmd: policy::PolicyCmd::Validate { file } } => policy::validate(&Config::load(cfg_path.as_deref())?, tenant, &file)?,
+        Cmd::Lang { cmd } => lang::run(cfg_path.as_deref(), cmd)?,
         Cmd::Eval { tenant, cmd } => eval::run(&engine(Config::load(cfg_path.as_deref())?).await?, tenant, cmd).await?,
         Cmd::Policy { tenant, cmd } => policy::run(&engine(Config::load(cfg_path.as_deref())?).await?, tenant, cmd).await?,
         Cmd::Grant { cmd } => principals::grant(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
@@ -746,6 +753,11 @@ async fn doctor(cfg_path: &Option<PathBuf>) -> anyhow::Result<()> {
             ok(&format!("embedder {} ({} dims)", eng.embedder.id(), eng.embedder.dim()));
             if let Some(r) = &eng.reranker {
                 ok(&format!("reranker {}", r.id()));
+            }
+            let packs: Vec<String> = eng.languages.packs().iter().map(|p| format!("{} ({})", p.code(), p.source)).collect();
+            ok(&format!("languages {}; default {}", packs.join(", "), eng.languages.default_pack().code()));
+            if let Some(w) = memhouse_core::lang::embedder_warning(&eng.languages.codes(), &cfg.embedding.model) {
+                bad(&w);
             }
             let st = eng.store.stats(&cfg.memory.tenant).await?;
             ok(&format!("{} memories, {} subjects, {} audit events", st.committed, st.subjects, st.audit_events));

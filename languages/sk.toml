@@ -1,0 +1,394 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Slovak language pack. Draft: it passes its test set (languages/tests/sk.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "sk"
+name = "Slovak"
+status = "draft"
+# Postgres has no Slovak stemmer.
+text_search = "simple"
+
+# Slovak and Czech share much of their vocabulary. The words that tell Slovak from Czech are
+# listed too ("som", "sú", "sa", "alebo", "keď", "ktorý", "pri", "pred", "teraz", "nie", "aj",
+# "používateľ"), and so are the letters ä, ľ, ĺ, ŕ and ô, which Czech does not have.
+[detect]
+words = [
+  "a", "aj", "i", "v", "vo", "z", "zo", "s", "so", "sa", "k", "ku", "o", "u", "na", "do", "od",
+  "po", "za", "pre", "pri", "pred", "medzi", "podľa", "je", "som", "si", "sme", "ste", "sú", "bol",
+  "bola", "bolo", "byť", "nie", "má", "mám", "že", "ale", "alebo", "keď", "ako", "čo", "kto", "kde",
+  "kedy", "prečo", "ktorý", "ktorá", "ktoré", "ten", "tá", "to", "tento", "už", "len", "iba",
+  "ešte", "tiež", "veľmi", "teraz", "môj", "jej", "ich", "náš", "aby", "by", "bude", "používateľ",
+]
+letters = "áäčďéíĺľňóôŕšťúýž"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# "asi" is left out: it is also "about" ("asi 5 km").
+speculation = [
+  "možno",
+  "možné,? že",
+  "snáď",
+  "azda",
+  "pravdepodobne",
+  "zrejme",
+  "údajne",
+  "vraj",
+  "podľa všetkého",
+  "vyzerá to",
+  "zdá sa",
+  "myslím",
+  "domnievam sa",
+  "tuším",
+  "hádam",
+  "predpokladám",
+  "tipujem",
+  "nie som si ist(?:ý|á)",
+  "neviem,? či",
+  "nie je isté",
+  "mohol by",
+  "mohl[aoi] by",
+  "keby",
+  "fám(?:a|y|u|e|ou)",
+  "chýr(?:y|ov)?",
+  "hovorí sa",
+  "povráva sa",
+  "hypoteticky",
+  "teoreticky",
+  "uvažuj(?:e|em|eme|ú|ete)",
+  "zvažuj(?:e|em|eme|ú|ete)",
+  "rozmýšľa(?:m|me|jú)?",
+  "premýšľa(?:m|me|jú)? o",
+]
+# A change to something stored before.
+correction = [
+  "vlastne",
+  "v skutočnosti",
+  # "oprava" is also a repair: only as a heading.
+  "oprava[:,]\\s+",
+  "korekcia[:,]\\s+",
+  "spresnenie",
+  "pomýlil[ai]? (?:som|sme) sa",
+  "mýlil[ai]? (?:som|sme) sa",
+  # "už nepracuje": the verb is negated by its prefix.
+  "už nie",
+  "už (?:sa |si )?ne\\w{3,}",
+  "namiesto",
+  "zmenil[aoi]?",
+  "preš(?:iel|la|lo|li) (?:na|do|k|ku)",
+  "(?:pre|od|vy)sťahoval[aoi]?",
+  "teraz",
+  "medzitým",
+  "aktualizovan(?:ý|á|é)",
+  "nahraden(?:ý|á|é)",
+  "kedysi",
+  "voľakedy",
+  "pôvodne",
+]
+# An intention not yet carried out.
+plan = [
+  "plánuj(?:e|em|eme|ú|ete|eš)",
+  "plánoval[aoi]?",
+  "naplánoval[aoi]?",
+  "naplánovan(?:ý|á|é)",
+  "v pláne",
+  "hodl(?:á|ám|áme|ajú)",
+  "(?:má|mám|máme|majú) v úmysle",
+  "zamýšľa(?:m|me|jú)?",
+  "chyst(?:á|ám|áme|ajú) sa",
+  "sa chyst(?:á|ám|áme|ajú)",
+  "chc(?:e|em|eme|ete|ú|eš)",
+  "chcel[aoi]? by",
+  "rád by",
+  "rada by",
+  "radi by",
+  "dúfa(?:m|me|jú)?",
+  # The compound future: "bude pracovať" (the infinitive ends in -ť).
+  "bud(?:em|e|eme|ete|ú|eš) (?:\\w+ ){0,2}\\w+ť",
+  # The simple future of common perfective verbs (as English "will visit, will start …").
+  "(?:nastúpi(?:m|me)?|začn(?:e|em|eme|ú)|pôjd(?:e|em|eme|u)|polet(?:í|ím|íme)|kúpi(?:m|me)?|navštívi(?:m|me)?|predá(?:m|me)?|predajú|pošl(?:e|em|eme|ú)|podpíš(?:e|em|eme|u)|(?:pre|od)sťahuj(?:e|em|eme|ú) sa|sa (?:pre|od)sťahuj(?:e|em|eme|ú)|prejd(?:e|em|eme)|vráti(?:m|me)? sa|zavolá(?:m|me)?|zarezervuj(?:e|em|eme|ú)|predĺži(?:m|me)?|rozhodn(?:e|em|eme|ú) sa|nasadí(?:m|me)?)",
+  "budúc(?:i|eho|om|u|a|ej|e) (?:týždeň|týždni|týždňa|mesiac|mesiaci|mesiaca|rok|roku|roka|štvrťrok|štvrťroku|pondelok|utorok|stredu|štvrtok|piatok|sobotu|nedeľu|víkend|víkende|jar|leto|jeseň|zimu)",
+  "nasledujúc(?:i|eho|om|u|a|ej|e) (?:týždeň|týždni|mesiac|mesiaci|rok|roku|štvrťrok|štvrťroku|víkend)",
+  "zajtra",
+  "pozajtra",
+  "čoskoro",
+  "onedlho",
+  # Years are left out: "o rok starší" is a comparison.
+  "o (?:\\d+|dva|dve|tri|štyri|päť|niekoľko|pár) (?:dni|dní|týždne|týždňov|mesiace|mesiacov)",
+  "o (?:týždeň|mesiac)",
+  "nezabudni(?:te)?",
+  "(?:musí|musím|musíme|musia|treba) ešte",
+  "ešte (?:musí|musím|musíme|musia|treba)",
+  "cieľom je",
+]
+# The feminine "rada" is also "advice" and "council": it counts only next to a verb.
+preference = [
+  "uprednostňuj(?:e|em|eme|ú)",
+  "dáva(?:m|me|jú)? prednosť",
+  "preferuj(?:e|em|eme|ú)",
+  "preferenci(?:a|e|u|í)",
+  "miluj(?:e|em|eme|ú)",
+  "zbožňuj(?:e|em|eme|ú)",
+  "neznáša(?:m|me|jú)?",
+  "nenávid(?:í|ím|íme|ia)",
+  "(?:naj)?obľúben(?:ý|á|é|ého|ú|om|ým|ých|ými|í|ej|ejší|ejšia|ejšie)",
+  "rád",
+  "radi",
+  "nerád",
+  "nerad[aiy]",
+  "radšej",
+  "najradšej",
+  "(?:je|má|mám|som|mala|bola|by) (?:\\w+ ){0,2}rada",
+  "rada (?:sa |si )?(?:má|chodí|číta|varí|cestuje|pracuje|počúva|hrá|pije|jedáva|pozerá|behá|pláva)",
+  "páči sa",
+  "sa páči",
+  "chutí",
+  "nemôž(?:e|em|eme|u) (?:vystáť|zniesť|ani cítiť)",
+  "alergick(?:ý|á|é|ú|ého) na",
+  "alergi(?:a|u|e|í) na",
+]
+# Only at the start of the statement.
+instruction_start = [
+  "vždy", "nikdy", "prosím", "uisti(?:te)? sa", "dbaj(?:te)?", "daj(?:te)? pozor",
+  "dávaj(?:te)? pozor", "vyhni(?:te)? sa", "vyvaruj(?:te)? sa", "používaj(?:te)?", "použi(?:te)?",
+  "spúšťaj(?:te)?", "spusti(?:te)?", "skontroluj(?:te)?", "over(?:te)?",
+  "ne\\w{2,}(?:aj|uj|ej)(?:te)?", "nesmie(?:š|te)?", "je (?:nutné|potrebné)",
+]
+instruction = [
+  "by mal[aoi]? (?:vždy|nikdy)",
+  "(?:musí|musia|musíš|musíte|treba|je potrebné|je nutné) vždy",
+  "vždy (?:musí|musia|musíš|musíte|treba|je potrebné|je nutné)",
+  "(?:nesmie|nesmú|nesmieš|nesmiete) nikdy",
+  "nikdy (?:nesmie|nesmú|nesmieš|nesmiete)",
+  "za žiadnych okolností",
+]
+# Past events: a dated reference or a completed action. Past participles by gender and number.
+event = [
+  "včera",
+  "predvčerom",
+  "vlani",
+  "(?:minul|vlaňajš|predchádzajúc|predošl)\\w{1,3} (?:týždeň|týždni|týždňa|mesiac|mesiaci|mesiaca|rok|roku|roka|noc|noci|víkend|víkende|pondelok|utorok|stredu|štvrtok|piatok|sobotu|nedeľu|jar|jari|leto|lete|jeseň|jeseni|zimu|zime)",
+  "pred (?:\\d+|dvoma|dvomi|troma|tromi|štyrmi|piatimi|šiestimi|niekoľkými|pár) (?:dňami|týždňami|mesiacmi|rokmi)",
+  "pred (?:týždňom|mesiacom|rokom)",
+  "(?:kúpi|preda|navštívi|adoptova|zača|dokonči|skonči|ukonči|absolvova|doštudova|vyštudova|podpísa|pripoji|opusti|zúčastni|oženi|vyda|dosta|získa|spusti|nasadi|odosla|posla|predĺži|obnovi|zruši|zaplati|zarezervova|objedna|vráti|cestova|odcestova|vyhra|prehra|strati|urobi|narodi|zomre|oslávi|zamestna|prepusti|aktualizova|založi|prija|naja|lete)l[aoi]?",
+  "stretol",
+  "stretl[aoi]",
+  "(?:od|pr)?išiel",
+  "(?:od|pr)?išl[aoi]",
+]
+
+[relations]
+relationship = [
+  "\\b(?:je|bol|bola|sú|boli|stal sa|stala sa) (?:teraz )?(?:nov(?:ým|ou) )?(?:manažér(?:om|kou)|vedúc(?:im|ou)|šéf(?:om|kou)|nadriaden(?:ým|ou)|kolegom|kolegyňou|manželkou|ženou|manželom|mužom|partner(?:om|kou)|bratom|sestrou|matkou|otcom|synom|dcérou|priateľ(?:om|kou)|kamarát(?:om|kou)|bratrancom|sesternicou|strýkom|tetou|sused(?:om|kou)|mentor(?:om|kou)|zákazník(?:om)?|zákazníčkou|klient(?:om|kou)|dodávateľom|majiteľ(?:om|kou)|zakladateľ(?:om|kou)|riaditeľ(?:om|kou)|kontaktnou osobou|sponzorom)\\s+\\w+",
+  "\\b(?:je podriaden[ýá]|podlieha|pracuje pre|pracuje s|pracuje so|pracuje u|je zasnúben[ýá] s|je príbuzn[ýá] s|je vydatá za|je ženatý s)\\b",
+]
+people = [
+  "sestra", "sestry", "sestre", "brat", "brata", "matka", "matky", "mama", "mamy", "otec", "otca",
+  "otecko", "rodič", "rodičia", "rodičov", "manželka", "manželky", "žena", "ženy", "manžel",
+  "manžela", "muž", "partner", "partnera", "partnerka", "partnerky", "syn", "syna", "dcéra",
+  "dcéry", "dieťa", "dieťaťa", "deti", "detí", "priateľ", "priateľa", "priateľka", "priateľky",
+  "kamarát", "kamaráta", "kamarátka", "priatelia", "kolega", "kolegu", "kolegyňa", "šéf", "šéfa",
+  "šéfka", "vedúci", "vedúca", "tím", "tímu", "sused", "suseda", "susedka", "bratranec",
+  "sesternica", "strýko", "ujo", "teta", "tety", "babka", "babička", "dedko", "pes", "psa",
+  "mačka", "mačky", "miláčik",
+]
+
+[values]
+stop = [
+  "používateľ", "používateľa", "používateľovi", "používateľom", "používateľka", "používateľky",
+  "používateľke", "používateľku", "používateľkou", "bolo", "bola", "boli", "bude", "majú", "mala",
+  "teraz", "jeho", "tento", "táto", "toto", "tejto", "tohto", "ktorý", "ktorá", "ktoré", "ktorú",
+  "alebo", "tiež", "ešte", "veľmi", "viac", "iné", "iný", "niektoré", "niekoľko", "podľa", "medzi",
+  "vlastne", "skutočnosti", "oprava", "korekcia", "namiesto", "zmenil", "zmenila", "presťahoval",
+  "presťahovala", "prešiel", "prešla", "kedysi", "voľakedy", "pôvodne", "predtým", "medzitým",
+  "aktuálne", "momentálne", "náš", "naša", "naše", "váš", "vaša", "vaše", "svoj", "svoje", "svoju",
+  "moja", "moje",
+]
+value_stop = [
+  "používateľ", "používateľa", "používateľka", "používateľky", "on", "ona", "oni", "ony", "jeho",
+  "jej", "ich", "ten", "tá", "to", "tie", "tento", "táto", "s", "so", "sa", "z", "zo", "od", "má",
+  "majú", "mal", "mala", "mali", "bol", "bola", "bolo", "boli", "je", "sú", "dostal", "dostala",
+  "teraz", "aktuálne", "momentálne", "nedávno", "celkovo", "spolu", "krát", "raz", "čas", "na",
+  "pre", "a", "aj", "i", "asi", "zhruba", "približne", "okolo", "skoro", "takmer", "vyše", "pod",
+  "viac", "než", "ako", "do", "tiež", "len", "iba", "stále", "ešte", "už", "nový", "nová", "nové",
+  "svoj", "svoja", "svoje", "náš", "si", "v", "vo", "o", "u", "po", "za", "pri", "k", "ku",
+]
+identifier = [
+  "faktúra", "faktúry", "faktúre", "faktúru", "faktúrou", "objednávka", "objednávky", "objednávke",
+  "objednávku", "objednávkou", "tiket", "tiketu", "tiketom", "ticket", "požiadavka", "požiadavky",
+  "požiadavke", "požiadavku", "požiadavkou", "prípad", "prípadu", "účet", "účtu", "id", "č",
+  "číslo", "čísla", "číslom", "ref", "referencia", "verzia", "verzie", "verziu", "izba", "izby",
+  "let", "letu", "stôl", "stola", "miesto", "sedadlo", "brána", "nástupište", "trasa", "autobus",
+  "linka", "linky", "model", "položka", "položky", "sku", "chyba", "chyby", "bug", "byt", "bytu",
+  "budova", "poschodie", "psč", "kód", "klapka",
+]
+quantity = [
+  "nula", "jeden", "jedna", "jedno", "dva", "dve", "tri", "štyri", "päť", "šesť", "sedem", "osem",
+  "deväť", "desať", "jedenásť", "dvanásť", "trinásť", "štrnásť", "pätnásť", "šestnásť",
+  "sedemnásť", "osemnásť", "devätnásť", "dvadsať", "tridsať", "štyridsať", "päťdesiat",
+  "šesťdesiat", "sedemdesiat", "osemdesiat", "deväťdesiat", "sto", "tisíc", "milión", "raz",
+  "dvakrát", "trikrát", "pol", "polovica", "tucet", "dvojitý", "trojitý", "niekoľko", "pár",
+]
+dates = [
+  "\\b\\d{1,2}\\.\\s*(?:január|február|marec|marc|apríl|máj|jún|júl|august|septemb|októb|novemb|decemb)\\w*",
+  "\\b\\d{1,2}\\.\\s?\\d{1,2}\\.(?:\\s?\\d{2,4})?",
+]
+
+[values.numbers]
+nula = 0
+jeden = 1
+jedna = 1
+jedno = 1
+raz = 1
+dva = 2
+dve = 2
+"dvakrát" = 2
+"dvojitý" = 2
+tri = 3
+"trikrát" = 3
+"trojitý" = 3
+"štyri" = 4
+"päť" = 5
+"šesť" = 6
+sedem = 7
+osem = 8
+"deväť" = 9
+"desať" = 10
+"jedenásť" = 11
+"dvanásť" = 12
+tucet = 12
+"dvadsať" = 20
+"tridsať" = 30
+"päťdesiat" = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# "5-krát", "3-tí"
+number_suffixes = ["-?(?:krát|ho|mu|tí|tý|té|ti)"]
+# Nominative, accusative ("v sobotu") and genitive ("do soboty").
+weekdays = [
+  ["pondel(?:ok|ka|ku)"], ["utor(?:ok|ka|ku)"], ["stred[auy]"], ["štvrt(?:ok|ka|ku)"],
+  ["piat(?:ok|ka|ku)"], ["sobot[auy]"], ["nedeľ[aue]"],
+]
+# Nominative, genitive ("3. júna"), locative ("vo februári") and instrumental.
+# "mája" is also the name Mája: it is May only after a day or a preposition, or before a year.
+months = [
+  ["január(?:a|i|om)?"], ["február(?:a|i|om)?"], ["marec", "marc(?:a|i|om)"], ["apríl(?:a|i|om)?"],
+  ["máj(?:i|om)?", "(?:\\d{1,2}\\.|od|do|koniec|konca|koncom|začiatok|začiatku|začiatkom|polovici|polovice)\\s*mája", "mája\\s+(?:19|20)\\d{2}"],
+  ["jún(?:a|i|om)?"], ["júl(?:a|i|om)?"], ["august(?:a|e|om)?"], ["september", "septembr(?:a|i|om)"],
+  ["október", "októbr(?:a|i|om)"], ["november", "novembr(?:a|i|om)"], ["december", "decembr(?:a|i|om)"],
+]
+month_names = [
+  "január", "januára", "januári", "február", "februára", "februári", "marec", "marca", "marci",
+  "apríl", "apríla", "apríli", "máj", "mája", "máji", "jún", "júna", "júni", "júl", "júla", "júli",
+  "august", "augusta", "auguste", "september", "septembra", "septembri", "október", "októbra",
+  "októbri", "november", "novembra", "novembri", "december", "decembra", "decembri",
+]
+# "pred dvoma týždňami"
+ago = ["pred\\s+{num}\\s+{unit}"]
+# "za posledný mesiac", "minulý týždeň", "počas posledných troch mesiacov"; "pred týždňom"
+past = [
+  "(?:posledn(?:ý|ého|om|ú|á|é|ých|ými)|minul(?:ý|ého|om|ú|á|é|ých)|uplynul(?:ý|ého|om|ú|á|é|ých)|predchádzajúc(?:i|eho|om|u|a|e|ich)|predošl(?:ý|ého|om|ú|á|é|ých)|vlaňajš(?:í|ieho|om))\\s+(?:{num}\\s+)?{unit}",
+  "pred\\s+{unit}",
+]
+# "minulý mesiac" and "minulý rok" are the previous calendar month and year; "posledný mesiac"
+# is the last thirty days.
+calendar = ["^(?:minul|predchádzajúc|predošl|vlaňajš)"]
+last_weekday = ["(?:minul(?:ý|ú|é|ého|ej)|posledn(?:ý|ú|é|ého|ej)|uplynul(?:ý|ú|é)|tento|túto|toto|v|vo)\\s+{weekday}"]
+strictly_before = ["^(?:minul|posledn|uplynul)"]
+last_weekend = ["(?:minul(?:ý|om|ého)|posledn(?:ý|om|ého)|uplynul(?:ý|om|ého))\\s+víkend(?:e|u)?"]
+yesterday = ["včera"]
+this = ["(?:tento|tohto|tomto|túto|toto|tejto)\\s+{unit}"]
+# "vo februári", "3. júna"
+in_month = ["(?:{day}\\.\\s*)?{month}"]
+
+# Number words in the forms the templates meet: "posledné dva týždne" (nominative), "posledných
+# piatich rokov" (genitive), "pred dvoma týždňami" (instrumental).
+[time.numbers]
+jeden = 1
+jedna = 1
+jedno = 1
+"jedným" = 1
+jednou = 1
+dva = 2
+dve = 2
+dvoch = 2
+dvoma = 2
+dvomi = 2
+"pár" = 2
+tri = 3
+troch = 3
+troma = 3
+tromi = 3
+"niekoľko" = 3
+"niekoľkých" = 3
+"niekoľkými" = 3
+"štyri" = 4
+"štyroch" = 4
+"štyrmi" = 4
+"päť" = 5
+piatich = 5
+piatimi = 5
+"šesť" = 6
+"šiestich" = 6
+"šiestimi" = 6
+sedem = 7
+siedmich = 7
+siedmimi = 7
+osem = 8
+"ôsmich" = 8
+"ôsmimi" = 8
+"deväť" = 9
+deviatich = 9
+deviatimi = 9
+"desať" = 10
+desiatich = 10
+desiatimi = 10
+"jedenásť" = 11
+"dvanásť" = 12
+
+# Singular, the form after 2–4 ("dva týždne"), the form after 5+ ("päť týždňov") and the oblique
+# cases ("pred týždňom", "pred dvoma týždňami").
+[time.units]
+day = ["deň", "dň(?:a|om|ami|och)", "dn(?:i|í)"]
+week = ["týždeň", "týždň(?:a|i|u|om|ov|ami|och)", "týždne"]
+month = ["mesiac(?:a|i|e|u|om|ov|mi|och)?"]
+year = ["rok(?:a|u|y|ov|om|mi|och)?"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["alebo", "či"]
+or_not = ["alebo nie", "či nie", "alebo ani"]
+between = ["medzi\\s+(.+?)\\s+a\\s+(.+?)"]
+clause = ["keď", "než", "predtým,? ako", "predtým,? než", "potom,? ako", "odkedy", "zatiaľ čo", "kým"]
+lead = [
+  "ktor(?:ý|á|é|ého|ú|om|ým|ých|ými|ej)", "ak(?:ý|á|é|ého|ú|om|ým|ých|ej)", "čo", "čoho", "čím",
+  "kto", "koho", "komu", "kým", "čí", "kedy", "kde", "kam", "odkiaľ",
+  "koľko\\s+(?:\\w+)?", "ako\\s+(?:dlho|často|veľmi|starý|stará)?",
+  "bol[ai]?", "je", "sú", "som", "mal[ai]?", "má", "mám",
+]
+article = [
+  "ten", "tá", "to", "tie", "tú", "toho", "tej", "môj", "moja", "moje", "moju", "môjho", "náš",
+  "naša", "naše", "nášho", "tamten", "tamtá", "tamto",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+# "si" is both "you are" and a reflexive ("teraz si daj kávu"), so "teraz si" alone is not a
+# phrase: it needs what follows ("… bez obmedzení", "… a nemáš …").
+[injection]
+override = [
+  "\\b(?:ignoruj(?:te)?|ignorovať|nedbaj(?:te)?|zabudni(?:te)?|prehliadaj(?:te)?|prehliadni(?:te)?|prepíš(?:te)?|neriaď(?:te)? sa|nevšímaj(?:te)? si|zahoď(?:te)?)\\b[^.\\n]{0,40}\\b(?:predchádzajúc\\w+|predošl\\w+|doterajš\\w+|skorš\\w+|vyššie uveden\\w+|všetk\\w+|svoj\\w*|tvoj\\w*|vaš\\w+)\\b[^.\\n]{0,25}\\b(?:pokyn\\w*|inštrukci\\w+|príkaz\\w*|pravid\\w+|zásad\\w*|usmerneni\\w+|prompt\\w*)",
+]
+role_hijack = [
+  "\\b(?:(?:odteraz|od teraz|od tejto chvíle|odo dneška),? (?:si|ste|budeš|budete|musíš|musíte|máš|odpovedaj|odpovedajte|odpovedáš)|(?:teraz|odteraz) (?:si|ste) (?:neobmedzen\\w+|necenzurovan\\w+|(?:\\w+ ){1,4}(?:bez|nemáš|nemáte))|správaj(?:te)? sa ako (?:\\w+ ){0,2}(?:neobmedzen\\w+|necenzurovan\\w+|bez (?:\\w+ )?(?:obmedzení|pravidiel|zábran))|konaj(?:te)? ako (?:\\w+ ){0,2}(?:neobmedzen\\w+|necenzurovan\\w+|bez (?:\\w+ )?(?:obmedzení|pravidiel|zábran))|tvár(?:te)? sa,? že nemáš (?:žiadne )?(?:pravidlá|obmedzenia))",
+]
+system_prompt = [
+  "\\b(?:ukáž(?:te)?|zobraz(?:te)?|vypíš(?:te)?|prezraď(?:te)?|odhaľ(?:te)?|vytlač(?:te)?|napíš(?:te)?|povedz(?:te)?|vyzraď(?:te)?)\\b[^.\\n]{0,40}\\b(?:systémov\\w+ (?:prompt\\w*|pokyn\\w*|inštrukci\\w+|správ\\w+)|skryt\\w+ (?:pokyn\\w*|inštrukci\\w+)|vývojársk\\w+ správ\\w+|správ\\w+ (?:od )?vývojára)",
+]
+memory_directive = [
+  "\\b(?:vždy|zakaždým|kedykoľvek|vždy keď)\\b[^.\\n]{0,60}\\b(?:pošli|posielaj|odošli|odosielaj|prepošli|preposielaj|odovzdaj|odovzdávaj|nahraj|nahrávaj|prenes|preveď)(?:te)?\\b[^.\\n]{0,60}\\b(?:na|do|k)\\b[^.\\n]{0,40}(?:https?://|@|\\bpeňaženk\\w+\\b|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:spusti(?:te)?|spustiť|vykonaj(?:te)?|zavolaj(?:te)?)\\b[^.\\n]{0,30}\\b(?:príkaz|nástroj|funkciu|funkcia)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

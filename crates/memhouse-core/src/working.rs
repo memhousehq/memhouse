@@ -195,6 +195,7 @@ mod tests {
             expires_at: Some(now + chrono::Duration::seconds(ttl_secs)),
             scope: Scope { session: Some(session.into()), ..Default::default() },
             provenance: Provenance::default(),
+            language: None,
         }
     }
 

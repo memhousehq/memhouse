@@ -1,0 +1,394 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Finnish language pack. Draft: it passes its test set (languages/tests/fi.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+# Finnish inflects by suffix: markers are stems with a bounded class of endings, and the time
+# templates take the unit, weekday and month in the case the phrase needs ("kaksi viikkoa sitten",
+# "viime kuussa", "lauantaina", "helmikuussa").
+format = 1
+language = "fi"
+name = "Finnish"
+status = "draft"
+text_search = "finnish"
+
+[detect]
+words = [
+  "ja", "on", "ei", "että", "se", "oli", "hän", "mutta", "kun", "niin", "myös", "tai", "jos",
+  "kuin", "ovat", "ole", "olla", "minä", "sinä", "me", "he", "tämä", "tuo", "ne", "nämä", "mikä",
+  "mitä", "kuka", "missä", "milloin", "miksi", "miten", "joka", "jotka", "vain", "vielä", "jo",
+  "nyt", "sitten", "kanssa", "mukaan", "ennen", "jälkeen", "koska", "sekä", "eli", "vaan", "en",
+  "emme", "eivät", "olen", "olet", "olin", "sen", "hänen", "minun", "sinun", "meidän", "heidän",
+  "tässä", "siitä", "sitä", "kaikki", "hyvin", "noin", "käyttäjä", "käyttäjän",
+]
+letters = "äöå"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "ehkä",
+  "kenties",
+  "mahdollisesti",
+  "luultavasti",
+  "todennäköisesti",
+  "oletettavasti",
+  "varmaan(?:kin)?",
+  "kai",
+  "saatta(?:a|vat|isi|isivat|nee|nevat)",
+  "saattanut",
+  "voi(?:si)? olla",
+  "taita(?:a|vat)",
+  "luulen",
+  "luulisin",
+  "luullakseni",
+  "uskoakseni",
+  "uskon,? että",
+  "arvelen",
+  "epäilen",
+  "veikkaan",
+  "mietin,? (?:onko|pitäisikö|kannattaako)",
+  "en ole varma",
+  "ei ole varmaa",
+  "epävarma[at]?",
+  "huhu(?:n|a|t|ja|jen|taan)?",
+  "kuulemma",
+  "ilmeisesti",
+  "nähtävästi",
+  "tiettävästi",
+  "väitetysti",
+  "hypoteettisesti",
+  "teoriassa",
+  "harkitse(?:e|vat|n|mme)",
+  "harkin(?:nut|neet)",
+  "mietti(?:i|vät) (?:\\w+ ){0,3}\\w+mist[aä]",
+  "jos (?:\\w+ ){0,4}\\w+isi(?:n|t|mme|tte|vat|vät)?",
+]
+# A change to something stored before.
+correction = [
+  "itse asiassa",
+  "oikeastaan",
+  "korjaus",
+  "oikaisu",
+  "olin väärässä",
+  "erehdyin",
+  "enää",
+  "sijaan",
+  "sijasta",
+  "on muuttunut",
+  "ovat muuttuneet",
+  "muuttui(?:vat)?",
+  "muut(?:ti|tivat|in|imme|tanut|taneet)",
+  "vaiht(?:oi|oivat|anut|aneet)",
+  "vaihdoin",
+  "siirty(?:i|ivät|nyt|neet)",
+  "nyt",
+  "nykyään",
+  "nykyisin",
+  "tätä nykyä",
+  "päivitetty",
+  "korvattu",
+  "korvattiin",
+  "aiemmin",
+  "aikaisemmin",
+  "ennen (?:asui|oli|työskenteli|käytti|omisti)",
+  "(?:asui|oli|työskenteli|käytti|omisti) ennen",
+]
+# An intention not yet carried out.
+plan = [
+  "aiko(?:o|vat|i|ivat)",
+  "aion",
+  "aiomme",
+  "suunnittele(?:e|vat|n|mme)",
+  "suunnitel(?:lut|leet)",
+  "suunnitelmissa",
+  "suunnitelma(?:na)? on",
+  "on tarkoitus",
+  "tarkoituksena",
+  "aikomus",
+  "aikomuksena",
+  "halua(?:a|vat|n|mme|isi|isivat|isin|isimme)",
+  "toivo(?:o|vat|n|mme)",
+  "pyrki(?:i|vät)",
+  "tavoitteena",
+  "ensi (?:viikolla|viikon|kuussa|kuun|vuonna|vuoden|vuosineljänneksellä|kvartaalilla|maanantaina|tiistaina|keskiviikkona|torstaina|perjantaina|lauantaina|sunnuntaina|viikonloppuna|keväänä|kesänä|syksynä|talvena)",
+  "tulevana? (?:viikolla|viikkona|kuukautena|vuonna|maanantaina|tiistaina|keskiviikkona|torstaina|perjantaina|lauantaina|sunnuntaina|viikonloppuna)",
+  "huomenna",
+  "ylihuomenna",
+  "myöhemmin (?:tällä viikolla|tässä kuussa|tänä vuonna)",
+  "lähiaikoina",
+  "(?:pitää|täytyy|pitäisi) (?:vielä|muistaa)",
+  # "muista lähettää" (remember to send), not "muista syistä" (for other reasons).
+  "muista(?:kaa)? \\w+(?:[aeiouyäö][aä]|d[aä])",
+  "on pakko",
+]
+preference = [
+  "mieluiten",
+  "mieluummin",
+  "suosi(?:i|vat|n|mme)",
+  "rakasta(?:a|vat|n|mme)",
+  "tykkä(?:ä|ävät|än|äämme)",
+  "pitä(?:ä|vät|n|mme)(?: (?:kovasti|paljon|todella|erityisesti|eniten))? \\w+st[aä]",
+  "ei(?:vät)? pidä \\w+st[aä]",
+  "nautti(?:i|vat)",
+  "nautin",
+  "inhoa(?:a|vat|n)",
+  "vihaa(?:vat|n)?",
+  "lempi\\w+",
+  "suosikki\\w*",
+  "ei(?:vät)? voi sietää",
+  "ei(?:vät)? siedä",
+  "allergi(?:nen|sia|set)",
+]
+# Only at the start of the statement.
+instruction_start = [
+  "aina", "älä", "älkää", "varmista(?:kaa)?", "huolehdi(?:than)?", "vältä", "välttäkää", "käytä",
+  "käyttäkää", "aja(?:kaa)?", "suorita", "suorittakaa", "muista(?:kaa)? aina",
+]
+instruction = [
+  "(?:pitää|täytyy|tulee|kuuluu) aina",
+  "on aina (?:oltava|tehtävä)",
+  "ei (?:saa|pidä|tule) koskaan",
+  "ei koskaan (?:saa|pidä|tule)",
+]
+# Past events: a dated reference or a completed action.
+event = [
+  "eilen",
+  "toissapäivänä",
+  "viime (?:viikolla|kuussa|vuonna|yönä|viikonloppuna|maanantaina|tiistaina|keskiviikkona|torstaina|perjantaina|lauantaina|sunnuntaina|keväänä|kesänä|syksynä|talvena)",
+  "\\d+ (?:päivää|viikkoa|kuukautta|vuotta) sitten",
+  "(?:pari|kaksi|kolme|neljä|viisi|kuusi|muutama|muutamia) (?:päivää|päivä|viikkoa|viikko|kuukautta|kuukausi|vuotta|vuosi) sitten",
+  "(?:päivä|viikko|kuukausi|vuosi) sitten",
+  "ost(?:i|in|imme|ivat|anut|aneet)",
+  "my(?:i|in|imme|ivät|ynyt|yneet)",
+  "vieraili(?:n|mme|vat)?",
+  "käv(?:i|in|imme|ivät)",
+  "käyn(?:yt|eet)",
+  "men(?:i|in|imme|ivät|nyt|neet)",
+  "adopto(?:i|in|imme|ivat|inut|ineet)",
+  "aloit(?:ti|in|imme|tivat|tanut|taneet)",
+  "lopet(?:ti|in|imme|tivat|tanut|taneet)",
+  "valmistu(?:i|in|imme|ivat|nut|neet)",
+  "sa(?:i|in|imme|ivat|anut|aneet)",
+  "allekirjoit(?:ti|in|imme|tivat|tanut|taneet)",
+  "liitty(?:i|ivät|nyt|neet)",
+  "liityin",
+  "läht(?:i|ivät|enyt|eneet)",
+  "lähdin",
+  "tapas(?:i|in|imme|ivat)",
+  "tavan(?:nut|neet)",
+  "osallistu(?:i|in|imme|ivat|nut|neet)",
+  "julkais(?:i|in|imme|ivat|sut|seet)",
+  "toimit(?:ti|in|imme|tivat|tanut|taneet)",
+  "peru(?:i|in|imme|ivat|nut|neet)",
+  "peruut(?:ti|in|imme|tivat|tanut|taneet)",
+  "maks(?:oi|oin|oimme|oivat|anut|aneet)",
+  "vara(?:si|sin|simme|sivat|nnut|nneet)",
+  "tila(?:si|sin|simme|sivat|nnut|nneet)",
+  "palaut(?:ti|in|imme|tivat|tanut|taneet)",
+  "matkust(?:i|in|imme|ivat|anut|aneet)",
+  "voit(?:ti|in|imme|tivat|tanut|taneet)",
+  "hävi(?:si|sin|simme|sivät|nnyt|nneet)",
+  "anto(?:i|ivat)",
+  "annoin",
+  "antan(?:ut|eet)",
+  "ott(?:i|ivat|anut|aneet)",
+  "otin",
+  "tek(?:i|ivät)",
+  "tein",
+  "tehn(?:yt|eet)",
+  "synty(?:i|ivät|nyt|neet)",
+  "kuol(?:i|ivat|lut|leet)",
+  "juhl(?:i|in|imme|ivat|inut|ineet)",
+  "palkka(?:si|sivat)",
+  "irtisano(?:i|ivat|utui|utuivat)",
+  "jä(?:i|ivät|in) eläkkeelle",
+  "hank(?:ki|in|imme|kivat|kinut|kineet)",
+  "päivit(?:ti|in|imme|tivät|tänyt|täneet)",
+  # The passive past, verb by verb: a general "-tiin" would also read "konserttiin" and "projektiin".
+  "(?:ostettiin|myytiin|julkaistiin|allekirjoitettiin|aloitettiin|lopetettiin|toimitettiin|peruttiin|peruutettiin|maksettiin|varattiin|tilattiin|palautettiin|palkattiin|irtisanottiin|hankittiin|päivitettiin|tehtiin|annettiin|saatiin|juhlittiin|perustettiin)",
+]
+
+[relations]
+# The possessor comes first, in the genitive: "Dana on Bobin esihenkilö".
+relationship = [
+  "\\b(?:on|oli|ovat|olivat) (?:nyt |nykyään )?\\p{L}+n (?:uusi )?(?:esihenkilö|esimies|pomo|kollega|työkaveri|vaimo|aviomies|mies|puoliso|kumppani|tyttöystävä|poikaystävä|veli|sisko|sisar|äiti|isä|poika|tytär|ystävä|serkku|setä|eno|täti|naapuri|mentori|asiakas|toimittaja|omistaja|perustaja|toimitusjohtaja|yhteyshenkilö|sponsori)\\b",
+  "\\b(?:raportoi \\p{L}+lle|työskentelee \\p{L}+(?:lle|n kanssa|n alaisuudessa)|on naimisissa|on kihloissa|on sukua)\\b",
+]
+people = [
+  "sisko", "siskon", "sisar", "veli", "veljen", "äiti", "äidin", "isä", "isän", "vanhempi",
+  "vanhemmat", "vaimo", "vaimon", "mies", "miehen", "aviomies", "puoliso", "kumppani", "poika",
+  "pojan", "tytär", "tyttären", "lapsi", "lapsen", "lapset", "ystävä", "ystävän", "ystävät",
+  "kaveri", "kollega", "työkaveri", "pomo", "esihenkilö", "esimies", "tiimi", "naapuri", "serkku",
+  "setä", "eno", "täti", "isoäiti", "mummo", "isoisä", "ukki", "tyttöystävä", "poikaystävä",
+  "koira", "koiran", "kissa", "kissan", "lemmikki",
+]
+
+[values]
+stop = [
+  "käyttäjä", "käyttäjän", "käyttäjällä", "käyttäjää", "että", "tämä", "tämän", "tässä", "nämä",
+  "kanssa", "ovat", "olla", "ollut", "olivat", "heidän", "hänen", "heillä", "hänellä", "siellä",
+  "täällä", "sitten", "kuin", "myös", "vain", "hyvin", "jotkut", "enemmän", "eniten", "muut",
+  "muita", "sinun", "teidän", "meidän", "enää", "itse", "asiassa", "oikeastaan", "sijaan",
+  "muutti", "muuttanut", "vaihtoi", "siirtyi", "päivitetty", "aiemmin", "aikaisemmin", "nykyään",
+  "nykyisin", "tällä", "hetkellä", "korjaus", "joka", "jotka", "mikä", "mitä", "koska", "mutta",
+]
+value_stop = [
+  "käyttäjä", "käyttäjän", "käyttäjällä", "hän", "hänen", "hänellä", "he", "heidän", "se", "sen",
+  "ne", "tämä", "tämän", "tuo", "kanssa", "on", "ovat", "oli", "olivat", "ollut", "sai", "saa",
+  "nyt", "nykyään", "tällä", "hetkellä", "äskettäin", "hiljattain", "yhteensä", "kertaa", "aika",
+  "per", "ja", "noin", "suunnilleen", "lähes", "melkein", "yli", "alle", "enemmän", "kuin", "myös",
+  "vain", "vielä", "jo", "uusi", "uuden", "uutta", "meidän", "sinun", "ei", "että",
+]
+identifier = [
+  "lasku", "laskun", "laskulle", "tilaus", "tilauksen", "tilaukselle", "tiketti", "tiketin",
+  "tiketille", "tukipyyntö", "tapaus", "tapauksen", "tili", "tilin", "id", "nro", "numero",
+  "viite", "viitteen", "versio", "version", "huone", "huoneen", "lento", "lennon", "pöytä",
+  "paikka", "portti", "laituri", "raide", "reitti", "bussi", "linja", "malli", "sarjanumero",
+  "tuote", "nimike", "sku", "ongelma", "vika", "bugi", "yksikkö", "asunto", "rakennus", "kerros",
+  "postinumero", "koodi", "alanumero",
+]
+quantity = [
+  "nolla", "yksi", "kaksi", "kolme", "neljä", "viisi", "kuusi", "seitsemän", "kahdeksan",
+  "yhdeksän", "kymmenen", "yksitoista", "kaksitoista", "kolmetoista", "neljätoista", "viisitoista",
+  "kuusitoista", "seitsemäntoista", "kahdeksantoista", "yhdeksäntoista", "kaksikymmentä",
+  "kolmekymmentä", "neljäkymmentä", "viisikymmentä", "kuusikymmentä", "seitsemänkymmentä",
+  "kahdeksankymmentä", "yhdeksänkymmentä", "sata", "tuhat", "miljoona", "kerran", "kahdesti",
+  "kolmesti", "puoli", "tusina", "pari", "kaksinkertainen", "kolminkertainen", "useita", "usea",
+  "muutama", "harva",
+]
+dates = [
+  "\\b\\d{1,2}\\.\\s*(?:tammi|helmi|maalis|huhti|touko|kesä|heinä|elo|syys|loka|marras|joulu)kuu(?:ta|n|ssa)?\\b",
+  "\\b(?:tammi|helmi|maalis|huhti|touko|kesä|heinä|elo|syys|loka|marras|joulu)kuun\\s+\\d{1,2}\\b",
+  "\\b\\d{1,2}\\.\\d{1,2}\\.(?:\\d{2,4})?",
+]
+
+[values.numbers]
+nolla = 0
+yksi = 1
+kerran = 1
+kaksi = 2
+kahdesti = 2
+pari = 2
+kolme = 3
+kolmesti = 3
+"neljä" = 4
+viisi = 5
+kuusi = 6
+"seitsemän" = 7
+kahdeksan = 8
+"yhdeksän" = 9
+kymmenen = 10
+yksitoista = 11
+kaksitoista = 12
+tusina = 12
+"kaksikymmentä" = 20
+"kolmekymmentä" = 30
+"viisikymmentä" = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# Amounts written onto a number: "2v" (years), "3kk" (months), "5pv" (days), "2vk" (weeks).
+number_suffixes = ["v", "kk", "pv", "vk", "kpl", "krs"]
+# Stems: the templates add the case ending ("lauantaina", "viime keskiviikon").
+weekdays = [
+  ["maanantai"], ["tiistai"], ["keskiviikko", "keskiviiko"], ["torstai"], ["perjantai"],
+  ["lauantai"], ["sunnuntai"],
+]
+months = [
+  ["tammikuu(?:ssa|n|ta|sta|hun|lla|lta)?"], ["helmikuu(?:ssa|n|ta|sta|hun|lla|lta)?"],
+  ["maaliskuu(?:ssa|n|ta|sta|hun|lla|lta)?"], ["huhtikuu(?:ssa|n|ta|sta|hun|lla|lta)?"],
+  ["toukokuu(?:ssa|n|ta|sta|hun|lla|lta)?"], ["kesäkuu(?:ssa|n|ta|sta|hun|lla|lta)?"],
+  ["heinäkuu(?:ssa|n|ta|sta|hun|lla|lta)?"], ["elokuu(?:ssa|n|ta|sta|hun|lla|lta)?"],
+  ["syyskuu(?:ssa|n|ta|sta|hun|lla|lta)?"], ["lokakuu(?:ssa|n|ta|sta|hun|lla|lta)?"],
+  ["marraskuu(?:ssa|n|ta|sta|hun|lla|lta)?"], ["joulukuu(?:ssa|n|ta|sta|hun|lla|lta)?"],
+]
+month_names = [
+  "tammikuu", "tammikuussa", "tammikuun", "tammikuuta", "helmikuu", "helmikuussa", "helmikuun",
+  "helmikuuta", "maaliskuu", "maaliskuussa", "maaliskuun", "maaliskuuta", "huhtikuu",
+  "huhtikuussa", "huhtikuun", "huhtikuuta", "toukokuu", "toukokuussa", "toukokuun", "toukokuuta",
+  "kesäkuu", "kesäkuussa", "kesäkuun", "kesäkuuta", "heinäkuu", "heinäkuussa", "heinäkuun",
+  "heinäkuuta", "elokuu", "elokuussa", "elokuun", "elokuuta", "syyskuu", "syyskuussa", "syyskuun",
+  "syyskuuta", "lokakuu", "lokakuussa", "lokakuun", "lokakuuta", "marraskuu", "marraskuussa",
+  "marraskuun", "marraskuuta", "joulukuu", "joulukuussa", "joulukuun", "joulukuuta",
+]
+# "kaksi viikkoa sitten": the postposition follows.
+ago = ["{num}\\s+{unit}\\s+(?:sitten|takaperin)"]
+# "viimeisen kolmen kuukauden aikana", "viime viikolla"
+past = ["(?:viime|viimeisen|viimeisten|viimeisimmän|kuluneen|kuluneiden|edellisen|edellisellä|edellisenä|menneen)\\s+(?:{num}\\s+)?{unit}"]
+# "viime kuussa" and "viime vuonna" are the previous calendar month and year; "viimeisen
+# kuukauden aikana" is the last thirty days.
+calendar = ["^(?:viime|edellise)"]
+# "viime lauantaina", "tänä lauantaina", "lauantaina"
+last_weekday = ["(?:viime|tänä|edellisenä)\\s+{weekday}(?:na|n)?", "{weekday}na"]
+strictly_before = ["^(?:viime|edellisenä)\\s"]
+last_weekend = ["(?:viime|edellisenä|edellisen)\\s+viikonlop(?:puna|un|pu)"]
+yesterday = ["eilen", "eilisen", "eilisiltana", "eilisaamuna"]
+# "tällä viikolla", "tässä kuussa", "tänä vuonna"
+this = ["(?:tällä|tässä|tänä|tämän|kuluvalla|kuluvana|kuluvan)\\s+{unit}"]
+# "kesäkuun 3. päivänä", then "3. kesäkuuta" and "helmikuussa"
+in_month = ["{month}\\s+{day}", "(?:{day}\\.\\s*)?{month}"]
+
+[time.numbers]
+yksi = 1
+yhden = 1
+kaksi = 2
+kahden = 2
+pari = 2
+parin = 2
+kolme = 3
+kolmen = 3
+muutama = 3
+muutaman = 3
+"neljä" = 4
+"neljän" = 4
+viisi = 5
+viiden = 5
+kuusi = 6
+kuuden = 6
+"seitsemän" = 7
+kahdeksan = 8
+"yhdeksän" = 9
+kymmenen = 10
+yksitoista = 11
+kaksitoista = 12
+
+[time.units]
+day = ["päiv(?:ä|ää|än|änä|ien|inä)"]
+week = ["viik(?:ko|koa|on|olla|kojen|koina)"]
+month = ["kuukau(?:si|den|tta|sien|sina|dessa)", "kuu(?:ssa|n|ta)?"]
+year = ["vuo(?:si|tta|den|nna|sien|sina|dessa)"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["tai", "vai"]
+or_not = ["vai ei", "tai ei"]
+# "A:n ja B:n välillä": the postposition follows, so each side is one word.
+between = ["(\\S+)\\s+ja\\s+(\\S+)\\s+väli(?:llä|ltä|ssä)"]
+clause = ["kun", "ennen kuin", "sen jälkeen kun", "jälkeen", "siitä lähtien kun", "kunnes", "samalla kun"]
+lead = [
+  "mikä", "mitä", "mitkä", "minkä", "mistä", "mihin", "missä", "minne", "kuka", "ketkä", "kenen",
+  "kenet", "milloin", "koska",
+  "kuinka\\s+(?:mon\\w+\\s+\\w+|paljon|kauan|vanha|usein)?",
+  "montako\\s+\\w+", "miten", "onko", "oliko", "ovatko", "olinko", "olenko",
+]
+article = ["minun", "meidän", "se", "tuo", "ne", "nuo", "tämä", "nämä"]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:ohit(?:a|takaa)|unohda|unohtakaa|sivuut(?:a|takaa)|hylkää|hylätkää|kumoa|kumotkaa|älä välitä|älkää välittäkö|älä huomioi|älä noudata)\\b[^.\\n]{0,40}\\b(?:aiem\\w+|aikaisem\\w+|edelli\\w+|kaik\\w+|yllä olev\\w+|omat|sinun|nykyi\\w+)\\b[^.\\n]{0,25}\\b(?:ohje\\w+|sään\\w+|määräy\\w+|kehot\\w+|prompt\\w*)",
+  "\\bjät(?:ä|täkää)\\b[^.\\n]{0,60}\\b(?:ohje\\w+|sään\\w+|määräy\\w+|kehot\\w+)\\b[^.\\n]{0,20}\\bhuomio(?:tta|imatta)\\b",
+  "\\bjät(?:ä|täkää) huomio(?:tta|imatta)\\b[^.\\n]{0,40}\\b(?:ohje\\w+|sään\\w+|määräy\\w+|kehot\\w+)",
+]
+role_hijack = [
+  "\\b(?:(?:sinä )?olet nyt|tästä (?:lähtien|eteenpäin|hetkestä alkaen),? (?:sinä )?(?:olet|vastaat|toimit|puhut|sinun (?:täytyy|pitää|tulee))|toimi (?:kuin |kuten )?(?:rajoittamat\\w+|sensuroimat\\w+)|esitä (?:rajoittamat\\w+|sensuroimat\\w+)|teeskentele,? (?:että|ettei) sinulla (?:ei )?ole (?:mitään |lainkaan )?(?:sääntöjä|rajoituksia))",
+]
+system_prompt = [
+  "\\b(?:näyt(?:ä|täkää)|paljasta(?:kaa)?|tulosta(?:kaa)?|kerro|kertokaa|anna|antakaa|kirjoita|vuoda)\\b[^.\\n]{0,40}\\b(?:järjestelmäkeho\\w+|järjestelmäprompt\\w*|järjestelmän kehot\\w+|järjestelmäviesti\\w*|system prompt\\w*|piilotet\\w+ ohje\\w+|kehittäjäviesti\\w*|kehittäjän viesti\\w*)",
+]
+memory_directive = [
+  "\\b(?:aina|joka kerta|kun tahansa|milloin tahansa)\\b[^.\\n]{0,60}\\b(?:lähet(?:ä|täkää)|välit(?:ä|täkää)|edelleenlähet(?:ä|täkää)|siirr(?:ä|täkää)|lataa|ladatkaa|toimit(?:a|takaa)|meilaa)\\b[^.\\n]{0,80}(?:https?://|@|\\blompak\\w+|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:suorit(?:a|takaa)|aja(?:kaa)?|käynnist(?:ä|äkää)|kutsu(?:kaa)?)\\b[^.\\n]{0,30}\\b(?:komen\\w+|käsky\\w*|työkalu\\w*|funktio\\w*)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

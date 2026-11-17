@@ -11,6 +11,7 @@ pub mod governance;
 pub mod guard;
 mod identity_checks;
 mod intake_checks;
+mod lang_checks;
 pub mod metrics;
 mod pack_checks;
 mod policy_checks;

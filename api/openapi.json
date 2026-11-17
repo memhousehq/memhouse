@@ -156,6 +156,16 @@
           "decisions": {
             "description": "Access-decision values (D-01…D-07), from the decision register in G28."
           },
+          "languages": {
+            "description": "The languages the tenant's text is detected among; absent means every enabled one.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "memory_types": {
             "$ref": "#/components/schemas/PolicyMemoryTypes"
           },
@@ -938,6 +948,13 @@
             },
             "type": "array"
           },
+          "language": {
+            "description": "The language the text was detected as, among the enabled ones (a language-pack code\nsuch as `en` or `de`); absent on records written before languages were recorded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "metadata": {
             "default": null,
             "description": "Free-form JSON object."
@@ -1474,6 +1491,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "language": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicySpecLanguage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The languages the tenant's text is read in (G36)."
+          },
           "memory_types": {
             "anyOf": [
               {
@@ -1557,6 +1585,22 @@
           "name",
           "scope"
         ],
+        "type": "object"
+      },
+      "PolicySpecLanguage": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "description": "Some of the server's enabled languages (`[language] enabled`): the tenant's writes and\nquestions are detected among these only. It narrows what statements are read as, never\nthe injection screen, which always applies every enabled language's phrases.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "PolicySpecMemoryTypes": {
@@ -4097,7 +4141,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.7.0"
+    "version": "1.8.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

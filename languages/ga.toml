@@ -1,0 +1,328 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Irish language pack. Draft: it passes its test set (languages/tests/ga.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+#
+# Irish puts the verb first and mutates the start of words (lenition "bhog", eclipsis
+# "mbliana", "t-" and "h" prefixes), so the patterns list the mutated forms. An apostrophe may be
+# straight or curly ("d'eisigh", "d’eisigh").
+format = 1
+language = "ga"
+name = "Irish"
+status = "draft"
+text_search = "irish"
+
+[detect]
+words = [
+  "an", "na", "agus", "is", "tá", "bhí", "ní", "níl", "ar", "ag", "le", "leis", "do", "de", "go",
+  "i", "sa", "san", "ó", "faoi", "trí", "idir", "mé", "tú", "sé", "sí", "muid", "sibh", "siad",
+  "mo", "ár", "seo", "sin", "a", "é", "í", "iad", "nach", "gur", "má", "ach", "nó", "cad", "cé",
+  "cén", "conas", "cathain", "cá", "atá", "raibh", "bhfuil", "bheith", "beidh", "chun", "chuig",
+  "roimh", "mar", "freisin", "anois", "aige", "aici", "agam", "liom", "úsáideoir", "úsáideora",
+]
+letters = "áéíóú"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "b['’]fhéidir",
+  "seans (?:go|gur|nach|nár)",
+  "tá seans ann",
+  "dócha",
+  "is cosúil",
+  "de réir (?:dealraimh|cosúlachta)",
+  "dealraíonn",
+  "sílim",
+  "ceapaim",
+  "measaim",
+  "is dóigh liom",
+  "déarfainn",
+  "níl(?:im)? (?:mé |sé |sí |siad )?cinnte",
+  "n['’]fheadar",
+  "d['’]fhéadfadh",
+  "d['’]fhéadfaí",
+  "ráfla(?:í)?",
+  "deirtear",
+  "más fíor",
+  "go teoiriciúil",
+  "ag (?:smaoineamh|machnamh|cuimhneamh) ar",
+  "dá mbeadh",
+  "dá bhféadf\\w+",
+]
+# A change to something stored before. "bhíodh" is the past habitual: "used to be".
+correction = [
+  "le fírinne",
+  "déanta na fírinne",
+  "i ndáiríre",
+  "ceartúchán",
+  "ceartú",
+  "bhí dul amú orm",
+  "bhí mé mícheart",
+  "a thuilleadh",
+  "in ionad",
+  "anois",
+  "tá athrú tagtha",
+  "d['’]athraigh",
+  "bhog (?:[\\w'’-]+ ){1,4}(?:go|chuig|ó|as|amach|ar ais)",
+  "d['’]aistrigh (?:[\\w'’-]+ ){1,4}(?:go|chuig)",
+  "bhíodh",
+  "ba ghnách le",
+  "nuashonraithe",
+]
+# An intention not yet carried out. The future tense is an ending in Irish ("tosóidh",
+# "ceannóidh", "cuirfidh"), so the endings are matched; "beidh" (will be) is left out.
+plan = [
+  "beartaithe",
+  "ag beartú",
+  "ag pleanáil",
+  "pleanáilte",
+  "(?:plean|rún|i gceist|ar intinn) (?:ag|agam|agat|aige|aici|againn|agaibh|acu)",
+  "ba mhaith (?:le|leis|liom|leat|léi|linn|libh|leo)",
+  "ag iarraidh",
+  "teastaíonn (?:ó|uaim|uait|uaidh|uaithi|uainn|uathu)",
+  "tá súil (?:ag|agam|agat|aige|aici|againn|acu)",
+  "ag súil (?:le|go|gur|nach)",
+  "tá(?:im|imid)? (?:mé |muid |sé |sí |siad )?chun",
+  "\\w+(?:f[ae]?idh|óidh|eoidh|f[ae]?imid|óimid|eoimid)",
+  "rachai(?:dh|mid)",
+  "gheobhai(?:dh|mid)",
+  "seo chugainn",
+  "amárach",
+  "arú amárach",
+  "ná déan(?:aigí)? dearmad",
+  "cuimhnigh",
+]
+preference = [
+  "is (?:fearr|breá|maith|aoibhinn|fuath|gráin|ansa) (?:le|leis|liom|leat|léi|linn|libh|leo)",
+  "ní maith (?:le|leis|liom|leat|léi|linn|libh|leo)",
+  "b['’]fhearr (?:le|leis|liom|leat|léi|linn|libh|leo)",
+  "taitníonn",
+  "thaitin",
+  "taitneamh",
+  "an-dúil",
+  "ailléirg\\w+",
+]
+# Only at the start of the statement. A verb root with no lenition at the start of a sentence is
+# an imperative ("Seol", against the past "Sheol"); verbs that cannot be lenited ("rith", "lean")
+# count only with "i gcónaí" or "riamh". "Ná" is the negative imperative.
+instruction_start = [
+  "ná", "i gcónaí", "déan", "bí", "cinntigh", "seachain", "bain úsáid as", "úsáid", "cuir", "seol",
+  "coinnigh", "seiceáil", "tabhair", "fág", "dún", "sábháil", "tástáil",
+  "(?:rith|lean|léigh|scríobh|scrios|stop|nuashonraigh|roghnaigh)\\b[^.\\n]{0,60}\\b(?:i gcónaí|riamh|choíche)",
+]
+instruction = [
+  "ba ch(?:óir|eart)\\b[^.\\n]{0,60}\\b(?:i gcónaí|riamh|choíche)",
+  "níor ch(?:óir|eart)\\b[^.\\n]{0,60}\\b(?:riamh|choíche)",
+  "ní mór\\b[^.\\n]{0,60}\\bi gcónaí",
+]
+# Past events: a dated reference or a completed action. The past tense is the lenited root
+# (or "d'" before a vowel or "fh"), the same for every person.
+event = [
+  "inné",
+  "aréir",
+  "anuraidh",
+  "seo caite",
+  "seo a chuaigh thart",
+  "ó shin",
+  "cheannaigh",
+  "dhíol",
+  "thug",
+  "chuaigh",
+  "tháinig",
+  "ghlac",
+  "thosaigh",
+  "chríochnaigh",
+  "chuir",
+  "shínigh",
+  "sheol",
+  "bhain",
+  "bhuail",
+  "phós",
+  "fuair",
+  "thaistil",
+  "bhuaigh",
+  "chaill",
+  "thóg",
+  "rinne",
+  "rugadh",
+  "cailleadh",
+  "cheiliúir",
+  "d['’](?:uchtaigh|eisigh|fhág|fhreastail|íoc|ordaigh|fhill|fhostaigh|éirigh|athnuaigh|imigh|oscail|fhoilsigh)",
+]
+
+[relations]
+relationship = [
+  "\\bis (?:é|í) [\\w'’-]+ (?:bainisteoir|saoiste|comhghleacaí|bean chéile|fear céile|páirtí|deartháir|deirfiúr|máthair|athair|mac|iníon|cara|col ceathrair|uncail|aintín|comharsa|meantóir|custaiméir|cliant|soláthraí|úinéir|bunaitheoir)\\b",
+  "\\b(?:pósta ar|geallta le|ag obair (?:do|le)|faoi stiúir|gaolta le|ag tuairisciú do)\\b",
+]
+people = [
+  "deirfiúr", "dheirfiúr", "deartháir", "dheartháir", "máthair", "mháthair", "mam", "mamaí",
+  "athair", "daid", "daidí", "tuismitheoir", "tuismitheoirí", "bean", "fear", "céile", "páirtí",
+  "mac", "mhac", "iníon", "páiste", "páistí", "leanbh", "leanaí", "cara", "chara", "cairde",
+  "comhghleacaí", "saoiste", "bainisteoir", "foireann", "comharsa", "uncail", "aintín",
+  "seanmháthair", "seanathair", "mamó", "daideo", "cailín", "buachaill", "madra", "mhadra", "cat",
+  "chat", "peata",
+]
+
+[values]
+stop = [
+  "úsáideoir", "úsáideora", "t-úsáideoir", "agus", "atá", "bhfuil", "raibh", "bheith", "beidh",
+  "anois", "thuilleadh", "fírinne", "ceartúchán", "bhíodh", "ionad", "chuig", "leis", "aige",
+  "aici", "agam", "againn", "freisin", "ansin", "nuair", "roimh", "faoi", "chun", "níos", "siad",
+  "sibh", "muid", "cuid", "cónaí", "láthair",
+]
+value_stop = [
+  "an", "na", "a", "ag", "ar", "le", "leis", "do", "de", "go", "i", "in", "sa", "san", "ó", "as",
+  "is", "tá", "bhí", "níl", "ní", "é", "í", "iad", "sé", "sí", "siad", "mé", "tú", "mo", "ár",
+  "seo", "sin", "agus", "atá", "úsáideoir", "úsáideora", "t-úsáideoir", "anois", "láthair",
+  "cheana", "fós", "freisin", "timpeall", "thart", "beagnach", "níos", "mó", "ná", "nua", "aige",
+  "aici", "acu", "agam", "againn", "chuig", "ina", "cuid", "fuair",
+]
+identifier = [
+  "sonrasc", "shonrasc", "ordú", "n-ordú", "t-ordú", "ticéad", "thicéad", "dticéad", "cás", "chás",
+  "gcás", "cuntas", "chuntas", "gcuntas", "id", "uimh", "uimhir", "tagairt", "thagairt", "leagan",
+  "seomra", "sheomra", "eitilt", "bord", "bhord", "suíochán", "shuíochán", "geata", "gheata",
+  "ardán", "bealach", "bhealach", "bus", "bhus", "líne", "samhail", "shamhail", "mír", "mhír",
+  "sku", "fadhb", "fhadhb", "fabht", "fhabht", "árasán", "foirgneamh", "fhoirgneamh", "urlár",
+  "cód", "chód", "gcód",
+]
+# "sé" (six) is left out: it is also the pronoun "he". So are "aon" and "dó".
+quantity = [
+  "náid", "amháin", "dhá", "dá", "trí", "ceithre", "ceathair", "cúig", "seacht", "ocht", "naoi",
+  "deich", "déag", "fiche", "tríocha", "daichead", "caoga", "seasca", "seachtó", "ochtó", "nócha",
+  "céad", "milliún", "leath", "dosaen", "cúpla", "roinnt", "beirt", "triúr", "ceathrar", "cúigear",
+  "seisear",
+]
+# "1 Márta", "an 3ú lá de Mheitheamh", "3 Meitheamh"
+dates = [
+  "\\b\\d{1,2}ú?\\s+(?:lá\\s+)?(?:de\\s+|d['’])?(?:mhí\\s+)?(?:eanáir|fh?eabhra|mh?árta|aibreáin?|bh?ealtaine|mh?eith(?:eamh|imh)|iúil|lúnasa|mh?eán\\s+fómhair|dh?eireadh\\s+fómhair|sh?amh(?:ain|na)|nolla(?:ig|g))\\b",
+]
+
+[values.numbers]
+"náid" = 0
+"amháin" = 1
+"dhá" = 2
+"dá" = 2
+beirt = 2
+"trí" = 3
+"triúr" = 3
+ceithre = 4
+ceathair = 4
+ceathrar = 4
+"cúig" = 5
+"cúigear" = 5
+seisear = 6
+seacht = 7
+ocht = 8
+naoi = 9
+deich = 10
+dosaen = 12
+fiche = 20
+"tríocha" = 30
+caoga = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# "3ú"
+number_suffixes = ["ú"]
+# "Dé Luain", "Dé hAoine", "ar an gCéadaoin", "an Satharn".
+weekdays = [
+  ["luain", "luan"], ["mh?áirt"], ["(?:gc|ch|c)éadaoin"], ["déardaoin"], ["h?aoine"],
+  ["sathairn", "satharn"], ["domhnaigh", "domhnach"],
+]
+# "mí Feabhra", "mí an Mhárta", "mí na Bealtaine", "mí an Mheithimh", "mí na Samhna".
+months = [
+  ["eanáir"], ["fh?eabhra"], ["mh?árta"], ["aibreáin?"], ["(?:m?b|bh)ealtaine"],
+  ["mh?eith(?:eamh|imh)"], ["iúil"], ["lúnasa"], ["mh?eán\\s+fómhair"], ["dh?eireadh\\s+fómhair"],
+  ["(?:t?s|sh)amh(?:ain|na)"], ["nolla(?:ig|g)"],
+]
+month_names = [
+  "eanáir", "feabhra", "fheabhra", "márta", "mhárta", "aibreán", "aibreáin", "bealtaine",
+  "bhealtaine", "meitheamh", "mheitheamh", "meithimh", "mheithimh", "iúil", "lúnasa", "fómhair",
+  "samhain", "samhna", "nollaig", "nollag",
+]
+# "dhá sheachtain ó shin", "trí seachtaine ó shin". ("coicís ó shin", a fortnight ago, has no
+# number and unit to read; "sé" (six) is left out because it is also "he".)
+ago = ["{num}\\s+{unit}\\s+ó\\s+shin"]
+# "le mí anuas", "le trí mhí anuas", "an mhí seo caite"; and "seachtain ó shin" (a week ago, no
+# number), read as the time since then. The first two entries have no {unit}: they keep "an
+# deireadh seachtaine seo caite" (last weekend) and "dhá sheachtain ó shin" (read by `ago`) from
+# also being read here.
+past = [
+  "deireadh\\s+seachtaine\\s+seo\\s+(?:caite|a\\s+chuaigh\\s+thart)",
+  "(?:(?:\\d+|dhá|dá|trí|ceithre|cúig|seacht|ocht|naoi|deich|cúpla|roinnt)\\s+(?:lá|laethanta|(?:t?s|sh)eachtain(?:e|í)?|mh?í|mh?íosa|mh?íonna|(?:m?b|bh)lia(?:in|na|nta))|sé\\s+(?:lá|seachtaine|mhí|bliana))\\s+ó\\s+shin",
+  "le\\s+(?:{num}\\s+)?{unit}\\s+anuas",
+  "{unit}\\s+seo\\s+(?:caite|a\\s+chuaigh\\s+thart)",
+  "{unit}\\s+ó\\s+shin",
+]
+# "an mhí seo caite" and "an bhliain seo caite" are the previous calendar month and year.
+calendar = ["seo\\s+(?:caite|a\\s+chuaigh\\s+thart)$"]
+# "Dé Sathairn seo caite", "Dé Luain", "ar an Aoine"
+last_weekday = ["(?:dé\\s+|ar\\s+an\\s+)?{weekday}(?:\\s+seo\\s+(?:caite|a\\s+chuaigh\\s+thart))?"]
+strictly_before = ["seo\\s+(?:caite|a\\s+chuaigh\\s+thart)$"]
+last_weekend = ["deireadh\\s+seachtaine\\s+seo\\s+(?:caite|a\\s+chuaigh\\s+thart)"]
+yesterday = ["inné"]
+# "an tseachtain seo". The first entry has no {unit}: it keeps "an mhí seo caite" (last month)
+# and "an mhí seo chugainn" (next month) from being read as "this month".
+this = [
+  "(?:lá|(?:t?s|sh)eachtain(?:e|í)?|mh?í|mh?íosa|(?:m?b|bh)lia(?:in|na))\\s+seo\\s+(?:caite|chugainn|a\\s+chuaigh\\s+thart)",
+  "{unit}\\s+seo",
+]
+# "i mí Feabhra", "an 3 Meitheamh", "an 3ú lá de Mheitheamh"
+in_month = ["(?:{day}ú?\\s+(?:lá\\s+)?(?:de\\s+|d['’])?(?:mhí\\s+)?)?{month}"]
+
+[time.numbers]
+"dhá" = 2
+"dá" = 2
+"cúpla" = 2
+"trí" = 3
+roinnt = 3
+ceithre = 4
+"cúig" = 5
+seacht = 7
+ocht = 8
+naoi = 9
+deich = 10
+
+# After a number the noun is singular and mutated: "dhá sheachtain", "trí seachtaine",
+# "seacht mbliana", "trí mhí".
+[time.units]
+day = ["lá", "laethanta"]
+week = ["(?:t?s|sh)eachtain(?:e|í)?"]
+month = ["mh?í", "mh?íosa", "mh?íonna"]
+year = ["(?:m?b|bh)lia(?:in|na|nta)"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["nó"]
+or_not = ["nó nach", "nó ná"]
+between = ["idir\\s+(.+?)\\s+agus\\s+(.+?)"]
+clause = ["nuair\\s+a", "nuair", "sular?", "tar\\s+éis", "fad\\s+is", "go\\s+dtí\\s+go"]
+lead = [
+  "cé\\s+mhéad(?:\\s+\\w+)?", "cén\\s+(?:fáth|uair|áit|chaoi)", "cén", "cé\\s+na", "céard", "cé",
+  "cad\\s+(?:é|í|iad)?", "cathain", "cá\\s+(?:háit|fhad)?", "conas", "an", "ar", "nach", "nár",
+]
+article = ["an", "na", "mo", "ár"]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines
+# it). In Irish the qualifier follows the noun ("na treoracha roimhe seo") or is a possessive
+# before it ("do chuid rialacha").
+[injection]
+override = [
+  "\\b(?:déan(?:aigí)? neamhaird|tabhair neamhaird|ná bac(?:aigí)? le|déan(?:aigí)? dearmad|lig(?:igí)? i ndearmad|sáraigh)\\b[^.\\n]{0,40}\\b(?:(?:gach|do chuid|bhur gcuid|do|aon)\\s+(?:[\\w'’-]+\\s+)?(?:d?th?reoracha|d?th?reoir|d?th?reoirlínte|orduithe|rialacha|riail|leideanna)|(?:d?th?reoracha|d?th?reoir|d?th?reoirlínte|orduithe|rialacha|riail|leideanna)\\b[^.\\n]{0,25}\\b(?:roimhe seo|roimhe sin|go léir|uile|thuas|a tugadh|a fuair tú|níos luaithe|atá agat))",
+]
+role_hijack = [
+  "\\b(?:is (?:tusa|tú) (?:[\\w'’-]+ ){1,4}anois|anois is (?:tusa|tú)|(?:as seo amach|ó seo amach|ó anois ar aghaidh|ó anois amach),? (?:[\\w'’-]+ ){0,2}tú\\b|(?:gníomhaigh|iompair tú féin|bí) (?:mar|i do) [^.\\n]{0,30}\\bgan (?:srian|srianta|teorainn|cosc|rialacha)|lig ort nach bhfuil (?:aon )?(?:rialacha|srianta) (?:agat|ort))",
+]
+system_prompt = [
+  "\\b(?:taispeáin|nocht|foilsigh|priontáil|léirigh|sceith|tabhair|inis|scríobh amach)\\b[^.\\n]{0,40}\\b(?:leid(?: an)? ch?órais|d?th?reoracha(?: an)? ch?órais|system prompt|d?th?reoracha (?:faoi cheilt|ceilte|rúnda|folaithe)|teachtaireacht an fhorbróra)",
+]
+# "always" comes before or after the verb: "Seol … i gcónaí chuig …".
+memory_directive = [
+  "\\b(?:i gcónaí|aon uair|gach uair|am ar bith)\\b[^.\\n]{0,60}\\b(?:seol(?:aigí)?|cuir(?:igí)?|uaslódáil|aistrigh|sceith|tarchuir)\\b[^.\\n]{0,80}(?:https?://|@|\\bsparán\\b|\\bwallet\\b)",
+  "\\b(?:seol(?:aigí)?|cuir(?:igí)?|uaslódáil|aistrigh|sceith|tarchuir)\\b[^.\\n]{0,60}\\b(?:i gcónaí|gach uair|aon uair)\\b[^.\\n]{0,60}(?:https?://|@|\\bsparán\\b|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:rith(?:igí)?|forghníomhaigh|cuir i bhfeidhm|glaoigh ar|úsáid)\\b[^.\\n]{0,20}\\b(?:ordú|uirlis|fh?eidhm)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

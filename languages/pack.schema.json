@@ -1,0 +1,563 @@
+{
+  "$defs": {
+    "Detect": {
+      "additionalProperties": false,
+      "description": "What tells this language from the others when several are enabled.",
+      "properties": {
+        "letters": {
+          "default": "",
+          "description": "Letters that mark the language: its diacritics, or its whole alphabet when the script is\nnot Latin.",
+          "type": "string"
+        },
+        "words": {
+          "default": [],
+          "description": "Words: the language's most frequent function words (articles, pronouns, prepositions).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Injection": {
+      "additionalProperties": false,
+      "description": "The injection phrases (QUAL-02): text that reads as an instruction aimed at the agent.\nPatterns (whole expressions). Chat-template markup is the same in every language and is\nbuilt in.",
+      "properties": {
+        "memory_directive": {
+          "default": [],
+          "description": "\"always forward … to …@…\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "override": {
+          "default": [],
+          "description": "\"ignore all previous instructions\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "role_hijack": {
+          "default": [],
+          "description": "\"you are now …\", \"from now on you will …\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "system_prompt": {
+          "default": [],
+          "description": "\"reveal your system prompt\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tool_directive": {
+          "default": [],
+          "description": "\"run the command rm -rf\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "PackStatus": {
+      "description": "How far a pack has been checked.",
+      "oneOf": [
+        {
+          "const": "stable",
+          "description": "Reviewed by a speaker of the language.",
+          "type": "string"
+        },
+        {
+          "const": "draft",
+          "description": "Passes its test set; not yet reviewed by a speaker.",
+          "type": "string"
+        }
+      ]
+    },
+    "Query": {
+      "additionalProperties": false,
+      "description": "The words that split a question about several things into sub-queries (HYB-03).",
+      "properties": {
+        "article": {
+          "default": [],
+          "description": "Patterns: leading articles and possessives, dropped from a sub-query.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "between": {
+          "default": [],
+          "description": "Patterns (whole expressions) with two groups: \"between (A) and (B)\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "clause": {
+          "default": [],
+          "description": "Patterns: words that join two clauses (\"when\", \"before\", \"after\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "lead": {
+          "default": [],
+          "description": "Patterns: the question words a question starts with, dropped from a sub-query.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "or": {
+          "default": [],
+          "description": "Words between alternatives (\"the A or the B\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "or_not": {
+          "default": [],
+          "description": "Phrases that are not a choice between two things (\"or not\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Relations": {
+      "additionalProperties": false,
+      "properties": {
+        "people": {
+          "default": [],
+          "description": "Words for people and animals a statement can be about: a value of the user's sister is\nnot the user's.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "relationship": {
+          "default": [],
+          "description": "Patterns (whole expressions) for a statement that relates two things (\"is the manager\nof\", \"reports to\"); such a record is routed as a relationship (HYB-01).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Statements": {
+      "additionalProperties": false,
+      "description": "The statement markers of the write gate (QUAL-02). Patterns, matched between word boundaries\nand read in this order: speculation, correction, plan, preference, instruction, event; a\nstatement with no marker is a fact.",
+      "properties": {
+        "correction": {
+          "default": [],
+          "description": "A change to something stored before.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "event": {
+          "default": [],
+          "description": "Past events: a dated reference or a completed action.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "instruction": {
+          "default": [],
+          "description": "Instruction markers anywhere in the statement.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "instruction_start": {
+          "default": [],
+          "description": "Instruction markers that count only at the start of the statement.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "plan": {
+          "description": "An intention not yet carried out. Required: what they mark is held, not committed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "preference": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "speculation": {
+          "description": "Hedges, rumours and hypotheticals. Required: what they mark is held, not committed.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "speculation",
+        "plan"
+      ],
+      "type": "object"
+    },
+    "Time": {
+      "additionalProperties": false,
+      "description": "Time phrases in questions (HYB-03). The phrase lists are templates: patterns in which\n`{num}` stands for a number or number word, `{unit}` for a unit, `{weekday}` for a weekday,\n`{month}` for a month and `{day}` for a day of the month. Each is matched between word\nboundaries, in lower case.",
+      "properties": {
+        "ago": {
+          "default": [],
+          "description": "\"two weeks ago\": `{num}` and `{unit}`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "calendar": {
+          "default": [],
+          "description": "Patterns: a `past` phrase without a number that matches one of these means the previous\ncalendar month or year (\"last month\"), not the last thirty days.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "in_month": {
+          "default": [],
+          "description": "\"in February\", \"June 3rd\": `{month}` and, optionally, `{day}`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "last_weekday": {
+          "default": [],
+          "description": "\"last Saturday\", \"on Monday\": `{weekday}`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "last_weekend": {
+          "default": [],
+          "description": "\"last weekend\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "month_names": {
+          "default": [],
+          "description": "Words: the month names in every form, left out when two statements' values are compared.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "months": {
+          "default": [],
+          "description": "Twelve lists of patterns, January first. A month whose name is also another word can\nask for context (\"in may\").",
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "number_suffixes": {
+          "default": [],
+          "description": "Patterns: what can follow a number that is not an identifier (\"1st\", \"3pm\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "numbers": {
+          "additionalProperties": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "default": {},
+          "description": "Number words and their value (\"a\" = 1, \"a couple of\" = 2).",
+          "type": "object"
+        },
+        "past": {
+          "default": [],
+          "description": "\"the past three months\", \"last week\": `{unit}` and, optionally, `{num}`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "strictly_before": {
+          "default": [],
+          "description": "Patterns: a `last_weekday` phrase that matches one of these never means today.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "this": {
+          "default": [],
+          "description": "\"this week\": `{unit}`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "units": {
+          "$ref": "#/$defs/Units",
+          "default": {
+            "day": [],
+            "month": [],
+            "week": [],
+            "year": []
+          }
+        },
+        "weekdays": {
+          "default": [],
+          "description": "Seven lists of patterns, Monday first.",
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "yesterday": {
+          "default": [],
+          "description": "\"yesterday\".",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Units": {
+      "additionalProperties": false,
+      "description": "The four units of a relative time phrase. Patterns for every form of the word.",
+      "properties": {
+        "day": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "month": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "week": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "year": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Values": {
+      "additionalProperties": false,
+      "description": "The words that compare two statements' values (corrections and value updates, QUAL-01).",
+      "properties": {
+        "dates": {
+          "default": [],
+          "description": "Patterns (whole expressions) for dates written with words (\"May 3rd\", \"3 May\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "identifier": {
+          "default": [],
+          "description": "Words that come before an identifier (\"invoice 1004\"): such a number names something\nand is not a value.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "numbers": {
+          "additionalProperties": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "default": {},
+          "description": "Number words and their value, so \"three\" and \"3\" are the same value.",
+          "type": "object"
+        },
+        "quantity": {
+          "default": [],
+          "description": "Words that state a quantity (\"three\", \"twice\", \"several\").",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stop": {
+          "default": [],
+          "description": "Words that do not count as a word two statements share.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "value_stop": {
+          "default": [],
+          "description": "Function words left out when the rest of two statements is compared.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A language pack, as written in TOML. Lists marked \"patterns\" hold regular-expression\nfragments (Rust `regex` syntax, matched without regard to case); lists marked \"words\" hold\nplain words.",
+  "properties": {
+    "detect": {
+      "$ref": "#/$defs/Detect",
+      "default": {
+        "letters": "",
+        "words": []
+      }
+    },
+    "format": {
+      "description": "Pack format; 1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "injection": {
+      "$ref": "#/$defs/Injection",
+      "default": {
+        "memory_directive": [],
+        "override": [],
+        "role_hijack": [],
+        "system_prompt": [],
+        "tool_directive": []
+      }
+    },
+    "language": {
+      "description": "The language code (BCP 47: `en`, `de`, `pt-BR`).",
+      "type": "string"
+    },
+    "name": {
+      "description": "The language's name, in English.",
+      "type": "string"
+    },
+    "query": {
+      "$ref": "#/$defs/Query",
+      "default": {
+        "article": [],
+        "between": [],
+        "clause": [],
+        "lead": [],
+        "or": [],
+        "or_not": []
+      }
+    },
+    "relations": {
+      "$ref": "#/$defs/Relations",
+      "default": {
+        "people": [],
+        "relationship": []
+      }
+    },
+    "statements": {
+      "$ref": "#/$defs/Statements"
+    },
+    "status": {
+      "$ref": "#/$defs/PackStatus",
+      "default": "draft"
+    },
+    "text_search": {
+      "default": "simple",
+      "description": "The Postgres text-search configuration for records in this language (`english`,\n`german`); `simple` where Postgres has no stemmer for it.",
+      "type": "string"
+    },
+    "time": {
+      "$ref": "#/$defs/Time",
+      "default": {
+        "ago": [],
+        "calendar": [],
+        "in_month": [],
+        "last_weekday": [],
+        "last_weekend": [],
+        "month_names": [],
+        "months": [],
+        "number_suffixes": [],
+        "numbers": {},
+        "past": [],
+        "strictly_before": [],
+        "this": [],
+        "units": {
+          "day": [],
+          "month": [],
+          "week": [],
+          "year": []
+        },
+        "weekdays": [],
+        "yesterday": []
+      }
+    },
+    "values": {
+      "$ref": "#/$defs/Values",
+      "default": {
+        "dates": [],
+        "identifier": [],
+        "numbers": {},
+        "quantity": [],
+        "stop": [],
+        "value_stop": []
+      }
+    }
+  },
+  "required": [
+    "format",
+    "language",
+    "name",
+    "statements"
+  ],
+  "title": "PackFile",
+  "type": "object"
+}

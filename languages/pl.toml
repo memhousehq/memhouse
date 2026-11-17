@@ -1,0 +1,403 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Polish language pack. Draft: it passes its test set (languages/tests/pl.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "pl"
+name = "Polish"
+status = "draft"
+# Postgres has no Polish stemmer.
+text_search = "simple"
+
+[detect]
+words = [
+  "i", "w", "we", "z", "ze", "na", "do", "się", "nie", "to", "że", "jest", "są", "był", "była",
+  "było", "być", "ma", "mam", "o", "od", "po", "za", "przez", "przy", "dla", "bez", "pod", "nad",
+  "jak", "co", "kto", "gdzie", "kiedy", "czy", "ale", "lub", "albo", "oraz", "już", "tylko", "też",
+  "także", "bardzo", "ten", "ta", "te", "tego", "tym", "tej", "ja", "ty", "on", "ona", "my", "oni",
+  "mój", "moja", "jego", "jej", "ich", "nasz", "który", "która", "które", "tak", "jeszcze",
+  "użytkownik",
+]
+letters = "ąćęłńóśźż"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+# Bare "może" is left out: it is also "can / is allowed to" ("może pracować zdalnie").
+speculation = [
+  "być może",
+  "może być",
+  "możliwe,? że",
+  "niewykluczone",
+  "chyba",
+  "pewnie",
+  "zapewne",
+  "prawdopodobnie",
+  "przypuszczalnie",
+  "podobno",
+  "ponoć",
+  "rzekomo",
+  "najwyraźniej",
+  "najwidoczniej",
+  "wygląda na to",
+  "zdaje się",
+  "wydaje (?:mi |nam )?się",
+  "myślę",
+  "sądzę",
+  "przypuszczam",
+  "podejrzewam",
+  "zgaduję",
+  "zastanawia(?:m|my|ją)? się",
+  "rozważa(?:m|my|ją)?",
+  "nie (?:jestem|jesteśmy) pew(?:ien|ny|na|ni)",
+  "nie wiem,? czy",
+  "nie wiadomo,? czy",
+  "mógłby",
+  "mogł(?:a|o|y)by",
+  "mogliby",
+  "plotk(?:a|i|ę|ach|ami)",
+  "pogłosk(?:a|i|ę|ach|ami)",
+  "hipotetycznie",
+  "teoretycznie",
+  "gdyby\\w{0,4}",
+]
+# A change to something stored before.
+correction = [
+  "właściwie",
+  "tak naprawdę",
+  "w rzeczywistości",
+  # "poprawka" is also an amendment or an alteration: only as a heading.
+  "poprawka[:,]\\s+",
+  "korekta",
+  "sprostowanie",
+  "pomyli(?:łem|łam|ł|ła|liśmy) się",
+  "(?:byłem|byłam|byliśmy) w błędzie",
+  "już nie",
+  "nie \\w+ już",
+  "zamiast",
+  "zmieni(?:ł(?:[aoy]|em|am)?|li(?:śmy)?)",
+  "uległ[aoy]? zmianie",
+  "prze(?:szedł|szedłem|szła|szłam|szło|szli|szliśmy|szły) (?:na|do)",
+  "przeni(?:ósł|osłem|osła|osłam|osło|eśli|eśliśmy|osły) się",
+  "(?:prze|wy)prowadzi(?:ł(?:[aoy]|em|am)?|li(?:śmy)?) się",
+  "teraz",
+  "obecnie",
+  "zaktualizowan(?:y|a|e|o)",
+  "zastąpi(?:ony|ona|one|ono|eni|ł|ła|li)",
+  "kiedyś",
+  "dawniej",
+  "niegdyś",
+]
+# An intention not yet carried out.
+plan = [
+  "planuj(?:e|ę|ą|emy|ecie|esz)",
+  "planowa(?:ł|ła|li|ły|łem|łam|liśmy)",
+  "zaplanowa(?:ł|ła|li|ły|łem|łam|liśmy|ny|na|ne|no)",
+  "w planach",
+  "(?:ma|mam|mamy|mają) w planie",
+  "zamierza(?:m|my|ją|sz)?",
+  "(?:ma|mam|mamy|mają) zamiar",
+  "chc(?:e|ę|ą|emy|ecie|esz)",
+  "chciał(?:a|o)?by(?:m)?",
+  "chcieliby(?:śmy)?",
+  "(?:ma|mam|mamy|mają) nadzieję",
+  # The compound future: "będzie pracować", "będzie pracował".
+  "będ(?:ę|zie|ziemy|ziecie|ą) (?:\\w+ ){0,2}\\w+(?:ć|ł|ła|li|ły)",
+  # The simple future of common perfective verbs (as English "will visit, will start …").
+  "zacz(?:nę|nie|niemy|ną)",
+  "rozpocz(?:nę|nie|niemy|ną)",
+  "pojed(?:ę|zie|ziemy|ą)",
+  "polec(?:ę|i|imy|ą)",
+  "kupi(?:ę|my|ą)?",
+  "odwiedz(?:ę|i|imy|ą)",
+  "sprzeda(?:m|my|dzą)?",
+  "wyśl(?:ę|e|emy|ą)",
+  "podpis(?:zę|ze|zemy|zą)",
+  "(?:prze|wy)prowadz(?:ę|i|imy|ą) się",
+  "przejd(?:ę|zie|ziemy|ą)",
+  "zmieni(?:ę|my|ą)?",
+  "wróc(?:ę|i|imy|ą)",
+  "dołącz(?:ę|y|ymy|ą)",
+  "odejd(?:ę|zie|ziemy|ą)",
+  "zadzwoni(?:ę|my|ą)?",
+  "zarezerwuj(?:ę|e|emy|ą)",
+  "przedłuż(?:ę|y|ymy|ą)",
+  "zdecyduj(?:ę|e|emy|ą)",
+  "wdroż(?:ę|y|ymy|ą)",
+  "przyszł(?:y|ym|ego|ą|a|ej) (?:tydzień|tygodniu|tygodnia|miesiąc|miesiącu|miesiąca|rok|roku|kwartał|kwartale|kwartału|poniedziałek|wtorek|środ[aęy]|czwartek|piątek|sobot[aęy]|niedziel[aęi]|weekend|wiosn[aęy]|lat[oa]|jesień|jesieni|zim[aęy])",
+  "jutro",
+  "pojutrze",
+  "wkrótce",
+  "niebawem",
+  "niedługo",
+  "za (?:\\d+|dwa|dwie|trzy|cztery|pięć|kilka|parę) (?:dni|tygodnie|tygodni|miesiące|miesięcy|lata|lat)",
+  "za (?:tydzień|miesiąc|rok)",
+  "pamiętaj(?:cie)?,? (?:żeby|aby|by|o)",
+  "(?:muszę|musi|musimy|muszą|trzeba) jeszcze",
+  "celem jest",
+]
+preference = [
+  "wol(?:i|ę|ą|imy|isz)",
+  "wolał(?:a|o)?by(?:m)?",
+  "preferuj(?:e|ę|ą|emy)",
+  "preferencj(?:a|e|ę|i)",
+  "lubi(?:ę|my|ą|sz)?",
+  "uwielbia(?:m|my|ją|sz)?",
+  "kocha(?:m|my|ją)?",
+  "przepada(?:m|my|ją)? za",
+  "nienawidz(?:i|ę|ą|imy)",
+  "nie znos(?:i|zę|zą|imy)",
+  "nie cierpi(?:ę|my|ą)?",
+  "ulubion(?:y|a|e|ego|ej|ą|ym|ych|ymi)",
+  "najchętniej",
+  "chętnie",
+  "uczulon[yae] na",
+  "alergi[ęai] na",
+]
+# Only at the start of the statement.
+instruction_start = [
+  "zawsze", "nigdy", "proszę", "upewnij(?:cie)? się", "unikaj(?:cie)?", "używaj(?:cie)?",
+  "użyj(?:cie)?", "stosuj(?:cie)?", "uruchamiaj(?:cie)?", "uruchom(?:cie)?", "sprawdzaj(?:cie)?",
+  "sprawdź(?:cie)?", "zadbaj(?:cie)?", "nie \\w+(?:aj|uj|ij|yj|ej)(?:cie)?",
+  "nie (?:pisz|rób|mów|bierz|twórz|usuń|zmień)(?:cie)?", "nie wolno",
+]
+instruction = [
+  "(?:powin(?:ien|na|no|ni|ny)|musi|muszą|musisz|należy|trzeba) (?:zawsze|nigdy)",
+  "(?:zawsze|nigdy nie) (?:powin(?:ien|na|no|ni|ny)|musi|muszą|musisz|należy|trzeba|może|mogą|wolno)",
+  "pod żadnym pozorem",
+]
+# Past events: a dated reference or a completed action. Past-tense forms by gender and number.
+event = [
+  "wczoraj",
+  "przedwczoraj",
+  "(?:zeszł|ubiegł|ostatni|poprzedni)\\w{0,3} (?:tydzień|tygodniu|tygodnia|miesiąc|miesiącu|miesiąca|rok|roku|noc|nocy|weekend|weekendu|poniedziałek|wtorek|środę|czwartek|piątek|sobotę|niedzielę|wiosny|wiosnę|lata|jesieni|zimy|zimę)",
+  # Bare "temu" is left out: it is also the dative of "ten" ("dzięki temu").
+  "(?:\\d+|dwa|dwie|trzy|cztery|pięć|sześć|kilka|parę|kilkanaście) (?:dni|tygodnie|tygodni|miesiące|miesięcy|lata|lat) temu",
+  "(?:dzień|tydzień|miesiąc|rok|jakiś czas|dawno|niedawno) temu",
+  "(?:kupi|sprzeda|odwiedzi|pojecha|wyjecha|przyjecha|polecia|adoptowa|zaadoptowa|skończy|ukończy|zakończy|podpisa|dołączy|opuści|spotka|pozna|uczestniczy|otrzyma|dosta|wyda|wdroży|wypuści|wysła|przedłuży|odnowi|anulowa|odwoła|zapłaci|opłaci|zarezerwowa|zamówi|zwróci|wróci|podróżowa|wygra|przegra|zgubi|straci|zrobi|urodzi|świętowa|obchodzi|zatrudni|zwolni|naby|zda|obroni|ożeni|uruchomi|wprowadzi|zainstalowa|odebra)(?:ł(?:[aoy]|em|am|yśmy)?|li(?:śmy)?)",
+  "polecieli",
+  "poszedł(?:em)?",
+  "posz(?:ła|łam|li|liśmy|ły)",
+  "odszedł(?:em)?",
+  "odesz(?:ła|łam|li|liśmy|ły)",
+  "(?:zacz|rozpocz|wzi|przygarn)(?:ął|ąłem|ęła|ęłam|ęli|ęliśmy|ęły)",
+  "zmar(?:ł|ła|li)",
+  "wyszła za mąż",
+  "pobrali się",
+]
+
+[relations]
+relationship = [
+  "\\b(?:jest|był|była|są|byli|został|została) (?:teraz |obecnie )?(?:now(?:ym|ą) )?(?:menedżerem|kierownikiem|kierowniczką|szefem|szefową|przełożon(?:ym|ą)|kolegą|koleżanką|współpracownikiem|żoną|mężem|partnerem|partnerką|bratem|siostrą|matką|ojcem|synem|córką|przyjacielem|przyjaciółką|kuzynem|kuzynką|wujkiem|ciocią|sąsiadem|sąsiadką|mentorem|mentorką|klientem|klientką|dostawcą|właścicielem|właścicielką|założycielem|założycielką|prezesem|opiekunem|osobą kontaktową|sponsorem)\\s+\\w+",
+  "\\b(?:podlega|raportuje do|pracuje dla|pracuje z|pracuje u|jest zaręczon[ya] z|jest spokrewnion[ya] z|wziął ślub z|wzięła ślub z)\\b",
+]
+people = [
+  "siostra", "siostry", "brat", "brata", "matka", "matki", "mama", "mamy", "ojciec", "ojca", "tata",
+  "taty", "rodzic", "rodzice", "rodziców", "żona", "żony", "mąż", "męża", "partner", "partnera",
+  "partnerka", "partnerki", "syn", "syna", "córka", "córki", "dziecko", "dziecka", "dzieci",
+  "przyjaciel", "przyjaciela", "przyjaciółka", "przyjaciółki", "przyjaciele", "kolega", "kolegi",
+  "koleżanka", "koleżanki", "szef", "szefa", "szefowa", "kierownik", "zespół", "zespołu", "sąsiad",
+  "sąsiada", "sąsiadka", "kuzyn", "kuzyna", "kuzynka", "wujek", "wujka", "ciocia", "cioci", "babcia",
+  "babci", "dziadek", "dziadka", "dziewczyna", "dziewczyny", "chłopak", "chłopaka", "pies", "psa",
+  "kot", "kota", "zwierzak",
+]
+
+[values]
+stop = [
+  "użytkownik", "użytkownika", "użytkownikowi", "użytkownikiem", "użytkowniku", "użytkowniczka",
+  "użytkowniczki", "użytkowniczce", "użytkowniczkę", "użytkowniczką", "jest", "były", "było",
+  "była", "będzie", "mają", "miał", "miała", "teraz", "obecnie", "jego", "tego", "temu", "tych",
+  "tylko", "także", "również", "bardzo", "więcej", "jeszcze", "przez", "przy", "oraz", "albo",
+  "które", "który", "która", "którego", "której", "kiedy", "gdzie", "tutaj", "właściwie", "naprawdę",
+  "zamiast", "poprawka", "korekta", "sprostowanie", "kiedyś", "dawniej", "zmienił", "zmieniła",
+  "przeprowadził", "przeprowadziła", "przeszedł", "przeszła", "inne", "inny", "jakiś", "kilka",
+  "nasz", "nasza", "nasze", "wasz", "swój", "swoje", "swoją", "swojego", "moja", "moje", "mojego",
+]
+value_stop = [
+  "użytkownik", "użytkownika", "użytkowniczka", "użytkowniczki", "on", "ona", "oni", "one", "jego",
+  "jej", "ich", "ten", "ta", "to", "te", "tego", "tej", "tym", "z", "ze", "od", "ma", "mają", "miał",
+  "miała", "mieli", "był", "była", "było", "byli", "jest", "są", "został", "została", "dostał",
+  "dostała", "teraz", "obecnie", "ostatnio", "niedawno", "łącznie", "razem", "razy", "raz", "czas",
+  "na", "dla", "i", "oraz", "a", "około", "ok", "mniej", "więcej", "prawie", "niemal", "ponad",
+  "poniżej", "niż", "do", "też", "także", "również", "tylko", "wciąż", "nadal", "jeszcze", "już",
+  "nowy", "nowa", "nowe", "swój", "swoja", "swoje", "nasz", "się", "w", "we", "o", "u", "po", "za",
+  "przy", "przez",
+]
+identifier = [
+  "faktura", "faktury", "fakturze", "fakturę", "fakturą", "zamówienie", "zamówienia", "zamówieniu",
+  "zamówieniem", "zgłoszenie", "zgłoszenia", "zgłoszeniu", "zgłoszeniem", "ticket", "tiket",
+  "bilet", "sprawa", "sprawy", "sprawie", "sprawę", "konto", "konta", "koncie", "id", "nr", "numer",
+  "numeru", "numerze", "ref", "wersja", "wersji", "wersję", "pokój", "pokoju", "lot", "lotu",
+  "stolik", "stolika", "miejsce", "bramka", "peron", "trasa", "autobus", "linia", "linii", "model",
+  "artykuł", "pozycja", "sku", "błąd", "błędu", "bug", "lokal", "mieszkanie", "mieszkania",
+  "budynek", "piętro", "kod", "wewnętrzny",
+]
+quantity = [
+  "zero", "jeden", "jedna", "jedno", "dwa", "dwie", "trzy", "cztery", "pięć", "sześć", "siedem",
+  "osiem", "dziewięć", "dziesięć", "jedenaście", "dwanaście", "trzynaście", "czternaście",
+  "piętnaście", "szesnaście", "siedemnaście", "osiemnaście", "dziewiętnaście", "dwadzieścia",
+  "trzydzieści", "czterdzieści", "pięćdziesiąt", "sześćdziesiąt", "siedemdziesiąt", "osiemdziesiąt",
+  "dziewięćdziesiąt", "sto", "tysiąc", "milion", "raz", "dwukrotnie", "trzykrotnie", "pół",
+  "połowa", "tuzin", "podwójny", "potrójny", "kilka", "parę", "kilkanaście",
+]
+dates = [
+  "\\b\\d{1,2}\\.?\\s+(?:stycz|lut|mar[cz]|kwie|maj|czerw|lip|sierp|wrze|październik|listopad|grud)\\w*",
+  "\\b\\d{1,2}\\.\\d{1,2}\\.(?:\\d{2,4})?",
+]
+
+[values.numbers]
+zero = 0
+jeden = 1
+jedna = 1
+jedno = 1
+raz = 1
+dwa = 2
+dwie = 2
+dwukrotnie = 2
+"podwójny" = 2
+trzy = 3
+trzykrotnie = 3
+"potrójny" = 3
+cztery = 4
+"pięć" = 5
+"sześć" = 6
+siedem = 7
+osiem = 8
+"dziewięć" = 9
+"dziesięć" = 10
+"jedenaście" = 11
+"dwanaście" = 12
+tuzin = 12
+"dwadzieścia" = 20
+"trzydzieści" = 30
+"pięćdziesiąt" = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+# "3-go", "1-szy", "2-gi"
+number_suffixes = ["-?(?:go|ego|tego|szy|szego|gi|ci|ty|ej|ym|ka|ki|ma)"]
+# Nominative, accusative and genitive: "w sobotę", "do soboty".
+weekdays = [
+  ["poniedział(?:ek|ku)"], ["wtor(?:ek|ku)"], ["środ[aęy]"], ["czwart(?:ek|ku)"], ["piąt(?:ek|ku)"],
+  ["sobot[aęy]"], ["niedziel[aęi]"],
+]
+# Nominative, genitive ("3 czerwca"), locative ("w lutym") and instrumental.
+# "maja" is also the name Maja: it is May only after a day or a preposition, or before a year.
+months = [
+  ["stycz(?:eń|nia|niu|niem)"], ["lut(?:y|ego|ym)"], ["mar(?:zec|ca|cu|cem)"],
+  ["kwie(?:cień|tnia|tniu|tniem)"],
+  ["maj(?:u|em)?", "(?:\\d{1,2}\\.?|od|do|koniec|końca|końcu|początek|początku|połowie|połowy)\\s+maja", "maja\\s+(?:19|20)\\d{2}"],
+  ["czerw(?:iec|ca|cu|cem)"], ["lip(?:iec|ca|cu|cem)"], ["sierp(?:ień|nia|niu|niem)"],
+  ["wrze(?:sień|śnia|śniu|śniem)"], ["październik(?:a|u|iem)?"], ["listopad(?:a|zie|em)?"],
+  ["grud(?:zień|nia|niu|niem)"],
+]
+month_names = [
+  "styczeń", "stycznia", "styczniu", "luty", "lutego", "lutym", "marzec", "marca", "marcu",
+  "kwiecień", "kwietnia", "kwietniu", "maj", "maja", "maju", "czerwiec", "czerwca", "czerwcu",
+  "lipiec", "lipca", "lipcu", "sierpień", "sierpnia", "sierpniu", "wrzesień", "września",
+  "wrześniu", "październik", "października", "październiku", "listopad", "listopada", "listopadzie",
+  "grudzień", "grudnia", "grudniu",
+]
+# "dwa tygodnie temu", "przed dwoma tygodniami"
+ago = ["{num}\\s+{unit}\\s+temu", "przed\\s+{num}\\s+{unit}"]
+# "w ciągu ostatniego miesiąca", "w zeszłym tygodniu", "ostatnie trzy miesiące"; "przed tygodniem"
+past = [
+  "(?:ostatni(?:ch|ego|ej|m|mi|ą|e|a)?|zeszł(?:y|ym|ego|ą|a|ej)|ubiegł(?:y|ym|ego|ą|a|ej)|poprzedni(?:ch|ego|ej|m|ą|e|a)?|minion(?:y|ym|ego|ą|a|ej|ych))\\s+(?:{num}\\s+)?{unit}",
+  "przed\\s+{unit}",
+]
+# "w zeszłym miesiącu" and "w ubiegłym roku" are the previous calendar month and year;
+# "w ostatnim miesiącu" is the last thirty days.
+calendar = ["^(?:zeszł|ubiegł|poprzedni|minion)"]
+last_weekday = ["(?:zeszł(?:y|ą|ego|ej)|ubiegł(?:y|ą|ego|ej)|ostatni(?:ą|ego|ej)?|poprzedni(?:ą|ego|ej)?|minion(?:y|ą|ego|ej)|ten|tę|tą|w|we)\\s+{weekday}"]
+strictly_before = ["^(?:zeszł|ubiegł|ostatni|poprzedni|minion)"]
+last_weekend = ["(?:zeszł(?:y|ym|ego)|ubiegł(?:y|ym|ego)|ostatni(?:m|ego)?|poprzedni(?:m|ego)?|minion(?:y|ym|ego))\\s+weekend(?:u|zie)?"]
+yesterday = ["wczoraj"]
+this = ["(?:ten|tym|tego|tej|tę)\\s+{unit}"]
+# "w lutym", "3 czerwca"
+in_month = ["(?:{day}\\.?\\s+)?{month}"]
+
+# Number words in the forms the templates meet: "dwa tygodnie temu" (nominative), "ostatnich
+# dwóch tygodni" (genitive), "przed dwoma tygodniami" (instrumental).
+[time.numbers]
+jeden = 1
+jedna = 1
+"jedną" = 1
+jednego = 1
+jednym = 1
+dwa = 2
+dwie = 2
+"dwóch" = 2
+dwoma = 2
+dwiema = 2
+"parę" = 2
+paru = 2
+paroma = 2
+trzy = 3
+trzech = 3
+trzema = 3
+kilka = 3
+kilku = 3
+kilkoma = 3
+cztery = 4
+czterech = 4
+czterema = 4
+"pięć" = 5
+"pięciu" = 5
+"pięcioma" = 5
+"sześć" = 6
+"sześciu" = 6
+siedem = 7
+siedmiu = 7
+osiem = 8
+"ośmiu" = 8
+"dziewięć" = 9
+"dziewięciu" = 9
+"dziesięć" = 10
+"dziesięciu" = 10
+"jedenaście" = 11
+jedenastu = 11
+"dwanaście" = 12
+dwunastu = 12
+
+# Singular, the form after 2–4 ("dwa tygodnie"), the form after 5+ ("pięć tygodni") and the
+# oblique cases.
+[time.units]
+day = ["dzień", "dni(?:a|u|em|ami|ach)?"]
+week = ["tydzień", "tygodni(?:a|u|e|em|ami|ach)?"]
+month = ["miesiąc(?:a|u|e|em|ami|ach)?", "miesięcy"]
+year = ["rok(?:u|iem)?", "lat(?:a|ami|ach)?"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["czy", "albo", "lub"]
+or_not = ["czy nie", "albo nie", "lub nie"]
+between = ["(?:po)?między\\s+(.+?)\\s+a\\s+(.+?)"]
+clause = ["kiedy", "gdy", "zanim", "po tym,? jak", "odkąd", "podczas gdy", "dopóki"]
+lead = [
+  "któr(?:y|a|e|ego|ej|ą|ym|ych|ymi)", "jak(?:i|a|ie|iego|iej|ą|im|ich)", "co", "czego", "czym",
+  "kto", "kogo", "komu", "kim", "czyj(?:a|e)?", "kiedy", "gdzie", "dokąd", "skąd",
+  "ile\\s+(?:\\w+)?", "jak\\s+(?:długo|często|dużo|wiele|stary|stara)?",
+  "czy", "był(?:em|am|a|o)?", "jest", "są", "miał(?:em|am|a)?",
+]
+article = [
+  "ten", "ta", "to", "te", "tego", "tej", "tę", "mój", "moja", "moje", "mojego", "moją", "nasz",
+  "nasza", "nasze", "tamten", "tamta", "tamte",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  "\\b(?:z?ignoruj(?:cie)?|z?ignorować|pomiń(?:cie)?|pominąć|zapomnij(?:cie)?|zapomnieć|odrzuć(?:cie)?|zlekceważ(?:cie)?|nie zważaj(?:cie)?|nie przestrzegaj(?:cie)?)\\b[^.\\n]{0,40}\\b(?:poprzedni\\w*|wcześniejsz\\w+|dotychczasow\\w+|powyższ\\w+|wszystki\\w+|wszelki\\w+|sw(?:oj|oi)\\w+|tw(?:oj|oi)\\w+|wasz\\w+)\\b[^.\\n]{0,25}\\b(?:instrukcj\\w+|polece\\w+|zasad\\w*|reguł\\w*|wytyczn\\w+|nakaz\\w*|prompt\\w*)",
+]
+role_hijack = [
+  "\\b(?:jesteś teraz|teraz jesteś|(?:od teraz|odtąd|od tej chwili|od tej pory|od dziś),? (?:jesteś|będziesz|masz|musisz|odpowiadasz|odpowiadaj)|jest pan(?:i)? teraz|zachowuj(?:cie)? się jak (?:\\w+ ){0,2}(?:nieograniczon\\w+|niecenzurowan\\w+|bez (?:\\w+ )?(?:ograniczeń|zasad|reguł))|działaj jako (?:\\w+ ){0,2}(?:nieograniczon\\w+|niecenzurowan\\w+|bez (?:\\w+ )?(?:ograniczeń|zasad|reguł))|udawaj(?:cie)?,? że nie masz (?:żadnych )?(?:zasad|reguł|ograniczeń))",
+]
+system_prompt = [
+  "\\b(?:pokaż(?:cie)?|pokazać|ujawnij(?:cie)?|ujawnić|wyświetl(?:cie)?|wyświetlić|wypisz(?:cie)?|wypisać|wydrukuj(?:cie)?|podaj(?:cie)?|podać|zdradź(?:cie)?|zdradzić)\\b[^.\\n]{0,40}\\b(?:prompt\\w* systemow\\w+|systemow\\w+ prompt\\w*|instrukcj\\w+ systemow\\w+|polece\\w+ systemow\\w+|ukryt\\w+ instrukcj\\w+|wiadomoś\\w+ (?:od )?(?:dewelopera|programisty))",
+]
+memory_directive = [
+  "\\b(?:zawsze|za każdym razem|ilekroć|kiedy tylko|gdy tylko)\\b[^.\\n]{0,60}\\b(?:wyślij|wysyłaj|prześlij|przesyłaj|przekaż|przekazuj|wgraj|wgrywaj|przelej|przelewaj|udostępnij|udostępniaj)(?:cie)?\\b[^.\\n]{0,60}\\b(?:na|do|pod)\\b[^.\\n]{0,40}(?:https?://|@|\\bportfel\\w*\\b|\\bwallet\\b)",
+]
+tool_directive = [
+  "\\b(?:uruchom(?:cie)?|uruchomić|wykonaj(?:cie)?|wykonać|wywołaj(?:cie)?|wywołać|odpal(?:cie)?)\\b[^.\\n]{0,30}\\b(?:polecenie|komend[ęay]|narzędzi[ea]|funkcj[ęai])\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]

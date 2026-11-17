@@ -1,0 +1,374 @@
+# SPDX-License-Identifier: Apache-2.0
+# The Italian language pack. Draft: it passes its test set (languages/tests/it.yaml) and has not
+# yet been reviewed by a speaker of the language.
+# The format is described in docs/languages.md; its JSON Schema is languages/pack.schema.json.
+format = 1
+language = "it"
+name = "Italian"
+status = "draft"
+text_search = "italian"
+
+[detect]
+words = [
+  "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "di", "del", "della", "dei", "delle", "a",
+  "al", "alla", "da", "dal", "in", "nel", "nella", "con", "su", "per", "tra", "fra", "e", "è",
+  "sono", "non", "che", "chi", "come", "dove", "quando", "perché", "si", "mi", "ci", "io", "tu",
+  "lui", "lei", "noi", "loro", "questo", "questa", "suo", "sua", "mio", "mia", "ma", "o", "anche",
+  "più", "molto", "ha", "hanno", "ho", "era", "utente",
+]
+letters = "àèéìíòóùú"
+
+# Statement markers (QUAL-02), read in this order: speculation, correction, plan, preference,
+# instruction, event. A statement with no marker is a fact.
+[statements]
+speculation = [
+  "forse",
+  "magari",
+  "può darsi",
+  "chissà",
+  "probabilmente",
+  "presumibilmente",
+  "è (?:possibile|probabile)",
+  "potrebb(?:e|ero)",
+  "potrei",
+  "potresti",
+  "potremmo",
+  "credo",
+  "penso che",
+  "suppongo",
+  "immagino",
+  "sospetto che",
+  "mi chiedo",
+  "mi domando",
+  "non (?:sono|è|siamo) (?:sicur|cert)[oaie]",
+  "non (?:so|sa|sanno|sappiamo) se",
+  "si dice",
+  "dicono che",
+  "(?:corre|gira) voce",
+  "a quanto (?:pare|sembra)",
+  "pare che",
+  "sembra(?:no)?",
+  "apparentemente",
+  "presunt[oaie]",
+  "ipoteticamente",
+  "teoricamente",
+  "in teoria",
+  # "sta pensando di comprare", "pensa di trasferirsi": thinking of doing something.
+  "pens(?:a|ano|o|iamo|ando) di \\w+(?:are|ere|ire|arsi|ersi|irsi|rre)",
+  "(?:sta|stanno|sto|stiamo) (?:valutando|considerando)",
+  "valut(?:a|ano) (?:di|se)",
+  # "se" with the imperfect subjunctive: a hypothesis ("se avesse", "se potessero").
+  "se (?:\\w+ ){0,2}(?:avesse|potesse|fosse|volesse|facesse|avessi|potessi|fossi|volessi|avessero|fossero|potessero|avessimo|fossimo|potessimo)",
+]
+# A change to something stored before.
+correction = [
+  "in realtà",
+  "a dire il vero",
+  "anzi",
+  "correzione",
+  "rettifica",
+  "errata corrige",
+  "mi sbagliavo",
+  "mi (?:sono|ero) sbagliat[oa]",
+  # "non lavora più", "non ci abita più"; the word before "più" is a verb, not an article
+  # ("non è il più economico" is a superlative).
+  "non (?:[\\w'’]+ )?(?:[\\w'’]{3,}|è|ha|ho|fa|va|sa|so|dà) più",
+  "invece d(?:i|el|ello|ella|ei|egli|elle)",
+  "invece dell['’]\\w+",
+  "al posto d(?:i|el|ello|ella|ei|egli|elle)",
+  "anziché",
+  "cambiat[oaie]",
+  "trasferit[oaie]",
+  "traslocat[oaie]",
+  # "è passata al turno di notte"
+  "(?:è|sono|sei|siamo) passat[oaie] (?:a|al|allo|alla|ai|agli|alle|in|da)",
+  "(?:è|sono|sei|siamo) passat[oaie] all['’]\\w+",
+  "adesso",
+  "ormai",
+  "oramai",
+  # "ora" is also "hour": it counts at the start of the statement or next to a common verb.
+  "^ora",
+  "(?:ha|hanno|vive|vivono|lavora|lavorano|abita|abitano|usa|usano) ora",
+  "ora (?:ha|hanno|vive|vivono|lavora|lavorano|abita|abitano|usa|usano|si trova)",
+  "aggiornat[oaie] (?:a|al|alla|da)",
+  "sostituit[oaie] (?:da|con)",
+  "smesso di",
+  # "prima abitava a": "prima" with the imperfect of a common verb. Plain "prima" is left out
+  # ("prima di cena", "la prima volta").
+  "(?:prima|una volta) (?:(?:l['’]\\w+|\\w+) )?(?:abitava|viveva|lavorava|era|aveva|usava|stava|faceva|andava|preferiva|giocava|studiava|guidava|possedeva)(?:no)?",
+  "(?:abitava|viveva|lavorava|usava|stava)(?:no)? prima",
+  "in passato",
+  "un tempo",
+  "in precedenza",
+  "precedentemente",
+]
+# An intention not yet carried out.
+plan = [
+  "in programma",
+  "pianific(?:a|ano|o|hiamo|ando)",
+  "(?:ha|hanno|ho|abbiamo) in (?:mente|progetto)",
+  "intenzione di",
+  "intend(?:e|ono|o|iamo)",
+  "cont(?:a|ano|o|iamo) di \\w+(?:are|ere|ire|arsi|ersi|irsi|rre)",
+  "preved(?:e|ono|o|iamo) di",
+  "vuole",
+  "vuoi",
+  "voglio",
+  "vogliamo",
+  "vogliono",
+  "vorrebb(?:e|ero)",
+  "vorrei",
+  "vorremmo",
+  "desider(?:a|ano|o|iamo)",
+  "piacerebbe",
+  "sper(?:a|ano|o|iamo) (?:di|che)",
+  # "sta per partire": about to.
+  "(?:sta|stanno|sto|stiamo) per \\w+(?:are|ere|ire|arsi|ersi|irsi|rre)",
+  # The future tense: "inizierà", "partiranno", "migreremo". Two letters before the ending keep
+  # out "però".
+  "\\w{2,}(?:er|ir)(?:à|ò|anno|emo|ete)",
+  "(?:sar|avr|andr|far|dar|star|dir|verr|vorr|potr|dovr|sapr|vedr|vivr|cadr|terr|rimarr|berr|otterr|manterr|diverr)(?:à|ò|ai|anno|emo|ete)",
+  "prossim[oaie] (?:settiman[ae]|mes[ei]|ann[oi]|trimestr[ei]|semestr[ei]|giorni|lunedì|martedì|mercoledì|giovedì|venerdì|sabato|domenica|fine settimana|week-?end|estate|inverno|autunno|primavera)",
+  "(?:settimana|mese|anno|trimestre|semestre|lunedì|martedì|mercoledì|giovedì|venerdì|sabato|domenica|fine settimana|week-?end|estate|inverno|autunno|primavera) prossim[oa]",
+  "domani",
+  "dopodomani",
+  "a breve",
+  "prossimamente",
+  "(?:tra|fra) poco",
+  # "tra due settimane": in two weeks.
+  "(?:tra|fra) (?:\\d+|un|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|qualche|pochi|poche|alcuni|alcune) (?:giorn[oi]|settiman[ae]|mes[ei]|ann[oi])",
+  "(?:deve|devono|devo|dobbiamo) ancora",
+  "ricorda(?:ti|tevi)? di",
+  "non dimenticar(?:e|ti|si) di",
+  "(?:ha|hanno|ho|abbiamo) bisogno di \\w+(?:are|ere|ire|arsi|ersi|irsi|rre)",
+]
+preference = [
+  "prefer(?:isce|iscono|isco|iamo|iva|ivano|it[oaie])",
+  "preferenz[ae]",
+  "ador(?:a|ano|o|iamo|ava|avano)",
+  "am(?:a|ano|iamo)",
+  "piac(?:e|ciono|eva|evano)",
+  "odi(?:a|ano|o)",
+  "detest(?:a|ano|o)",
+  "predilig(?:e|ono)",
+  "gradisc(?:e|ono)",
+  "non sopport(?:a|ano|o|iamo)",
+  "non toller(?:a|ano|o)",
+  "(?:va|vanno) matt[oaie] per",
+  "appassionat[oaie] di",
+  "fan d(?:i|el|ello|ella|ei|egli|elle)",
+  "allergic(?:o|a|i|he)",
+  "piuttosto che",
+]
+# Only at the start of the statement. "non" with an infinitive is the negative imperative
+# ("Non inviare").
+instruction_start = [
+  "sempre", "mai", "non \\w+(?:are|ere|ire|arsi|ersi|irsi|rre|arlo|arla|erlo|erla|irlo|irla)",
+  "assicura(?:ti|tevi)", "si assicuri", "verifica", "controlla", "evita(?:re)?", "usa(?:re)?",
+  "utilizza(?:re)?", "esegui(?:re)?", "per favore", "bisogna", "occorre", "è vietato", "vietato",
+]
+instruction = [
+  "(?:deve|devono) (?:\\w+ )?sempre",
+  "non (?:deve|devono) (?:\\w+ )?mai",
+  "(?:va|vanno) sempre \\w+(?:at|ut|it)[oaie]",
+  "non (?:va|vanno) mai \\w+(?:at|ut|it)[oaie]",
+  "bisogna sempre",
+  "non bisogna mai",
+]
+# Past events: a dated reference or a completed action (the passato prossimo).
+event = [
+  "ieri",
+  "(?:settimana|notte|volta|estate|primavera|domenica) scorsa",
+  "(?:mese|anno|fine settimana|week-?end|inverno|autunno|lunedì|martedì|mercoledì|giovedì|venerdì|sabato) scorso",
+  "scors[oa] (?:settimana|mese|anno|fine settimana|week-?end|estate|inverno|autunno|lunedì|martedì|mercoledì|giovedì|venerdì|sabato|domenica)",
+  "(?:\\d+|un|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|qualche|pochi|poche|alcuni|alcune) (?:giorn[oi]|settiman[ae]|mes[ei]|ann[oi]) fa",
+  # avere + a participle: "ha comprato", "hanno già firmato".
+  "(?:ho|hai|ha|abbiamo|avete|hanno|aveva|avevano) (?:(?:già|appena|anche|poi|finalmente|recentemente|infine|quindi|così|ancora) )?(?:\\w+(?:at|ut|it)[oaie]|fatto|preso|messo|visto|scritto|letto|detto|chiuso|aperto|perso|vinto|speso|deciso|scelto|rotto|chiesto|risposto|concluso|acceso|spento|offerto|corso|discusso|risolto|promosso|assunto|raggiunto|vissuto)",
+  # essere + a participle of movement or change: "è andata", "sono partiti", "è nato".
+  "(?:sono|sei|è|siamo|siete|era|erano) (?:(?:già|appena|anche|poi|finalmente) )?(?:andat|venut|partit|arrivat|entrat|uscit|nat|mort|decedut|rimast|tornat|rientrat|diventat|cadut|salit|sces|stat|riuscit|success)[oaie]",
+  # Reflexive verbs in the passato prossimo: "si è laureato", "si sono sposati".
+  "si è",
+  "si sono",
+  "mi sono",
+  "ci siamo",
+  "si era(?:no)?",
+]
+
+[relations]
+relationship = [
+  "\\b(?:è|era|sono|erano|è diventat[oa]) (?:ora |adesso )?(?:il |la |lo |l['’]|un |una |suo |sua |nostro |nostra |mio |mia )?(?:nuov[oa] )?(?:responsabile|manager|cap[oa]|collega|moglie|marito|partner|compagn[oa]|fidanzat[oa]|ragazz[oa]|fratello|sorella|madre|padre|figli[oa]|amic[oa]|cugin[oa]|zi[oa]|vicin[oa]|mentore|cliente|fornitore|proprietari[oa]|titolare|fondat(?:ore|rice)|dirett(?:ore|rice)|amministratore delegato|sponsor|referente|contatto) (?:(?:di|del|dello|della|dei|degli|delle|per|presso)\\b|dell['’])",
+  "\\b(?:riporta a|lavora per|lavora con|sposat[oa] con|fidanzat[oa] con|è parente di|è gestit[oa] da)\\b",
+]
+people = [
+  "sorella", "fratello", "madre", "mamma", "padre", "papà", "genitori", "moglie", "marito",
+  "partner", "compagno", "compagna", "figlio", "figlia", "figli", "bambino", "bambina", "bambini",
+  "amico", "amica", "amici", "collega", "colleghi", "capo", "responsabile", "team", "squadra",
+  "vicino", "vicina", "cugino", "cugina", "zio", "zia", "nonna", "nonno", "fidanzato", "fidanzata",
+  "ragazzo", "ragazza", "cane", "gatto", "animale",
+]
+
+[values]
+stop = [
+  "utente", "utenti", "questo", "questa", "questi", "queste", "quello", "quella", "sono", "della",
+  "dello", "delle", "degli", "nella", "nello", "alla", "allo", "dalla", "aveva", "avevano",
+  "adesso", "loro", "erano", "stato", "stata", "essere", "avere", "sopra", "dopo", "quando", "dove",
+  "quale", "quali", "anche", "solo", "molto", "molta", "alcuni", "alcune", "altro", "altra", "altri",
+  "altre", "nostro", "nostra", "vostro", "vostra", "realtà", "invece", "prima", "cambiato",
+  "trasferito", "trasferita", "attualmente", "correzione", "precedentemente", "perché", "tutto",
+  "tutta", "tutti", "tutte", "ancora", "sempre", "come", "però", "ormai",
+]
+value_stop = [
+  "il", "lo", "la", "gli", "le", "un", "uno", "una", "del", "dello", "della", "dei", "degli",
+  "delle", "nel", "nella", "utente", "suo", "sua", "suoi", "sue", "loro", "lui", "lei", "questo",
+  "questa", "con", "per", "tra", "fra", "hanno", "aveva", "era", "erano", "stato", "stata", "sono",
+  "adesso", "ora", "attualmente", "recentemente", "totale", "volte", "volta", "ogni", "che", "più",
+  "meno", "quasi", "circa", "anche", "solo", "ancora", "già", "nuovo", "nuova", "nostro", "nostra",
+  "come", "alla", "alle", "dal", "dalla", "sul", "sulla", "non",
+]
+identifier = [
+  "fattura", "ordine", "ticket", "biglietto", "pratica", "caso", "conto", "id", "n°", "nº", "num",
+  "numero", "rif", "riferimento", "versione", "camera", "stanza", "sala", "volo", "tavolo", "posto",
+  "gate", "binario", "linea", "bus", "autobus", "modello", "serie", "seriale", "articolo", "sku",
+  "segnalazione", "bug", "unità", "appartamento", "interno", "edificio", "piano", "codice",
+  "prenotazione", "contratto", "spedizione",
+]
+# "sei" is left out: it is also "you are".
+quantity = [
+  "zero", "uno", "due", "tre", "quattro", "cinque", "sette", "otto", "nove", "dieci", "undici",
+  "dodici", "tredici", "quattordici", "quindici", "sedici", "venti", "trenta", "quaranta",
+  "cinquanta", "sessanta", "settanta", "ottanta", "novanta", "cento", "mille", "mila", "milione",
+  "milioni", "metà", "dozzina", "doppio", "triplo", "parecchi", "parecchie", "pochi", "poche",
+]
+dates = [
+  "\\b\\d{1,2}[º°]?\\s+(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\\b(?:\\s+\\d{4})?",
+  "\\b\\d{1,2}\\s+(?:gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\\.",
+  "\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b",
+]
+
+[values.numbers]
+zero = 0
+uno = 1
+due = 2
+doppio = 2
+tre = 3
+triplo = 3
+quattro = 4
+cinque = 5
+sette = 7
+otto = 8
+nove = 9
+dieci = 10
+undici = 11
+dodici = 12
+dozzina = 12
+quindici = 15
+venti = 20
+trenta = 30
+cinquanta = 50
+
+# Time phrases in questions (HYB-03). {num}, {unit}, {weekday}, {month} and {day} are placeholders.
+[time]
+number_suffixes = ["º", "ª", "°"]
+weekdays = [
+  ["lunedì", "lunedi"], ["martedì", "martedi"], ["mercoledì", "mercoledi"], ["giovedì", "giovedi"],
+  ["venerdì", "venerdi"], ["sabato"], ["domenica"],
+]
+months = [
+  ["gennaio"], ["febbraio"], ["marzo"], ["aprile"], ["maggio"], ["giugno"], ["luglio"], ["agosto"],
+  ["settembre"], ["ottobre"], ["novembre"], ["dicembre"],
+]
+month_names = [
+  "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre",
+  "ottobre", "novembre", "dicembre",
+]
+# "due settimane fa"
+ago = ["{num}\\s+{unit}\\s+fa"]
+# "nell'ultimo mese", "gli ultimi tre mesi", "la settimana scorsa"
+past = [
+  "(?:ultim[oaie]|scors[oaie]|passat[oaie])\\s+(?:{num}\\s+)?{unit}",
+  "{unit}\\s+(?:scors[oaie]|passat[oaie]|precedente)",
+]
+# "il mese scorso", "lo scorso anno" are the previous calendar month and year; "l'ultimo mese" is
+# the last thirty days.
+calendar = ["^(?:scors|passat)", "(?:scors[oa]|passat[oa]|precedente)$"]
+# "sabato scorso", "lo scorso sabato", "sabato"
+last_weekday = ["(?:(?:lo\\s+)?scors[oa]\\s+)?{weekday}(?:\\s+(?:scors[oa]|passat[oa]))?"]
+strictly_before = ["scors|passat"]
+last_weekend = [
+  "(?:scorso|ultimo)\\s+(?:fine settimana|week-?end)",
+  "(?:fine settimana|week-?end)\\s+(?:scorso|passato)",
+]
+yesterday = ["ieri"]
+# "questa settimana", "questo mese", "quest'anno"
+this = ["quest(?:[oa]\\s+|['’]){unit}"]
+# "a febbraio", "il 3 giugno", "il 1º giugno"
+in_month = ["(?:{day}[º°]?\\s+)?{month}"]
+
+[time.numbers]
+un = 1
+una = 1
+uno = 1
+due = 2
+"un paio di" = 2
+tre = 3
+qualche = 3
+alcuni = 3
+alcune = 3
+diversi = 3
+diverse = 3
+quattro = 4
+cinque = 5
+sei = 6
+sette = 7
+otto = 8
+nove = 9
+dieci = 10
+undici = 11
+dodici = 12
+quindici = 15
+
+[time.units]
+day = ["giorn[oi]"]
+week = ["settiman[ae]"]
+month = ["mes[ei]"]
+year = ["ann[oi]"]
+
+# The words that split a question about several things into sub-queries.
+[query]
+or = ["o", "oppure"]
+or_not = ["o no", "o meno"]
+between = ["(?:tra|fra)\\s+(.+?)\\s+ed?\\s+(.+?)"]
+clause = ["prima che", "prima di", "dopo che", "dopo", "da quando", "quando", "mentre", "finché"]
+lead = [
+  "qual è", "quale", "quali", "che cosa", "cos['’]è", "cosa", "che", "chi", "quando", "dove",
+  "come", "perché", "da quanto tempo", "quant[oaie](?:\\s+\\w+)?",
+  "ho", "ha", "è", "sono", "ero", "avevo",
+]
+article = [
+  "il", "lo", "la", "i", "gli", "le", "un", "uno", "una", "mio", "mia", "miei", "mie", "nostro",
+  "nostra", "quel", "quello", "quella", "questo", "questa",
+]
+
+# Injection phrases: text that reads as an instruction aimed at the agent (the gate quarantines it).
+[injection]
+override = [
+  # A qualifier before the noun: "ignora tutte le istruzioni", "dimentica le tue regole".
+  "\\b(?:ignor(?:a|ate|are|i)|dimentic(?:a|ate|are|hi)|scorda(?:ti|tevi|re)?|trascura(?:re|te)?|tralascia(?:re|te)?|non (?:tenere|tenete|tener) conto|non considerare|scavalca(?:re)?)\\b[^.\\n]{0,40}\\b(?:tutt[eio]|tue|tuoi|tua|tuo|vostr[eio]|qualsiasi|qualunque|precedenti|precedente)\\b[^.\\n]{0,25}\\b(?:istruzion[ei]|indicazion[ei]|regol[ae]|direttiv[ae]|linee guida|prompt|ordini|restrizion[ei]|vincoli)",
+  # A qualifier after the noun: "ignora le istruzioni precedenti".
+  "\\b(?:ignor(?:a|ate|are|i)|dimentic(?:a|ate|are|hi)|scorda(?:ti|tevi|re)?|trascura(?:re|te)?|tralascia(?:re|te)?|non (?:tenere|tenete|tener) conto|non considerare|scavalca(?:re)?)\\b[^.\\n]{0,40}\\b(?:istruzioni|indicazioni|regole|direttive|linee guida|ordini|prompt)\\s+(?:precedenti|di prima|sopra|iniziali|originali|ricevute)",
+]
+role_hijack = [
+  "\\b(?:(?:ora|adesso) sei|sei (?:ora|adesso)|(?:ora|adesso) (?:tu )?sarai|(?:ora|adesso) siete|(?:ora|adesso) lei è)\\b",
+  "\\b(?:d['’]ora in (?:poi|avanti)|da (?:adesso|ora) in (?:poi|avanti)|da questo momento(?: in poi)?),? (?:(?:tu )?(?:sei|sarai|devi|dovrai|\\w+(?:er|ir)ai)|(?:voi )?(?:siete|sarete|dovete|dovrete)|lei (?:è|sarà|deve|dovrà)|(?:rispondi|rispondete|agisci|agite|comportati|parla|parlate))\\b",
+  "\\b(?:agisci|agite|agisca|comportati|comportatevi|si comporti|rispondi|rispondete)\\b[^.\\n]{0,10}\\b(?:come|da)\\b[^.\\n]{0,40}\\b(?:senza (?:alcuna |nessuna |alcun |nessun )?(?:restrizion[ei]|limit[ei]|regol[ae]|filtr[oi]|censura|vincol[oi])|non censurat[oa]|jailbreak\\w*|dan)\\b",
+  "\\b(?:fingi|finga|fai finta|faccia finta|fate finta)\\b[^.\\n]{0,20}\\bnon (?:avere|hai|ha|abbia) (?:alcuna |nessuna )?(?:regol[ae]|restrizion[ei]|limit[ei])",
+]
+system_prompt = [
+  "\\b(?:rivela(?:mi|re|te)?|riveli|mostra(?:mi|re|te)?|mostri|stampa(?:mi|re|te)?|dimmi|dammi|mi dica|scrivi(?:mi)?|scrivere|ripeti(?:mi)?|ripetere|svela(?:mi|re)?|riporta(?:mi|re)?|condividi|fammi vedere|elenca(?:mi|re)?)\\b[^.\\n]{0,40}\\b(?:prompt di sistema|messaggio di sistema|istruzioni di sistema|istruzioni (?:nascoste|segrete|iniziali)|messaggio dello sviluppatore|system prompt)",
+]
+memory_directive = [
+  "\\b(?:sempre|ogni volta|ogniqualvolta|non appena|sistematicamente)\\b[^.\\n]{0,60}\\b(?:invia(?:re|te)?|invii|inoltra(?:re|te)?|inoltri|manda(?:re|te)?|mandi|spedisci|spedire|spedite|trasferisci|trasferire|trasmetti|trasmettere|carica(?:re)?|copia(?:re)?)\\b[^.\\n]{0,60}\\b(?:a|ad|al|alla|allo|verso|su|presso)\\b[^.\\n]{0,40}(?:https?://|@|\\bwallet\\b|\\bportafoglio\\b)",
+]
+tool_directive = [
+  "\\b(?:esegui(?:re|te)?|esegua|lancia(?:re|te)?|avvia(?:re|te)?|chiama(?:re|te)?|invoca(?:re|te)?|richiama(?:re)?)\\b[^.\\n]{0,30}\\b(?:comando|strumento|tool|funzione|script)\\b[^.\\n]{0,40}(?:rm -rf|curl [^ ]+\\s*\\|\\s*(?:ba)?sh|transfer_funds|delete_all)",
+]
