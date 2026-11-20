@@ -12,7 +12,14 @@ const TENANT: &str = "kit-tenant";
 fn identity(kind: PrincipalKind, id: &str, scopes: &[&str]) -> Identity {
     let mut p = Principal::new(id, TENANT, kind, "conformance");
     p.subjects = vec!["kit:*".into()];
-    Identity { principal: p, user: Some("user:kit-ana".into()), scopes: scopes.iter().map(|s| s.to_string()).collect(), key_id: Some("kit-key".into()), expires_at: None, via: Via::Key }
+    Identity {
+        principal: p,
+        user: Some("user:kit-ana".into()),
+        scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        key_id: Some("kit-key".into()),
+        expires_at: None,
+        via: Via::Key,
+    }
 }
 
 fn request(op: Operation) -> AccessRequest {
@@ -44,7 +51,11 @@ pub async fn run_authorizer_kit(a: &dyn Authorizer) -> Report {
             leaked.push(op.name().to_string());
         }
     }
-    r.check("no_permission_no_access", "a credential that carries no permission is denied every memory operation", unless(leaked.is_empty(), || format!("allowed: {}", leaked.join(", "))));
+    r.check(
+        "no_permission_no_access",
+        "a credential that carries no permission is denied every memory operation",
+        unless(leaked.is_empty(), || format!("allowed: {}", leaked.join(", "))),
+    );
 
     let read_only = identity(PrincipalKind::Agent, "agent:kit", &[perm::READ]);
     let mut wrote = vec![];
@@ -95,7 +106,11 @@ pub async fn run_authorizer_kit(a: &dyn Authorizer) -> Report {
     );
 
     let (one, two) = (a.authorize(&agent, &request(Operation::Remember)).await, a.authorize(&agent, &request(Operation::Remember)).await);
-    r.check("deterministic", "the same identity and request get the same decision", unless(one.allowed == two.allowed && one.rule == two.rule && one.propose_only == two.propose_only, || format!("{} then {}", says(&one), says(&two))));
+    r.check(
+        "deterministic",
+        "the same identity and request get the same decision",
+        unless(one.allowed == two.allowed && one.rule == two.rule && one.propose_only == two.propose_only, || format!("{} then {}", says(&one), says(&two))),
+    );
 
     let denied = a.authorize(&nothing, &request(Operation::Recall)).await;
     r.check(

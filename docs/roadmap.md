@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 13 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
+| Progress | 14 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 66 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 68 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -141,7 +141,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 66 / 66 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 68 / 68 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -345,7 +345,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 
 **D. Lite + developer launch**
 
-- [ ] [G15 — Adapter and profile conformance kits](#g15--adapter-and-profile-conformance-kits)
+- [x] [G15 — Adapter and profile conformance kits](#g15--adapter-and-profile-conformance-kits) (20 November 2026)
 - [ ] [G16 — Lite profile: embedded store](#g16--lite-profile-embedded-store)
 - [ ] [G17 — Profile migration](#g17--profile-migration)
 - [ ] [G18 — SDKs, embedded bindings and first framework adapters](#g18--sdks-embedded-bindings-and-first-framework-adapters)
@@ -1541,7 +1541,7 @@ which is named.
 
 #### G15 — Adapter and profile conformance kits
 
-- [ ] **Done**
+- [x] **Done** (20 November 2026)
 
 > `/goal Publish conformance kits for every adapter type (store, embedder, reranker, chat model, intake queue, authorizer) as reusable test suites, plus the profile conformance suite (technical document 6.11); run them against the Postgres profile in CI. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -1549,10 +1549,49 @@ which is named.
 - **Scope:** **TR-CORE-01** (verified: no profile reimplements engine logic), **TR-CORE-02**,
   **DEP-02**, **DEP-01** (verified Postgres-only), PROF-01 (finished in G16), **SCALE-05**.
 - **Deliverables:**
-  - [ ] `memhouse-conformance` crate with one `run_store_kit(store)`-style entry per adapter type
-  - [ ] profile suite: the same scenario file run through REST, MCP, the CLI and (later) SDKs
+  - [x] `memhouse-conformance` crate with one `run_store_kit(store)`-style entry per adapter type
+  - [x] profile suite: the same scenario file run through REST, MCP, the CLI and (later) SDKs (the SDKs add their own way in G18)
 - **Done when:** Postgres passes every kit; a mock store that drops one cascade fails the kit with a clear message.
 - **Guard:** T1. **Depends on:** G14.
+- **Result (2026-11-20).**
+  - **The kits.** The crate `memhouse-conformance` has one function per adapter type, each
+    returning a report of named checks with what was expected and what the adapter did:
+    `run_store_kit` (15 checks), `run_intake_queue_kit` (12), `run_embedder_kit` (9),
+    `run_reranker_kit` (6), `run_chat_kit` (4), `run_authorizer_kit` (12). Most of the store
+    kit drives the real engine over the store under test with a deterministic embedder and
+    extractor (`fakes`), so it tests the store as it is used. [conformance.md](conformance.md)
+    lists what each checks and how an adapter author runs them.
+  - **The profile suite.** A scenario is a YAML file of steps (`remember`, `recall`, `revise`,
+    `forget`, `ingest`) with the outcome each must have. `run_profile_suite` runs it through
+    each way in and requires every expectation met and the same outcome at every step. Three
+    ways are built in: `Rest`, `Mcp` and `Cli`; `revise`, `forget` and `ingest` gained `--json`
+    on the command line for it. The basic scenario has 13 steps.
+  - **Done when.** Postgres passes every kit: store 15 of 15, intake queue 12 of 12, the
+    configured embedder 9 of 9, the default authorizer 12 of 12 (the reranker kit runs when a
+    reranker is enabled; its own tests cover it otherwise). The store that drops a cascade is
+    the same Postgres store on a database where one deletion of an extracted fact silently
+    does nothing: the kit fails with "delete_cascades_to_derived_facts: expected: deleting a
+    conversation round also deletes the facts extracted from it; found: after the round was
+    deleted, 1 fact(s) extracted from it are still stored". The basic scenario gives the same
+    13 outcomes through REST, MCP and the command line.
+  - **In CI.** Two governance checks, `adapter_conformance` and `profile_conformance` (68 in
+    all), run in the hosted end-to-end job on every pull request.
+  - **What the kits found.** A failed attempt reported to the Postgres intake queue without
+    `keep_payload` lost the proposal's content, so its retry had nothing to run. The engine
+    always sets the flag, so no write was affected; the queue now keeps the content of any
+    proposal that will be retried.
+  - **Guard: T1, $0**, latency not gated on a loaded machine: governance 68 of 68;
+    LongMemEval_S 91.3 / 94.2 / 84.8; LoCoMo 78.8 / 78.7 / 59.2; the starter suite 97.6 / 97.5,
+    84.9% without a stale version, 100% of plans and guesses not committed.
+  - **Differs from the plan, and limits.** The faulty store is a fault injected into Postgres
+    (a trigger), not a second store implementation: the `Store` interface has about 110
+    methods and a hand-written mock of it would be a store of its own. The chat-model kit runs
+    in CI with a stand-in model, since the suite calls no paid model; a real model is checked
+    by calling `run_chat_kit` on it. SCALE-05's acceptance test names two managed Postgres
+    services: the kits were run on self-hosted Postgres with pgvector only. PROF-01 is
+    finished in G16, when the Lite profile runs the same scenario. The store kit needs a
+    store with an intake queue and a claim of one subject's extraction jobs
+    (`Store::enrich_claim_for`); a store without them fails those checks rather than skip them.
 
 #### G16 — Lite profile: embedded store
 

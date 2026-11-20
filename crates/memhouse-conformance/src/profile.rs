@@ -115,7 +115,15 @@ impl Scenario {
         for (i, step) in s.steps.iter().enumerate() {
             let n = [step.remember.is_some(), step.recall.is_some(), step.revise.is_some(), step.forget.is_some(), step.ingest.is_some()].iter().filter(|x| **x).count();
             anyhow::ensure!(n == 1, "scenario {}, step {}: exactly one of remember, recall, revise, forget, ingest", s.name, i + 1);
-            let used = step.revise.iter().map(|r| &r.id).chain(step.forget.iter().map(|f| &f.id)).chain(&step.expect.contains).chain(&step.expect.excludes).chain(&step.expect.first).chain(&step.expect.superseded);
+            let used = step
+                .revise
+                .iter()
+                .map(|r| &r.id)
+                .chain(step.forget.iter().map(|f| &f.id))
+                .chain(&step.expect.contains)
+                .chain(&step.expect.excludes)
+                .chain(&step.expect.first)
+                .chain(&step.expect.superseded);
             for name in used {
                 anyhow::ensure!(saved.contains(&name.as_str()), "scenario {}, step {}: \"{name}\" was not saved by an earlier step", s.name, i + 1);
             }
@@ -449,7 +457,8 @@ mod tests {
                 }
                 "recall" => {
                     let word = text("query").split(' ').next().unwrap_or_default().to_lowercase();
-                    let hits: Vec<Value> = recs.iter().filter(|r| r.1 == text("subject") && r.2.to_lowercase().contains(&word)).map(|r| json!({ "memory": { "id": r.0, "content": r.2 } })).collect();
+                    let hits: Vec<Value> =
+                        recs.iter().filter(|r| r.1 == text("subject") && r.2.to_lowercase().contains(&word)).map(|r| json!({ "memory": { "id": r.0, "content": r.2 } })).collect();
                     json!({ "hits": hits })
                 }
                 "forget" => {

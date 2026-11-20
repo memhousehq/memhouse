@@ -87,6 +87,13 @@ path from 0.x data other than export and import.
   model, for at most 30% of a tenant's sessions. Tier metrics for both.
 - Suites can be replayed as ingested conversations (`memhouse bench run --suite ... --enrich`),
   which scores the extracted facts.
+- Conformance kits (`memhouse-conformance`): one reusable test suite per adapter type (store,
+  intake queue, embedder, reranker, chat model, authorizer) and a profile suite that runs one
+  scenario through REST, MCP and the command line and requires the same outcomes. `revise`,
+  `forget` and `ingest` take `--json` on the command line. See
+  [docs/conformance.md](docs/conformance.md).
+- A proposal that fails and will be retried always keeps its content in the intake queue (found
+  by the queue's kit).
 - Identifiers and words are matched with Unicode letter classes ("Č-1001" is an identifier).
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early

@@ -74,14 +74,21 @@ async fn adapters(base: &Engine) -> Outcome {
         }
     }
     // A store that drops one cascade: the same Postgres store, on a database where deleting a
-    // record extracted from a round silently does nothing.
+    // record extracted from a round silently does nothing, once.
     let scratch = Scratch::create(base, "kit2").await?;
     let faulty = async {
         let store = postgres(&scratch.url).await?;
         store.migrate(kit::STORE_KIT_DIM, &kit::fakes::HashEmbedder::new(kit::STORE_KIT_DIM).id).await?;
         let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&scratch.url).await?;
+        // The fault drops one cascade and then heals: the first extracted fact that should be
+        // deleted stays. (A store that never deleted one would keep erasure retrying for an hour.)
         sqlx::raw_sql(
-            "CREATE FUNCTION kit_keep_derived() RETURNS trigger AS $$ BEGIN IF OLD.metadata->>'derived' = 'true' THEN RETURN NULL; END IF; RETURN OLD; END $$ LANGUAGE plpgsql; \
+            "CREATE TABLE kit_fault (left_to_drop int NOT NULL); INSERT INTO kit_fault VALUES (1); \
+             CREATE FUNCTION kit_keep_derived() RETURNS trigger AS $$ BEGIN \
+               IF OLD.metadata->>'derived' = 'true' THEN \
+                 UPDATE kit_fault SET left_to_drop = left_to_drop - 1 WHERE left_to_drop > 0; \
+                 IF FOUND THEN RETURN NULL; END IF; \
+               END IF; RETURN OLD; END $$ LANGUAGE plpgsql; \
              CREATE TRIGGER kit_keep_derived BEFORE DELETE ON mh_memory FOR EACH ROW EXECUTE FUNCTION kit_keep_derived();",
         )
         .execute(&pool)
@@ -95,7 +102,10 @@ async fn adapters(base: &Engine) -> Outcome {
     let text = faulty.failure_text();
     let named = faulty.failures().iter().any(|c| c.name == "delete_cascades_to_derived_facts") && text.contains("still stored");
     if faulty.passed() || !named {
-        problems.push(format!("a store that keeps the facts of a deleted round was not caught clearly: {}", if faulty.passed() { "the kit passed".to_string() } else { text.replace('\n', "; ") }));
+        problems.push(format!(
+            "a store that keeps the facts of a deleted round was not caught clearly: {}",
+            if faulty.passed() { "the kit passed".to_string() } else { text.replace('\n', "; ") }
+        ));
     }
     let value = format!("{}; the faulty store failed {} check(s)", reports.iter().map(|r| r.summary()).collect::<Vec<_>>().join("; "), faulty.failures().len());
     let passed = problems.is_empty();

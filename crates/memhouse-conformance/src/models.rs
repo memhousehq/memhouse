@@ -10,11 +10,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (n(a) * n(b)).max(1e-9)
 }
 
-const TEXTS: &[&str] = &[
-    "The user adopted a cat named Miso in March.",
-    "A cat called Miso was adopted by the user in March.",
-    "The quarterly invoice for Acme is due on the last Friday.",
-];
+const TEXTS: &[&str] =
+    &["The user adopted a cat named Miso in March.", "A cat called Miso was adopted by the user in March.", "The quarterly invoice for Acme is due on the last Friday."];
 
 /// The embedder contract: vectors of the declared size, finite and not zero; one per text, in
 /// order; the same text gives the same vector, alone or in a batch; a paraphrase is closer than
@@ -45,32 +42,48 @@ pub async fn run_embedder_kit(e: &dyn Embedder) -> Report {
         "every component is a finite number and no vector is all zeros",
         unless(vectors.iter().all(|v| v.iter().all(|x| x.is_finite()) && v.iter().any(|x| *x != 0.0)), || "a vector has a NaN or infinite component, or is all zeros".into()),
     );
-    r.outcome("deterministic", "the same text gives the same vector on a second call (cosine above 0.9999)", async {
-        let again = e.embed(&texts[..1], EmbedKind::Passage).await?;
-        let c = again.first().map(|v| cosine(v, &vectors[0])).unwrap_or(0.0);
-        Ok(unless(c > 0.9999, || format!("cosine {c:.5} between two embeddings of one text")))
-    }
-    .await);
-    r.outcome("batch_equals_single", "a text embedded in a batch equals the same text embedded alone, in the batch's order", async {
-        let alone = e.embed(&texts[2..3], EmbedKind::Passage).await?;
-        let c = alone.first().map(|v| cosine(v, &vectors[2])).unwrap_or(0.0);
-        Ok(unless(c > 0.999, || format!("cosine {c:.5} between the third text alone and in the batch")))
-    }
-    .await);
+    r.outcome(
+        "deterministic",
+        "the same text gives the same vector on a second call (cosine above 0.9999)",
+        async {
+            let again = e.embed(&texts[..1], EmbedKind::Passage).await?;
+            let c = again.first().map(|v| cosine(v, &vectors[0])).unwrap_or(0.0);
+            Ok(unless(c > 0.9999, || format!("cosine {c:.5} between two embeddings of one text")))
+        }
+        .await,
+    );
+    r.outcome(
+        "batch_equals_single",
+        "a text embedded in a batch equals the same text embedded alone, in the batch's order",
+        async {
+            let alone = e.embed(&texts[2..3], EmbedKind::Passage).await?;
+            let c = alone.first().map(|v| cosine(v, &vectors[2])).unwrap_or(0.0);
+            Ok(unless(c > 0.999, || format!("cosine {c:.5} between the third text alone and in the batch")))
+        }
+        .await,
+    );
     let (near, far) = (cosine(&vectors[0], &vectors[1]), cosine(&vectors[0], &vectors[2]));
     r.check("similar_texts_are_closer", "a paraphrase is closer than an unrelated text", unless(near > far, || format!("paraphrase cosine {near:.3}, unrelated {far:.3}")));
-    r.outcome("embeds_queries", "a question about a passage is closer to it than to an unrelated one", async {
-        let q = e.embed(&["What is the cat called?".to_string()], EmbedKind::Query).await?;
-        let Some(q) = q.first().filter(|q| q.len() == e.dim()) else { return Ok(Some("no query vector of the declared size".into())) };
-        let (hit, miss) = (cosine(q, &vectors[0]), cosine(q, &vectors[2]));
-        Ok(unless(hit > miss, || format!("cosine {hit:.3} to the passage about the cat, {miss:.3} to the one about the invoice")))
-    }
-    .await);
-    r.outcome("empty_input", "no texts give no vectors, without an error", async {
-        let none = e.embed(&[], EmbedKind::Passage).await?;
-        Ok(unless(none.is_empty(), || format!("{} vectors for no text", none.len())))
-    }
-    .await);
+    r.outcome(
+        "embeds_queries",
+        "a question about a passage is closer to it than to an unrelated one",
+        async {
+            let q = e.embed(&["What is the cat called?".to_string()], EmbedKind::Query).await?;
+            let Some(q) = q.first().filter(|q| q.len() == e.dim()) else { return Ok(Some("no query vector of the declared size".into())) };
+            let (hit, miss) = (cosine(q, &vectors[0]), cosine(q, &vectors[2]));
+            Ok(unless(hit > miss, || format!("cosine {hit:.3} to the passage about the cat, {miss:.3} to the one about the invoice")))
+        }
+        .await,
+    );
+    r.outcome(
+        "empty_input",
+        "no texts give no vectors, without an error",
+        async {
+            let none = e.embed(&[], EmbedKind::Passage).await?;
+            Ok(unless(none.is_empty(), || format!("{} vectors for no text", none.len())))
+        }
+        .await,
+    );
     r
 }
 
@@ -93,23 +106,39 @@ pub async fn run_reranker_kit(m: &dyn Reranker) -> Report {
         return r;
     }
     r.check("scores_are_finite", "every score is a finite number", unless(scores.iter().all(|s| s.is_finite()), || format!("scores {scores:?}")));
-    r.check("relevant_document_first", "the document that answers the query scores highest", unless(scores[2] > scores[0] && scores[2] > scores[1], || format!("scores {scores:?}; the third document answers the query")));
-    r.outcome("order_follows_the_documents", "scores follow the documents when their order changes", async {
-        let rev: Vec<String> = docs.iter().rev().cloned().collect();
-        let s = m.rerank(query, &rev).await?;
-        Ok(unless(s.len() == 3 && s[0] > s[1] && s[0] > s[2], || format!("with the documents reversed the scores are {s:?}")))
-    }
-    .await);
-    r.outcome("deterministic", "the same input gives the same scores", async {
-        let again = m.rerank(query, &docs).await?;
-        Ok(unless(again.len() == scores.len() && again.iter().zip(&scores).all(|(a, b)| (a - b).abs() < 1e-4), || format!("{scores:?} then {again:?}")))
-    }
-    .await);
-    r.outcome("empty_input", "no documents give no scores, without an error", async {
-        let none = m.rerank(query, &[]).await?;
-        Ok(unless(none.is_empty(), || format!("{} scores for no document", none.len())))
-    }
-    .await);
+    r.check(
+        "relevant_document_first",
+        "the document that answers the query scores highest",
+        unless(scores[2] > scores[0] && scores[2] > scores[1], || format!("scores {scores:?}; the third document answers the query")),
+    );
+    r.outcome(
+        "order_follows_the_documents",
+        "scores follow the documents when their order changes",
+        async {
+            let rev: Vec<String> = docs.iter().rev().cloned().collect();
+            let s = m.rerank(query, &rev).await?;
+            Ok(unless(s.len() == 3 && s[0] > s[1] && s[0] > s[2], || format!("with the documents reversed the scores are {s:?}")))
+        }
+        .await,
+    );
+    r.outcome(
+        "deterministic",
+        "the same input gives the same scores",
+        async {
+            let again = m.rerank(query, &docs).await?;
+            Ok(unless(again.len() == scores.len() && again.iter().zip(&scores).all(|(a, b)| (a - b).abs() < 1e-4), || format!("{scores:?} then {again:?}")))
+        }
+        .await,
+    );
+    r.outcome(
+        "empty_input",
+        "no documents give no scores, without an error",
+        async {
+            let none = m.rerank(query, &[]).await?;
+            Ok(unless(none.is_empty(), || format!("{} scores for no document", none.len())))
+        }
+        .await,
+    );
     r
 }
 
@@ -202,7 +231,9 @@ mod tests {
         let broken = run_embedder_kit(&Constant).await;
         let failed: Vec<&str> = broken.failures().iter().map(|c| c.name.as_str()).collect();
         assert_eq!(failed, ["similar_texts_are_closer", "embeds_queries"], "{}", broken.failure_text());
-        assert!(broken.failure_text().contains("embedder kit, broken:constant: similar_texts_are_closer: expected: a paraphrase is closer than an unrelated text; found: paraphrase cosine 1.000, unrelated 1.000"));
+        assert!(broken.failure_text().contains(
+            "embedder kit, broken:constant: similar_texts_are_closer: expected: a paraphrase is closer than an unrelated text; found: paraphrase cosine 1.000, unrelated 1.000"
+        ));
     }
 
     #[tokio::test]
