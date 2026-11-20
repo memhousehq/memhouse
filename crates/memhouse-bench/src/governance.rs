@@ -1030,6 +1030,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // Tiered extraction and the correction rule (G14).
     checks.extend(crate::tier_checks::run(engine, run_id).await);
 
+    // The adapter conformance kits against the Postgres profile (G15).
+    checks.extend(crate::conformance_checks::run(engine).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;

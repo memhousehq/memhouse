@@ -1411,6 +1411,7 @@ dependencies = [
  "half",
  "hex",
  "libc",
+ "memhouse-conformance",
  "memhouse-core",
  "memhouse-models",
  "memhouse-server",
@@ -1451,6 +1452,22 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "memhouse-conformance"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "memhouse-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tokio",
  "uuid",
 ]
 

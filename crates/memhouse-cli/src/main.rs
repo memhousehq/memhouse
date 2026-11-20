@@ -208,7 +208,13 @@ enum Cmd {
         all: bool,
     },
     /// Replace a memory with a corrected version (the old one is kept as superseded)
-    Revise { id: String, content: String },
+    Revise {
+        id: String,
+        content: String,
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Delete one memory, or everything about a subject, user, agent or source
     Forget {
         id: Option<String>,
@@ -228,6 +234,9 @@ enum Cmd {
         dry_run: bool,
         #[arg(long)]
         yes: bool,
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Print the OpenAPI 3.1 document of the REST API
     Openapi,
@@ -238,6 +247,9 @@ enum Cmd {
         subject: Option<String>,
         #[arg(long)]
         session: Option<String>,
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Export a tenant (or one subject) as Memory Format v2 JSONL (docs/memory-format.md)
     Export {
@@ -559,15 +571,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("{}  {:<11} {:<10} {}  {}", m.id, m.kind.as_str(), m.status.as_str(), m.created_at.format("%Y-%m-%d"), m.content.replace('\n', " "));
             }
         }
-        Cmd::Revise { id, content } => {
+        Cmd::Revise { id, content, json } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let r = eng.revise(ReviseRequest { id: uuid::Uuid::parse_str(&id)?, content, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
             match r.superseded {
+                _ if json => println!("{}", serde_json::to_string_pretty(&r)?),
                 Some(old) => println!("{} now replaces {old}", r.id),
                 None => println!("stored {} ({}); {id} was not superseded{}", r.id, r.status.as_str(), r.note.map(|n| format!(": {n}")).unwrap_or_default()),
             }
         }
-        Cmd::Forget { id, subject, user, agent, source, dry_run, yes } => {
+        Cmd::Forget { id, subject, user, agent, source, dry_run, yes, json } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let id = id.map(|i| uuid::Uuid::parse_str(&i)).transpose()?;
             let req = ForgetRequest { id, subject, user, agent, source, dry_run, actor: Some("cli".into()), ..Default::default() };
@@ -582,6 +595,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             match eng.forget_by(req).await {
+                Ok(r) if json => println!("{}", serde_json::to_string_pretty(&r)?),
                 Ok(r) if r.dry_run => println!("would delete {} memories ({} {})", r.deleted, r.scope.as_str(), r.value),
                 Ok(r) => println!("deleted {} memories ({} {})", r.deleted, r.scope.as_str(), r.value),
                 Err(e) if memhouse_core::error::code_of(&e) == memhouse_core::error::ErrorCode::NotFound => println!("not found"),
@@ -589,11 +603,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Cmd::Openapi => println!("{}", serde_json::to_string_pretty(&memhouse_server::openapi::spec())?),
-        Cmd::Ingest { file, subject, session } => {
+        Cmd::Ingest { file, subject, session, json } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let messages: Vec<Message> = serde_json::from_str(&std::fs::read_to_string(&file)?)?;
             let r = eng.ingest(IngestRequest { subject, session_id: session, messages, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
-            println!("stored {} rounds ({} quarantined, {} already present)", r.stored, r.quarantined, r.deduplicated);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                println!("stored {} rounds ({} quarantined, {} already present)", r.stored, r.quarantined, r.deduplicated);
+            }
         }
         Cmd::Export { subject, out, tenant } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
