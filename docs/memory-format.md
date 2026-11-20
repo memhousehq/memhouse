@@ -86,9 +86,11 @@ Fields in this order; optional fields are left out when empty.
 | `created_at`, `updated_at` | RFC 3339 | yes | `updated_at` not before `created_at` |
 
 Unknown fields and unknown line types are **errors**, not ignored: a v2 reader can't silently drop
-what a newer writer added. This holds for every line of a v2 file and every object in it, with
-one exception: the header's `embedder` object is informational, and a reader may ignore members
-of it that it doesn't know.
+what a newer writer added. This holds for every line of a v2 file and every object whose fields
+these tables list (`scope`, `provenance`, `structured`, an item of `code_refs`). Three objects
+are free-form, with no fixed set of members: `metadata`, `structured.attrs` and a policy's `body`.
+And the header's `embedder` object is informational: a reader may ignore members of it that it
+doesn't know.
 
 ### Content hash
 
