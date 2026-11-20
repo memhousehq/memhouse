@@ -43,7 +43,16 @@ yanked = "warn"
 # 0700), every time it opens it, so no other user can place the database or its `-wal` there.
 # The fixed release (0.39) can't be selected while sqlx 0.9 holds `libsqlite3-sys` below 0.38.
 # Remove this entry when sqlx allows 0.39 or the spike examples go.
+#
+# Reviewed exception (20 November 2026): chrono was declared unmaintained (all versions; there is
+# no fixed release to move to). This is a maintenance notice, not a vulnerability: no flaw in
+# the code MemHouse uses is reported. chrono is used for every timestamp in the engine, the
+# store (through sqlx's `chrono` feature) and the API schema, so replacing it is a change of
+# its own, not a version bump. Remove this entry when the dates move to a maintained crate, or
+# at once if a vulnerability is reported against chrono (that advisory would fail the build on
+# its own id).
 ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, with no fixed version; a maintenance notice, not a vulnerability; replacing it touches the engine, the store and the API schema and is planned as its own change" },
   { id = "RUSTSEC-2026-0459", reason = "bundled SQLite only in the optional `spike` examples, which open databases only in a directory verified to be the user's own (0700); the fix is blocked by sqlx 0.9's libsqlite3-sys bound" },
 ]
 
