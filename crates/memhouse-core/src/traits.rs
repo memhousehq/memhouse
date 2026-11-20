@@ -72,7 +72,8 @@ pub trait IntakeQueue: Send + Sync {
     /// Mark a proposal finished (a no-op when the store did it in the insert's transaction).
     async fn finish(&self, id: Uuid, outcome: &serde_json::Value) -> anyhow::Result<()>;
     /// A failed attempt: retry after a backoff, or, with `dead`, set the proposal aside (TR-IN-07).
-    /// `keep_payload` keeps its content for the operator when its records could not be stored.
+    /// `keep_payload` keeps a dead proposal's content for the operator when its records could
+    /// not be stored; a proposal that will be retried always keeps its content.
     /// `attempt` is the claim's attempt number: a worker whose lease expired and was claimed
     /// again changes nothing.
     async fn fail(&self, id: Uuid, attempt: i32, error: &str, dead: bool, keep_payload: bool) -> anyhow::Result<()>;

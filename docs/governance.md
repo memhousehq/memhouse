@@ -488,7 +488,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-66 checks pass on the current release. The core ones:
+68 checks pass on the current release. The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -538,6 +538,8 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `extraction_tiers` | with `[enrich] escalate`, a session whose extracted facts are not grounded in its rounds goes to the large model, within 30% of the tenant's sessions; that model's facts pass the same gate (an injected instruction is quarantined); a session past the cap, or whose large model fails, keeps the small model's facts; each fact's `confidence` says how well its rounds support it (G14) |
 | `corrections_supersede` | a statement with a correction marker retires both older wordings of the fact it corrects, each with its own audit event; it leaves a fact about a relative, a fact about another named person and an unrelated fact alone; a recall returns the correction and neither retired version (G14) |
 | `ingested_replay` | a suite replayed as ingested conversations scores the facts extracted from it (facts stored, the plan held, a stale version counted when it is still live) and is refused, not scored, when enrichment is off (G14) |
+| `adapter_conformance` | the Postgres store and its intake queue, the configured embedder (and reranker), the default authorizer and a stand-in chat model pass their [conformance kits](conformance.md); the same store on a database where one deletion of an extracted fact silently does nothing fails the store kit, which names the dropped cascade (G15) |
+| `profile_conformance` | the basic scenario (a write, its duplicate, a held plan, a revision, a quarantined injection attempt, an ingested conversation, a deletion) gives the same outcome at each of its 13 steps through REST, MCP and the command line (G15) |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 

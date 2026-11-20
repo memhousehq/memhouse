@@ -32,6 +32,9 @@ flowchart BT
     server[memhouse-server<br/>axum REST · MCP stdio + HTTP · Memory Browser]
     bench[memhouse-bench<br/>datasets · runner · metrics · governance suite · reports]
     cli[memhouse-cli<br/>the memhouse binary: up · init · connect · doctor · …]
+    kit[memhouse-conformance<br/>adapter kits · profile suite]
+    kit --> core
+    bench --> kit
     pg --> core
     models --> core
     server --> core & pg & models
@@ -56,7 +59,8 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (66 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language and tier checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (68 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier and conformance checks are in `*_checks.rs` next to it |
+| `conformance/src/*.rs` | the conformance kits, one per adapter type, and the profile suite with its three ways in ([conformance.md](conformance.md)) |
 | `core/src/lang.rs`, `langcheck.rs` | language packs: the format, validation, compilation to patterns, detection; a pack's labelled test set. The packs are in `languages/`, their test sets in `languages/tests/` |
 
 ## Build

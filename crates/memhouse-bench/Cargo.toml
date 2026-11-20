@@ -8,6 +8,7 @@ license.workspace = true
 memhouse-core.workspace = true
 memhouse-server.workspace = true
 memhouse-models.workspace = true
+memhouse-conformance.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 serde.workspace = true

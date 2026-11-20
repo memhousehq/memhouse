@@ -1,0 +1,19 @@
+[package]
+name = "memhouse-conformance"
+description = "Conformance kits for MemHouse adapters (store, embedder, reranker, chat model, intake queue, authorizer) and the profile conformance suite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+memhouse-core.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde_yaml_ng.workspace = true
+reqwest.workspace = true
