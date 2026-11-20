@@ -29,6 +29,8 @@ pub struct Engine {
     pub reranker: Option<Arc<dyn Reranker>>,
     /// LLM for background enrichment (only workers use it; ingest just queues jobs).
     pub chat: Option<Arc<dyn ChatModel>>,
+    /// The larger model of the last extraction tier (`enrich.escalate`, ECON-04).
+    pub chat_large: Option<Arc<dyn ChatModel>>,
     pub cfg: Arc<Config>,
     /// The compiled policy of each tenant (G08): read through `policy_for`.
     pub policies: Arc<crate::policy::PolicyCache>,
@@ -154,6 +156,7 @@ impl Engine {
             embedder,
             reranker,
             chat: None,
+            chat_large: None,
             cfg,
             policies: Default::default(),
             policy_source,
@@ -271,6 +274,7 @@ impl Engine {
     /// The same engine under another configuration (policy, authenticator and authorizer rebuilt).
     pub fn reconfigure(self, cfg: Config) -> Engine {
         let (chat, intake, pii, inline) = (self.chat.clone(), self.intake.clone(), self.pii.clone(), self.inline_intake);
+        let chat_large = self.chat_large.clone();
         // A classifier built for another `intake.classifier` setting is not kept: the rules
         // stand in until the caller sets the new one with `with_classifier`.
         let classifier: Arc<dyn crate::traits::Classifier> = if cfg.intake.classifier == self.cfg.intake.classifier {
@@ -285,6 +289,7 @@ impl Engine {
         };
         let mut e = Engine::new(self.store, self.embedder, self.reranker, cfg).with_chat(chat).with_classifier(classifier).with_intake(intake).with_inline_intake(inline);
         e.pii = pii;
+        e.chat_large = chat_large;
         e
     }
 
@@ -366,6 +371,12 @@ impl Engine {
 
     pub fn with_chat(mut self, chat: Option<Arc<dyn ChatModel>>) -> Engine {
         self.chat = chat;
+        self
+    }
+
+    /// The large model enrichment escalates to (`enrich.escalate`).
+    pub fn with_large_chat(mut self, chat: Option<Arc<dyn ChatModel>>) -> Engine {
+        self.chat_large = chat;
         self
     }
 

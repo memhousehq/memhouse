@@ -21,6 +21,7 @@ mod schema_checks;
 pub mod suites;
 pub mod synth;
 mod telemetry_checks;
+mod tier_checks;
 mod type_checks;
 
 use anyhow::Context;
@@ -159,6 +160,12 @@ pub struct RunArgs {
     /// Enrichment-model price in USD per million tokens, "prompt,completion"
     #[arg(long)]
     pub enrich_price: Option<String>,
+    /// Extract again with this larger model when a session's extraction confidence is below
+    /// `--enrich-escalate-below` (tiered extraction; at most 30% of the sessions)
+    #[arg(long)]
+    pub enrich_large_model: Option<String>,
+    #[arg(long, default_value_t = 0.6)]
+    pub enrich_escalate_below: f32,
     /// Answer prompt version (1 = short direct answer, 2 = guidance per question type)
     #[arg(long, default_value_t = 2)]
     pub answer_prompt: u8,
@@ -339,6 +346,15 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
         }
         cfg.enrich.workers = args.enrich_workers;
         cfg.enrich.max_cost_usd = args.enrich_max_cost_usd;
+        if let Some(large) = &args.enrich_large_model {
+            cfg.enrich.escalate = true;
+            cfg.enrich.escalate_below = args.enrich_escalate_below;
+            cfg.enrich.large_llm.model = large.clone();
+            cfg.enrich.large_llm.api_key_env = Some(args.llm_key_env.clone());
+            if let Some(b) = &args.llm_base_url {
+                cfg.enrich.large_llm.base_url = b.clone();
+            }
+        }
     }
     cfg.memory.tenant = "bench".into();
     cfg.memory.recency_weight = 0.0;
@@ -358,7 +374,8 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
     let engine = memhouse_server::build_engine(cfg.clone(), true).await?;
     let engine = if args.enrich {
         let chat = memhouse_models::enrich_chat(&cfg, price(args.enrich_price.as_deref(), &args.enrich_model)?)?;
-        engine.with_chat(chat)
+        let large = memhouse_models::enrich_large_chat(&cfg, None)?;
+        engine.with_chat(chat).with_large_chat(large)
     } else {
         engine
     };
@@ -465,7 +482,10 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
             eprintln!("Replaying evaluation suite {} ({} conversations, {} turns) ...", suite.name, suite.conversations.len(), suite.turns());
             let mut runs = vec![];
             for _ in 0..args.repeat.max(1) {
-                runs.push(engine.eval_replay(&tenant, suite, None, memhouse_core::eval::EvalTrigger::Manual).await?);
+                // With --enrich the sessions are ingested and their facts extracted: the replay
+                // then scores extraction together with the gate.
+                let mode = if args.enrich { memhouse_core::eval::ReplayMode::Ingest } else { memhouse_core::eval::ReplayMode::Remember };
+                runs.push(engine.eval_replay_as(&tenant, suite, None, memhouse_core::eval::EvalTrigger::Manual, mode).await?);
             }
             let repeats = (runs.len() > 1).then(|| (runs.len(), suites::agreement(&runs)));
             let run = &runs[0];

@@ -794,7 +794,7 @@ impl Engine {
             m.language = Some(lang.pack.code().to_string());
             let reasons = self.languages.injection(&m.content);
             if type_gate.judges_statements() {
-                let mut c = self.classifier.classify(&m.content, m.kind, &lang).await?;
+                let mut c = self.classifier.classify_for(&m.tenant, &m.content, m.kind, &lang).await?;
                 // The extractor's reading wins over a plain "fact" or "event" from the rules.
                 if let Some(h) = it.hint.filter(|h| *h != c.statement && (matches!(c.statement, Statement::Fact | Statement::Event) || *h == Statement::Plan)) {
                     c = Classification { statement: h, confidence: c.confidence, reason: format!("extractor: {}", h.as_str()) };
@@ -1011,7 +1011,18 @@ impl Engine {
                     {
                         // QUAL-01: a correction, or the same statement with a changed value,
                         // supersedes what it updates: the old version stays, superseded and linked.
-                        for (old, sim) in near.iter().copied().filter(|(_, s)| *s >= icfg.correction_threshold) {
+                        // A marked correction needs less similarity than an unmarked value
+                        // update, and replaces every older version it matches (a fact restated
+                        // twice leaves two records to retire), the closest one being its
+                        // predecessor. An unmarked update replaces the closest only.
+                        //
+                        // An extracted fact retires the closest version only: an extractor also
+                        // writes "now" and "no longer" into facts that are history, so the
+                        // wider sweep is kept for what a caller states directly (G14).
+                        let marked = class == Some(Statement::Correction);
+                        let wide = marked && !it.derived;
+                        let floor = if marked { icfg.marked_correction_threshold.min(icfg.correction_threshold) } else { icfg.correction_threshold };
+                        for (old, sim) in near.iter().copied().filter(|(_, s)| *s >= floor) {
                             let Some(o) = self.store.get(tenant, old).await? else { continue };
                             let older = o.occurred_at.unwrap_or(o.created_at) <= m.occurred_at.unwrap_or(m.created_at);
                             let derived_ok = !it.derived || o.metadata.get("derived").and_then(|d| d.as_bool()).unwrap_or(false);
@@ -1019,19 +1030,31 @@ impl Engine {
                             if o.status != MemoryStatus::Committed || !older || !derived_ok || !fresh {
                                 continue;
                             }
-                            let corrects = class == Some(Statement::Correction) && self.languages.values().shares_content_word(&o.content, &m.content);
+                            let values = self.languages.values();
+                            // A further version must be closer than the first had to be: halfway
+                            // to the plain threshold. At the marked threshold itself the sweep
+                            // retired current facts about other things (1 to 3% on the suites).
+                            if it.superseded.is_some() && sim < (floor + icfg.correction_threshold) / 2.0 {
+                                continue;
+                            }
+                            let corrects =
+                                marked && values.shares_content_word(&o.content, &m.content) && (sim >= icfg.correction_threshold || values.same_topic(&o.content, &m.content));
                             // An event is a new occurrence unless it restates the old one exactly.
                             let overlap = if class == Some(Statement::Event) { 0.9 } else { 0.6 };
-                            let updates = !corrects && self.languages.values().value_update(&o.content, &m.content, overlap);
+                            let updates = !corrects && sim >= icfg.correction_threshold && values.value_update(&o.content, &m.content, overlap);
                             if corrects || updates {
                                 let how = if corrects { "correction" } else { "value_update" };
-                                m.supersedes = Some(old);
-                                m.metadata["supersedes_because"] = json!(how);
                                 supersede.push((old, m.id));
-                                it.superseded = Some(old);
-                                it.note = Some(format!("{} {old} (similarity {sim:.3}), which it supersedes", if corrects { "corrects" } else { "updates the value of" }));
                                 metrics::inc("memhouse_gate_corrections_total", &[("how", how)], 1.0);
-                                break;
+                                if it.superseded.is_none() {
+                                    m.supersedes = Some(old);
+                                    m.metadata["supersedes_because"] = json!(how);
+                                    it.superseded = Some(old);
+                                    it.note = Some(format!("{} {old} (similarity {sim:.3}), which it supersedes", if corrects { "corrects" } else { "updates the value of" }));
+                                }
+                                if !wide {
+                                    break;
+                                }
                             }
                         }
                     }

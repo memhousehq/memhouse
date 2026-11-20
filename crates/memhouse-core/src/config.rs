@@ -85,8 +85,12 @@ pub enum ClassifierKind {
     #[default]
     Rules,
     /// A small chat model (`intake.llm`) behind the same interface; the rules answer when it
-    /// fails. Tiering the two by confidence comes with G14.
+    /// fails.
     Llm,
+    /// Tiers (ECON-04, TR-MS-05): the rules first; the small model (`intake.llm`) when the
+    /// rules are less sure than `small_below`; the large model (`intake.large_llm`) only when
+    /// the small one is less sure than `large_below`, and within the tenant's cap.
+    Tiered,
 }
 
 /// The write pipeline (TR-IN-04): a write is authorized and redacted in the request, durably
@@ -114,11 +118,28 @@ pub struct IntakeConfig {
     pub classifier: ClassifierKind,
     /// Chat model of the `llm` classifier.
     pub llm: LlmConfig,
+    /// Large chat model of the `tiered` classifier: the last tier.
+    pub large_llm: LlmConfig,
+    /// `tiered`: the small model reads a statement when the rules' confidence is below this
+    /// (the rules give 0.8 on a marker and 0.6 without one).
+    pub small_below: f32,
+    /// `tiered`: the large model reads a statement when the small model's confidence is below this.
+    pub large_below: f32,
+    /// `tiered`: the largest share of a tenant's classified writes that may reach the large
+    /// model (ECON-04: 0.3). Past it the small model's reading stands.
+    pub large_max_share: f32,
+    /// `tiered`: the most large-model calls per tenant and day (UTC); 0 = no daily cap.
+    pub large_max_per_day: u32,
     /// A held plan or speculation with no end date expires after this many days unconfirmed.
     pub plan_ttl_days: u32,
     /// Cosine similarity at or above which a correction supersedes the closest record of its
     /// kind (QUAL-01). The two must also share a content word.
     pub correction_threshold: f32,
+    /// Cosine similarity at or above which a statement with a correction marker ("no longer",
+    /// "actually", "correction:") supersedes the records it corrects. Lower than
+    /// `correction_threshold`, which stays the bar for an unmarked value update: the marker and
+    /// the shared content word carry part of the evidence (found by the synthetic suites, G14).
+    pub marked_correction_threshold: f32,
     /// Cosine similarity at or above which a completed event confirms a held plan (they must
     /// also share a content word and the scope; speculation is never confirmed).
     pub confirm_threshold: f32,
@@ -138,8 +159,14 @@ impl Default for IntakeConfig {
             wait_timeout_ms: 10_000,
             classifier: ClassifierKind::Rules,
             llm: LlmConfig { model: "gpt-4o-mini".into(), max_tokens: 60, ..LlmConfig::default() },
+            large_llm: LlmConfig { model: "gpt-4o".into(), max_tokens: 60, ..LlmConfig::default() },
+            small_below: 0.7,
+            large_below: 0.6,
+            large_max_share: 0.3,
+            large_max_per_day: 0,
             plan_ttl_days: 90,
             correction_threshold: 0.8,
+            marked_correction_threshold: 0.6,
             confirm_threshold: 0.9,
             preference_signals: 2,
         }
@@ -339,6 +366,17 @@ pub struct EnrichConfig {
     pub max_attempts: i32,
     /// Stop calling the LLM once this process has spent this much (USD); 0 = no limit.
     pub max_cost_usd: f64,
+    /// Extract again with `large_llm` when a session's extraction confidence is below
+    /// `escalate_below` (ECON-04, TR-MS-05). Off by default: one model reads every session.
+    pub escalate: bool,
+    /// The larger model of the last extraction tier.
+    pub large_llm: LlmConfig,
+    /// Extraction confidence (0 to 1: how much of the extracted facts is found in the rounds
+    /// they cite) below which a session goes to the large model.
+    pub escalate_below: f32,
+    /// The largest share of a tenant's extracted sessions that may go to the large model
+    /// (ECON-04: 0.3). Past it the small model's facts stand.
+    pub large_max_share: f32,
 }
 
 impl Default for EnrichConfig {
@@ -357,6 +395,10 @@ impl Default for EnrichConfig {
             min_user_chars: 40,
             max_attempts: 4,
             max_cost_usd: 0.0,
+            escalate: false,
+            large_llm: LlmConfig { base_url: "https://openrouter.ai/api/v1".into(), model: "openai/gpt-4o-mini".into(), max_tokens: 3000, ..LlmConfig::default() },
+            escalate_below: 0.6,
+            large_max_share: 0.3,
         }
     }
 }

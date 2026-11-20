@@ -550,11 +550,34 @@ pub fn classifier_chat(cfg: &Config) -> anyhow::Result<Option<Arc<dyn ChatModel>
     Ok(Some(Arc::new(Llm::new(&cfg.intake.llm)?)))
 }
 
+/// The write gate's classifier from the configuration: `None` for the rules (the engine's
+/// default), the model classifier for `llm`, the tiers for `tiered` (ECON-04).
+pub fn build_classifier(cfg: &Config) -> anyhow::Result<Option<Arc<dyn memhouse_core::traits::Classifier>>> {
+    use memhouse_core::config::ClassifierKind;
+    Ok(match cfg.intake.classifier {
+        ClassifierKind::Rules => None,
+        ClassifierKind::Llm => Some(Arc::new(memhouse_core::classify::ChatClassifier { chat: Arc::new(Llm::new(&cfg.intake.llm)?) })),
+        ClassifierKind::Tiered => {
+            let small: Arc<dyn ChatModel> = Arc::new(Llm::new(&cfg.intake.llm)?);
+            let large: Arc<dyn ChatModel> = Arc::new(Llm::new(&cfg.intake.large_llm)?);
+            Some(Arc::new(memhouse_core::classify::TieredClassifier::new(&cfg.intake, Some(small), Some(large))))
+        }
+    })
+}
+
 pub fn enrich_chat(cfg: &Config, price: Option<(f64, f64)>) -> anyhow::Result<Option<Arc<dyn ChatModel>>> {
     if !cfg.enrich.enabled {
         return Ok(None);
     }
     Ok(Some(Arc::new(Llm::new(&cfg.enrich.llm)?.with_price(price))))
+}
+
+/// The large model of the last extraction tier, when `enrich.escalate` is on.
+pub fn enrich_large_chat(cfg: &Config, price: Option<(f64, f64)>) -> anyhow::Result<Option<Arc<dyn ChatModel>>> {
+    if !cfg.enrich.enabled || !cfg.enrich.escalate {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(Llm::new(&cfg.enrich.large_llm)?.with_price(price))))
 }
 
 #[cfg(all(test, feature = "local"))]

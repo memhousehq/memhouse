@@ -1027,6 +1027,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     checks.extend(crate::eval_checks::run(engine).await);
     checks.extend(crate::lang_checks::run(engine).await);
 
+    // Tiered extraction and the correction rule (G14).
+    checks.extend(crate::tier_checks::run(engine, run_id).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;

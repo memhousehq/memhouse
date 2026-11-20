@@ -4,8 +4,10 @@
 //! The markers and word lists are data: they come from the language pack of the text
 //! ([`crate::lang`]). [`RuleClassifier`] decides without a model: deterministic, free and testable, so the
 //! governance suite never depends on one. [`ChatClassifier`] puts a small chat model behind the
-//! same [`Classifier`] interface and falls back to the rules when the model fails; tiering the
-//! two by confidence (ECON-04) comes with G14.
+//! same [`Classifier`] interface and falls back to the rules when the model fails.
+//! [`TieredClassifier`] orders them by cost (ECON-04, TR-MS-05): the rules, then a small model
+//! when the rules are unsure, then a large model when the small one is unsure too, within a cap
+//! per tenant.
 
 use crate::lang::{Detected, Languages, Pack, ValueRules};
 use crate::traits::{ChatModel, Classifier};
@@ -169,6 +171,134 @@ impl Classifier for ChatClassifier {
     }
 }
 
+/// One tenant's use of the tiers, in this process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TierUse {
+    /// Statements classified.
+    pub writes: u64,
+    /// Of them, read by the small model.
+    pub small: u64,
+    /// Of them, read by the large model.
+    pub large: u64,
+    /// Large-model reads asked for and refused by the cap.
+    pub capped: u64,
+    day: i64,
+    large_today: u32,
+}
+
+/// The tiered write gate (ECON-04, TR-MS-05). The rules read every statement. One they are
+/// less sure of than `small_below` goes to the small model; one the small model is less sure
+/// of than `large_below` goes to the large model, while the tenant is within its cap
+/// (`large_max_share` of its classified writes, `large_max_per_day`). Past the cap the small
+/// model's reading stands: a cap lowers the tier, it never skips the gate (ECON-06).
+///
+/// A model can add caution, never remove it: a statement the rules hold (a plan, a guess)
+/// stays held whatever a model answers, and a failing model leaves the tier below in charge.
+pub struct TieredClassifier {
+    pub small: Option<Arc<dyn ChatModel>>,
+    pub large: Option<Arc<dyn ChatModel>>,
+    pub small_below: f32,
+    pub large_below: f32,
+    pub large_max_share: f32,
+    pub large_max_per_day: u32,
+    used: std::sync::Mutex<std::collections::HashMap<String, TierUse>>,
+}
+
+impl TieredClassifier {
+    pub fn new(cfg: &crate::config::IntakeConfig, small: Option<Arc<dyn ChatModel>>, large: Option<Arc<dyn ChatModel>>) -> TieredClassifier {
+        TieredClassifier {
+            small,
+            large,
+            small_below: cfg.small_below,
+            large_below: cfg.large_below,
+            large_max_share: cfg.large_max_share.clamp(0.0, 1.0),
+            large_max_per_day: cfg.large_max_per_day,
+            used: Default::default(),
+        }
+    }
+
+    /// What `tenant` has used of the tiers since this process started.
+    pub fn usage(&self, tenant: &str) -> TierUse {
+        self.used.lock().expect("tier use").get(tenant).copied().unwrap_or_default()
+    }
+
+    fn count(&self, tenant: &str, f: impl FnOnce(&mut TierUse)) {
+        f(self.used.lock().expect("tier use").entry(tenant.to_string()).or_default());
+    }
+
+    /// Take one large-model read from the tenant's cap, if it has one left.
+    fn take_large(&self, tenant: &str) -> bool {
+        let today = chrono::Utc::now().timestamp().div_euclid(86_400);
+        let mut used = self.used.lock().expect("tier use");
+        let u = used.entry(tenant.to_string()).or_default();
+        if u.day != today {
+            u.day = today;
+            u.large_today = 0;
+        }
+        let share_ok = (u.large + 1) as f64 <= self.large_max_share as f64 * u.writes as f64;
+        let day_ok = self.large_max_per_day == 0 || u.large_today < self.large_max_per_day;
+        if share_ok && day_ok {
+            u.large += 1;
+            u.large_today += 1;
+            true
+        } else {
+            u.capped += 1;
+            false
+        }
+    }
+
+    async fn ask(chat: &Arc<dyn ChatModel>, text: &str, kind: MemoryKind, lang: &Detected) -> Option<Classification> {
+        let c = ChatClassifier { chat: chat.clone() };
+        let id = c.id();
+        // The model classifier answers with the rules when it fails: that is no answer here.
+        c.classify(text, kind, lang).await.ok().filter(|c| c.reason == id)
+    }
+}
+
+#[async_trait]
+impl Classifier for TieredClassifier {
+    fn id(&self) -> String {
+        let name = |m: &Option<Arc<dyn ChatModel>>| m.as_ref().map(|m| m.id()).unwrap_or_else(|| "none".into());
+        format!("tiered:rules-v1>{}>{}", name(&self.small), name(&self.large))
+    }
+    async fn classify(&self, text: &str, kind: MemoryKind, lang: &Detected) -> anyhow::Result<Classification> {
+        self.classify_for("", text, kind, lang).await
+    }
+    async fn classify_for(&self, tenant: &str, text: &str, kind: MemoryKind, lang: &Detected) -> anyhow::Result<Classification> {
+        let tier = |t: &str| crate::metrics::inc("memhouse_gate_tier_total", &[("tier", t)], 1.0);
+        self.count(tenant, |u| u.writes += 1);
+        let rules = lang.classify_text(text, kind);
+        let Some(small) = self.small.as_ref().filter(|_| rules.confidence < self.small_below && !rules.statement.held()) else {
+            tier("rules");
+            return Ok(rules);
+        };
+        let Some(first) = Self::ask(small, text, kind, lang).await else {
+            tier("rules");
+            return Ok(rules);
+        };
+        self.count(tenant, |u| u.small += 1);
+        let Some(large) = self.large.as_ref().filter(|_| first.confidence < self.large_below) else {
+            tier("small");
+            return Ok(first);
+        };
+        if !self.take_large(tenant) {
+            tier("small");
+            crate::metrics::inc("memhouse_gate_tier_capped_total", &[], 1.0);
+            return Ok(Classification { reason: format!("{} (large model capped)", first.reason), ..first });
+        }
+        match Self::ask(large, text, kind, lang).await {
+            Some(second) => {
+                tier("large");
+                Ok(second)
+            }
+            None => {
+                tier("small");
+                Ok(first)
+            }
+        }
+    }
+}
+
 static CODE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?m)```|^\s*(?:fn |pub fn |def |class |impl |import |from \S+ import |#include|func |public (?:static )?\w+ |const \w+ = |let \w+ = |SELECT .+ FROM )|[;{]\s*$")
         .expect("valid regex")
@@ -255,6 +385,14 @@ impl ValueRules {
                     })
                 })
         })
+    }
+
+    /// Below the full correction threshold, a marked correction must be about the same thing as
+    /// the record it retires: no person or animal named on one side only (a correction about the
+    /// user's sister does not retire a fact about the user).
+    pub fn same_topic(&self, old: &str, new: &str) -> bool {
+        let (wo, wn) = (self.value_words(old), self.value_words(new));
+        !wo.symmetric_difference(&wn).any(|w| self.people.contains(w.as_str()))
     }
 
     /// The quantities a statement states (numbers, amounts, durations, counts), dates and
@@ -378,6 +516,14 @@ mod tests {
     }
 
     #[test]
+    fn a_loose_correction_must_be_about_the_same_person() {
+        let english = Languages::english();
+        let v = english.values();
+        assert!(v.same_topic("My home is in Tallinn.", "Actually I moved, I live in Dublin now, not Tallinn."));
+        assert!(!v.same_topic("My sister lives in Tallinn.", "Actually I moved, I live in Dublin now, not Tallinn."));
+    }
+
+    #[test]
     fn value_updates_restate_with_a_changed_quantity() {
         // From the LongMemEval knowledge-update sample.
         assert!(value_update("The user currently owns three bikes in total.", "The user owns four bikes in total.", 0.6));
@@ -401,6 +547,83 @@ mod tests {
         // Identifiers are not values: different invoices, orders, customers.
         assert!(!value_update("Customer kqzpfa prefers email for invoice 1000", "Customer wbtnoe prefers email for invoice 1004", 0.6));
         assert!(!value_update("Order A-1001 shipped on Monday.", "Order A-1002 shipped on Monday.", 0.6));
+    }
+
+    /// A chat model with a fixed answer that counts its calls.
+    struct Fixed(&'static str, &'static str, std::sync::atomic::AtomicU32);
+
+    #[async_trait]
+    impl ChatModel for Fixed {
+        fn id(&self) -> String {
+            self.0.into()
+        }
+        async fn chat(&self, _system: &str, _user: &str) -> anyhow::Result<(String, LlmUsage)> {
+            self.2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.1.is_empty() {
+                anyhow::bail!("model down");
+            }
+            Ok((self.1.to_string(), LlmUsage::default()))
+        }
+    }
+
+    fn fixed(id: &'static str, answer: &'static str) -> Arc<Fixed> {
+        Arc::new(Fixed(id, answer, Default::default()))
+    }
+
+    fn calls(m: &Fixed) -> u32 {
+        m.2.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn tiers_escalate_only_when_unsure_and_within_the_cap() {
+        let lang = Languages::english().detect("x", None);
+        let cfg = crate::config::IntakeConfig::default();
+        let (small, large) = (fixed("small", r#"{"statement": "event", "confidence": 0.4}"#), fixed("large", r#"{"statement": "correction", "confidence": 0.9}"#));
+        let t = TieredClassifier::new(&cfg, Some(small.clone()), Some(large.clone()));
+        // A marker: the rules are sure, no model is asked.
+        let c = t.classify_for("a", "The user prefers window seats.", MemoryKind::Semantic, &lang).await.unwrap();
+        assert_eq!((c.statement, calls(&small), calls(&large)), (Statement::Preference, 0, 0));
+        // What the rules hold stays held, and no model is asked about it.
+        let c = t.classify_for("a", "The user plans to visit Japan in May.", MemoryKind::Semantic, &lang).await.unwrap();
+        assert_eq!((c.statement, calls(&small)), (Statement::Plan, 0));
+        // No marker: the small model is asked; it is unsure, but the tenant's share (30% of
+        // three writes) has no room for the large model yet.
+        let c = t.classify_for("a", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap();
+        assert_eq!((c.statement, calls(&small), calls(&large)), (Statement::Event, 1, 0));
+        assert!(c.reason.contains("capped"));
+        // The fourth write has room (1 of 4 is within 30%).
+        let c = t.classify_for("a", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap();
+        assert_eq!((c.statement, calls(&large)), (Statement::Correction, 1));
+        // The next one does not (2 of 5), and another tenant has its own count.
+        t.classify_for("a", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap();
+        assert_eq!(calls(&large), 1);
+        let u = t.usage("a");
+        assert_eq!((u.writes, u.small, u.large, u.capped), (5, 3, 1, 2));
+        assert_eq!(t.usage("b"), TierUse::default());
+        assert!(u.large as f32 <= cfg.large_max_share * u.writes as f32);
+    }
+
+    #[tokio::test]
+    async fn a_failing_tier_leaves_the_one_below_in_charge_and_the_daily_cap_holds() {
+        let lang = Languages::english().detect("x", None);
+        let mut cfg = crate::config::IntakeConfig { large_max_share: 1.0, large_max_per_day: 1, ..Default::default() };
+        let (down, large) = (fixed("small", ""), fixed("large", r#"{"statement": "event", "confidence": 0.9}"#));
+        let t = TieredClassifier::new(&cfg, Some(down.clone()), Some(large.clone()));
+        let c = t.classify_for("a", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap();
+        assert_eq!((c.statement, c.reason.as_str(), calls(&down), calls(&large)), (Statement::Fact, "rules: no marker", 1, 0));
+        // A sure small model answers alone.
+        let sure = fixed("small", r#"{"statement": "event", "confidence": 0.9}"#);
+        let t = TieredClassifier::new(&cfg, Some(sure), Some(large.clone()));
+        assert_eq!(t.classify_for("a", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap().reason, "llm:small");
+        assert_eq!(calls(&large), 0);
+        // One large read a day.
+        cfg.large_below = 1.0;
+        let unsure = fixed("small", r#"{"statement": "fact", "confidence": 0.3}"#);
+        let t = TieredClassifier::new(&cfg, Some(unsure), Some(large.clone()));
+        for _ in 0..3 {
+            t.classify_for("a", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap();
+        }
+        assert_eq!((calls(&large), t.usage("a").capped), (1, 2));
     }
 
     #[test]

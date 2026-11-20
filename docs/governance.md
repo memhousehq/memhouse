@@ -488,7 +488,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-62 checks pass on the current release. The core ones:
+66 checks pass on the current release. The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -534,6 +534,10 @@ It runs against an isolated benchmark database and writes a report under `bench-
 | `injection_languages` | every pack's injection attempts are quarantined with every language enabled, also in mixed-language text and around text in a language that is not enabled; the English attempts are quarantined with only German enabled, for a tenant narrowed to German, and under an operator's English pack that has no injection phrases; a policy can't name a language the server has not enabled (G36, TR-CORE-05) |
 | `language_recall` | writes in French, German and English are detected and indexed with their own text-search configuration; a German correction supersedes the French fact it corrects and is what a recall returns (with a stand-in multilingual embedder); a keyword search finds a German word by its stem; a German question's time phrase is read (G36) |
 | `partitions` | 1,000 mixed writes, direct and through an agent: notes in the patient's partition, own preferences and procedures in the clinician's, each with the right author |
+| `gate_tiers` | under the tiered classifier (`[intake] classifier = "tiered"`) a statement the rules hold as a plan or a guess stays held when both models call it a fact, and reaches no model; the small model reads exactly the statements the rules found no marker in; the large model reads no more than the tenant's share of writes; with both models down the rules gate every write (G14) |
+| `extraction_tiers` | with `[enrich] escalate`, a session whose extracted facts are not grounded in its rounds goes to the large model, within 30% of the tenant's sessions; that model's facts pass the same gate (an injected instruction is quarantined); a session past the cap, or whose large model fails, keeps the small model's facts; each fact's `confidence` says how well its rounds support it (G14) |
+| `corrections_supersede` | a statement with a correction marker retires both older wordings of the fact it corrects, leaves a fact about another person and an unrelated fact alone, and a recall returns the correction and neither retired version (G14) |
+| `ingested_replay` | a suite replayed as ingested conversations scores the facts extracted from it (facts stored, the plan held, the corrected fact not recalled) and is refused, not scored, when enrichment is off (G14) |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 

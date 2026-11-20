@@ -60,9 +60,31 @@ struct ExtractedFact {
 #[derive(Default)]
 pub struct Spend {
     micro_usd: AtomicU64,
+    /// Per tenant: sessions extracted, and those the large model read (ECON-04's cap).
+    tiers: std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>>,
 }
 
 impl Spend {
+    /// Count one extracted session of `tenant`.
+    fn session(&self, tenant: &str) {
+        self.tiers.lock().expect("tiers").entry(tenant.to_string()).or_default().0 += 1;
+    }
+
+    /// Take one large-model extraction from the tenant's share (`large_max_share` of its
+    /// extracted sessions in this process), if it has one left.
+    fn take_large(&self, tenant: &str, max_share: f32) -> bool {
+        let mut t = self.tiers.lock().expect("tiers");
+        let (sessions, large) = t.entry(tenant.to_string()).or_default();
+        let ok = (*large + 1) as f64 <= max_share.clamp(0.0, 1.0) as f64 * *sessions as f64;
+        *large += u64::from(ok);
+        ok
+    }
+
+    /// Sessions extracted for `tenant` in this process, and those of them the large model read.
+    pub fn tiers(&self, tenant: &str) -> (u64, u64) {
+        self.tiers.lock().expect("tiers").get(tenant).copied().unwrap_or_default()
+    }
+
     pub fn add(&self, usd: f64) -> f64 {
         let add = (usd * 1e6).round() as u64;
         (self.micro_usd.fetch_add(add, Ordering::Relaxed) + add) as f64 / 1e6
@@ -101,11 +123,17 @@ fn render(rounds: &[Memory], assistant_chars: usize) -> (String, usize) {
 /// Parse the model's answer: the JSON object in the text. A truncated answer (the model hit its
 /// token limit) still yields every complete fact object before the cut.
 fn parse(text: &str) -> anyhow::Result<Vec<ExtractedFact>> {
+    parse_answer(text).map(|(f, _)| f)
+}
+
+/// The facts of an answer, and whether the answer was complete (false: cut at the token limit,
+/// only the facts before the cut were recovered).
+fn parse_answer(text: &str) -> anyhow::Result<(Vec<ExtractedFact>, bool)> {
     let keep = |v: Vec<ExtractedFact>| v.into_iter().filter(|f| f.text.trim().chars().count() >= 8).collect::<Vec<_>>();
     let start = text.find('{').ok_or_else(|| anyhow::anyhow!("no JSON object in extractor output"))?;
     if let Some(end) = text.rfind('}') {
         if let Ok(e) = serde_json::from_str::<Extracted>(&text[start..=end]) {
-            return Ok(keep(e.facts));
+            return Ok((keep(e.facts), true));
         }
     }
     let list = text[start..].find('[').map(|i| start + i + 1).ok_or_else(|| anyhow::anyhow!("no fact list in extractor output"))?;
@@ -144,7 +172,74 @@ fn parse(text: &str) -> anyhow::Result<Vec<ExtractedFact>> {
     if facts.is_empty() {
         anyhow::bail!("could not parse extractor output");
     }
-    Ok(keep(facts))
+    Ok((keep(facts), false))
+}
+
+/// The rounds a fact cites (1-based), as indexes into the session; empty when it cites none or
+/// only rounds that do not exist.
+fn cited(f: &ExtractedFact, n: usize) -> Vec<usize> {
+    f.rounds.iter().filter_map(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))).filter_map(|i| (i as usize).checked_sub(1)).filter(|i| *i < n).collect()
+}
+
+fn content_words(s: &str) -> std::collections::HashSet<String> {
+    // Five letters stand for the word, so "moving" in the fact meets "moved" in the round.
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 4 && !w.chars().any(|c| c.is_ascii_digit()))
+        .map(|w| w.to_lowercase().chars().take(5).collect::<String>())
+        .filter(|w| w != "user" && w != "users")
+        .collect()
+}
+
+/// Confidence of one extracted fact, 0.3 to 0.95 (the "confidence score on extracted facts" of
+/// ECON-04): the part of its content words found in the rounds it cites. A fact that cites no
+/// round is compared with the whole session and loses a tenth. Deterministic and free: it says
+/// how well the fact is grounded in what was said, not whether the model felt sure. Numbers
+/// and dates are left out, since the extractor rewrites them ("last week" becomes a date).
+pub fn fact_confidence(fact: &str, cited_rounds: &str, cites: bool) -> f32 {
+    let words = content_words(fact);
+    if words.is_empty() {
+        return 0.3;
+    }
+    let source = content_words(cited_rounds);
+    let found = words.iter().filter(|w| source.contains(*w)).count() as f32 / words.len() as f32;
+    let c = 0.3 + 0.65 * found;
+    if cites {
+        c
+    } else {
+        (c - 0.1).max(0.3)
+    }
+}
+
+/// Confidence of a session's extraction: the mean of its facts'. An answer cut at the token
+/// limit is capped at 0.5 (facts are missing), and an answer with no facts for a session with
+/// plenty of user text scores 0.4 (the model may have given up).
+fn session_confidence(facts: &[f32], complete: bool, user_chars: usize) -> f32 {
+    if facts.is_empty() {
+        return if user_chars >= 400 { 0.4 } else { 0.9 };
+    }
+    let mean = facts.iter().sum::<f32>() / facts.len() as f32;
+    if complete {
+        mean
+    } else {
+        mean.min(0.5)
+    }
+}
+
+/// Each fact with its confidence against the rounds it cites.
+fn with_confidence(facts: Vec<ExtractedFact>, rounds: &[Memory]) -> Vec<(ExtractedFact, f32)> {
+    facts
+        .into_iter()
+        .map(|f| {
+            let idx = cited(&f, rounds.len());
+            let source: String = if idx.is_empty() {
+                rounds.iter().map(|r| r.content.as_str()).collect::<Vec<_>>().join("\n")
+            } else {
+                idx.iter().map(|i| rounds[*i].content.as_str()).collect::<Vec<_>>().join("\n")
+            };
+            let c = fact_confidence(&f.text, &source, !idx.is_empty());
+            (f, c)
+        })
+        .collect()
 }
 
 /// Extraction-cache key: model, prompt version and the full prompt (so the same session,
@@ -220,11 +315,16 @@ impl Engine {
         let mut outcome = EnrichOutcome { model: model.clone(), ..Default::default() };
         if rounds.is_empty() {
             outcome.skipped = true;
+            outcome.tier = "rules".into();
             return Ok((None, outcome));
         }
         let (text, user_chars) = render(&rounds, cfg.assistant_chars);
         if user_chars < cfg.min_user_chars {
+            // The rules tier: nothing in the session is worth a model call.
             outcome.skipped = true;
+            outcome.tier = "rules".into();
+            outcome.rounds = rounds.len();
+            crate::metrics::inc("memhouse_enrich_tier_total", &[("tier", "rules")], 1.0);
             return Ok((None, outcome));
         }
         let session_time = rounds.iter().find_map(|r| r.occurred_at);
@@ -232,57 +332,107 @@ impl Engine {
         // With one language the prompt is unchanged, so what was extracted before stays cached.
         let any_language = if self.languages.packs().len() > 1 { ANY_LANGUAGE } else { "" };
         let prompt = format!("{INSTRUCTIONS}{any_language}\n\nSession date: {date_line}\n\nConversation:\n{text}");
-        let key = cache_key(&model, &prompt);
-        let answer = match self.store.llm_cache_get(&key).await? {
-            Some(a) => {
-                outcome.cached = true;
-                a
-            }
-            None => {
-                if cfg.max_cost_usd > 0.0 && spend.usd() >= cfg.max_cost_usd {
-                    anyhow::bail!("enrichment spend ${:.4} reached max_cost_usd {}", spend.usd(), cfg.max_cost_usd);
+        outcome.rounds = rounds.len();
+        outcome.tier = "small".into();
+        let (key, answer) = self.extract(chat, &prompt, job, spend, &mut outcome).await?;
+        let (facts, complete) = parse_answer(&answer)?;
+        let mut facts = with_confidence(facts, &rounds);
+        let confidence = session_confidence(&facts.iter().map(|(_, c)| *c).collect::<Vec<_>>(), complete, user_chars);
+        outcome.confidence = Some(confidence);
+        spend.session(&job.tenant);
+        let mut extractor = model.clone();
+        // The last tier (ECON-04, TR-MS-05): an unsure extraction is done again by the large
+        // model, while the tenant is within its share. If that fails, the small model's facts
+        // stand: escalation never loses a session.
+        if let Some(large) = self.chat_large.as_ref().filter(|_| cfg.escalate && confidence < cfg.escalate_below) {
+            if spend.take_large(&job.tenant, cfg.large_max_share) {
+                let mut again = EnrichOutcome { model: large.id(), ..Default::default() };
+                match self.extract(large, &prompt, job, spend, &mut again).await.and_then(|(_, a)| parse_answer(&a)) {
+                    Ok((better, _)) => {
+                        facts = with_confidence(better, &rounds);
+                        extractor = large.id();
+                        outcome.tier = "large".into();
+                        outcome.model = large.id();
+                    }
+                    Err(e) => tracing::warn!("enrichment job {}: the large model failed ({e:#}); keeping the small model's facts", job.id),
                 }
-                // An LLM call in the GenAI conventions, so LLM-observability tools show it (TR-OPS-06).
-                let span = tracing::info_span!(
-                    "gen_ai.chat",
-                    gen_ai.operation.name = "chat",
-                    gen_ai.system = "openai",
-                    gen_ai.request.model = %model,
-                    gen_ai.usage.input_tokens = tracing::field::Empty,
-                    gen_ai.usage.output_tokens = tracing::field::Empty,
-                    memhouse.cost_usd = tracing::field::Empty,
-                    memhouse.enrich_job = job.id,
-                );
-                let (a, usage) = chat.chat(SYSTEM, &prompt).instrument(span.clone()).await?;
-                span.record("gen_ai.usage.input_tokens", usage.prompt_tokens);
-                span.record("gen_ai.usage.output_tokens", usage.completion_tokens);
-                span.record("memhouse.cost_usd", usage.cost_usd.unwrap_or(0.0));
-                crate::metrics::inc("memhouse_enrich_cost_usd_total", &[], usage.cost_usd.unwrap_or(0.0));
-                crate::metrics::inc("memhouse_enrich_tokens_total", &[("type", "prompt")], usage.prompt_tokens as f64);
-                crate::metrics::inc("memhouse_enrich_tokens_total", &[("type", "completion")], usage.completion_tokens as f64);
-                spend.add(usage.cost_usd.unwrap_or(0.0));
-                outcome.usage = usage;
-                // Cache only answers that parse, so a malformed one is retried next time.
-                parse(&a)?;
-                self.store.llm_cache_put(&key, &model, &a).await?;
-                a
+                outcome.cached &= again.cached;
+                outcome.calls += again.calls;
+                outcome.usage.prompt_tokens += again.usage.prompt_tokens;
+                outcome.usage.completion_tokens += again.usage.completion_tokens;
+                outcome.usage.cost_usd = match (outcome.usage.cost_usd, again.usage.cost_usd) {
+                    (None, None) => None,
+                    (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+                };
+            } else {
+                outcome.capped = true;
+                crate::metrics::inc("memhouse_enrich_tier_capped_total", &[], 1.0);
             }
-        };
-        let facts = parse(&answer)?;
-        outcome.facts = self.store_facts(job, &rounds, session_time, facts, &model).await?;
+        }
+        crate::metrics::inc("memhouse_enrich_tier_total", &[("tier", &outcome.tier)], 1.0);
+        outcome.facts = self.store_facts(job, &rounds, session_time, facts, &extractor).await?;
         Ok((Some(key), outcome))
+    }
+
+    /// One extraction by `chat`: from the cache when this prompt was answered before, else a
+    /// model call within `max_cost_usd`. Returns the cache key and the answer; tokens, cost and
+    /// the call are added to `outcome`.
+    async fn extract(
+        &self,
+        chat: &Arc<dyn crate::traits::ChatModel>,
+        prompt: &str,
+        job: &EnrichJob,
+        spend: &Spend,
+        outcome: &mut EnrichOutcome,
+    ) -> anyhow::Result<(String, String)> {
+        let cfg = &self.cfg.enrich;
+        let model = chat.id();
+        let key = cache_key(&model, prompt);
+        if let Some(a) = self.store.llm_cache_get(&key).await? {
+            outcome.cached = true;
+            return Ok((key, a));
+        }
+        outcome.cached = false;
+        if cfg.max_cost_usd > 0.0 && spend.usd() >= cfg.max_cost_usd {
+            anyhow::bail!("enrichment spend ${:.4} reached max_cost_usd {}", spend.usd(), cfg.max_cost_usd);
+        }
+        // An LLM call in the GenAI conventions, so LLM-observability tools show it (TR-OPS-06).
+        let span = tracing::info_span!(
+            "gen_ai.chat",
+            gen_ai.operation.name = "chat",
+            gen_ai.system = "openai",
+            gen_ai.request.model = %model,
+            gen_ai.usage.input_tokens = tracing::field::Empty,
+            gen_ai.usage.output_tokens = tracing::field::Empty,
+            memhouse.cost_usd = tracing::field::Empty,
+            memhouse.enrich_job = job.id,
+        );
+        let (a, usage) = chat.chat(SYSTEM, prompt).instrument(span.clone()).await?;
+        span.record("gen_ai.usage.input_tokens", usage.prompt_tokens);
+        span.record("gen_ai.usage.output_tokens", usage.completion_tokens);
+        span.record("memhouse.cost_usd", usage.cost_usd.unwrap_or(0.0));
+        crate::metrics::inc("memhouse_enrich_cost_usd_total", &[], usage.cost_usd.unwrap_or(0.0));
+        crate::metrics::inc("memhouse_enrich_tokens_total", &[("type", "prompt")], usage.prompt_tokens as f64);
+        crate::metrics::inc("memhouse_enrich_tokens_total", &[("type", "completion")], usage.completion_tokens as f64);
+        spend.add(usage.cost_usd.unwrap_or(0.0));
+        outcome.usage = usage;
+        outcome.calls += 1;
+        // Cache only answers that parse, so a malformed one is retried next time.
+        parse(&a)?;
+        self.store.llm_cache_put(&key, &model, &a).await?;
+        Ok((key, a))
     }
 
     /// The extracted facts through stages 4 to 7 of the write pipeline: the gate (injection
     /// check, statement classifier: plans held, corrections superseding the facts they correct),
     /// routing, embedding, and one insert with their audit events.
-    async fn store_facts(&self, job: &EnrichJob, rounds: &[Memory], session_time: Option<DateTime<Utc>>, facts: Vec<ExtractedFact>, model: &str) -> anyhow::Result<usize> {
+    async fn store_facts(&self, job: &EnrichJob, rounds: &[Memory], session_time: Option<DateTime<Utc>>, facts: Vec<(ExtractedFact, f32)>, model: &str) -> anyhow::Result<usize> {
         use crate::intake::{Entry, IntakeWrite, Item};
         let now = Utc::now();
         let policy = self.policy_for(&job.tenant).await?;
         let mut items: Vec<Item> = vec![];
         let mut seen = std::collections::HashSet::new();
-        for f in facts {
+        for (f, confidence) in facts {
             // Facts go through the same stages as any write, under the tenant's policy now.
             let kind = kind_of(f.kind.as_deref());
             if !policy.allows(kind) {
@@ -294,12 +444,7 @@ impl Engine {
                 continue;
             }
             // Cited rounds (1-based); none or out of range means the whole session.
-            let mut src: Vec<&Memory> = f
-                .rounds
-                .iter()
-                .filter_map(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())))
-                .filter_map(|i| rounds.get((i as usize).checked_sub(1)?))
-                .collect();
+            let mut src: Vec<&Memory> = cited(&f, rounds.len()).into_iter().map(|i| &rounds[i]).collect();
             if src.is_empty() {
                 src = rounds.iter().collect();
             }
@@ -331,7 +476,7 @@ impl Engine {
                 labels: vec![],
                 tags: vec![],
                 source: format!("enrich:{model}"),
-                confidence: 0.9,
+                confidence,
                 metadata,
                 created_at: now,
                 expires_at: None,
@@ -413,6 +558,38 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fact_is_as_sure_as_it_is_grounded_in_its_rounds() {
+        let round = "user: I moved to Porto last week and I adopted a cat named Miso.";
+        let grounded = fact_confidence("The user adopted a cat named Miso on 2023-05-02.", round, true);
+        let invented = fact_confidence("The user enjoys skiing in Austria every winter.", round, true);
+        assert!(grounded > 0.9 && invented < 0.5, "{grounded} {invented}");
+        // The same fact without a cited round is a tenth less sure; numbers alone say nothing.
+        assert!((grounded - fact_confidence("The user adopted a cat named Miso on 2023-05-02.", round, false) - 0.1).abs() < 1e-6);
+        assert_eq!(fact_confidence("2023 05 02", round, true), 0.3);
+        // A session: the mean; capped when the answer was cut; low when nothing came of a long one.
+        assert!((session_confidence(&[0.9, 0.5], true, 900) - 0.7).abs() < 1e-6);
+        assert_eq!(session_confidence(&[0.9, 0.9], false, 900), 0.5);
+        assert_eq!(session_confidence(&[], true, 900), 0.4);
+        assert_eq!(session_confidence(&[], true, 80), 0.9);
+        // The cut is seen by the parser.
+        assert!(!parse_answer("{\"facts\": [{\"text\": \"The user sold a bike\", \"rounds\": [1]}, {\"text\": \"The user mo").unwrap().1);
+        assert!(parse_answer("{\"facts\": [{\"text\": \"The user sold a bike\", \"rounds\": [7]}]}").unwrap().1);
+    }
+
+    #[test]
+    fn the_large_tier_keeps_to_the_tenants_share() {
+        let s = Spend::default();
+        for _ in 0..3 {
+            s.session("a");
+        }
+        assert!(!s.take_large("a", 0.3));
+        s.session("a");
+        assert!(s.take_large("a", 0.3));
+        assert!(!s.take_large("a", 0.3));
+        assert_eq!((s.tiers("a"), s.tiers("b")), ((4, 1), (0, 0)));
+    }
 
     #[test]
     fn salvages_truncated_output() {

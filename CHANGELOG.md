@@ -74,6 +74,19 @@ path from 0.x data other than export and import.
   write. With English alone, behaviour is unchanged. `memhouse lang list|check|detect|schema`;
   API 1.8.0 (`language` on a record, `language.enabled` in a policy spec), schema version 9.
   See [docs/languages.md](docs/languages.md).
+- Corrections replace what they correct: a statement with a correction marker ("no longer",
+  "actually", "correction:") supersedes every older version of the fact, at a lower similarity
+  than an unmarked value update (`[intake] marked_correction_threshold`, 0.6). On the synthetic
+  starter suite the share of questions about a corrected fact that still get a stale version
+  fell from 84.9% to 15.1%.
+- Tiered write gate (`[intake] classifier = "tiered"`): the rules first, a small model when
+  they find no marker, a large model only when the small one is unsure and the tenant is within
+  its cap. A model can add caution, never release what the rules hold.
+- Tiered extraction: every extracted fact carries a confidence (how much of it is found in the
+  rounds it cites); with `[enrich] escalate`, an unsure session is extracted again by a larger
+  model, for at most 30% of a tenant's sessions. Tier metrics for both.
+- Suites can be replayed as ingested conversations (`memhouse bench run --suite ... --enrich`),
+  which scores the extracted facts.
 - Identifiers and words are matched with Unicode letter classes ("Č-1001" is an identifier).
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early

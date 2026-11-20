@@ -49,6 +49,11 @@ pub trait PiiDetector: Send + Sync {
 pub trait Classifier: Send + Sync {
     fn id(&self) -> String;
     async fn classify(&self, text: &str, kind: MemoryKind, lang: &crate::lang::Detected) -> anyhow::Result<crate::classify::Classification>;
+    /// The same for a write of `tenant`: a classifier with per-tenant limits (the tiered one's
+    /// cap on large-model calls) counts against it. The write gate calls this one.
+    async fn classify_for(&self, _tenant: &str, text: &str, kind: MemoryKind, lang: &crate::lang::Detected) -> anyhow::Result<crate::classify::Classification> {
+        self.classify(text, kind, lang).await
+    }
 }
 
 /// The intake queue (ADR 0004, TR-LT-05): a write is acknowledged once its redacted proposal is

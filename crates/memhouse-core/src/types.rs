@@ -1125,6 +1125,21 @@ pub struct EnrichOutcome {
     /// Milliseconds from enqueue to facts committed.
     #[serde(default)]
     pub lag_ms: f64,
+    /// The tier that produced the facts: `rules` (skipped without a model), `small` or `large`.
+    #[serde(default)]
+    pub tier: String,
+    /// Extraction confidence of the small model's answer, 0 to 1 (none when skipped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    /// Rounds of the session: model calls per round is the batching measure (SCALE-08).
+    #[serde(default)]
+    pub rounds: usize,
+    /// Model calls made for the session (0 when skipped or served from the cache).
+    #[serde(default)]
+    pub calls: u32,
+    /// The session was unsure enough for the large model, but the tenant's share was used up.
+    #[serde(default)]
+    pub capped: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

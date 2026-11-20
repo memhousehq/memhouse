@@ -278,6 +278,25 @@ Temporal questions, the original weak spot, are now the third-best LongMemEval t
 weakest remaining slices are personalised advice (preference, 66.7; it was 80.0 before the
 premise check made the model more cautious) and LoCoMo temporal and open-domain questions.
 
+### Tiered extraction: what is measured and what is not
+
+Extraction is tiered (rules, a small model, a larger model for unsure sessions;
+[configuration.md](configuration.md#enrich)). From the cached LoCoMo extraction (20 November
+2026, `qwen/qwen3.7-flash`, no new model calls):
+
+| Measure | Value | Requirement |
+|---|---|---|
+| Extraction calls per round | 0.046 (272 sessions, 5,881 rounds) | SCALE-08: 0.2 or fewer |
+| Extraction confidence, mean over sessions | 0.79 | |
+| Sessions below the escalation threshold (0.6) | 3 of 272 (1.1%) | ECON-04: large model on 30% or fewer |
+| Sessions below 0.7 | 18 of 272 (6.6%) | |
+
+So with escalation on, about 1% of LoCoMo's sessions would go to the larger model. **Not
+measured:** whether escalating those sessions changes answer accuracy, the tiered classifier
+of the write gate with real models, and a suite replayed as ingested conversations with a real
+extractor. Each needs a paid run; none has been made since these were built, and the QA
+results above are from before them.
+
 ### First QA runs (no enrichment, answer prompt v1)
 
 | Dataset | Answer / judge model | Accuracy | Tokens (prompt + completion) | Cost |
@@ -317,38 +336,58 @@ public datasets can't: whether what should be stored is stored, whether a correc
 comes back, and whether a plan is ever committed as a fact. No model is called except the local
 embedder; a replay costs nothing.
 
-13 November 2026, `bge-small-en-v1.5-onnx-Q`, rule classifier, default policy. Storage and
+20 November 2026, `bge-small-en-v1.5-onnx-Q`, rule classifier, default policy. Storage and
 retrieval are precision / recall / **F1**, in percent.
 
 | Suite | Conversations | Questions | Storage | Retrieval (top 5) | Stale facts returned | Contamination |
 |---|---|---|---|---|---|---|
-| `personal-starter` | 20 | 285 | 79.8 / 100.0 / **88.7** | 87.4 / 98.9 / **92.8** | 84.9 | 0.0 |
-| `support-starter` | 20 | 271 | 68.1 / 100.0 / **81.0** | 61.6 / 99.3 / **76.0** | 91.5 | 0.0 |
-| `coding-starter` | 20 | 270 | 69.5 / 100.0 / **82.0** | 74.8 / 100.0 / **85.6** | 75.5 | 0.0 |
-| `sales-starter` | 20 | 279 | 69.9 / 100.0 / **82.3** | 67.4 / 100.0 / **80.5** | 85.8 | 0.0 |
-| `success-starter` | 20 | 280 | 72.1 / 100.0 / **83.8** | 64.3 / 100.0 / **78.3** | 74.3 | 0.0 |
-| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 76.7 / 100.0 / **86.8** [86.1–87.5] | 82.7 / 99.8 / **90.4** [89.4–91.4] | 76.2 [73.6–78.6] | 0.0 |
+| `personal-starter` | 20 | 285 | 95.7 / 99.5 / **97.6** | 96.1 / 98.9 / **97.5** | 15.1 | 0.0 |
+| `support-starter` | 20 | 271 | 91.0 / 100.0 / **95.3** | 90.0 / 99.6 / **94.6** | 21.8 | 0.0 |
+| `coding-starter` | 20 | 270 | 87.6 / 99.7 / **93.3** | 87.4 / 99.6 / **93.1** | 28.0 | 0.0 |
+| `sales-starter` | 20 | 279 | 90.4 / 99.7 / **94.8** | 86.0 / 99.6 / **92.3** | 26.1 | 0.0 |
+| `success-starter` | 20 | 280 | 90.2 / 100.0 / **94.9** | 86.1 / 100.0 / **92.5** | 24.3 | 0.0 |
+| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 95.2 / 99.7 / **97.4** [97.1–97.7] | 96.0 / 99.5 / **97.7** [97.3–98.1] | 14.0 [12.3–15.7] | 0.0 |
 
-The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 8 minutes on a
+The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 5 minutes on a
 laptop that was busy with other work. Brackets are 95% bootstrap intervals over conversations.
+
+Before the correction rule was changed (13 November 2026, the same suites):
+
+| Suite | Storage F1 | Retrieval F1 | Stale facts returned |
+|---|---|---|---|
+| `personal-starter` | 88.7 | 92.8 | 84.9 |
+| `support-starter` | 81.0 | 76.0 | 91.5 |
+| `coding-starter` | 82.0 | 85.6 | 75.5 |
+| `sales-starter` | 82.3 | 80.5 | 85.8 |
+| `success-starter` | 83.8 | 78.3 | 74.3 |
+| reference (500 conversations) | 86.8 | 90.4 | 76.2 |
 
 What they show:
 
-- **Almost nothing that should be stored is lost**: storage recall is 99.98% on the reference
-  suite (2 of 10,289 facts at checkpoints not stored) and 100% on the starter suites. Plans and
-  guesses are held: none of the 4,399 on the reference suite was committed as a fact, and none
-  on the starter suites. A plan that a later turn carries out is not counted, since the engine
-  then rightly commits it.
-- **Corrections are the weak point.** Three quarters or more of the questions about a
-  corrected fact still get a stale version among the top 5, and storage precision is 68 to 80
-  because those stale records are still current. A correction supersedes the record it
-  corrects only when the two are close enough as vectors (`[intake] correction_threshold`,
-  0.8), and sentences such as "I no longer live in Lisbon; I now live in Porto" are not that
-  close to "I live in Lisbon" for this embedder. The public datasets did not show this: they
-  have few explicit corrections. It is what the first quality goal (G14) tunes, on these
-  suites.
-- Retrieval finds the current fact almost always (recall 98.9 to 100); it is first less often
-  where a stale version competes with it.
+- **Plans and guesses are held**: none of the 4,399 on the reference suite was committed as a
+  fact, and none on the starter suites. A plan that a later turn carries out is not counted,
+  since the engine then rightly commits it.
+- **Corrections now replace what they correct, most of the time.** The first replays (the
+  second table) found that three quarters or more of the questions about a corrected fact
+  still got a stale version among the top 5: a correction superseded a record only at cosine
+  0.8, and "I no longer live in Lisbon; I now live in Porto" is not that close to "I live in
+  Lisbon" for this embedder. Since G14 a statement with a correction marker supersedes the
+  closest older record at 0.6 (`[intake] marked_correction_threshold`), and any further older
+  version at 0.7. On the reference suite the stale share fell from 76.2% to 14.0%, storage
+  precision rose from 76.7 to 95.2, and the current fact is the first hit for 96.0% of the
+  questions (82.7 before).
+- **What is left** (14 to 28%) is mostly a change stated without a marker and without the old
+  value: "I bought a Fairphone 5 yesterday" after "I use a Galaxy S25", "I started at Globex on
+  Monday" after "I work at Northwind". Rules can't tell that the second replaces the first; a
+  model can, and that is where the gate's model tiers are meant to help. This has not been
+  measured yet: it needs a paid run.
+- **The price is a few current facts retired wrongly**: storage recall on the reference suite
+  is 99.7% (it was 99.98%), about 30 of 10,289 facts at checkpoints. Sweeping every older
+  version at 0.6 gave a lower stale share (13.4%) but lost three times as many current facts
+  (recall 99.1%), so further versions need 0.7.
+- The public datasets did not show any of this: they have few explicit corrections. LoCoMo
+  with extraction moved within noise (session R_all@5 79.3 → 79.1, round R_all@10 65.6 →
+  65.6); an extracted fact supersedes the closest older version only.
 
 ```bash
 memhouse bench run --suite bench/suites --embedding-model bge-small-en-v1.5-onnx-Q
