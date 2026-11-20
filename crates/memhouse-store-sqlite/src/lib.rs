@@ -34,6 +34,11 @@ struct Inner {
     /// Lite is one process and one writer: every call takes the connection for its own
     /// statements only, and never across an await.
     conn: Mutex<Connection>,
+    /// Connections for reads only (none in memory, where the one connection is the database).
+    /// In WAL mode readers do not wait for the writer, so scoring a large subject's vectors
+    /// never delays the acknowledgement of a write (PROF-07).
+    readers: Vec<Mutex<Connection>>,
+    next_reader: std::sync::atomic::AtomicUsize,
     /// The database file; `None` in memory. Where the pre-upgrade snapshot goes (TR-LT-10).
     path: Option<PathBuf>,
     /// Prefix the engine adds to passages before embedding; needed to purge cache entries on deletion.
@@ -84,6 +89,31 @@ pub fn private_dir(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The connection at the relaxed durability level; the full level is restored when it is dropped.
+pub(crate) struct Relaxed<'a>(MutexGuard<'a, Connection>);
+
+impl std::ops::Deref for Relaxed<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Relaxed<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.0
+    }
+}
+
+impl Drop for Relaxed<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.execute_batch("PRAGMA synchronous = FULL;");
+    }
+}
+
+/// Read connections of a store on a file.
+const READERS: usize = 3;
+
 impl SqliteStore {
     /// Open (or create) the database file. Writes are durable when they return (TR-LT-05):
     /// WAL with `synchronous = FULL`, and a full flush to the device where the OS tells the two
@@ -109,7 +139,16 @@ impl SqliteStore {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA checkpoint_fullfsync = ON;")?;
-        Self::with_connection(conn, passage_prefix, Some(path.to_path_buf()))
+        let mut readers = vec![];
+        for _ in 0..READERS {
+            let r = Connection::open(path).map_err(|e| anyhow::anyhow!("cannot open the SQLite database {}: {e}", path.display()))?;
+            // Read connections never write, whatever statement they are given.
+            r.execute_batch("PRAGMA query_only = ON;")?;
+            r.busy_timeout(std::time::Duration::from_secs(10))?;
+            r.set_prepared_statement_cache_capacity(128);
+            readers.push(r);
+        }
+        Self::with_connections(conn, readers, passage_prefix, Some(path.to_path_buf()))
     }
 
     /// A private in-memory database, for tests: nothing is kept.
@@ -118,13 +157,24 @@ impl SqliteStore {
     }
 
     fn with_connection(conn: Connection, passage_prefix: &str, path: Option<PathBuf>) -> anyhow::Result<SqliteStore> {
+        Self::with_connections(conn, vec![], passage_prefix, path)
+    }
+
+    fn with_connections(conn: Connection, readers: Vec<Connection>, passage_prefix: &str, path: Option<PathBuf>) -> anyhow::Result<SqliteStore> {
         // Cascades (structured rows, code references, links, source references) rely on it.
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         // Another process on the same file (a command-line tool beside the server) waits its turn.
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.set_prepared_statement_cache_capacity(256);
         Ok(SqliteStore {
-            inner: Arc::new(Inner { conn: Mutex::new(conn), path, passage_prefix: passage_prefix.to_string(), ident: Mutex::new(None) }),
+            inner: Arc::new(Inner {
+                conn: Mutex::new(conn),
+                readers: readers.into_iter().map(Mutex::new).collect(),
+                next_reader: Default::default(),
+                path,
+                passage_prefix: passage_prefix.to_string(),
+                ident: Mutex::new(None),
+            }),
             prefilter: None,
             upgrade_snapshot: true,
         })
@@ -149,6 +199,36 @@ impl SqliteStore {
     /// A value of the store's own bookkeeping (`schema_version`, `embedder`, ...).
     pub fn meta(&self, key: &str) -> anyhow::Result<Option<String>> {
         meta(&self.conn(), key)
+    }
+
+    /// The connection for a write that may be lost in a power failure without losing anything
+    /// that was acknowledged: the pipeline's work after the acknowledgement (which is run again
+    /// from the queued proposal or job, exactly once), caches, and recall explanations. These
+    /// commit without waiting for the device; the acknowledging writes (`enqueue`, deletions,
+    /// policies, keys) keep the full flush (TR-LT-05). In WAL mode a commit that is not flushed
+    /// can vanish as a whole after a power failure, never in part, and a later flushed commit
+    /// carries every earlier one with it.
+    pub(crate) fn conn_relaxed(&self) -> Relaxed<'_> {
+        let guard = self.conn();
+        // Outside any transaction, and under the lock: no other caller sees this level.
+        let _ = guard.execute_batch("PRAGMA synchronous = NORMAL;");
+        Relaxed(guard)
+    }
+
+    /// A connection for a read: one of the read connections that is free, else the next in
+    /// turn; the writer's own connection where there are none (in memory).
+    pub(crate) fn read(&self) -> MutexGuard<'_, Connection> {
+        let readers = &self.inner.readers;
+        if readers.is_empty() {
+            return self.conn();
+        }
+        for r in readers {
+            if let Ok(guard) = r.try_lock() {
+                return guard;
+            }
+        }
+        let i = self.inner.next_reader.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % readers.len();
+        readers[i].lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn conn(&self) -> MutexGuard<'_, Connection> {

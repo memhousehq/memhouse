@@ -146,7 +146,7 @@ impl SqliteStore {
     }
 
     fn claim_jobs(&self, limit: usize, lease_secs: i64, subject: Option<(&str, &str)>) -> anyhow::Result<Vec<EnrichJob>> {
-        let mut c = self.conn();
+        let mut c = self.conn_relaxed();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = now();
         // One job of a subject at a time, oldest first. Without a subject, never a job of an
@@ -176,7 +176,7 @@ impl SqliteStore {
 
     /// The most similar rows of a statement that returns (id, embedding).
     fn nearest_of(&self, sql: &str, params: impl rusqlite::Params, embedding: &[f32], n: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
-        let c = self.conn();
+        let c = self.read();
         let mut st = c.prepare_cached(sql)?;
         let mut found = st.query(params)?;
         scan(&mut found, &Probe::new(embedding), false, n)?.into_iter().map(|(id, sim)| Ok((uuid_of(&id)?, sim))).collect()
@@ -255,7 +255,7 @@ impl Store for SqliteStore {
 
     #[tracing::instrument(name = "db.apply_intake", skip_all, fields(db.system = "sqlite", db.operation = "INSERT", rows = w.records.len()))]
     async fn apply_intake(&self, w: &memhouse_core::intake::IntakeWrite) -> anyhow::Result<bool> {
-        let mut c = self.conn();
+        let mut c = self.conn_relaxed();
         // One writer at a time: from here to the commit no erasure, promotion or other insert
         // runs, which is what Postgres gets from its subject and row locks.
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -381,7 +381,7 @@ impl Store for SqliteStore {
         let lower: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
         let mut binds = recall_params(q)?;
         binds.push((":record_type", record_type.map(|t| Value::Text(t.to_string())).unwrap_or(Value::Null)));
-        let c = self.conn();
+        let c = self.read();
         let mut st = c.prepare_cached(&sql)?;
         bind(&mut st, &binds)?;
         let mut found = st.raw_query();
@@ -434,7 +434,7 @@ impl Store for SqliteStore {
 
     #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "sqlite", db.operation = "SELECT", probes = 1))]
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
-        let c = self.conn();
+        let c = self.read();
         self.ensure_current(&c)?;
         self.search_in(&c, q, true)
     }
@@ -442,19 +442,19 @@ impl Store for SqliteStore {
     #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "sqlite", db.operation = "SELECT", probes = qs.len()))]
     async fn search_many(&self, qs: &[SearchQuery]) -> anyhow::Result<Vec<Vec<Hit>>> {
         // The probes of one recall read one state of the file: nothing is written between them.
-        let c = self.conn();
+        let c = self.read();
         self.ensure_current(&c)?;
         qs.iter().map(|q| self.search_in(&c, q, true)).collect()
     }
 
     #[tracing::instrument(name = "db.search_unfiltered", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn search_unfiltered(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
-        self.search_in(&self.conn(), q, false)
+        self.search_in(&self.read(), q, false)
     }
 
     #[tracing::instrument(name = "db.get", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>> {
-        first(&self.conn(), &format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = ?1 AND m.id = ?2"), [tenant, id.to_string().as_str()], memory_of)
+        first(&self.read(), &format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = ?1 AND m.id = ?2"), [tenant, id.to_string().as_str()], memory_of)
     }
 
     #[tracing::instrument(name = "db.list", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
@@ -478,7 +478,7 @@ impl Store for SqliteStore {
              ORDER BY m.created_at DESC, m.id DESC LIMIT ?5 OFFSET ?6"
         );
         rows(
-            &self.conn(),
+            &self.read(),
             &sql,
             params![
                 q.tenant,
@@ -507,7 +507,7 @@ impl Store for SqliteStore {
 
     #[tracing::instrument(name = "db.find_by_hash", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn find_by_hash(&self, tenant: &str, subject: &str, hash: &str) -> anyhow::Result<Option<Uuid>> {
-        first(&self.conn(), "SELECT id FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND content_hash = ?3 AND status <> 'superseded' LIMIT 1", [tenant, subject, hash], |r| {
+        first(&self.read(), "SELECT id FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND content_hash = ?3 AND status <> 'superseded' LIMIT 1", [tenant, subject, hash], |r| {
             uuid_of(&r.get::<_, String>(0)?)
         })
     }
@@ -518,7 +518,7 @@ impl Store for SqliteStore {
             return Ok(Default::default());
         }
         Ok(rows(
-            &self.conn(),
+            &self.read(),
             "SELECT content_hash FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND content_hash IN (SELECT value FROM json_each(?3))",
             params![tenant, subject, json(hashes)?],
             |r| Ok(r.get::<_, String>(0)?),
@@ -805,14 +805,14 @@ impl Store for SqliteStore {
         if hashes.is_empty() {
             return Ok(vec![]);
         }
-        rows(&self.conn(), "SELECT hash, embedding FROM mh_embed_cache WHERE model = ?1 AND hash IN (SELECT value FROM json_each(?2))", params![model, json(hashes)?], |r| {
+        rows(&self.read(), "SELECT hash, embedding FROM mh_embed_cache WHERE model = ?1 AND hash IN (SELECT value FROM json_each(?2))", params![model, json(hashes)?], |r| {
             Ok((r.get(0)?, from_f32_blob(r.get_ref(1)?.as_blob()?)))
         })
     }
 
     #[tracing::instrument(name = "db.embed_cache_put", skip_all, fields(db.system = "sqlite", db.operation = "INSERT"))]
     async fn embed_cache_put(&self, model: &str, items: &[(String, Vec<f32>)]) -> anyhow::Result<()> {
-        let mut c = self.conn();
+        let mut c = self.conn_relaxed();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for (hash, v) in items {
             exec(&tx, "INSERT INTO mh_embed_cache (model, hash, embedding) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING", params![model, hash, to_f32_blob(v)])?;
@@ -900,7 +900,7 @@ impl Store for SqliteStore {
     }
 
     async fn get_many(&self, tenant: &str, ids: &[Uuid]) -> anyhow::Result<Vec<Memory>> {
-        rows(&self.conn(), &format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = ?1 AND m.id IN (SELECT value FROM json_each(?2))"), params![tenant, ids_json(ids)], memory_of)
+        rows(&self.read(), &format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = ?1 AND m.id IN (SELECT value FROM json_each(?2))"), params![tenant, ids_json(ids)], memory_of)
     }
 
     async fn enrich_enqueue(&self, tenant: &str, subject: &str, session_id: &str, round_ids: &[Uuid]) -> anyhow::Result<i64> {
@@ -922,7 +922,7 @@ impl Store for SqliteStore {
     }
 
     async fn enrich_finish(&self, id: i64, cache_key: Option<&str>, outcome: &EnrichOutcome) -> anyhow::Result<()> {
-        let mut c = self.conn();
+        let mut c = self.conn_relaxed();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = now();
         // The lag is measured against the store's own enqueue time, not the worker's start.
@@ -1196,7 +1196,7 @@ impl Store for SqliteStore {
 
     async fn structured_query(&self, tenant: &str, subject: &str, record_type: &str, attrs: &serde_json::Value) -> anyhow::Result<Vec<(Uuid, serde_json::Value)>> {
         let found = rows(
-            &self.conn(),
+            &self.read(),
             "SELECT s.memory_id, s.attrs FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id \
              WHERE s.tenant = ?1 AND s.subject = ?2 AND s.record_type = ?3 AND m.status = 'committed' ORDER BY s.memory_id",
             [tenant, subject, record_type],
@@ -1253,7 +1253,7 @@ impl Store for SqliteStore {
     #[tracing::instrument(name = "db.recall_put", skip_all, fields(db.system = "sqlite", db.operation = "INSERT"))]
     async fn recall_put(&self, r: &RecallRecord) -> anyhow::Result<()> {
         exec(
-            &self.conn(),
+            &self.conn_relaxed(),
             "INSERT INTO mh_recall (id, tenant, subject, principal, acting_user, at, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (id) DO NOTHING",
             params![r.recall_id.to_string(), r.tenant, r.subject, r.principal, r.user, us(r.at), json(r)?],
         )?;

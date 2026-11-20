@@ -145,7 +145,7 @@ mcp_legacy_tools = false             # also list the pre-v1 MCP tool names
 
 | Key | Default | Notes |
 |---|---|---|
-| `url` | `postgres://memhouse:memhouse@127.0.0.1:54329/memhouse` | Postgres 16+ with the `vector` extension available. `memhouse up` generates a random password. |
+| `url` | `postgres://memhouse:memhouse@127.0.0.1:54329/memhouse` | Postgres 16+ with the `vector` extension available (`memhouse up` generates a random password), or `sqlite:/path/to/memhouse.db` for the [Lite profile](lite.md): one SQLite file, which `memhouse up --lite` sets up. The file's directory must belong to the user and be closed to others. |
 | `max_connections` | 16 | Pool size per process. Each enrichment worker uses one connection at a time. |
 | `container` | none | Name of the Docker container `memhouse up` manages; `memhouse down` and `doctor` use it. |
 
@@ -172,7 +172,9 @@ database, which embeds everything with the new model.
 | `max_retries` | 3 | Remote only: retries after a 429, a 5xx or a connection error, waiting `Retry-After` when the endpoint sends it, otherwise 0.5 s, 1 s, 2 s … (at most 8 s). Other errors (a bad key, an unknown model) fail at once. |
 | `max_length` | 512 | Tokens per text for the local model. 256 is faster with little loss on chat data. |
 | `batch_size` | 1 | Texts per local model call. 32–64 is faster for bulk ingest. |
-| `sessions`, `threads` | 0 (auto) | Parallel ONNX sessions and threads per session. |
+| `sessions`, `threads` | 0 (auto) | Parallel ONNX sessions and threads per session. `memhouse up --lite` sets `sessions = 1`: each session holds its own copy of the model in memory. |
+| `revision` | none | Local models: the commit of the model's repository on the hub to fetch. The built-in models are pinned in the binary and need none; set it with `sha256` to pin another model, or to move a built-in one (its built-in hashes then no longer apply). |
+| `sha256` | none | Local models: a table of file name to the expected SHA-256 at that revision (`"onnx/model.onnx" = "…"`). A file with a hash is checked when it is downloaded and when a process first loads it, and refused on a mismatch; a file without one is used with a warning. |
 | `cache_dir` | `$MEMHOUSE_HOME/models` | Where model files are downloaded. |
 | `query_prefix`, `passage_prefix` | BGE query instruction / none | Some models need prefixes (`nomic`: `search_query: ` and `search_document: `). |
 
@@ -248,6 +250,7 @@ request can switch it with `"rerank": true` or `false`.
 | `candidates` | 20 | how many fused hits are rescored |
 | `max_length` | 256 | |
 | `fused_weight` | 0.15 | how much of the fused rank is blended in with the cross-encoder score |
+| `revision`, `sha256` | none | as in `[embedding]`: pin a reranker that is not built in, or move a built-in one |
 
 ## `[memory]`
 

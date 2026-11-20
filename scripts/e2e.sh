@@ -93,6 +93,33 @@ if [ "${SKIP_GOVERNANCE:-0}" != 1 ]; then  # `cargo xtask ci` runs it in the ben
   "$BIN" bench run --suite governance --out "$MEMHOUSE_HOME/bench-results" >/dev/null
 fi
 
+# The Lite profile (one SQLite file, no database server): a fresh installation works, and the
+# governance suite holds on it. Always run: the benchmark guard covers Postgres only.
+step "Lite profile: up --lite, write, recall, backup and restore"
+LITE_HOME="$MEMHOUSE_HOME-lite"
+mkdir -p "$LITE_HOME" && chmod 700 "$LITE_HOME"
+if [ -d "$MEMHOUSE_HOME/models" ]; then ln -s "$MEMHOUSE_HOME/models" "$LITE_HOME/models"; fi
+(
+  export MEMHOUSE_HOME="$LITE_HOME"
+  unset MEMHOUSE_CONFIG
+  "$BIN" up --lite | grep "SQLite file ready" >/dev/null
+  KEPT=$("$BIN" remember "The warehouse in Tallinn has four loading docks." -s lite:e2e | grep '"id"' | cut -d'"' -f4)
+  GONE=$("$BIN" remember "The forklift is serviced every March." -s lite:e2e | grep '"id"' | cut -d'"' -f4)
+  "$BIN" recall "How many loading docks?" -s lite:e2e | grep "four loading docks" >/dev/null
+  "$BIN" backup "$LITE_HOME/backup" >/dev/null
+  "$BIN" forget "$GONE" >/dev/null
+  # The restore brings the snapshot back and re-applies the deletion made after it.
+  "$BIN" restore "$LITE_HOME/backup" --force >/dev/null
+  "$BIN" recall "How many loading docks?" -s lite:e2e | grep "$KEPT" >/dev/null
+  if "$BIN" recall "When is the forklift serviced?" -s lite:e2e | grep "$GONE" >/dev/null; then echo "a restore brought back a deleted record"; exit 1; fi
+  "$BIN" doctor | grep "audit chain intact" >/dev/null
+)
+
+step "Lite profile: governance gates"
+mkdir -p "$LITE_HOME/governance" && chmod 700 "$LITE_HOME/governance"
+"$BIN" bench run --suite governance --database-url "sqlite:$LITE_HOME/governance/bench.db" --out "$LITE_HOME/bench-results" >/dev/null
+rm -rf "$LITE_HOME"
+
 step "re-embed with another model while the server runs"
 export MEMHOUSE_EMBEDDING_MODEL=bge-small-en-v1.5-onnx-Q
 if "$BIN" recall "renewal" -s customer:acme >/dev/null 2>&1; then echo "started on another model's vectors"; exit 1; fi

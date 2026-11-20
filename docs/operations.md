@@ -412,6 +412,11 @@ not in the file: an import embeds with its own model. Import skips ids that alre
 is safe to run twice, and export → import → export reproduces every line. It does not include the
 audit chain or the deletion ledger: back those up with the database.
 
+On the [Lite profile](lite.md#backup-and-restore), `memhouse backup <dir>` writes a consistent
+snapshot of the SQLite file together with the export and the deletion ledger, and
+`memhouse restore <dir>` re-applies the ledger for you. The two commands refuse a Postgres
+installation: use `pg_dump` and the procedure below.
+
 ### Re-applying deletions after a restore
 
 A backup taken before an erasure request still holds the erased data. The deletion ledger records

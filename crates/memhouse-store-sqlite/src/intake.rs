@@ -93,7 +93,7 @@ impl memhouse_core::IntakeQueue for SqliteStore {
 
     #[tracing::instrument(name = "db.intake_claim", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE"))]
     async fn claim(&self, limit: usize, lease_secs: u64, subject: Option<(&str, &str)>) -> anyhow::Result<Vec<IntakeJob>> {
-        let mut c = self.conn();
+        let mut c = self.conn_relaxed();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = now();
         // The oldest unfinished proposal of each subject only, so one subject's writes take effect
@@ -124,7 +124,7 @@ impl memhouse_core::IntakeQueue for SqliteStore {
 
     async fn finish(&self, id: Uuid, outcome: &serde_json::Value) -> anyhow::Result<()> {
         exec(
-            &self.conn(),
+            &self.conn_relaxed(),
             "UPDATE mh_intake SET status = 'done', finished_at = ?3, locked_until = NULL, payload = NULL, outcome = ?2 WHERE id = ?1 AND status IN ('pending', 'running')",
             params![id.to_string(), outcome.to_string(), now()],
         )?;
