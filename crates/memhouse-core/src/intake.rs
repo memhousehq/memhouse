@@ -307,6 +307,8 @@ pub(crate) struct Item {
     pub note: Option<String>,
     pub duplicate_of: Option<Uuid>,
     pub superseded: Option<Uuid>,
+    /// Further older versions a marked correction retired, besides `superseded`.
+    pub also_superseded: Vec<Uuid>,
     pub confirms: Vec<Uuid>,
     /// The held signal this record repeats, its new count, and whether that commits it.
     pub signal: Option<(Uuid, u32, bool)>,
@@ -329,6 +331,7 @@ impl Item {
             note: None,
             duplicate_of: None,
             superseded: None,
+            also_superseded: vec![],
             confirms: vec![],
             signal: None,
             policy_changed: false,
@@ -996,7 +999,16 @@ impl Engine {
                 }
             } else if judged && m.status != MemoryStatus::Quarantined {
                 if let Some(emb) = it.rec.embedding.clone() {
-                    let near = self.store.nearest_many(tenant, subject, m.kind, &emb, 5, &m.scope).await?;
+                    // The wider correction rule needs the text's own marker: a model that
+                    // reads a statement as a correction does not lower the bar. And it is for
+                    // what a caller states directly: an extractor also writes "now" and "no
+                    // longer" into facts that are history, and on LoCoMo with extraction the
+                    // lower bar cost retrieval with no measured gain (G14).
+                    let pack = m.language.as_deref().and_then(|l| self.languages.pack(l)).unwrap_or(self.languages.default_pack());
+                    let marked = class == Some(Statement::Correction) && pack.marker(&m.content, m.kind).is_some_and(|c| c.statement == Statement::Correction);
+                    let wide = marked && !it.derived;
+                    // The sweep looks further than the closest few: every older version counts.
+                    let near = self.store.nearest_many(tenant, subject, m.kind, &emb, if wide { 20 } else { 5 }, &m.scope).await?;
                     // A structured record is told apart by its attributes, not its wording.
                     let comparable = it.route != Route::Structured;
                     if let Some((dup, sim)) = near.first().copied().filter(|(_, s)| comparable && *s >= policy.policy.write_gate.dedup_threshold) {
@@ -1012,16 +1024,10 @@ impl Engine {
                         // QUAL-01: a correction, or the same statement with a changed value,
                         // supersedes what it updates: the old version stays, superseded and linked.
                         // A marked correction needs less similarity than an unmarked value
-                        // update, and replaces every older version it matches (a fact restated
-                        // twice leaves two records to retire), the closest one being its
-                        // predecessor. An unmarked update replaces the closest only.
-                        //
-                        // An extracted fact retires the closest version only: an extractor also
-                        // writes "now" and "no longer" into facts that are history, so the
-                        // wider sweep is kept for what a caller states directly (G14).
-                        let marked = class == Some(Statement::Correction);
-                        let wide = marked && !it.derived;
-                        let floor = if marked { icfg.marked_correction_threshold.min(icfg.correction_threshold) } else { icfg.correction_threshold };
+                        // update, and replaces further older versions that are nearly as close
+                        // (a fact restated twice leaves two records to retire), the closest one
+                        // being its predecessor. Anything else replaces the closest only.
+                        let floor = if wide { icfg.marked_correction_threshold.min(icfg.correction_threshold) } else { icfg.correction_threshold };
                         for (old, sim) in near.iter().copied().filter(|(_, s)| *s >= floor) {
                             let Some(o) = self.store.get(tenant, old).await? else { continue };
                             let older = o.occurred_at.unwrap_or(o.created_at) <= m.occurred_at.unwrap_or(m.created_at);
@@ -1037,8 +1043,9 @@ impl Engine {
                             if it.superseded.is_some() && sim < (floor + icfg.correction_threshold) / 2.0 {
                                 continue;
                             }
-                            let corrects =
-                                marked && values.shares_content_word(&o.content, &m.content) && (sim >= icfg.correction_threshold || values.same_topic(&o.content, &m.content));
+                            let corrects = class == Some(Statement::Correction)
+                                && values.shares_content_word(&o.content, &m.content)
+                                && (sim >= icfg.correction_threshold || (wide && values.same_topic(&o.content, &m.content)));
                             // An event is a new occurrence unless it restates the old one exactly.
                             let overlap = if class == Some(Statement::Event) { 0.9 } else { 0.6 };
                             let updates = !corrects && sim >= icfg.correction_threshold && values.value_update(&o.content, &m.content, overlap);
@@ -1046,6 +1053,9 @@ impl Engine {
                                 let how = if corrects { "correction" } else { "value_update" };
                                 supersede.push((old, m.id));
                                 metrics::inc("memhouse_gate_corrections_total", &[("how", how)], 1.0);
+                                if it.superseded.is_some() {
+                                    it.also_superseded.push(old);
+                                }
                                 if it.superseded.is_none() {
                                     m.supersedes = Some(old);
                                     m.metadata["supersedes_because"] = json!(how);
@@ -1115,6 +1125,9 @@ impl Engine {
                     detail["statement"] = json!(c.statement.as_str());
                     detail["classifier"] = json!(c.reason);
                 }
+                if *action == "memory.supersede" && !it.also_superseded.is_empty() {
+                    detail["also_supersedes"] = json!(it.also_superseded);
+                }
                 if *action == "memory.reject" {
                     detail["reason"] = json!(it.note.clone().unwrap_or_default());
                     if let Some(d) = it.duplicate_of {
@@ -1122,6 +1135,18 @@ impl Engine {
                     }
                 }
                 out.push(AuditEntry { actor: actor.clone(), action: (*action).into(), subject: Some(subject.to_string()), memory_id: Some(m.id), detail });
+            }
+            // Every record a correction retires has its own event (not only the predecessor).
+            if it.actions.iter().any(|(a, _)| *a == "memory.supersede") {
+                for old in &it.also_superseded {
+                    out.push(AuditEntry {
+                        actor: m.provenance.agent.clone().unwrap_or_else(|| m.source.clone()),
+                        action: "memory.supersede".into(),
+                        subject: Some(subject.to_string()),
+                        memory_id: Some(*old),
+                        detail: json!({ "superseded_by": m.id, "because": "correction", "kind": m.kind.as_str() }),
+                    });
+                }
             }
             // MEM-05: a promotion is its own event, naming the sources it keeps a link to.
             if let Some(from) = m.metadata.get("promoted_from").filter(|f| f.is_array()) {

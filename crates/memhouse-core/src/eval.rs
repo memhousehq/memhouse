@@ -481,6 +481,27 @@ impl Played {
     }
 }
 
+/// Whether an extracted `fact` says what the `turn` said, allowing a paraphrase: every name and
+/// number of the turn (a capitalised word after the first, a word with a digit) is in the fact,
+/// and so is at least half of the turn's other longer words (by their first four letters).
+pub(crate) fn restates(turn: &str, fact: &str) -> bool {
+    let words = |s: &str| s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect::<Vec<_>>();
+    let fact_words: Vec<String> = words(fact).iter().map(|w| w.to_lowercase()).collect();
+    let stem = |w: &str| w.to_lowercase().chars().take(4).collect::<String>();
+    let (mut values, mut plain) = (vec![], vec![]);
+    for (i, w) in words(turn).into_iter().enumerate() {
+        let named = i > 0 && w.chars().next().is_some_and(|c| c.is_uppercase()) && w.chars().count() > 1;
+        if named || w.chars().any(|c| c.is_ascii_digit()) {
+            values.push(w.to_lowercase());
+        } else if w.chars().count() >= 4 {
+            plain.push(stem(&w));
+        }
+    }
+    let has_values = values.iter().all(|v| fact_words.contains(v));
+    let shared = plain.iter().filter(|p| fact_words.iter().any(|f| f.starts_with(p.as_str()))).count();
+    has_values && (plain.is_empty() || shared * 2 >= plain.len())
+}
+
 /// How a suite is replayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReplayMode {
@@ -521,14 +542,27 @@ impl Engine {
         self.eval_replay_as(tenant, suite, policy, trigger, ReplayMode::Remember).await
     }
 
-    /// [`Engine::eval_replay`] in the given mode.
+    /// [`Engine::eval_replay`] in the given mode, with a spend counter of its own.
     pub async fn eval_replay_as(&self, tenant: &str, suite: &Suite, policy: Option<Arc<CompiledPolicy>>, trigger: EvalTrigger, mode: ReplayMode) -> anyhow::Result<EvalRun> {
+        self.eval_replay_with(tenant, suite, policy, trigger, mode, &crate::enrich::Spend::default()).await
+    }
+
+    /// [`Engine::eval_replay_as`] counting extraction spend in `spend`: a caller that replays
+    /// several suites passes the same counter to each, so `[enrich] max_cost_usd` holds for
+    /// them together.
+    pub async fn eval_replay_with(
+        &self,
+        tenant: &str,
+        suite: &Suite,
+        policy: Option<Arc<CompiledPolicy>>,
+        trigger: EvalTrigger,
+        mode: ReplayMode,
+        spend: &crate::enrich::Spend,
+    ) -> anyhow::Result<EvalRun> {
         suite.validate()?;
         if mode == ReplayMode::Ingest {
             anyhow::ensure!(self.cfg.enrich.enabled && self.chat.is_some(), "an ingested replay needs enrichment: set [enrich] enabled and its model");
         }
-        let spend = crate::enrich::Spend::default();
-        let spend = &spend;
         let start = std::time::Instant::now();
         let policy = match policy {
             Some(p) => p,
@@ -664,16 +698,28 @@ impl Engine {
                 start.elapsed() < std::time::Duration::from_secs(600),
                 "evaluation: the extraction of conversation {conversation} did not finish; its replay is not scored"
             );
-            if !self.enrich_once(spend).await? {
+            // This subject's jobs only: a replay never extracts for another subject or tenant.
+            if !self.enrich_once_for(tenant, subject, spend).await? {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         }
-        let records = self.list(Some(tenant.into()), Some(subject.into()), None, 10_000, 0, true).await?;
+        // Every record of the subject, a page at a time (a list returns at most 1,000).
+        let mut records = vec![];
+        loop {
+            let page = self.list(Some(tenant.into()), Some(subject.into()), None, 1000, records.len(), true).await?;
+            let n = page.len();
+            records.extend(page);
+            if n < 1000 {
+                break;
+            }
+        }
         let facts: Vec<&Memory> = records.iter().filter(|m| m.metadata["derived"].as_bool() == Some(true)).collect();
+        // A fact stands for a turn when it cites the turn and says what the turn said: a fact
+        // that cites a turn about Lisbon and states Berlin is a wrong extraction, not that turn.
         Ok((0..session.turns.len())
             .map(|t| {
                 let me = name(t);
-                facts.iter().filter(|m| m.turn_ref.as_deref().is_some_and(|r| r.split(',').any(|x| x == me))).map(|m| m.id).collect()
+                facts.iter().filter(|m| m.turn_ref.as_deref().is_some_and(|r| r.split(',').any(|x| x == me)) && restates(&session.turns[t].say, &m.content)).map(|m| m.id).collect()
             })
             .collect())
     }
@@ -765,6 +811,9 @@ impl Engine {
                     .flat_map(|(_, p)| p.records())
                     .filter(|id| !id.is_nil() && !right.contains(id))
                     .collect();
+                // A question is about a corrected fact when an earlier turn stated the same
+                // key, whether or not that turn left a record of its own to go stale.
+                let corrected = played.iter().enumerate().any(|(i, p)| i != answer && p.expect == Expect::Commit && p.key.as_deref() == Some(q.key.as_str()));
                 let r = self
                     .recall(RecallRequest {
                         tenant: Some(tenant.into()),
@@ -785,7 +834,7 @@ impl Engine {
                 counts.questions += 1;
                 counts.first_correct += u64::from(ids.first().is_some_and(|id| right.contains(id)));
                 counts.found += u64::from(ids.iter().any(|id| right.contains(id)));
-                if !stale.is_empty() {
+                if corrected {
                     counts.corrected_questions += 1;
                     counts.stale_returned += u64::from(stale.iter().any(|s| ids.contains(s)));
                 }
@@ -796,13 +845,27 @@ impl Engine {
         for (turn, p) in c.sessions.iter().flat_map(|s| &s.turns).zip(&played) {
             // A refused write is an outcome whatever was expected of the turn.
             if p.expect != Expect::Ignore || p.id.is_nil() {
+                let turn_hash = &crate::engine::content_hash(&turn.say)[..12];
+                if mode == ReplayMode::Ingest {
+                    // Every fact extracted from the turn, by content: two replays agree only when
+                    // they extracted the same facts and left them in the same state.
+                    let mut facts = vec![];
+                    for id in &p.facts {
+                        if let Some(m) = self.store.get(tenant, *id).await? {
+                            facts.push(format!("{}={}", &crate::engine::content_hash(&m.content)[..12], m.status.as_str()));
+                        }
+                    }
+                    facts.sort();
+                    outcomes.push(format!("{}:{turn_hash}:{}", c.id, if facts.is_empty() { "none".to_string() } else { facts.join(",") }));
+                    continue;
+                }
                 let first = p.records()[0];
                 let status = if first.is_nil() {
-                    if mode == ReplayMode::Ingest { "none" } else { "refused" }.to_string()
+                    "refused".to_string()
                 } else {
                     self.store.get(tenant, first).await?.map(|m| m.status.as_str().to_string()).unwrap_or_else(|| "gone".into())
                 };
-                outcomes.push(format!("{}:{}:{status}", c.id, &crate::engine::content_hash(&turn.say)[..12]));
+                outcomes.push(format!("{}:{turn_hash}:{status}", c.id));
             }
         }
         Ok((counts, outcomes))
@@ -938,6 +1001,17 @@ mod tests {
         bad.conversations.push(bad.conversations[0].clone());
         assert!(bad.validate().unwrap_err().to_string().contains("used twice"));
         assert!(serde_json::from_str::<Suite>(r#"{"name":"s","conversations":[],"extra":1}"#).is_err());
+    }
+
+    #[test]
+    fn a_fact_stands_for_a_turn_only_when_it_says_the_same() {
+        assert!(restates("I live in Lisbon.", "The user lives in Lisbon."));
+        assert!(restates("I no longer live in Lisbon; I now live in Porto.", "The user moved from Lisbon and now lives in Porto."));
+        assert!(restates("I follow a vegetarian diet.", "The user follows a vegetarian diet."));
+        // The wrong value, or another thing altogether, cited to the same turn.
+        assert!(!restates("I live in Lisbon.", "The user lives in Berlin."));
+        assert!(!restates("I follow a vegetarian diet.", "The user enjoys skiing in Austria."));
+        assert!(!restates("My phone is a Pixel 9.", "The user's phone is a Pixel 8."));
     }
 
     #[test]

@@ -287,6 +287,12 @@ impl Classifier for TieredClassifier {
             return Ok(Classification { reason: format!("{} (large model capped)", first.reason), ..first });
         }
         match Self::ask(large, text, kind, lang).await {
+            // No tier releases a hold of the tier below it: what the small model read as a
+            // plan or a guess stays held, whatever the large model reads.
+            Some(second) if first.statement.held() && !second.statement.held() => {
+                tier("large");
+                Ok(Classification { reason: format!("{} (held; {} read {})", first.reason, second.reason, second.statement.as_str()), ..first })
+            }
             Some(second) => {
                 tier("large");
                 Ok(second)
@@ -390,9 +396,27 @@ impl ValueRules {
     /// Below the full correction threshold, a marked correction must be about the same thing as
     /// the record it retires: no person or animal named on one side only (a correction about the
     /// user's sister does not retire a fact about the user).
+    ///
+    /// And it must be about the same one: when the old record leads with a name ("Morgan lives
+    /// in Tallinn"), the correction must name it too ("Taylor lives in Dublin, not Tallinn" does
+    /// not retire it, nor does "I live in Dublin now, not Tallinn"). The leading name is the
+    /// record's first word that is not one of the pack's plain words, when it is capitalised.
+    /// Rules can't tell a person from a place, so this errs towards leaving a record alone.
     pub fn same_topic(&self, old: &str, new: &str) -> bool {
         let (wo, wn) = (self.value_words(old), self.value_words(new));
-        !wo.symmetric_difference(&wn).any(|w| self.people.contains(w.as_str()))
+        if wo.symmetric_difference(&wn).any(|w| self.people.contains(w.as_str())) {
+            return false;
+        }
+        let plain = |w: &str| self.stop.contains(w) || self.value_stop.contains(w) || self.months.contains(w) || self.function.contains(w);
+        let lead = old.split(|c: char| !c.is_alphanumeric()).find(|w| w.chars().count() >= 3 && !plain(&w.to_lowercase()));
+        match lead.filter(|w| w.chars().next().is_some_and(|c| c.is_uppercase())) {
+            // By its first letters, so "Tests run with pytest" is met by "the test runner".
+            Some(name) => {
+                let stem: String = name.to_lowercase().chars().take(4).collect();
+                new.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&stem))
+            }
+            None => true,
+        }
     }
 
     /// The quantities a statement states (numbers, amounts, durations, counts), dates and
@@ -521,6 +545,19 @@ mod tests {
         let v = english.values();
         assert!(v.same_topic("My home is in Tallinn.", "Actually I moved, I live in Dublin now, not Tallinn."));
         assert!(!v.same_topic("My sister lives in Tallinn.", "Actually I moved, I live in Dublin now, not Tallinn."));
+        // Another name in the old record: not the same person. The same name: the same.
+        assert!(!v.same_topic("Morgan lives in Tallinn.", "Actually, Taylor lives in Dublin, not Tallinn."));
+        assert!(v.same_topic("Morgan lives in Tallinn.", "Actually, Morgan lives in Dublin, not Tallinn."));
+        assert!(!v.same_topic("Morgan lives in Tallinn.", "Actually I moved, I live in Dublin now, not Tallinn."));
+        // A record that leads with no name is about the speaker: the old value need not be repeated.
+        assert!(v.same_topic("I live in Lisbon.", "The move is done: I live in Porto now."));
+        assert!(v.same_topic("Dana Novak habite à Porto.", "Korrektur: Dana Novak wohnt jetzt in Berlin."));
+        // A function word that starts a sentence is not a name.
+        assert!(v.same_topic("Our dog's name is Olive.", "Correction: the dog is called Pixel, not Olive."));
+        assert!(v.same_topic("The office is on the third floor.", "Actually the office is on the fourth floor now."));
+        // Nor is a marker that opens the old record, or an ordinary noun the correction repeats.
+        assert!(v.same_topic("Correction: my hobby is pottery, not woodworking.", "I no longer do pottery; my hobby is beekeeping now."));
+        assert!(v.same_topic("Tests run with pytest.", "Correction: the test runner is unittest, not pytest."));
     }
 
     #[test]
@@ -624,6 +661,16 @@ mod tests {
             t.classify_for("a", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap();
         }
         assert_eq!((calls(&large), t.usage("a").capped), (1, 2));
+        // The small model holds, unsure; the large one calls it a fact: the hold stands.
+        let holds = fixed("small", r#"{"statement": "plan", "confidence": 0.4}"#);
+        let t = TieredClassifier::new(&cfg, Some(holds), Some(fixed("large", r#"{"statement": "fact", "confidence": 0.99}"#)));
+        let c = t.classify_for("b", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap();
+        assert_eq!(c.statement, Statement::Plan);
+        assert!(c.reason.contains("held"), "{}", c.reason);
+        // The other way round, the large model's hold is taken.
+        let passes = fixed("small", r#"{"statement": "fact", "confidence": 0.4}"#);
+        let t = TieredClassifier::new(&cfg, Some(passes), Some(fixed("large", r#"{"statement": "speculation", "confidence": 0.9}"#)));
+        assert_eq!(t.classify_for("c", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap().statement, Statement::Speculation);
     }
 
     #[test]

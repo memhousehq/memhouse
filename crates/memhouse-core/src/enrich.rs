@@ -60,29 +60,54 @@ struct ExtractedFact {
 #[derive(Default)]
 pub struct Spend {
     micro_usd: AtomicU64,
-    /// Per tenant: sessions extracted, and those the large model read (ECON-04's cap).
-    tiers: std::sync::Mutex<std::collections::HashMap<String, (u64, u64)>>,
+    /// Per tenant: the jobs extracted, and those the large model read (ECON-04's cap).
+    tiers: std::sync::Mutex<std::collections::HashMap<String, TenantTiers>>,
+    unpriced: AtomicBool,
+}
+
+#[derive(Default)]
+struct TenantTiers {
+    sessions: std::collections::HashSet<i64>,
+    large: std::collections::HashSet<i64>,
 }
 
 impl Spend {
-    /// Count one extracted session of `tenant`.
-    fn session(&self, tenant: &str) {
-        self.tiers.lock().expect("tiers").entry(tenant.to_string()).or_default().0 += 1;
+    /// Count one extracted session of `tenant`: once per job, however often it is retried.
+    fn session(&self, tenant: &str, job: i64) {
+        let mut t = self.tiers.lock().expect("tiers");
+        t.entry(tenant.to_string()).or_default().sessions.insert(job);
     }
 
     /// Take one large-model extraction from the tenant's share (`large_max_share` of its
-    /// extracted sessions in this process), if it has one left.
-    fn take_large(&self, tenant: &str, max_share: f32) -> bool {
+    /// extracted sessions in this process), if it has one left. A job that already holds one
+    /// keeps it on a retry.
+    fn take_large(&self, tenant: &str, job: i64, max_share: f32) -> bool {
         let mut t = self.tiers.lock().expect("tiers");
-        let (sessions, large) = t.entry(tenant.to_string()).or_default();
-        let ok = (*large + 1) as f64 <= max_share.clamp(0.0, 1.0) as f64 * *sessions as f64;
-        *large += u64::from(ok);
+        let e = t.entry(tenant.to_string()).or_default();
+        if e.large.contains(&job) {
+            return true;
+        }
+        let ok = (e.large.len() + 1) as f64 <= max_share.clamp(0.0, 1.0) as f64 * e.sessions.len() as f64;
+        if ok {
+            e.large.insert(job);
+        }
         ok
     }
 
     /// Sessions extracted for `tenant` in this process, and those of them the large model read.
     pub fn tiers(&self, tenant: &str) -> (u64, u64) {
-        self.tiers.lock().expect("tiers").get(tenant).copied().unwrap_or_default()
+        self.tiers.lock().expect("tiers").get(tenant).map(|e| (e.sessions.len() as u64, e.large.len() as u64)).unwrap_or_default()
+    }
+
+    /// A model call came back with tokens and no cost: the spend is no longer known. True the
+    /// first time.
+    fn mark_unpriced(&self) -> bool {
+        !self.unpriced.swap(true, Ordering::Relaxed)
+    }
+
+    /// Whether some call's cost is unknown, so `max_cost_usd` cannot be enforced exactly.
+    pub fn unpriced(&self) -> bool {
+        self.unpriced.load(Ordering::Relaxed)
     }
 
     pub fn add(&self, usd: f64) -> f64 {
@@ -288,6 +313,17 @@ impl Engine {
     /// Claim and process one job. Returns false when the queue is empty.
     pub async fn enrich_once(&self, spend: &Spend) -> anyhow::Result<bool> {
         let Some(job) = self.store.enrich_claim(1, 300).await?.pop() else { return Ok(false) };
+        self.enrich_claimed(job, spend).await
+    }
+
+    /// Claim and process one job of this subject only (a replay, a test: nothing of another
+    /// subject or tenant is touched). Returns false when the subject has none to claim.
+    pub async fn enrich_once_for(&self, tenant: &str, subject: &str, spend: &Spend) -> anyhow::Result<bool> {
+        let Some(job) = self.store.enrich_claim_for(tenant, subject, 1, 300).await?.pop() else { return Ok(false) };
+        self.enrich_claimed(job, spend).await
+    }
+
+    async fn enrich_claimed(&self, job: EnrichJob, spend: &Spend) -> anyhow::Result<bool> {
         let span = tracing::info_span!("memhouse.enrich", memhouse.enrich_job = job.id, memhouse.subject = %job.subject, memhouse.facts = tracing::field::Empty, otel.status_code = tracing::field::Empty);
         match self.enrich_job(&job, spend).instrument(span.clone()).await {
             Ok((key, outcome)) => {
@@ -334,20 +370,20 @@ impl Engine {
         let prompt = format!("{INSTRUCTIONS}{any_language}\n\nSession date: {date_line}\n\nConversation:\n{text}");
         outcome.rounds = rounds.len();
         outcome.tier = "small".into();
-        let (key, answer) = self.extract(chat, &prompt, job, spend, &mut outcome).await?;
+        let (key, answer) = self.extract(chat, &prompt, job, spend, &mut outcome, false).await?;
         let (facts, complete) = parse_answer(&answer)?;
         let mut facts = with_confidence(facts, &rounds);
         let confidence = session_confidence(&facts.iter().map(|(_, c)| *c).collect::<Vec<_>>(), complete, user_chars);
         outcome.confidence = Some(confidence);
-        spend.session(&job.tenant);
+        spend.session(&job.tenant, job.id);
         let mut extractor = model.clone();
         // The last tier (ECON-04, TR-MS-05): an unsure extraction is done again by the large
         // model, while the tenant is within its share. If that fails, the small model's facts
         // stand: escalation never loses a session.
         if let Some(large) = self.chat_large.as_ref().filter(|_| cfg.escalate && confidence < cfg.escalate_below) {
-            if spend.take_large(&job.tenant, cfg.large_max_share) {
+            if spend.take_large(&job.tenant, job.id, cfg.large_max_share) {
                 let mut again = EnrichOutcome { model: large.id(), ..Default::default() };
-                match self.extract(large, &prompt, job, spend, &mut again).await.and_then(|(_, a)| parse_answer(&a)) {
+                match self.extract(large, &prompt, job, spend, &mut again, true).await.and_then(|(_, a)| parse_answer(&a)) {
                     Ok((better, _)) => {
                         facts = with_confidence(better, &rounds);
                         extractor = large.id();
@@ -384,6 +420,7 @@ impl Engine {
         job: &EnrichJob,
         spend: &Spend,
         outcome: &mut EnrichOutcome,
+        large: bool,
     ) -> anyhow::Result<(String, String)> {
         let cfg = &self.cfg.enrich;
         let model = chat.id();
@@ -395,6 +432,11 @@ impl Engine {
         outcome.cached = false;
         if cfg.max_cost_usd > 0.0 && spend.usd() >= cfg.max_cost_usd {
             anyhow::bail!("enrichment spend ${:.4} reached max_cost_usd {}", spend.usd(), cfg.max_cost_usd);
+        }
+        // A cap that cannot be checked is not a cap: once a call has come back without a cost,
+        // the optional tier stops (the small model's facts stand), and the operator is told.
+        if large && cfg.max_cost_usd > 0.0 && spend.unpriced() {
+            anyhow::bail!("max_cost_usd is set but a model call reported no cost: the large model is not called until the provider reports costs or a price is configured");
         }
         // An LLM call in the GenAI conventions, so LLM-observability tools show it (TR-OPS-06).
         let span = tracing::info_span!(
@@ -415,6 +457,9 @@ impl Engine {
         crate::metrics::inc("memhouse_enrich_tokens_total", &[("type", "prompt")], usage.prompt_tokens as f64);
         crate::metrics::inc("memhouse_enrich_tokens_total", &[("type", "completion")], usage.completion_tokens as f64);
         spend.add(usage.cost_usd.unwrap_or(0.0));
+        if usage.cost_usd.is_none() && usage.prompt_tokens + usage.completion_tokens > 0 && cfg.max_cost_usd > 0.0 && spend.mark_unpriced() {
+            tracing::warn!("enrichment: {model} reported tokens but no cost, so max_cost_usd cannot count its calls; the large model will not be called");
+        }
         outcome.usage = usage;
         outcome.calls += 1;
         // Cache only answers that parse, so a malformed one is retried next time.
@@ -581,13 +626,20 @@ mod tests {
     #[test]
     fn the_large_tier_keeps_to_the_tenants_share() {
         let s = Spend::default();
-        for _ in 0..3 {
-            s.session("a");
+        for job in 1..=3 {
+            s.session("a", job);
         }
-        assert!(!s.take_large("a", 0.3));
-        s.session("a");
-        assert!(s.take_large("a", 0.3));
-        assert!(!s.take_large("a", 0.3));
+        assert!(!s.take_large("a", 3, 0.3));
+        // A retry of a job is the same session: it does not make room.
+        for _ in 0..5 {
+            s.session("a", 3);
+        }
+        assert!(!s.take_large("a", 3, 0.3));
+        s.session("a", 4);
+        assert!(s.take_large("a", 4, 0.3));
+        // The job that holds the slot keeps it on a retry; another job gets none.
+        assert!(s.take_large("a", 4, 0.3));
+        assert!(!s.take_large("a", 2, 0.3));
         assert_eq!((s.tiers("a"), s.tiers("b")), ((4, 1), (0, 0)));
     }
 

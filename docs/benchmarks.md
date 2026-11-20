@@ -343,10 +343,10 @@ retrieval are precision / recall / **F1**, in percent.
 |---|---|---|---|---|---|---|
 | `personal-starter` | 20 | 285 | 95.7 / 99.5 / **97.6** | 96.1 / 98.9 / **97.5** | 15.1 | 0.0 |
 | `support-starter` | 20 | 271 | 91.0 / 100.0 / **95.3** | 90.0 / 99.6 / **94.6** | 21.8 | 0.0 |
-| `coding-starter` | 20 | 270 | 87.6 / 99.7 / **93.3** | 87.4 / 99.6 / **93.1** | 28.0 | 0.0 |
-| `sales-starter` | 20 | 279 | 90.4 / 99.7 / **94.8** | 86.0 / 99.6 / **92.3** | 26.1 | 0.0 |
-| `success-starter` | 20 | 280 | 90.2 / 100.0 / **94.9** | 86.1 / 100.0 / **92.5** | 24.3 | 0.0 |
-| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 95.2 / 99.7 / **97.4** [97.1–97.7] | 96.0 / 99.5 / **97.7** [97.3–98.1] | 14.0 [12.3–15.7] | 0.0 |
+| `coding-starter` | 20 | 270 | 84.7 / 99.7 / **91.6** | 87.4 / 99.6 / **93.1** | 33.6 | 0.0 |
+| `sales-starter` | 20 | 279 | 89.4 / 99.7 / **94.3** | 85.7 / 99.6 / **92.1** | 29.1 | 0.0 |
+| `success-starter` | 20 | 280 | 89.5 / 100.0 / **94.5** | 85.7 / 100.0 / **92.3** | 25.0 | 0.0 |
+| reference: `bench synth --profile personal --seed 7 --conversations 500` | 500 | 7,196 | 95.1 / 99.7 / **97.3** [97.0–97.7] | 95.8 / 99.5 / **97.6** [97.2–98.1] | 14.4 [12.6–16.1] | 0.0 |
 
 The reference suite has 8,511 turns and 10,289 facts at checkpoints; its replay took 5 minutes on a
 laptop that was busy with other work. Brackets are 95% bootstrap intervals over conversations.
@@ -371,12 +371,12 @@ What they show:
   second table) found that three quarters or more of the questions about a corrected fact
   still got a stale version among the top 5: a correction superseded a record only at cosine
   0.8, and "I no longer live in Lisbon; I now live in Porto" is not that close to "I live in
-  Lisbon" for this embedder. Since G14 a statement with a correction marker supersedes the
-  closest older record at 0.6 (`[intake] marked_correction_threshold`), and any further older
-  version at 0.7. On the reference suite the stale share fell from 76.2% to 14.0%, storage
-  precision rose from 76.7 to 95.2, and the current fact is the first hit for 96.0% of the
-  questions (82.7 before).
-- **What is left** (14 to 28%) is mostly a change stated without a marker and without the old
+  Lisbon" for this embedder. Since G14 a statement whose text has a correction marker
+  supersedes the closest older record at 0.6 (`[intake] marked_correction_threshold`), and any
+  further older version at 0.7. On the reference suite the stale share fell from 76.2% to
+  14.4%, storage precision rose from 76.7 to 95.1, and the current fact is the first hit for
+  95.8% of the questions (82.7 before).
+- **What is left** (14 to 34%) is mostly a change stated without a marker and without the old
   value: "I bought a Fairphone 5 yesterday" after "I use a Galaxy S25", "I started at Globex on
   Monday" after "I work at Northwind". Rules can't tell that the second replaces the first; a
   model can, and that is where the gate's model tiers are meant to help. This has not been
@@ -385,9 +385,16 @@ What they show:
   is 99.7% (it was 99.98%), about 30 of 10,289 facts at checkpoints. Sweeping every older
   version at 0.6 gave a lower stale share (13.4%) but lost three times as many current facts
   (recall 99.1%), so further versions need 0.7.
-- The public datasets did not show any of this: they have few explicit corrections. LoCoMo
-  with extraction moved within noise (session R_all@5 79.3 → 79.1, round R_all@10 65.6 →
-  65.6); an extracted fact supersedes the closest older version only.
+- **A record that leads with a name is only retired by a correction that names it too**: at
+  the lower bar, "Taylor lives in Dublin, not Tallinn" does not retire "Morgan lives in
+  Tallinn". Rules can't tell a person from a product, so this also keeps some stale records
+  whose correction is worded around another noun; it is why the coding and sales suites, whose
+  facts lead with product and company names, improve less than the personal one.
+- The public datasets did not show any of this: they have few explicit corrections. Facts
+  extracted by enrichment keep the old rule (0.8, the closest record only): an extractor writes
+  "now" and "no longer" into facts that are history, and LoCoMo with extraction is unchanged
+  (session R_all@5 79.3, round R_all@10 65.6). Whether the lower bar helps extracted facts
+  needs the ingested replay with a real extractor, which has not been run.
 
 ```bash
 memhouse bench run --suite bench/suites --embedding-model bge-small-en-v1.5-onnx-Q

@@ -118,7 +118,9 @@ pub struct IntakeConfig {
     pub classifier: ClassifierKind,
     /// Chat model of the `llm` classifier.
     pub llm: LlmConfig,
-    /// Large chat model of the `tiered` classifier: the last tier.
+    /// Large chat model of the `tiered` classifier: the last tier. Keys left out of the table
+    /// keep this tier's defaults.
+    #[serde(deserialize_with = "intake_large_llm")]
     pub large_llm: LlmConfig,
     /// `tiered`: the small model reads a statement when the rules' confidence is below this
     /// (the rules give 0.8 on a marker and 0.6 without one).
@@ -369,7 +371,9 @@ pub struct EnrichConfig {
     /// Extract again with `large_llm` when a session's extraction confidence is below
     /// `escalate_below` (ECON-04, TR-MS-05). Off by default: one model reads every session.
     pub escalate: bool,
-    /// The larger model of the last extraction tier.
+    /// The larger model of the last extraction tier. Keys left out of the table keep this
+    /// tier's defaults (the endpoint, the model, the token limit).
+    #[serde(deserialize_with = "enrich_large_llm")]
     pub large_llm: LlmConfig,
     /// Extraction confidence (0 to 1: how much of the extracted facts is found in the rounds
     /// they cite) below which a session goes to the large model.
@@ -401,6 +405,27 @@ impl Default for EnrichConfig {
             large_max_share: 0.3,
         }
     }
+}
+
+/// A model table laid over its tier's defaults: a table that sets only `api_key_env` keeps the
+/// tier's endpoint, model and token limit, like a table that is left out.
+fn overlay<'de, D: serde::Deserializer<'de>>(d: D, base: LlmConfig) -> Result<LlmConfig, D::Error> {
+    use serde::de::Error;
+    let given = serde_json::Value::deserialize(d)?;
+    let mut merged = serde_json::to_value(&base).map_err(D::Error::custom)?;
+    match (merged.as_object_mut(), given.as_object()) {
+        (Some(m), Some(g)) => m.extend(g.iter().map(|(k, v)| (k.clone(), v.clone()))),
+        _ => return Err(D::Error::custom("a model table must be a table of keys")),
+    }
+    serde_json::from_value(merged).map_err(D::Error::custom)
+}
+
+fn intake_large_llm<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LlmConfig, D::Error> {
+    overlay(d, IntakeConfig::default().large_llm)
+}
+
+fn enrich_large_llm<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LlmConfig, D::Error> {
+    overlay(d, EnrichConfig::default().large_llm)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -688,6 +713,19 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model table that sets one key keeps its tier's other defaults.
+    #[test]
+    fn a_partial_large_model_table_keeps_the_tiers_defaults() {
+        let cfg: Config = toml::from_str("[enrich.large_llm]\napi_key_env = \"MY_KEY\"\n\n[intake.large_llm]\nmodel = \"my-large\"\n").unwrap();
+        let (d, i) = (EnrichConfig::default().large_llm, IntakeConfig::default().large_llm);
+        assert_eq!(cfg.enrich.large_llm.api_key_env.as_deref(), Some("MY_KEY"));
+        assert_eq!((&cfg.enrich.large_llm.base_url, &cfg.enrich.large_llm.model, cfg.enrich.large_llm.max_tokens), (&d.base_url, &d.model, d.max_tokens));
+        assert_eq!((cfg.intake.large_llm.model.as_str(), cfg.intake.large_llm.max_tokens, &cfg.intake.large_llm.base_url), ("my-large", i.max_tokens, &i.base_url));
+        // Left out altogether: the same defaults.
+        let none: Config = toml::from_str("").unwrap();
+        assert_eq!(none.enrich.large_llm.base_url, d.base_url);
+    }
 
     /// PROF-12: an empty file starts with authentication, redaction and the injection screen on.
     #[test]

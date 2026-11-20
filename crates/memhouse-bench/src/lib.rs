@@ -374,7 +374,9 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
     let engine = memhouse_server::build_engine(cfg.clone(), true).await?;
     let engine = if args.enrich {
         let chat = memhouse_models::enrich_chat(&cfg, price(args.enrich_price.as_deref(), &args.enrich_model)?)?;
-        let large = memhouse_models::enrich_large_chat(&cfg, None)?;
+        // The large tier is priced like the small one, so a provider that reports tokens without
+        // a cost still counts against --enrich-max-cost-usd.
+        let large = memhouse_models::enrich_large_chat(&cfg, price(None, &cfg.enrich.large_llm.model)?)?;
         engine.with_chat(chat).with_large_chat(large)
     } else {
         engine
@@ -478,6 +480,9 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
         let mut sum = memhouse_core::eval::EvalCounts::default();
         let mut per = vec![];
         let mut sections = String::new();
+        // One spend counter for the whole invocation: --enrich-max-cost-usd holds across the
+        // suites and repeats, not for each of them.
+        let replay_spend = memhouse_core::enrich::Spend::default();
         for suite in &loaded {
             eprintln!("Replaying evaluation suite {} ({} conversations, {} turns) ...", suite.name, suite.conversations.len(), suite.turns());
             let mut runs = vec![];
@@ -485,7 +490,7 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
                 // With --enrich the sessions are ingested and their facts extracted: the replay
                 // then scores extraction together with the gate.
                 let mode = if args.enrich { memhouse_core::eval::ReplayMode::Ingest } else { memhouse_core::eval::ReplayMode::Remember };
-                runs.push(engine.eval_replay_as(&tenant, suite, None, memhouse_core::eval::EvalTrigger::Manual, mode).await?);
+                runs.push(engine.eval_replay_with(&tenant, suite, None, memhouse_core::eval::EvalTrigger::Manual, mode, &replay_spend).await?);
             }
             let repeats = (runs.len() > 1).then(|| (runs.len(), suites::agreement(&runs)));
             let run = &runs[0];

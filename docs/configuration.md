@@ -371,7 +371,7 @@ answer, and workers pick up whatever a crash or a failure left behind.
 | `large_max_per_day` | 0 | `tiered`: the most large-model reads per tenant and day (UTC); 0 = no daily cap |
 | `plan_ttl_days` | 90 | a held plan or speculation without `valid_to` expires after this many days unconfirmed |
 | `correction_threshold` | 0.8 | cosine at or above which a statement that restates a record with a changed value ("three bikes" → "four bikes") supersedes the closest such record |
-| `marked_correction_threshold` | 0.6 | cosine at or above which a statement with a correction marker ("no longer", "actually", "correction:") supersedes the closest older record it corrects, and any further older version at or above the midpoint of the two thresholds (0.7); they must also share a content word and, below `correction_threshold`, name no other person. A fact extracted by enrichment supersedes the closest only |
+| `marked_correction_threshold` | 0.6 | cosine at or above which a statement with a correction marker ("no longer", "actually", "correction:") supersedes the closest older record it corrects, and any further older version at or above the midpoint of the two thresholds (0.7). The marker must be in the text (a model's reading is not enough); the two must share a content word; and below `correction_threshold` the correction must name every name the old record names and no other person. A fact extracted by enrichment keeps `correction_threshold` and supersedes the closest record only |
 | `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word and the scope; speculation is never confirmed), and at which an inferred preference counts as the same signal again |
 | `preference_signals` | 2 | times an inferred preference (a write with `metadata.signal = true`) must be seen, in the same scope, before it is committed; 1 commits it at once |
 
@@ -387,8 +387,10 @@ With `classifier = "tiered"` the gate uses the cheapest reader that is sure (ECO
    its classified writes and `large_max_per_day`.
 
 A model can add caution, never remove it: what the rules hold as a plan or a guess stays held
-and is not sent to a model. A model that fails leaves the tier below in charge, and a tenant past
-its cap gets the small model's reading: no write skips the gate. The counts are per server
+and is not sent to a model, and what the small model holds stays held whatever the large model
+reads. A model that fails leaves the tier below in charge, and a tenant past its cap gets the
+small model's reading: no write skips the gate. A `[intake.large_llm]` table that sets only some
+keys keeps this tier's defaults for the others. The counts are per server
 process. `memhouse_gate_tier_total{tier}` and `memhouse_gate_tier_capped_total` show the mix.
 
 ## `[enrich]`
@@ -422,7 +424,11 @@ fact that cites no round is compared with the whole session and loses a tenth). 
 the record's `confidence`. A session's confidence is the mean of its facts'; an answer cut at the
 token limit is capped at 0.5, and no facts from a long session scores 0.4. With `escalate`, a
 session below `escalate_below` is extracted again by the large model. If that call fails, or the
-tenant's share is used up, the small model's facts are stored. `memhouse_enrich_tier_total{tier}`
+tenant's share is used up, the small model's facts are stored. A session counts once towards the
+share however often its job is retried. With `max_cost_usd` set, the large model is called only
+while every call's cost is known: once a provider answers with tokens and no cost, escalation
+stops and a warning says so, since the cap could no longer be checked. A `[enrich.large_llm]`
+table that sets only some keys keeps this tier's defaults for the others. `memhouse_enrich_tier_total{tier}`
 counts sessions by the tier that produced their facts (`rules`, `small`, `large`), and each
 job's outcome records its tier, confidence, rounds and calls.
 

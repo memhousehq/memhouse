@@ -158,10 +158,11 @@ pub fn markdown(s: &Summary) -> String {
                 );
                 let _ = writeln!(
                     o,
-                    "| Extraction calls per round | {:.3} ({} sessions read, at most one call per tier, over {} rounds) |",
+                    "| Extraction calls per round | {:.3} needed ({} extractions, one per session and tier, over {} rounds); {} made in this run, the rest from the cache |",
                     (read + t.large) as f64 / t.rounds.max(1) as f64,
-                    read,
-                    t.rounds
+                    read + t.large,
+                    t.rounds,
+                    t.calls
                 );
                 let _ = writeln!(
                     o,

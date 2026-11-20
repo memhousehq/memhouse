@@ -10,8 +10,8 @@
 //!   quarantined), a session past the cap or whose large model fails keeps the small model's
 //!   facts, and each fact carries a confidence that says how well its rounds support it;
 //! - `ingested_replay`: a suite replayed as ingested conversations scores the extracted facts
-//!   (a fact is stored, a plan is held, a corrected fact is not recalled), and is refused, not
-//!   scored, when enrichment is off;
+//!   (a fact is stored, a plan is held, a stale version is counted when it is still live), and
+//!   is refused, not scored, when enrichment is off;
 //! - `corrections_supersede`: a statement with a correction marker retires every older
 //!   version of the fact it corrects, also one too differently worded for the plain threshold,
 //!   and leaves a fact about another person and an unrelated fact alone; the retired versions
@@ -80,7 +80,7 @@ pub(crate) async fn run(engine: &Engine, run_id: &str) -> Vec<Check> {
         (
             "ingested_replay",
             "QUAL-03 / QUAL-11 (G14)",
-            "A suite replayed as ingested conversations scores the facts extracted from them: facts stored, plans held, a corrected fact not recalled; without enrichment the replay is refused, not scored",
+            "A suite replayed as ingested conversations scores the facts extracted from them: facts stored, plans held, a stale version counted when it is still live; without enrichment the replay is refused, not scored",
         ),
     ];
     let subject = |name: &str| format!("bench:{run_id}:gov:tier-{name}");
@@ -129,7 +129,9 @@ async fn gate_tiers(base: &Engine, subject: &str) -> Outcome {
     let fact = |c: f32| serde_json::json!({ "statement": "fact", "confidence": c }).to_string();
     // Both models call everything a fact; the small one is never sure.
     let (small, large) = (Stub::new("stub:small", &[fact(0.2)]), Stub::new("stub:large", &[fact(0.99)]));
-    let tiers = Arc::new(TieredClassifier::new(&base.cfg.intake, Some(small.clone()), Some(large.clone())));
+    // The fixture's own thresholds and caps, whatever the operator has configured.
+    let icfg = memhouse_core::config::IntakeConfig { small_below: 0.7, large_below: 0.6, large_max_share: 0.3, large_max_per_day: 0, ..base.cfg.intake.clone() };
+    let tiers = Arc::new(TieredClassifier::new(&icfg, Some(small.clone()), Some(large.clone())));
     let e = base.clone().with_classifier(tiers.clone());
     for text in HELD {
         let r = write(&e, subject, text).await?;
@@ -151,9 +153,9 @@ async fn gate_tiers(base: &Engine, subject: &str) -> Outcome {
         }
     }
     let u = tiers.usage(&tenant);
-    let share = base.cfg.intake.large_max_share;
+    let share = icfg.large_max_share;
     // The statements the rules found no marker in: the small model reads exactly those.
-    let unmarked = PLAIN.iter().filter(|t| memhouse_core::classify::RuleClassifier::classify_text(t, MemoryKind::Semantic).confidence < base.cfg.intake.small_below).count();
+    let unmarked = PLAIN.iter().filter(|t| memhouse_core::classify::RuleClassifier::classify_text(t, MemoryKind::Semantic).confidence < icfg.small_below).count();
     if small.calls() as usize != unmarked || unmarked < PLAIN.len() / 2 {
         problems.push(format!("the small model read {} statements; the rules found no marker in {unmarked} of {}", small.calls(), PLAIN.len()));
     }
@@ -165,7 +167,7 @@ async fn gate_tiers(base: &Engine, subject: &str) -> Outcome {
     }
     // A model may add caution: a statement the rules pass and the model reads as a plan is held.
     let cautious = Stub::new("stub:small", &[serde_json::json!({ "statement": "plan", "confidence": 0.9 }).to_string()]);
-    let e2 = base.clone().with_classifier(Arc::new(TieredClassifier::new(&base.cfg.intake, Some(cautious), None)));
+    let e2 = base.clone().with_classifier(Arc::new(TieredClassifier::new(&icfg, Some(cautious), None)));
     let r = write(&e2, subject, "Dana moves to the Rotterdam office in the spring.").await?;
     if r.status != MemoryStatus::Candidate {
         problems.push(format!("a statement the small model read as a plan ended {}", r.status.as_str()));
@@ -173,7 +175,15 @@ async fn gate_tiers(base: &Engine, subject: &str) -> Outcome {
     // Both models down: the rules decide, nothing is skipped or lost.
     let down = || Stub::new("stub:down", &[]);
     let (s, l) = (down(), down());
-    let e3 = base.clone().with_classifier(Arc::new(TieredClassifier::new(&base.cfg.intake, Some(s.clone()), Some(l))));
+    let e3 = base.clone().with_classifier(Arc::new(TieredClassifier::new(&icfg, Some(s.clone()), Some(l))));
+    // A hold of the small model is not released by the large one.
+    let held_small = Stub::new("stub:small", &[serde_json::json!({ "statement": "plan", "confidence": 0.3 }).to_string()]);
+    let open = memhouse_core::config::IntakeConfig { large_max_share: 1.0, ..icfg.clone() };
+    let e4 = base.clone().with_classifier(Arc::new(TieredClassifier::new(&open, Some(held_small), Some(Stub::new("stub:large", &[fact(0.99)])))));
+    let r4 = write(&e4, subject, "Priya's desk moves to the fourth floor.").await?;
+    if r4.status != MemoryStatus::Candidate {
+        problems.push(format!("a statement the small model held and the large model called a fact ended {}", r4.status.as_str()));
+    }
     let sub = format!("{subject}-down");
     let (plan, plain) = (write(&e3, &sub, HELD[0]).await?, write(&e3, &sub, PLAIN[0]).await?);
     if (plan.status, plain.status) != (MemoryStatus::Candidate, MemoryStatus::Committed) || s.calls() != 1 {
@@ -207,6 +217,10 @@ async fn extraction_tiers(base: &Engine, subject: &str) -> Outcome {
     cfg.enrich.enabled = true;
     cfg.enrich.min_user_chars = 1;
     cfg.enrich.escalate = true;
+    // The fixture's own threshold and share, whatever the operator has configured.
+    cfg.enrich.escalate_below = 0.6;
+    cfg.enrich.large_max_share = 0.3;
+    cfg.enrich.max_cost_usd = 0.0;
     let (below, share) = (cfg.enrich.escalate_below, cfg.enrich.large_max_share);
     let e = base.clone().reconfigure(cfg.clone()).with_chat(Some(small.clone())).with_large_chat(Some(large.clone()));
     let spend = memhouse_core::enrich::Spend::default();
@@ -218,7 +232,8 @@ async fn extraction_tiers(base: &Engine, subject: &str) -> Outcome {
                 if st.pending + st.running == 0 {
                     break;
                 }
-                e.enrich_once(&spend).await?;
+                // This subject's jobs only: the stand-in models never answer for another subject.
+                e.enrich_once_for(&tenant, &subject, &spend).await?;
             }
             anyhow::Ok(())
         }
@@ -305,6 +320,7 @@ async fn corrections(base: &Engine, subject: &str) -> Outcome {
     let second = write(base, subject, "I'm based in Tallinn these days.").await?;
     let sister = write(base, subject, "My sister lives in Tallinn.").await?;
     let bystander = write(base, subject, "I work at Kestrel Works.").await?;
+    let morgan = write(base, subject, "Morgan lives in Tallinn.").await?;
     let fix = write(base, subject, "Actually I moved, I live in Dublin now, not Tallinn.").await?;
     let get = |id| base.store.get(&tenant, id);
     let status = |m: &Option<Memory>| m.as_ref().map(|m| m.status);
@@ -315,8 +331,18 @@ async fn corrections(base: &Engine, subject: &str) -> Outcome {
     if status(&a) != Some(MemoryStatus::Superseded) || status(&b) != Some(MemoryStatus::Superseded) {
         problems.push(format!("the two older versions ended {:?} and {:?}, not both superseded", status(&a), status(&b)));
     }
-    if status(&s) != Some(MemoryStatus::Committed) || status(&w) != Some(MemoryStatus::Committed) {
-        problems.push(format!("the fact about the sister ended {:?} and the unrelated fact {:?}", status(&s), status(&w)));
+    let named = get(morgan.id).await?;
+    if status(&s) != Some(MemoryStatus::Committed) || status(&w) != Some(MemoryStatus::Committed) || status(&named) != Some(MemoryStatus::Committed) {
+        problems.push(format!("the fact about the sister ended {:?}, the one about Morgan {:?} and the unrelated fact {:?}", status(&s), status(&named), status(&w)));
+    }
+    // Each retired record has its own audit event, not only the predecessor.
+    let log = base.store.audit_log(&tenant, 400).await?;
+    for (name, id) in [("first", first.id), ("second", second.id)] {
+        let predecessor = f.as_ref().and_then(|m| m.supersedes) == Some(id);
+        let audited = log.iter().any(|a| a.action == "memory.supersede" && (a.memory_id == Some(id) || (predecessor && a.memory_id == Some(fix.id))));
+        if !audited {
+            problems.push(format!("no audit event names the {name} retired version"));
+        }
     }
     let hits = base
         .recall(RecallRequest { subject: Some(subject.into()), query: "Which city do I live in?".into(), k: Some(5), actor: Some("bench".into()), ..Default::default() })
@@ -327,7 +353,7 @@ async fn corrections(base: &Engine, subject: &str) -> Outcome {
         problems.push(format!("a recall returned {:?}", hits.iter().map(|h| h.memory.content.as_str()).collect::<Vec<_>>()));
     }
     let value = format!("older versions: {:?}, {:?}; sister's: {:?}", status(&a), status(&b), status(&s));
-    Ok(verdict(problems, value, "both older versions superseded and linked; the sister's and the unrelated fact untouched"))
+    Ok(verdict(problems, value, "both older versions superseded, linked and audited; the sister's, Morgan's and the unrelated fact untouched"))
 }
 
 /// An extractor that repeats each round of the conversation as one fact citing that round.
@@ -377,7 +403,10 @@ async fn ingested_replay(base: &Engine) -> Outcome {
     let tenant = base.cfg.memory.tenant.clone();
     let suite = crate::suites::parse(REPLAY_SUITE, "ingested.yaml")?;
     // Without enrichment there is nothing to score: the replay says so.
-    match base.eval_replay_as(&tenant, &suite, None, EvalTrigger::Manual, ReplayMode::Ingest).await {
+    let mut off = (*base.cfg).clone();
+    off.enrich.enabled = false;
+    let disabled = base.clone().reconfigure(off).with_chat(None);
+    match disabled.eval_replay_as(&tenant, &suite, None, EvalTrigger::Manual, ReplayMode::Ingest).await {
         Err(e) if format!("{e:#}").contains("needs enrichment") => {}
         Err(e) => problems.push(format!("without enrichment the replay failed otherwise: {e:#}")),
         Ok(_) => problems.push("without enrichment an ingested replay was scored".into()),
@@ -396,11 +425,14 @@ async fn ingested_replay(base: &Engine) -> Outcome {
     if (c.held, c.held_committed) != (2, 0) {
         problems.push(format!("{} of {} held statements committed", c.held_committed, c.held));
     }
-    if (c.questions, c.found) != (2, 2) || (c.corrected_questions, c.stale_returned) != (1, 0) {
-        problems.push(format!("{} of {} questions found their fact; {} of {} corrected ones got a stale version", c.found, c.questions, c.stale_returned, c.corrected_questions));
-    }
-    if c.stored != c.stored_true {
-        problems.push(format!("{} extracted facts are live, {} of them current", c.stored, c.stored_true));
+    // An extracted fact supersedes another only at the plain threshold, so the Tallinn fact may
+    // still be live: the replay must then count it, as a stale record and a stale answer.
+    let stale_live = c.stored - c.stored_true;
+    if (c.questions, c.found, c.corrected_questions) != (2, 2, 1) || stale_live > 1 || c.stale_returned != stale_live {
+        problems.push(format!(
+            "{} of {} questions found their fact; {} of {} corrected ones got a stale version, with {stale_live} stale fact(s) live",
+            c.found, c.questions, c.stale_returned, c.corrected_questions
+        ));
     }
     let value = format!(
         "facts {}/{}, held committed {}/{}, found {}/{}, stale {}/{}",

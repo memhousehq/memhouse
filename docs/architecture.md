@@ -125,9 +125,11 @@ flowchart LR
 7. **Insert** (`Store::apply_intake`): against what is stored, a near-duplicate (cosine ≥ 0.97,
    same kind, not for structured records) is `rejected` with `metadata.duplicate_of`; an explicit
    revision supersedes its predecessor or is rejected if that is no longer current; a statement
-   with a correction marker supersedes the closest older record of its kind it corrects (cosine
-   ≥ `marked_correction_threshold`, a shared content word, no other person named, not newer
-   than itself) and any further older version halfway to `correction_threshold` or closer, and a statement that restates a record with a
+   whose text has a correction marker supersedes the closest older record of its kind it
+   corrects (cosine ≥ `marked_correction_threshold`, a shared content word, not newer than
+   itself; below `correction_threshold` it must also name every name the old record names and
+   no other person) and any further older version halfway to `correction_threshold` or closer,
+   each with its own audit event, and a statement that restates a record with a
    changed value supersedes the closest such record (cosine ≥ `correction_threshold`);
    enrichment facts only supersede enrichment facts; a completed
    event commits the unexpired held plans in its scope it fulfils (`metadata.confirmed_by`;

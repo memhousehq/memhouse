@@ -1465,12 +1465,13 @@ which is named.
 - **Result (2026-11-20), first session: what could be built and measured without a model key.**
   - **Corrections supersede what they correct.** A statement with a correction marker now
     supersedes the closest older record at cosine 0.6 (`[intake] marked_correction_threshold`;
-    it was 0.8 for everything) and any further older version at 0.7; below 0.8 it must name no
-    person the old record does not. An unmarked value update keeps 0.8, and a fact extracted by
-    enrichment supersedes the closest version only. On the 500-conversation reference suite the
-    share of questions about a corrected fact that get a stale version fell from 76.2% to
-    **14.0%** [12.3–15.7]; storage F1 86.8 → 97.4, retrieval F1 90.4 → 97.7. The five starter
-    suites: stale share 74–92% → 15–28% ([benchmarks.md](benchmarks.md#synthetic-timeline-suites)).
+    it was 0.8 for everything) and any further older version at 0.7, each with its own audit
+    event; below 0.8 it must name no person the old record does not, and the name the old
+    record leads with. An unmarked value update, a statement only a model read as a correction,
+    and a fact extracted by enrichment keep 0.8 and the closest record. On the 500-conversation
+    reference suite the share of questions about a corrected fact that get a stale version fell
+    from 76.2% to **14.4%** [12.6–16.1]; storage F1 86.8 → 97.3, retrieval F1 90.4 → 97.6. The
+    five starter suites: stale share 74–92% → 15–34% ([benchmarks.md](benchmarks.md#synthetic-timeline-suites)).
     The cost: storage recall on the reference suite 99.98% → 99.7% (about 30 current facts of
     10,289 retired wrongly). Sweeping every older version at 0.6 gave 13.4% stale but recall
     99.1%, so it was not kept. What is left is mostly a change stated with no marker and no old
@@ -1499,7 +1500,7 @@ which is named.
     make its "worse" engine.
   - **Guard: T2, $0** (extractions from the cache), with `--skip-latency` on a loaded machine:
     governance 66 of 66; LongMemEval_S 91.3 / 94.2 / 84.8; LoCoMo 78.8 / 78.7 / 59.2; LoCoMo
-    with extraction 79.1 / 65.6 (79.3 / 65.6 before this change; limits 78.6 / 65.0); the
+    with extraction 79.3 / 65.6, as before this change; the
     starter suite storage F1 97.6, retrieval F1 97.5, 84.9% of the questions about a corrected
     fact answered without a stale version, 100% of plans and guesses not committed. Those
     three starter values are the new baselines.
@@ -1510,6 +1511,19 @@ which is named.
     and multi-session aggregation are not started: both change what the answer model sees,
     and that can only be judged by a QA run. TR-IN-05's batching across sessions (several
     short sessions in one call) is not built.
+  - **Review fixes (2026-11-20, pull request 30).** The lower correction bar needs the marker
+    in the text (a model's reading does not lower it) and is not applied to extracted facts,
+    which restored LoCoMo with extraction to its earlier value; a record that leads with a name
+    is retired only by a correction that names it; a marked correction looks at 20 neighbours,
+    not 5, and every record it retires has an audit event. The large model cannot release a
+    hold of the small one. The cap on escalated sessions counts a session once however often
+    its job is retried, and with `max_cost_usd` set the large model stops being called once a
+    call reports no cost. An ingested replay claims its own subject's extraction jobs only
+    (`Store::enrich_claim_for`), counts a fact for a turn only when it restates the turn, keeps
+    one spend counter for the whole run, and reports every extracted fact in its outcomes.
+    `[intake.large_llm]` and `[enrich.large_llm]` tables keep their tier's defaults for keys
+    left out. Not changed: the default key variable of the large extraction model stays the
+    same as the small one's.
 
 ### Stage D — Lite profile and developer launch
 

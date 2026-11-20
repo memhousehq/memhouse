@@ -2554,6 +2554,38 @@ impl Store for PgStore {
             .collect()
     }
 
+    async fn enrich_claim_for(&self, tenant: &str, subject: &str, limit: usize, lease_secs: i64) -> anyhow::Result<Vec<EnrichJob>> {
+        let rows = sqlx::query(
+            "UPDATE mh_enrich_job j SET status = 'running', attempts = j.attempts + 1, \
+               locked_until = now() + make_interval(secs => $2) \
+             WHERE j.id IN (SELECT c.id FROM mh_enrich_job c \
+               WHERE c.tenant = $3 AND c.subject = $4 \
+                 AND ((c.status = 'pending' AND c.run_after <= now()) OR (c.status = 'running' AND c.locked_until < now())) \
+                 AND NOT EXISTS (SELECT 1 FROM mh_enrich_job o WHERE o.tenant = c.tenant AND o.subject = c.subject \
+                                 AND o.status IN ('pending', 'running') AND o.id < c.id) \
+               ORDER BY c.id LIMIT $1 FOR UPDATE SKIP LOCKED) \
+             RETURNING j.id, j.tenant, j.subject, j.session_id, j.round_ids, j.attempts",
+        )
+        .bind(limit as i64)
+        .bind(lease_secs as f64)
+        .bind(tenant)
+        .bind(subject)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(EnrichJob {
+                    id: r.try_get("id")?,
+                    tenant: r.try_get("tenant")?,
+                    subject: r.try_get("subject")?,
+                    session_id: r.try_get("session_id")?,
+                    round_ids: r.try_get("round_ids")?,
+                    attempts: r.try_get("attempts")?,
+                })
+            })
+            .collect()
+    }
+
     async fn enrich_finish(&self, id: i64, cache_key: Option<&str>, outcome: &EnrichOutcome) -> anyhow::Result<()> {
         // The lag is measured in the database so it is not skewed by the worker's clock.
         sqlx::query(

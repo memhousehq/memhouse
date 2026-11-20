@@ -508,6 +508,9 @@ pub struct EnrichTiers {
     pub capped: usize,
     /// Rounds of the sessions with a job: a session needs at most one model call per tier.
     pub rounds: usize,
+    /// Model calls made in this run (none for an extraction served from the cache).
+    #[serde(default)]
+    pub calls: usize,
     /// Mean extraction confidence of the sessions a model read.
     pub mean_confidence: f64,
     /// Sessions whose confidence was below 0.5, 0.6 and 0.7.
@@ -595,6 +598,7 @@ pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> 
                     large: tier("large"),
                     capped: jobs.iter().filter(|j| j.capped).count(),
                     rounds: jobs.iter().map(|j| j.rounds).sum(),
+                    calls: jobs.iter().map(|j| j.calls as usize).sum(),
                     mean_confidence: if conf.is_empty() { 0.0 } else { conf.iter().sum::<f64>() / conf.len() as f64 },
                     below: [0.5, 0.6, 0.7].map(|t| conf.iter().filter(|c| **c < t).count()),
                 }

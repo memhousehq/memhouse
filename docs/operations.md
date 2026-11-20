@@ -612,12 +612,14 @@ per recall. The governance check `telemetry_overhead` measures it on every guard
 | `memhouse_intake_ack_seconds`, `memhouse_intake_duration_seconds`, `memhouse_intake_freshness_seconds` | | time to the durable acknowledgement (PERF-03), to run the pipeline, and from acknowledgement to stored (PERF-04) |
 | `memhouse_intake_total`, `memhouse_intake_refused_total` | outcome: ok, retry, dead | pipeline runs; writes refused because they could not be queued |
 | `memhouse_gate_statements_total`, `memhouse_gate_corrections_total` | statement | what the gate read writes as; corrections that superseded a record |
-| `memhouse_gate_tier_total`, `memhouse_gate_tier_capped_total` | tier: rules, small, large | the tiered classifier: which tier decided each statement, and large-model reads refused by the tenant's cap (ECON-04) |
+| `memhouse_gate_tier_total` | tier: rules, small, large | the tiered classifier: which tier decided each statement (ECON-04) |
+| `memhouse_gate_tier_capped_total` | | large-model reads refused by the tenant's cap |
 | `memhouse_recall_degraded_total` | | recalls answered empty and flagged after a failure or timeout (PERF-07) |
 | `memhouse_refused_total` | kind: auth, access; reason | 401s by reason, 403s by rule |
 | `memhouse_enrich_jobs`, `memhouse_enrich_queue_lag_seconds` | state | queue depth and the age of the oldest pending job |
 | `memhouse_enrich_cost_usd_total`, `memhouse_enrich_tokens_total` | type | LLM spend |
-| `memhouse_enrich_tier_total`, `memhouse_enrich_tier_capped_total` | tier: rules, small, large | sessions by the tier that produced their facts, and escalations held back by the tenant's share |
+| `memhouse_enrich_tier_total` | tier: rules, small, large | sessions by the tier that produced their facts |
+| `memhouse_enrich_tier_capped_total` | | escalations held back by the tenant's share |
 | `memhouse_build_info` | version, api_version | |
 
 ```yaml
