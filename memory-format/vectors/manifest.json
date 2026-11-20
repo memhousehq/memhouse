@@ -34,7 +34,12 @@
     {
       "file": "invalid-newer-schema.jsonl",
       "error": "written for schema",
-      "note": "format v2 from a schema newer than any reader knows: refused at the header, before the record with its unknown field is read"
+      "note": "a valid v2 file but for its schema version, newer than any reader knows: refused at the header"
+    },
+    {
+      "file": "invalid-header-without-schema.jsonl",
+      "error": "schema_version",
+      "note": "a v2 header without schema_version: refused, not read as an old file"
     },
     {
       "file": "invalid-not-memhouse.jsonl",

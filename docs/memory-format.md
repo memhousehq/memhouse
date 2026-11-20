@@ -36,8 +36,8 @@ naming a `memory_id` comes after that record. Writers use the order above.
 | Field | Type | Notes |
 |---|---|---|
 | `format` | `"memhouse.memory"` | required |
-| `version` | `2` | the format version; a reader refuses a version it doesn't know |
-| `schema_version` | integer | the [logical schema](schema.md) version of the writer; a reader refuses a schema newer than it knows ([below](#additions-within-a-version)) |
+| `version` | `2` | required; the format version; a reader refuses a version it doesn't know |
+| `schema_version` | integer | required; the [logical schema](schema.md) version of the writer; a reader refuses a schema newer than it knows ([Additions within a version](#additions-within-a-version)) |
 | `producer` | text | e.g. `memhouse 2.0.0` |
 | `exported_at` | RFC 3339 | |
 | `tenant` | text | the tenant exported |
@@ -86,20 +86,9 @@ Fields in this order; optional fields are left out when empty.
 | `created_at`, `updated_at` | RFC 3339 | yes | `updated_at` not before `created_at` |
 
 Unknown fields and unknown line types are **errors**, not ignored: a v2 reader can't silently drop
-what a newer writer added.
-
-### Additions within a version
-
-Within a format version, an addition comes with a new schema version: a new optional field, a new
-value of an enumerated field, or a new input to a key. The tables mark each one "from schema N".
-The header carries the writer's schema version, and a reader that knows the format up to schema N
-**refuses, at the header, a file whose `schema_version` is greater than N**. So a reader never
-meets a field it doesn't know in a file it accepted, and the rule above still holds: inside an
-accepted file, an unknown field is an error. A reader reads the files of every earlier schema of
-the version; an addition is never required in them.
-
-A change that an older reader of the same version could not refuse this way comes with a new
-format version.
+what a newer writer added. This holds for every line of a v2 file and every object in it, with
+one exception: the header's `embedder` object is informational, and a reader may ignore members
+of it that it doesn't know.
 
 ### Content hash
 
@@ -133,6 +122,28 @@ import reports how many).
 | `created_by` | text | yes | |
 | `created_at` | RFC 3339 | yes | |
 
+## Additions within a version
+
+`schema_version` is the number of the writer's [logical schema](schema.md). It advances with
+every change of the schema, whether or not the change touches the format. Of the schemas so far,
+7 and 9 added to version 2; the others changed nothing in a file. Each addition is marked "from
+schema N" where it is described.
+
+Within a format version, a change to the format comes with a new schema version, and a reader
+that knows the format up to schema N **refuses, at the header, every file whose `schema_version`
+is greater than N**, whether or not that schema changed the format (it can't know). So a reader
+never meets something it doesn't know in a file it accepted, and the unknown-field rule is never
+the only thing that stops it. A writer puts in the header the newest schema whose additions it
+may have written.
+
+A reader reads the files of every earlier schema of the version as they are: nothing added later
+is required in them. It need not check that a field or value appears only from its schema
+(`language` in a file marked schema 7 is read).
+
+A new format version is needed when that can no longer hold: when files of the earlier schemas
+could not be read as they are (a field removed, renamed or made required), or when the header
+itself changes.
+
 ## Canonical form
 
 Writers emit each line canonically, so export → import → export reproduces every line byte for
@@ -160,7 +171,8 @@ Files written before schema v2 have the header `{"format":"memhouse.memory","ver
 "exported_at":…,"embedder":"<id>"}` and one serialized record per line, without `type`. They are
 read and upgraded with the [v1 rules](schema.md#upgrading-from-v1): provenance from `source`, the
 policy `legacy-v1`, `content_hash` computed, `superseded_by` taken from the record in the file
-that supersedes it, `updated_at` set to `created_at`.
+that supersedes it, `updated_at` set to `created_at`. The unknown-field rule is a v2 rule: a
+field of a v1 record that the reader doesn't know is ignored.
 
 ## Conformance
 
