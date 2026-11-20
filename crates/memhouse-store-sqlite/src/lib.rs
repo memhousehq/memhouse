@@ -44,12 +44,54 @@ pub struct SqliteStore {
     prefilter: Option<(usize, usize)>,
 }
 
+/// The directory a database lives in: created for the user alone when it is missing; refused
+/// when it belongs to someone else or others may write to it. A database file is only as
+/// trustworthy as the directory that can hold its journal.
+pub fn private_dir(dir: &Path) -> anyhow::Result<()> {
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).map_err(|e| anyhow::anyhow!("cannot create the database directory {}: {e}", dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(dir)?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        anyhow::ensure!(meta.is_dir() && meta.uid() == me, "the database directory {} does not belong to this user: the Lite store only opens a database in a directory of its own user", dir.display());
+        anyhow::ensure!(
+            meta.mode() & 0o022 == 0,
+            "the database directory {} can be written by other users (mode {:o}): close it first, for example `chmod 700 {}`",
+            dir.display(),
+            meta.mode() & 0o777,
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
 impl SqliteStore {
     /// Open (or create) the database file. Writes are durable when they return (TR-LT-05):
     /// WAL with `synchronous = FULL`, and a full flush to the device where the OS tells the two
     /// apart (macOS).
+    ///
+    /// The file's directory must be the user's own and closed to others (see [`private_dir`]):
+    /// SQLite trusts the `-wal` and `-shm` files it finds beside a database, so nobody else may
+    /// be able to put one there.
     pub fn open(path: &Path, passage_prefix: &str) -> anyhow::Result<SqliteStore> {
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        private_dir(dir)?;
         let conn = Connection::open(path).map_err(|e| anyhow::anyhow!("cannot open the SQLite database {}: {e}", path.display()))?;
+        // The memories are the user's alone: no other account reads the file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA checkpoint_fullfsync = ON;")?;
         Self::with_connection(conn, passage_prefix)
     }

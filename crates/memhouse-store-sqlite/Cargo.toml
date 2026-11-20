@@ -20,6 +20,10 @@ hex.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
 half = "2"
 
+[target.'cfg(unix)'.dependencies]
+# geteuid, for the check that the database's directory belongs to the user.
+libc = "0.2"
+
 [dev-dependencies]
 memhouse-conformance.workspace = true
 tokio.workspace = true

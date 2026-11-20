@@ -56,6 +56,9 @@ enum Cmd {
         /// Use-case template: personal, coding, support, sales, success
         #[arg(long)]
         template: Option<String>,
+        /// The Lite profile: one SQLite file under MEMHOUSE_HOME, no Docker and no database server
+        #[arg(long)]
+        lite: bool,
     },
     /// Stop the managed Postgres container (data is kept)
     Down,
@@ -366,10 +369,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let cfg_path = cli.config.clone();
     let path_or_default = cfg_path.clone().unwrap_or_else(default_config_path);
     match cli.cmd {
-        Cmd::Up { port, name, template } => {
+        Cmd::Up { port, name, template, lite } => {
             let mut cfg = if path_or_default.exists() { Config::load(Some(&path_or_default))? } else { Config::default() };
             let fresh = !path_or_default.exists();
-            if fresh || up::managed(&cfg).is_some() {
+            let is_lite = memhouse_server::sqlite_path(&cfg.database.url).is_some();
+            anyhow::ensure!(!lite || fresh || is_lite, "{} already configures a Postgres database; `memhouse up --lite` only sets up a new installation", path_or_default.display());
+            if lite && fresh {
+                // Lite: the database is one file beside the configuration. One model session
+                // keeps the embedder within its memory budget (ADR 0002).
+                cfg.database.url = format!("sqlite:{}", memhouse_core::config::home_dir().join("memhouse.db").display());
+                cfg.database.container = None;
+                cfg.embedding.sessions = 1;
+                cfg.server.api_keys = vec![format!("mh_{}", random_token(32))];
+            } else if is_lite {
+                eprintln!("Using the SQLite database from {}.", path_or_default.display());
+            } else if fresh || up::managed(&cfg).is_some() {
                 let password = if fresh { random_token(24) } else { cfg.database.url.split(':').nth(2).and_then(|s| s.split('@').next()).unwrap_or("memhouse").to_string() };
                 let container = if fresh { name.clone() } else { up::managed(&cfg).unwrap_or(up::CONTAINER).to_string() };
                 let url = up::start(&container, port, &password, fresh)?;
@@ -391,11 +405,16 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             eprintln!("Loading the embedding model ({}) and preparing the schema ...", cfg.embedding.model);
             let eng = engine(Config::load(Some(&path))?).await?;
             let st = eng.store.stats(&eng.cfg.memory.tenant).await?;
-            println!("✓ Postgres ready, schema migrated, {} memories stored", st.committed);
+            let which = if memhouse_server::sqlite_path(&eng.cfg.database.url).is_some() { "SQLite file" } else { "Postgres" };
+            println!("✓ {which} ready, schema migrated, {} memories stored", st.committed);
             print_next_steps(&path);
         }
         Cmd::Down => {
             let cfg = Config::load(cfg_path.as_deref())?;
+            if memhouse_server::sqlite_path(&cfg.database.url).is_some() {
+                println!("The Lite profile runs no database server: there is nothing to stop.");
+                return Ok(());
+            }
             up::stop(up::managed(&cfg).unwrap_or(up::CONTAINER))?
         }
         Cmd::Init { database_url, template, embedding, model, dim, base_url, api_key_env, request_dimensions, force } => {
@@ -638,8 +657,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             use memhouse_core::reembed;
             let cfg = Config::load(cfg_path.as_deref())?;
             if abort {
-                let store = memhouse_store_postgres::PgStore::connect(&cfg.database.url, 2, "").await?;
-                let had = memhouse_core::Store::reembed_abort(&store).await?;
+                let store = memhouse_server::open_store(&cfg, 2).await?;
+                let had = store.reembed_abort().await?;
                 println!("{}", if had { "✓ unfinished re-embedding dropped; the current vectors are unchanged" } else { "nothing to abort" });
                 return Ok(());
             }
