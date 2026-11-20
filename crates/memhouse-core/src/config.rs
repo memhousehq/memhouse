@@ -620,7 +620,22 @@ impl Config {
         };
         cfg.apply_env();
         cfg.check_floor().map_err(|e| anyhow::anyhow!("{e} (config {})", path.display()))?;
+        cfg.check_ranges().map_err(|e| anyhow::anyhow!("{e} (config {})", path.display()))?;
         Ok(cfg)
+    }
+
+    /// Shares and thresholds are fractions: `30` for 30% is an error, not a cap of 100%.
+    pub fn check_ranges(&self) -> anyhow::Result<()> {
+        for (name, v) in [
+            ("intake.large_max_share", self.intake.large_max_share),
+            ("intake.small_below", self.intake.small_below),
+            ("intake.large_below", self.intake.large_below),
+            ("enrich.large_max_share", self.enrich.large_max_share),
+            ("enrich.escalate_below", self.enrich.escalate_below),
+        ] {
+            anyhow::ensure!(v.is_finite() && (0.0..=1.0).contains(&v), "{name} must be a fraction from 0 to 1, not {v}");
+        }
+        Ok(())
     }
 
     /// The security baseline configuration can't lower (TR-CORE-05, AP-10): `secret` is always
@@ -722,6 +737,11 @@ mod tests {
         assert_eq!(cfg.enrich.large_llm.api_key_env.as_deref(), Some("MY_KEY"));
         assert_eq!((&cfg.enrich.large_llm.base_url, &cfg.enrich.large_llm.model, cfg.enrich.large_llm.max_tokens), (&d.base_url, &d.model, d.max_tokens));
         assert_eq!((cfg.intake.large_llm.model.as_str(), cfg.intake.large_llm.max_tokens, &cfg.intake.large_llm.base_url), ("my-large", i.max_tokens, &i.base_url));
+        // A share is a fraction: 30 for 30% is refused, with the key's name.
+        let mut wrong = Config::default();
+        wrong.intake.large_max_share = 30.0;
+        assert!(wrong.check_ranges().unwrap_err().to_string().contains("intake.large_max_share must be a fraction"));
+        Config::default().check_ranges().unwrap();
         // Left out altogether: the same defaults.
         let none: Config = toml::from_str("").unwrap();
         assert_eq!(none.enrich.large_llm.base_url, d.base_url);

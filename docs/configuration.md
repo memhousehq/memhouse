@@ -367,11 +367,11 @@ answer, and workers pick up whatever a crash or a failure left behind.
 | `large_llm` | `gpt-4o`, 60 tokens | an `LlmConfig` table: the large model of `tiered` |
 | `small_below` | 0.7 | `tiered`: the small model reads a statement when the rules' confidence is below this (the rules give 0.8 on a marker, 0.6 without one) |
 | `large_below` | 0.6 | `tiered`: the large model reads a statement when the small model's confidence is below this |
-| `large_max_share` | 0.3 | `tiered`: the largest share of a tenant's classified writes that may reach the large model; past it the small model's reading stands |
+| `large_max_share` | 0.3 | `tiered`: the largest share of a tenant's classified writes that may reach the large model, a fraction from 0 to 1 (another value is refused at start); past it the small model's reading stands |
 | `large_max_per_day` | 0 | `tiered`: the most large-model reads per tenant and day (UTC); 0 = no daily cap |
 | `plan_ttl_days` | 90 | a held plan or speculation without `valid_to` expires after this many days unconfirmed |
 | `correction_threshold` | 0.8 | cosine at or above which a statement that restates a record with a changed value ("three bikes" → "four bikes") supersedes the closest such record |
-| `marked_correction_threshold` | 0.6 | cosine at or above which a statement with a correction marker ("no longer", "actually", "correction:") supersedes the closest older record it corrects, and any further older version at or above the midpoint of the two thresholds (0.7). The marker must be in the text (a model's reading is not enough); the two must share a content word; and below `correction_threshold` the correction must name every name the old record names and no other person. A fact extracted by enrichment keeps `correction_threshold` and supersedes the closest record only |
+| `marked_correction_threshold` | 0.6 | cosine at or above which a statement with a correction marker ("no longer", "actually", "correction:") supersedes the closest older record it corrects, and any further older version at or above the midpoint of the two thresholds (0.7). The marker must be in the text (a model's reading is not enough); the two must share a content word; and below `correction_threshold` they must be about the same one (no relative or animal word on one side only, and a name that either statement leads with must appear in the other). A fact extracted by enrichment keeps `correction_threshold` and supersedes the closest record only |
 | `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word and the scope; speculation is never confirmed), and at which an inferred preference counts as the same signal again |
 | `preference_signals` | 2 | times an inferred preference (a write with `metadata.signal = true`) must be seen, in the same scope, before it is committed; 1 commits it at once |
 
@@ -379,9 +379,11 @@ answer, and workers pick up whatever a crash or a failure left behind.
 
 With `classifier = "tiered"` the gate uses the cheapest reader that is sure (ECON-04):
 
-1. **The rules** read every statement, for free. A statement with a marker ("plans to",
-   "might", "prefers", "no longer") is decided here.
-2. **The small model** (`[intake.llm]`) reads a statement the rules found no marker in.
+1. **The rules** read every statement, for free. What they hold as a plan or a guess is
+   decided here, and so is any statement they are at least `small_below` sure of: with the
+   defaults, every statement with a marker ("prefers", "no longer"), which scores 0.8.
+2. **The small model** (`[intake.llm]`) reads a statement the rules do not hold and are less
+   sure of than `small_below`: with the defaults, one they found no marker in (0.6).
 3. **The large model** (`[intake.large_llm]`) reads it only when the small model's own
    confidence is below `large_below`, and only while the tenant is within `large_max_share` of
    its classified writes and `large_max_per_day`.
@@ -417,8 +419,9 @@ and [operations.md](operations.md#enrichment-workers) for running it.
 | `large_max_share` | 0.3 | the largest share of a tenant's extracted sessions (per process) that may go to the large model; past it the small model's facts stand |
 
 Extraction is tiered too (ECON-04, SCALE-08). A session with less user text than
-`min_user_chars` is skipped by a rule, without a model. Every other session is read once by
-`[enrich.llm]`: one call per session, however many turns it has. Each extracted fact gets a
+`min_user_chars` is skipped by a rule, without a model. Every other session is read as a whole
+by `[enrich.llm]`: the session is the unit of extraction, however many turns it has. That is one
+provider call unless the answer is in the cache (none) or an attempt fails and is retried. Each extracted fact gets a
 **confidence** from 0.3 to 0.95: the part of its content words found in the rounds it cites (a
 fact that cites no round is compared with the whole session and loses a tenth). It is stored in
 the record's `confidence`. A session's confidence is the mean of its facts'; an answer cut at the

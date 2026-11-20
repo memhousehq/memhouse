@@ -228,8 +228,10 @@ impl TieredClassifier {
 
     /// Take one large-model read from the tenant's cap, if it has one left.
     fn take_large(&self, tenant: &str) -> bool {
-        let today = chrono::Utc::now().timestamp().div_euclid(86_400);
         let mut used = self.used.lock().expect("tier use");
+        // Read under the lock: a caller that sampled the day before midnight and got the lock
+        // after it would otherwise reset the new day's count.
+        let today = chrono::Utc::now().timestamp().div_euclid(86_400);
         let u = used.entry(tenant.to_string()).or_default();
         if u.day != today {
             u.day = today;
@@ -288,8 +290,9 @@ impl Classifier for TieredClassifier {
         }
         match Self::ask(large, text, kind, lang).await {
             // No tier releases a hold of the tier below it: what the small model read as a
-            // plan or a guess stays held, whatever the large model reads.
-            Some(second) if first.statement.held() && !second.statement.held() => {
+            // plan or a guess stays held, whatever the large model reads. Nor does it turn a
+            // guess into a plan, which a later event could confirm.
+            Some(second) if first.statement.held() && caution(first.statement) < caution(second.statement) => {
                 tier("large");
                 Ok(Classification { reason: format!("{} (held; {} read {})", first.reason, second.reason, second.statement.as_str()), ..first })
             }
@@ -409,12 +412,24 @@ impl ValueRules {
         }
         let plain = |w: &str| self.stop.contains(w) || self.value_stop.contains(w) || self.months.contains(w) || self.function.contains(w);
         let lead = old.split(|c: char| !c.is_alphanumeric()).find(|w| w.chars().count() >= 3 && !plain(&w.to_lowercase()));
-        match lead.filter(|w| w.chars().next().is_some_and(|c| c.is_uppercase())) {
-            // By its first letters, so "Tests run with pytest" is met by "the test runner".
-            Some(name) => {
-                let stem: String = name.to_lowercase().chars().take(4).collect();
-                new.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(&stem))
+        let named = |w: &&str| w.chars().next().is_some_and(|c| c.is_uppercase());
+        // The name itself, or, written in lower case, a word with its first letters: "Tests run
+        // with pytest" is met by "the test runner", "Alice" is not met by "Alicia".
+        let mentions = |text: &str, name: &str| {
+            let (lower, stem) = (name.to_lowercase(), name.to_lowercase().chars().take(4).collect::<String>());
+            text.split(|c: char| !c.is_alphanumeric()).any(|w| w.to_lowercase() == lower || (w.chars().next().is_some_and(|c| c.is_lowercase()) && w.starts_with(&stem)))
+        };
+        if let Some(name) = lead.filter(named) {
+            if !mentions(new, name) {
+                return false;
             }
+        }
+        // The other way round: a correction that leads with a name the old record never
+        // mentions is about someone else ("Taylor lives in Dublin" does not retire "I live in
+        // Tallinn").
+        let new_lead = new.split(|c: char| !c.is_alphanumeric()).find(|w| w.chars().count() >= 3 && !plain(&w.to_lowercase()));
+        match new_lead.filter(named) {
+            Some(name) => mentions(old, name),
             None => true,
         }
     }
@@ -551,10 +566,17 @@ mod tests {
         assert!(!v.same_topic("Morgan lives in Tallinn.", "Actually I moved, I live in Dublin now, not Tallinn."));
         // A record that leads with no name is about the speaker: the old value need not be repeated.
         assert!(v.same_topic("I live in Lisbon.", "The move is done: I live in Porto now."));
-        assert!(v.same_topic("Dana Novak habite à Porto.", "Korrektur: Dana Novak wohnt jetzt in Berlin."));
+        // (The engine takes a leading marker off first: `Languages::without_leading_marker`.)
+        assert!(v.same_topic("Dana Novak habite à Porto.", "Dana Novak wohnt jetzt in Berlin."));
+        assert_eq!(english.without_leading_marker("Correction: my hobby is pottery."), "my hobby is pottery.");
+        assert_eq!(english.without_leading_marker("Morgan lives in Tallinn."), "Morgan lives in Tallinn.");
         // A function word that starts a sentence is not a name.
         assert!(v.same_topic("Our dog's name is Olive.", "Correction: the dog is called Pixel, not Olive."));
         assert!(v.same_topic("The office is on the third floor.", "Actually the office is on the fourth floor now."));
+        // Names are compared whole, and a name the correction leads with must be in the old record.
+        assert!(!v.same_topic("Alice lives in Tallinn.", "Actually, Alicia lives in Dublin, not Tallinn."));
+        assert!(!v.same_topic("I live in Tallinn.", "Actually, Taylor lives in Dublin, not Tallinn."));
+        assert!(v.same_topic("I live in Tallinn.", "Actually I moved, I live in Dublin now, not Tallinn."));
         // Nor is a marker that opens the old record, or an ordinary noun the correction repeats.
         assert!(v.same_topic("Correction: my hobby is pottery, not woodworking.", "I no longer do pottery; my hobby is beekeeping now."));
         assert!(v.same_topic("Tests run with pytest.", "Correction: the test runner is unittest, not pytest."));
@@ -671,6 +693,10 @@ mod tests {
         let passes = fixed("small", r#"{"statement": "fact", "confidence": 0.4}"#);
         let t = TieredClassifier::new(&cfg, Some(passes), Some(fixed("large", r#"{"statement": "speculation", "confidence": 0.9}"#)));
         assert_eq!(t.classify_for("c", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap().statement, Statement::Speculation);
+        // A guess of the small model does not become a plan, which an event could confirm.
+        let guesses = fixed("small", r#"{"statement": "speculation", "confidence": 0.4}"#);
+        let t = TieredClassifier::new(&cfg, Some(guesses), Some(fixed("large", r#"{"statement": "plan", "confidence": 0.9}"#)));
+        assert_eq!(t.classify_for("d", "Dana is a nurse at the city hospital.", MemoryKind::Semantic, &lang).await.unwrap().statement, Statement::Speculation);
     }
 
     #[test]

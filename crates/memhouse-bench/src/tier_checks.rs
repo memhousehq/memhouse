@@ -179,10 +179,16 @@ async fn gate_tiers(base: &Engine, subject: &str) -> Outcome {
     // A hold of the small model is not released by the large one.
     let held_small = Stub::new("stub:small", &[serde_json::json!({ "statement": "plan", "confidence": 0.3 }).to_string()]);
     let open = memhouse_core::config::IntakeConfig { large_max_share: 1.0, ..icfg.clone() };
-    let e4 = base.clone().with_classifier(Arc::new(TieredClassifier::new(&open, Some(held_small), Some(Stub::new("stub:large", &[fact(0.99)])))));
+    let releasing = Stub::new("stub:large", &[fact(0.99)]);
+    let e4 = base.clone().with_classifier(Arc::new(TieredClassifier::new(&open, Some(held_small.clone()), Some(releasing.clone()))));
     let r4 = write(&e4, subject, "Priya's desk moves to the fourth floor.").await?;
-    if r4.status != MemoryStatus::Candidate {
-        problems.push(format!("a statement the small model held and the large model called a fact ended {}", r4.status.as_str()));
+    if r4.status != MemoryStatus::Candidate || (held_small.calls(), releasing.calls()) != (1, 1) {
+        problems.push(format!(
+            "a statement the small model held and the large model called a fact ended {} ({} small-model and {} large-model calls)",
+            r4.status.as_str(),
+            held_small.calls(),
+            releasing.calls()
+        ));
     }
     let sub = format!("{subject}-down");
     let (plan, plain) = (write(&e3, &sub, HELD[0]).await?, write(&e3, &sub, PLAIN[0]).await?);
@@ -339,7 +345,11 @@ async fn corrections(base: &Engine, subject: &str) -> Outcome {
     let log = base.store.audit_log(&tenant, 400).await?;
     for (name, id) in [("first", first.id), ("second", second.id)] {
         let predecessor = f.as_ref().and_then(|m| m.supersedes) == Some(id);
-        let audited = log.iter().any(|a| a.action == "memory.supersede" && (a.memory_id == Some(id) || (predecessor && a.memory_id == Some(fix.id))));
+        let names = |v: &serde_json::Value, other: uuid::Uuid| v.as_str() == Some(other.to_string().as_str());
+        let audited = log.iter().any(|a| {
+            a.action == "memory.supersede"
+                && ((a.memory_id == Some(id) && names(&a.detail["superseded_by"], fix.id)) || (predecessor && a.memory_id == Some(fix.id) && names(&a.detail["supersedes"], id)))
+        });
         if !audited {
             problems.push(format!("no audit event names the {name} retired version"));
         }
@@ -414,7 +424,9 @@ async fn ingested_replay(base: &Engine) -> Outcome {
     let mut cfg = (*base.cfg).clone();
     cfg.enrich.enabled = true;
     cfg.enrich.min_user_chars = 1;
-    let e = base.clone().reconfigure(cfg).with_chat(Some(Arc::new(Echo)));
+    // Stand-in models only: no escalation and no large client from the operator's settings.
+    cfg.enrich.escalate = false;
+    let e = base.clone().reconfigure(cfg).with_chat(Some(Arc::new(Echo))).with_large_chat(None);
     let run = e.eval_replay_as(&tenant, &suite, None, EvalTrigger::Manual, ReplayMode::Ingest).await?;
     let c = run.counts;
     // Checkpoint 1: two facts current; checkpoint 2: two again (the city corrected). The plan

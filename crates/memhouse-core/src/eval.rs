@@ -481,25 +481,44 @@ impl Played {
     }
 }
 
-/// Whether an extracted `fact` says what the `turn` said, allowing a paraphrase: every name and
-/// number of the turn (a capitalised word after the first, a word with a digit) is in the fact,
-/// and so is at least half of the turn's other longer words (by their first four letters).
+/// Whether an extracted `fact` says what the `turn` said, allowing a paraphrase: at least half
+/// of the turn's values (a capitalised word after the first, a word with a digit; neighbours
+/// are one value, as "Pixel 9") are in the fact, whole, and so is at least half of the turn's other longer words (by their first four
+/// letters). Half, not all: a turn that corrects a value names the old one too ("I no longer
+/// live in Lisbon; I now live in Porto"), and the fact "The user lives in Porto" is right. The
+/// limit of this: a fact that states only the old value of such a turn also passes. This is a
+/// filter against wrong citations, not a proof that the fact is true.
 pub(crate) fn restates(turn: &str, fact: &str) -> bool {
     let words = |s: &str| s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect::<Vec<_>>();
     let fact_words: Vec<String> = words(fact).iter().map(|w| w.to_lowercase()).collect();
     let stem = |w: &str| w.to_lowercase().chars().take(4).collect::<String>();
-    let (mut values, mut plain) = (vec![], vec![]);
+    // Values next to each other are one value ("Pixel 9", "Kestrel Works"): all of it or none.
+    let (mut values, mut plain): (Vec<Vec<String>>, Vec<String>) = (vec![], vec![]);
+    let mut last_value = None;
     for (i, w) in words(turn).into_iter().enumerate() {
         let named = i > 0 && w.chars().next().is_some_and(|c| c.is_uppercase()) && w.chars().count() > 1;
         if named || w.chars().any(|c| c.is_ascii_digit()) {
-            values.push(w.to_lowercase());
+            match values.last_mut().filter(|_| last_value == Some(i.wrapping_sub(1))) {
+                Some(phrase) => phrase.push(w.to_lowercase()),
+                None => values.push(vec![w.to_lowercase()]),
+            }
+            last_value = Some(i);
         } else if w.chars().count() >= 4 {
             plain.push(stem(&w));
         }
     }
-    let has_values = values.iter().all(|v| fact_words.contains(v));
+    // A fact that negates where the turn does not ("does not live in Lisbon") contradicts it.
+    // English negations only: other languages' facts are not screened for this.
+    let negates = |s: &str| {
+        let l = s.to_lowercase();
+        l.contains("n't") || l.split(|c: char| !c.is_alphanumeric()).any(|w| matches!(w, "not" | "never" | "no"))
+    };
+    if negates(fact) && !negates(turn) {
+        return false;
+    }
+    let found = values.iter().filter(|phrase| phrase.iter().all(|v| fact_words.contains(v))).count();
     let shared = plain.iter().filter(|p| fact_words.iter().any(|f| f.starts_with(p.as_str()))).count();
-    has_values && (plain.is_empty() || shared * 2 >= plain.len())
+    found * 2 >= values.len() && (plain.is_empty() || shared * 2 >= plain.len())
 }
 
 /// How a suite is replayed.
@@ -669,23 +688,35 @@ impl Engine {
 
     /// One session ingested as a conversation, its facts extracted before this returns. Gives,
     /// per turn, the facts extracted from it (by the message the fact cites).
-    async fn eval_ingest(&self, tenant: &str, subject: &str, conversation: &str, n: usize, session: &SuiteSession, spend: &crate::enrich::Spend) -> anyhow::Result<Vec<Vec<Uuid>>> {
+    async fn eval_ingest(
+        &self,
+        tenant: &str,
+        subject: &str,
+        conversation: &str,
+        n: usize,
+        session: &SuiteSession,
+        spend: &crate::enrich::Spend,
+    ) -> anyhow::Result<(Vec<Vec<Uuid>>, Vec<Uuid>)> {
         let name = |t: usize| format!("s{n}t{t}");
         let messages =
             session.turns.iter().enumerate().map(|(t, turn)| Message { role: "user".into(), content: turn.say.clone(), timestamp: session.at, id: Some(name(t)) }).collect();
-        self.ingest(IngestRequest {
-            tenant: Some(tenant.into()),
-            subject: Some(subject.into()),
-            session_id: Some(format!("s{n}")),
-            session_time: session.at,
-            messages,
-            per_message: true,
-            source: Some("eval".into()),
-            actor: Some("eval".into()),
-            wait: true,
-            ..Default::default()
-        })
-        .await?;
+        let ingested = self
+            .ingest(IngestRequest {
+                tenant: Some(tenant.into()),
+                subject: Some(subject.into()),
+                session_id: Some(format!("s{n}")),
+                session_time: session.at,
+                messages,
+                per_message: true,
+                source: Some("eval".into()),
+                actor: Some("eval".into()),
+                wait: true,
+                ..Default::default()
+            })
+            .await?;
+        // A session whose write has not committed has no extraction job yet: scoring it now
+        // would score an empty session. The replay fails instead.
+        anyhow::ensure!(!ingested.queued, "evaluation: the write of conversation {conversation} did not settle; its replay is not scored");
         // The session's extraction, run here: a scratch tenant's jobs are not left to workers.
         let start = std::time::Instant::now();
         loop {
@@ -716,12 +747,16 @@ impl Engine {
         let facts: Vec<&Memory> = records.iter().filter(|m| m.metadata["derived"].as_bool() == Some(true)).collect();
         // A fact stands for a turn when it cites the turn and says what the turn said: a fact
         // that cites a turn about Lisbon and states Berlin is a wrong extraction, not that turn.
-        Ok((0..session.turns.len())
+        let per_turn: Vec<Vec<Uuid>> = (0..session.turns.len())
             .map(|t| {
                 let me = name(t);
                 facts.iter().filter(|m| m.turn_ref.as_deref().is_some_and(|r| r.split(',').any(|x| x == me)) && restates(&session.turns[t].say, &m.content)).map(|m| m.id).collect()
             })
-            .collect())
+            .collect();
+        // Facts of this session that restate none of its turns: stored, and true of nothing.
+        let session_id = format!("s{n}");
+        let unmatched = facts.iter().filter(|m| m.session_id.as_deref() == Some(session_id.as_str()) && !per_turn.iter().any(|ids| ids.contains(&m.id))).map(|m| m.id).collect();
+        Ok((per_turn, unmatched))
     }
 
     /// One conversation: its sessions in order, a checkpoint after each.
@@ -731,9 +766,16 @@ impl Engine {
         let mut played: Vec<Played> = vec![];
         // Plans carried out so far (by turn id): no longer scored.
         let mut confirmed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // An ingested replay: extracted facts that restate no turn. They count as stored and
+        // not true, so a wrong extraction lowers storage precision.
+        let mut unmatched: Vec<Uuid> = vec![];
         for (n, session) in c.sessions.iter().enumerate() {
             let mut extracted = match mode {
-                ReplayMode::Ingest => self.eval_ingest(tenant, &subject, &c.id, n, session, spend).await?,
+                ReplayMode::Ingest => {
+                    let (per_turn, extra) = self.eval_ingest(tenant, &subject, &c.id, n, session, spend).await?;
+                    unmatched.extend(extra);
+                    per_turn
+                }
                 ReplayMode::Remember => vec![],
             };
             for (t, turn) in session.turns.iter().enumerate() {
@@ -799,6 +841,11 @@ impl Engine {
                         counts.stored += 1;
                         counts.stored_true += u64::from(is_current(i, p));
                     }
+                }
+            }
+            for id in &unmatched {
+                if let Some(m) = self.store.get(tenant, *id).await? {
+                    counts.stored += u64::from(m.status == MemoryStatus::Committed && m.valid_to.is_none_or(|t| t > now) && m.expires_at.is_none_or(|t| t > now));
                 }
             }
             for q in &session.ask {
@@ -1008,10 +1055,15 @@ mod tests {
         assert!(restates("I live in Lisbon.", "The user lives in Lisbon."));
         assert!(restates("I no longer live in Lisbon; I now live in Porto.", "The user moved from Lisbon and now lives in Porto."));
         assert!(restates("I follow a vegetarian diet.", "The user follows a vegetarian diet."));
+        // A correction names the old value too; the fact with the new one alone is right.
+        assert!(restates("I no longer live in Lisbon; I now live in Porto.", "The user lives in Porto."));
         // The wrong value, or another thing altogether, cited to the same turn.
         assert!(!restates("I live in Lisbon.", "The user lives in Berlin."));
         assert!(!restates("I follow a vegetarian diet.", "The user enjoys skiing in Austria."));
         assert!(!restates("My phone is a Pixel 9.", "The user's phone is a Pixel 8."));
+        // A fact that negates the turn contradicts it.
+        assert!(!restates("I live in Lisbon.", "The user does not live in Lisbon."));
+        assert!(!restates("I live in Lisbon.", "The user doesn't live in Lisbon anymore."));
     }
 
     #[test]

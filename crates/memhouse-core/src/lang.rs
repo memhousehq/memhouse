@@ -1056,6 +1056,18 @@ impl Languages {
         }
     }
 
+    /// `text` without a correction marker that opens it ("Correction: ...", "Amendment: ..."),
+    /// whatever pattern a pack writes the marker as: the rest is what the statement is about.
+    pub fn without_leading_marker<'a>(&self, text: &'a str) -> &'a str {
+        let t = text.trim_start();
+        for p in self.packs() {
+            if let Some(m) = p.correction.as_ref().and_then(|re| re.find(t)).filter(|m| m.start() == 0) {
+                return t[m.end()..].trim_start_matches(|c: char| !c.is_alphanumeric());
+            }
+        }
+        t
+    }
+
     /// The language of `text`, among the enabled ones (or those `narrowed` names). Function
     /// words and marking letters are counted for each pack; the pack with the most evidence
     /// wins; the pack's other plain words count half. Evidence several packs claim is shared

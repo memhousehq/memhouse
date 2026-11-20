@@ -67,29 +67,30 @@ pub struct Spend {
 
 #[derive(Default)]
 struct TenantTiers {
-    sessions: std::collections::HashSet<i64>,
-    large: std::collections::HashSet<i64>,
+    sessions: std::collections::HashSet<String>,
+    large: std::collections::HashSet<String>,
 }
 
 impl Spend {
-    /// Count one extracted session of `tenant`: once per job, however often it is retried.
-    fn session(&self, tenant: &str, job: i64) {
+    /// Count one extracted session of `tenant`: once per session (its subject and session
+    /// id), however many jobs the session has and however often one is retried.
+    fn session(&self, tenant: &str, session: &str) {
         let mut t = self.tiers.lock().expect("tiers");
-        t.entry(tenant.to_string()).or_default().sessions.insert(job);
+        t.entry(tenant.to_string()).or_default().sessions.insert(session.to_string());
     }
 
     /// Take one large-model extraction from the tenant's share (`large_max_share` of its
-    /// extracted sessions in this process), if it has one left. A job that already holds one
-    /// keeps it on a retry.
-    fn take_large(&self, tenant: &str, job: i64, max_share: f32) -> bool {
+    /// extracted sessions in this process), if it has one left. A session that already holds
+    /// one keeps it on a retry.
+    fn take_large(&self, tenant: &str, session: &str, max_share: f32) -> bool {
         let mut t = self.tiers.lock().expect("tiers");
         let e = t.entry(tenant.to_string()).or_default();
-        if e.large.contains(&job) {
+        if e.large.contains(session) {
             return true;
         }
         let ok = (e.large.len() + 1) as f64 <= max_share.clamp(0.0, 1.0) as f64 * e.sessions.len() as f64;
         if ok {
-            e.large.insert(job);
+            e.large.insert(session.to_string());
         }
         ok
     }
@@ -375,13 +376,14 @@ impl Engine {
         let mut facts = with_confidence(facts, &rounds);
         let confidence = session_confidence(&facts.iter().map(|(_, c)| *c).collect::<Vec<_>>(), complete, user_chars);
         outcome.confidence = Some(confidence);
-        spend.session(&job.tenant, job.id);
+        let session = format!("{}\u{1f}{}", job.subject, job.session_id);
+        spend.session(&job.tenant, &session);
         let mut extractor = model.clone();
         // The last tier (ECON-04, TR-MS-05): an unsure extraction is done again by the large
         // model, while the tenant is within its share. If that fails, the small model's facts
         // stand: escalation never loses a session.
         if let Some(large) = self.chat_large.as_ref().filter(|_| cfg.escalate && confidence < cfg.escalate_below) {
-            if spend.take_large(&job.tenant, job.id, cfg.large_max_share) {
+            if spend.take_large(&job.tenant, &session, cfg.large_max_share) {
                 let mut again = EnrichOutcome { model: large.id(), ..Default::default() };
                 match self.extract(large, &prompt, job, spend, &mut again, true).await.and_then(|(_, a)| parse_answer(&a)) {
                     Ok((better, _)) => {
@@ -626,20 +628,20 @@ mod tests {
     #[test]
     fn the_large_tier_keeps_to_the_tenants_share() {
         let s = Spend::default();
-        for job in 1..=3 {
-            s.session("a", job);
+        for session in ["s1", "s2", "s3"] {
+            s.session("a", session);
         }
-        assert!(!s.take_large("a", 3, 0.3));
-        // A retry of a job is the same session: it does not make room.
+        assert!(!s.take_large("a", "s3", 0.3));
+        // A retry, or another job of the same session, is the same session: it makes no room.
         for _ in 0..5 {
-            s.session("a", 3);
+            s.session("a", "s3");
         }
-        assert!(!s.take_large("a", 3, 0.3));
-        s.session("a", 4);
-        assert!(s.take_large("a", 4, 0.3));
-        // The job that holds the slot keeps it on a retry; another job gets none.
-        assert!(s.take_large("a", 4, 0.3));
-        assert!(!s.take_large("a", 2, 0.3));
+        assert!(!s.take_large("a", "s3", 0.3));
+        s.session("a", "s4");
+        assert!(s.take_large("a", "s4", 0.3));
+        // The session that holds the slot keeps it on a retry; another one gets none.
+        assert!(s.take_large("a", "s4", 0.3));
+        assert!(!s.take_large("a", "s2", 0.3));
         assert_eq!((s.tiers("a"), s.tiers("b")), ((4, 1), (0, 0)));
     }
 

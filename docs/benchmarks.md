@@ -393,7 +393,7 @@ What they show:
 - The public datasets did not show any of this: they have few explicit corrections. Facts
   extracted by enrichment keep the old rule (0.8, the closest record only): an extractor writes
   "now" and "no longer" into facts that are history, and LoCoMo with extraction is unchanged
-  (session R_all@5 79.3, round R_all@10 65.6). Whether the lower bar helps extracted facts
+  (session R_all@5 79.4 against 79.3 before, round R_all@10 65.6). Whether the lower bar helps extracted facts
   needs the ingested replay with a real extractor, which has not been run.
 
 ```bash

@@ -127,11 +127,13 @@ flowchart LR
    revision supersedes its predecessor or is rejected if that is no longer current; a statement
    whose text has a correction marker supersedes the closest older record of its kind it
    corrects (cosine ≥ `marked_correction_threshold`, a shared content word, not newer than
-   itself; below `correction_threshold` it must also name every name the old record names and
-   no other person) and any further older version halfway to `correction_threshold` or closer,
-   each with its own audit event, and a statement that restates a record with a
+   itself; below `correction_threshold` the two must also be about the same one: no relative or
+   animal word on one side only, and a name that either statement leads with must be in the
+   other) and any further older version halfway to `correction_threshold` or closer, each with
+   its own audit event, and a statement that restates a record with a
    changed value supersedes the closest such record (cosine ≥ `correction_threshold`);
-   enrichment facts only supersede enrichment facts; a completed
+   enrichment facts only supersede enrichment facts, only at `correction_threshold`, and only the
+   closest record (the marked-correction rule is for direct writes); a completed
    event commits the unexpired held plans in its scope it fulfils (`metadata.confirmed_by`;
    speculation and candidates waiting for a reviewer are never confirmed this way). Then one transaction locks
    the proposal, writes the records and structured rows, the supersessions and confirmations, the

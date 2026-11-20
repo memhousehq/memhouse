@@ -1500,7 +1500,7 @@ which is named.
     make its "worse" engine.
   - **Guard: T2, $0** (extractions from the cache), with `--skip-latency` on a loaded machine:
     governance 66 of 66; LongMemEval_S 91.3 / 94.2 / 84.8; LoCoMo 78.8 / 78.7 / 59.2; LoCoMo
-    with extraction 79.3 / 65.6, as before this change; the
+    with extraction 79.4 / 65.6 (79.3 / 65.6 before this change); the
     starter suite storage F1 97.6, retrieval F1 97.5, 84.9% of the questions about a corrected
     fact answered without a stale version, 100% of plans and guesses not committed. Those
     three starter values are the new baselines.
@@ -1524,6 +1524,18 @@ which is named.
     `[intake.large_llm]` and `[enrich.large_llm]` tables keep their tier's defaults for keys
     left out. Not changed: the default key variable of the large extraction model stays the
     same as the small one's.
+  - **Second review round (2026-11-20).** Names are compared whole, and a correction that
+    leads with a name the old record never mentions is about someone else; a leading marker
+    is taken off by the pack's own pattern before the comparison. The large model does not
+    turn a small-model guess into a plan. The escalation cap counts by session, not by job.
+    Shares and thresholds outside 0 to 1 are refused when the configuration is loaded. The
+    four tier counters are registered for `/metrics` (they were incremented and never
+    shown). The global extraction claim leaves evaluation scratch tenants to the replay. An
+    ingested replay fails rather than score a session whose write has not committed, counts
+    an extracted fact that restates no turn as stored and not true, and accepts a correction
+    turn's fact that names only the new value. Declined: an unbounded search past 20
+    neighbours, a price check before the first large-model call (one call can go uncounted
+    before escalation stops), and proving an extracted fact true by rules.
 
 ### Stage D — Lite profile and developer launch
 

@@ -308,7 +308,7 @@ pub(crate) struct Item {
     pub duplicate_of: Option<Uuid>,
     pub superseded: Option<Uuid>,
     /// Further older versions a marked correction retired, besides `superseded`.
-    pub also_superseded: Vec<Uuid>,
+    pub also_superseded: Vec<(Uuid, &'static str)>,
     pub confirms: Vec<Uuid>,
     /// The held signal this record repeats, its new count, and whether that commits it.
     pub signal: Option<(Uuid, u32, bool)>,
@@ -1040,12 +1040,15 @@ impl Engine {
                             // A further version must be closer than the first had to be: halfway
                             // to the plain threshold. At the marked threshold itself the sweep
                             // retired current facts about other things (1 to 3% on the suites).
-                            if it.superseded.is_some() && sim < (floor + icfg.correction_threshold) / 2.0 {
+                            // (A hair below it, so that a record at exactly 0.7 counts with the
+                            // default thresholds, whose midpoint is 0.70000005 in single precision.)
+                            if it.superseded.is_some() && sim + 1e-4 < (floor + icfg.correction_threshold) / 2.0 {
                                 continue;
                             }
                             let corrects = class == Some(Statement::Correction)
                                 && values.shares_content_word(&o.content, &m.content)
-                                && (sim >= icfg.correction_threshold || (wide && values.same_topic(&o.content, &m.content)));
+                                && (sim >= icfg.correction_threshold
+                                    || (wide && values.same_topic(self.languages.without_leading_marker(&o.content), self.languages.without_leading_marker(&m.content))));
                             // An event is a new occurrence unless it restates the old one exactly.
                             let overlap = if class == Some(Statement::Event) { 0.9 } else { 0.6 };
                             let updates = !corrects && sim >= icfg.correction_threshold && values.value_update(&o.content, &m.content, overlap);
@@ -1054,7 +1057,7 @@ impl Engine {
                                 supersede.push((old, m.id));
                                 metrics::inc("memhouse_gate_corrections_total", &[("how", how)], 1.0);
                                 if it.superseded.is_some() {
-                                    it.also_superseded.push(old);
+                                    it.also_superseded.push((old, how));
                                 }
                                 if it.superseded.is_none() {
                                     m.supersedes = Some(old);
@@ -1126,7 +1129,7 @@ impl Engine {
                     detail["classifier"] = json!(c.reason);
                 }
                 if *action == "memory.supersede" && !it.also_superseded.is_empty() {
-                    detail["also_supersedes"] = json!(it.also_superseded);
+                    detail["also_supersedes"] = json!(it.also_superseded.iter().map(|(id, _)| id).collect::<Vec<_>>());
                 }
                 if *action == "memory.reject" {
                     detail["reason"] = json!(it.note.clone().unwrap_or_default());
@@ -1138,13 +1141,13 @@ impl Engine {
             }
             // Every record a correction retires has its own event (not only the predecessor).
             if it.actions.iter().any(|(a, _)| *a == "memory.supersede") {
-                for old in &it.also_superseded {
+                for (old, how) in &it.also_superseded {
                     out.push(AuditEntry {
                         actor: m.provenance.agent.clone().unwrap_or_else(|| m.source.clone()),
                         action: "memory.supersede".into(),
                         subject: Some(subject.to_string()),
                         memory_id: Some(*old),
-                        detail: json!({ "superseded_by": m.id, "because": "correction", "kind": m.kind.as_str() }),
+                        detail: json!({ "superseded_by": m.id, "because": how, "kind": m.kind.as_str() }),
                     });
                 }
             }

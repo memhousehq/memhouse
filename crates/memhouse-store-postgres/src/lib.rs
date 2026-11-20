@@ -2531,6 +2531,7 @@ impl Store for PgStore {
                locked_until = now() + make_interval(secs => $2) \
              WHERE j.id IN (SELECT c.id FROM mh_enrich_job c \
                WHERE ((c.status = 'pending' AND c.run_after <= now()) OR (c.status = 'running' AND c.locked_until < now())) \
+                 AND position($3 in c.tenant) = 0 \
                  AND NOT EXISTS (SELECT 1 FROM mh_enrich_job o WHERE o.tenant = c.tenant AND o.subject = c.subject \
                                  AND o.status IN ('pending', 'running') AND o.id < c.id) \
                ORDER BY c.id LIMIT $1 FOR UPDATE SKIP LOCKED) \
@@ -2538,6 +2539,9 @@ impl Store for PgStore {
         )
         .bind(limit as i64)
         .bind(lease_secs as f64)
+        // An evaluation's scratch tenant is extracted by the replaying engine alone, which
+        // claims by tenant and subject and counts the spend in the replay's own counter.
+        .bind(memhouse_core::eval::SCRATCH_MARK)
         .fetch_all(&self.pool)
         .await?;
         rows.iter()
