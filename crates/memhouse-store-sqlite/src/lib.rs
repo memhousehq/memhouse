@@ -4,7 +4,9 @@
 //! vectors scored in process by an exact scan of the subject (ADR 0003), jobs in tables of the
 //! same file. The logical schema and the behaviour are those of the Postgres store (TR-CORE-04).
 
+pub mod backup;
 mod intake;
+mod migrate;
 mod records;
 mod schema;
 mod search;
@@ -13,7 +15,7 @@ mod util;
 pub mod vector;
 
 use rusqlite::Connection;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The logical schema version this build migrates to (see `docs/schema.md`).
@@ -32,6 +34,8 @@ struct Inner {
     /// Lite is one process and one writer: every call takes the connection for its own
     /// statements only, and never across an await.
     conn: Mutex<Connection>,
+    /// The database file; `None` in memory. Where the pre-upgrade snapshot goes (TR-LT-10).
+    path: Option<PathBuf>,
     /// Prefix the engine adds to passages before embedding; needed to purge cache entries on deletion.
     passage_prefix: String,
     ident: Mutex<Option<Ident>>,
@@ -42,6 +46,8 @@ pub struct SqliteStore {
     inner: Arc<Inner>,
     /// (rows of a subject above which it applies, candidates kept for exact rescoring).
     prefilter: Option<(usize, usize)>,
+    /// Whether `migrate` keeps a copy of an older file before upgrading it (TR-LT-10).
+    upgrade_snapshot: bool,
 }
 
 /// The directory a database lives in: created for the user alone when it is missing; refused
@@ -90,6 +96,12 @@ impl SqliteStore {
         let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         private_dir(dir)?;
         let conn = Connection::open(path).map_err(|e| anyhow::anyhow!("cannot open the SQLite database {}: {e}", path.display()))?;
+        // Before anything is written to it, journal mode included: a file of a newer MemHouse
+        // is left exactly as it is (TR-LT-10).
+        migrate::refuse_newer(
+            meta(&conn, "schema_version").map_err(|e| anyhow::anyhow!("{} is not a MemHouse database: {e}", path.display()))?.as_deref(),
+            &path.display().to_string(),
+        )?;
         // The memories are the user's alone: no other account reads the file.
         #[cfg(unix)]
         {
@@ -97,21 +109,33 @@ impl SqliteStore {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         }
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA checkpoint_fullfsync = ON;")?;
-        Self::with_connection(conn, passage_prefix)
+        Self::with_connection(conn, passage_prefix, Some(path.to_path_buf()))
     }
 
     /// A private in-memory database, for tests: nothing is kept.
     pub fn in_memory(passage_prefix: &str) -> anyhow::Result<SqliteStore> {
-        Self::with_connection(Connection::open_in_memory()?, passage_prefix)
+        Self::with_connection(Connection::open_in_memory()?, passage_prefix, None)
     }
 
-    fn with_connection(conn: Connection, passage_prefix: &str) -> anyhow::Result<SqliteStore> {
+    fn with_connection(conn: Connection, passage_prefix: &str, path: Option<PathBuf>) -> anyhow::Result<SqliteStore> {
         // Cascades (structured rows, code references, links, source references) rely on it.
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         // Another process on the same file (a command-line tool beside the server) waits its turn.
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.set_prepared_statement_cache_capacity(256);
-        Ok(SqliteStore { inner: Arc::new(Inner { conn: Mutex::new(conn), passage_prefix: passage_prefix.to_string(), ident: Mutex::new(None) }), prefilter: None })
+        Ok(SqliteStore {
+            inner: Arc::new(Inner { conn: Mutex::new(conn), path, passage_prefix: passage_prefix.to_string(), ident: Mutex::new(None) }),
+            prefilter: None,
+            upgrade_snapshot: true,
+        })
+    }
+
+    /// Upgrade an older file without keeping a copy of it first. For a file that is itself a
+    /// copy (a backup being restored): a second copy would keep what the deletion ledger is
+    /// about to remove.
+    pub fn without_upgrade_snapshot(mut self) -> SqliteStore {
+        self.upgrade_snapshot = false;
+        self
     }
 
     /// Turn on the binary prefilter of ADR 0003 for recalls over subjects with more than

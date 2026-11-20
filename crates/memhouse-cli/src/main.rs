@@ -18,6 +18,7 @@ macro_rules! println {
     }};
 }
 
+mod backup;
 mod connect;
 mod eval;
 mod lang;
@@ -266,6 +267,25 @@ enum Cmd {
     },
     /// Import a Memory Format v1 or v2 file (ids, states, timestamps and provenance are kept; vectors are made with this config's model)
     Import { file: PathBuf },
+    /// Back up a Lite installation: a consistent snapshot of the database, the canonical export and the deletion ledger
+    Backup {
+        /// Directory to write the backup into (new or empty; created for this user alone)
+        dir: PathBuf,
+        /// Write only the deletion ledger (deletion-ledger.jsonl), for a later `restore --ledger`
+        #[arg(long)]
+        ledger_only: bool,
+    },
+    /// Restore a Lite backup, re-applying every deletion made since it was taken
+    Restore {
+        /// Directory written by `memhouse backup`
+        dir: PathBuf,
+        /// Replace the existing database (its deletion ledger is carried over)
+        #[arg(long)]
+        force: bool,
+        /// A deletion ledger to re-apply as well (from `memhouse backup --ledger-only`, or a later backup's deletion-ledger.jsonl)
+        #[arg(long)]
+        ledger: Option<PathBuf>,
+    },
     /// Re-embed every stored memory with the model now in [embedding] (after changing it)
     Reembed {
         /// Show what would be re-embedded and stop
@@ -657,6 +677,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("  {} rounds kept only their main vector (their user-only text could not be recovered exactly)", r.second_vectors_dropped);
             }
         }
+        Cmd::Backup { dir, ledger_only } => backup::backup(Config::load(cfg_path.as_deref())?, &dir, ledger_only).await?,
+        Cmd::Restore { dir, force, ledger } => backup::restore(Config::load(cfg_path.as_deref())?, &dir, force, ledger.as_deref()).await?,
         Cmd::Reembed { dry_run, abort, batch, yes } => {
             use memhouse_core::reembed;
             let cfg = Config::load(cfg_path.as_deref())?;
@@ -795,6 +817,17 @@ async fn doctor(cfg_path: &Option<PathBuf>) -> anyhow::Result<()> {
             ok(&format!("embedder {} ({} dims)", eng.embedder.id(), eng.embedder.dim()));
             if let Some(r) = &eng.reranker {
                 ok(&format!("reranker {}", r.id()));
+            }
+            // The files were checked against their pin when the models loaded just now (threat T19).
+            let pins = [(eng.embedder.id(), &cfg.embedding.revision, &cfg.embedding.sha256)]
+                .into_iter()
+                .chain(eng.reranker.as_ref().map(|r| (r.id(), &cfg.rerank.revision, &cfg.rerank.sha256)));
+            for (id, revision, sha256) in pins {
+                match memhouse_models::pin_status(id, revision, sha256) {
+                    Some(Ok(pinned)) => ok(&format!("model files verified: {pinned}")),
+                    Some(Err(unpinned)) => bad(&format!("model {unpinned}")),
+                    None => {}
+                }
             }
             let packs: Vec<String> = eng.languages.packs().iter().map(|p| format!("{} ({})", p.code(), p.source)).collect();
             ok(&format!("languages {}; default {}", packs.join(", "), eng.languages.default_pack().code()));

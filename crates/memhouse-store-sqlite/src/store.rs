@@ -2,7 +2,6 @@
 //! The `Store` interface on SQLite, method by method what the Postgres store does. Statements
 //! bind every value from callers; only this crate's constants are formatted in.
 
-use crate::intake::drop_promotions_of;
 use crate::records::*;
 use crate::search::{bind, recall_filters, recall_params, scan};
 use crate::util::*;
@@ -189,10 +188,9 @@ impl Store for SqliteStore {
     async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()> {
         let mine = EmbeddingIdentity { embedder: embedder_id.to_string(), dim, passage_prefix: self.inner.passage_prefix.clone() };
         let mut c = self.conn();
-        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(db) = identity_of(&tx, "")? {
+        if let Some(db) = identity_of(&c, "")? {
             if db != mine {
-                let unfinished = identity_of(&tx, "reembed_target_")?.is_some_and(|t| t == mine);
+                let unfinished = identity_of(&c, "reembed_target_")?.is_some_and(|t| t == mine);
                 anyhow::bail!(
                     "this database's memories are embedded with {db}, but the configuration says {mine}. {}",
                     if unfinished {
@@ -203,17 +201,38 @@ impl Store for SqliteStore {
                 );
             }
         }
-        let stored: Option<u32> = meta(&tx, "schema_version")?.map(|v| v.parse()).transpose()?;
-        if let Some(v) = stored.filter(|v| *v > SCHEMA_VERSION) {
-            anyhow::bail!("this database has schema version {v}, newer than this build ({SCHEMA_VERSION}); upgrade MemHouse");
+        let version = |c: &Connection| -> anyhow::Result<Option<u32>> { Ok(meta(c, "schema_version")?.map(|v| v.parse()).transpose()?) };
+        if let Some(v) = version(&c)?.filter(|v| *v != SCHEMA_VERSION) {
+            if v > SCHEMA_VERSION {
+                anyhow::bail!("this database has schema version {v}, newer than this build ({SCHEMA_VERSION}); upgrade MemHouse");
+            }
+            // Refused before anything is copied when no step starts from this version.
+            crate::migrate::pending(v).map(drop)?;
+            // The file as it was, before anything changes (TR-LT-10). Outside the upgrade's
+            // transaction because SQLite copies a database only from outside one; a writer that
+            // slipped in between would be an older build's, and the upgrade keeps its rows.
+            if let Some(path) = self.inner.path.as_deref().filter(|_| self.upgrade_snapshot) {
+                let copy = crate::migrate::snapshot_path(path, SCHEMA_VERSION);
+                crate::migrate::snapshot(&c, &copy)?;
+                tracing::info!("database schema version {v} is older than this build's ({SCHEMA_VERSION}): kept the file as it was in {} before upgrading it", copy.display());
+            }
+        }
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Read again under the write lock: another process may have upgraded the file meanwhile.
+        if let Some(v) = version(&tx)?.filter(|v| *v < SCHEMA_VERSION) {
+            for step in crate::migrate::pending(v)? {
+                (step.run)(&tx).map_err(|e| anyhow::anyhow!("upgrading the database to schema version {} ({}): {e}", step.to, step.what))?;
+                set_meta(&tx, "schema_version", &step.to.to_string())?;
+            }
+            tracing::info!("database upgraded from schema version {v} to {SCHEMA_VERSION}");
         }
         tx.execute_batch(crate::schema::DDL)?;
         for (k, v) in [("embedding_dim", dim.to_string()), ("embedder", embedder_id.to_string()), ("passage_prefix", self.inner.passage_prefix.clone())] {
             exec(&tx, "INSERT INTO mh_meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO NOTHING", [k, v.as_str()])?;
         }
-        // The first Lite schema is the current logical version: there is nothing older to upgrade.
         set_meta(&tx, "schema_version", &SCHEMA_VERSION.to_string())?;
         tx.commit()?;
+        drop(c);
         *self.inner.ident.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ident { embedder: embedder_id.to_string(), config: mine.config_hash(), dim });
         Ok(())
     }
@@ -556,38 +575,11 @@ impl Store for SqliteStore {
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let ids = id.to_string();
-        let row = first(&tx, "SELECT subject, content, alt_hash FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
-        })?;
-        let Some((subject, content, alt_hash)) = row else { return Ok(false) };
-        exec(&tx, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
-        // Also drop the cached embeddings of this content (every representation goes, TR-WF-01).
-        self.purge_vectors(&tx, [content.as_str()], alt_hash.as_deref())?;
-        // Facts derived from this record and records promoted from it (MEM-05) go with it, and
-        // so does everything promoted from those in turn (a note promoted to a fact, the fact to
-        // a procedure), with their cached vectors.
-        let mut gone = vec![id];
-        let mut level = self.delete_dependents(&tx, tenant, &[id], true, true)?;
-        while !level.is_empty() {
-            gone.extend(level.iter().copied());
-            level = self.delete_dependents(&tx, tenant, &level, false, true)?;
-        }
-        // Promotions of this record, or of anything that went with it, that are still queued
-        // (or set aside with their payload): gone with it on every erasure path.
-        drop_promotions_of(&tx, tenant, &gone.iter().copied().collect())?;
-        // The session jobs that read it, and the cached extraction of each.
-        let jobs = rows(
-            &tx,
-            "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value = ?3)",
-            [tenant, subject.as_str(), ids.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        drop_jobs(&tx, &jobs, true)?;
+        let Some((subject, _)) = self.delete_in(&tx, tenant, id, true, None)? else { return Ok(false) };
         exec(
             &tx,
             "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'memory', ?5)",
-            params![now(), tenant, subject, ids, actor],
+            params![now(), tenant, subject, id.to_string(), actor],
         )?;
         tx.commit()?;
         Ok(true)
@@ -1252,19 +1244,7 @@ impl Store for SqliteStore {
     async fn delete_tenant(&self, tenant: &str, actor: &str) -> anyhow::Result<u64> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        exec(&tx, "DELETE FROM mh_intake WHERE tenant = ?1", [tenant])?;
-        // Every subject, in any state (`subjects` lists only those with committed records).
-        let subjects = rows(&tx, "SELECT DISTINCT subject FROM mh_memory WHERE tenant = ?1", [tenant], |r| Ok(r.get::<_, String>(0)?))?;
-        let mut total = 0;
-        for s in subjects {
-            total += self.delete_subject_in(&tx, tenant, &s, actor, true)?;
-        }
-        // What is left without a record: links, remembered responses, queued jobs and writes.
-        for table in ["mh_link", "mh_grant", "mh_eval_suite", "mh_eval_run", "mh_request_key", "mh_recall"] {
-            exec(&tx, &format!("DELETE FROM {table} WHERE tenant = ?1"), [tenant])?;
-        }
-        let jobs = rows(&tx, "SELECT id, cache_key FROM mh_enrich_job WHERE tenant = ?1", [tenant], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        drop_jobs(&tx, &jobs, true)?;
+        let total = self.erase_tenant(&tx, tenant, Some(actor), None)?;
         exec(&tx, "INSERT INTO mh_deletion_ledger (at, tenant, scope, actor) VALUES (?1, ?2, 'tenant', ?3)", params![now(), tenant, actor])?;
         tx.commit()?;
         Ok(total)

@@ -242,28 +242,110 @@ impl SqliteStore {
         Ok(ids)
     }
 
+    /// Delete one record with everything derived from it (see `Store::delete`), inside the
+    /// caller's transaction and without the ledger row. `promotions` also removes what was
+    /// promoted from it (a deletion does, retention does not). With `upto`, only a record
+    /// written by then: a deletion re-applied after a restore removes what existed when it
+    /// was made. Returns the record's subject and how many records went.
+    pub(crate) fn delete_in(&self, c: &Connection, tenant: &str, id: Uuid, promotions: bool, upto: Option<i64>) -> anyhow::Result<Option<(String, u64)>> {
+        let ids = id.to_string();
+        let row =
+            first(c, "SELECT subject, content, alt_hash FROM mh_memory WHERE tenant = ?1 AND id = ?2 AND (?3 IS NULL OR created_at <= ?3)", params![tenant, ids, upto], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
+            })?;
+        let Some((subject, content, alt_hash)) = row else { return Ok(None) };
+        exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
+        // Also drop the cached embeddings of this content (every representation goes, TR-WF-01).
+        self.purge_vectors(c, [content.as_str()], alt_hash.as_deref())?;
+        // Facts derived from this record and records promoted from it (MEM-05) go with it, and
+        // so does everything promoted from those in turn (a note promoted to a fact, the fact to
+        // a procedure), with their cached vectors.
+        let mut gone = vec![id];
+        let mut level = self.delete_dependents(c, tenant, &[id], true, promotions)?;
+        while !level.is_empty() {
+            gone.extend(level.iter().copied());
+            level = if promotions { self.delete_dependents(c, tenant, &level, false, true)? } else { vec![] };
+        }
+        if promotions {
+            // Promotions of this record, or of anything that went with it, that are still queued
+            // (or set aside with their payload): gone with it on every erasure path.
+            crate::intake::drop_promotions_of(c, tenant, &gone.iter().copied().collect())?;
+        }
+        // The session jobs that read it, and the cached extraction of each.
+        let jobs = rows(
+            c,
+            "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value = ?3)",
+            [tenant, subject.as_str(), ids.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        drop_jobs(c, &jobs, true)?;
+        Ok(Some((subject, gone.len() as u64)))
+    }
+
     /// Erase a subject (see `Store::delete_subject`), inside the caller's transaction.
     pub(crate) fn delete_subject_in(&self, c: &Connection, tenant: &str, subject: &str, actor: &str, purge_cache: bool) -> anyhow::Result<u64> {
-        // Queued writes first: nothing lands after an erasure.
-        exec(c, "DELETE FROM mh_intake WHERE tenant = ?1 AND subject = ?2", [tenant, subject])?;
-        if purge_cache {
-            let held = rows(c, "SELECT content, alt_hash FROM mh_memory WHERE tenant = ?1 AND subject = ?2", [tenant, subject], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-            })?;
-            self.purge_vectors(c, held.iter().map(|(t, _)| t.as_str()), held.iter().filter_map(|(_, h)| h.as_deref()))?;
-        }
-        let n = exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND subject = ?2", [tenant, subject])?;
-        // Links held by the subject and links to it from others, and remembered responses.
-        exec(c, "DELETE FROM mh_link WHERE tenant = ?1 AND (subject = ?2 OR linked_subject = ?2)", [tenant, subject])?;
-        exec(c, "DELETE FROM mh_request_key WHERE tenant = ?1 AND subject = ?2", [tenant, subject])?;
-        exec(c, "DELETE FROM mh_recall WHERE tenant = ?1 AND subject = ?2", [tenant, subject])?;
-        let jobs = rows(c, "SELECT id, cache_key FROM mh_enrich_job WHERE tenant = ?1 AND subject = ?2", [tenant, subject], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        drop_jobs(c, &jobs, purge_cache)?;
+        let n = self.erase_subject(c, tenant, subject, purge_cache, None)?;
         exec(
             c,
             "INSERT INTO mh_deletion_ledger (at, tenant, subject, scope, actor) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![now(), tenant, subject, if purge_cache { "subject" } else { "subject-reset" }, actor],
         )?;
         Ok(n)
+    }
+
+    /// Everything held about a subject, without the ledger row. With `upto`, only what was
+    /// written by then (see `delete_in`).
+    pub(crate) fn erase_subject(&self, c: &Connection, tenant: &str, subject: &str, purge_cache: bool, upto: Option<i64>) -> anyhow::Result<u64> {
+        // Queued writes first: nothing lands after an erasure.
+        exec(c, "DELETE FROM mh_intake WHERE tenant = ?1 AND subject = ?2 AND (?3 IS NULL OR enqueued_at <= ?3)", params![tenant, subject, upto])?;
+        if purge_cache {
+            let held =
+                rows(c, "SELECT content, alt_hash FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND (?3 IS NULL OR created_at <= ?3)", params![tenant, subject, upto], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })?;
+            self.purge_vectors(c, held.iter().map(|(t, _)| t.as_str()), held.iter().filter_map(|(_, h)| h.as_deref()))?;
+        }
+        let n = exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND (?3 IS NULL OR created_at <= ?3)", params![tenant, subject, upto])?;
+        // Links held by the subject and links to it from others, and remembered responses.
+        exec(c, "DELETE FROM mh_link WHERE tenant = ?1 AND (subject = ?2 OR linked_subject = ?2) AND (?3 IS NULL OR created_at <= ?3)", params![tenant, subject, upto])?;
+        exec(c, "DELETE FROM mh_request_key WHERE tenant = ?1 AND subject = ?2 AND (?3 IS NULL OR created_at <= ?3)", params![tenant, subject, upto])?;
+        exec(c, "DELETE FROM mh_recall WHERE tenant = ?1 AND subject = ?2 AND (?3 IS NULL OR at <= ?3)", params![tenant, subject, upto])?;
+        let jobs =
+            rows(c, "SELECT id, cache_key FROM mh_enrich_job WHERE tenant = ?1 AND subject = ?2 AND (?3 IS NULL OR enqueued_at <= ?3)", params![tenant, subject, upto], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+        drop_jobs(c, &jobs, purge_cache)?;
+        Ok(n)
+    }
+
+    /// Everything of a tenant (see `Store::delete_tenant`), without the tenant's ledger row.
+    /// With `ledger_actor` each subject gets its own ledger row, as an erasure writes them;
+    /// with `upto`, only what was written by then (see `delete_in`).
+    pub(crate) fn erase_tenant(&self, c: &Connection, tenant: &str, ledger_actor: Option<&str>, upto: Option<i64>) -> anyhow::Result<u64> {
+        exec(c, "DELETE FROM mh_intake WHERE tenant = ?1 AND (?2 IS NULL OR enqueued_at <= ?2)", params![tenant, upto])?;
+        // Every subject, in any state (`subjects` lists only those with committed records).
+        let subjects = rows(c, "SELECT DISTINCT subject FROM mh_memory WHERE tenant = ?1", [tenant], |r| Ok(r.get::<_, String>(0)?))?;
+        let mut total = 0;
+        for s in subjects {
+            total += match ledger_actor {
+                Some(actor) => self.delete_subject_in(c, tenant, &s, actor, true)?,
+                None => self.erase_subject(c, tenant, &s, true, upto)?,
+            };
+        }
+        // What is left without a record: links, remembered responses, queued jobs and writes.
+        for (table, written) in [
+            ("mh_link", "created_at"),
+            ("mh_grant", "created_at"),
+            ("mh_eval_suite", "created_at"),
+            ("mh_eval_run", "created_at"),
+            ("mh_request_key", "created_at"),
+            ("mh_recall", "at"),
+        ] {
+            exec(c, &format!("DELETE FROM {table} WHERE tenant = ?1 AND (?2 IS NULL OR {written} <= ?2)"), params![tenant, upto])?;
+        }
+        let jobs =
+            rows(c, "SELECT id, cache_key FROM mh_enrich_job WHERE tenant = ?1 AND (?2 IS NULL OR enqueued_at <= ?2)", params![tenant, upto], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        drop_jobs(c, &jobs, true)?;
+        Ok(total)
     }
 }
