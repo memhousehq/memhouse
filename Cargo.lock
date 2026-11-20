@@ -1554,6 +1554,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "memhouse-store-sqlite"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "half",
+ "hex",
+ "memhouse-conformance",
+ "memhouse-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"

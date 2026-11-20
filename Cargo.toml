@@ -12,6 +12,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 memhouse-core = { path = "crates/memhouse-core", version = "2.0.0" }
 memhouse-store-postgres = { path = "crates/memhouse-store-postgres", version = "2.0.0" }
+memhouse-store-sqlite = { path = "crates/memhouse-store-sqlite", version = "2.0.0" }
 memhouse-models = { path = "crates/memhouse-models", version = "2.0.0" }
 memhouse-server = { path = "crates/memhouse-server", version = "2.0.0" }
 memhouse-bench = { path = "crates/memhouse-bench", version = "2.0.0" }
