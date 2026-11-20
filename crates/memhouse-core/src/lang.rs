@@ -441,6 +441,10 @@ pub struct ValueRules {
     pub(crate) value_stop: HashSet<String>,
     pub(crate) people: HashSet<String>,
     pub(crate) months: HashSet<String>,
+    /// The packs' most frequent function words (their detection words) and their one-word
+    /// statement markers ("correction", "eigentlich"): never a name, even capitalised at the
+    /// start of a sentence ("Our", "The", "Correction:").
+    pub(crate) function: HashSet<String>,
     pub(crate) numbers: HashMap<String, String>,
     pub(crate) dates: Regex,
     pub(crate) identifier: Regex,
@@ -899,6 +903,13 @@ impl ValueRules {
             value_stop: set(|f| &f.values.value_stop),
             people: set(|f| &f.relations.people),
             months: set(|f| &f.time.month_names),
+            function: {
+                let mut words = set(|f| &f.detect.words);
+                for marker in [set(|f| &f.statements.correction), set(|f| &f.statements.speculation), set(|f| &f.statements.instruction_start)] {
+                    words.extend(marker.into_iter().filter(|m| m.chars().all(|c| c.is_alphabetic())));
+                }
+                words
+            },
             numbers,
             dates: Regex::new(&format!("(?i){}", date_alts.join("|"))).expect("validated patterns"),
             identifier: Regex::new(&format!(r"(?i){named}#\s*\d[\w\-]*|\b\p{{L}}+-?\d[\w\-]*")).expect("escaped words"),
@@ -1043,6 +1054,18 @@ impl Languages {
             }
             _ => self.packs.clone(),
         }
+    }
+
+    /// `text` without a correction marker that opens it ("Correction: ...", "Amendment: ..."),
+    /// whatever pattern a pack writes the marker as: the rest is what the statement is about.
+    pub fn without_leading_marker<'a>(&self, text: &'a str) -> &'a str {
+        let t = text.trim_start();
+        for p in self.packs() {
+            if let Some(m) = p.correction.as_ref().and_then(|re| re.find(t)).filter(|m| m.start() == 0) {
+                return t[m.end()..].trim_start_matches(|c: char| !c.is_alphanumeric());
+            }
+        }
+        t
     }
 
     /// The language of `text`, among the enabled ones (or those `narrowed` names). Function

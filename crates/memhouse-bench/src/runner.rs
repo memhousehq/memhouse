@@ -492,6 +492,29 @@ pub struct EnrichTally {
     /// Recall latency measured while that item's jobs were still pending.
     pub recall_during: Latency,
     pub recall_during_pending_jobs: i64,
+    /// Tiered extraction (ECON-04, SCALE-08): sessions by the tier that produced their facts.
+    #[serde(default)]
+    pub tiers: EnrichTiers,
+}
+
+/// The tier mix of an enrichment run, and how sure the small model's extractions were.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnrichTiers {
+    /// Skipped by the rules (too little user text): no model.
+    pub rules: usize,
+    pub small: usize,
+    pub large: usize,
+    /// Unsure enough for the large model, but past the tenant's share.
+    pub capped: usize,
+    /// Rounds of the sessions with a job: a session needs at most one model call per tier.
+    pub rounds: usize,
+    /// Model calls made in this run (none for an extraction served from the cache).
+    #[serde(default)]
+    pub calls: usize,
+    /// Mean extraction confidence of the sessions a model read.
+    pub mean_confidence: f64,
+    /// Sessions whose confidence was below 0.5, 0.6 and 0.7.
+    pub below: [usize; 3],
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -566,6 +589,20 @@ pub fn aggregate(results: &[ItemResult], wall_secs: f64, concurrency: usize) -> 
             lag: metrics::latency(&jobs.iter().map(|j| j.lag_ms).collect::<Vec<_>>()),
             recall_during: metrics::latency(&ens.iter().filter_map(|e| e.recall_during_ms).collect::<Vec<_>>()),
             recall_during_pending_jobs: ens.iter().filter(|e| e.recall_during_ms.is_some()).map(|e| e.pending_at_recall).sum(),
+            tiers: {
+                let conf: Vec<f64> = jobs.iter().filter_map(|j| j.confidence.map(f64::from)).collect();
+                let tier = |t: &str| jobs.iter().filter(|j| j.tier == t).count();
+                EnrichTiers {
+                    rules: jobs.iter().filter(|j| j.skipped).count(),
+                    small: tier("small"),
+                    large: tier("large"),
+                    capped: jobs.iter().filter(|j| j.capped).count(),
+                    rounds: jobs.iter().map(|j| j.rounds).sum(),
+                    calls: jobs.iter().map(|j| j.calls as usize).sum(),
+                    mean_confidence: if conf.is_empty() { 0.0 } else { conf.iter().sum::<f64>() / conf.len() as f64 },
+                    below: [0.5, 0.6, 0.7].map(|t| conf.iter().filter(|c| **c < t).count()),
+                }
+            },
         }
     });
     let llm = (!qa_qs.is_empty()).then(|| {

@@ -121,6 +121,21 @@ memhouse bench run --suite bench/suites/support          # a file, or every suit
 memhouse bench run --suite my-suite.yaml --repeat 3      # also reports reproducibility
 ```
 
+With `--enrich` a suite is replayed as **ingested conversations**: each session is ingested,
+the enrichment model extracts its facts, and the facts are what is scored (a turn counts as
+stored when a fact extracted from it is current; questions recall facts only). This measures
+extraction together with the gate, where the default replay, which writes each turn with
+`remember`, measures the gate alone. It needs a model key, and **every replay pays for its
+extractions** (about $0.00007 per session with the default model): a replay runs in a scratch
+tenant that is erased afterwards, and erasure removes the cached extractions with it.
+`--enrich-max-cost-usd` holds for the whole invocation, across suites and repeats. A fact counts
+for a turn when it cites the turn and restates it (its names and numbers, and half of its other
+words), so a wrong extraction is not scored as the turn's fact:
+
+```bash
+OPENAI_API_KEY=... memhouse bench run --suite bench/suites/personal --enrich --enrich-max-cost-usd 0.05
+```
+
 A suite is replayed with the engine's own recall settings and is a run of its own: `--mode`,
 `--rerank` and `--dataset` are refused together with a suite file.
 

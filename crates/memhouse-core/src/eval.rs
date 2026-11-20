@@ -463,8 +463,74 @@ struct Played {
     key: Option<String>,
     /// The record the turn became; nil when the policy refused the write.
     id: Uuid,
+    /// An ingested replay: the facts extracted from the turn (none: nothing was kept of it).
+    facts: Vec<Uuid>,
     /// The turn's own name in the suite, if it has one.
     name: Option<String>,
+}
+
+impl Played {
+    /// The records that stand for the turn: the one it was written as, or, in an ingested
+    /// replay, the facts extracted from it.
+    fn records(&self) -> Vec<Uuid> {
+        if self.facts.is_empty() {
+            vec![self.id]
+        } else {
+            self.facts.clone()
+        }
+    }
+}
+
+/// Whether an extracted `fact` says what the `turn` said, allowing a paraphrase: at least half
+/// of the turn's values (a capitalised word after the first, a word with a digit; neighbours
+/// are one value, as "Pixel 9") are in the fact, whole, and so is at least half of the turn's other longer words (by their first four
+/// letters). Half, not all: a turn that corrects a value names the old one too ("I no longer
+/// live in Lisbon; I now live in Porto"), and the fact "The user lives in Porto" is right. The
+/// limit of this: a fact that states only the old value of such a turn also passes. This is a
+/// filter against wrong citations, not a proof that the fact is true.
+pub(crate) fn restates(turn: &str, fact: &str) -> bool {
+    let words = |s: &str| s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect::<Vec<_>>();
+    let fact_words: Vec<String> = words(fact).iter().map(|w| w.to_lowercase()).collect();
+    let stem = |w: &str| w.to_lowercase().chars().take(4).collect::<String>();
+    // Values next to each other are one value ("Pixel 9", "Kestrel Works"): all of it or none.
+    let (mut values, mut plain): (Vec<Vec<String>>, Vec<String>) = (vec![], vec![]);
+    let mut last_value = None;
+    for (i, w) in words(turn).into_iter().enumerate() {
+        let named = i > 0 && w.chars().next().is_some_and(|c| c.is_uppercase()) && w.chars().count() > 1;
+        if named || w.chars().any(|c| c.is_ascii_digit()) {
+            match values.last_mut().filter(|_| last_value == Some(i.wrapping_sub(1))) {
+                Some(phrase) => phrase.push(w.to_lowercase()),
+                None => values.push(vec![w.to_lowercase()]),
+            }
+            last_value = Some(i);
+        } else if w.chars().count() >= 4 {
+            plain.push(stem(&w));
+        }
+    }
+    // A fact that negates where the turn does not ("does not live in Lisbon") contradicts it.
+    // English negations only: other languages' facts are not screened for this.
+    let negates = |s: &str| {
+        let l = s.to_lowercase();
+        l.contains("n't") || l.split(|c: char| !c.is_alphanumeric()).any(|w| matches!(w, "not" | "never" | "no"))
+    };
+    if negates(fact) && !negates(turn) {
+        return false;
+    }
+    let found = values.iter().filter(|phrase| phrase.iter().all(|v| fact_words.contains(v))).count();
+    let shared = plain.iter().filter(|p| fact_words.iter().any(|f| f.starts_with(p.as_str()))).count();
+    found * 2 >= values.len() && (plain.is_empty() || shared * 2 >= plain.len())
+}
+
+/// How a suite is replayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReplayMode {
+    /// Each turn is written with `remember`, as an agent writes a memory (the default).
+    #[default]
+    Remember,
+    /// Each session is ingested as a conversation and the enrichment model extracts its facts
+    /// (needs `[enrich]`): what is scored is the extracted facts, so the replay measures
+    /// extraction together with the gate (G14).
+    Ingest,
 }
 
 impl Engine {
@@ -479,6 +545,7 @@ impl Engine {
                 match self.cfg.intake.classifier {
                     crate::config::ClassifierKind::Rules => "rules".to_string(),
                     crate::config::ClassifierKind::Llm => format!("llm:{}", self.cfg.intake.llm.model),
+                    crate::config::ClassifierKind::Tiered => format!("tiered:{}>{}", self.cfg.intake.llm.model, self.cfg.intake.large_llm.model),
                 },
                 if self.languages.tag().is_empty() { String::new() } else { format!("+lang:{}", self.languages.tag()) }
             ),
@@ -491,7 +558,30 @@ impl Engine {
     /// replay writes into a scratch tenant, which is erased before this returns; nothing is
     /// stored about the run (see [`Engine::eval_record`]).
     pub async fn eval_replay(&self, tenant: &str, suite: &Suite, policy: Option<Arc<CompiledPolicy>>, trigger: EvalTrigger) -> anyhow::Result<EvalRun> {
+        self.eval_replay_as(tenant, suite, policy, trigger, ReplayMode::Remember).await
+    }
+
+    /// [`Engine::eval_replay`] in the given mode, with a spend counter of its own.
+    pub async fn eval_replay_as(&self, tenant: &str, suite: &Suite, policy: Option<Arc<CompiledPolicy>>, trigger: EvalTrigger, mode: ReplayMode) -> anyhow::Result<EvalRun> {
+        self.eval_replay_with(tenant, suite, policy, trigger, mode, &crate::enrich::Spend::default()).await
+    }
+
+    /// [`Engine::eval_replay_as`] counting extraction spend in `spend`: a caller that replays
+    /// several suites passes the same counter to each, so `[enrich] max_cost_usd` holds for
+    /// them together.
+    pub async fn eval_replay_with(
+        &self,
+        tenant: &str,
+        suite: &Suite,
+        policy: Option<Arc<CompiledPolicy>>,
+        trigger: EvalTrigger,
+        mode: ReplayMode,
+        spend: &crate::enrich::Spend,
+    ) -> anyhow::Result<EvalRun> {
         suite.validate()?;
+        if mode == ReplayMode::Ingest {
+            anyhow::ensure!(self.cfg.enrich.enabled && self.chat.is_some(), "an ingested replay needs enrichment: set [enrich] enabled and its model");
+        }
         let start = std::time::Instant::now();
         let policy = match policy {
             Some(p) => p,
@@ -516,7 +606,7 @@ impl Engine {
             async move {
                 let mut out = vec![];
                 for c in chunk {
-                    out.push(engine.eval_conversation(scratch, c, suite.k).await);
+                    out.push(engine.eval_conversation(scratch, c, suite.k, mode, spend).await);
                 }
                 out
             }
@@ -551,59 +641,153 @@ impl Engine {
         })
     }
 
+    /// One turn written with `remember`; returns the record it became (nil when the policy
+    /// refused the write).
+    async fn eval_remember(&self, tenant: &str, subject: &str, conversation: &str, turn: &SuiteTurn, at: Option<DateTime<Utc>>) -> anyhow::Result<Uuid> {
+        let written = self
+            .remember(RememberRequest {
+                tenant: Some(tenant.into()),
+                subject: Some(subject.into()),
+                content: turn.say.clone(),
+                kind: turn.kind,
+                occurred_at: at,
+                actor: Some("eval".into()),
+                source: Some("eval".into()),
+                wait: true,
+                ..Default::default()
+            })
+            .await;
+        let id = match written {
+            Ok(r) => r.id,
+            // The policy refuses the write (a kind it forbids, a text over its limit):
+            // that is an outcome to score, not a failed replay. Nothing was stored. Only
+            // an error raised as a refusal counts: a store or provider failure whose
+            // message merely reads like one fails the replay.
+            Err(e) if crate::error::coded(&e) == Some(crate::error::ErrorCode::InvalidRequest) => Uuid::nil(),
+            Err(e) => return Err(e),
+        };
+        // A write still queued when its wait ran out (a loaded machine) would be judged
+        // by the next turn's gate as if it did not exist. Wait until it is settled: a
+        // replay that can't settle a write fails, it never scores a half-written state.
+        let mut tries = 0;
+        while !id.is_nil() && self.intake.pending(tenant, id).await?.is_some() {
+            tries += 1;
+            anyhow::ensure!(tries <= 30, "evaluation: the write of conversation {conversation} did not settle; its replay is not scored");
+            self.settle_record(tenant, id).await?;
+        }
+        // A write the pipeline gave up on (set aside after its attempts failed: a model
+        // or the store was down) says nothing about quality: the replay fails.
+        if !id.is_nil() {
+            let gave_up = self.store.get(tenant, id).await?.is_some_and(|m| {
+                m.status == MemoryStatus::Quarantined && m.metadata.get("quarantine_reasons").and_then(|r| r.as_array()).is_some_and(|r| r.iter().any(|x| x == "intake_failed"))
+            });
+            anyhow::ensure!(!gave_up, "evaluation: the write pipeline failed on a write of conversation {conversation}; its replay is not scored");
+        }
+        Ok(id)
+    }
+
+    /// One session ingested as a conversation, its facts extracted before this returns. Gives,
+    /// per turn, the facts extracted from it (by the message the fact cites).
+    async fn eval_ingest(
+        &self,
+        tenant: &str,
+        subject: &str,
+        conversation: &str,
+        n: usize,
+        session: &SuiteSession,
+        spend: &crate::enrich::Spend,
+    ) -> anyhow::Result<(Vec<Vec<Uuid>>, Vec<Uuid>)> {
+        let name = |t: usize| format!("s{n}t{t}");
+        let messages =
+            session.turns.iter().enumerate().map(|(t, turn)| Message { role: "user".into(), content: turn.say.clone(), timestamp: session.at, id: Some(name(t)) }).collect();
+        let ingested = self
+            .ingest(IngestRequest {
+                tenant: Some(tenant.into()),
+                subject: Some(subject.into()),
+                session_id: Some(format!("s{n}")),
+                session_time: session.at,
+                messages,
+                per_message: true,
+                source: Some("eval".into()),
+                actor: Some("eval".into()),
+                wait: true,
+                ..Default::default()
+            })
+            .await?;
+        // A session whose write has not committed has no extraction job yet: scoring it now
+        // would score an empty session. The replay fails instead.
+        anyhow::ensure!(!ingested.queued, "evaluation: the write of conversation {conversation} did not settle; its replay is not scored");
+        // The session's extraction, run here: a scratch tenant's jobs are not left to workers.
+        let start = std::time::Instant::now();
+        loop {
+            let st = self.store.enrich_status(tenant, Some(subject)).await?;
+            anyhow::ensure!(st.failed == 0, "evaluation: the extraction of conversation {conversation} failed; its replay is not scored");
+            if st.pending + st.running == 0 {
+                break;
+            }
+            anyhow::ensure!(
+                start.elapsed() < std::time::Duration::from_secs(600),
+                "evaluation: the extraction of conversation {conversation} did not finish; its replay is not scored"
+            );
+            // This subject's jobs only: a replay never extracts for another subject or tenant.
+            if !self.enrich_once_for(tenant, subject, spend).await? {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+        // Every record of the subject, a page at a time (a list returns at most 1,000).
+        let mut records = vec![];
+        loop {
+            let page = self.list(Some(tenant.into()), Some(subject.into()), None, 1000, records.len(), true).await?;
+            let n = page.len();
+            records.extend(page);
+            if n < 1000 {
+                break;
+            }
+        }
+        let facts: Vec<&Memory> = records.iter().filter(|m| m.metadata["derived"].as_bool() == Some(true)).collect();
+        // A fact stands for a turn when it cites the turn and says what the turn said: a fact
+        // that cites a turn about Lisbon and states Berlin is a wrong extraction, not that turn.
+        let per_turn: Vec<Vec<Uuid>> = (0..session.turns.len())
+            .map(|t| {
+                let me = name(t);
+                facts.iter().filter(|m| m.turn_ref.as_deref().is_some_and(|r| r.split(',').any(|x| x == me)) && restates(&session.turns[t].say, &m.content)).map(|m| m.id).collect()
+            })
+            .collect();
+        // Facts of this session that restate none of its turns: stored, and true of nothing.
+        let session_id = format!("s{n}");
+        let unmatched = facts.iter().filter(|m| m.session_id.as_deref() == Some(session_id.as_str()) && !per_turn.iter().any(|ids| ids.contains(&m.id))).map(|m| m.id).collect();
+        Ok((per_turn, unmatched))
+    }
+
     /// One conversation: its sessions in order, a checkpoint after each.
-    async fn eval_conversation(&self, tenant: &str, c: &SuiteConversation, k: usize) -> anyhow::Result<(EvalCounts, Vec<String>)> {
+    async fn eval_conversation(&self, tenant: &str, c: &SuiteConversation, k: usize, mode: ReplayMode, spend: &crate::enrich::Spend) -> anyhow::Result<(EvalCounts, Vec<String>)> {
         let subject = format!("eval:{}", c.id);
         let mut counts = EvalCounts::default();
         let mut played: Vec<Played> = vec![];
         // Plans carried out so far (by turn id): no longer scored.
         let mut confirmed: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for session in &c.sessions {
-            for turn in &session.turns {
-                let written = self
-                    .remember(RememberRequest {
-                        tenant: Some(tenant.into()),
-                        subject: Some(subject.clone()),
-                        content: turn.say.clone(),
-                        kind: turn.kind,
-                        occurred_at: session.at,
-                        actor: Some("eval".into()),
-                        source: Some("eval".into()),
-                        wait: true,
-                        ..Default::default()
-                    })
-                    .await;
-                let id = match written {
-                    Ok(r) => r.id,
-                    // The policy refuses the write (a kind it forbids, a text over its limit):
-                    // that is an outcome to score, not a failed replay. Nothing was stored. Only
-                    // an error raised as a refusal counts: a store or provider failure whose
-                    // message merely reads like one fails the replay.
-                    Err(e) if crate::error::coded(&e) == Some(crate::error::ErrorCode::InvalidRequest) => Uuid::nil(),
-                    Err(e) => return Err(e),
+        // An ingested replay: extracted facts that restate no turn. They count as stored and
+        // not true, so a wrong extraction lowers storage precision.
+        let mut unmatched: Vec<Uuid> = vec![];
+        for (n, session) in c.sessions.iter().enumerate() {
+            let mut extracted = match mode {
+                ReplayMode::Ingest => {
+                    let (per_turn, extra) = self.eval_ingest(tenant, &subject, &c.id, n, session, spend).await?;
+                    unmatched.extend(extra);
+                    per_turn
+                }
+                ReplayMode::Remember => vec![],
+            };
+            for (t, turn) in session.turns.iter().enumerate() {
+                let (id, facts) = match mode {
+                    ReplayMode::Remember => (self.eval_remember(tenant, &subject, &c.id, turn, session.at).await?, vec![]),
+                    // Nothing extracted from the turn: nothing of it is stored (the nil id).
+                    ReplayMode::Ingest => (Uuid::nil(), std::mem::take(&mut extracted[t])),
                 };
-                // A write still queued when its wait ran out (a loaded machine) would be judged
-                // by the next turn's gate as if it did not exist. Wait until it is settled: a
-                // replay that can't settle a write fails, it never scores a half-written state.
-                let mut tries = 0;
-                while !id.is_nil() && self.intake.pending(tenant, id).await?.is_some() {
-                    tries += 1;
-                    anyhow::ensure!(tries <= 30, "evaluation: the write of conversation {} did not settle; its replay is not scored", c.id);
-                    self.settle_record(tenant, id).await?;
-                }
-                // A write the pipeline gave up on (set aside after its attempts failed: a model
-                // or the store was down) says nothing about quality: the replay fails.
-                if !id.is_nil() {
-                    let gave_up = self.store.get(tenant, id).await?.is_some_and(|m| {
-                        m.status == MemoryStatus::Quarantined
-                            && m.metadata.get("quarantine_reasons").and_then(|r| r.as_array()).is_some_and(|r| r.iter().any(|x| x == "intake_failed"))
-                    });
-                    anyhow::ensure!(!gave_up, "evaluation: the write pipeline failed on a write of conversation {}; its replay is not scored", c.id);
-                }
                 if let Some(of) = &turn.confirms {
                     confirmed.insert(of.clone());
                 }
-                played.push(Played { expect: turn.expect, key: turn.key.clone(), id, name: turn.id.clone() });
+                played.push(Played { expect: turn.expect, key: turn.key.clone(), id, facts, name: turn.id.clone() });
             }
             // The truth at this checkpoint: for each key, the newest commit turn is current and
             // the earlier ones are stale.
@@ -618,19 +802,22 @@ impl Engine {
             let mut live = std::collections::HashSet::new();
             // A plan that a later turn carried out is out of the scoring from then on.
             let scored = |p: &Played| p.expect != Expect::Ignore && !(p.expect == Expect::Hold && p.name.as_ref().is_some_and(|n| confirmed.contains(n)));
-            for p in played.iter().filter(|p| !p.id.is_nil()) {
-                if let Some(m) = self.store.get(tenant, p.id).await? {
+            for id in played.iter().flat_map(|p| p.records()).filter(|id| !id.is_nil()) {
+                if let Some(m) = self.store.get(tenant, id).await? {
                     if m.status == MemoryStatus::Committed && m.valid_to.is_none_or(|t| t > now) && m.expires_at.is_none_or(|t| t > now) {
-                        live.insert(p.id);
+                        live.insert(id);
                     }
                 }
             }
+            let is_live = |p: &Played| p.records().iter().any(|id| live.contains(id));
             // A turn deduplicated onto an earlier record shares its id: score each record once,
             // by the newest turn that produced it.
             let mut newest: HashMap<Uuid, usize> = HashMap::new();
             for (i, p) in played.iter().enumerate() {
-                if scored(p) && !p.id.is_nil() {
-                    newest.insert(p.id, i);
+                if scored(p) {
+                    for id in p.records().into_iter().filter(|id| !id.is_nil()) {
+                        newest.insert(id, i);
+                    }
                 }
             }
             for (i, p) in played.iter().enumerate() {
@@ -641,33 +828,48 @@ impl Engine {
                     Expect::Ignore => continue,
                     Expect::Hold => {
                         counts.held += 1;
-                        counts.held_committed += u64::from(live.contains(&p.id));
+                        counts.held_committed += u64::from(is_live(p));
                     }
                     Expect::Commit if is_current(i, p) => {
                         counts.truth += 1;
-                        counts.truth_stored += u64::from(live.contains(&p.id));
+                        counts.truth_stored += u64::from(is_live(p));
                     }
                     Expect::Commit => {}
                 }
-                if newest.get(&p.id) == Some(&i) && live.contains(&p.id) {
-                    counts.stored += 1;
-                    counts.stored_true += u64::from(is_current(i, p));
+                for id in p.records() {
+                    if newest.get(&id) == Some(&i) && live.contains(&id) {
+                        counts.stored += 1;
+                        counts.stored_true += u64::from(is_current(i, p));
+                    }
+                }
+            }
+            for id in &unmatched {
+                if let Some(m) = self.store.get(tenant, *id).await? {
+                    counts.stored += u64::from(m.status == MemoryStatus::Committed && m.valid_to.is_none_or(|t| t > now) && m.expires_at.is_none_or(|t| t > now));
                 }
             }
             for q in &session.ask {
                 let Some(&answer) = current.get(q.key.as_str()) else { continue };
+                let right = played[answer].records();
                 let stale: Vec<Uuid> = played
                     .iter()
                     .enumerate()
-                    .filter(|(i, p)| *i != answer && p.expect == Expect::Commit && p.key.as_deref() == Some(q.key.as_str()) && p.id != played[answer].id)
-                    .map(|(_, p)| p.id)
+                    .filter(|(i, p)| *i != answer && p.expect == Expect::Commit && p.key.as_deref() == Some(q.key.as_str()))
+                    .flat_map(|(_, p)| p.records())
+                    .filter(|id| !id.is_nil() && !right.contains(id))
                     .collect();
+                // A question is about a corrected fact when an earlier turn stated the same
+                // key, whether or not that turn left a record of its own to go stale.
+                let corrected = played.iter().enumerate().any(|(i, p)| i != answer && p.expect == Expect::Commit && p.key.as_deref() == Some(q.key.as_str()));
                 let r = self
                     .recall(RecallRequest {
                         tenant: Some(tenant.into()),
                         subject: Some(subject.clone()),
                         query: q.q.clone(),
                         k: Some(k),
+                        // An ingested replay scores the extracted facts, so it recalls facts: the
+                        // rounds they came from are not what an answer is built on.
+                        kinds: (mode == ReplayMode::Ingest).then(|| vec![MemoryKind::Semantic, MemoryKind::Preference, MemoryKind::Commitment]),
                         actor: Some("eval".into()),
                         ..Default::default()
                     })
@@ -677,9 +879,9 @@ impl Engine {
                 }
                 let ids: Vec<Uuid> = r.hits.iter().map(|h| h.memory.id).collect();
                 counts.questions += 1;
-                counts.first_correct += u64::from(ids.first() == Some(&played[answer].id));
-                counts.found += u64::from(ids.contains(&played[answer].id));
-                if !stale.is_empty() {
+                counts.first_correct += u64::from(ids.first().is_some_and(|id| right.contains(id)));
+                counts.found += u64::from(ids.iter().any(|id| right.contains(id)));
+                if corrected {
                     counts.corrected_questions += 1;
                     counts.stale_returned += u64::from(stale.iter().any(|s| ids.contains(s)));
                 }
@@ -690,9 +892,27 @@ impl Engine {
         for (turn, p) in c.sessions.iter().flat_map(|s| &s.turns).zip(&played) {
             // A refused write is an outcome whatever was expected of the turn.
             if p.expect != Expect::Ignore || p.id.is_nil() {
-                let status =
-                    if p.id.is_nil() { "refused".to_string() } else { self.store.get(tenant, p.id).await?.map(|m| m.status.as_str().to_string()).unwrap_or_else(|| "gone".into()) };
-                outcomes.push(format!("{}:{}:{status}", c.id, &crate::engine::content_hash(&turn.say)[..12]));
+                let turn_hash = &crate::engine::content_hash(&turn.say)[..12];
+                if mode == ReplayMode::Ingest {
+                    // Every fact extracted from the turn, by content: two replays agree only when
+                    // they extracted the same facts and left them in the same state.
+                    let mut facts = vec![];
+                    for id in &p.facts {
+                        if let Some(m) = self.store.get(tenant, *id).await? {
+                            facts.push(format!("{}={}", &crate::engine::content_hash(&m.content)[..12], m.status.as_str()));
+                        }
+                    }
+                    facts.sort();
+                    outcomes.push(format!("{}:{turn_hash}:{}", c.id, if facts.is_empty() { "none".to_string() } else { facts.join(",") }));
+                    continue;
+                }
+                let first = p.records()[0];
+                let status = if first.is_nil() {
+                    "refused".to_string()
+                } else {
+                    self.store.get(tenant, first).await?.map(|m| m.status.as_str().to_string()).unwrap_or_else(|| "gone".into())
+                };
+                outcomes.push(format!("{}:{turn_hash}:{status}", c.id));
             }
         }
         Ok((counts, outcomes))
@@ -828,6 +1048,22 @@ mod tests {
         bad.conversations.push(bad.conversations[0].clone());
         assert!(bad.validate().unwrap_err().to_string().contains("used twice"));
         assert!(serde_json::from_str::<Suite>(r#"{"name":"s","conversations":[],"extra":1}"#).is_err());
+    }
+
+    #[test]
+    fn a_fact_stands_for_a_turn_only_when_it_says_the_same() {
+        assert!(restates("I live in Lisbon.", "The user lives in Lisbon."));
+        assert!(restates("I no longer live in Lisbon; I now live in Porto.", "The user moved from Lisbon and now lives in Porto."));
+        assert!(restates("I follow a vegetarian diet.", "The user follows a vegetarian diet."));
+        // A correction names the old value too; the fact with the new one alone is right.
+        assert!(restates("I no longer live in Lisbon; I now live in Porto.", "The user lives in Porto."));
+        // The wrong value, or another thing altogether, cited to the same turn.
+        assert!(!restates("I live in Lisbon.", "The user lives in Berlin."));
+        assert!(!restates("I follow a vegetarian diet.", "The user enjoys skiing in Austria."));
+        assert!(!restates("My phone is a Pixel 9.", "The user's phone is a Pixel 8."));
+        // A fact that negates the turn contradicts it.
+        assert!(!restates("I live in Lisbon.", "The user does not live in Lisbon."));
+        assert!(!restates("I live in Lisbon.", "The user doesn't live in Lisbon anymore."));
     }
 
     #[test]

@@ -410,6 +410,7 @@ async fn eval_gate(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     }
     let mut worse = (*e.cfg).clone();
     worse.intake.correction_threshold = 1.01;
+    worse.intake.marked_correction_threshold = 1.01;
     let degraded = e.clone().reconfigure(worse);
     degraded.eval_suite_put(other, &two, "bench").await?;
     for round in 1..=2 {

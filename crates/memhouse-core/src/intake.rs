@@ -307,6 +307,8 @@ pub(crate) struct Item {
     pub note: Option<String>,
     pub duplicate_of: Option<Uuid>,
     pub superseded: Option<Uuid>,
+    /// Further older versions a marked correction retired, besides `superseded`.
+    pub also_superseded: Vec<(Uuid, &'static str)>,
     pub confirms: Vec<Uuid>,
     /// The held signal this record repeats, its new count, and whether that commits it.
     pub signal: Option<(Uuid, u32, bool)>,
@@ -329,6 +331,7 @@ impl Item {
             note: None,
             duplicate_of: None,
             superseded: None,
+            also_superseded: vec![],
             confirms: vec![],
             signal: None,
             policy_changed: false,
@@ -794,7 +797,7 @@ impl Engine {
             m.language = Some(lang.pack.code().to_string());
             let reasons = self.languages.injection(&m.content);
             if type_gate.judges_statements() {
-                let mut c = self.classifier.classify(&m.content, m.kind, &lang).await?;
+                let mut c = self.classifier.classify_for(&m.tenant, &m.content, m.kind, &lang).await?;
                 // The extractor's reading wins over a plain "fact" or "event" from the rules.
                 if let Some(h) = it.hint.filter(|h| *h != c.statement && (matches!(c.statement, Statement::Fact | Statement::Event) || *h == Statement::Plan)) {
                     c = Classification { statement: h, confidence: c.confidence, reason: format!("extractor: {}", h.as_str()) };
@@ -996,7 +999,16 @@ impl Engine {
                 }
             } else if judged && m.status != MemoryStatus::Quarantined {
                 if let Some(emb) = it.rec.embedding.clone() {
-                    let near = self.store.nearest_many(tenant, subject, m.kind, &emb, 5, &m.scope).await?;
+                    // The wider correction rule needs the text's own marker: a model that
+                    // reads a statement as a correction does not lower the bar. And it is for
+                    // what a caller states directly: an extractor also writes "now" and "no
+                    // longer" into facts that are history, and on LoCoMo with extraction the
+                    // lower bar cost retrieval with no measured gain (G14).
+                    let pack = m.language.as_deref().and_then(|l| self.languages.pack(l)).unwrap_or(self.languages.default_pack());
+                    let marked = class == Some(Statement::Correction) && pack.marker(&m.content, m.kind).is_some_and(|c| c.statement == Statement::Correction);
+                    let wide = marked && !it.derived;
+                    // The sweep looks further than the closest few: every older version counts.
+                    let near = self.store.nearest_many(tenant, subject, m.kind, &emb, if wide { 20 } else { 5 }, &m.scope).await?;
                     // A structured record is told apart by its attributes, not its wording.
                     let comparable = it.route != Route::Structured;
                     if let Some((dup, sim)) = near.first().copied().filter(|(_, s)| comparable && *s >= policy.policy.write_gate.dedup_threshold) {
@@ -1011,7 +1023,12 @@ impl Engine {
                     {
                         // QUAL-01: a correction, or the same statement with a changed value,
                         // supersedes what it updates: the old version stays, superseded and linked.
-                        for (old, sim) in near.iter().copied().filter(|(_, s)| *s >= icfg.correction_threshold) {
+                        // A marked correction needs less similarity than an unmarked value
+                        // update, and replaces further older versions that are nearly as close
+                        // (a fact restated twice leaves two records to retire), the closest one
+                        // being its predecessor. Anything else replaces the closest only.
+                        let floor = if wide { icfg.marked_correction_threshold.min(icfg.correction_threshold) } else { icfg.correction_threshold };
+                        for (old, sim) in near.iter().copied().filter(|(_, s)| *s >= floor) {
                             let Some(o) = self.store.get(tenant, old).await? else { continue };
                             let older = o.occurred_at.unwrap_or(o.created_at) <= m.occurred_at.unwrap_or(m.created_at);
                             let derived_ok = !it.derived || o.metadata.get("derived").and_then(|d| d.as_bool()).unwrap_or(false);
@@ -1019,19 +1036,38 @@ impl Engine {
                             if o.status != MemoryStatus::Committed || !older || !derived_ok || !fresh {
                                 continue;
                             }
-                            let corrects = class == Some(Statement::Correction) && self.languages.values().shares_content_word(&o.content, &m.content);
+                            let values = self.languages.values();
+                            // A further version must be closer than the first had to be: halfway
+                            // to the plain threshold. At the marked threshold itself the sweep
+                            // retired current facts about other things (1 to 3% on the suites).
+                            // (A hair below it, so that a record at exactly 0.7 counts with the
+                            // default thresholds, whose midpoint is 0.70000005 in single precision.)
+                            if it.superseded.is_some() && sim + 1e-4 < (floor + icfg.correction_threshold) / 2.0 {
+                                continue;
+                            }
+                            let corrects = class == Some(Statement::Correction)
+                                && values.shares_content_word(&o.content, &m.content)
+                                && (sim >= icfg.correction_threshold
+                                    || (wide && values.same_topic(self.languages.without_leading_marker(&o.content), self.languages.without_leading_marker(&m.content))));
                             // An event is a new occurrence unless it restates the old one exactly.
                             let overlap = if class == Some(Statement::Event) { 0.9 } else { 0.6 };
-                            let updates = !corrects && self.languages.values().value_update(&o.content, &m.content, overlap);
+                            let updates = !corrects && sim >= icfg.correction_threshold && values.value_update(&o.content, &m.content, overlap);
                             if corrects || updates {
                                 let how = if corrects { "correction" } else { "value_update" };
-                                m.supersedes = Some(old);
-                                m.metadata["supersedes_because"] = json!(how);
                                 supersede.push((old, m.id));
-                                it.superseded = Some(old);
-                                it.note = Some(format!("{} {old} (similarity {sim:.3}), which it supersedes", if corrects { "corrects" } else { "updates the value of" }));
                                 metrics::inc("memhouse_gate_corrections_total", &[("how", how)], 1.0);
-                                break;
+                                if it.superseded.is_some() {
+                                    it.also_superseded.push((old, how));
+                                }
+                                if it.superseded.is_none() {
+                                    m.supersedes = Some(old);
+                                    m.metadata["supersedes_because"] = json!(how);
+                                    it.superseded = Some(old);
+                                    it.note = Some(format!("{} {old} (similarity {sim:.3}), which it supersedes", if corrects { "corrects" } else { "updates the value of" }));
+                                }
+                                if !wide {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1092,6 +1128,9 @@ impl Engine {
                     detail["statement"] = json!(c.statement.as_str());
                     detail["classifier"] = json!(c.reason);
                 }
+                if *action == "memory.supersede" && !it.also_superseded.is_empty() {
+                    detail["also_supersedes"] = json!(it.also_superseded.iter().map(|(id, _)| id).collect::<Vec<_>>());
+                }
                 if *action == "memory.reject" {
                     detail["reason"] = json!(it.note.clone().unwrap_or_default());
                     if let Some(d) = it.duplicate_of {
@@ -1099,6 +1138,18 @@ impl Engine {
                     }
                 }
                 out.push(AuditEntry { actor: actor.clone(), action: (*action).into(), subject: Some(subject.to_string()), memory_id: Some(m.id), detail });
+            }
+            // Every record a correction retires has its own event (not only the predecessor).
+            if it.actions.iter().any(|(a, _)| *a == "memory.supersede") {
+                for (old, how) in &it.also_superseded {
+                    out.push(AuditEntry {
+                        actor: m.provenance.agent.clone().unwrap_or_else(|| m.source.clone()),
+                        action: "memory.supersede".into(),
+                        subject: Some(subject.to_string()),
+                        memory_id: Some(*old),
+                        detail: json!({ "superseded_by": m.id, "because": how, "kind": m.kind.as_str() }),
+                    });
+                }
             }
             // MEM-05: a promotion is its own event, naming the sources it keeps a link to.
             if let Some(from) = m.metadata.get("promoted_from").filter(|f| f.is_array()) {

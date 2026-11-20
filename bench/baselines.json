@@ -3,8 +3,8 @@
   "measured_at": "2026-11-01",
   "embedding_model": "bge-small-en-v1.5-onnx-Q",
   "governance": {
-    "min_checks": 62,
-    "source": "bench-results/guard/20261113-111202-de9f3d_governance_guard_governance"
+    "min_checks": 66,
+    "source": "bench-results/guard/20261120-181814-ef8a0b_governance_guard_governance"
   },
   "runs": [
     {
@@ -90,21 +90,21 @@
         "--suite",
         "bench/suites/personal"
       ],
-      "source": "bench-results/20261113-123259-6d61ea_personal_starter",
+      "source": "bench-results/guard/20261120-182136-a4b279_personal_guard_synthetic_personal_starter",
       "checks": [
         {
           "metric": "eval/storage_f1",
-          "baseline": 0.8874,
+          "baseline": 0.9756,
           "max_drop": 0.02
         },
         {
           "metric": "eval/retrieval_f1",
-          "baseline": 0.928,
+          "baseline": 0.9752,
           "max_drop": 0.02
         },
         {
           "metric": "eval/stale_free",
-          "baseline": 0.1509,
+          "baseline": 0.8491,
           "max_drop": 0.01
         },
         {

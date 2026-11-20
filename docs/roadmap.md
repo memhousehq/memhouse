@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 13 of 36 goals done; G12 built and waiting for its latency check ([goal tracker](#goal-tracker)) |
+| Progress | 13 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 62 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 66 governance checks;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -141,7 +141,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 62 / 62 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 66 / 66 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -152,9 +152,9 @@ including the governance suite.
 | | round recall_all@10 | 59.2 | drops by more than 1.0 |
 | | SQL search p50 | 9.0 ms | rises by more than 50% and 5 ms |
 | | recall p95 | 61 ms | doubles |
-| Synthetic personal starter (20 conversations, 13 November 2026) | storage F1 | 88.7 | drops by more than 2.0 |
-| | retrieval F1 | 92.8 | drops by more than 2.0 |
-| | questions about a corrected fact answered without a stale version | 15.1 | drops by more than 1.0 |
+| Synthetic personal starter (20 conversations, 20 November 2026) | storage F1 | 97.6 | drops by more than 2.0 |
+| | retrieval F1 | 97.5 | drops by more than 2.0 |
+| | questions about a corrected fact answered without a stale version | 84.9 | drops by more than 1.0 |
 | | plans and guesses not committed | 100.0 | drops by more than 1.0 |
 | LoCoMo + enrich (T2) | round recall_all@10 | 66.0 | drops by more than 1.0 |
 | | session recall_all@5 | 79.6 | drops by more than 1.0 |
@@ -1446,7 +1446,7 @@ which is named.
 
 #### G14 — Quality iteration I: weak types and tiered extraction
 
-- [ ] **Done**
+- [ ] **Done** (partly built, 20 November 2026: the correction rule, the tiers and the confidence score are in; the preference and multi-session work and every paid run are still to do)
 
 > `/goal Raise answer quality on the weak categories (LongMemEval preference 66.7 and multi-session 78.5; LoCoMo open-domain 66.7 and multi-hop 79.8) with tiered extraction (rules, then small model, then large model only below a confidence threshold) and session-batched extraction, keeping enrichment cost under $0.0002 per session; verify with T2 on every change and T3 at the end. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -1454,13 +1454,88 @@ which is named.
   suites too. Each change is validated on a sample first, then confirmed on the full set
   (development guide, "Benchmark a change").
 - **Deliverables:**
-  - [ ] confidence score on extracted facts; escalation path to a larger model with a per-tenant cap
+  - [x] confidence score on extracted facts; escalation path to a larger model with a per-tenant cap (20 November 2026; not yet run with a real large model)
   - [ ] preference-aware fact extraction and recall (the cause of the 80.0 → 66.7 drop after the premise check)
   - [ ] multi-session aggregation (counting, dedup across sessions) at fact level
   - [ ] results added to `docs/benchmarks.md`
-  - [ ] corrections supersede what they correct: the stale-fact rate on the synthetic suites (76% on the 500-conversation reference suite, found by G13) brought down, and the suites replayed as ingested conversations with enrichment (added from G13, 13 November 2026)
+  - [ ] corrections supersede what they correct: the stale-fact rate on the synthetic suites (76% on the 500-conversation reference suite, found by G13) brought down, and the suites replayed as ingested conversations with enrichment (added from G13, 13 November 2026). Half done, 20 November 2026: the rate is 14.0% on the reference suite; the ingested replay is built (`memhouse bench run --suite … --enrich`) and has not been run with a real extractor
+  - [x] tiered classifier for the write gate: rules, small model, large model within a per-tenant cap (`[intake] classifier = "tiered"`; added 20 November 2026, ECON-04 names the gate's confidence; not yet run with real models)
 - **Done when:** LongMemEval_S QA (T4, with approval) ≥ 86.0 with preference ≥ 80; LoCoMo QA (T3) ≥ 84.5; large-model calls ≤ 30% of writes.
 - **Guard:** T2 per change, T3 at the end. **Depends on:** G13, G36. **Milestone:** engine complete.
+- **Result (2026-11-20), first session: what could be built and measured without a model key.**
+  - **Corrections supersede what they correct.** A statement with a correction marker now
+    supersedes the closest older record at cosine 0.6 (`[intake] marked_correction_threshold`;
+    it was 0.8 for everything) and any further older version at 0.7, each with its own audit
+    event; below 0.8 it must name no person the old record does not, and the name the old
+    record leads with. An unmarked value update, a statement only a model read as a correction,
+    and a fact extracted by enrichment keep 0.8 and the closest record. On the 500-conversation
+    reference suite the share of questions about a corrected fact that get a stale version fell
+    from 76.2% to **14.4%** [12.6–16.1]; storage F1 86.8 → 97.3, retrieval F1 90.4 → 97.6. The
+    five starter suites: stale share 74–92% → 15–34% ([benchmarks.md](benchmarks.md#synthetic-timeline-suites)).
+    The cost: storage recall on the reference suite 99.98% → 99.7% (about 30 current facts of
+    10,289 retired wrongly). Sweeping every older version at 0.6 gave 13.4% stale but recall
+    99.1%, so it was not kept. What is left is mostly a change stated with no marker and no old
+    value ("I bought a Fairphone 5 yesterday"), which rules cannot read.
+  - **Tiered write gate** (ECON-04, TR-MS-05). `[intake] classifier = "tiered"`: the rules
+    decide a statement with a marker; the small model (`[intake.llm]`) reads one without; the
+    large model (`[intake.large_llm]`) reads it only when the small one's confidence is below
+    `large_below`, within `large_max_share` (0.3) of the tenant's classified writes and
+    `large_max_per_day`. A model can add caution, never release what the rules hold; a failing
+    model or a used-up cap leaves the tier below in charge. Metrics
+    `memhouse_gate_tier_total{tier}` and `memhouse_gate_tier_capped_total`.
+  - **Tiered extraction and the confidence score** (ECON-04, SCALE-08, TR-IN-05). Each
+    extracted fact's `confidence` is the part of its content words found in the rounds it
+    cites (0.3 to 0.95; it was a fixed 0.9). With `[enrich] escalate`, a session whose mean is
+    below `escalate_below` (0.6) is extracted again by `[enrich.large_llm]`, for at most
+    `large_max_share` (0.3) of a tenant's sessions; past the cap, or if that call fails, the
+    small model's facts are stored. Each job's outcome records its tier, confidence, rounds
+    and calls; `memhouse_enrich_tier_total{tier}`. Extraction was already one call per session;
+    this goal measures it: on LoCoMo 0.046 calls per round (SCALE-08 asks for 0.2 or fewer),
+    mean confidence 0.79, and 3 of 272 sessions (1.1%) below the escalation threshold.
+  - **Suites as ingested conversations.** `memhouse bench run --suite … --enrich` ingests each
+    session, extracts its facts and scores those (`ReplayMode::Ingest`).
+  - **Governance checks (4 new, 66 in all).** `gate_tiers`, `extraction_tiers`,
+    `corrections_supersede`, `ingested_replay` ([governance.md](governance.md)); all use
+    stand-in models. The evaluation-gate check now turns off both correction thresholds to
+    make its "worse" engine.
+  - **Guard: T2, $0** (extractions from the cache), with `--skip-latency` on a loaded machine:
+    governance 66 of 66; LongMemEval_S 91.3 / 94.2 / 84.8; LoCoMo 78.8 / 78.7 / 59.2; LoCoMo
+    with extraction 79.4 / 65.6 (79.3 / 65.6 before this change); the
+    starter suite storage F1 97.6, retrieval F1 97.5, 84.9% of the questions about a corrected
+    fact answered without a stale version, 100% of plans and guesses not committed. Those
+    three starter values are the new baselines.
+  - **Not done, and why.** No model key was available to this session, so nothing here was
+    run with a real model: the "Done when" numbers (T3, T4) are not measured, the tiers and
+    the ingested replay have only run with stand-in models, and the default extraction prompt
+    is unchanged (changing it would need new paid extractions to judge). The preference work
+    and multi-session aggregation are not started: both change what the answer model sees,
+    and that can only be judged by a QA run. TR-IN-05's batching across sessions (several
+    short sessions in one call) is not built.
+  - **Review fixes (2026-11-20, pull request 30).** The lower correction bar needs the marker
+    in the text (a model's reading does not lower it) and is not applied to extracted facts,
+    which restored LoCoMo with extraction to its earlier value; a record that leads with a name
+    is retired only by a correction that names it; a marked correction looks at 20 neighbours,
+    not 5, and every record it retires has an audit event. The large model cannot release a
+    hold of the small one. The cap on escalated sessions counts a session once however often
+    its job is retried, and with `max_cost_usd` set the large model stops being called once a
+    call reports no cost. An ingested replay claims its own subject's extraction jobs only
+    (`Store::enrich_claim_for`), counts a fact for a turn only when it restates the turn, keeps
+    one spend counter for the whole run, and reports every extracted fact in its outcomes.
+    `[intake.large_llm]` and `[enrich.large_llm]` tables keep their tier's defaults for keys
+    left out. Not changed: the default key variable of the large extraction model stays the
+    same as the small one's.
+  - **Second review round (2026-11-20).** Names are compared whole, and a correction that
+    leads with a name the old record never mentions is about someone else; a leading marker
+    is taken off by the pack's own pattern before the comparison. The large model does not
+    turn a small-model guess into a plan. The escalation cap counts by session, not by job.
+    Shares and thresholds outside 0 to 1 are refused when the configuration is loaded. The
+    four tier counters are registered for `/metrics` (they were incremented and never
+    shown). The global extraction claim leaves evaluation scratch tenants to the replay. An
+    ingested replay fails rather than score a session whose write has not committed, counts
+    an extracted fact that restates no turn as stored and not true, and accepts a correction
+    turn's fact that names only the new value. Declined: an unbounded search past 20
+    neighbours, a price check before the first large-model call (one call can go uncounted
+    before escalation stops), and proving an extracted fact true by rules.
 
 ### Stage D — Lite profile and developer launch
 

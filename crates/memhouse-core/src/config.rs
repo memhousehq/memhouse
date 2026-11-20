@@ -85,8 +85,12 @@ pub enum ClassifierKind {
     #[default]
     Rules,
     /// A small chat model (`intake.llm`) behind the same interface; the rules answer when it
-    /// fails. Tiering the two by confidence comes with G14.
+    /// fails.
     Llm,
+    /// Tiers (ECON-04, TR-MS-05): the rules first; the small model (`intake.llm`) when the
+    /// rules are less sure than `small_below`; the large model (`intake.large_llm`) only when
+    /// the small one is less sure than `large_below`, and within the tenant's cap.
+    Tiered,
 }
 
 /// The write pipeline (TR-IN-04): a write is authorized and redacted in the request, durably
@@ -114,11 +118,30 @@ pub struct IntakeConfig {
     pub classifier: ClassifierKind,
     /// Chat model of the `llm` classifier.
     pub llm: LlmConfig,
+    /// Large chat model of the `tiered` classifier: the last tier. Keys left out of the table
+    /// keep this tier's defaults.
+    #[serde(deserialize_with = "intake_large_llm")]
+    pub large_llm: LlmConfig,
+    /// `tiered`: the small model reads a statement when the rules' confidence is below this
+    /// (the rules give 0.8 on a marker and 0.6 without one).
+    pub small_below: f32,
+    /// `tiered`: the large model reads a statement when the small model's confidence is below this.
+    pub large_below: f32,
+    /// `tiered`: the largest share of a tenant's classified writes that may reach the large
+    /// model (ECON-04: 0.3). Past it the small model's reading stands.
+    pub large_max_share: f32,
+    /// `tiered`: the most large-model calls per tenant and day (UTC); 0 = no daily cap.
+    pub large_max_per_day: u32,
     /// A held plan or speculation with no end date expires after this many days unconfirmed.
     pub plan_ttl_days: u32,
     /// Cosine similarity at or above which a correction supersedes the closest record of its
     /// kind (QUAL-01). The two must also share a content word.
     pub correction_threshold: f32,
+    /// Cosine similarity at or above which a statement with a correction marker ("no longer",
+    /// "actually", "correction:") supersedes the records it corrects. Lower than
+    /// `correction_threshold`, which stays the bar for an unmarked value update: the marker and
+    /// the shared content word carry part of the evidence (found by the synthetic suites, G14).
+    pub marked_correction_threshold: f32,
     /// Cosine similarity at or above which a completed event confirms a held plan (they must
     /// also share a content word and the scope; speculation is never confirmed).
     pub confirm_threshold: f32,
@@ -138,8 +161,14 @@ impl Default for IntakeConfig {
             wait_timeout_ms: 10_000,
             classifier: ClassifierKind::Rules,
             llm: LlmConfig { model: "gpt-4o-mini".into(), max_tokens: 60, ..LlmConfig::default() },
+            large_llm: LlmConfig { model: "gpt-4o".into(), max_tokens: 60, ..LlmConfig::default() },
+            small_below: 0.7,
+            large_below: 0.6,
+            large_max_share: 0.3,
+            large_max_per_day: 0,
             plan_ttl_days: 90,
             correction_threshold: 0.8,
+            marked_correction_threshold: 0.6,
             confirm_threshold: 0.9,
             preference_signals: 2,
         }
@@ -339,6 +368,19 @@ pub struct EnrichConfig {
     pub max_attempts: i32,
     /// Stop calling the LLM once this process has spent this much (USD); 0 = no limit.
     pub max_cost_usd: f64,
+    /// Extract again with `large_llm` when a session's extraction confidence is below
+    /// `escalate_below` (ECON-04, TR-MS-05). Off by default: one model reads every session.
+    pub escalate: bool,
+    /// The larger model of the last extraction tier. Keys left out of the table keep this
+    /// tier's defaults (the endpoint, the model, the token limit).
+    #[serde(deserialize_with = "enrich_large_llm")]
+    pub large_llm: LlmConfig,
+    /// Extraction confidence (0 to 1: how much of the extracted facts is found in the rounds
+    /// they cite) below which a session goes to the large model.
+    pub escalate_below: f32,
+    /// The largest share of a tenant's extracted sessions that may go to the large model
+    /// (ECON-04: 0.3). Past it the small model's facts stand.
+    pub large_max_share: f32,
 }
 
 impl Default for EnrichConfig {
@@ -357,8 +399,33 @@ impl Default for EnrichConfig {
             min_user_chars: 40,
             max_attempts: 4,
             max_cost_usd: 0.0,
+            escalate: false,
+            large_llm: LlmConfig { base_url: "https://openrouter.ai/api/v1".into(), model: "openai/gpt-4o-mini".into(), max_tokens: 3000, ..LlmConfig::default() },
+            escalate_below: 0.6,
+            large_max_share: 0.3,
         }
     }
+}
+
+/// A model table laid over its tier's defaults: a table that sets only `api_key_env` keeps the
+/// tier's endpoint, model and token limit, like a table that is left out.
+fn overlay<'de, D: serde::Deserializer<'de>>(d: D, base: LlmConfig) -> Result<LlmConfig, D::Error> {
+    use serde::de::Error;
+    let given = serde_json::Value::deserialize(d)?;
+    let mut merged = serde_json::to_value(&base).map_err(D::Error::custom)?;
+    match (merged.as_object_mut(), given.as_object()) {
+        (Some(m), Some(g)) => m.extend(g.iter().map(|(k, v)| (k.clone(), v.clone()))),
+        _ => return Err(D::Error::custom("a model table must be a table of keys")),
+    }
+    serde_json::from_value(merged).map_err(D::Error::custom)
+}
+
+fn intake_large_llm<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LlmConfig, D::Error> {
+    overlay(d, IntakeConfig::default().large_llm)
+}
+
+fn enrich_large_llm<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LlmConfig, D::Error> {
+    overlay(d, EnrichConfig::default().large_llm)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -553,7 +620,22 @@ impl Config {
         };
         cfg.apply_env();
         cfg.check_floor().map_err(|e| anyhow::anyhow!("{e} (config {})", path.display()))?;
+        cfg.check_ranges().map_err(|e| anyhow::anyhow!("{e} (config {})", path.display()))?;
         Ok(cfg)
+    }
+
+    /// Shares and thresholds are fractions: `30` for 30% is an error, not a cap of 100%.
+    pub fn check_ranges(&self) -> anyhow::Result<()> {
+        for (name, v) in [
+            ("intake.large_max_share", self.intake.large_max_share),
+            ("intake.small_below", self.intake.small_below),
+            ("intake.large_below", self.intake.large_below),
+            ("enrich.large_max_share", self.enrich.large_max_share),
+            ("enrich.escalate_below", self.enrich.escalate_below),
+        ] {
+            anyhow::ensure!(v.is_finite() && (0.0..=1.0).contains(&v), "{name} must be a fraction from 0 to 1, not {v}");
+        }
+        Ok(())
     }
 
     /// The security baseline configuration can't lower (TR-CORE-05, AP-10): `secret` is always
@@ -646,6 +728,24 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model table that sets one key keeps its tier's other defaults.
+    #[test]
+    fn a_partial_large_model_table_keeps_the_tiers_defaults() {
+        let cfg: Config = toml::from_str("[enrich.large_llm]\napi_key_env = \"MY_KEY\"\n\n[intake.large_llm]\nmodel = \"my-large\"\n").unwrap();
+        let (d, i) = (EnrichConfig::default().large_llm, IntakeConfig::default().large_llm);
+        assert_eq!(cfg.enrich.large_llm.api_key_env.as_deref(), Some("MY_KEY"));
+        assert_eq!((&cfg.enrich.large_llm.base_url, &cfg.enrich.large_llm.model, cfg.enrich.large_llm.max_tokens), (&d.base_url, &d.model, d.max_tokens));
+        assert_eq!((cfg.intake.large_llm.model.as_str(), cfg.intake.large_llm.max_tokens, &cfg.intake.large_llm.base_url), ("my-large", i.max_tokens, &i.base_url));
+        // A share is a fraction: 30 for 30% is refused, with the key's name.
+        let mut wrong = Config::default();
+        wrong.intake.large_max_share = 30.0;
+        assert!(wrong.check_ranges().unwrap_err().to_string().contains("intake.large_max_share must be a fraction"));
+        Config::default().check_ranges().unwrap();
+        // Left out altogether: the same defaults.
+        let none: Config = toml::from_str("").unwrap();
+        assert_eq!(none.enrich.large_llm.base_url, d.base_url);
+    }
 
     /// PROF-12: an empty file starts with authentication, redaction and the injection screen on.
     #[test]

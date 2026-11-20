@@ -37,10 +37,11 @@ pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<En
     let store = PgStore::connect(&cfg.database.url, cfg.database.max_connections, cfg.embedding.passage_prefix.as_deref().unwrap_or("")).await?;
     store.migrate(embedder.dim(), embedder.id()).await?;
     let chat = memhouse_models::enrich_chat(&cfg, None)?;
-    let classifier = memhouse_models::classifier_chat(&cfg)?;
-    let mut engine = Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat);
-    if let Some(chat) = classifier {
-        engine = engine.with_classifier(Arc::new(memhouse_core::classify::ChatClassifier { chat }));
+    let classifier = memhouse_models::build_classifier(&cfg)?;
+    let large = memhouse_models::enrich_large_chat(&cfg, None)?;
+    let mut engine = Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat).with_large_chat(large);
+    if let Some(c) = classifier {
+        engine = engine.with_classifier(c);
     }
     // Records name the policy that admitted them; the policy itself is kept with them (and the
     // active policy is compiled now, so a spec that no longer compiles is reported at start).

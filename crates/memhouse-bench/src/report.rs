@@ -144,6 +144,32 @@ pub fn markdown(s: &Summary) -> String {
                 e.jobs, e.llm_calls, e.cached, e.skipped, e.failed
             );
             let _ = writeln!(o, "| Facts stored | {} |", e.facts);
+            let t = &e.tiers;
+            let read = t.small + t.large;
+            if read > 0 {
+                let _ = writeln!(
+                    o,
+                    "| Tiers | rules only (skipped) {} · small model {} · large model {} ({:.1}% of the sessions a model read; {} more held back by the cap) |",
+                    t.rules,
+                    t.small,
+                    t.large,
+                    100.0 * t.large as f64 / read as f64,
+                    t.capped
+                );
+                let _ = writeln!(
+                    o,
+                    "| Extraction calls per round | {:.3} needed ({} extractions, one per session and tier, over {} rounds); {} made in this run, the rest from the cache |",
+                    (read + t.large) as f64 / t.rounds.max(1) as f64,
+                    read + t.large,
+                    t.rounds,
+                    t.calls
+                );
+                let _ = writeln!(
+                    o,
+                    "| Extraction confidence | mean {:.2}; below 0.5: {} · below 0.6: {} · below 0.7: {} sessions of {} |",
+                    t.mean_confidence, t.below[0], t.below[1], t.below[2], read
+                );
+            }
             let _ = writeln!(o, "| Tokens | {} prompt + {} completion |", e.calls.prompt_tokens, e.calls.completion_tokens);
             let _ = writeln!(
                 o,

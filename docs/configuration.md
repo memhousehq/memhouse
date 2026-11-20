@@ -112,6 +112,9 @@ assistant_chars = 300
 min_user_chars = 40
 max_attempts = 4
 max_cost_usd = 0.0                   # 0 = no limit
+escalate = false                     # true: unsure sessions go to [enrich.large_llm]
+escalate_below = 0.6
+large_max_share = 0.3
 
 [enrich.llm]
 provider = "openai"                  # any OpenAI-compatible chat endpoint
@@ -359,12 +362,38 @@ answer, and workers pick up whatever a crash or a failure left behind.
 | `max_attempts` | 5 | attempts (backoff 0.5, 1, 2, 4 … s, at most 30) before a failing proposal is set aside and its records quarantined (`intake_failed`) |
 | `keep_done_secs` | 3600 | finished proposals, without their content, are kept this long for `wait` answers, then pruned |
 | `wait_timeout_ms` | 10000 | the longest a request with `wait: true` waits for the gate |
-| `classifier` | `rules` | the statement classifier: `rules` (deterministic, free) or `llm` (`[intake.llm]`, falling back to the rules when it fails) |
-| `llm` | `gpt-4o-mini`, 60 tokens | an `LlmConfig` table, as `[enrich.llm]`; used only with `classifier = "llm"` |
+| `classifier` | `rules` | the statement classifier: `rules` (deterministic, free), `llm` (`[intake.llm]`, falling back to the rules when it fails) or `tiered` (the rules first, then the models below; see [Tiers](#tiers-rules-small-model-large-model)) |
+| `llm` | `gpt-4o-mini`, 60 tokens | an `LlmConfig` table, as `[enrich.llm]`: the model of `llm`, and the small model of `tiered` |
+| `large_llm` | `gpt-4o`, 60 tokens | an `LlmConfig` table: the large model of `tiered` |
+| `small_below` | 0.7 | `tiered`: the small model reads a statement when the rules' confidence is below this (the rules give 0.8 on a marker, 0.6 without one) |
+| `large_below` | 0.6 | `tiered`: the large model reads a statement when the small model's confidence is below this |
+| `large_max_share` | 0.3 | `tiered`: the largest share of a tenant's classified writes that may reach the large model, a fraction from 0 to 1 (another value is refused at start); past it the small model's reading stands |
+| `large_max_per_day` | 0 | `tiered`: the most large-model reads per tenant and day (UTC); 0 = no daily cap |
 | `plan_ttl_days` | 90 | a held plan or speculation without `valid_to` expires after this many days unconfirmed |
-| `correction_threshold` | 0.8 | cosine at or above which a correction supersedes the closest record of its kind (they must also share a content word) |
+| `correction_threshold` | 0.8 | cosine at or above which a statement that restates a record with a changed value ("three bikes" → "four bikes") supersedes the closest such record |
+| `marked_correction_threshold` | 0.6 | cosine at or above which a statement with a correction marker ("no longer", "actually", "correction:") supersedes the closest older record it corrects, and any further older version at or above the midpoint of the two thresholds (0.7). The marker must be in the text (a model's reading is not enough); the two must share a content word; and below `correction_threshold` they must be about the same one (no relative or animal word on one side only, and a name that either statement leads with must appear in the other). A fact extracted by enrichment keeps `correction_threshold` and supersedes the closest record only |
 | `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word and the scope; speculation is never confirmed), and at which an inferred preference counts as the same signal again |
 | `preference_signals` | 2 | times an inferred preference (a write with `metadata.signal = true`) must be seen, in the same scope, before it is committed; 1 commits it at once |
+
+### Tiers: rules, small model, large model
+
+With `classifier = "tiered"` the gate uses the cheapest reader that is sure (ECON-04):
+
+1. **The rules** read every statement, for free. What they hold as a plan or a guess is
+   decided here, and so is any statement they are at least `small_below` sure of: with the
+   defaults, every statement with a marker ("prefers", "no longer"), which scores 0.8.
+2. **The small model** (`[intake.llm]`) reads a statement the rules do not hold and are less
+   sure of than `small_below`: with the defaults, one they found no marker in (0.6).
+3. **The large model** (`[intake.large_llm]`) reads it only when the small model's own
+   confidence is below `large_below`, and only while the tenant is within `large_max_share` of
+   its classified writes and `large_max_per_day`.
+
+A model can add caution, never remove it: what the rules hold as a plan or a guess stays held
+and is not sent to a model, and what the small model holds stays held whatever the large model
+reads. A model that fails leaves the tier below in charge, and a tenant past its cap gets the
+small model's reading: no write skips the gate. A `[intake.large_llm]` table that sets only some
+keys keeps this tier's defaults for the others. The counts are per server
+process. `memhouse_gate_tier_total{tier}` and `memhouse_gate_tier_capped_total` show the mix.
 
 ## `[enrich]`
 
@@ -384,6 +413,27 @@ and [operations.md](operations.md#enrichment-workers) for running it.
 | `min_user_chars` | 40 | sessions with less user text are skipped without a call |
 | `max_attempts` | 4 | retries with backoff 2^attempt seconds, then `failed` |
 | `max_cost_usd` | 0 | stop calling the LLM after this much spend per process (0 = no limit) |
+| `escalate` | false | extract a session again with `[enrich.large_llm]` when its extraction confidence is below `escalate_below` |
+| `large_llm` | `openai/gpt-4o-mini` through OpenRouter, 3000 tokens | an `LlmConfig` table: the larger model of the last extraction tier |
+| `escalate_below` | 0.6 | extraction confidence below which a session goes to the large model |
+| `large_max_share` | 0.3 | the largest share of a tenant's extracted sessions (per process) that may go to the large model; past it the small model's facts stand |
+
+Extraction is tiered too (ECON-04, SCALE-08). A session with less user text than
+`min_user_chars` is skipped by a rule, without a model. Every other session is read as a whole
+by `[enrich.llm]`: the session is the unit of extraction, however many turns it has. That is one
+provider call unless the answer is in the cache (none) or an attempt fails and is retried. Each extracted fact gets a
+**confidence** from 0.3 to 0.95: the part of its content words found in the rounds it cites (a
+fact that cites no round is compared with the whole session and loses a tenth). It is stored in
+the record's `confidence`. A session's confidence is the mean of its facts'; an answer cut at the
+token limit is capped at 0.5, and no facts from a long session scores 0.4. With `escalate`, a
+session below `escalate_below` is extracted again by the large model. If that call fails, or the
+tenant's share is used up, the small model's facts are stored. A session counts once towards the
+share however often its job is retried. With `max_cost_usd` set, the large model is called only
+while every call's cost is known: once a provider answers with tokens and no cost, escalation
+stops and a warning says so, since the cap could no longer be checked. A `[enrich.large_llm]`
+table that sets only some keys keeps this tier's defaults for the others. `memhouse_enrich_tier_total{tier}`
+counts sessions by the tier that produced their facts (`rules`, `small`, `large`), and each
+job's outcome records its tier, confidence, rounds and calls.
 
 `[enrich.llm]` (the same shape as the optional top-level `[llm]`):
 

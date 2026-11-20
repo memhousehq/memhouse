@@ -42,6 +42,10 @@ const HELP: &[(&str, &str, &str)] = &[
     ("memhouse_enrich_queue_lag_seconds", "gauge", "Age of the oldest pending enrichment job"),
     ("memhouse_enrich_cost_usd_total", "counter", "LLM spend of enrichment, in US dollars"),
     ("memhouse_enrich_tokens_total", "counter", "LLM tokens of enrichment, by type"),
+    ("memhouse_enrich_tier_total", "counter", "Sessions by the extraction tier that produced their facts: rules, small, large"),
+    ("memhouse_enrich_tier_capped_total", "counter", "Extraction escalations held back by the tenant's share"),
+    ("memhouse_gate_tier_total", "counter", "Statements by the classifier tier that decided them: rules, small, large"),
+    ("memhouse_gate_tier_capped_total", "counter", "Large-model reads of the write gate refused by the tenant's cap"),
     ("memhouse_build_info", "gauge", "Build and API versions"),
 ];
 
