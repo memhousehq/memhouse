@@ -7,6 +7,7 @@
 
 use crate::api_checks::{Api, KEY};
 use crate::governance::{check, stub_engine, Check, Scratch};
+use crate::scratch::{Db, Sql};
 use memhouse_core::identity::{self, Principal, PrincipalKind};
 use memhouse_core::types::*;
 use memhouse_core::Engine;
@@ -51,11 +52,11 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(memhouse_server::serve_listener(listener, e.clone()));
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
+        let db = scratch.db().await?;
         let mut api = Api::new(url);
-        let mut out = vec![explanation(&mut api, &e, &pool).await?, round_trip(&e).await?, overhead(&e).await?];
+        let mut out = vec![explanation(&mut api, &e, &db).await?, round_trip(&e).await?, overhead(&e).await?];
         server.abort();
-        pool.close().await;
+        db.close().await;
         out.push(no_content(base, &scratch.url).await?);
         anyhow::Ok(out)
     }
@@ -75,7 +76,7 @@ async fn key_for(e: &Engine, id: &str, kind: PrincipalKind) -> anyhow::Result<St
 
 /// The done-when of G07: exclusions by label and budget (and access, validity, state) with the
 /// right reasons; hidden from a non-auditor, refused to another principal.
-async fn explanation(api: &mut Api, e: &Engine, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn explanation(api: &mut Api, e: &Engine, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let subj = "customer:exp";
     let w = |content: &str| RememberRequest { subject: Some(subj.into()), content: content.into(), wait: true, ..Default::default() };
@@ -141,14 +142,14 @@ async fn explanation(api: &mut Api, e: &Engine, pool: &sqlx::PgPool) -> anyhow::
     // Stored, and erased with the subject.
     let mut stored = 0i64;
     for _ in 0..50 {
-        stored = sqlx::query_scalar("SELECT count(*) FROM mh_recall WHERE id = $1::uuid").bind(&rid).fetch_one(pool).await?;
+        stored = db.count(Sql::each("SELECT count(*) FROM mh_recall WHERE id = $1::uuid", "SELECT count(*) FROM mh_recall WHERE id = ?1"), &[(&rid).into()]).await?;
         if stored == 1 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     e.forget_subject(None, subj, Some("bench".into())).await?;
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_recall WHERE subject = $1").bind(subj).fetch_one(pool).await?;
+    let left = db.count(Sql::same("SELECT count(*) FROM mh_recall WHERE subject = $1"), &[subj.into()]).await?;
     if stored != 1 || left != 0 {
         problems.push(format!("explanation rows: {stored} stored, {left} left after erasing the subject"));
     }

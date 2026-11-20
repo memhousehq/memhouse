@@ -45,6 +45,7 @@ impl memhouse_core::IntakeQueue for SqliteStore {
         "sqlite"
     }
 
+    #[tracing::instrument(name = "db.intake_enqueue", skip_all, fields(db.system = "sqlite", db.operation = "INSERT"))]
     async fn enqueue(&self, p: &Proposal) -> anyhow::Result<()> {
         let head = p.records.first().map(|r| &r.memory);
         let embedder = self.ident().map(|i| i.embedder);
@@ -90,6 +91,7 @@ impl memhouse_core::IntakeQueue for SqliteStore {
         Ok(tx.commit()?)
     }
 
+    #[tracing::instrument(name = "db.intake_claim", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE"))]
     async fn claim(&self, limit: usize, lease_secs: u64, subject: Option<(&str, &str)>) -> anyhow::Result<Vec<IntakeJob>> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;

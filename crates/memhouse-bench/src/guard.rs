@@ -44,8 +44,14 @@ pub struct Baselines {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GovernanceBase {
-    /// Every check must pass, and there must be at least this many (a removed check is a regression).
+    /// Every check that applies to the profile must pass, and there must be at least this many
+    /// checks in all (a removed check is a regression).
     pub min_checks: usize,
+    /// How many checks may say they do not apply, by profile (`sqlite`). A profile not named
+    /// here, Postgres above all, allows none: there every check applies and must pass. A check
+    /// that newly declares itself not applicable is a regression like a removed one.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub max_not_applicable: std::collections::BTreeMap<String, usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
@@ -147,17 +153,7 @@ pub async fn run(g: GuardArgs, cfg: Config) -> anyhow::Result<()> {
     eprintln!("guard: governance suite");
     let (s, dir) = run_to(a, cfg.clone(), true).await?;
     let gov = s.governance.as_ref().context("governance report missing")?;
-    for c in gov.checks.iter().filter(|c| !c.passed) {
-        rows.push(Row { run: "governance".into(), metric: c.id.clone(), baseline: 1.0, value: Some(0.0), limit: "pass".into(), pass: false });
-    }
-    rows.push(Row {
-        run: "governance".into(),
-        metric: "checks passed".into(),
-        baseline: base.governance.min_checks as f64,
-        value: Some(gov.passed as f64),
-        limit: format!("all of ≥ {}", base.governance.min_checks),
-        pass: gov.failed == 0 && gov.checks.len() >= base.governance.min_checks,
-    });
+    rows.extend(governance_rows(&base.governance, gov));
     if g.update {
         base.governance.min_checks = base.governance.min_checks.max(gov.checks.len());
         base.governance.source = Some(rel(&dir));
@@ -249,6 +245,30 @@ pub async fn run(g: GuardArgs, cfg: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The guard's verdict on a governance run: every check that applies to the profile passed, no
+/// check has gone missing, and no more checks than the baselines allow for the profile say they
+/// do not apply (none on Postgres, so there it is "all of at least `min_checks`", as before).
+fn governance_rows(base: &GovernanceBase, gov: &crate::governance::GovernanceReport) -> Vec<Row> {
+    let row =
+        |metric: &str, baseline: f64, value: f64, limit: String, pass: bool| Row { run: "governance".into(), metric: metric.into(), baseline, value: Some(value), limit, pass };
+    let mut rows: Vec<Row> = gov.checks.iter().filter(|c| c.applies() && !c.passed).map(|c| row(&c.id, 1.0, 0.0, "pass".into(), false)).collect();
+    let allowed = base.max_not_applicable.get(&gov.profile).copied().unwrap_or(0);
+    let not_applicable = gov.checks.iter().filter(|c| !c.applies()).count();
+    // Checks that apply and passed, against the checks that must apply: all of them on a
+    // profile that allows none to be left out.
+    rows.push(row(
+        "checks passed",
+        base.min_checks as f64,
+        gov.passed as f64,
+        if allowed == 0 { format!("all of ≥ {}", base.min_checks) } else { format!("all applicable of ≥ {}", base.min_checks) },
+        gov.failed == 0 && gov.checks.len() >= base.min_checks,
+    ));
+    if allowed > 0 || not_applicable > 0 {
+        rows.push(row("checks not applicable", allowed as f64, not_applicable as f64, format!("≤ {allowed}"), not_applicable <= allowed));
+    }
+    rows
+}
+
 fn is_latency(metric: &str) -> bool {
     metric.ends_with("_ms")
 }
@@ -259,4 +279,63 @@ fn rel(p: &Path) -> String {
 
 fn slug(s: &str) -> String {
     s.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::governance::{Check, GovernanceReport};
+
+    fn a_check(id: &str, passed: bool, not_applicable: Option<&str>) -> Check {
+        Check {
+            id: id.into(),
+            requirement: String::new(),
+            title: String::new(),
+            passed,
+            value: String::new(),
+            target: String::new(),
+            detail: String::new(),
+            not_applicable: not_applicable.map(String::from),
+        }
+    }
+
+    fn base(min_checks: usize, sqlite: Option<usize>) -> GovernanceBase {
+        GovernanceBase { min_checks, max_not_applicable: sqlite.map(|n| ("sqlite".to_string(), n)).into_iter().collect(), source: None }
+    }
+
+    fn passes(rows: &[Row]) -> bool {
+        rows.iter().all(|r| r.pass)
+    }
+
+    #[test]
+    fn postgres_needs_every_check_to_apply_and_pass() {
+        let all = GovernanceReport::new(vec![a_check("a", true, None), a_check("b", true, None)], "postgres", 0.0);
+        let rows = governance_rows(&base(2, Some(1)), &all);
+        assert!(passes(&rows) && rows.len() == 1 && rows[0].limit == "all of ≥ 2" && rows[0].value == Some(2.0));
+        // A failed check, a missing check, and a check that says it does not apply all fail the guard.
+        assert!(!passes(&governance_rows(&base(2, None), &GovernanceReport::new(vec![a_check("a", true, None), a_check("b", false, None)], "postgres", 0.0))));
+        assert!(!passes(&governance_rows(&base(3, None), &all)));
+        assert!(!passes(&governance_rows(&base(2, Some(1)), &GovernanceReport::new(vec![a_check("a", true, None), a_check("b", false, Some("no"))], "postgres", 0.0))));
+    }
+
+    #[test]
+    fn sqlite_needs_every_applicable_check_to_pass() {
+        let report = |checks| GovernanceReport::new(checks, "sqlite", 0.0);
+        let ok = report(vec![a_check("a", true, None), a_check("b", false, Some("Postgres only")), a_check("c", true, None)]);
+        assert_eq!(ok.summary(), "2 of 2 applicable checks passed; 1 not applicable to this profile");
+        assert!(passes(&governance_rows(&base(3, Some(1)), &ok)));
+        // More checks left out than the baselines allow, an applicable check failing, a check missing.
+        assert!(!passes(&governance_rows(&base(3, Some(0)), &ok)));
+        assert!(!passes(&governance_rows(&base(3, Some(1)), &report(vec![a_check("a", false, None), a_check("b", false, Some("Postgres only")), a_check("c", true, None)]))));
+        assert!(!passes(&governance_rows(&base(4, Some(1)), &ok)));
+        // A report written before the field existed has no profile: nothing may be left out.
+        assert!(!passes(&governance_rows(&base(3, Some(1)), &GovernanceReport { profile: String::new(), ..ok })));
+    }
+
+    #[test]
+    fn baselines_file_still_parses() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../bench/baselines.json")).unwrap();
+        let b: Baselines = serde_json::from_str(&text).unwrap();
+        assert!(b.governance.min_checks > 0 && !b.governance.max_not_applicable.contains_key("postgres"));
+    }
 }

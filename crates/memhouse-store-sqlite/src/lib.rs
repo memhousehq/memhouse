@@ -62,7 +62,11 @@ pub fn private_dir(dir: &Path) -> anyhow::Result<()> {
         let meta = std::fs::metadata(dir)?;
         // SAFETY: geteuid has no preconditions and cannot fail.
         let me = unsafe { libc::geteuid() };
-        anyhow::ensure!(meta.is_dir() && meta.uid() == me, "the database directory {} does not belong to this user: the Lite store only opens a database in a directory of its own user", dir.display());
+        anyhow::ensure!(
+            meta.is_dir() && meta.uid() == me,
+            "the database directory {} does not belong to this user: the Lite store only opens a database in a directory of its own user",
+            dir.display()
+        );
         anyhow::ensure!(
             meta.mode() & 0o022 == 0,
             "the database directory {} can be written by other users (mode {:o}): close it first, for example `chmod 700 {}`",

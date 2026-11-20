@@ -19,6 +19,7 @@ mod policy_checks;
 pub mod report;
 pub mod runner;
 mod schema_checks;
+mod scratch;
 pub mod suites;
 pub mod synth;
 mod telemetry_checks;
@@ -464,8 +465,9 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
         eprintln!("Running governance and safety suite ...");
         let g = governance::run(&engine, &run_id).await?;
         for c in &g.checks {
-            eprintln!("  {} {:<22} {}", if c.passed { "✓" } else { "✗" }, c.id, c.value);
+            eprintln!("  {} {:<22} {}", c.mark(), c.id, c.value);
         }
+        eprintln!("  {}", g.summary());
         summary.governance = Some(g);
     } else if let Some(s) = args.suite.as_deref().filter(|s| std::path::Path::new(s).exists()) {
         // Evaluation suites (G13): replayed through the real write and recall paths.

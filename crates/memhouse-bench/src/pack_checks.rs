@@ -9,6 +9,7 @@
 //!   in the structured hits or in the rendered block (PERF-06, INT-04).
 
 use crate::governance::{check, stub_engine, Check, Scratch};
+use crate::scratch::{Db, Sql};
 use memhouse_core::pack::{approx_tokens, cosine, overlap, shingles};
 use memhouse_core::policy::parse_spec;
 use memhouse_core::types::*;
@@ -42,7 +43,7 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         .zip(results)
         .map(|((id, req, title), r)| match r {
             Ok((passed, value, detail)) => check(id, req, title, passed, value, "all", detail),
-            Err(e) => check(id, req, title, false, "error".into(), "all", format!("{e:#}")),
+            Err(e) => crate::governance::errored(id, req, title, "all", e),
         })
         .collect()
 }
@@ -51,11 +52,12 @@ async fn suites(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     let scratch = Scratch::create(base, "pack").await?;
     let out = async {
         let e = stub_engine(base, &scratch.url, "stub:p", 256, "", true).await?;
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
+        let db = scratch.db().await?;
         // The checks that activate policies run last, each leaving the default ranking behind.
         let budget = token_budget(&e).await;
         let dedup = packing_dedup(&e).await;
-        let weights = ranking_weights(&e, &pool).await;
+        let weights = ranking_weights(&e, &db).await;
+        db.close().await;
         Ok::<_, anyhow::Error>(vec![weights, dedup, budget])
     }
     .await;
@@ -77,7 +79,7 @@ async fn activate(e: &Engine, n: &mut u32, ranking: &str) -> anyhow::Result<()> 
 }
 
 /// HYB-05's acceptance test: a controlled set whose order is known for each weight.
-async fn ranking_weights(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
+async fn ranking_weights(e: &Engine, db: &Db) -> Outcome {
     let subj = "customer:ranking";
     let now = chrono::Utc::now();
     let mut problems = vec![];
@@ -91,7 +93,7 @@ async fn ranking_weights(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         problems.push(format!("the controlled set was stored as {}, {}, {}", old.status.as_str(), recent.status.as_str(), plan.status.as_str()));
     }
     // The recent record is the less certain one.
-    sqlx::query("UPDATE mh_memory SET confidence = 0.2 WHERE id = $1").bind(recent.id).execute(pool).await?;
+    db.execute(Sql::same("UPDATE mh_memory SET confidence = 0.2 WHERE id = $1"), &[recent.id.into()]).await?;
     let name = |id: Uuid| {
         if id == old.id {
             "old"

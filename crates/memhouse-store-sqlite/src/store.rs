@@ -218,6 +218,7 @@ impl Store for SqliteStore {
         Ok(())
     }
 
+    #[tracing::instrument(name = "db.insert", skip_all, fields(db.system = "sqlite", db.operation = "INSERT", rows = records.len()))]
     async fn insert(&self, records: &[NewMemory]) -> anyhow::Result<()> {
         if records.is_empty() {
             return Ok(());
@@ -233,6 +234,7 @@ impl Store for SqliteStore {
         Some(std::sync::Arc::new(self.clone()))
     }
 
+    #[tracing::instrument(name = "db.apply_intake", skip_all, fields(db.system = "sqlite", db.operation = "INSERT", rows = w.records.len()))]
     async fn apply_intake(&self, w: &memhouse_core::intake::IntakeWrite) -> anyhow::Result<bool> {
         let mut c = self.conn();
         // One writer at a time: from here to the commit no erasure, promotion or other insert
@@ -347,6 +349,7 @@ impl Store for SqliteStore {
         Ok(true)
     }
 
+    #[tracing::instrument(name = "db.structured_lookup", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn structured_lookup(&self, q: &SearchQuery, record_type: Option<&str>, attrs: Option<&serde_json::Value>, values: &[String]) -> anyhow::Result<Vec<Hit>> {
         // The recall filters (status, labels, validity, scope) with the recall's own parameters,
         // then the exact match on the structured row.
@@ -410,12 +413,14 @@ impl Store for SqliteStore {
         )
     }
 
+    #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "sqlite", db.operation = "SELECT", probes = 1))]
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         let c = self.conn();
         self.ensure_current(&c)?;
         self.search_in(&c, q, true)
     }
 
+    #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "sqlite", db.operation = "SELECT", probes = qs.len()))]
     async fn search_many(&self, qs: &[SearchQuery]) -> anyhow::Result<Vec<Vec<Hit>>> {
         // The probes of one recall read one state of the file: nothing is written between them.
         let c = self.conn();
@@ -423,14 +428,17 @@ impl Store for SqliteStore {
         qs.iter().map(|q| self.search_in(&c, q, true)).collect()
     }
 
+    #[tracing::instrument(name = "db.search_unfiltered", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn search_unfiltered(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         self.search_in(&self.conn(), q, false)
     }
 
+    #[tracing::instrument(name = "db.get", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>> {
         first(&self.conn(), &format!("SELECT {COLS} FROM mh_memory m WHERE m.tenant = ?1 AND m.id = ?2"), [tenant, id.to_string().as_str()], memory_of)
     }
 
+    #[tracing::instrument(name = "db.list", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn list(&self, q: &ListQuery) -> anyhow::Result<Vec<Memory>> {
         let kinds = q.kinds.as_ref().map(|ks| json(&ks.iter().map(|k| k.as_str()).collect::<Vec<_>>())).transpose()?;
         let sql = format!(
@@ -478,12 +486,14 @@ impl Store for SqliteStore {
         )
     }
 
+    #[tracing::instrument(name = "db.find_by_hash", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn find_by_hash(&self, tenant: &str, subject: &str, hash: &str) -> anyhow::Result<Option<Uuid>> {
         first(&self.conn(), "SELECT id FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND content_hash = ?3 AND status <> 'superseded' LIMIT 1", [tenant, subject, hash], |r| {
             uuid_of(&r.get::<_, String>(0)?)
         })
     }
 
+    #[tracing::instrument(name = "db.existing_hashes", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn existing_hashes(&self, tenant: &str, subject: &str, hashes: &[String]) -> anyhow::Result<HashSet<String>> {
         if hashes.is_empty() {
             return Ok(Default::default());
@@ -509,6 +519,7 @@ impl Store for SqliteStore {
             .pop())
     }
 
+    #[tracing::instrument(name = "db.nearest", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn nearest_many(&self, tenant: &str, subject: &str, kind: MemoryKind, embedding: &[f32], n: usize, scope: &Scope) -> anyhow::Result<Vec<(Uuid, f32)>> {
         self.nearest_of(
             "SELECT id, embedding FROM mh_memory \
@@ -520,10 +531,12 @@ impl Store for SqliteStore {
         )
     }
 
+    #[tracing::instrument(name = "db.set_superseded", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE"))]
     async fn set_superseded(&self, tenant: &str, id: Uuid, by: Uuid) -> anyhow::Result<bool> {
         Ok(exec(&self.conn(), SUPERSEDE_SQL, params![tenant, id.to_string(), by.to_string(), now()])? > 0)
     }
 
+    #[tracing::instrument(name = "db.set_status", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE"))]
     async fn set_status(&self, tenant: &str, id: Uuid, status: MemoryStatus) -> anyhow::Result<bool> {
         Ok(self.set_status_many(tenant, &[id], status).await? > 0)
     }
@@ -539,6 +552,7 @@ impl Store for SqliteStore {
         )
     }
 
+    #[tracing::instrument(name = "db.delete", skip_all, fields(db.system = "sqlite", db.operation = "DELETE"))]
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -579,6 +593,7 @@ impl Store for SqliteStore {
         Ok(true)
     }
 
+    #[tracing::instrument(name = "db.delete_subject", skip_all, fields(db.system = "sqlite", db.operation = "DELETE"))]
     async fn delete_subject(&self, tenant: &str, subject: &str, actor: &str, purge_cache: bool) -> anyhow::Result<u64> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -793,6 +808,7 @@ impl Store for SqliteStore {
         Ok(true)
     }
 
+    #[tracing::instrument(name = "db.embed_cache_get", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn embed_cache_get(&self, model: &str, hashes: &[String]) -> anyhow::Result<Vec<(String, Vec<f32>)>> {
         if hashes.is_empty() {
             return Ok(vec![]);
@@ -802,6 +818,7 @@ impl Store for SqliteStore {
         })
     }
 
+    #[tracing::instrument(name = "db.embed_cache_put", skip_all, fields(db.system = "sqlite", db.operation = "INSERT"))]
     async fn embed_cache_put(&self, model: &str, items: &[(String, Vec<f32>)]) -> anyhow::Result<()> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -811,6 +828,7 @@ impl Store for SqliteStore {
         Ok(tx.commit()?)
     }
 
+    #[tracing::instrument(name = "db.audit", skip_all, fields(db.system = "sqlite", db.operation = "INSERT"))]
     async fn audit(&self, actor: &str, action: &str, tenant: &str, subject: Option<&str>, memory_id: Option<Uuid>, detail: serde_json::Value) -> anyhow::Result<()> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1159,10 +1177,12 @@ impl Store for SqliteStore {
         self.export_links(tenant, Some(subject)).await
     }
 
+    #[tracing::instrument(name = "db.request_get", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn request_get(&self, tenant: &str, key: &str) -> anyhow::Result<Option<(String, serde_json::Value)>> {
         first(&self.conn(), "SELECT request_hash, response FROM mh_request_key WHERE tenant = ?1 AND key = ?2", [tenant, key], |r| Ok((r.get(0)?, value(&r.get::<_, String>(1)?)?)))
     }
 
+    #[tracing::instrument(name = "db.request_put", skip_all, fields(db.system = "sqlite", db.operation = "INSERT"))]
     async fn request_put(&self, tenant: &str, key: &str, subject: &str, operation: &str, request_hash: &str, response: &serde_json::Value) -> anyhow::Result<()> {
         exec(
             &self.conn(),
@@ -1250,6 +1270,7 @@ impl Store for SqliteStore {
         Ok(total)
     }
 
+    #[tracing::instrument(name = "db.recall_put", skip_all, fields(db.system = "sqlite", db.operation = "INSERT"))]
     async fn recall_put(&self, r: &RecallRecord) -> anyhow::Result<()> {
         exec(
             &self.conn(),

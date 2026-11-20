@@ -10,6 +10,7 @@
 //!   more (QUAL-10).
 
 use crate::governance::{check, stub_engine, Check, Scratch};
+use crate::scratch::{Db, Sql};
 use memhouse_core::error::{code_of, ErrorCode};
 use memhouse_core::eval::{EvalTrigger, Expect, Suite, SuiteConversation, SuiteQuestion, SuiteSession, SuiteTurn, SUITE_FORMAT};
 use memhouse_core::policy::parse_spec;
@@ -47,7 +48,7 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         .zip(results)
         .map(|((id, req, title), r)| match r {
             Ok((passed, value, detail)) => check(id, req, title, passed, value, "all", detail),
-            Err(e) => check(id, req, title, false, "error".into(), "all", format!("{e:#}")),
+            Err(e) => crate::governance::errored(id, req, title, "all", e),
         })
         .collect()
 }
@@ -56,11 +57,12 @@ async fn suites(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     let scratch = Scratch::create(base, "eval").await?;
     let out = async {
         let e = stub_engine(base, &scratch.url, "stub:e", 256, "", true).await?;
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
-        let harness = eval_harness(&e, &pool).await;
+        let db = scratch.db().await?;
+        let harness = eval_harness(&e, &db).await;
         let reproducible = eval_reproducible(&e).await;
         // Last: it activates a policy.
-        let gate = eval_gate(&e, &pool).await;
+        let gate = eval_gate(&e, &db).await;
+        db.close().await;
         Ok::<_, anyhow::Error>(vec![harness, gate, reproducible])
     }
     .await;
@@ -151,7 +153,7 @@ fn controlled(n: usize) -> Suite {
 }
 
 /// QUAL-03's acceptance test: separate storage and retrieval scores and a stale-fact rate.
-async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
+async fn eval_harness(e: &Engine, db: &Db) -> Outcome {
     let mut problems = vec![];
     let suite = controlled(12);
     let run = e.eval_replay(TENANT, &suite, None, EvalTrigger::Manual).await?;
@@ -207,7 +209,7 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let mark = format!("%{}%", memhouse_core::eval::SCRATCH_MARK);
     for table in ["mh_recall", "mh_intake"] {
-        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table} WHERE tenant LIKE $1"))).bind(&mark).fetch_one(pool).await?;
+        let n = db.count(Sql::same(&format!("SELECT count(*) FROM {table} WHERE tenant LIKE $1")), &[(&mark).into()]).await?;
         if n != 0 {
             problems.push(format!("{n} rows of a scratch tenant are left in {table}"));
         }
@@ -227,14 +229,15 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     }
     // The same for the store: a database error on a write, with a message that reads like a
     // bad request, fails the replay; it is not a refusal by policy.
-    sqlx::raw_sql(
+    // The same failing insert, with the same message, in each database's trigger language.
+    db.batch(Sql::each(
         "CREATE FUNCTION eval_check_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'unexpected storage failure, expected none'; END $$; \
          CREATE TRIGGER eval_check_fail BEFORE INSERT ON mh_intake FOR EACH ROW WHEN (NEW.subject = 'eval:c00') EXECUTE FUNCTION eval_check_fail();",
-    )
-    .execute(pool)
+        "CREATE TRIGGER eval_check_fail BEFORE INSERT ON mh_intake WHEN NEW.subject = 'eval:c00' BEGIN SELECT RAISE(ABORT, 'unexpected storage failure, expected none'); END;",
+    ))
     .await?;
     let store_down = e.eval_replay(TENANT, &controlled(1), None, EvalTrigger::Manual).await;
-    sqlx::raw_sql("DROP TRIGGER eval_check_fail ON mh_intake; DROP FUNCTION eval_check_fail();").execute(pool).await?;
+    db.batch(Sql::each("DROP TRIGGER eval_check_fail ON mh_intake; DROP FUNCTION eval_check_fail();", "DROP TRIGGER eval_check_fail;")).await?;
     match store_down {
         Err(err) if format!("{err:#}").contains("unexpected storage failure") => {}
         Err(err) => problems.push(format!("a store error on a write: the replay failed with another error: {err:#}")),
@@ -273,12 +276,11 @@ async fn eval_harness(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         other => problems.push(format!("a write to a reserved tenant name without a pinned policy: {:?}", other.map(|r| r.status).map_err(|e| format!("{e:#}")))),
     }
     for t in [scratch.as_str(), TENANT] {
-        sqlx::query("DELETE FROM mh_intake WHERE tenant = $1 AND subject = 'eval:claim'").bind(t).execute(pool).await?;
+        db.execute(Sql::same("DELETE FROM mh_intake WHERE tenant = $1 AND subject = 'eval:claim'"), &[t.into()]).await?;
     }
     // The replay ran in a scratch tenant, which is gone; the tenant itself was not written to.
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE tenant LIKE $1 OR subject LIKE 'eval:%'")
-        .bind(format!("{TENANT}{}%", memhouse_core::eval::SCRATCH_MARK))
-        .fetch_one(pool)
+    let left = db
+        .count(Sql::same("SELECT count(*) FROM mh_memory WHERE tenant LIKE $1 OR subject LIKE 'eval:%'"), &[format!("{TENANT}{}%", memhouse_core::eval::SCRATCH_MARK).into()])
         .await?;
     if left != 0 {
         problems.push(format!("{left} records of the replay are still stored"));
@@ -322,15 +324,25 @@ async fn eval_reproducible(e: &Engine) -> Outcome {
 }
 
 /// QUAL-04 and QUAL-05's acceptance tests: a custom suite, triggered by a policy change.
-async fn eval_gate(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
+async fn eval_gate(e: &Engine, db: &Db) -> Outcome {
     let mut problems = vec![];
     let suite = controlled(10);
     e.eval_suite_put(TENANT, &suite, "bench").await?;
     let spec = |n: u32, body: &str| parse_spec(&format!("name = \"eval-{n}\"\n[scope]\ntenant = \"{TENANT}\"\n{body}"));
-    let runs = |pool: &sqlx::PgPool| {
-        let pool = pool.clone();
+    // `trigger` is a keyword in SQLite, where the column is quoted.
+    let runs = |db: &Db| {
+        let db = db.clone();
         async move {
-            sqlx::query_as::<_, (String, String)>("SELECT policy_version, trigger FROM mh_eval_run WHERE tenant = $1 ORDER BY created_at, id").bind(TENANT).fetch_all(&pool).await
+            let rows = db
+                .rows(
+                    Sql::each(
+                        "SELECT policy_version, trigger FROM mh_eval_run WHERE tenant = $1 ORDER BY created_at, id",
+                        "SELECT policy_version, \"trigger\" FROM mh_eval_run WHERE tenant = ?1 ORDER BY created_at, id",
+                    ),
+                    &[TENANT.into()],
+                )
+                .await?;
+            anyhow::Ok(rows.into_iter().map(|r| (r[0].text().unwrap_or_default(), r[1].text().unwrap_or_default())).collect::<Vec<(String, String)>>())
         }
     };
     let default_version = e.policy_for(TENANT).await?.version.clone();
@@ -338,7 +350,7 @@ async fn eval_gate(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     // A harmless policy passes the gate and is activated; the suite ran for it automatically.
     let p1 = e.policy_propose(TENANT, &spec(1, "[ranking]\ndefault_k = 8")?, "bench", None).await?;
     let ok = e.policy_approve(TENANT, p1.version, "Dana Reviewer").await;
-    let stored = runs(pool).await?;
+    let stored = runs(db).await?;
     match &ok {
         Ok(c) => {
             if stored.len() != 2 || stored[0].0 != default_version || stored[1].0 != c.version || stored.iter().any(|(_, t)| t != "policy_change") {
@@ -347,7 +359,7 @@ async fn eval_gate(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         }
         Err(err) => problems.push(format!("a harmless policy was refused: {err:#}")),
     }
-    let gated: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_audit WHERE tenant = $1 AND action = 'policy.gate'").bind(TENANT).fetch_one(pool).await?;
+    let gated = db.count(Sql::same("SELECT count(*) FROM mh_audit WHERE tenant = $1 AND action = 'policy.gate'"), &[TENANT.into()]).await?;
     if gated != 1 {
         problems.push(format!("{gated} policy.gate audit events after one gated approval"));
     }
@@ -373,17 +385,22 @@ async fn eval_gate(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     if rec.as_ref().map(|r| r.status) != Some(memhouse_core::policy::SpecStatus::Proposed) || e.policy_for(TENANT).await?.version != active_before {
         problems.push("the refused version did not stay proposed, or the running policy changed".into());
     }
-    let reason: Option<String> = sqlx::query_scalar("SELECT detail::jsonb ->> 'reason' FROM mh_audit WHERE tenant = $1 AND action = 'policy.refuse' ORDER BY id DESC LIMIT 1")
-        .bind(TENANT)
-        .fetch_optional(pool)
-        .await?
-        .flatten();
+    // The event's detail is JSON text on both stores; each reads the `reason` member its own way.
+    let reason = db
+        .text(
+            Sql::each(
+                "SELECT detail::jsonb ->> 'reason' FROM mh_audit WHERE tenant = $1 AND action = 'policy.refuse' ORDER BY id DESC LIMIT 1",
+                "SELECT json_extract(detail, '$.reason') FROM mh_audit WHERE tenant = ?1 AND action = 'policy.refuse' ORDER BY id DESC LIMIT 1",
+            ),
+            &[TENANT.into()],
+        )
+        .await?;
     if reason.as_deref() != Some("regression_gate") {
         problems.push(format!("the refusal's audit event has reason {reason:?}"));
     }
     // Both replays of the refused change are stored too: the active policy's is reused, the
     // candidate's is new, each under its own policy version.
-    let stored = runs(pool).await?;
+    let stored = runs(db).await?;
     let versions: std::collections::BTreeSet<&str> = stored.iter().map(|(v, _)| v.as_str()).collect();
     if stored.len() != 3 || versions.len() != 3 {
         problems.push(format!("{} runs under {} policy versions are stored; expected 3 under 3", stored.len(), versions.len()));
@@ -420,8 +437,20 @@ async fn eval_gate(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
             None => problems.push(format!("engine gate, round {round}: no comparison was made")),
         }
     }
-    let flags: Vec<(String, Option<String>)> =
-        sqlx::query_as("SELECT suite, run ->> 'gate_passed' FROM mh_eval_run WHERE tenant = $1 ORDER BY created_at, id").bind(other).fetch_all(pool).await?;
+    // Postgres gives a JSON boolean as the text `true` or `false`; SQLite gives 1 or 0, which
+    // is spelled out the same way here (and stays null when the member is absent).
+    let flags: Vec<(String, Option<String>)> = db
+        .rows(
+            Sql::each(
+                "SELECT suite, run ->> 'gate_passed' FROM mh_eval_run WHERE tenant = $1 ORDER BY created_at, id",
+                "SELECT suite, CASE json_extract(run, '$.gate_passed') WHEN 1 THEN 'true' WHEN 0 THEN 'false' END FROM mh_eval_run WHERE tenant = ?1 ORDER BY created_at, id",
+            ),
+            &[other.into()],
+        )
+        .await?
+        .into_iter()
+        .map(|r| (r[0].text().unwrap_or_default(), r[1].text()))
+        .collect();
     let two_flags: Vec<Option<&str>> = flags.iter().filter(|(s, _)| s == "two").map(|(_, g)| g.as_deref()).collect();
     if two_flags != [Some("false"), Some("false")] || e.store.eval_reference(other, "two", &two.hash()).await?.is_some() {
         problems.push(format!("the replays of a suite first run during a failed gate are flagged {two_flags:?} and may serve as its reference"));

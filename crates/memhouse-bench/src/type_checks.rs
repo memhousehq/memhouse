@@ -13,6 +13,7 @@
 //!   own preferences and procedures in the clinician's, with the author recorded (ACC-10).
 
 use crate::governance::{check, stub_engine, Check, Scratch};
+use crate::scratch::{Db, Sql};
 use memhouse_core::caller::Caller;
 use memhouse_core::config::Admission;
 use memhouse_core::error::{code_of, ErrorCode};
@@ -63,7 +64,7 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         .zip(results)
         .map(|((id, req, title), r)| match r {
             Ok((passed, value, detail)) => check(id, req, title, passed, value, "all", detail),
-            Err(e) => check(id, req, title, false, "error".into(), "all", format!("{e:#}")),
+            Err(e) => crate::governance::errored(id, req, title, "all", e),
         })
         .collect()
 }
@@ -73,8 +74,10 @@ async fn typed_suites(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     let scratch = Scratch::create(base, "typ1").await?;
     let out = async {
         let e = stub_engine(base, &scratch.url, "stub:t", 64, "", true).await?;
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
-        Ok::<_, anyhow::Error>(vec![memory_types(&e, &pool).await, working_session(&e, &scratch.url, base).await, scope_inheritance(&e).await, promotion(&e, &pool).await])
+        let db = scratch.db().await?;
+        let out = vec![memory_types(&e, &db).await, working_session(&e, &scratch.url, base).await, scope_inheritance(&e).await, promotion(&e, &db).await];
+        db.close().await;
+        Ok::<_, anyhow::Error>(out)
     }
     .await;
     scratch.drop().await?;
@@ -86,8 +89,10 @@ async fn sharing_suites(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     let scratch = Scratch::create(base, "typ2").await?;
     let out = async {
         let e = stub_engine(base, &scratch.url, "stub:t", 64, "", true).await?;
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
-        Ok::<_, anyhow::Error>(vec![agent_grants(&e).await, partitions(&e, &pool).await])
+        let db = scratch.db().await?;
+        let out = vec![agent_grants(&e).await, partitions(&e, &db).await];
+        db.close().await;
+        Ok::<_, anyhow::Error>(out)
     }
     .await;
     scratch.drop().await?;
@@ -168,7 +173,7 @@ async fn status_of(e: &Engine, id: Uuid) -> anyhow::Result<Option<MemoryStatus>>
 
 /// MEM-01: the type-specific scenario suite. One row of the type table per block: gate,
 /// retention, retrieval, access.
-async fn memory_types(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
+async fn memory_types(e: &Engine, db: &Db) -> Outcome {
     let mut s = Suite::default();
     let subj = "customer:types";
     let a = who(e, "agent:a", PrincipalKind::Agent, |_| {}).await?;
@@ -284,14 +289,24 @@ async fn memory_types(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     let after_expiry = small.recall(after_expiry).await?;
     // However many newer notes fail the filter: the filter is in the statement, before its limit.
     // 1,000 of them, written straight into the store: more than any bounded paging would read.
-    sqlx::query(
-        "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, valid_from, expires_at, scope_agent, scope_session, source, created_at, updated_at) \
-         SELECT gen_random_uuid(), $1, $2, 'working', 'committed', 'crowd note ' || g, encode(sha256(convert_to('crowd' || g, 'UTF8')), 'hex'), now(), now() + interval '1 day', \
-                'agent:a', 'deep', 'bench', now() + g * interval '1 millisecond', now() + g * interval '1 millisecond' FROM generate_series(1, 1000) g",
+    // The same 1,000 rows in SQLite's types: a random version-4 id as text, timestamps in
+    // microseconds, and the subject's keyword token, which SQLite keeps in a column of the row
+    // (copied from a record of the subject). The content hash only has to be unique per row:
+    // SQLite has no sha256 function, so it is 32 random bytes there.
+    db.execute(
+        Sql::each(
+            "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, valid_from, expires_at, scope_agent, scope_session, source, created_at, updated_at) \
+             SELECT gen_random_uuid(), $1, $2, 'working', 'committed', 'crowd note ' || g, encode(sha256(convert_to('crowd' || g, 'UTF8')), 'hex'), now(), now() + interval '1 day', \
+                    'agent:a', 'deep', 'bench', now() + g * interval '1 millisecond', now() + g * interval '1 millisecond' FROM generate_series(1, 1000) g",
+            "WITH RECURSIVE series (g) AS (SELECT 1 UNION ALL SELECT g + 1 FROM series WHERE g < 1000), \
+                  clock (t) AS (SELECT CAST(unixepoch('subsec') * 1000000 AS INTEGER)) \
+             INSERT INTO mh_memory (id, tenant, subject, stok, kind, status, content, content_hash, valid_from, expires_at, scope_agent, scope_session, source, created_at, updated_at) \
+             SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-8' || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))), \
+                    ?1, ?2, (SELECT stok FROM mh_memory WHERE tenant = ?1 AND subject = ?2 LIMIT 1), 'working', 'committed', 'crowd note ' || g, lower(hex(randomblob(32))), t, t + 86400000000, \
+                    'agent:a', 'deep', 'bench', t + g * 1000, t + g * 1000 FROM series, clock",
+        ),
+        &[TENANT.into(), subj.into()],
     )
-    .bind(TENANT)
-    .bind(subj)
-    .execute(pool)
     .await?;
     let mut crowded = ask(subj, "anything", Some("deep"));
     (crowded.k, crowded.tags, crowded.kinds) = (Some(1), Some(vec!["keep".into()]), Some(vec![MemoryKind::Working]));
@@ -341,7 +356,15 @@ async fn memory_types(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     let retained = e.clone().reconfigure(retention_cfg);
     let old_fact = a.remember(write(subj, "The office is on the fourth floor of the Harbour building.", MemoryKind::Semantic)).await?.id;
     for (id, days) in [(in_march, 366), (in_august, 364), (old_fact, 800)] {
-        sqlx::query("UPDATE mh_memory SET created_at = now() - make_interval(days => $2), updated_at = now() WHERE id = $1").bind(id).bind(days).execute(pool).await?;
+        // SQLite: the same instants in microseconds since the epoch.
+        db.execute(
+            Sql::each(
+                "UPDATE mh_memory SET created_at = now() - make_interval(days => $2), updated_at = now() WHERE id = $1",
+                "UPDATE mh_memory SET created_at = CAST(unixepoch('subsec') * 1000000 AS INTEGER) - ?2 * 86400000000, updated_at = CAST(unixepoch('subsec') * 1000000 AS INTEGER) WHERE id = ?1",
+            ),
+            &[id.into(), crate::scratch::Arg::Int32(days)],
+        )
+        .await?;
     }
     retained.apply_retention().await?;
     let (gone, kept, fact) = (status_of(e, in_march).await?, status_of(e, in_august).await?, status_of(e, old_fact).await?);
@@ -687,7 +710,7 @@ async fn scope_inheritance(e: &Engine) -> Outcome {
 }
 
 /// MEM-05: 100 promotions, each linked to its sources and audited.
-async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
+async fn promotion(e: &Engine, db: &Db) -> Outcome {
     let mut problems = vec![];
     let subj = "customer:promote";
     let p = who(e, "agent:p", PrincipalKind::Agent, |p| p.can_commit = true).await?;
@@ -810,48 +833,80 @@ async fn promotion(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
     // (a promotion's own task may outlive its request), and the waiter count is zero before the
     // deletion starts, so the waiter seen afterwards is the deletion.
     anyhow::ensure!(e.settle_subject(None, subj, Duration::from_secs(30)).await?, "the subject's intake queue did not drain");
-    let mut tx = pool.begin().await?;
-    sqlx::query(memhouse_store_postgres::SUBJECT_LOCK_SQL).bind(TENANT).bind(subj).execute(&mut *tx).await?;
-    let waiters = "SELECT count(*) FROM pg_locks w WHERE w.locktype = 'advisory' AND w.classid = 7270002 AND NOT w.granted \
-                   AND w.objid::bigint = (hashtext($1 || chr(31) || $2)::bigint & 4294967295)";
-    let before: i64 = sqlx::query_scalar(waiters).bind(TENANT).bind(subj).fetch_one(pool).await?;
-    let deleter = on(&p, e);
-    let deletion = tokio::spawn(async move { deleter.forget(ForgetRequest { id: Some(base), ..Default::default() }).await.map(|_| ()) });
-    // Until the database itself shows the deletion waiting for the subject's lock: only then
-    // does committing below exercise the interleaving.
-    // The waiter must be on this subject's lock and blocked by this connection: nothing else.
-    let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *tx).await?;
-    let mut waited = false;
-    for _ in 0..200 {
-        let blocked: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_locks w WHERE w.locktype = 'advisory' AND w.classid = 7270002 AND NOT w.granted \
-             AND w.objid::bigint = (hashtext($1 || chr(31) || $2)::bigint & 4294967295) AND $3 = ANY(pg_blocking_pids(w.pid))",
-        )
-        .bind(TENANT)
-        .bind(subj)
-        .bind(holder)
-        .fetch_one(pool)
-        .await?;
-        if blocked > 0 {
-            waited = before == 0 && !deletion.is_finished();
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
     let tip = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, valid_from, source, metadata) \
-         VALUES ($1, $2, $3, 'procedural', 'committed', 'promoted while the deletion waited', $4, now(), 'bench', $5)",
-    )
-    .bind(tip)
-    .bind(TENANT)
-    .bind(subj)
-    .bind(format!("{:064x}", tip.as_u128()))
-    .bind(json!({ "promoted_from": [middle.to_string()] }))
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    deletion.await??;
+    let deleter = on(&p, e);
+    let waited = match db {
+        Db::Postgres(pool) => {
+            let mut tx = pool.begin().await?;
+            sqlx::query(memhouse_store_postgres::SUBJECT_LOCK_SQL).bind(TENANT).bind(subj).execute(&mut *tx).await?;
+            let waiters = "SELECT count(*) FROM pg_locks w WHERE w.locktype = 'advisory' AND w.classid = 7270002 AND NOT w.granted \
+                           AND w.objid::bigint = (hashtext($1 || chr(31) || $2)::bigint & 4294967295)";
+            let before: i64 = sqlx::query_scalar(waiters).bind(TENANT).bind(subj).fetch_one(pool).await?;
+            let deletion = tokio::spawn(async move { deleter.forget(ForgetRequest { id: Some(base), ..Default::default() }).await.map(|_| ()) });
+            // Until the database itself shows the deletion waiting for the subject's lock: only then
+            // does committing below exercise the interleaving.
+            // The waiter must be on this subject's lock and blocked by this connection: nothing else.
+            let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *tx).await?;
+            let mut waited = false;
+            for _ in 0..200 {
+                let blocked: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_locks w WHERE w.locktype = 'advisory' AND w.classid = 7270002 AND NOT w.granted \
+                     AND w.objid::bigint = (hashtext($1 || chr(31) || $2)::bigint & 4294967295) AND $3 = ANY(pg_blocking_pids(w.pid))",
+                )
+                .bind(TENANT)
+                .bind(subj)
+                .bind(holder)
+                .fetch_one(pool)
+                .await?;
+                if blocked > 0 {
+                    waited = before == 0 && !deletion.is_finished();
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            sqlx::query(
+                "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, valid_from, source, metadata) \
+                 VALUES ($1, $2, $3, 'procedural', 'committed', 'promoted while the deletion waited', $4, now(), 'bench', $5)",
+            )
+            .bind(tip)
+            .bind(TENANT)
+            .bind(subj)
+            .bind(format!("{:064x}", tip.as_u128()))
+            .bind(json!({ "promoted_from": [middle.to_string()] }))
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            deletion.await??;
+            waited
+        }
+        // SQLite has one writer for the whole file, and no table of locks to read. The second
+        // connection takes the write lock (as an in-flight promotion's transaction holds it),
+        // the deletion is started and can only wait for it, the promoted record is added and
+        // committed, and the deletion then runs. That it waited is seen from its not having
+        // finished while the lock was held, after time enough to reach it. The record is written
+        // as the SQLite store writes a promotion: with the subject's keyword token and a row in
+        // `mh_source_ref`, the index its deletions follow (Postgres indexes the metadata list).
+        Db::Sqlite(conn) => {
+            let run = |sql: &str, args: &[&dyn rusqlite::ToSql]| conn.lock().unwrap_or_else(|e| e.into_inner()).execute(sql, args).map(|_| ());
+            conn.lock().unwrap_or_else(|e| e.into_inner()).execute_batch("BEGIN IMMEDIATE")?;
+            let deletion = tokio::spawn(async move { deleter.forget(ForgetRequest { id: Some(base), ..Default::default() }).await.map(|_| ()) });
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let waited = !deletion.is_finished();
+            let written = run(
+                "INSERT INTO mh_memory (id, tenant, subject, stok, kind, status, content, content_hash, valid_from, source, metadata, created_at, updated_at) \
+                 SELECT ?1, ?2, ?3, (SELECT stok FROM mh_memory WHERE tenant = ?2 AND subject = ?3 LIMIT 1), 'procedural', 'committed', 'promoted while the deletion waited', ?4, t, 'bench', ?5, t, t \
+                 FROM (SELECT CAST(unixepoch('subsec') * 1000000 AS INTEGER) AS t)",
+                rusqlite::params![tip.to_string(), TENANT, subj, format!("{:064x}", tip.as_u128()), json!({ "promoted_from": [middle.to_string()] }).to_string()],
+            )
+            .and_then(|_| run("INSERT INTO mh_source_ref (memory_id, tenant, source_id, via) VALUES (?1, ?2, ?3, 'promoted')", rusqlite::params![tip.to_string(), TENANT, middle.to_string()]));
+            // The lock is released whatever happened, so the deletion never waits out its timeout.
+            let ended = conn.lock().unwrap_or_else(|e| e.into_inner()).execute_batch(if written.is_ok() { "COMMIT" } else { "ROLLBACK" });
+            written?;
+            ended?;
+            deletion.await??;
+            waited
+        }
+    };
     if !waited || e.store.get(TENANT, middle).await?.is_some() || e.store.get(TENANT, tip).await?.is_some() {
         problems.push(format!("a promotion committed during a chain deletion survived it (the deletion waited for it: {waited})"));
     }
@@ -1052,7 +1107,7 @@ async fn agent_grants(e: &Engine) -> Outcome {
 }
 
 /// ACC-10: 1,000 mixed writes, each in the right partition with the right authorship.
-async fn partitions(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
+async fn partitions(e: &Engine, db: &Db) -> Outcome {
     let mut problems = vec![];
     let spec = parse_spec(&format!(
         "name = \"clinic\"\n[scope]\ntenant = \"{TENANT}\"\n[types.preference.access]\npartition = \"author\"\n[types.procedural.access]\npartition = \"author\""
@@ -1101,9 +1156,17 @@ async fn partitions(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         e.settle_subject(None, subject, Duration::from_secs(60)).await?;
     }
     let ids: Vec<Uuid> = expected.iter().map(|x| x.0).collect();
-    let rows: Vec<(Uuid, String, Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT id, subject, prov_user, prov_agent FROM mh_memory WHERE tenant = $1 AND id = ANY($2)").bind(TENANT).bind(&ids).fetch_all(pool).await?;
-    let stored: std::collections::HashMap<Uuid, (String, Option<String>, Option<String>)> = rows.into_iter().map(|(id, s, u, a)| (id, (s, u, a))).collect();
+    let rows = db
+        .rows(
+            Sql::each(
+                "SELECT id, subject, prov_user, prov_agent FROM mh_memory WHERE tenant = $1 AND id = ANY($2)",
+                "SELECT id, subject, prov_user, prov_agent FROM mh_memory WHERE tenant = ?1 AND id IN (SELECT value FROM json_each(?2))",
+            ),
+            &[TENANT.into(), (&ids).into()],
+        )
+        .await?;
+    let stored: std::collections::HashMap<Uuid, (String, Option<String>, Option<String>)> =
+        rows.into_iter().filter_map(|r| Some((r[0].id()?, (r[1].text()?, r[2].text(), r[3].text())))).collect();
     let (mut placed, mut authored) = (0, 0);
     for (id, partition, author, writer) in &expected {
         if let Some((subject, user, agent)) = stored.get(id) {
@@ -1115,12 +1178,14 @@ async fn partitions(e: &Engine, pool: &sqlx::PgPool) -> Outcome {
         problems.push(format!("of {n} writes {} are stored, {placed} in the right partition, {authored} with the right author and writer", stored.len()));
     }
     // A patient's partition holds nothing of the clinician's own, and the reverse.
-    let strays: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM mh_memory WHERE tenant = $1 AND ((subject LIKE 'patient:%' AND kind IN ('preference', 'procedural')) OR (subject LIKE 'user:dr-%' AND kind NOT IN ('preference', 'procedural')))",
-    )
-    .bind(TENANT)
-    .fetch_one(pool)
-    .await?;
+    let strays = db
+        .count(
+            Sql::same(
+                "SELECT count(*) FROM mh_memory WHERE tenant = $1 AND ((subject LIKE 'patient:%' AND kind IN ('preference', 'procedural')) OR (subject LIKE 'user:dr-%' AND kind NOT IN ('preference', 'procedural')))",
+            ),
+            &[TENANT.into()],
+        )
+        .await?;
     if strays > 0 {
         problems.push(format!("{strays} records are in the wrong kind of partition"));
     }

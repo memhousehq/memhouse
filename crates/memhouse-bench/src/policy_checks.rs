@@ -5,6 +5,7 @@
 //! a policy change alters recall without a restart and a rollback restores it exactly (POL-08).
 
 use crate::governance::{check, stub_engine, Check, Scratch};
+use crate::scratch::{Arg, Db, Sql};
 use crate::telemetry_checks::Capture;
 use memhouse_core::error::{code_of, ErrorCode};
 use memhouse_core::policy::{self, PolicyDiffRequest, PolicyTarget, REFRESH};
@@ -55,9 +56,9 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
         // Scores before a policy and after its rollback are compared exactly: no clock in them.
         cfg.memory.recency_weight = 0.0;
         let e = e.reconfigure(cfg);
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
-        let out = vec![precedence(&e, &pool).await?, approval(base, &e, &scratch.url, &pool).await?, rollback(base, &e, &scratch.url, &pool).await?];
-        pool.close().await;
+        let db = scratch.db().await?;
+        let out = vec![precedence(&e, &db).await?, approval(base, &e, &scratch.url, &db).await?, rollback(base, &e, &scratch.url, &db).await?];
+        db.close().await;
         anyhow::Ok(out)
     }
     .await;
@@ -69,8 +70,8 @@ fn spec(tenant: &str, body: &str) -> anyhow::Result<policy::PolicySpec> {
     policy::parse_spec(&format!("name = \"gov-check\"\n[scope]\ntenant = \"{tenant}\"\n{body}"))
 }
 
-async fn audits(pool: &sqlx::PgPool, tenant: &str, action: &str) -> anyhow::Result<i64> {
-    Ok(sqlx::query_scalar("SELECT count(*) FROM mh_audit WHERE tenant = $1 AND action = $2").bind(tenant).bind(action).fetch_one(pool).await?)
+async fn audits(db: &Db, tenant: &str, action: &str) -> anyhow::Result<i64> {
+    db.count(Sql::same("SELECT count(*) FROM mh_audit WHERE tenant = $1 AND action = $2"), &[tenant.into(), action.into()]).await
 }
 
 /// The loosening attempts: each names the field its refusal must name.
@@ -110,7 +111,7 @@ const LOOSENING: [(&str, &str); 30] = [
 /// POL-04: under strict governance every loosening spec fails compilation with a reason naming
 /// the governance rule, is not stored, and is audited; tightening specs compile. An approved
 /// policy that a later, stricter governance outranks stops running (the default runs instead).
-async fn precedence(e: &Engine, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn precedence(e: &Engine, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let t = "pol-precedence";
     let mut cfg = (*e.cfg).clone();
@@ -137,7 +138,7 @@ async fn precedence(e: &Engine, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> 
         }
     }
     let stored = strict.policy_source.specs(t).await?.len();
-    let rejections = audits(pool, t, "policy.reject").await?;
+    let rejections = audits(db, t, "policy.reject").await?;
     if stored != 0 || rejections != LOOSENING.len() as i64 {
         problems.push(format!("after the refusals: {stored} specs stored, {rejections} policy.reject audit events (want 0 and {})", LOOSENING.len()));
     }
@@ -174,7 +175,7 @@ async fn precedence(e: &Engine, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> 
 /// by the database, and audited; approval names the approver; after it, writes of a kind the
 /// policy forbids are refused, labels it denies are not recalled, and records, explanations and
 /// spans carry its version.
-async fn approval(base: &Engine, e: &Engine, url: &str, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn approval(base: &Engine, e: &Engine, url: &str, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let t = "pol-approve";
     let subj = "customer:pol";
@@ -209,20 +210,33 @@ async fn approval(base: &Engine, e: &Engine, url: &str, pool: &sqlx::PgPool) -> 
     if other.policy_for(t).await?.version != default_version {
         problems.push("a proposed, unapproved policy is running".into());
     }
-    let rejected = audits(pool, t, "policy.reject").await?;
+    let rejected = audits(db, t, "policy.reject").await?;
     match e.policy_rollback(t, Some(PolicyTarget::Version(n)), "bench").await {
         Ok(_) => problems.push("an unapproved version was activated by rollback".into()),
         Err(err) if code_of(&err) != ErrorCode::Forbidden => problems.push(format!("activating an unapproved version: {err:#}")),
         Err(_) => {}
     }
-    if audits(pool, t, "policy.reject").await? != rejected + 1 {
+    if audits(db, t, "policy.reject").await? != rejected + 1 {
         problems.push("the refused activation was not audited".into());
     }
-    let direct = sqlx::query("INSERT INTO mh_policy_activation (tenant, version, compiled, action, by_whom) VALUES ($1, $2, 'x', 'approve', 'sql')")
-        .bind(t)
-        .bind(n as i32)
-        .execute(pool)
+    // The same row, straight into the table; SQLite's `at` has no default, so the row names it
+    // (a row refused for a missing column would prove nothing about the guard).
+    let direct = db
+        .execute(
+            Sql::each(
+                "INSERT INTO mh_policy_activation (tenant, version, compiled, action, by_whom) VALUES ($1, $2, 'x', 'approve', 'sql')",
+                "INSERT INTO mh_policy_activation (tenant, version, compiled, action, by_whom, at) VALUES (?1, ?2, 'x', 'approve', 'sql', CAST(unixepoch('subsec') * 1000000 AS INTEGER))",
+            ),
+            &[t.into(), Arg::Int32(n as i32)],
+        )
         .await;
+    // Refused by the guard itself, on either store, not by anything else about the row.
+    if let Err(err) = &direct {
+        let text = format!("{err:#}");
+        if matches!(db, Db::Sqlite(_)) && !text.contains("mh_policy_guard") {
+            problems.push(format!("the direct activation was refused for another reason than the guard: {text}"));
+        }
+    }
     if direct.is_ok() {
         problems.push("the database accepted an activation of an unapproved version".into());
     }
@@ -238,8 +252,8 @@ async fn approval(base: &Engine, e: &Engine, url: &str, pool: &sqlx::PgPool) -> 
     if rec.as_ref().and_then(|r| r.approved_by.as_deref()) != Some("Dana Reviewer") || rec.as_ref().map(|r| r.proposed_by.as_str()) != Some("agent:bench") {
         problems.push("the version does not record its proposer and named approver".into());
     }
-    let approved_by: Option<String> = sqlx::query_scalar("SELECT actor FROM mh_audit WHERE tenant = $1 AND action = 'policy.approve'").bind(t).fetch_optional(pool).await?;
-    if approved_by.as_deref() != Some("Dana Reviewer") || audits(pool, t, "policy.propose").await? != 1 {
+    let approved_by = db.text(Sql::same("SELECT actor FROM mh_audit WHERE tenant = $1 AND action = 'policy.approve'"), &[t.into()]).await?;
+    if approved_by.as_deref() != Some("Dana Reviewer") || audits(db, t, "policy.propose").await? != 1 {
         problems.push(format!("policy.propose/approve audit events missing or without the approver ({approved_by:?})"));
     }
     if e.store.policy_body(&v).await?.and_then(|b| b["spec"]["version"].as_u64()) != Some(n as u64) {
@@ -292,7 +306,7 @@ async fn approval(base: &Engine, e: &Engine, url: &str, pool: &sqlx::PgPool) -> 
 /// The done-when of G08 and POL-08: ranking weights changed by a policy change recall in the same
 /// engine at once and in a second engine within `REFRESH`, with no restart; a rollback restores
 /// the results exactly, in both, and is audited.
-async fn rollback(base: &Engine, e: &Engine, url: &str, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn rollback(base: &Engine, e: &Engine, url: &str, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let t = "pol-rollback";
     let subj = "customer:rb";
@@ -370,8 +384,8 @@ async fn rollback(base: &Engine, e: &Engine, url: &str, pool: &sqlx::PgPool) -> 
     }
     let history = e.policy_source.history(t, 10).await?;
     let actions: Vec<(String, Option<u32>)> = history.iter().map(|a| (a.action.clone(), a.version)).collect();
-    if actions != vec![("rollback".to_string(), None), ("approve".to_string(), Some(p.version))] || audits(pool, t, "policy.rollback").await? != 1 {
-        problems.push(format!("activations {actions:?}, {} policy.rollback audit events", audits(pool, t, "policy.rollback").await?));
+    if actions != vec![("rollback".to_string(), None), ("approve".to_string(), Some(p.version))] || audits(db, t, "policy.rollback").await? != 1 {
+        problems.push(format!("activations {actions:?}, {} policy.rollback audit events", audits(db, t, "policy.rollback").await?));
     }
     Ok(verdict(
         problems,

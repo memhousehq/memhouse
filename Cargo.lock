@@ -1416,6 +1416,7 @@ dependencies = [
  "memhouse-models",
  "memhouse-server",
  "memhouse-store-postgres",
+ "memhouse-store-sqlite",
  "once_cell",
  "rand 0.10.3",
  "regex",
@@ -1572,6 +1573,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

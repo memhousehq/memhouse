@@ -16,6 +16,8 @@ uuid.workspace = true
 chrono.workspace = true
 sha2.workspace = true
 hex.workspace = true
+# The same `db.*` spans as the Postgres store, so a trace reads alike on both profiles (QUAL-07).
+tracing.workspace = true
 # SQLite is compiled in (ADR 0002): nothing to install, and FTS5 and JSON are always there.
 rusqlite = { version = "0.32", features = ["bundled"] }
 half = "2"

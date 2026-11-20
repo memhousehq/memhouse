@@ -373,7 +373,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let mut cfg = if path_or_default.exists() { Config::load(Some(&path_or_default))? } else { Config::default() };
             let fresh = !path_or_default.exists();
             let is_lite = memhouse_server::sqlite_path(&cfg.database.url).is_some();
-            anyhow::ensure!(!lite || fresh || is_lite, "{} already configures a Postgres database; `memhouse up --lite` only sets up a new installation", path_or_default.display());
+            anyhow::ensure!(
+                !lite || fresh || is_lite,
+                "{} already configures a Postgres database; `memhouse up --lite` only sets up a new installation",
+                path_or_default.display()
+            );
             if lite && fresh {
                 // Lite: the database is one file beside the configuration. One model session
                 // keeps the embedder within its memory budget (ADR 0002).
