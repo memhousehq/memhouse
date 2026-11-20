@@ -1377,12 +1377,14 @@ impl memhouse_core::IntakeQueue for PgStore {
     }
 
     async fn fail(&self, id: Uuid, attempt: i32, error: &str, dead: bool, keep_payload: bool) -> anyhow::Result<()> {
-        // Backoff 0.5, 1, 2, 4 ... seconds, at most 30. Only the attempt that holds the claim: a
+        // Backoff 0.5, 1, 2, 4 ... seconds, at most 30. A proposal that will be retried keeps its
+        // content whatever `keep_payload` says (found by the queue's conformance kit: without it
+        // the retry had nothing to run). Only the attempt that holds the claim: a
         // worker whose lease expired must not reset a proposal another worker now runs.
         sqlx::query(
             "UPDATE mh_intake SET status = CASE WHEN $3 THEN 'dead' ELSE 'pending' END, locked_until = NULL, error = $2, \
                run_after = now() + make_interval(secs => least(power(2, attempts) * 0.25, 30)), \
-               finished_at = CASE WHEN $3 THEN now() END, payload = CASE WHEN $4 THEN payload END \
+               finished_at = CASE WHEN $3 THEN now() END, payload = CASE WHEN $4 OR NOT $3 THEN payload END \
              WHERE id = $1 AND status IN ('pending', 'running') AND attempts = $5",
         )
         .bind(id)

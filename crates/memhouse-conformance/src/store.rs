@@ -170,7 +170,7 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             if st.pending + st.running == 0 {
                 break;
             }
-            e.enrich_once(&spend).await?;
+            e.enrich_once_for(t, b, &spend).await?;
         }
         let before = derived(b).await?;
         anyhow::ensure!(before.iter().any(|m| m.content.contains("Marzipan")), "the kit could not set up the check: no fact was extracted from the round ({} derived records)", before.len());
