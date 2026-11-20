@@ -4,6 +4,15 @@
 use crate::{unless, Report};
 use memhouse_core::{ChatModel, EmbedKind, Embedder, Reranker};
 
+/// The one vector of an answer to one text: exactly one, of the declared size, finite.
+fn single(vectors: &[Vec<f32>], dim: usize) -> Result<&Vec<f32>, String> {
+    match vectors {
+        [v] if v.len() == dim && v.iter().all(|x| x.is_finite()) => Ok(v),
+        [v] => Err(format!("one text gave a vector of size {} (declared {dim}) or with a component that is not finite", v.len())),
+        _ => Err(format!("one text gave {} vectors", vectors.len())),
+    }
+}
+
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
     let n = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -47,7 +56,11 @@ pub async fn run_embedder_kit(e: &dyn Embedder) -> Report {
         "the same text gives the same vector on a second call (cosine above 0.9999)",
         async {
             let again = e.embed(&texts[..1], EmbedKind::Passage).await?;
-            let c = again.first().map(|v| cosine(v, &vectors[0])).unwrap_or(0.0);
+            let v = match single(&again, e.dim()) {
+                Ok(v) => v,
+                Err(why) => return Ok(Some(why)),
+            };
+            let c = cosine(v, &vectors[0]);
             Ok(unless(c > 0.9999, || format!("cosine {c:.5} between two embeddings of one text")))
         }
         .await,
@@ -57,7 +70,10 @@ pub async fn run_embedder_kit(e: &dyn Embedder) -> Report {
         "a text embedded in a batch equals the same text embedded alone, in the batch's order",
         async {
             let alone = e.embed(&texts[2..3], EmbedKind::Passage).await?;
-            let c = alone.first().map(|v| cosine(v, &vectors[2])).unwrap_or(0.0);
+            let c = match single(&alone, e.dim()) {
+                Ok(v) => cosine(v, &vectors[2]),
+                Err(why) => return Ok(Some(why)),
+            };
             Ok(unless(c > 0.999, || format!("cosine {c:.5} between the third text alone and in the batch")))
         }
         .await,
@@ -69,7 +85,10 @@ pub async fn run_embedder_kit(e: &dyn Embedder) -> Report {
         "a question about a passage is closer to it than to an unrelated one",
         async {
             let q = e.embed(&["What is the cat called?".to_string()], EmbedKind::Query).await?;
-            let Some(q) = q.first().filter(|q| q.len() == e.dim()) else { return Ok(Some("no query vector of the declared size".into())) };
+            let q = match single(&q, e.dim()) {
+                Ok(v) => v,
+                Err(why) => return Ok(Some(why)),
+            };
             let (hit, miss) = (cosine(q, &vectors[0]), cosine(q, &vectors[2]));
             Ok(unless(hit > miss, || format!("cosine {hit:.3} to the passage about the cat, {miss:.3} to the one about the invoice")))
         }
@@ -117,7 +136,9 @@ pub async fn run_reranker_kit(m: &dyn Reranker) -> Report {
         async {
             let rev: Vec<String> = docs.iter().rev().cloned().collect();
             let s = m.rerank(query, &rev).await?;
-            Ok(unless(s.len() == 3 && s[0] > s[1] && s[0] > s[2], || format!("with the documents reversed the scores are {s:?}")))
+            // Each document keeps its own score wherever it stands.
+            let follows = s.len() == scores.len() && s.iter().zip(scores.iter().rev()).all(|(a, b)| (a - b).abs() < 1e-4);
+            Ok(unless(follows, || format!("scores {scores:?}; with the documents reversed {s:?}")))
         }
         .await,
     );

@@ -110,7 +110,8 @@ are run through the same scenario.
 
 - `adapter_conformance`: the Postgres store and its intake queue on an empty database, the
   configured embedder (and reranker, when one is enabled), the default authorizer, and the
-  chat kit with a stand-in model (the suite calls no paid model). Then the same store on a
+  chat kit with a stand-in model (no chat model is called; the embedder kit does call the
+  configured embedder, which is a paid call when that is a paid API). Then the same store on a
   database where deleting an extracted fact silently does nothing: the store kit must fail and
   name the dropped cascade.
 - `profile_conformance`: the basic scenario through REST, MCP and the command line against one

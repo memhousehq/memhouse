@@ -98,18 +98,23 @@ pub async fn run_authorizer_kit(a: &dyn Authorizer) -> Report {
     // A caller cannot widen its own scope by naming someone else's in the request.
     let asked = Scope { user: Some("user:kit-someone-else".into()), agent: Some("agent:kit-someone-else".into()), ..Default::default() };
     let d = a.authorize(&agent, &AccessRequest { scope: Some(asked), ..request(Operation::Recall) }).await;
-    let widened = d.allowed && (d.scope.user.as_deref() == Some("user:kit-someone-else") || d.scope.agent.as_deref() == Some("agent:kit-someone-else"));
+    // Within the caller's own scope means its own user and agent: an unset field would match
+    // every record, and a third name is as wrong as the one asked for.
+    let own = d.scope.user.as_deref() == Some("user:kit-ana") && d.scope.agent.as_deref() == Some("agent:kit");
     r.check(
         "scope_is_not_widened_by_the_request",
-        "a request that names another user's or agent's scope is denied, or is answered within the caller's own scope",
-        unless(!widened, || format!("allowed with scope user {:?}, agent {:?}", d.scope.user, d.scope.agent)),
+        "a request that names another user's or agent's scope is denied, or is answered within the caller's own user and agent",
+        unless(!d.allowed || own, || format!("allowed with scope user {:?}, agent {:?}", d.scope.user, d.scope.agent)),
     );
 
     let (one, two) = (a.authorize(&agent, &request(Operation::Remember)).await, a.authorize(&agent, &request(Operation::Remember)).await);
     r.check(
         "deterministic",
         "the same identity and request get the same decision",
-        unless(one.allowed == two.allowed && one.rule == two.rule && one.propose_only == two.propose_only, || format!("{} then {}", says(&one), says(&two))),
+        // Every field: the scope, the denied labels and the kinds limit what is read.
+        unless(serde_json::to_value(&one).ok() == serde_json::to_value(&two).ok(), || {
+            format!("{} then {}", serde_json::to_string(&one).unwrap_or_else(|_| says(&one)), serde_json::to_string(&two).unwrap_or_else(|_| says(&two)))
+        }),
     );
 
     let denied = a.authorize(&nothing, &request(Operation::Recall)).await;

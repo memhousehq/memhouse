@@ -598,7 +598,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(r) if json => println!("{}", serde_json::to_string_pretty(&r)?),
                 Ok(r) if r.dry_run => println!("would delete {} memories ({} {})", r.deleted, r.scope.as_str(), r.value),
                 Ok(r) => println!("deleted {} memories ({} {})", r.deleted, r.scope.as_str(), r.value),
-                Err(e) if memhouse_core::error::code_of(&e) == memhouse_core::error::ErrorCode::NotFound => println!("not found"),
+                // With --json a missing record is an error (a non-zero exit), not a line of text.
+                Err(e) if !json && memhouse_core::error::code_of(&e) == memhouse_core::error::ErrorCode::NotFound => println!("not found"),
                 Err(e) => return Err(e),
             }
         }

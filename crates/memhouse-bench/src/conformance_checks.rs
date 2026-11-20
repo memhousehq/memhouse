@@ -132,12 +132,13 @@ async fn profile(base: &Engine) -> Outcome {
         let engine = memhouse_server::build_engine(cfg.clone(), false).await?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", listener.local_addr()?);
-        let server = tokio::spawn(memhouse_server::serve_listener(listener, engine));
         // The command line reads the same configuration from a file of its own.
         std::fs::create_dir_all(&dir)?;
         let config = cfg.save(Some(&dir.join("config.toml")))?;
         let (rest, mcp) = (Rest::new(&url, KEY), Mcp::new(&url, KEY));
         let cli = Cli { bin: std::env::current_exe()?, config, env: vec![] };
+        // Started after the last step that can fail, so no early return leaves it running.
+        let server = tokio::spawn(memhouse_server::serve_listener(listener, engine));
         let ways: [&dyn Way; 3] = [&rest, &mcp, &cli];
         let report = run_profile_suite(&scenario, &ways).await;
         server.abort();

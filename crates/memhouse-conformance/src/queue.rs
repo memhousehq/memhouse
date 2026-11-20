@@ -39,6 +39,12 @@ pub(crate) fn memory(tenant: &str, subject: &str, content: &str) -> Memory {
     }
 }
 
+/// A claimed job for a failure message: its first record's text (or its id, when an adapter
+/// hands back a proposal without records) and its attempt.
+fn said(j: &memhouse_core::intake::IntakeJob) -> (String, i32) {
+    (j.proposal.records.first().map(|r| r.memory.content.clone()).unwrap_or_else(|| format!("proposal {} without records", j.proposal.id)), j.attempts)
+}
+
 fn proposal(tenant: &str, subject: &str, content: &str) -> Proposal {
     let m = memory(tenant, subject, content);
     Proposal {
@@ -128,7 +134,7 @@ pub async fn run_intake_queue_kit(q: Arc<dyn IntakeQueue>) -> Report {
             r.check(
                 "claims_in_order_one_per_subject",
                 "a claim gives the subject's oldest proposal only, as attempt 1",
-                Some(format!("{} proposals claimed: {:?}", jobs.len(), jobs.iter().map(|j| (j.proposal.records[0].memory.content.clone(), j.attempts)).collect::<Vec<_>>())),
+                Some(format!("{} proposals claimed: {:?}", jobs.len(), jobs.iter().map(said).collect::<Vec<_>>())),
             );
             None
         }
@@ -175,9 +181,12 @@ pub async fn run_intake_queue_kit(q: Arc<dyn IntakeQueue>) -> Report {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
-                Ok(unless(got.len() == 1 && got[0].proposal.id == first.id && got[0].attempts == 2, || {
-                    format!("after 8 s: {:?}", got.iter().map(|j| (j.proposal.records[0].memory.content.clone(), j.attempts)).collect::<Vec<_>>())
-                }))
+                if got.len() != 1 || got[0].proposal.id != first.id || got[0].attempts != 2 {
+                    return Ok(Some(format!("after 8 s: {:?}", got.iter().map(said).collect::<Vec<_>>())));
+                }
+                // A retried proposal keeps its content: the retry has to have something to run.
+                let texts = |p: &Proposal| p.records.iter().map(|r| r.memory.content.clone()).collect::<Vec<_>>();
+                Ok(unless(texts(&got[0].proposal) == texts(&first), || format!("the retried proposal's content is {:?}, not {:?}", texts(&got[0].proposal), texts(&first))))
             }
             .await,
         );

@@ -127,6 +127,25 @@ impl Scenario {
             for name in used {
                 anyhow::ensure!(saved.contains(&name.as_str()), "scenario {}, step {}: \"{name}\" was not saved by an earlier step", s.name, i + 1);
             }
+            // An expectation the step's operation never shows would be silently ignored.
+            let ex = &step.expect;
+            let writes = step.remember.is_some() || step.revise.is_some();
+            let wrong: Vec<&str> = [
+                ("status", ex.status.is_some() && !writes),
+                ("deduplicated", ex.deduplicated.is_some() && !writes),
+                ("superseded", ex.superseded.is_some() && step.revise.is_none()),
+                ("first", ex.first.is_some() && step.recall.is_none()),
+                ("contains", !ex.contains.is_empty() && step.recall.is_none()),
+                ("excludes", !ex.excludes.is_empty() && step.recall.is_none()),
+                ("contains_text", ex.contains_text.is_some() && step.recall.is_none()),
+                ("stored", ex.stored.is_some() && step.ingest.is_none()),
+                ("deleted", ex.deleted.is_some() && step.forget.is_none()),
+            ]
+            .iter()
+            .filter(|(_, bad)| *bad)
+            .map(|(name, _)| *name)
+            .collect();
+            anyhow::ensure!(wrong.is_empty(), "scenario {}, step {}: this operation has no {} to expect", s.name, i + 1, wrong.join(", "));
             if let Some(name) = &step.save {
                 anyhow::ensure!(step.recall.is_none() && step.forget.is_none(), "scenario {}, step {}: only a step that stores a record can save one", s.name, i + 1);
                 saved.push(name);
@@ -229,7 +248,9 @@ impl Way for Cli {
             }
             "recall" => vec!["recall".into(), text("query"), "-s".into(), subject, "-k".into(), body["k"].as_u64().unwrap_or(10).to_string(), "--json".into()],
             "revise" => vec!["revise".into(), text("id"), text("content"), "--json".into()],
-            "forget" => vec!["forget".into(), text("id"), "--json".into()],
+            // One record by id, or (the suite's cleanup) everything of a subject.
+            "forget" if body["id"].as_str().is_some_and(|id| !id.is_empty()) => vec!["forget".into(), text("id"), "--json".into()],
+            "forget" => vec!["forget".into(), "--subject".into(), subject, "--yes".into(), "--json".into()],
             "ingest" => {
                 let path = std::env::temp_dir().join(format!("memhouse-profile-{}.json", uuid::Uuid::new_v4().simple()));
                 std::fs::write(&path, serde_json::to_vec(&body["messages"])?)?;
@@ -353,7 +374,9 @@ async fn run_way(scenario: &Scenario, way: &dyn Way) -> WayResult {
                     .flatten()
                     .map(|h| (h["memory"]["id"].as_str().unwrap_or_default().to_string(), h["memory"]["content"].as_str().unwrap_or_default().to_string()))
                     .collect();
-                let shown: Vec<String> = hits.iter().map(|(id, content)| name_of(id).unwrap_or_else(|| format!("\"{content}\""))).collect();
+                // The saved name with the content: two ways that return the same record with
+                // different text are not the same outcome.
+                let shown: Vec<String> = hits.iter().map(|(id, content)| format!("{}\"{content}\"", name_of(id).map(|n| format!("{n}=")).unwrap_or_default())).collect();
                 if let Some(first) = &ex.first {
                     if hits.first().map(|(id, _)| id.as_str()) != Some(id_of(first).as_str()) {
                         miss(format!("the first hit is {}, expected {first}", shown.first().cloned().unwrap_or_else(|| "nothing".into())));
@@ -498,7 +521,7 @@ steps:
         assert!(!bad.passed());
         let text = bad.failure_text();
         assert!(text.contains("three: step 4 (recall): docks is among the hits, and must not be"), "{text}");
-        assert!(text.contains("step 4: one gave `recall: hits=[]`, three gave `recall: hits=[docks]`"), "{text}");
+        assert!(text.contains("step 4: one gave `recall: hits=[]`, three gave `recall: hits=[docks=\"Docks: the warehouse has four.\"]`"), "{text}");
     }
 
     #[test]
@@ -507,6 +530,8 @@ steps:
         assert!(s.steps.len() >= 10);
         let unknown = "name: x\nsteps:\n  - forget: {id: nobody}\n";
         assert!(Scenario::parse(unknown).unwrap_err().to_string().contains("\"nobody\" was not saved"));
+        let ignored = "name: x\nsteps:\n  - recall: {query: a}\n    expect: {deleted: 1}\n";
+        assert!(Scenario::parse(ignored).unwrap_err().to_string().contains("this operation has no deleted to expect"));
         let two = "name: x\nsteps:\n  - remember: {content: a}\n    recall: {query: a}\n";
         assert!(Scenario::parse(two).unwrap_err().to_string().contains("exactly one of"));
     }
