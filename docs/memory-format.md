@@ -37,7 +37,7 @@ naming a `memory_id` comes after that record. Writers use the order above.
 |---|---|---|
 | `format` | `"memhouse.memory"` | required |
 | `version` | `2` | the format version; a reader refuses a version it doesn't know |
-| `schema_version` | integer | the [logical schema](schema.md) version of the writer |
+| `schema_version` | integer | the [logical schema](schema.md) version of the writer; a reader refuses a schema newer than it knows ([below](#additions-within-a-version)) |
 | `producer` | text | e.g. `memhouse 2.0.0` |
 | `exported_at` | RFC 3339 | |
 | `tenant` | text | the tenant exported |
@@ -86,7 +86,20 @@ Fields in this order; optional fields are left out when empty.
 | `created_at`, `updated_at` | RFC 3339 | yes | `updated_at` not before `created_at` |
 
 Unknown fields and unknown line types are **errors**, not ignored: a v2 reader can't silently drop
-what a newer writer added. New fields come with a new format version.
+what a newer writer added.
+
+### Additions within a version
+
+Within a format version, an addition comes with a new schema version: a new optional field, a new
+value of an enumerated field, or a new input to a key. The tables mark each one "from schema N".
+The header carries the writer's schema version, and a reader that knows the format up to schema N
+**refuses, at the header, a file whose `schema_version` is greater than N**. So a reader never
+meets a field it doesn't know in a file it accepted, and the rule above still holds: inside an
+accepted file, an unknown field is an error. A reader reads the files of every earlier schema of
+the version; an addition is never required in them.
+
+A change that an older reader of the same version could not refuse this way comes with a new
+format version.
 
 ### Content hash
 

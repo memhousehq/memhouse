@@ -32,6 +32,11 @@
       "error": "newer than this build"
     },
     {
+      "file": "invalid-newer-schema.jsonl",
+      "error": "written for schema",
+      "note": "format v2 from a schema newer than any reader knows: refused at the header, before the record with its unknown field is read"
+    },
+    {
       "file": "invalid-not-memhouse.jsonl",
       "error": "not a MemHouse export"
     },
