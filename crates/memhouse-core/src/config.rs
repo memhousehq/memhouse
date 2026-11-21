@@ -275,6 +275,15 @@ pub struct EmbeddingConfig {
     /// CPU threads per local model session (0 = auto: cores / sessions).
     pub threads: usize,
     pub cache_dir: Option<PathBuf>,
+    /// Local models: the commit of the model's repository on the hub its files are fetched at.
+    /// The models MemHouse names are pinned in the binary (threat T19); set this for another
+    /// model, or with `sha256` to move a pinned one to another revision.
+    pub revision: Option<String>,
+    /// Local models: the expected sha256 of the model's files at that revision, by file name
+    /// (`"onnx/model.onnx" = "..."`). A file is checked when it is downloaded and when a process
+    /// first loads it; a file without an entry is used unchecked, with a warning.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub sha256: std::collections::BTreeMap<String, String>,
     /// Prefix added to queries (some models need one, e.g. "search_query: ").
     pub query_prefix: Option<String>,
     pub passage_prefix: Option<String>,
@@ -296,6 +305,8 @@ impl Default for EmbeddingConfig {
             sessions: 0,
             threads: 0,
             cache_dir: None,
+            revision: None,
+            sha256: Default::default(),
             query_prefix: Some("Represent this sentence for searching relevant passages: ".into()),
             passage_prefix: None,
         }
@@ -313,11 +324,16 @@ pub struct RerankConfig {
     pub max_length: usize,
     /// Weight of the fused (keyword + vector) rank blended with the cross-encoder score.
     pub fused_weight: f32,
+    /// The commit of the reranker's repository on the hub (see `[embedding] revision`).
+    pub revision: Option<String>,
+    /// The expected sha256 of the reranker's files, by file name (see `[embedding] sha256`).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub sha256: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for RerankConfig {
     fn default() -> Self {
-        RerankConfig { enabled: false, model: "jina-reranker-v1-turbo-en".into(), candidates: 20, max_length: 256, fused_weight: 0.15 }
+        RerankConfig { enabled: false, model: "jina-reranker-v1-turbo-en".into(), candidates: 20, max_length: 256, fused_weight: 0.15, revision: None, sha256: Default::default() }
     }
 }
 

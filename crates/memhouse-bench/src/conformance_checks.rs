@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Governance checks for the conformance kits (roadmap G15):
 //!
-//! - `adapter_conformance`: the Postgres profile's adapters pass their kits (store, intake
+//! - `adapter_conformance`: the adapters of the profile under test pass their kits (store, intake
 //!   queue, embedder, reranker when one is configured, authorizer, and the chat-model kit with a
 //!   stand-in model), and a store that drops one cascade (facts extracted from a deleted round
 //!   stay) fails the store kit with a message that says so;
@@ -10,20 +10,20 @@
 //!   every way in).
 
 use crate::governance::{check, Check, Scratch};
+use crate::scratch::{open_store, Profile, Sql};
 use memhouse_conformance as kit;
-use memhouse_core::traits::Store;
 use memhouse_core::Engine;
-use std::sync::Arc;
 
 type Outcome = anyhow::Result<(bool, String, String)>;
 
 pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
+    // The profile under test is named in the title: the kits ran against its store and queue.
+    let adapters_title = format!(
+        "Every adapter of the {} profile passes its conformance kit; a store that drops one deletion cascade fails the store kit with a message that names it",
+        Profile::of(engine).title()
+    );
     let titles = [
-        (
-            "adapter_conformance",
-            "TR-CORE-02 / DEP-02 (G15)",
-            "Every adapter of the Postgres profile passes its conformance kit; a store that drops one deletion cascade fails the store kit with a message that names it",
-        ),
+        ("adapter_conformance", "TR-CORE-02 / DEP-02 (G15)", adapters_title.as_str()),
         (
             "profile_conformance",
             "PROF-01 / TR-CORE-01 (G15)",
@@ -36,13 +36,9 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         .zip(results)
         .map(|((id, req, title), r)| match r {
             Ok((passed, value, detail)) => check(id, req, title, passed, value, "all", detail),
-            Err(e) => check(id, req, title, false, "error".into(), "all", format!("{e:#}")),
+            Err(e) => crate::governance::errored(id, req, title, "all", e),
         })
         .collect()
-}
-
-async fn postgres(url: &str) -> anyhow::Result<Arc<memhouse_store_postgres::PgStore>> {
-    Ok(Arc::new(memhouse_store_postgres::PgStore::connect(url, 4, "").await?.with_identity_recheck(std::time::Duration::ZERO)))
 }
 
 async fn adapters(base: &Engine) -> Outcome {
@@ -51,9 +47,9 @@ async fn adapters(base: &Engine) -> Outcome {
     // The store and its queue, on an empty database.
     let scratch = Scratch::create(base, "kit1").await?;
     let ran = async {
-        let store = postgres(&scratch.url).await?;
+        let store = open_store(&scratch.url, 4, "").await?;
         reports.push(kit::run_store_kit(store.clone()).await);
-        let queue = store.intake_queue().ok_or_else(|| anyhow::anyhow!("the Postgres store has no intake queue"))?;
+        let queue = store.intake_queue().ok_or_else(|| anyhow::anyhow!("the {} store has no intake queue", scratch.profile().title()))?;
         reports.push(kit::run_intake_queue_kit(queue).await);
         anyhow::Ok(())
     }
@@ -73,16 +69,19 @@ async fn adapters(base: &Engine) -> Outcome {
             problems.push(if r.checks.is_empty() { format!("{}: no check ran", r.kit) } else { r.failure_text().replace('\n', "; ") });
         }
     }
-    // A store that drops one cascade: the same Postgres store, on a database where deleting a
-    // record extracted from a round silently does nothing, once.
+    // A store that drops one cascade: the same store, on a database where deleting a record
+    // extracted from a round silently does nothing, once.
     let scratch = Scratch::create(base, "kit2").await?;
     let faulty = async {
-        let store = postgres(&scratch.url).await?;
+        let store = open_store(&scratch.url, 4, "").await?;
         store.migrate(kit::STORE_KIT_DIM, &kit::fakes::HashEmbedder::new(kit::STORE_KIT_DIM).id).await?;
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&scratch.url).await?;
+        let db = scratch.db().await?;
         // The fault drops one cascade and then heals: the first extracted fact that should be
         // deleted stays. (A store that never deleted one would keep erasure retrying for an hour.)
-        sqlx::raw_sql(
+        // The same fault in each database's own trigger language: in SQLite, RAISE(IGNORE) in a
+        // BEFORE DELETE trigger skips that one row and keeps the trigger's own update, which is
+        // what RETURN NULL does in Postgres; `derived` is a JSON true, which SQLite reads as 1.
+        db.batch(Sql::each(
             "CREATE TABLE kit_fault (left_to_drop int NOT NULL); INSERT INTO kit_fault VALUES (1); \
              CREATE FUNCTION kit_keep_derived() RETURNS trigger AS $$ BEGIN \
                IF OLD.metadata->>'derived' = 'true' THEN \
@@ -90,10 +89,15 @@ async fn adapters(base: &Engine) -> Outcome {
                  IF FOUND THEN RETURN NULL; END IF; \
                END IF; RETURN OLD; END $$ LANGUAGE plpgsql; \
              CREATE TRIGGER kit_keep_derived BEFORE DELETE ON mh_memory FOR EACH ROW EXECUTE FUNCTION kit_keep_derived();",
-        )
-        .execute(&pool)
+            "CREATE TABLE kit_fault (left_to_drop int NOT NULL); INSERT INTO kit_fault VALUES (1); \
+             CREATE TRIGGER kit_keep_derived BEFORE DELETE ON mh_memory \
+             WHEN json_extract(OLD.metadata, '$.derived') = 1 AND (SELECT left_to_drop FROM kit_fault) > 0 BEGIN \
+               UPDATE kit_fault SET left_to_drop = left_to_drop - 1; \
+               SELECT RAISE(IGNORE); \
+             END;",
+        ))
         .await?;
-        pool.close().await;
+        db.close().await;
         anyhow::Ok(kit::run_store_kit(store).await)
     }
     .await;
@@ -114,8 +118,8 @@ async fn adapters(base: &Engine) -> Outcome {
 
 const KEY: &str = "mh_conformance_profile_key_0123456789";
 
-/// The basic scenario through the three ways into one Postgres deployment: a server on a
-/// scratch database for REST and MCP, and this binary with the same configuration for the CLI.
+/// The basic scenario through the three ways into one deployment of the profile under test: a
+/// server on a scratch database for REST and MCP, and this binary with the same configuration for the CLI.
 async fn profile(base: &Engine) -> Outcome {
     use kit::profile::{run_profile_suite, Cli, Mcp, Rest, Scenario, Way, BASIC};
     let scenario = Scenario::parse(BASIC)?;

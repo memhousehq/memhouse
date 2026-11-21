@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 14 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
+| Progress | 15 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -40,6 +40,8 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
 - `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 68 governance checks;
+- the Lite profile (G16): the same engine on one SQLite file, `memhouse up --lite`, backup and restore with the deletion ledger re-applied;
+- conformance kits for every adapter type and a profile suite over REST, MCP and the command line (G15);
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -346,7 +348,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 **D. Lite + developer launch**
 
 - [x] [G15 — Adapter and profile conformance kits](#g15--adapter-and-profile-conformance-kits) (20 November 2026)
-- [ ] [G16 — Lite profile: embedded store](#g16--lite-profile-embedded-store)
+- [x] [G16 — Lite profile: embedded store](#g16--lite-profile-embedded-store) (21 November 2026)
 - [ ] [G17 — Profile migration](#g17--profile-migration)
 - [ ] [G18 — SDKs, embedded bindings and first framework adapters](#g18--sdks-embedded-bindings-and-first-framework-adapters)
 - [ ] [G19 — Coding template v1](#g19--coding-template-v1)
@@ -1595,7 +1597,7 @@ which is named.
 
 #### G16 — Lite profile: embedded store
 
-- [ ] **Done**
+- [x] **Done** (21 November 2026; two things wait for the user: the review of the SQLite advisory exception, and the three governance checks reported as not applicable on Lite)
 
 > `/goal Implement the Lite profile: an embedded store (per ADR, SQLite + FTS5) with in-process exact per-subject vector scoring (binary-quantised prefilter, half-precision rescoring), in-process jobs, automatic migrations with a pre-upgrade snapshot, optional file encryption, backup by snapshot plus export with deletion-ledger replay; make it the default for memhouse up --lite; pass every conformance kit, the governance suite and the guard within noise of Postgres. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -1603,15 +1605,72 @@ which is named.
   container; bindings in G18), **TR-LT-03**, **TR-LT-04**, **TR-LT-06**, **TR-LT-08**,
   **TR-LT-09**, **TR-LT-10**, SCALE-06 (Lite side).
 - **Deliverables:**
-  - [ ] `memhouse-store-sqlite` crate; `memhouse up --lite` with no Docker
-  - [ ] in-process scorer with an exactness test against brute force
-  - [ ] footprint and latency report (binary ≤ 100 MB excluding models, RSS ≤ 256 MB at 100k memories, recall p95 ≤ 50 ms)
-  - [ ] as decided in [ADR 0002](adr/0002-lite-embedded-store.md) and [ADR 0003](adr/0003-vector-storage-format.md): rusqlite with bundled SQLite, FTS5 with the subject token inside `MATCH`, half-precision blobs with an exact full scan, binary copy for an optional prefilter
-  - [ ] embedding model revisions pinned and file hashes verified on download (threat model T19)
-  - [ ] Lite runs one embedding-model session by default; PROF-06 as decided in ADR 0002: the store and binary within 256 MB / 100 MB, the optional local model on its own budget (394 MB peak measured in G03), reported separately
-  - [ ] Lite with a remote embedding API (`provider = "openai"`, already in the engine) loads no model; the footprint report covers both modes
+  - [x] `memhouse-store-sqlite` crate; `memhouse up --lite` with no Docker
+  - [x] in-process scorer with an exactness test against brute force
+  - [x] footprint and latency report (binary ≤ 100 MB excluding models, RSS ≤ 256 MB at 100k memories, recall p95 ≤ 50 ms)
+  - [x] as decided in [ADR 0002](adr/0002-lite-embedded-store.md) and [ADR 0003](adr/0003-vector-storage-format.md): rusqlite with bundled SQLite, FTS5 with the subject token inside `MATCH`, half-precision blobs with an exact full scan, binary copy for an optional prefilter
+  - [x] embedding model revisions pinned and file hashes verified on download (threat model T19)
+  - [x] Lite runs one embedding-model session by default; PROF-06 as decided in ADR 0002: the store and binary within 256 MB / 100 MB, the optional local model on its own budget (394 MB peak measured in G03), reported separately
+  - [x] Lite with a remote embedding API (`provider = "openai"`, already in the engine) loads no model; the footprint report covers both modes (the report is measured with no model loaded; the local model's memory is reported apart)
+  - [x] automatic migration with a copy of the database made first (TR-LT-10), and backup and restore with the deletion ledger re-applied (TR-LT-09) (from the goal's line, added 21 November 2026)
+  - [x] the governance suite made store-neutral, so it runs on both profiles (added 21 November 2026: "governance 100% on Lite" needed it)
+  - ~~optional encryption of the store file with a user-supplied key (TR-LT-08, a Should; from the goal's line)~~ not built: the bundled SQLite has no encryption, and SQLCipher is another build of SQLite with a cryptography library to choose and ship. It needs a decision of its own; moved to G29 with the other encryption work
 - **Done when:** the guard on Lite matches the Postgres baseline within the thresholds; conformance and governance are 100%.
 - **Guard:** T1 on both profiles. **Depends on:** G15.
+- **Result (2026-11-21).**
+  - **The store.** `crates/memhouse-store-sqlite` implements `Store` and `IntakeQueue` on one
+    SQLite file as ADRs 0002 and 0003 decided: WAL, FTS5 (`porter unicode61`, BM25) with the
+    subject as a token inside the `MATCH`, vectors as half-precision blobs scored by an exact
+    scan of the subject, a bit copy for an optional prefilter that is off. The logical schema
+    is the Postgres one; physical types differ ([lite.md](lite.md)). A write is acknowledged
+    after a flush to the device (`synchronous = FULL`); the pipeline's work after it commits
+    without waiting and is re-run from the queue after a power failure. Reads use their own
+    connections, so a vector scan does not hold up the writer.
+  - **The profile.** `[database] url = "sqlite:<path>"` selects it
+    (`memhouse_server::open_store`); `memhouse up --lite` writes the configuration and the file
+    under `MEMHOUSE_HOME` with no Docker, and sets one model session. The file is created for
+    its owner only, and the store refuses a database directory that another user owns or can
+    write to.
+  - **Backup, restore, upgrade.** `memhouse backup <dir>` (a consistent snapshot, the canonical
+    export, the deletion ledger, a manifest with hashes) and `memhouse restore <dir>`, which
+    re-applies every deletion and erasure made after the snapshot (TR-LT-09; audit actions
+    `backup.create`, `backup.restore`, `deletion.reapply`). On start an older file is upgraded
+    in place after a copy is written beside it, and a newer file is refused (TR-LT-10).
+  - **Model files (T19).** The six built-in local models are pinned to a revision in the binary
+    with the SHA-256 of each file, checked on download and when a process first loads them;
+    `[embedding] revision` and `sha256` (and the same under `[rerank]`) pin another model.
+  - **Conformance and governance.** The store and queue kits pass on SQLite (15 of 15, 12 of
+    12). The governance suite was written against Postgres (scratch databases, direct table
+    inspections); it is now store-neutral (`crates/memhouse-bench/src/scratch.rs`), and a check
+    can report that it does not apply to a profile. Postgres: 68 of 68. SQLite: **65 of 65
+    applicable, 3 not applicable**: `recall_plan_scoped` (it reads the Postgres planner's
+    plan), `schema_upgrade` (it upgrades a version-1 Postgres database), `language_recall` (it
+    verifies per-language text-search configurations, which SQLite does not have).
+  - **Guard on Lite** (T1, `memhouse bench guard --skip-latency -- --database-url sqlite:…`):
+    LongMemEval_S 91.3 / 93.8 / 84.8 (Postgres 91.3 / 94.2 / 84.8), LoCoMo 78.3 / 78.3 / 59.2
+    (78.8 / 78.7 / 59.2), the starter suite identical. All within the thresholds; the latency
+    baselines are Postgres's and are not applied to Lite.
+  - **Footprint and latency** (`memhouse bench footprint`, 100,000 memories, 10,000 per
+    subject, through the engine): binary 60.5 MB, resident memory 52 MB, recall p95 35.5 ms,
+    write acknowledgement p95 3.8 ms, a gated memory recallable in 97 ms at p95
+    ([benchmarks.md](benchmarks.md#lite-profile)).
+  - **What Lite does not do, and what was found.** Keyword search has one English-stemming
+    index for every record: no per-language stemming. A burst of 200 back-to-back writes on a
+    large subject is acknowledged in 123 ms at p95 (one writer). The default local model
+    peaked at about 850 MB of resident memory with one session on a macOS laptop, against the
+    394 MB of the technology spike; not explained yet, and unrelated to the store. Two
+    neighbours closer than half precision resolves (about 0.001 in cosine) can come back in
+    either order: the `exact_topk` check, which allowed ties within single precision, allows
+    them within half precision on Lite (the pre-push CI found this with the default model).
+    Erased
+    content can stay in the file's free pages, and backups and pre-upgrade copies keep what
+    was erased after they were made. The container image is G21's.
+  - **For the user to decide.** (1) The bundled SQLite has a known advisory (RUSTSEC-2026-0459,
+    a crafted `-wal` file); its reviewed exception covered only the spike examples, and Lite
+    now ships that SQLite. The private-directory check limits the exposure to a database
+    directory taken from an untrusted source; the fixed version is blocked by a bound in sqlx.
+    `deny.toml` states this and asks for review. (2) Whether three not-applicable checks are
+    acceptable as "governance 100%" on Lite.
 
 #### G17 — Profile migration
 
@@ -1820,6 +1879,7 @@ which is named.
   - [ ] OIDC and SAML SSO for humans and admins; SCIM provisioning
   - [ ] mutual TLS and workload identity between components
   - [ ] envelope encryption of content columns with customer-managed keys in a KMS or HSM
+  - [ ] optional encryption of the Lite store file with a user-supplied key (TR-LT-08; moved from G16 on 21 November 2026: it needs SQLCipher or another encrypted build of SQLite, a decision of its own)
   - [ ] egress policy (no external model calls for sovereign tenants unless enabled); per-tenant region pinning
   - [ ] release keys in an HSM with two-person approval (SC-02)
   - [ ] key-revocation test (content unreadable after the key is revoked); egress test

@@ -9,6 +9,7 @@ ships with its own benchmark and validation tool so you can check its quality, s
 
 ```bash
 memhouse up                      # Postgres + pgvector in Docker, config, local embedding model
+memhouse up --lite               # or: no Docker, everything in one SQLite file (docs/lite.md)
 memhouse connect claude-code     # or cursor, claude-desktop, vscode, windsurf, codex, gemini, all
 ```
 
@@ -35,7 +36,7 @@ Build from source (Rust 1.85+):
 cargo install --path crates/memhouse-cli
 ```
 
-Docker is needed only for `memhouse up`. With your own Postgres, use `memhouse init --database-url postgres://...` instead.
+Docker is needed only for `memhouse up`. With your own Postgres, use `memhouse init --database-url postgres://...` instead; with no database at all, `memhouse up --lite` runs the same engine on one SQLite file ([the Lite profile](docs/lite.md)).
 
 ## Use it from an agent (MCP)
 
@@ -235,7 +236,7 @@ memhouse down                    # stop the container; data stays in the Docker 
 ## Documentation
 
 [API](docs/api.md) · [Configuration](docs/configuration.md) · [Operations](docs/operations.md) ·
-[Governance and compliance](docs/governance.md) · [Policies](docs/policy.md) · [Languages](docs/languages.md) · [Conformance kits](docs/conformance.md) · [Development](docs/development.md) ·
+[Governance and compliance](docs/governance.md) · [Policies](docs/policy.md) · [Languages](docs/languages.md) · [The Lite profile](docs/lite.md) · [Conformance kits](docs/conformance.md) · [Development](docs/development.md) ·
 [Architecture](docs/architecture.md) · [Benchmarks](docs/benchmarks.md)
 
 The plan of record is [`docs/roadmap.md`](docs/roadmap.md).

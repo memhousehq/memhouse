@@ -1,0 +1,32 @@
+[package]
+name = "memhouse-store-sqlite"
+description = "SQLite store adapter for the MemHouse Lite profile: one file, FTS5 keywords, exact in-process vector scoring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+memhouse-core.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+# The same `db.*` spans as the Postgres store, so a trace reads alike on both profiles (QUAL-07).
+tracing.workspace = true
+# SQLite is compiled in (ADR 0002): nothing to install, and FTS5 and JSON are always there.
+rusqlite = { version = "0.32", features = ["bundled"] }
+half = "2"
+
+[target.'cfg(unix)'.dependencies]
+# geteuid, for the check that the database's directory belongs to the user.
+libc = "0.2"
+
+[dev-dependencies]
+memhouse-conformance.workspace = true
+tokio.workspace = true
+tempfile = "3"

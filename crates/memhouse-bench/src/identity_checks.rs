@@ -5,6 +5,7 @@
 
 use crate::api_checks::{Api, KEY};
 use crate::governance::{check, stub_engine, Check, Scratch};
+use crate::scratch::{Db, Profile, Sql};
 use memhouse_core::access::{AccessRequest, Operation};
 use memhouse_core::config::Admission;
 use memhouse_core::identity::{self, perm, Authenticator, Principal, PrincipalKind};
@@ -117,19 +118,19 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
 
         let (url, server) = serve(e.clone()).await?;
         let (review_url, review_server) = serve(reviewed.clone()).await?;
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
+        let db = scratch.db().await?;
         let mut api = Api::new(url);
         let mut review_api = Api::new(review_url);
         let out = vec![
-            authentication(&mut api, &keys, &pool).await?,
-            routes(&mut api, &keys, &pool).await?,
-            propose_only(&mut api, &mut review_api, &keys, &pool).await?,
-            labels(&mut api, &keys, &e).await?,
+            authentication(&mut api, &keys, &db).await?,
+            routes(&mut api, &keys, &db).await?,
+            propose_only(&mut api, &mut review_api, &keys, &db).await?,
+            labels(&mut api, &keys, &e, &db).await?,
             latency(&e, &keys).await?,
         ];
         server.abort();
         review_server.abort();
-        pool.close().await;
+        db.close().await;
         anyhow::Ok(out)
     }
     .await;
@@ -137,15 +138,15 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     result
 }
 
-async fn count(pool: &sqlx::PgPool, action: &str) -> anyhow::Result<i64> {
-    Ok(sqlx::query_scalar("SELECT count(*) FROM mh_audit WHERE action = $1").bind(action).fetch_one(pool).await?)
+async fn count(db: &Db, action: &str) -> anyhow::Result<i64> {
+    db.count(Sql::same("SELECT count(*) FROM mh_audit WHERE action = $1"), &[action.into()]).await
 }
 
 /// A refused credential: why, the Authorization header, extra headers.
 type Case = (&'static str, String, Vec<(&'static str, String)>);
 
 /// GOV-01, GOV-13: every credential that isn't valid is refused with an audit entry and no data.
-async fn authentication(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn authentication(api: &mut Api, keys: &Keys, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let ok = api.call("GET", "/v1/whoami", "/v1/whoami", None, &[("authorization", &keys.bearer("a"))]).await?;
     if ok.body["principal"] != "agent:a" || ok.body["via"] != "key" || ok.body["user"].is_string() {
@@ -171,7 +172,7 @@ async fn authentication(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyh
     }
     let mut tampered_body = token.clone();
     tampered_body.replace_range(5..7, if &token[5..7] == "ey" { "ab" } else { "ey" });
-    let before = count(pool, "auth.failed").await?;
+    let before = count(db, "auth.failed").await?;
     let mut cases: Vec<Case> = vec![
         ("no credential", String::new(), vec![]),
         ("garbage", "Bearer hello".into(), vec![]),
@@ -194,7 +195,7 @@ async fn authentication(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyh
             problems.push(format!("{why}: {} {}", r.status, r.body));
         }
     }
-    let audited = count(pool, "auth.failed").await? - before;
+    let audited = count(db, "auth.failed").await? - before;
     if audited != cases.len() as i64 {
         problems.push(format!("{audited} auth.failed events for {} refused calls", cases.len()));
     }
@@ -203,9 +204,14 @@ async fn authentication(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyh
     let tok = format!("Bearer {}", t.body["token"].as_str().unwrap_or_default());
     let before = api.call("GET", "/v1/whoami", "/v1/whoami", None, &[("authorization", &tok)]).await?.status;
     let key_id = keys.0["trusted"].split('_').nth(1).unwrap_or_default().to_string();
-    sqlx::query("UPDATE mh_api_key SET revoked_at = now() WHERE id = $1").bind(&key_id).execute(pool).await?;
+    // SQLite: the instant in microseconds since the epoch.
+    db.execute(
+        Sql::each("UPDATE mh_api_key SET revoked_at = now() WHERE id = $1", "UPDATE mh_api_key SET revoked_at = CAST(unixepoch('subsec') * 1000000 AS INTEGER) WHERE id = ?1"),
+        &[(&key_id).into()],
+    )
+    .await?;
     let after = api.call("GET", "/v1/whoami", "/v1/whoami", None, &[("authorization", &tok)]).await?.status;
-    sqlx::query("UPDATE mh_api_key SET revoked_at = NULL WHERE id = $1").bind(&key_id).execute(pool).await?;
+    db.execute(Sql::same("UPDATE mh_api_key SET revoked_at = NULL WHERE id = $1"), &[(&key_id).into()]).await?;
     if before != 200 || after != 401 {
         problems.push(format!("token of a revoked key: {before} before, {after} after"));
     }
@@ -213,7 +219,7 @@ async fn authentication(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyh
 }
 
 /// Done-when of G06: a key without permissions reaches the authorizer on every route and tool.
-async fn routes(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn routes(api: &mut Api, keys: &Keys, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let id = uuid::Uuid::now_v7().to_string();
     let body = |path: &str| -> Option<Value> {
@@ -238,7 +244,7 @@ async fn routes(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Resu
     let spec = api.spec.clone();
     let none = keys.bearer("a-none");
     let mut calls = 0;
-    let before = count(pool, "access.denied").await?;
+    let before = count(db, "access.denied").await?;
     for (path, methods) in spec["paths"].as_object().into_iter().flatten() {
         for (method, op) in methods.as_object().into_iter().flatten() {
             if op.get("security") == Some(&json!([])) || path == "/v1/whoami" {
@@ -271,7 +277,7 @@ async fn routes(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Resu
             problems.push(format!("MCP {name}: {}", r["content"][0]["text"]));
         }
     }
-    let audited = count(pool, "access.denied").await? - before;
+    let audited = count(db, "access.denied").await? - before;
     if audited < (calls + tool_calls) as i64 {
         problems.push(format!("{audited} access.denied events for {} refused calls", calls + tool_calls));
     }
@@ -289,11 +295,17 @@ async fn routes(api: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Resu
 }
 
 /// GOV-08: agents propose; the engine (auto) or a reviewer (review) commits.
-async fn propose_only(api: &mut Api, review: &mut Api, keys: &Keys, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn propose_only(api: &mut Api, review: &mut Api, keys: &Keys, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
-    let actions = |id: String| {
-        let pool = pool.clone();
-        async move { sqlx::query_as::<_, (String, String)>("SELECT action, actor FROM mh_audit WHERE memory_id = $1::uuid ORDER BY id").bind(id).fetch_all(&pool).await }
+    // The id is bound as text: Postgres casts it to its uuid column, SQLite stores it as text.
+    let actions = |id: String| async move {
+        let rows = db
+            .rows(
+                Sql::each("SELECT action, actor FROM mh_audit WHERE memory_id = $1::uuid ORDER BY id", "SELECT action, actor FROM mh_audit WHERE memory_id = ?1 ORDER BY id"),
+                &[id.into()],
+            )
+            .await?;
+        anyhow::Ok(rows.into_iter().map(|r| (r[0].text().unwrap_or_default(), r[1].text().unwrap_or_default())).collect::<Vec<(String, String)>>())
     };
     let a = keys.bearer("a");
     let r =
@@ -316,9 +328,9 @@ async fn propose_only(api: &mut Api, review: &mut Api, keys: &Keys, pool: &sqlx:
     if hits.body["hits"].as_array().is_some_and(|h| h.iter().any(|x| x["memory"]["id"] == cand.as_str())) {
         problems.push("a candidate was recalled".into());
     }
-    let denied_before = count(pool, "access.denied").await?;
+    let denied_before = count(db, "access.denied").await?;
     let direct = review.call("POST", "/v1/review", "/v1/review", Some(json!({"id": cand, "action": "commit"})), &[("authorization", a.as_str())]).await?;
-    if direct.status != 403 || count(pool, "access.denied").await? != denied_before + 1 {
+    if direct.status != 403 || count(db, "access.denied").await? != denied_before + 1 {
         problems.push(format!("agent committing its own proposal: {}", direct.status));
     }
     let rev = keys.bearer("rev");
@@ -354,7 +366,7 @@ async fn propose_only(api: &mut Api, review: &mut Api, keys: &Keys, pool: &sqlx:
             problems.push(format!("{who}: status {}, audit {trail:?}", r.body["status"]));
         }
     }
-    let prov: Option<String> = sqlx::query_scalar("SELECT prov_agent FROM mh_memory WHERE id = $1::uuid").bind(&id).fetch_optional(pool).await?.flatten();
+    let prov = db.text(Sql::each("SELECT prov_agent FROM mh_memory WHERE id = $1::uuid", "SELECT prov_agent FROM mh_memory WHERE id = ?1"), &[(&id).into()]).await?;
     if prov.as_deref() != Some("agent:a") {
         problems.push(format!("provenance.agent of the proposal is {prov:?}"));
     }
@@ -367,7 +379,7 @@ async fn propose_only(api: &mut Api, review: &mut Api, keys: &Keys, pool: &sqlx:
 
 /// TR-RQ-03, ACC-04, GOV-02: denied labels inside the statement; caller-supplied filters can't
 /// widen access.
-async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcome> {
+async fn labels(api: &mut Api, keys: &Keys, e: &Engine, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let subj = "customer:lbl";
     // As the operator: 12 HR records that match the query best, 3 ordinary ones.
@@ -423,9 +435,30 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
         shared_agents: vec![],
         with_vectors: false,
     };
-    let plan = e.store.search_plan(&q).await?.unwrap_or_default();
-    if !scan_filters_labels(&plan) {
-        problems.push("no mh_memory scan in the recall plan filters on labels".into());
+    match Profile::of(e) {
+        Profile::Postgres => {
+            let plan = e.store.search_plan(&q).await?.unwrap_or_default();
+            if !scan_filters_labels(&plan) {
+                problems.push("no mh_memory scan in the recall plan filters on labels".into());
+            }
+        }
+        // The SQLite store gives no plan to read, so the same property is shown by what the
+        // statement returns: with each retriever cut to its 3 best and a question the 12 denied
+        // records match best, a filter applied after that cut would leave nothing; a filter in
+        // the scan leaves the 3 permitted records.
+        Profile::Sqlite => {
+            let text = "payroll salary grievance dispute";
+            let narrow =
+                SearchQuery { text: text.into(), embedding: Some(e.embedder.embed(&[text.to_string()], memhouse_core::EmbedKind::Query).await?.remove(0)), per_retriever: 3, ..q };
+            let hits = e.store.search(&narrow).await?;
+            if hits.len() != 3 || hits.iter().any(|h| !h.memory.labels.is_empty()) {
+                problems.push(format!(
+                    "the label filter is not applied before each retriever's limit: {} hits with a limit of 3 per retriever, labels {:?}",
+                    hits.len(),
+                    hits.iter().map(|h| h.memory.labels.clone()).collect::<Vec<_>>()
+                ));
+            }
+        }
     }
     // Get and list hide what recall hides; writing a denied label is refused.
     let hr_id: String =
@@ -438,9 +471,12 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
     }
     // Relabelling doesn't re-embed and takes effect at once.
     let plain: String = l.body["items"][0]["id"].as_str().unwrap_or_default().to_string();
-    let vec_before: Option<String> = sqlx::query_scalar("SELECT embedding::text FROM mh_memory WHERE id = $1::uuid").bind(&plain).fetch_optional(&pool_of(e)).await?;
+    // The stored vector, to compare before and after: its text form in Postgres, the bytes of
+    // its blob in SQLite.
+    let vector = Sql::each("SELECT embedding::text FROM mh_memory WHERE id = $1::uuid", "SELECT hex(embedding) FROM mh_memory WHERE id = ?1");
+    let vec_before = db.text(vector, &[(&plain).into()]).await?;
     let rl = api.call("POST", "/v1/labels", "/v1/labels", Some(json!({"id": plain, "labels": ["hr"]})), &[("authorization", ana.as_str())]).await?;
-    let vec_after: Option<String> = sqlx::query_scalar("SELECT embedding::text FROM mh_memory WHERE id = $1::uuid").bind(&plain).fetch_optional(&pool_of(e)).await?;
+    let vec_after = db.text(vector, &[(&plain).into()]).await?;
     let g = api.call("GET", "/v1/memories/{id}", &format!("/v1/memories/{plain}"), None, &[("authorization", a.as_str())]).await?;
     if rl.status != 200 || vec_before != vec_after || g.status != 404 {
         problems.push(format!("relabel: {} (vector unchanged: {}), agent then gets {}", rl.status, vec_before == vec_after, g.status));
@@ -488,10 +524,6 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine) -> anyhow::Result<Outcom
         problems.push("an agent without a verified user recalled user-scoped notes".into());
     }
     Ok(verdict(problems, "12 hr + 3 plain records, k=3".into(), "denied labels filtered in the scan before ranking (k still full); tampered tenant, user and scope refused"))
-}
-
-fn pool_of(e: &Engine) -> sqlx::PgPool {
-    sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_lazy(&e.cfg.database.url).expect("database url")
 }
 
 /// The plan has a scan of `mh_memory` whose filter (or index condition) mentions labels.

@@ -29,13 +29,15 @@ sha2.workspace = true
 hex.workspace = true
 sqlx.workspace = true
 memhouse-store-postgres.workspace = true
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+memhouse-store-sqlite.workspace = true
+# The governance suite looks at the tables of an SQLite database under test (the same build the store uses).
+rusqlite = { version = "0.32", features = ["bundled"] }
 half = { version = "2", optional = true }
 libc = { version = "0.2", optional = true }
 
 [features]
 # Technology spike (roadmap G03): `cargo run --release -p memhouse-bench --features spike --example spike_storage -- <run-id>`
-spike = ["dep:rusqlite", "dep:half", "dep:libc"]
+spike = ["dep:half", "dep:libc"]
 
 [[example]]
 name = "spike_storage"

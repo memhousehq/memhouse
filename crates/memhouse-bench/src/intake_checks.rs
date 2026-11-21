@@ -5,12 +5,12 @@
 //! corrections superseding, confirmations, expiry), exact structured recall, and degradation.
 
 use crate::governance::{check, stub_engine, Check, Scratch, StubEmbedder};
+use crate::scratch::{Db, Sql};
 use memhouse_core::types::*;
 use memhouse_core::{EmbedKind, Embedder, Engine};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 
 pub(crate) async fn run(engine: &Engine, run_id: &str) -> Vec<Check> {
     let s = |name: &str| format!("bench:{run_id}:gov:{name}");
@@ -51,7 +51,7 @@ pub(crate) async fn run(engine: &Engine, run_id: &str) -> Vec<Check> {
     ] {
         out.push(match result {
             Ok((passed, value, detail)) => check(id, req, title, passed, value, "all", detail),
-            Err(e) => check(id, req, title, false, "error".into(), "all", format!("{e:#}")),
+            Err(e) => crate::governance::errored(id, req, title, "all", e),
         });
     }
     for name in ["fresh", "gate"] {
@@ -86,15 +86,15 @@ fn p95(v: &mut [f64]) -> f64 {
 }
 
 /// A scratch database with the stub embedder, intake left to workers (or nobody).
-async fn scratch_engine(base: &Engine, suffix: &str, tune: impl FnOnce(&mut memhouse_core::Config)) -> anyhow::Result<(Scratch, Engine, sqlx::PgPool)> {
+async fn scratch_engine(base: &Engine, suffix: &str, tune: impl FnOnce(&mut memhouse_core::Config)) -> anyhow::Result<(Scratch, Engine, Db)> {
     let scratch = Scratch::create(base, suffix).await?;
     let e = stub_engine(base, &scratch.url, "stub:intake", DIM, "", true).await?;
     let mut cfg = (*e.cfg).clone();
     cfg.governance.audit_reads = false;
     tune(&mut cfg);
     let e = e.reconfigure(cfg).with_inline_intake(false);
-    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
-    Ok((scratch, e, pool))
+    let db = scratch.db().await?;
+    Ok((scratch, e, db))
 }
 
 async fn wait_idle(e: &Engine, timeout: Duration) -> anyhow::Result<bool> {
@@ -112,7 +112,7 @@ async fn wait_idle(e: &Engine, timeout: Duration) -> anyhow::Result<bool> {
 /// CORE-02, TR-IN-04, PERF-03: 200 writes, each answered as a candidate; while queued, no PII
 /// canary is anywhere in the queue; workers then resolve every id to exactly one stored record.
 async fn candidates(base: &Engine) -> Outcome {
-    let (scratch, e, pool) = scratch_engine(base, "int1", |_| {}).await?;
+    let (scratch, e, db) = scratch_engine(base, "int1", |_| {}).await?;
     let result = async {
         let mut problems = vec![];
         let subj = "customer:intake";
@@ -134,7 +134,8 @@ async fn candidates(base: &Engine) -> Outcome {
             ids.push(r.id);
         }
         // Queued, not yet through the gate: readable as candidates; no canary in the queue.
-        let queued: Vec<String> = sqlx::query_scalar("SELECT payload::text FROM mh_intake WHERE payload IS NOT NULL").fetch_all(&pool).await?;
+        // The payload is JSON text in SQLite already.
+        let queued = db.texts(Sql::each("SELECT payload::text FROM mh_intake WHERE payload IS NOT NULL", "SELECT payload FROM mh_intake WHERE payload IS NOT NULL"), &[]).await?;
         let leaked = queued.iter().filter(|p| canaries.iter().any(|c| p.contains(c))).count();
         if queued.len() != 200 || leaked > 0 {
             problems.push(format!("{} proposals queued, {leaked} with a PII canary", queued.len()));
@@ -157,11 +158,19 @@ async fn candidates(base: &Engine) -> Outcome {
         for w in workers {
             let _ = w.await;
         }
-        let rows: Vec<(Uuid, i64)> = sqlx::query_as("SELECT id, count(*) FROM mh_memory WHERE id = ANY($1) GROUP BY id").bind(&ids).fetch_all(&pool).await?;
-        if !idle || rows.len() != ids.len() || rows.iter().any(|(_, n)| *n != 1) {
+        let rows = db
+            .rows(
+                Sql::each(
+                    "SELECT id, count(*) FROM mh_memory WHERE id = ANY($1) GROUP BY id",
+                    "SELECT id, count(*) FROM mh_memory WHERE id IN (SELECT value FROM json_each(?1)) GROUP BY id",
+                ),
+                &[(&ids).into()],
+            )
+            .await?;
+        if !idle || rows.len() != ids.len() || rows.iter().any(|r| r[1].int() != Some(1)) {
             problems.push(format!("{} of {} ids stored after {resolved_s:.1} s (queue idle: {idle})", rows.len(), ids.len()));
         }
-        let stored: Vec<String> = sqlx::query_scalar("SELECT content FROM mh_memory UNION ALL SELECT detail FROM mh_audit").fetch_all(&pool).await?;
+        let stored = db.texts(Sql::same("SELECT content FROM mh_memory UNION ALL SELECT detail FROM mh_audit"), &[]).await?;
         if stored.iter().any(|c| canaries.iter().any(|k| c.contains(k))) {
             problems.push("a PII canary reached storage".into());
         }
@@ -176,7 +185,7 @@ async fn candidates(base: &Engine) -> Outcome {
         )
     }
     .await;
-    pool.close().await;
+    db.close().await;
     scratch.drop().await?;
     result
 }
@@ -185,7 +194,7 @@ async fn candidates(base: &Engine) -> Outcome {
 /// twice at once. After the lease, workers finish everything, and each record and its audit
 /// event exist exactly once.
 async fn restart(base: &Engine) -> Outcome {
-    let (scratch, e, pool) = scratch_engine(base, "int2", |c| c.intake.lease_secs = 1).await?;
+    let (scratch, e, db) = scratch_engine(base, "int2", |c| c.intake.lease_secs = 1).await?;
     let result = async {
         let mut problems = vec![];
         let mut ids = vec![];
@@ -223,16 +232,37 @@ async fn restart(base: &Engine) -> Outcome {
         for w in workers {
             let _ = w.await;
         }
-        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE id = ANY($1)").bind(&ids).fetch_one(&pool).await?;
-        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_audit WHERE action = 'memory.write' AND memory_id = ANY($1)").bind(&ids).fetch_one(&pool).await?;
-        let retried: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_intake WHERE attempts > 1").fetch_one(&pool).await?;
+        let rows = db
+            .count(Sql::each("SELECT count(*) FROM mh_memory WHERE id = ANY($1)", "SELECT count(*) FROM mh_memory WHERE id IN (SELECT value FROM json_each(?1))"), &[(&ids).into()])
+            .await?;
+        let events = db
+            .count(
+                Sql::each(
+                    "SELECT count(*) FROM mh_audit WHERE action = 'memory.write' AND memory_id = ANY($1)",
+                    "SELECT count(*) FROM mh_audit WHERE action = 'memory.write' AND memory_id IN (SELECT value FROM json_each(?1))",
+                ),
+                &[(&ids).into()],
+            )
+            .await?;
+        let retried = db.count(Sql::same("SELECT count(*) FROM mh_intake WHERE attempts > 1"), &[]).await?;
         if !idle || rows != 30 || events != 30 || abandoned != 10 || !both_ok || retried < 10 {
             problems.push(format!("queue idle: {idle}; {rows}/30 records, {events}/30 write events; {abandoned} abandoned, {retried} retried; double processing ok: {both_ok}"));
         }
-        let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE content LIKE $1 OR metadata::text LIKE $1").bind(format!("%{mail}%")).fetch_one(&pool).await?;
+        // The address has no letter outside ASCII and is matched in its own case, so SQLite's
+        // LIKE (case-insensitive for ASCII) can only find more than Postgres's, never less.
+        let leaked = db
+            .count(
+                Sql::each("SELECT count(*) FROM mh_memory WHERE content LIKE $1 OR metadata::text LIKE $1", "SELECT count(*) FROM mh_memory WHERE content LIKE ?1 OR metadata LIKE ?1"),
+                &[format!("%{mail}%").into()],
+            )
+            .await?;
         let redacted = e.store.get(&tenant, queued_mail).await?.is_some_and(|m| m.status == MemoryStatus::Committed && m.provenance.policy_version.as_deref() == Some(active.as_str()));
-        let (proc_status, proc_vector): (Option<String>, Option<bool>) =
-            sqlx::query_as("SELECT status, embedding IS NOT NULL FROM mh_memory WHERE id = $1").bind(queued_proc).fetch_optional(&pool).await?.map(|(s, v)| (Some(s), Some(v))).unwrap_or((None, None));
+        let (proc_status, proc_vector): (Option<String>, Option<bool>) = db
+            .rows(Sql::same("SELECT status, embedding IS NOT NULL FROM mh_memory WHERE id = $1"), &[queued_proc.into()])
+            .await?
+            .first()
+            .map(|r| (r[0].text(), r[1].bool()))
+            .unwrap_or((None, None));
         if leaked != 0 || !redacted || proc_status.as_deref() != Some("rejected") || proc_vector != Some(false) {
             problems.push(format!(
                 "policy approved while queued: address stored {leaked} time(s), redacted record under the new policy {redacted}; disallowed kind {proc_status:?}, vector {proc_vector:?}"
@@ -245,7 +275,7 @@ async fn restart(base: &Engine) -> Outcome {
         )
     }
     .await;
-    pool.close().await;
+    db.close().await;
     scratch.drop().await?;
     result
 }
@@ -269,7 +299,7 @@ impl Embedder for Poisoned {
 
 /// TR-IN-07: a proposal whose embedding always fails, then a good one for the same subject.
 async fn poison(base: &Engine) -> Outcome {
-    let (scratch, e, pool) = scratch_engine(base, "int3", |c| {
+    let (scratch, e, db) = scratch_engine(base, "int3", |c| {
         c.intake.max_attempts = 3;
     })
     .await?;
@@ -281,7 +311,14 @@ async fn poison(base: &Engine) -> Outcome {
         let bad = e.remember(write(subj, "POISON pill note about the account", false)).await?.id;
         // Queued before writes were refused for non-object metadata: setting it aside must not
         // fail on it either (the subject's next write still commits).
-        sqlx::query("UPDATE mh_intake SET payload = jsonb_set(payload, '{records,0,memory,metadata}', '[\"legacy\"]') WHERE id = $1").bind(bad).execute(&pool).await?;
+        db.execute(
+            Sql::each(
+                "UPDATE mh_intake SET payload = jsonb_set(payload, '{records,0,memory,metadata}', '[\"legacy\"]') WHERE id = $1",
+                "UPDATE mh_intake SET payload = json_set(payload, '$.records[0].memory.metadata', json('[\"legacy\"]')) WHERE id = ?1",
+            ),
+            &[bad.into()],
+        )
+        .await?;
         let good = e.remember(write(subj, "The account manager is Lena", false)).await?.id;
         let stop = Arc::new(AtomicBool::new(false));
         let t = Instant::now();
@@ -295,8 +332,8 @@ async fn poison(base: &Engine) -> Outcome {
         let tenant = e.cfg.memory.tenant.clone();
         let b = e.store.get(&tenant, bad).await?;
         let g = e.store.get(&tenant, good).await?;
-        let dead: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_intake WHERE status = 'dead' AND id = $1").bind(bad).fetch_one(&pool).await?;
-        let audited: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_audit WHERE action = 'memory.quarantine' AND memory_id = $1").bind(bad).fetch_one(&pool).await?;
+        let dead = db.count(Sql::same("SELECT count(*) FROM mh_intake WHERE status = 'dead' AND id = $1"), &[bad.into()]).await?;
+        let audited = db.count(Sql::same("SELECT count(*) FROM mh_audit WHERE action = 'memory.quarantine' AND memory_id = $1"), &[bad.into()]).await?;
         let quarantined =
             b.as_ref().is_some_and(|m| m.status == MemoryStatus::Quarantined && m.metadata["quarantine_reasons"][0] == "intake_failed" && m.metadata["value"][0] == "legacy");
         let committed = g.as_ref().is_some_and(|m| m.status == MemoryStatus::Committed);
@@ -310,7 +347,7 @@ async fn poison(base: &Engine) -> Outcome {
         )
     }
     .await;
-    pool.close().await;
+    db.close().await;
     scratch.drop().await?;
     result
 }
@@ -456,7 +493,7 @@ async fn statement_gate(e: &Engine, subj: &str) -> Outcome {
 
 /// HYB-01/02/03: 300 orders written as JSON records; questions naming an order get it first.
 async fn exact_recall(base: &Engine) -> Outcome {
-    let (scratch, e, pool) = scratch_engine(base, "int4", |c| c.governance.denied_labels = vec!["restricted".into()]).await?;
+    let (scratch, e, db) = scratch_engine(base, "int4", |c| c.governance.denied_labels = vec!["restricted".into()]).await?;
     let result = async {
         let mut problems = vec![];
         let subj = "customer:orders";
@@ -469,7 +506,7 @@ async fn exact_recall(base: &Engine) -> Outcome {
                 break;
             }
         }
-        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_structured WHERE record_type = 'order'").fetch_one(&pool).await?;
+        let rows = db.count(Sql::same("SELECT count(*) FROM mh_structured WHERE record_type = 'order'"), &[]).await?;
         if rows != 300 {
             problems.push(format!("{rows}/300 rows in the structured table"));
         }
@@ -519,11 +556,16 @@ async fn exact_recall(base: &Engine) -> Outcome {
         let current_only = after.len() == 1 && after[0].memory.id == revised.id && after[0].memory.content.contains("status=returned");
         e.forget(None, revised.id, Some("bench".into())).await?;
         let gone = e.recall(exact("A-1000")).await?.hits.iter().all(|h| !h.exact);
-        let rows: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id WHERE s.attrs @> '{\"order_id\": \"A-1000\"}' AND m.status = 'committed'",
-        )
-        .fetch_one(&pool)
-        .await?;
+        // Containment of one top-level text attribute is equality on that attribute.
+        let rows = db
+            .count(
+                Sql::each(
+                    "SELECT count(*) FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id WHERE s.attrs @> '{\"order_id\": \"A-1000\"}' AND m.status = 'committed'",
+                    "SELECT count(*) FROM mh_structured s JOIN mh_memory m ON m.id = s.memory_id WHERE json_extract(s.attrs, '$.order_id') = 'A-1000' AND m.status = 'committed'",
+                ),
+                &[],
+            )
+            .await?;
         if !current_only || !gone || rows != 0 {
             problems.push(format!("HYB-06: after revise {} exact hit(s), current only {current_only}; after forget gone {gone}, {rows} committed rows", after.len()));
         }
@@ -551,7 +593,16 @@ async fn exact_recall(base: &Engine) -> Outcome {
         for r in [seen_by("Z-9002", None, Some(other_user)), seen_by("Z-9003", Some("int4-t2"), None)] {
             controls += usize::from(e.recall(r).await?.hits.iter().any(|h| h.exact));
         }
-        let labelled: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE 'restricted' = ANY(labels) AND status = 'committed'").fetch_one(&pool).await?;
+        // Labels are a text array in Postgres and a JSON array of texts in SQLite.
+        let labelled = db
+            .count(
+                Sql::each(
+                    "SELECT count(*) FROM mh_memory WHERE 'restricted' = ANY(labels) AND status = 'committed'",
+                    "SELECT count(*) FROM mh_memory WHERE EXISTS (SELECT 1 FROM json_each(labels) WHERE value = 'restricted') AND status = 'committed'",
+                ),
+                &[],
+            )
+            .await?;
         if !leaked.is_empty() || controls != 2 || labelled != 1 {
             problems.push(format!("exact probe isolation: leaked {}; controls {controls}/2, labelled record stored {labelled}", if leaked.is_empty() { "none".into() } else { leaked.join(", ") }));
         }
@@ -562,7 +613,7 @@ async fn exact_recall(base: &Engine) -> Outcome {
         )
     }
     .await;
-    pool.close().await;
+    db.close().await;
     scratch.drop().await?;
     result
 }
@@ -586,7 +637,7 @@ impl Embedder for Hanging {
 
 /// PERF-07: kill each dependency in turn.
 async fn degradation(base: &Engine) -> Outcome {
-    let (scratch, e, pool) = scratch_engine(base, "int5", |_| {}).await?;
+    let (scratch, e, db) = scratch_engine(base, "int5", |_| {}).await?;
     let result = async {
         let mut problems = vec![];
         let subj = "customer:degrade";
@@ -598,11 +649,39 @@ async fn degradation(base: &Engine) -> Outcome {
         hang.embedder = Arc::new(Hanging);
         let mut fail = e.clone();
         fail.embedder = Arc::new(Poisoned(StubEmbedder { id: "stub:intake".into(), dim: DIM }));
-        // The database goes away: an engine whose pool is closed (every statement fails).
-        let store = memhouse_store_postgres::PgStore::connect(&scratch.url, 2, "").await?;
-        let dead_pool = store.pool.clone();
-        let gone = Engine::new(Arc::new(store), Arc::new(StubEmbedder { id: "stub:intake".into(), dim: DIM }), None, (*e.cfg).clone()).with_inline_intake(false);
-        dead_pool.close().await;
+        // The database goes away: an engine whose every statement fails.
+        let gone_store: Arc<dyn memhouse_core::Store> = match scratch.sqlite_sibling("gone") {
+            // Postgres: the store's pool is closed.
+            None => {
+                let store = memhouse_store_postgres::PgStore::connect(&scratch.url, 2, "").await?;
+                let dead_pool = store.pool.clone();
+                dead_pool.close().await;
+                Arc::new(store)
+            }
+            // SQLite has no server to lose and no pool to close: an embedded database is gone
+            // when its file no longer holds it. A store is opened on a file of its own, and
+            // every table is then dropped behind its back: each statement fails with "no such
+            // table". (Unlinking the file would change nothing for a connection that has it open.)
+            Some(url) => {
+                let store = crate::scratch::open_store(&url, 2, "").await?;
+                store.migrate(DIM, "stub:intake").await?;
+                let behind = Db::open(&url).await?;
+                let tables = behind
+                    .texts(
+                        Sql::same("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'mh\\_%' ESCAPE '\\' AND name NOT LIKE 'mh\\_memory\\_fts\\_%' ESCAPE '\\'"),
+                        &[],
+                    )
+                    .await?;
+                behind.batch(Sql::same("PRAGMA foreign_keys = OFF")).await?;
+                for t in &tables {
+                    behind.batch(Sql::same(&format!("DROP TABLE IF EXISTS \"{t}\""))).await?;
+                }
+                let left = behind.count(Sql::same("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'mh\\_%' ESCAPE '\\'"), &[]).await?;
+                anyhow::ensure!(!tables.is_empty() && left == 0, "the stand-in for a lost database still has {left} tables");
+                store
+            }
+        };
+        let gone = Engine::new(gone_store, Arc::new(StubEmbedder { id: "stub:intake".into(), dim: DIM }), None, (*e.cfg).clone()).with_inline_intake(false);
         for (what, eng, query) in [("hanging model", &hang, q()), ("failing model", &fail, RecallRequest { query: "POISON".into(), ..q() }), ("database down", &gone, q())] {
             let t = Instant::now();
             let r = eng.recall(query).await;
@@ -634,7 +713,7 @@ async fn degradation(base: &Engine) -> Outcome {
         verdict(problems, timings.join(", "), "empty and flagged within 500 ms; refused access returns nothing; the write is refused with `unavailable`, nothing stored")
     }
     .await;
-    pool.close().await;
+    db.close().await;
     scratch.drop().await?;
     result
 }

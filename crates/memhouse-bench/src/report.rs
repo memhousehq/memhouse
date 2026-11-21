@@ -319,11 +319,10 @@ pub fn markdown(s: &Summary) -> String {
 
     if let Some(g) = &s.governance {
         let _ = writeln!(o, "## Governance and safety gates\n");
-        let _ = writeln!(o, "**{} of {} checks passed** ({:.0} ms). Deterministic checks, never decided by a model.\n", g.passed, g.passed + g.failed, g.took_ms);
+        let _ = writeln!(o, "**{}** ({:.0} ms). Deterministic checks, never decided by a model.\n", g.summary(), g.took_ms);
         let _ = writeln!(o, "| | Check | Requirement | Result | Target | Detail |\n|---|---|---|---|---|---|");
         for c in &g.checks {
-            let _ =
-                writeln!(o, "| {} | {} | {} | {} | {} | {} |", if c.passed { "✅ pass" } else { "❌ FAIL" }, c.title, c.requirement, c.value, c.target, c.detail.replace('|', "/"));
+            let _ = writeln!(o, "| {} | {} | {} | {} | {} | {} |", state(c), c.title, c.requirement, c.value, c.target, c.detail.replace('|', "/"));
         }
         let _ = writeln!(o);
     }
@@ -359,4 +358,13 @@ pub fn compare(runs: &[Summary]) -> String {
         );
     }
     o
+}
+
+/// A check's state in the report: one that does not apply to the profile is neither a pass nor a failure.
+fn state(c: &crate::governance::Check) -> &'static str {
+    match (c.applies(), c.passed) {
+        (false, _) => "➖ n/a",
+        (true, true) => "✅ pass",
+        (true, false) => "❌ FAIL",
+    }
 }

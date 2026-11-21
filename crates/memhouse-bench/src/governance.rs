@@ -2,6 +2,8 @@
 //! Governance and safety suite: deterministic checks, never decided by a model (strategy 7.5).
 //! Each check maps to a requirement and is a hard gate (pass/fail), plus a few rate metrics.
 
+pub(crate) use crate::scratch::Scratch;
+use crate::scratch::{Profile, Sql};
 use memhouse_core::types::*;
 use memhouse_core::{EmbedKind, Engine};
 use rand::rngs::StdRng;
@@ -20,14 +22,60 @@ pub struct Check {
     pub value: String,
     pub target: String,
     pub detail: String,
+    /// Why the check does not apply to the profile under test (what it inspects does not exist
+    /// there). Such a check has neither passed nor failed: `passed` is false and it is counted
+    /// in neither total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_applicable: Option<String>,
+}
+
+impl Check {
+    pub fn applies(&self) -> bool {
+        self.not_applicable.is_none()
+    }
+
+    /// The mark in reports: its own state for a check that does not apply.
+    pub fn mark(&self) -> &'static str {
+        match (self.applies(), self.passed) {
+            (false, _) => "–",
+            (true, true) => "✓",
+            (true, false) => "✗",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GovernanceReport {
     pub checks: Vec<Check>,
+    /// Applicable checks that passed.
     pub passed: usize,
+    /// Applicable checks that failed.
     pub failed: usize,
+    /// Checks that do not apply to the profile under test: neither passed nor failed.
+    #[serde(default)]
+    pub not_applicable: usize,
+    /// The store the suite ran on: `postgres` or `sqlite` (empty in reports written before the field).
+    #[serde(default)]
+    pub profile: String,
     pub took_ms: f64,
+}
+
+impl GovernanceReport {
+    pub fn new(checks: Vec<Check>, profile: &str, took_ms: f64) -> GovernanceReport {
+        let not_applicable = checks.iter().filter(|c| !c.applies()).count();
+        let passed = checks.iter().filter(|c| c.applies() && c.passed).count();
+        GovernanceReport { failed: checks.len() - passed - not_applicable, passed, not_applicable, profile: profile.to_string(), checks, took_ms }
+    }
+
+    /// `68 of 68 checks passed`, or `61 of 61 applicable checks passed; 7 not applicable to this profile`.
+    pub fn summary(&self) -> String {
+        let applicable = self.passed + self.failed;
+        if self.not_applicable == 0 {
+            format!("{} of {applicable} checks passed", self.passed)
+        } else {
+            format!("{} of {applicable} applicable checks passed; {} not applicable to this profile", self.passed, self.not_applicable)
+        }
+    }
 }
 
 const INJECTIONS: &[&str] = &[
@@ -102,7 +150,21 @@ fn rand_alnum(rng: &mut StdRng, n: usize) -> String {
 }
 
 pub(crate) fn check(id: &str, req: &str, title: &str, passed: bool, value: String, target: &str, detail: String) -> Check {
-    Check { id: id.into(), requirement: req.into(), title: title.into(), passed, value, target: target.into(), detail }
+    Check { id: id.into(), requirement: req.into(), title: title.into(), passed, value, target: target.into(), detail, not_applicable: None }
+}
+
+/// A check that does not apply to the profile under test, with the reason: not a pass.
+pub(crate) fn not_applicable(id: &str, req: &str, title: &str, reason: &str) -> Check {
+    Check { not_applicable: Some(reason.to_string()), ..check(id, req, title, false, "not applicable".into(), "–", reason.to_string()) }
+}
+
+/// What a check that returned an error becomes: a failure, unless the error says the check does
+/// not apply to this profile.
+pub(crate) fn errored(id: &str, req: &str, title: &str, target: &str, e: anyhow::Error) -> Check {
+    match e.downcast_ref::<crate::scratch::NotApplicable>() {
+        Some(na) => not_applicable(id, req, title, &na.0),
+        None => check(id, req, title, false, "error".into(), target, format!("{e:#}")),
+    }
 }
 
 /// Deterministic stand-in for the enrichment LLM: returns a benign fact, a card number and an
@@ -764,19 +826,32 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 None => supported = false,
             }
         }
-        checks.push(check(
-            "recall_plan_scoped",
-            "TR-RQ-01 / SCALE-04",
-            "The recall statement's plan only reads the requested subject's rows (no sequential scan, every memory-table scan keyed on subject or id)",
-            supported && violations.is_empty(),
-            if supported { format!("{} violations in {checked} plans", violations.len()) } else { "store has no query planner to inspect".into() },
-            "0",
-            format!(
-                "memory-table scans: {}{}",
-                scans.iter().map(|(k, n)| format!("{k} ×{n}")).collect::<Vec<_>>().join(", "),
-                if violations.is_empty() { String::new() } else { format!("; {}", violations.join("; ")) }
-            ),
-        ));
+        const PLAN_TITLE: &str = "The recall statement's plan only reads the requested subject's rows (no sequential scan, every memory-table scan keyed on subject or id)";
+        // The check reads the plans of the Postgres planner. The SQLite store gives none: it
+        // scores a subject's vectors in process, and that recall stays inside the subject is
+        // shown there by `subject_isolation` and the store conformance kit, not by a plan.
+        checks.push(if !supported && Profile::of(engine) == Profile::Sqlite {
+            not_applicable(
+                "recall_plan_scoped",
+                "TR-RQ-01 / SCALE-04",
+                PLAN_TITLE,
+                "the check reads the Postgres planner's plan of the recall statement; the SQLite store exposes no plan (vectors are scored in process over the subject's rows)",
+            )
+        } else {
+            check(
+                "recall_plan_scoped",
+                "TR-RQ-01 / SCALE-04",
+                PLAN_TITLE,
+                supported && violations.is_empty(),
+                if supported { format!("{} violations in {checked} plans", violations.len()) } else { "store has no query planner to inspect".into() },
+                "0",
+                format!(
+                    "memory-table scans: {}{}",
+                    scans.iter().map(|(k, n)| format!("{k} ×{n}")).collect::<Vec<_>>().join(", "),
+                    if violations.is_empty() { String::new() } else { format!("; {}", violations.join("; ")) }
+                ),
+            )
+        });
         for subj in &subjects {
             engine.forget_subject(Some(tenant.clone()), subj, Some("bench".into())).await?;
         }
@@ -843,10 +918,17 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             };
             let hits = engine.store.search(&q).await?;
             let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();
+            // A tie is two records whose distances differ by less than the precision the store
+            // keeps vectors at: single precision on Postgres, half precision on SQLite (ADR
+            // 0003), where two neighbours that close may come back in either order. A record
+            // that is not a tie with the brute-force one at its rank is a mismatch on both.
+            let tie = match crate::scratch::Profile::of(engine) {
+                crate::scratch::Profile::Postgres => 1e-5,
+                crate::scratch::Profile::Sqlite => 1e-3,
+            };
             for (i, h) in hits.iter().enumerate() {
                 let (bd, bid) = brute[i];
-                // Same record, or a tie within float precision.
-                if h.memory.id != bid && (dist.get(&h.memory.id).copied().unwrap_or(f64::MAX) - bd).abs() > 1e-5 {
+                if h.memory.id != bid && (dist.get(&h.memory.id).copied().unwrap_or(f64::MAX) - bd).abs() > tie {
                     mismatches += 1;
                     detail.push(format!("'{qtext}' rank {}", i + 1));
                 }
@@ -994,7 +1076,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // 19. Re-embedding to another model and dimension (TR-MS-04), in a scratch database.
     checks.push(match reembed_check(engine).await {
         Ok(c) => c,
-        Err(e) => check("reembed", "TR-MS-04", "Re-embedding moves every memory to the new model", false, "error".into(), "pass", format!("{e:#}")),
+        Err(e) => errored("reembed", "TR-MS-04", "Re-embedding moves every memory to the new model", "pass", e),
     });
 
     // 20–24. Schema v2: idempotency, lifecycle, representations, the format and the upgrade.
@@ -1030,7 +1112,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // Tiered extraction and the correction rule (G14).
     checks.extend(crate::tier_checks::run(engine, run_id).await);
 
-    // The adapter conformance kits against the Postgres profile (G15).
+    // The adapter conformance kits against the profile under test (G15).
     checks.extend(crate::conformance_checks::run(engine).await);
 
     // Clean up every subject used by the suite.
@@ -1041,8 +1123,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         engine.forget_subject(None, &s(&format!("iso{i}")), Some("bench".into())).await?;
     }
 
-    let passed = checks.iter().filter(|c| c.passed).count();
-    Ok(GovernanceReport { failed: checks.len() - passed, passed, checks, took_ms: start.elapsed().as_secs_f64() * 1000.0 })
+    Ok(GovernanceReport::new(checks, Profile::of(engine).as_str(), start.elapsed().as_secs_f64() * 1000.0))
 }
 
 fn rand_word(rng: &mut StdRng, n: usize) -> String {
@@ -1142,48 +1223,30 @@ pub(crate) async fn stub_engine(base: &Engine, url: &str, id: &str, dim: usize, 
     cfg.embedding.query_prefix = None;
     cfg.rerank.enabled = false;
     cfg.enrich.enabled = false;
-    let store = memhouse_store_postgres::PgStore::connect(url, 4, prefix).await?.with_identity_recheck(std::time::Duration::ZERO);
+    let store = crate::scratch::open_store(url, 4, prefix).await?;
     if migrate {
-        memhouse_core::Store::migrate(&store, dim, id).await?;
+        store.migrate(dim, id).await?;
     }
-    Ok(Engine::new(Arc::new(store), Arc::new(StubEmbedder { id: id.into(), dim }), None, cfg))
+    Ok(Engine::new(store, Arc::new(StubEmbedder { id: id.into(), dim }), None, cfg))
 }
 
 /// Model A writes, model B (another size and passage prefix) takes over with `reembed`, with a
 /// write arriving mid-run and an aborted attempt to a third model; A must then be refused.
-/// A fresh database next to the benchmark one, for checks that change a whole database.
-pub(crate) struct Scratch {
-    admin: sqlx::PgPool,
-    db: String,
-    pub(crate) url: String,
-}
-
-impl Scratch {
-    pub(crate) async fn create(engine: &Engine, suffix: &str) -> anyhow::Result<Scratch> {
-        let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&engine.cfg.database.url).await?;
-        let db: String = sqlx::query_scalar("SELECT current_database() || '_' || $1").bind(suffix).fetch_one(&admin).await?;
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"))).execute(&admin).await?;
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{db}\""))).execute(&admin).await?;
-        let (head, tail) = engine.cfg.database.url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;
-        let query = tail.split_once('?').map(|(_, q)| format!("?{q}")).unwrap_or_default();
-        Ok(Scratch { url: format!("{head}/{db}{query}"), admin, db })
-    }
-
-    pub(crate) async fn drop(self) -> anyhow::Result<()> {
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.db))).execute(&self.admin).await?;
-        Ok(())
-    }
-}
-
 async fn reembed_check(engine: &Engine) -> anyhow::Result<Check> {
     let scratch = Scratch::create(engine, "reembed").await?;
-    let result = reembed_scenario(engine, &scratch.url).await;
+    let result = async {
+        let db = scratch.db().await?;
+        let result = reembed_scenario(engine, &scratch.url, &db).await;
+        db.close().await;
+        result
+    }
+    .await;
     scratch.drop().await?;
     let (passed, value, detail) = result?;
     Ok(check("reembed", "TR-MS-04", "Re-embedding moves every memory to the new model; the old one is refused afterwards", passed, value, "all", detail))
 }
 
-async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, String, String)> {
+async fn reembed_scenario(base: &Engine, url: &str, db: &crate::scratch::Db) -> anyhow::Result<(bool, String, String)> {
     use memhouse_core::reembed;
     let subj = "gov:reembed".to_string();
     let a = stub_engine(base, url, "stub:a", 8, "", true).await?;
@@ -1200,15 +1263,23 @@ async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, Str
     .map(|(r, c)| Message { role: r.to_string(), content: c.to_string(), timestamp: None, id: None })
     .collect();
     a.ingest(IngestRequest { subject: Some(subj.clone()), session_id: Some("s1".into()), messages: msgs, actor: Some("bench".into()), wait: true, ..Default::default() }).await?;
-    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(url).await?;
-    let counts = |pool: sqlx::PgPool| async move {
-        sqlx::query_as::<_, (i64, i64, i64)>(
-            "SELECT count(*) FILTER (WHERE embedding IS NOT NULL), count(*) FILTER (WHERE embedding_alt IS NOT NULL), coalesce(min(vector_dims(embedding)), 0)::bigint FROM mh_memory",
-        )
-        .fetch_one(&pool)
-        .await
+    // Records with a vector, with a second vector, and the smallest vector size stored. SQLite
+    // keeps a vector as a blob of half-precision numbers, two bytes per dimension (ADR 0003),
+    // so the size is half the blob's length.
+    let counts = || async {
+        let rows = db
+            .rows(
+                Sql::each(
+                    "SELECT count(*) FILTER (WHERE embedding IS NOT NULL), count(*) FILTER (WHERE embedding_alt IS NOT NULL), coalesce(min(vector_dims(embedding)), 0)::bigint FROM mh_memory",
+                    "SELECT count(*) FILTER (WHERE embedding IS NOT NULL), count(*) FILTER (WHERE embedding_alt IS NOT NULL), coalesce(min(length(embedding) / 2), 0) FROM mh_memory",
+                ),
+                &[],
+            )
+            .await?;
+        let n = |i: usize| rows.first().and_then(|r| r.get(i)).and_then(crate::scratch::Cell::int).unwrap_or(-1);
+        anyhow::Ok((n(0), n(1), n(2)))
     };
-    let (rows_before, alts_before, _) = counts(pool.clone()).await?;
+    let (rows_before, alts_before, _) = counts().await?;
     let mut problems = vec![];
 
     // B is refused at start-up until the database is re-embedded.
@@ -1221,8 +1292,20 @@ async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, Str
     let c = stub_engine(base, url, "stub:c", 4, "", false).await?;
     c.store.reembed_begin(&reembed::target(&c)).await?;
     c.store.reembed_abort().await?;
-    let next_cols: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM information_schema.columns WHERE table_name = 'mh_memory' AND column_name LIKE '%\\_next'").fetch_one(&pool).await?;
+    // Postgres adds the staging columns for a run and drops them: none may be left. SQLite keeps
+    // the columns in its schema for good, so there it is their content that must be gone: no row
+    // with a staged vector or model, and no recorded target.
+    let next_cols = db
+        .count(
+            Sql::each(
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'mh_memory' AND column_name LIKE '%\\_next'",
+                "SELECT (SELECT count(*) FROM mh_memory WHERE embedding_next IS NOT NULL OR embedding_alt_next IS NOT NULL OR embedding_bits_next IS NOT NULL \
+                 OR embedding_alt_bits_next IS NOT NULL OR alt_hash_next IS NOT NULL OR embedder_next IS NOT NULL OR embedder_config_next IS NOT NULL) \
+                 + (SELECT count(*) FROM mh_meta WHERE key LIKE 'reembed_target_%')",
+            ),
+            &[],
+        )
+        .await?;
     if next_cols != 0 {
         problems.push(format!("{next_cols} staging columns left after abort"));
     }
@@ -1236,15 +1319,24 @@ async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, Str
         reembed::Outcome::Done(r) => r,
         reembed::Outcome::Current(_) => anyhow::bail!("re-embedding did nothing"),
     };
-    let (rows_after, alts_after, dims) = counts(pool.clone()).await?;
+    let (rows_after, alts_after, dims) = counts().await?;
     if rows_after != rows_before + 1 || dims != 12 {
         problems.push(format!("{rows_after} rows at {dims} dims after, {} expected at 12", rows_before + 1));
     }
     if alts_after != alts_before || report.second_vectors_dropped > 0 {
         problems.push(format!("second vectors {alts_before} → {alts_after} ({} dropped)", report.second_vectors_dropped));
     }
-    let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE embedding IS NOT NULL AND embedder IS DISTINCT FROM 'stub:b'").fetch_one(&pool).await?;
-    let old_cache: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_embed_cache WHERE model = 'stub:a'").fetch_one(&pool).await?;
+    // `IS NOT` is SQLite's null-safe inequality, what `IS DISTINCT FROM` is in Postgres.
+    let stale = db
+        .count(
+            Sql::each(
+                "SELECT count(*) FROM mh_memory WHERE embedding IS NOT NULL AND embedder IS DISTINCT FROM 'stub:b'",
+                "SELECT count(*) FROM mh_memory WHERE embedding IS NOT NULL AND embedder IS NOT 'stub:b'",
+            ),
+            &[],
+        )
+        .await?;
+    let old_cache = db.count(Sql::same("SELECT count(*) FROM mh_embed_cache WHERE model = 'stub:a'"), &[]).await?;
     if stale + old_cache > 0 {
         problems.push(format!("{stale} rows not stamped with the new model, {old_cache} cached vectors of the old one"));
     }
@@ -1272,11 +1364,10 @@ async fn reembed_scenario(base: &Engine, url: &str) -> anyhow::Result<(bool, Str
     if a_read.is_ok() {
         problems.push("A recalled after the switch".into());
     }
-    let audited: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_audit WHERE action = 'embedding.reembed'").fetch_one(&pool).await?;
+    let audited = db.count(Sql::same("SELECT count(*) FROM mh_audit WHERE action = 'embedding.reembed'"), &[]).await?;
     if audited != 1 {
         problems.push(format!("{audited} audit events for the re-embedding"));
     }
-    pool.close().await;
     Ok((
         problems.is_empty(),
         format!("{rows_after} records 8 → 12 dims in {} passes, {alts_after}/{alts_before} second vectors, old model refused", report.passes),

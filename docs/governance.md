@@ -488,7 +488,8 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-68 checks pass on the current release. The core ones:
+68 checks pass on the current release on Postgres; on the Lite profile 65 apply and pass, and 3
+are reported as not applicable ([conformance.md](conformance.md#where-they-run)). The core ones:
 
 | Check | What it proves |
 |---|---|
@@ -576,7 +577,8 @@ reviewers don't have to find them:
   and G25.
 - **Retention is by write time** (`created_at`), not event time. An imported or backfilled
   conversation is kept for the full period from when it was imported.
-- **Ledger re-application after a restore is a manual SQL procedure.**
+- **Ledger re-application after a restore is a manual SQL procedure on Postgres.** On the Lite
+  profile `memhouse restore` does it ([lite.md](lite.md#backup-and-restore)).
 - **The audit log keeps subject identifiers after erasure** (e.g. `customer:acme`, never content).
   Use pseudonymous subject ids (an internal customer number, not an email address) so the log
   itself holds no personal data.

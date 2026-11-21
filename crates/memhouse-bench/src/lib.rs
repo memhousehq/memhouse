@@ -8,6 +8,7 @@ pub mod baselines;
 mod conformance_checks;
 pub mod datasets;
 mod eval_checks;
+mod footprint;
 pub mod governance;
 pub mod guard;
 mod identity_checks;
@@ -19,6 +20,7 @@ mod policy_checks;
 pub mod report;
 pub mod runner;
 mod schema_checks;
+mod scratch;
 pub mod suites;
 pub mod synth;
 mod telemetry_checks;
@@ -46,6 +48,18 @@ pub enum BenchCmd {
     },
     /// Run a benchmark dataset, the governance suite or an evaluation suite file
     Run(Box<RunArgs>),
+    /// Measure the Lite profile's footprint and latency (PROF-06, PROF-07) on a fresh SQLite file
+    Footprint {
+        /// Memories to load
+        #[arg(long, default_value_t = 100_000)]
+        memories: usize,
+        /// Memories per subject
+        #[arg(long, default_value_t = 10_000)]
+        per_subject: usize,
+        /// Write the report here as well as printing it
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Generate a synthetic evaluation suite with ground truth at checkpoints
     Synth {
         /// personal, support, coding, sales or success
@@ -266,6 +280,17 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        BenchCmd::Footprint { memories, per_subject, out } => {
+            let dir = std::env::temp_dir().join(format!("memhouse-footprint-{}", std::process::id()));
+            let report = footprint::run(memories, per_subject, &dir).await;
+            let _ = std::fs::remove_dir_all(&dir);
+            let report = report?;
+            if let Some(p) = &out {
+                std::fs::write(p, &report).with_context(|| format!("writing {}", p.display()))?;
+            }
+            print!("{report}");
+            Ok(())
+        }
         BenchCmd::Synth { profile, seed, conversations, name, out } => {
             let (suite, shape) = synth::generate(&profile, seed, conversations, name.as_deref())?;
             let yaml = suites::to_yaml(&suite)?;
@@ -464,8 +489,9 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
         eprintln!("Running governance and safety suite ...");
         let g = governance::run(&engine, &run_id).await?;
         for c in &g.checks {
-            eprintln!("  {} {:<22} {}", if c.passed { "✓" } else { "✗" }, c.id, c.value);
+            eprintln!("  {} {:<22} {}", c.mark(), c.id, c.value);
         }
+        eprintln!("  {}", g.summary());
         summary.governance = Some(g);
     } else if let Some(s) = args.suite.as_deref().filter(|s| std::path::Path::new(s).exists()) {
         // Evaluation suites (G13): replayed through the real write and recall paths.

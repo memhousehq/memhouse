@@ -5,6 +5,7 @@
 //! recall can read, and `forget` leaves nothing of what it matched.
 
 use crate::governance::{check, stub_engine, Check, Scratch};
+use crate::scratch::{Db, Sql};
 use memhouse_core::Engine;
 use memhouse_server::openapi;
 use serde_json::{json, Value};
@@ -45,9 +46,9 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let base_url = format!("http://{}", listener.local_addr()?);
         let server = tokio::spawn(memhouse_server::serve_listener(listener, e.clone()));
-        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&scratch.url).await?;
+        let db = scratch.db().await?;
         let mut api = Api::new(base_url);
-        let out = vec![contract(&mut api).await?, idempotency(&mut api, &pool).await?, revisions(&mut api).await?, forget(&mut api, &pool, &e).await?];
+        let out = vec![contract(&mut api).await?, idempotency(&mut api, &db).await?, revisions(&mut api).await?, forget(&mut api, &db, &e).await?];
         // Every documented operation was called by one of the checks above.
         let missing = api.uncovered();
         let mut out = out;
@@ -60,7 +61,7 @@ async fn run_all(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
             out[0].2 = format!("{}; {}", api.problems.iter().take(6).cloned().collect::<Vec<_>>().join("; "), out[0].2);
         }
         server.abort();
-        pool.close().await;
+        db.close().await;
         anyhow::Ok(out)
     }
     .await;
@@ -539,17 +540,11 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
 }
 
 /// CORE-06 over HTTP: five retries of each write with one key; a reused key is a conflict.
-async fn idempotency(api: &mut Api, pool: &sqlx::PgPool) -> anyhow::Result<Outcome> {
+async fn idempotency(api: &mut Api, db: &Db) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
     let subj = "gov:api-idem";
-    let audit = |action: &'static str| {
-        let pool = pool.clone();
-        async move { sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mh_audit WHERE subject = $1 AND action = $2").bind(subj).bind(action).fetch_one(&pool).await }
-    };
-    let records = || {
-        let pool = pool.clone();
-        async move { sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mh_memory WHERE subject = $1").bind(subj).fetch_one(&pool).await }
-    };
+    let audit = |action: &'static str| async move { db.count(Sql::same("SELECT count(*) FROM mh_audit WHERE subject = $1 AND action = $2"), &[subj.into(), action.into()]).await };
+    let records = || async move { db.count(Sql::same("SELECT count(*) FROM mh_memory WHERE subject = $1"), &[subj.into()]).await };
     let write = json!({"subject": subj, "content": "Globex's invoices go to ap@globex.example"});
     let mut bodies = BTreeSet::new();
     for _ in 0..5 {
@@ -600,7 +595,17 @@ async fn idempotency(api: &mut Api, pool: &sqlx::PgPool) -> anyhow::Result<Outco
     if bodies.len() != 1 || records().await? != 3 {
         problems.push(format!("ingest ×5: {} distinct responses, {} records", bodies.len(), records().await?));
     }
-    let current: String = sqlx::query_scalar("SELECT id::text FROM mh_memory WHERE subject = $1 AND status = 'committed' AND kind = 'semantic'").bind(subj).fetch_one(pool).await?;
+    // An id is text in SQLite already, in the same hyphenated form.
+    let current = db
+        .text(
+            Sql::each(
+                "SELECT id::text FROM mh_memory WHERE subject = $1 AND status = 'committed' AND kind = 'semantic'",
+                "SELECT id FROM mh_memory WHERE subject = ?1 AND status = 'committed' AND kind = 'semantic'",
+            ),
+            &[subj.into()],
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no committed semantic record of {subj}"))?;
     let mut statuses = vec![];
     let mut bodies = BTreeSet::new();
     for _ in 0..5 {
@@ -669,12 +674,9 @@ async fn revisions(api: &mut Api) -> anyhow::Result<Outcome> {
 
 /// CORE-05: each forget mode on seeded data; nothing that matched remains, in any
 /// representation, and everything else does; one audit event per call.
-async fn forget(api: &mut Api, pool: &sqlx::PgPool, engine: &Engine) -> anyhow::Result<Outcome> {
+async fn forget(api: &mut Api, db: &Db, engine: &Engine) -> anyhow::Result<Outcome> {
     let mut problems = vec![];
-    let count = |sql: &'static str, arg: String| {
-        let pool = pool.clone();
-        async move { sqlx::query_scalar::<_, i64>(sql).bind(arg).fetch_one(&pool).await }
-    };
+    let count = |sql: &'static str, arg: String| async move { db.count(Sql::same(sql), &[arg.into()]).await };
     let seed = |subject: &str, content: &str, actor: &str, extra: Value| {
         let mut b = json!({"subject": subject, "content": content});
         for (k, v) in extra.as_object().cloned().unwrap_or_default() {
@@ -745,7 +747,16 @@ async fn forget(api: &mut Api, pool: &sqlx::PgPool, engine: &Engine) -> anyhow::
     let bot_a = count("SELECT count(*) FROM mh_memory WHERE prov_agent = $1 OR scope_agent = $1", "bot-a".into()).await?;
     let crm = count("SELECT count(*) FROM mh_memory WHERE source = $1", "crm-import".into()).await?;
     let side = count("SELECT (SELECT count(*) FROM mh_structured) + (SELECT count(*) FROM mh_code_ref) + 0 * length($1)", String::new()).await?;
-    let cached = count("SELECT count(*) FROM mh_embed_cache WHERE hash = encode(sha256(convert_to($1, 'UTF8')), 'hex')", "Ana prefers calls after 3pm".into()).await?;
+    // The cache key of the content, the sha256 Postgres computes in the statement: SQLite has no
+    // sha256 function, so there the same hash is computed here and compared as a value.
+    let cached = match db {
+        Db::Postgres(_) => {
+            db.count(Sql::same("SELECT count(*) FROM mh_embed_cache WHERE hash = encode(sha256(convert_to($1, 'UTF8')), 'hex')"), &["Ana prefers calls after 3pm".into()]).await?
+        }
+        Db::Sqlite(_) => {
+            db.count(Sql::same("SELECT count(*) FROM mh_embed_cache WHERE hash = $1"), &[memhouse_core::engine::content_hash("Ana prefers calls after 3pm").into()]).await?
+        }
+    };
     if ana + bot_a + crm + side + cached != 0 {
         problems.push(format!("left after forget: user {ana}, agent {bot_a}, source {crm}, structured/code refs {side}, cached vectors {cached}"));
     }
@@ -754,7 +765,10 @@ async fn forget(api: &mut Api, pool: &sqlx::PgPool, engine: &Engine) -> anyhow::
         problems.push(format!("{ledger} deletion-ledger rows for 6 deleted records"));
     }
     // Record and subject; the unrelated fact stays until its subject goes.
-    let kept: String = sqlx::query_scalar("SELECT id::text FROM mh_memory WHERE subject = 'gov:fs-4'").fetch_one(pool).await?;
+    let kept = db
+        .text(Sql::each("SELECT id::text FROM mh_memory WHERE subject = 'gov:fs-4'", "SELECT id FROM mh_memory WHERE subject = 'gov:fs-4'"), &[])
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the unrelated fact of gov:fs-4 is not stored"))?;
     let r = api.post("/v1/forget", json!({"subject": "gov:fs-4", "dry_run": true})).await?;
     if r.body["deleted"] != 1 {
         problems.push(format!("subject dry run: {}", r.body));

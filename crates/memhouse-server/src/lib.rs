@@ -23,7 +23,24 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Connect to Postgres, load models, run migrations: everything a transport needs.
+/// The file of a `sqlite:` database URL (the Lite profile): `sqlite:/path/to/memhouse.db`, also
+/// written `sqlite:///path/to/memhouse.db`. `None` for any other URL.
+pub fn sqlite_path(url: &str) -> Option<std::path::PathBuf> {
+    let rest = url.strip_prefix("sqlite://").or_else(|| url.strip_prefix("sqlite:"))?;
+    (!rest.is_empty()).then(|| std::path::PathBuf::from(rest))
+}
+
+/// The store the configuration names: one SQLite file for a `sqlite:` URL (Lite), else Postgres
+/// (Standard). The engine is the same on both (TR-CORE-01).
+pub async fn open_store(cfg: &Config, connections: u32) -> anyhow::Result<Arc<dyn memhouse_core::Store>> {
+    let prefix = cfg.embedding.passage_prefix.as_deref().unwrap_or("");
+    Ok(match sqlite_path(&cfg.database.url) {
+        Some(path) => Arc::new(memhouse_store_sqlite::SqliteStore::open(&path, prefix)?),
+        None => Arc::new(PgStore::connect(&cfg.database.url, connections, prefix).await?),
+    })
+}
+
+/// Open the store, load models, run migrations: everything a transport needs.
 pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<Engine> {
     cfg.check_floor()?;
     // Before anything is loaded or migrated: a language pack that does not validate stops the
@@ -34,12 +51,12 @@ pub async fn build_engine(cfg: Config, show_progress: bool) -> anyhow::Result<En
         anyhow::bail!("embedding model {} produces {} dimensions but embedding.dim is {}", embedder.id(), embedder.dim(), cfg.embedding.dim);
     }
     let reranker = memhouse_models::build_reranker(&cfg, show_progress)?;
-    let store = PgStore::connect(&cfg.database.url, cfg.database.max_connections, cfg.embedding.passage_prefix.as_deref().unwrap_or("")).await?;
+    let store = open_store(&cfg, cfg.database.max_connections).await?;
     store.migrate(embedder.dim(), embedder.id()).await?;
     let chat = memhouse_models::enrich_chat(&cfg, None)?;
     let classifier = memhouse_models::build_classifier(&cfg)?;
     let large = memhouse_models::enrich_large_chat(&cfg, None)?;
-    let mut engine = Engine::new(Arc::new(store), embedder, reranker, cfg).with_chat(chat).with_large_chat(large);
+    let mut engine = Engine::new(store, embedder, reranker, cfg).with_chat(chat).with_large_chat(large);
     if let Some(c) = classifier {
         engine = engine.with_classifier(c);
     }
@@ -61,8 +78,8 @@ pub async fn build_reembed_engine(cfg: Config, show_progress: bool) -> anyhow::R
     if embedder.dim() != cfg.embedding.dim {
         anyhow::bail!("embedding model {} produces {} dimensions but embedding.dim is {}", embedder.id(), embedder.dim(), cfg.embedding.dim);
     }
-    let store = PgStore::connect(&cfg.database.url, cfg.database.max_connections, cfg.embedding.passage_prefix.as_deref().unwrap_or("")).await?;
-    Ok(Engine::new(Arc::new(store), embedder, None, cfg))
+    let store = open_store(&cfg, cfg.database.max_connections).await?;
+    Ok(Engine::new(store, embedder, None, cfg))
 }
 
 /// An error response: `{"error": <message>, "code": <stable code>}` with the code's status.
