@@ -47,8 +47,9 @@ The design is recorded in [ADR 0002](adr/0002-lite-embedded-store.md) and
   a search never ranks another subject's rows.
 - **Vector search is exact.** Vectors are stored at half precision (2 bytes per dimension) and
   every vector of the subject is scored in process on each recall. There is no approximate
-  index. On real data the half-precision scan returns the same top 10 as full precision (a test
-  in the store checks this against brute force).
+  index. The half-precision scan returns the same top 10 as full precision; two neighbours
+  whose similarities differ by less than half precision can tell apart (about 0.001) may come
+  back in either order. A test in the store and a governance check compare against brute force.
 - **Jobs are tables in the same file.** A write is acknowledged once its proposal is in the
   intake queue and flushed to the device. The pipeline's work after that (the gate, the insert,
   extraction bookkeeping) commits without waiting for the device: if power fails, it is run again

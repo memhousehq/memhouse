@@ -918,10 +918,17 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             };
             let hits = engine.store.search(&q).await?;
             let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();
+            // A tie is two records whose distances differ by less than the precision the store
+            // keeps vectors at: single precision on Postgres, half precision on SQLite (ADR
+            // 0003), where two neighbours that close may come back in either order. A record
+            // that is not a tie with the brute-force one at its rank is a mismatch on both.
+            let tie = match crate::scratch::Profile::of(engine) {
+                crate::scratch::Profile::Postgres => 1e-5,
+                crate::scratch::Profile::Sqlite => 1e-3,
+            };
             for (i, h) in hits.iter().enumerate() {
                 let (bd, bid) = brute[i];
-                // Same record, or a tie within float precision.
-                if h.memory.id != bid && (dist.get(&h.memory.id).copied().unwrap_or(f64::MAX) - bd).abs() > 1e-5 {
+                if h.memory.id != bid && (dist.get(&h.memory.id).copied().unwrap_or(f64::MAX) - bd).abs() > tie {
                     mismatches += 1;
                     detail.push(format!("'{qtext}' rank {}", i + 1));
                 }

@@ -1658,7 +1658,11 @@ which is named.
     index for every record: no per-language stemming. A burst of 200 back-to-back writes on a
     large subject is acknowledged in 123 ms at p95 (one writer). The default local model
     peaked at about 850 MB of resident memory with one session on a macOS laptop, against the
-    394 MB of the technology spike; not explained yet, and unrelated to the store. Erased
+    394 MB of the technology spike; not explained yet, and unrelated to the store. Two
+    neighbours closer than half precision resolves (about 0.001 in cosine) can come back in
+    either order: the `exact_topk` check, which allowed ties within single precision, allows
+    them within half precision on Lite (the pre-push CI found this with the default model).
+    Erased
     content can stay in the file's free pages, and backups and pre-upgrade copies keep what
     was erased after they were made. The container image is G21's.
   - **For the user to decide.** (1) The bundled SQLite has a known advisory (RUSTSEC-2026-0459,
