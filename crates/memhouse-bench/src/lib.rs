@@ -8,6 +8,7 @@ pub mod baselines;
 mod conformance_checks;
 pub mod datasets;
 mod eval_checks;
+mod footprint;
 pub mod governance;
 pub mod guard;
 mod identity_checks;
@@ -19,6 +20,7 @@ mod policy_checks;
 pub mod report;
 pub mod runner;
 mod schema_checks;
+mod scratch;
 pub mod suites;
 pub mod synth;
 mod telemetry_checks;
@@ -46,6 +48,18 @@ pub enum BenchCmd {
     },
     /// Run a benchmark dataset, the governance suite or an evaluation suite file
     Run(Box<RunArgs>),
+    /// Measure the Lite profile's footprint and latency (PROF-06, PROF-07) on a fresh SQLite file
+    Footprint {
+        /// Memories to load
+        #[arg(long, default_value_t = 100_000)]
+        memories: usize,
+        /// Memories per subject
+        #[arg(long, default_value_t = 10_000)]
+        per_subject: usize,
+        /// Write the report here as well as printing it
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
     /// Generate a synthetic evaluation suite with ground truth at checkpoints
     Synth {
         /// personal, support, coding, sales or success
@@ -202,9 +216,17 @@ fn slug(s: &str) -> String {
 }
 
 /// Create (if needed) a dedicated benchmark database next to the user's one, so benchmark data
-/// never mixes with real memories and each embedding model gets its own schema dimension.
+/// never mixes with real memories and each embedding model gets its own schema dimension. On
+/// the Lite profile it is another SQLite file, created when it is first opened.
 async fn bench_database(base_url: &str, model: &str) -> anyhow::Result<String> {
     let db = format!("memhouse_bench_{}", slug(model)).chars().take(60).collect::<String>();
+    // Lite: a file of its own beside the user's database, in the same private directory.
+    if let Some(path) = memhouse_server::sqlite_path(base_url) {
+        let bench = path.with_file_name(format!("{db}.db"));
+        // The configured file may carry the benchmark's own name: a run must never write into it.
+        anyhow::ensure!(bench != path, "the benchmark database would be the configured database itself ({}); name another file with --database-url", path.display());
+        return Ok(format!("sqlite:{}", bench.display()));
+    }
     let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(base_url).await?;
     let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '{db}')"))).fetch_one(&pool).await?;
     if !exists {
@@ -264,6 +286,17 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
                     anyhow::bail!("{} governance gate(s) failed", g.failed);
                 }
             }
+            Ok(())
+        }
+        BenchCmd::Footprint { memories, per_subject, out } => {
+            let dir = std::env::temp_dir().join(format!("memhouse-footprint-{}", std::process::id()));
+            let report = footprint::run(memories, per_subject, &dir).await;
+            let _ = std::fs::remove_dir_all(&dir);
+            let report = report?;
+            if let Some(p) = &out {
+                std::fs::write(p, &report).with_context(|| format!("writing {}", p.display()))?;
+            }
+            print!("{report}");
             Ok(())
         }
         BenchCmd::Synth { profile, seed, conversations, name, out } => {
@@ -464,8 +497,9 @@ pub async fn run_to(args: RunArgs, mut cfg: Config, quiet: bool) -> anyhow::Resu
         eprintln!("Running governance and safety suite ...");
         let g = governance::run(&engine, &run_id).await?;
         for c in &g.checks {
-            eprintln!("  {} {:<22} {}", if c.passed { "✓" } else { "✗" }, c.id, c.value);
+            eprintln!("  {} {:<22} {}", c.mark(), c.id, c.value);
         }
+        eprintln!("  {}", g.summary());
         summary.governance = Some(g);
     } else if let Some(s) = args.suite.as_deref().filter(|s| std::path::Path::new(s).exists()) {
         // Evaluation suites (G13): replayed through the real write and recall paths.
@@ -585,4 +619,19 @@ fn price(flag: Option<&str>, model: &str) -> anyhow::Result<Option<(f64, f64)>> 
         "gpt-4.1-nano" => Some((0.10, 0.40)),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_lite_benchmark_file_is_never_the_configured_database() {
+        let beside = bench_database("sqlite:/data/memhouse.db", "local_bge-small").await.unwrap();
+        assert_eq!(beside, "sqlite:/data/memhouse_bench_local_bge_small.db");
+        let e = bench_database(&beside, "local_bge-small").await.unwrap_err().to_string();
+        assert!(e.contains("the configured database itself"), "{e}");
+        // Another model's file beside it is still its own.
+        assert_eq!(bench_database(&beside, "local_other").await.unwrap(), "sqlite:/data/memhouse_bench_local_other.db");
+    }
 }

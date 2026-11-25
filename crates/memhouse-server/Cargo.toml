@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 memhouse-core.workspace = true
 memhouse-store-postgres.workspace = true
+memhouse-store-sqlite.workspace = true
 memhouse-models.workspace = true
 anyhow.workspace = true
 tokio.workspace = true

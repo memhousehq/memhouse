@@ -17,6 +17,8 @@ serde.workspace = true
 serde_json.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
 fastembed = { workspace = true, optional = true }
 # Same version fastembed uses; needed to pin the CPU execution provider.
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std"], optional = true }

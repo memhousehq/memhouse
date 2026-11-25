@@ -130,7 +130,7 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         .zip(results)
         .map(|((id, req, title), r)| match r {
             Ok((passed, value, detail)) => check(id, req, title, passed, value, "all", detail),
-            Err(e) => check(id, req, title, false, "error".into(), "all", format!("{e:#}")),
+            Err(e) => crate::governance::errored(id, req, title, "all", e),
         })
         .collect()
 }
@@ -323,11 +323,11 @@ async fn engine_for(base: &Engine, url: &str, enabled: &[&str], packs_dir: &str,
     cfg.rerank.enabled = false;
     cfg.enrich.enabled = false;
     cfg.language = LanguageConfig { enabled: enabled.iter().map(|s| s.to_string()).collect(), default: String::new(), packs_dir: packs_dir.to_string() };
-    let store = memhouse_store_postgres::PgStore::connect(url, 4, "").await?.with_identity_recheck(std::time::Duration::ZERO);
+    let store = crate::scratch::open_store(url, 4, "").await?;
     if migrate {
-        memhouse_core::Store::migrate(&store, DIM, embedder.id()).await?;
+        store.migrate(DIM, embedder.id()).await?;
     }
-    let e = Engine::new(Arc::new(store), embedder, None, cfg);
+    let e = Engine::new(store, embedder, None, cfg);
     e.check_languages().await?;
     Ok(e)
 }
@@ -336,7 +336,17 @@ async fn on_scratch(base: &Engine) -> anyhow::Result<Vec<Outcome>> {
     let scratch = Scratch::create(base, "lang").await?;
     let out = async {
         let injection = injection_languages(base, &scratch.url).await;
-        let recall = language_recall(base, &scratch.url).await;
+        // What this check inspects is Postgres's text search: a `ts_config` per record and a
+        // second index in the record's language, so that a German word is stemmed as German.
+        // The SQLite store has one FTS5 index with one tokenizer for every record (its schema
+        // has no such columns), so there is nothing per language to verify there.
+        let recall = match crate::scratch::postgres_only(
+            base,
+            "the check verifies that each record is indexed with the Postgres text-search configuration of its language; the SQLite store indexes every record with one FTS5 tokenizer and has no per-language index",
+        ) {
+            Ok(()) => language_recall(base, &scratch.url).await,
+            Err(e) => Err(e),
+        };
         anyhow::Ok(vec![injection, recall])
     }
     .await;

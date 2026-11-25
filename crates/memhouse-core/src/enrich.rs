@@ -288,6 +288,11 @@ fn kind_of(k: Option<&str>) -> MemoryKind {
     }
 }
 
+/// The rounds a derived fact names as its sources (`metadata.source_ids`).
+fn source_ids(m: &Memory) -> Vec<Uuid> {
+    m.metadata["source_ids"].as_array().into_iter().flatten().filter_map(|v| v.as_str()?.parse().ok()).collect()
+}
+
 /// Enrichment as a job of the [`crate::intake::JobRunner`]: one session per run.
 pub struct EnrichWorker {
     pub engine: Engine,
@@ -427,7 +432,12 @@ impl Engine {
         let cfg = &self.cfg.enrich;
         let model = chat.id();
         let key = cache_key(&model, prompt);
+        // An erasure removes a job with its rounds, and the cached answers the job names. A job
+        // that is gone has no rounds left to read: its answer is neither kept nor used.
+        const GONE: &str = "the session's rounds were deleted while it was being read: nothing extracted from them is kept";
         if let Some(a) = self.store.llm_cache_get(&key).await? {
+            // The answer an earlier job left is this job's too from here on.
+            anyhow::ensure!(self.store.llm_cache_put_for(job.id, &key, &model, &a).await?, GONE);
             outcome.cached = true;
             return Ok((key, a));
         }
@@ -466,7 +476,7 @@ impl Engine {
         outcome.calls += 1;
         // Cache only answers that parse, so a malformed one is retried next time.
         parse(&a)?;
-        self.store.llm_cache_put(&key, &model, &a).await?;
+        anyhow::ensure!(self.store.llm_cache_put_for(job.id, &key, &model, &a).await?, GONE);
         Ok((key, a))
     }
 
@@ -574,6 +584,12 @@ impl Engine {
         );
         let n = items.len();
         let signals = crate::intake::signals_of(&items);
+        // The rounds the facts were read from must still be stored when the facts are written
+        // (checked in the insert's transaction): a deletion that ran during the model call took
+        // the rounds and this job with it, and nothing derived from them lands after it (TR-WF-01).
+        let mut requires: Vec<Uuid> = items.iter().flat_map(|i| source_ids(&i.rec.memory)).collect();
+        requires.sort();
+        requires.dedup();
         let w = IntakeWrite {
             proposal: None,
             tenant: job.tenant.clone(),
@@ -581,6 +597,7 @@ impl Engine {
             supersede,
             confirm,
             signals,
+            requires,
             audit,
             ..Default::default()
         };

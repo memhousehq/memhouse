@@ -402,6 +402,59 @@ memhouse bench synth --profile personal --seed 7 --conversations 500 --out refer
 memhouse bench run --suite reference.yaml --embedding-model bge-small-en-v1.5-onnx-Q
 ```
 
+## Lite profile
+
+The same engine on one SQLite file ([lite.md](lite.md)). 21 November 2026, a laptop busy with
+other work.
+
+**Retrieval quality** is that of Postgres within the guard's limits (`bge-small-en-v1.5-onnx-Q`,
+the same runs as the guard's free tier, `--database-url sqlite:<file>`):
+
+| Run | Lite | Postgres | Limit on the drop |
+|---|---|---|---|
+| LongMemEval_S, stride 10: session R_all@5 / nDCG@10 / round R_all@10 | 91.3 / 93.8 / 84.8 | 91.3 / 94.2 / 84.8 | 2.2 / 2.0 / 2.2 |
+| LoCoMo: session R_all@5 / nDCG@10 / round R_all@10 |  78.3 / 78.3 / 59.2 | 78.8 / 78.7 / 59.2 | 1.0 each |
+| Synthetic personal starter: storage F1 / retrieval F1 / stale-free | 97.6 / 97.5 / 84.9 | 97.6 / 97.5 / 84.9 | 2.0 / 2.0 / 1.0 |
+
+The small differences come from keyword ranking: FTS5's BM25 and stemmer are not Postgres's.
+Vector scoring is exact on both.
+
+**Footprint and latency** (PROF-06, PROF-07), from `memhouse bench footprint`: 100,000
+memories, 10,000 per subject, loaded and queried through the engine (gate, intake queue, audit,
+fusion) with a stand-in embedder, so the numbers are the engine's and the store's.
+
+| Requirement | Target | Measured |
+|---|---|---|
+| Binary, without models | ≤ 100 MB | 60.5 MB |
+| Resident memory with the store loaded | ≤ 256 MB | 52 MB |
+| Recall p95, on a 10,000-memory subject | ≤ 50 ms | 35.5 ms (p50 34.7) |
+| Write acknowledgement p95 | ≤ 20 ms | 3.8 ms (p50 3.2), one write at a time |
+| A gated memory is recallable | ≤ 2 s | 97 ms p95 |
+
+- **A burst is slower to acknowledge.** 200 writes sent back to back on a 10,000-memory
+  subject were acknowledged in 123 ms at p95 (p50 34 ms): each acknowledgement then waits for
+  the pipeline work of the writes before it, on the store's single writer. Nothing is lost or
+  reordered; it is the reason to choose Standard for write-heavy use.
+- **Recall time is the vector scan.** Lite scores every vector of the subject exactly: about
+  35 ms for 10,000 vectors of 384 dimensions here, and proportionally less for smaller subjects
+  (5 ms at 2,000).
+- **A local embedding model is not in these numbers.** It has its own budget ([ADR
+  0002](adr/0002-lite-embedded-store.md)). A command that loads the default model peaked at
+  about 850 MB of resident memory with one session on this machine (1.6 GB with the automatic
+  four sessions), against 394 MB in the technology spike; the difference is not explained yet.
+  With a remote embedding API no model is loaded.
+- The database file is 649 MB for 100,000 memories (6.6 KB each: text, the full-text index,
+  half-precision and bit vectors); the load ran at 818 rounds per second.
+
+```bash
+memhouse bench footprint --memories 100000 --per-subject 10000
+memhouse bench run --dataset locomo --database-url sqlite:/path/to/new.db
+memhouse bench run --suite governance --database-url sqlite:/path/to/new.db
+```
+
+Without `--database-url`, a Lite configuration runs benchmarks on a SQLite file of their own
+beside the configured database (`memhouse_bench_<model>.db`), never on the database itself.
+
 ## Governance suite
 
 `memhouse bench run --suite governance` runs 18 checks; all pass:

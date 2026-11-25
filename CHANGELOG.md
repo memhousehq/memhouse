@@ -87,6 +87,15 @@ path from 0.x data other than export and import.
   model, for at most 30% of a tenant's sessions. Tier metrics for both.
 - Suites can be replayed as ingested conversations (`memhouse bench run --suite ... --enrich`),
   which scores the extracted facts.
+- The Lite profile: `memhouse up --lite` runs the same engine on one SQLite file, with no
+  Docker and no database server (`sqlite:` database URL; FTS5 keyword search, exact vector
+  scoring over half-precision vectors). `memhouse backup` and `memhouse restore` for Lite,
+  the restore re-applying every deletion made since the backup; an automatic upgrade first
+  writes a copy of the database. See [docs/lite.md](docs/lite.md).
+- The built-in local models are pinned to a revision, and every model file's SHA-256 is checked
+  on download and when first loaded (`[embedding] revision` and `sha256` pin other models).
+- The governance suite runs on both profiles; a check that cannot apply to a profile is
+  reported as not applicable, apart from passed and failed.
 - Conformance kits (`memhouse-conformance`): one reusable test suite per adapter type (store,
   intake queue, embedder, reranker, chat model, authorizer) and a profile suite that runs one
   scenario through REST, MCP and the command line and requires the same outcomes. `revise`,

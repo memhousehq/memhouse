@@ -30,7 +30,7 @@ pub(crate) async fn run(engine: &Engine, run_id: &str) -> Vec<Check> {
     ] {
         out.push(match result {
             Ok((passed, value, detail)) => check(id, req, title, passed, value, "all", detail),
-            Err(e) => check(id, req, title, false, "error".into(), "all", format!("{e:#}")),
+            Err(e) => crate::governance::errored(id, req, title, "all", e),
         });
     }
     for name in ["idem", "life", "repr", "repr-linked"] {
@@ -295,6 +295,12 @@ async fn roundtrip_in(base: &Engine, url1: &str, url2: &str) -> Outcome {
 /// rows keep their vectors and need no re-extraction), and exports exactly what importing the
 /// same records from a v1 file gives. A v1 writer still works against the v2 schema.
 async fn upgrade(base: &Engine) -> Outcome {
+    // The Lite schema began at logical version 2 (its `migrate` has nothing older to upgrade):
+    // a version-1 database exists only in Postgres, and this check builds one from the v1 DDL.
+    crate::scratch::postgres_only(
+        base,
+        "the check upgrades a version-1 database in place, and version 1 of the schema exists only for Postgres: the SQLite store began at version 2, so no version-1 SQLite database can exist",
+    )?;
     let (one, two) = (Scratch::create(base, "upg1").await?, Scratch::create(base, "upg2").await?);
     let result = upgrade_in(base, &one.url, &two.url).await;
     one.drop().await?;

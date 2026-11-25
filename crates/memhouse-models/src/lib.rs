@@ -32,12 +32,21 @@ pub mod local {
         tokenizer: TokenizerFiles,
     }
 
-    fn model_files(code: &str, model_file: &str, additional: &[String], cache_dir: &Option<std::path::PathBuf>, show_progress: bool) -> anyhow::Result<ModelFiles> {
+    /// Where a model's files come from and what they are checked against.
+    struct Source<'a> {
+        cache_dir: &'a Option<std::path::PathBuf>,
+        /// The configuration's own pin, for a model the binary does not pin (or to move one).
+        revision: &'a Option<String>,
+        sha256: &'a std::collections::BTreeMap<String, String>,
+        show_progress: bool,
+    }
+
+    fn model_files(code: &str, model_file: &str, additional: &[String], from: &Source) -> anyhow::Result<ModelFiles> {
         const TOKENIZER: [&str; 4] = ["tokenizer.json", "config.json", "special_tokens_map.json", "tokenizer_config.json"];
         let mut want: Vec<&str> = vec![model_file];
         want.extend(additional.iter().map(String::as_str));
         want.extend(TOKENIZER);
-        let paths = hub::Repo::new(code, model_cache_dir(cache_dir), show_progress).get(&want)?;
+        let paths = hub::Repo::new(code, model_cache_dir(from.cache_dir), from.show_progress).with_pin(from.revision.as_deref(), from.sha256).get(&want)?;
         let read = |i: usize| std::fs::read(&paths[i]).with_context(|| format!("reading {}", paths[i].display()));
         let t = 1 + additional.len();
         Ok(ModelFiles {
@@ -151,7 +160,8 @@ pub mod local {
         pub fn new(cfg: &EmbeddingConfig, show_progress: bool) -> anyhow::Result<LocalEmbedder> {
             let (model, dim, code) = resolve_embedding(&cfg.model)?;
             let info = TextEmbedding::get_model_info(&model)?;
-            let files = model_files(&code, &info.model_file, &info.additional_files, &cfg.cache_dir, show_progress)?;
+            let files =
+                model_files(&code, &info.model_file, &info.additional_files, &Source { cache_dir: &cfg.cache_dir, revision: &cfg.revision, sha256: &cfg.sha256, show_progress })?;
             let mut def = UserDefinedEmbeddingModel::new(std::fs::read(&files.onnx)?, files.tokenizer).with_quantization(TextEmbedding::get_quantization_mode(&model));
             def.pooling = TextEmbedding::get_default_pooling_method(&model);
             def.output_key = info.output_key.clone();
@@ -233,7 +243,8 @@ pub mod local {
                 .or_else(|| models.iter().find(|m| m.model_code.to_ascii_lowercase().contains(&want)))
                 .ok_or_else(|| anyhow::anyhow!("unknown reranker '{}'. Available: {}", cfg.model, models.iter().map(|m| m.model_code.clone()).collect::<Vec<_>>().join(", ")))?;
             // Loaded from its file, so external data files (downloaded beside it) are found by ONNX Runtime.
-            let files = model_files(&pick.model_code, &pick.model_file, &pick.additional_files, cache_dir, show_progress)?;
+            let files =
+                model_files(&pick.model_code, &pick.model_file, &pick.additional_files, &Source { cache_dir, revision: &cfg.revision, sha256: &cfg.sha256, show_progress })?;
             let opts = RerankInitOptionsUserDefined::new()
                 .with_max_length(cfg.max_length)
                 .with_execution_providers(cpu_provider())
@@ -390,6 +401,23 @@ impl Embedder for OpenAiEmbedder {
             }
         }
         Ok(out)
+    }
+}
+
+/// How the files of a local model (`local:<repository>`, an embedder's or reranker's id) are
+/// pinned, for `memhouse doctor`: `Ok` with the revision when every file the model has loaded
+/// in this process has a checksum, `Err` when nothing pins them or some are unchecked. `None`
+/// for a model that is not local.
+pub fn pin_status(model_id: &str, revision: &Option<String>, sha256: &std::collections::BTreeMap<String, String>) -> Option<Result<String, String>> {
+    let repo = model_id.strip_prefix("local:")?;
+    #[cfg(feature = "local")]
+    {
+        Some(hub::Expect::of(repo, revision.as_deref(), sha256).describe_loaded(repo, &hub::loaded(repo)))
+    }
+    #[cfg(not(feature = "local"))]
+    {
+        let _ = (repo, revision, sha256);
+        None
     }
 }
 
@@ -596,6 +624,37 @@ mod tests {
             assert!(batch.len() == 1 || max * batch.len() <= 8192);
             assert!(batch.len() <= 32);
         }
+    }
+
+    /// Every model MemHouse names resolves to a repository pinned in the binary, with a
+    /// checksum for each file the loader asks for (threat T19).
+    #[test]
+    fn named_models_are_pinned_with_every_file_they_load() {
+        use fastembed::{TextEmbedding, TextRerank};
+        use memhouse_core::config::{EmbeddingConfig, RerankConfig};
+        let pinned = |code: &str, model_file: &str, additional: &[String]| {
+            let pin = super::hub::pin_for(code).unwrap_or_else(|| panic!("{code} is not pinned"));
+            for f in std::iter::once(model_file).chain(additional.iter().map(String::as_str)) {
+                assert!(pin.files.iter().any(|(name, _)| *name == f), "{code}: no checksum for {f}");
+            }
+        };
+        let default = EmbeddingConfig::default().model;
+        for name in [default.as_str(), "bge-small-en-v1.5-onnx-Q", "all-MiniLM-L6-v2-onnx", "multilingual-e5-small"] {
+            let (model, _, code) = super::local::resolve_embedding(name).unwrap();
+            let info = TextEmbedding::get_model_info(&model).unwrap();
+            pinned(&code, &info.model_file, &info.additional_files);
+        }
+        let rerankers = TextRerank::list_supported_models();
+        let default = RerankConfig::default().model;
+        for name in [default.as_str(), "bge-reranker-base"] {
+            let m =
+                rerankers.iter().find(|m| m.model_code.to_ascii_lowercase().ends_with(&format!("/{}", name.to_ascii_lowercase()))).unwrap_or_else(|| panic!("no reranker {name}"));
+            pinned(&m.model_code, &m.model_file, &m.additional_files);
+        }
+        assert_eq!(super::hub::PINS.len(), 6, "a pin was added or removed: name its model above");
+        assert!(super::pin_status("local:Xenova/bge-small-en-v1.5", &None, &Default::default()).unwrap().is_ok());
+        assert!(super::pin_status("local:org/unknown", &None, &Default::default()).unwrap().is_err());
+        assert!(super::pin_status("openai:text-embedding-3-small", &None, &Default::default()).is_none());
     }
 
     /// Downloads the default embedder and reranker into an empty cache (network, ~180 MB), and
