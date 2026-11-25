@@ -57,6 +57,11 @@ export interface Transport {
 
 const URL_FORM = "the MemHouse URL must be http(s)://host[:port], with an optional path prefix";
 
+/** `text` with the user and password of every URL in it removed (`scheme://user:pass@host`). */
+function withoutUrlCredentials(text: string): string {
+  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s\/?#@]*@/gi, "$1");
+}
+
 /**
  * HTTP through the global `fetch`: no dependency.
  *
@@ -98,10 +103,9 @@ export class HttpTransport implements Transport {
       return { status: response.status, body: await response.text() };
     } catch (e) {
       // `baseUrl` has no credentials (see the constructor). The failure's own text is the
-      // runtime's, about the connection; should it ever repeat the request's URL, that URL is
-      // this one plus the path.
+      // runtime's, and may name another URL (a redirect's target): credentials in one are cut.
       const cause = e instanceof Error ? ((e.cause as { message?: string } | undefined)?.message ?? e.message) : String(e);
-      throw new MemHouseError(0, "transport", `no answer from ${this.baseUrl}: ${cause}`);
+      throw new MemHouseError(0, "transport", `no answer from ${this.baseUrl}: ${withoutUrlCredentials(cause)}`);
     }
   }
 }

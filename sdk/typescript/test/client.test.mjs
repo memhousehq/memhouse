@@ -189,3 +189,23 @@ test("every operation of the specification is a method", () => {
   }
   assert.equal(API_VERSION.split(".").length, 3);
 });
+
+test("credentials in a URL named by a transport failure are not in the error", async () => {
+  const real = globalThis.fetch;
+  // What a runtime may say about a redirect it refused to follow.
+  globalThis.fetch = async () => {
+    throw new TypeError("fetch failed", { cause: new Error("cannot follow http://someone:hunter2@other.test/target then HTTPS://a@b.test") }); // secret-scan: allow (fake fixture)
+  };
+  try {
+    const mh = new MemHouse({ baseUrl: "http://memhouse.test", apiKey: "" });
+    await assert.rejects(mh.health(), (e) => {
+      assert.ok(e instanceof MemHouseError);
+      assert.equal(e.code, "transport");
+      assert.equal(e.error, "no answer from http://memhouse.test: cannot follow http://other.test/target then HTTPS://b.test");
+      assert.ok(!inspect(e).includes("hunter2") && !inspect(e).includes("someone"));
+      return true;
+    });
+  } finally {
+    globalThis.fetch = real;
+  }
+});
