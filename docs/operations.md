@@ -16,6 +16,7 @@ backups, upgrades, enrichment workers, monitoring and troubleshooting.
 - [Enrichment workers](#enrichment-workers)
 - [Write pipeline](#write-pipeline)
 - [Backup and restore](#backup-and-restore)
+- [Moving between profiles](#moving-between-profiles)
 - [Upgrades](#upgrades)
 - [Changing the embedding model](#changing-the-embedding-model)
 - [Languages](#languages)
@@ -465,6 +466,126 @@ Embedding-cache rows for the deleted text can't be matched once the text is gone
 fell inside the restored window, also clear `mh_embed_cache` and `mh_llm_cache`. Both are caches
 and rebuild on demand, at the cost of re-embedding. A built-in `memhouse restore --reapply-deletions`
 is planned (TR-WF-03).
+
+## Moving between profiles
+
+`memhouse migrate` moves a whole installation from one database to another: Lite to Standard,
+Standard to Lite, or to another database of the same kind (TR-MIG-01, PROF-02, PROF-03).
+
+```bash
+memhouse migrate --to postgres://memhouse@db.internal:5432/memhouse --dry-run   # look first
+memhouse migrate --to postgres://memhouse@db.internal:5432/memhouse            # asks, then migrates
+memhouse migrate --from postgres://… --to lite:///home/ada/.memhouse/memhouse.db --yes
+```
+
+- **The source** is the configured database unless `--from` names one. A URL is
+  `postgres://…`, or `sqlite:<path>` (also spelled `lite://<path>`) for a Lite file.
+- **Passwords:** give a URL in `MEMHOUSE_MIGRATE_FROM` or `MEMHOUSE_MIGRATE_TO` instead of on
+  the command line. Whatever the command prints or audits shows URLs without credentials.
+- **Stop `memhouse serve` and the agents first, and keep them stopped until the command has
+  finished.** The migration is the downtime. What the command does about a source that is
+  still written to is under [Writes to the source](#writes-to-the-source-during-a-migration).
+- **The source is only read.** It is left as it was, whether the migration succeeds or not.
+
+**What a dry run reports** (`--dry-run`, and the first thing every run prints): records by type
+and state, the other tables' row counts, the size of the source, whether its audit chain is
+intact, an estimate of the duration, the state of the target, and the records that need
+attention. Anything that blocks the migration makes the command fail, in a dry run too: a
+target that is not empty and is not a resumed migration of this source, a source written by an
+older schema version (upgrade it first), another embedding model on the target, or text with
+NUL characters on the way to Postgres, which cannot store them.
+
+**What moves:**
+
+| Moves | How |
+|---|---|
+| Records in every state, with their versions, provenance, labels, scope, language, structured rows and code references | as the canonical export ([memory-format.md](memory-format.md)) |
+| Vectors | copied as stored; nothing is embedded again |
+| Policies with their activations and approvals; principals, API key hashes and token signing keys; links, grants; evaluation suites and runs | row by row |
+| The deletion ledger and the audit log | row by row, ids and hashes kept: the chain verifies on the target |
+| The intake queue and extraction jobs | row by row, in order: queued work continues on the target |
+
+Left behind, because they are rebuilt on use or expire: the embedding and extraction caches,
+recall explanations, and idempotency keys (a request repeated across the migration is carried
+out again).
+
+**Verification, then the switch.** After the copy every record is read back from the target
+and its hash compared with the source's; every other table is compared row for row; a sample
+of vectors is compared; the audit chain is verified. Only then is `[database] url` in the
+configuration file changed to the target, with the file as it was kept beside it as
+`config.toml.before-migrate-<timestamp>`. If the verification fails, the command names the
+records, exits with an error, and changes neither the configuration nor the source. The file is
+switched only when it names the source; otherwise it is left alone and the command says so.
+Agents keep their keys and tokens. The target's audit log gains one event,
+`migration.complete`.
+
+**An interrupted migration** is run again with the same command: it continues where it stopped
+and verifies everything. Running the command again after it completed copies nothing; it
+switches the configuration file if that was still to do, and only if the source is still what
+the target was verified against (the target records that). If the source was written to in
+between, the command fails and switches nothing: migrate again into a new, empty target.
+
+### Writes to the source during a migration
+
+A write made to the source after its copy began is not in the target. The command does not
+carry such writes over; it refuses to finish when it sees one.
+
+| Source | What is guaranteed |
+|---|---|
+| Lite (a SQLite file) | The command refuses to start while another process has the file open, and holds the file's write lock from the start until after the configuration file is switched: no other process can write to it in that time. |
+| Standard (Postgres) | The command cannot lock out a server. It notes other sessions on the database, refuses to start while a worker holds a live claim on queued work, and compares the source with what it held at the start three times: after the copy, after the verification, and immediately before the configuration file is switched. A difference fails the migration and nothing is switched. |
+
+What is compared, each time:
+
+- the number of records by tenant, type and state, the number of vectors, and the newest
+  change time of any record;
+- the last audit event (its id and hash) and the row count of every table that moves;
+- a digest of every row of every table that moves row by row, except the audit log: policies
+  and policy specs with their activations, principals, API keys, signing keys, links, grants,
+  evaluation suites and runs, the deletion ledger, the intake queue and the extraction jobs.
+  These rows are read again each time, so a row changed in place (a queued job that failed,
+  a key that was revoked) is seen even when no row was added and no audit event written.
+
+Records are not read a second time for this: a record that is added, changed or deleted moves
+a count, the newest change time, or the sum of all records' change times (which moves also
+when the changed record is not the newest, as after an import that kept later times). One
+change is not seen: extending the session of a working record that was imported with a change
+time in the future leaves that time where it was. The audit log is not digested again either:
+it only grows, and its last event stands for every event before it. The same comparison decides whether a
+migration that completed earlier is still complete when the command is run again.
+
+What remains, for a Postgres source: a write that lands after the last comparison, in the
+moment before the file is rewritten, is not seen. And whatever the source is, a server that is
+still running after the switch keeps writing to the source, because it read its configuration
+when it started; those writes are not in the target either. So the rule above is the
+guarantee: the server and the agents stay stopped until the command has finished. If you
+find the source was written to after a migration, the target is missing those writes: migrate
+again into a new, empty target.
+
+After the migration the command says what to do next, and that depends on what the server
+would use, which is `MEMHOUSE_DATABASE_URL` or `DATABASE_URL` when one is set and the
+configuration file's `[database] url` otherwise. When that names the target, it says to start
+the server (and, when only the environment names it, to set the file as well). Otherwise it
+says that MemHouse is not pointed at the target yet and what to change, and does not call the
+source unused.
+
+**The managed container** (`[database] container`, set by `memhouse up`) is kept in the
+configuration only when the target is another database on the same Postgres host and port;
+for a file or another server it is removed, so `memhouse down` never stops a container that
+does not serve the configured database.
+
+Where a migrated database is not bit-identical to its source:
+
+- **Vectors on the way to Lite** are rounded once to half precision, Lite's storage format
+  (largest change of a component about 0.0001); the report says so. Records and their hashes
+  are unaffected. Lite to Standard, and every later move, copies vectors exactly.
+- **A number in a record's JSON attributes** that Postgres writes differently (`1e16` becomes
+  `10000000000000000`) changes that record's hash. The report counts such records as equal in
+  value and lists them; any other difference fails the migration.
+
+**Duration** (PROF-03: at most 5 minutes of downtime per million records): 1,000,000 records
+with 384-dimension vectors and 1,000,000 audit events moved from Lite to Postgres in 120 s on a
+laptop, verification included ([benchmarks.md](benchmarks.md#migration-at-size)).
 
 ## Upgrades
 

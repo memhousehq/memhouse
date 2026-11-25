@@ -92,6 +92,11 @@ path from 0.x data other than export and import.
   scoring over half-precision vectors). `memhouse backup` and `memhouse restore` for Lite,
   the restore re-applying every deletion made since the backup; an automatic upgrade first
   writes a copy of the database. See [docs/lite.md](docs/lite.md).
+- `memhouse migrate --from <url> --to <url> [--dry-run]` moves a whole installation between
+  profiles (Lite to Standard and back): records, vectors as stored, policies, principals and
+  keys, the deletion ledger and the audit chain. Every record is verified by hash before the
+  configuration is switched; the source is only read. See
+  [docs/operations.md](docs/operations.md#moving-between-profiles).
 - The built-in local models are pinned to a revision, and every model file's SHA-256 is checked
   on download and when first loaded (`[embedding] revision` and `sha256` pin other models).
 - The governance suite runs on both profiles; a check that cannot apply to a profile is

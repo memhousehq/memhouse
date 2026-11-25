@@ -2,6 +2,7 @@
 //! HTTP gateway: REST API, streamable-HTTP MCP endpoint and the Memory Browser page.
 
 pub mod mcp;
+pub mod migrate;
 pub mod openapi;
 pub mod telemetry;
 

@@ -31,9 +31,9 @@ API key, and sets `[embedding] sessions = 1`.
 | Backup | `memhouse backup` | `pg_dump` ([operations.md](operations.md#backup-and-restore)) |
 
 Choose Standard when several processes or hosts write, when subjects grow well past 10,000
-memories, or when you need keyword stemming in languages other than English. Moving a Lite
-installation to Standard is `memhouse export` and `memhouse import` today; a guided migration is
-goal G17.
+memories, or when you need keyword stemming in languages other than English. `memhouse migrate` moves a
+Lite installation to Standard, or back, with everything in it
+([operations.md](operations.md#moving-between-profiles)).
 
 ## How it works
 

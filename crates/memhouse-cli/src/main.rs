@@ -288,6 +288,21 @@ enum Cmd {
         #[arg(long)]
         ledger: Option<PathBuf>,
     },
+    /// Move the installation to another database: Lite to Standard (or back), verified record by record, then the configuration is switched over
+    Migrate {
+        /// The database to move from: sqlite:<path> or postgres://… (default: the configured database)
+        #[arg(long, env = "MEMHOUSE_MIGRATE_FROM", hide_env_values = true)]
+        from: Option<String>,
+        /// The database to move to: sqlite:<path> or postgres://…; it must be empty
+        #[arg(long, env = "MEMHOUSE_MIGRATE_TO", hide_env_values = true)]
+        to: String,
+        /// Report counts, size, the estimated duration and what needs attention; change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Migrate without asking first
+        #[arg(long)]
+        yes: bool,
+    },
     /// Re-embed every stored memory with the model now in [embedding] (after changing it)
     Reembed {
         /// Show what would be re-embedded and stop
@@ -699,6 +714,35 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Cmd::Backup { dir, ledger_only } => backup::backup(Config::load(cfg_path.as_deref())?, &dir, ledger_only).await?,
         Cmd::Restore { dir, force, ledger } => backup::restore(Config::load(cfg_path.as_deref())?, &dir, force, ledger.as_deref()).await?,
+        Cmd::Migrate { from, to, dry_run, yes } => {
+            use memhouse_server::migrate;
+            let cfg = Config::load(cfg_path.as_deref())?;
+            let req = migrate::Request {
+                from: migrate::endpoint(from.as_deref().unwrap_or(&cfg.database.url))?,
+                to: migrate::endpoint(&to)?,
+                cfg,
+                config_path: Some(path_or_default.clone()),
+                progress: Some(std::sync::Arc::new(|m: &str| eprintln!("  {m}"))),
+            };
+            let plan = migrate::plan(&req).await?;
+            println!("{}", migrate::describe_plan(&req, &plan).trim_end());
+            // Not a success either way: a script that runs the dry run first stops here.
+            anyhow::ensure!(!plan.blocked(), "the migration cannot run yet: see \"Needs attention\" above. Nothing was changed");
+            if dry_run {
+                return Ok(());
+            }
+            if !yes {
+                eprint!("\nMigrate {} records to {}? The source is only read. [y/N] ", plan.source.record_total(), req.to.label);
+                std::io::stderr().flush()?;
+                let mut answer = String::new();
+                std::io::stdin().lock().read_line(&mut answer)?;
+                anyhow::ensure!(matches!(answer.trim(), "y" | "Y" | "yes"), "not migrated");
+            }
+            let (report, switch) = migrate::run(&req).await.map_err(|e| {
+                e.context("the migration stopped before the switch-over: the configuration and the source are as they were. Run it again to resume, or start over with a new, empty target")
+            })?;
+            println!("\n{}", migrate::describe_report(&req, &report, &switch).trim_end());
+        }
         Cmd::Reembed { dry_run, abort, batch, yes } => {
             use memhouse_core::reembed;
             let cfg = Config::load(cfg_path.as_deref())?;

@@ -533,6 +533,7 @@ metrics and setting up a backend.
 | `MEMHOUSE_HOME` | home directory |
 | `MEMHOUSE_CONFIG` | config file path |
 | `MEMHOUSE_DATABASE_URL` (or `DATABASE_URL`) | `database.url` |
+| `MEMHOUSE_MIGRATE_FROM`, `MEMHOUSE_MIGRATE_TO` | the `--from` and `--to` of `memhouse migrate`, so a database password need not be on the command line ([operations.md](operations.md#moving-between-profiles)) |
 | `MEMHOUSE_TENANT` | `memory.tenant` |
 | `MEMHOUSE_SUBJECT` | `memory.default_subject` |
 | `MEMHOUSE_BIND` | `server.bind` |

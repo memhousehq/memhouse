@@ -15,6 +15,8 @@ mod identity_checks;
 mod intake_checks;
 mod lang_checks;
 pub mod metrics;
+mod migrate_checks;
+mod migration_bench;
 mod pack_checks;
 mod policy_checks;
 pub mod report;
@@ -56,6 +58,27 @@ pub enum BenchCmd {
         /// Memories per subject
         #[arg(long, default_value_t = 10_000)]
         per_subject: usize,
+        /// Write the report here as well as printing it
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Migrate a synthetic Lite store to a scratch Postgres database and time it (TR-MIG-01, PROF-03); on demand only
+    Migrate {
+        /// Records to load and migrate
+        #[arg(long, default_value_t = 1_000_000)]
+        records: usize,
+        /// Records per subject
+        #[arg(long, default_value_t = 1_000)]
+        per_subject: usize,
+        /// Migrate to another SQLite file instead of Postgres
+        #[arg(long)]
+        to_sqlite: bool,
+        /// Migrate this existing Lite file instead of loading a synthetic one (it is only read)
+        #[arg(long)]
+        source: Option<std::path::PathBuf>,
+        /// Keep the loaded synthetic file here for later runs with --source
+        #[arg(long)]
+        keep: Option<std::path::PathBuf>,
         /// Write the report here as well as printing it
         #[arg(long)]
         out: Option<std::path::PathBuf>,
@@ -292,6 +315,36 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
             let dir = std::env::temp_dir().join(format!("memhouse-footprint-{}", std::process::id()));
             let report = footprint::run(memories, per_subject, &dir).await;
             let _ = std::fs::remove_dir_all(&dir);
+            let report = report?;
+            if let Some(p) = &out {
+                std::fs::write(p, &report).with_context(|| format!("writing {}", p.display()))?;
+            }
+            print!("{report}");
+            Ok(())
+        }
+        BenchCmd::Migrate { records, per_subject, to_sqlite, source, keep, out } => {
+            let dir = std::env::temp_dir().join(format!("memhouse-migrate-bench-{}", std::process::id()));
+            let report = migration_bench::run(&cfg, records, per_subject, to_sqlite, source.as_deref(), &dir).await;
+            let kept = match (&keep, report.is_ok() && source.is_none()) {
+                (Some(to), true) => {
+                    let from = dir.join("source.db");
+                    // A rename only works within one filesystem; elsewhere the file is copied.
+                    std::fs::rename(&from, to).or_else(|_| std::fs::copy(&from, to).map(drop)).with_context(|| {
+                        format!("keeping the source file as {}; it was left where it was generated, at {} (remove that directory when you have it)", to.display(), from.display())
+                    })
+                }
+                _ => Ok(()),
+            };
+            // Gone only when nothing in it is still wanted: a file that could be neither moved
+            // nor copied stays where it is, and the error says where.
+            if kept.is_ok() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            // The report first: the migration ran, whatever became of the kept file.
+            if let (Ok(text), Err(_)) = (&report, &kept) {
+                print!("{text}");
+            }
+            kept?;
             let report = report?;
             if let Some(p) = &out {
                 std::fs::write(p, &report).with_context(|| format!("writing {}", p.display()))?;

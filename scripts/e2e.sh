@@ -98,7 +98,7 @@ fi
 
 # The Lite profile (one SQLite file, no database server): a fresh installation works, and the
 # governance suite holds on it. Always run: the benchmark guard covers Postgres only.
-step "Lite profile: up --lite, write, recall, backup and restore"
+step "Lite profile: up --lite, write, recall, backup and restore, migrate"
 # A new directory every run: a run that failed halfway leaves nothing the next one trips over.
 LITE_HOME=$(mktemp -d)
 chmod 700 "$LITE_HOME"
@@ -116,6 +116,11 @@ if [ -d "$MEMHOUSE_HOME/models" ]; then ln -s "$MEMHOUSE_HOME/models" "$LITE_HOM
   "$BIN" restore "$LITE_HOME/backup" --force >/dev/null
   "$BIN" recall "How many loading docks?" -s lite:e2e | grep "$KEPT" >/dev/null
   if "$BIN" recall "When is the forklift serviced?" -s lite:e2e | grep "$GONE" >/dev/null; then echo "a restore brought back a deleted record"; exit 1; fi
+  "$BIN" doctor | grep "audit chain intact" >/dev/null
+  # A migration to another file: verified, the configuration switched, the data and chain there.
+  "$BIN" migrate --to "sqlite:$LITE_HOME/moved/memhouse.db" --dry-run | grep "Needs attention: nothing" >/dev/null
+  "$BIN" migrate --to "sqlite:$LITE_HOME/moved/memhouse.db" --yes | grep "now names the target" >/dev/null
+  "$BIN" recall "How many loading docks?" -s lite:e2e | grep "$KEPT" >/dev/null
   "$BIN" doctor | grep "audit chain intact" >/dev/null
 )
 

@@ -311,6 +311,7 @@ appended to `mh_audit`. Recalls are added when `audit_reads = true`.
 | `subject.reset` | benchmark only (keeps caches) | records |
 | `memory.import` | import | added, skipped, file |
 | `retention.purge` | retention | records, days |
+| `migration.complete` | `memhouse migrate`, on the target | source and target without credentials, embedder, rows per table, verification result, timings |
 
 `actor` is the `x-memhouse-actor` header for REST, `--actor` for `memhouse mcp`, `cli` for the
 CLI, `enrich` for enrichment workers and `system` for scheduled jobs. Use one actor name per integration so the log shows which
@@ -488,7 +489,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-68 checks pass on the current release on Postgres; on the Lite profile 65 apply and pass, and 3
+72 checks pass on the current release on Postgres; on the Lite profile 69 apply and pass, and 3
 are reported as not applicable ([conformance.md](conformance.md#where-they-run)). The core ones:
 
 | Check | What it proves |
@@ -541,6 +542,10 @@ are reported as not applicable ([conformance.md](conformance.md#where-they-run))
 | `ingested_replay` | a suite replayed as ingested conversations scores the facts extracted from it (facts stored, the plan held, a stale version counted when it is still live) and is refused, not scored, when enrichment is off (G14) |
 | `adapter_conformance` | the Postgres store and its intake queue, the configured embedder (and reranker), the default authorizer and a stand-in chat model pass their [conformance kits](conformance.md); the same store on a database where one deletion of an extracted fact silently does nothing fails the store kit, which names the dropped cascade (G15) |
 | `profile_conformance` | the basic scenario (a write, its duplicate, a held plan, a revision, a quarantined injection attempt, an ingested conversation, a deletion) gives the same outcome at each of its 13 steps through REST, MCP and the command line (G15) |
+| `migrate_round_trip` | Lite → Standard → Lite and Standard → Lite → Standard end with every record identical by hash and every other table equal row for row; vectors are copied, not recomputed (to Lite they are rounded once to half precision, and the report says so) |
+| `migrate_erasure_and_audit` | the deletion ledger moves with the data, erased text is nowhere on the target, and the audit chain verifies there |
+| `migrate_no_credentials` | no password of either database URL appears in the plan, the report, an error, the log or the audit event |
+| `migrate_failed_verification` | when a record differs on the target the command names it and fails, and the configuration and the source are unchanged; a verified run switches the configuration |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 

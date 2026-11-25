@@ -101,8 +101,16 @@ enum Place {
 
 impl Scratch {
     pub(crate) async fn create(engine: &Engine, suffix: &str) -> anyhow::Result<Scratch> {
-        match Profile::of(engine) {
+        Scratch::create_as(Profile::of(engine), engine, suffix).await
+    }
+
+    /// A scratch store of the profile asked for, whatever the engine under test runs on: for the
+    /// checks that move data between profiles. A Postgres one is made next to the engine's
+    /// database, so it needs the engine to be on Postgres.
+    pub(crate) async fn create_as(profile: Profile, engine: &Engine, suffix: &str) -> anyhow::Result<Scratch> {
+        match profile {
             Profile::Postgres => {
+                anyhow::ensure!(Profile::of(engine) == Profile::Postgres, "a scratch Postgres database is created beside the engine's, which is not on Postgres");
                 let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(&engine.cfg.database.url).await?;
                 let db: String = sqlx::query_scalar("SELECT current_database() || '_' || $1").bind(suffix).fetch_one(&admin).await?;
                 sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"))).execute(&admin).await?;

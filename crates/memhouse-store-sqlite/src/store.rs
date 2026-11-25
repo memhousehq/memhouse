@@ -1030,10 +1030,15 @@ impl Store for SqliteStore {
         // One read transaction: a record and its code references are read from one state of
         // the file, whatever another process deletes between the two statements.
         let c = c.unchecked_transaction()?;
+        // A whole tenant is read along the id index, a page starting where the last one ended:
+        // `+` keeps the planner from choosing the tenant's index and sorting the tenant for every
+        // page, which made an export (and a migration) quadratic in the number of records.
+        let scope = if subject.is_some() { "m.tenant = ?1 AND m.subject = ?2" } else { "+m.tenant = ?1 AND ?2 IS NULL" };
         let sql = format!(
             "SELECT {COLS}, m.content_hash, m.superseded_by, m.updated_at, m.alt_hash, s.record_type, s.attrs \
              FROM mh_memory m LEFT JOIN mh_structured s ON s.memory_id = m.id \
-             WHERE m.tenant = ?1 AND (?2 IS NULL OR m.subject = ?2) AND (?3 IS NULL OR m.id > ?3) ORDER BY m.id LIMIT ?4"
+             WHERE {scope} AND {} ORDER BY m.id LIMIT ?4",
+            if after.is_some() { "m.id > ?3" } else { "?3 IS NULL" }
         );
         let mut lines = rows(&c, &sql, params![tenant, subject, after.map(|u| u.to_string()), lim(limit)], |r| {
             let m = memory_of(r)?;
@@ -1528,6 +1533,34 @@ impl Store for SqliteStore {
         let removed = exec(&tx, "DELETE FROM mh_meta WHERE key LIKE 'reembed_target_%'", [])?;
         tx.commit()?;
         Ok(removed > 0)
+    }
+
+    async fn export_vectors(&self, tenant: &str, ids: &[Uuid]) -> anyhow::Result<Vec<memhouse_core::migrate::RecordVectors>> {
+        self.vectors_of(tenant, ids)
+    }
+
+    async fn migration_summary(&self) -> anyhow::Result<memhouse_core::migrate::Summary> {
+        let mut s = self.summary()?;
+        if s.schema_version.is_some() {
+            (s.identity, s.reembed_target) = self.embedding_identity().await?;
+        }
+        Ok(s)
+    }
+
+    async fn migration_dump(&self, table: &str, after: Option<&serde_json::Value>, limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.dump(table, after, limit)
+    }
+
+    async fn migration_load(&self, table: &str, rows: &[serde_json::Value]) -> anyhow::Result<u64> {
+        self.load(table, rows)
+    }
+
+    async fn migration_marker(&self) -> anyhow::Result<Option<serde_json::Value>> {
+        self.marker()
+    }
+
+    async fn set_migration_marker(&self, marker: &serde_json::Value) -> anyhow::Result<()> {
+        self.set_marker(marker)
     }
 }
 

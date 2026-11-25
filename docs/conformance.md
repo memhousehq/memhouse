@@ -101,7 +101,7 @@ same outcome at every step (ids replaced by their saved names). Three ways are b
 | `Cli` | the `memhouse` binary with a configuration file (`remember`, `recall --json`, `revise --json`, `forget --json`, `ingest --json`) |
 
 An SDK adds its own way by implementing the `Way` trait (one method: carry out an operation
-with a JSON request and return the JSON response). The Lite profile (G16) and the SDKs (G17)
+with a JSON request and return the JSON response). The Lite profile (G16) and the SDKs (G18)
 are run through the same scenario.
 
 ## Where they run
