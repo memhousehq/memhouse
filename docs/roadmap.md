@@ -1764,6 +1764,12 @@ which is named.
     a change; the closing instructions follow the database URL the server would use, the
     environment's when it is set; the benchmark keeps its generated file when it cannot be
     moved. The cost of reading those tables again at one million records was not measured.
+    A third round: the comparison also carries a sum over every record's change time, which
+    moves when a record that is not the newest changes; a percent-encoded parameter name in a
+    database URL is refused by the command and its value never printed; the closing
+    instructions no longer say which database is in use when the command cannot know.
+    Declined: refusing unknown parameters on every Postgres connection, server start
+    included (existing behaviour outside this goal; `memhouse migrate` refuses them).
   - **Not measured or not tested.** Postgres to Lite and Lite to Lite at one million records;
     the timing was not measured again after the review fixes, which add two summaries of the
     source. Resuming is tested on a half-copied target, not by killing a run. A write to a

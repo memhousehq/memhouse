@@ -99,6 +99,13 @@ async fn scratch_postgres(cfg: &Config) -> anyhow::Result<(sqlx::PgPool, String,
         memhouse_server::sqlite_path(&cfg.database.url).is_none(),
         "the scratch database is created on the configured server, which must be Postgres (or use --to-sqlite)"
     );
+    // The scratch URL is the configured one with another database in its path: a database or a
+    // socket directory given as a parameter would be kept, or cut, with it.
+    let query = cfg.database.url.split_once('?').map(|(_, q)| q).unwrap_or_default();
+    anyhow::ensure!(
+        !query.split('&').any(|p| p.starts_with("dbname=") || p.starts_with("host=")),
+        "this benchmark needs the configured database URL to name the host and the database before the `?` (not as `host=` or `dbname=` parameters)"
+    );
     let admin = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .connect(&cfg.database.url)

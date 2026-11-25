@@ -641,7 +641,9 @@ pub fn redact_url(url: &str) -> String {
     let params: Vec<String> = query
         .split('&')
         .map(|p| match p.split_once('=') {
-            Some((k, _)) if k.to_ascii_lowercase().contains("pass") => format!("{k}=***"),
+            // A percent-encoded name (`p%61ssword`) is decoded by the driver: what it spells is
+            // not judged here, its value is hidden.
+            Some((k, _)) if k.to_ascii_lowercase().contains("pass") || k.contains('%') => format!("{k}=***"),
             _ => p.to_string(),
         })
         .collect();
@@ -3314,6 +3316,7 @@ mod tests {
 
     #[test]
     fn urls_are_printed_without_credentials() {
+        assert_eq!(redact_url("postgres://h/db?p%61ssword=s3cret&sslmode=require"), "postgres://h/db?p%61ssword=***&sslmode=require"); // secret-scan: allow (fake fixture)
         assert_eq!(redact_url("postgres://memhouse:s3cret@db.internal:5432/memhouse"), "postgres://***@db.internal:5432/memhouse"); // secret-scan: allow (fake fixture)
         assert_eq!(
             redact_url("postgres://db.internal/memhouse?sslmode=require&password=s3cret&sslpassword=k3y"),

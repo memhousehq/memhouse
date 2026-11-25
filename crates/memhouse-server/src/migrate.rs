@@ -75,6 +75,8 @@ pub fn endpoint(url: &str) -> anyhow::Result<Endpoint> {
     // The driver writes a parameter it does not know to the log, value and all.
     for key in url.split_once('?').map(|(_, q)| q).unwrap_or_default().split('&').filter_map(|p| p.split_once('=').map(|(k, _)| k)) {
         let k = key.to_ascii_lowercase();
+        // The driver decodes a name before it reads it, so an encoded one could spell anything.
+        anyhow::ensure!(!key.contains('%'), "the database URL has a parameter whose name is percent-encoded (`{key}`): write parameter names plainly");
         anyhow::ensure!(
             k == "password" || !["pass", "secret", "token"].iter().any(|w| k.contains(w)),
             "the database URL has a parameter `{key}` that the Postgres driver does not know: it would be ignored, and logged with its value. Remove it (a password goes before the host, or in `password`)"
@@ -457,6 +459,14 @@ pub fn describe_report(req: &Request, report: &Report, switch: &Switch) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_encoded_parameter_name_is_refused_and_never_printed() {
+        let e = endpoint("postgres://h/db?p%61ssword=s3cret").unwrap_err().to_string(); // secret-scan: allow (fake fixture)
+        assert!(e.contains("percent-encoded") && !e.contains("s3cret"), "{e}");
+        assert!(endpoint("postgres://h/db?sslmode=require&password=s3cret").is_ok());
+        // secret-scan: allow (fake fixture)
+    }
 
     #[test]
     fn a_postgres_url_names_its_server() {
