@@ -196,7 +196,8 @@ pub async fn run(req: &Request) -> anyhow::Result<(Report, Switch)> {
     // locked against writes until this function returns.
     let switch = match &req.config_path {
         Some(path) => {
-            core::ensure_source_unchanged(o.source.as_ref(), &core::SourceState::of(&report.source), "after it was verified, before the configuration was switched").await?;
+            let verified = report.verified.as_ref().ok_or_else(|| anyhow::anyhow!("the migration does not say what the source held when it was verified: nothing was switched"))?;
+            core::ensure_source_unchanged(o.source.as_ref(), verified, "after it was verified, before the configuration was switched").await?;
             switch_config(path, &req.from, &req.to)?
         }
         None => Switch::NotAsked,
@@ -412,11 +413,15 @@ pub fn describe_report(req: &Request, report: &Report, switch: &Switch) -> Strin
     };
     // Cut over only when the URL the server will read names the target: the file's, unless the
     // environment sets one over it.
+    // The URL the server will read: the environment's when it sets one, else the file's.
     let file_on_target = matches!(switch, Switch::Switched { .. } | Switch::AlreadyOnTarget { .. });
     let env = Config::env_database_url();
-    let env_elsewhere = env.as_deref().is_some_and(|url| !names(url, &req.to));
+    let cut_over = match env.as_deref() {
+        Some(url) => names(url, &req.to),
+        None => file_on_target,
+    };
     let _ = writeln!(o, "\nNext:");
-    if file_on_target && !env_elsewhere {
+    if cut_over {
         let _ = writeln!(o, "  1. Start the server again: `memhouse serve`. Agents keep their configuration and their keys.");
         let _ = writeln!(o, "  2. `memhouse doctor` checks the new database; `memhouse audit --verify` checks the audit chain.");
         let _ = writeln!(
@@ -424,11 +429,16 @@ pub fn describe_report(req: &Request, report: &Report, switch: &Switch) -> Strin
             "  3. The source was not changed and is no longer used: {}. Keep it until you are satisfied, then remove it yourself; it holds everything, including what you erase from now on.",
             req.from.label
         );
+        if !file_on_target {
+            let _ = writeln!(
+                o,
+                "  ! The target is named by the environment (MEMHOUSE_DATABASE_URL or DATABASE_URL) only; the configuration file still names another database. \
+                 Set [database] url to the target as well, or a start without that variable opens the other database."
+            );
+        }
     } else {
-        let what = if env_elsewhere {
+        let what = if env.is_some() {
             "the environment sets the database URL (MEMHOUSE_DATABASE_URL or DATABASE_URL) over the configuration file, and it does not name the target: change it to the target, or unset it"
-        } else if env.is_some() {
-            "the environment's database URL names the target; the configuration file does not: set [database] url to the target as well"
         } else {
             "set [database] url to the target"
         };

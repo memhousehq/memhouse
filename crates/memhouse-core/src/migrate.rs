@@ -451,9 +451,23 @@ pub struct SourceState {
     pub tables: BTreeMap<String, u64>,
     pub last_change: Option<i64>,
     pub audit_head: Option<(i64, String)>,
+    /// A digest of the rows of every table of [`DIGESTED`]: a row whose contents changed in
+    /// place (a queued job that failed, a key that was revoked) changes no count and may write
+    /// no audit event. Empty in the figures taken from a summary alone, and in a marker written
+    /// before digests were recorded, which therefore never equals a state that was read.
+    #[serde(default)]
+    pub digests: BTreeMap<String, TableDigest>,
+}
+
+/// The tables whose rows are digested for a [`SourceState`]: every table that moves row by row
+/// but the audit log, which only grows and whose last event (id and hash) covers every row
+/// before it. Records are covered by their counts and their newest change time.
+fn digested() -> impl Iterator<Item = &'static Table> {
+    TABLES.iter().filter(|t| t.name != "audit")
 }
 
 impl SourceState {
+    /// The figures of a summary, without the digests: for comparing two summaries.
     pub fn of(s: &Summary) -> SourceState {
         SourceState {
             records: s.records.clone(),
@@ -462,13 +476,31 @@ impl SourceState {
             tables: s.tables.clone(),
             last_change: s.last_change,
             audit_head: s.audit_head.clone(),
+            digests: BTreeMap::new(),
         }
+    }
+
+    /// What the store holds now: its summary, and a digest of every row of the digested tables.
+    pub async fn read(store: &dyn Store, page: usize) -> anyhow::Result<SourceState> {
+        let mut state = SourceState::of(&store.migration_summary().await?);
+        for t in digested() {
+            let mut d = TableDigest::default();
+            let mut after = None;
+            loop {
+                let rows = store.migration_dump(t.name, after.as_ref(), page).await?;
+                let Some(last) = rows.last().cloned() else { break };
+                rows.iter().for_each(|row| d.add(row));
+                after = Some(last);
+            }
+            state.digests.insert(t.name.into(), d);
+        }
+        Ok(state)
     }
 }
 
 /// Fails when the source no longer holds what it held at `then`: something wrote to it.
 pub async fn ensure_source_unchanged(source: &dyn Store, then: &SourceState, when: &str) -> anyhow::Result<()> {
-    let now = SourceState::of(&source.migration_summary().await?);
+    let now = SourceState::read(source, 1000).await?;
     anyhow::ensure!(
         now == *then,
         "the source changed {when} (a server or an agent is still writing to it): what was written is not in the target. \
@@ -525,10 +557,21 @@ fn record_difference(a: &RecordLine, b: &RecordLine) -> (Vec<String>, bool) {
 }
 
 /// An order-independent digest of a table's rows (the two stores order text keys differently).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TableDigest {
-    rows: u64,
-    xor: [u8; 32],
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableDigest {
+    pub rows: u64,
+    /// The sha256 of every row, combined by exclusive or.
+    #[serde(serialize_with = "hex_of", deserialize_with = "of_hex")]
+    pub xor: [u8; 32],
+}
+
+fn hex_of<S: serde::Serializer>(bytes: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&hex::encode(bytes))
+}
+
+fn of_hex<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
+    let text = String::deserialize(d)?;
+    hex::decode(&text).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| serde::de::Error::custom("a digest is 64 hex digits"))
 }
 
 impl TableDigest {
@@ -632,7 +675,7 @@ pub async fn inspect(source: &dyn Store, target: Option<&dyn Store>, o: &Options
             s.record_total()
         ))),
         // Complete as of then: only if the source still is what the target was verified against.
-        TargetState::Complete if ours.and_then(|m| m.verified.as_ref()) == Some(&SourceState::of(&s)) => {
+        TargetState::Complete if ours.and_then(|m| m.verified.as_ref()) == Some(&SourceState::read(source, o.page).await?) => {
             attention.push(Attention::note("this migration already completed: there is nothing left to copy".to_string()))
         }
         TargetState::Complete => attention.push(Attention::stop(
@@ -716,6 +759,9 @@ impl std::error::Error for VerificationFailed {}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
+    /// What the source held when the target was verified against it (in this run, or in the
+    /// earlier one that completed): what the source must still hold when anything is switched.
+    pub verified: Option<SourceState>,
     /// False when the migration had completed in an earlier run and nothing was done now.
     pub ran: bool,
     pub resumed: bool,
@@ -747,6 +793,7 @@ pub async fn run(source: Arc<dyn Store>, target: Arc<dyn Store>, o: &Options) ->
     let before_copy = plan.source;
     let identity = before_copy.identity.clone().ok_or_else(|| anyhow::anyhow!("the source records no embedding identity"))?;
     let mut report = Report {
+        verified: None,
         ran: false,
         resumed: plan.target_state == TargetState::Resume,
         records: before_copy.record_total(),
@@ -763,6 +810,8 @@ pub async fn run(source: Arc<dyn Store>, target: Arc<dyn Store>, o: &Options) ->
         audit_broken_at: plan.source_audit.1,
     };
     if plan.target_state == TargetState::Complete {
+        // `inspect` has just read the source and found it equal to what the marker records.
+        report.verified = marker_of(target.as_ref()).await?.and_then(|m| m.verified);
         return Ok(report);
     }
     report.ran = true;
@@ -924,8 +973,11 @@ pub async fn run(source: Arc<dyn Store>, target: Arc<dyn Store>, o: &Options) ->
     }
     // Once more, now that the target has been read back: a write made during the verification
     // is as missing from the target as one made during the copy.
-    let verified = SourceState::of(&before_copy);
-    if problems.is_empty() && SourceState::of(&source.migration_summary().await?) != verified {
+    // The rows are read again and digested: a row changed in place since it was copied (a
+    // queued job that failed) moves no count and may write no audit event.
+    let mut verified = SourceState::of(&before_copy);
+    verified.digests = digested().map(|t| (t.name.to_string(), digests.get(t.name).cloned().unwrap_or_default())).collect();
+    if problems.is_empty() && SourceState::read(source.as_ref(), o.page).await? != verified {
         problems.push("the source changed while the copy was being verified (a server or an agent is still writing to it): stop them and run the migration again".into());
     }
     report.verify_secs = started.elapsed().as_secs_f64();
@@ -956,7 +1008,8 @@ pub async fn run(source: Arc<dyn Store>, target: Arc<dyn Store>, o: &Options) ->
         });
         target.audit(&o.actor, AUDIT_ACTION, &o.tenant, None, None, detail).await?;
     }
-    marker.verified = Some(verified);
+    marker.verified = Some(verified.clone());
+    report.verified = Some(verified);
     marker.state = "complete".into();
     marker.completed_at = Some(chrono::Utc::now());
     target.set_migration_marker(&serde_json::to_value(&marker)?).await?;

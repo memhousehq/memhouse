@@ -1759,6 +1759,11 @@ which is named.
     Declined: unique names for governance scratch databases (as in G16), and keeping the
     scratch database URL out of the temporary configuration file of one check (the
     configuration file holds the URL by design; the directory is removed).
+    A second round: the comparison of the source also digests every row of every moved
+    table except the audit log, so a row changed in place (a queued job that failed) counts as
+    a change; the closing instructions follow the database URL the server would use, the
+    environment's when it is set; the benchmark keeps its generated file when it cannot be
+    moved. The cost of reading those tables again at one million records was not measured.
   - **Not measured or not tested.** Postgres to Lite and Lite to Lite at one million records;
     the timing was not measured again after the review fixes, which add two summaries of the
     source. Resuming is tested on a half-copied target, not by killing a run. A write to a

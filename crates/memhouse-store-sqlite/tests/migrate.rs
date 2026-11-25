@@ -388,6 +388,69 @@ async fn a_completed_migration_is_complete_only_while_the_source_is_what_was_ver
     assert!(err.contains("cannot start") && err.contains("the source has changed since"), "{err}");
 }
 
+/// A queued job that fails: its row changes in place, no row is added, no audit event is written.
+fn fail_a_queued_job(file: &Path) {
+    let writer = rusqlite::Connection::open(file).unwrap();
+    let n = writer.execute("UPDATE mh_enrich_job SET status = 'failed', error = 'the model is down', attempts = 3 WHERE status = 'pending'", []).unwrap();
+    assert_eq!(n, 1);
+}
+
+#[tokio::test]
+async fn a_row_changed_in_place_is_a_changed_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a.db"), dir.path().join("b.db"));
+    seeded(&a).await;
+    migrate_files(&a, &b).await.unwrap();
+    let marker: Marker = serde_json::from_value(SqliteStore::open_read_only(&b, "").unwrap().migration_marker().await.unwrap().unwrap()).unwrap();
+    let verified = marker.verified.expect("the verified state of the source");
+    assert!(verified.digests.len() == migrate::TABLES.len() - 1 && !verified.digests.contains_key("audit"), "{:?}", verified.digests.keys());
+    assert!(!migrate_files(&a, &b).await.unwrap().ran);
+
+    // After the migration completed: the counts, the newest record change and the last audit
+    // event are what they were, and the source is not what the target holds.
+    let figures = |file: &Path| {
+        let file = file.to_path_buf();
+        async move { migrate::SourceState::of(&SqliteStore::open_read_only(&file, "").unwrap().migration_summary().await.unwrap()) }
+    };
+    let before = figures(&a).await;
+    fail_a_queued_job(&a);
+    assert_eq!(figures(&a).await, before, "nothing a summary counts has moved");
+    let (source, lock) = SqliteStore::open_source(&a, "").unwrap();
+    assert!(migrate::ensure_source_unchanged(&source, &verified, "since").await.is_err());
+    drop((source, lock));
+    let err = migrate_files(&a, &b).await.unwrap_err().to_string();
+    assert!(err.contains("cannot start") && err.contains("the source has changed since"), "{err}");
+
+    // The same change while a migration is verifying its copy fails that migration.
+    let (c, d) = (dir.path().join("c.db"), dir.path().join("d.db"));
+    seeded(&c).await;
+    let mut o = options(&c, &d);
+    let file = c.clone();
+    o.progress = Some(Arc::new(move |said: &str| {
+        if said.starts_with("records: read back") {
+            fail_a_queued_job(&file);
+        }
+    }));
+    let err = migrate::run(Arc::new(SqliteStore::open(&c, PREFIX).unwrap()), Arc::new(SqliteStore::open(&d, PREFIX).unwrap()), &o).await.unwrap_err();
+    let failed = err.downcast_ref::<VerificationFailed>().expect("a verification failure");
+    assert!(failed.problems.len() == 1 && failed.problems[0].contains("the source changed while the copy was being verified"), "{:?}", failed.problems);
+    let marker: Marker = serde_json::from_value(SqliteStore::open_read_only(&d, "").unwrap().migration_marker().await.unwrap().unwrap()).unwrap();
+    assert_eq!((marker.state.as_str(), marker.verified), ("copying", None));
+
+    // A marker of before digests were recorded reads as a changed source, never as an equal one.
+    let (e, f) = (dir.path().join("e.db"), dir.path().join("f.db"));
+    seeded(&e).await;
+    migrate_files(&e, &f).await.unwrap();
+    {
+        let target = SqliteStore::open(&f, PREFIX).unwrap();
+        let mut old = target.migration_marker().await.unwrap().unwrap();
+        old["verified"].as_object_mut().unwrap().remove("digests");
+        target.set_migration_marker(&old).await.unwrap();
+    }
+    let err = migrate_files(&e, &f).await.unwrap_err().to_string();
+    assert!(err.contains("the source has changed since"), "{err}");
+}
+
 #[tokio::test]
 async fn text_postgres_cannot_hold_is_found_before_anything_is_written() {
     let dir = tempfile::tempdir().unwrap();

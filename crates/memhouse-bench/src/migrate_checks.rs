@@ -53,6 +53,9 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         .collect()
 }
 
+/// How a problem that reports a failed teardown begins.
+const NOT_REMOVED: &str = "a scratch store was not removed:";
+
 /// Scratch stores of one check, dropped together whatever the check returned.
 struct Places(Vec<Scratch>);
 
@@ -73,13 +76,14 @@ impl Places {
         for s in self.0 {
             let what = memhouse_store_postgres::redact_url(&s.url);
             if let Err(e) = s.drop().await {
-                left.push(format!("the scratch store {what} was not removed: {e:#}"));
+                left.push(format!("{NOT_REMOVED} {what}: {e:#}"));
             }
         }
         match ran {
-            Ok((mut problems, value)) => {
-                problems.extend(left);
-                Ok((problems, value))
+            // First, so a detail that shows only the first few problems never drops them.
+            Ok((problems, value)) => {
+                left.extend(problems);
+                Ok((left, value))
             }
             Err(e) if left.is_empty() => Err(e),
             Err(e) => Err(anyhow::anyhow!("{e:#} (and afterwards: {})", left.join("; "))),
@@ -241,7 +245,19 @@ async fn round_trip_check(engine: &Engine) -> Outcome {
     .await;
     let (problems, said) = places.drop_all(ran).await?;
     let passed = problems.is_empty();
-    Ok((passed, said.join("; "), if passed { "every trip ended where it started".into() } else { problems.into_iter().take(8).collect::<Vec<_>>().join("; ") }))
+    Ok((
+        passed,
+        said.join("; "),
+        if passed {
+            "every trip ended where it started".into()
+        } else {
+            {
+                // The first eight of the scenario's problems, and every teardown failure beside them.
+                let teardown = problems.iter().filter(|p| p.starts_with(NOT_REMOVED)).count();
+                problems.into_iter().take(teardown + 8).collect::<Vec<_>>().join("; ")
+            }
+        },
+    ))
 }
 
 async fn erasure_and_audit(engine: &Engine) -> Outcome {

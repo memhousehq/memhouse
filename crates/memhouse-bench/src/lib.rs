@@ -328,13 +328,18 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
             let kept = match (&keep, report.is_ok() && source.is_none()) {
                 (Some(to), true) => {
                     let from = dir.join("source.db");
-                    // A rename only works within one filesystem; elsewhere the file is copied,
-                    // and the original goes with the directory below.
-                    std::fs::rename(&from, to).or_else(|_| std::fs::copy(&from, to).map(drop)).with_context(|| format!("keeping the source file as {}", to.display()))
+                    // A rename only works within one filesystem; elsewhere the file is copied.
+                    std::fs::rename(&from, to).or_else(|_| std::fs::copy(&from, to).map(drop)).with_context(|| {
+                        format!("keeping the source file as {}; it was left where it was generated, at {} (remove that directory when you have it)", to.display(), from.display())
+                    })
                 }
                 _ => Ok(()),
             };
-            let _ = std::fs::remove_dir_all(&dir);
+            // Gone only when nothing in it is still wanted: a file that could be neither moved
+            // nor copied stays where it is, and the error says where.
+            if kept.is_ok() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             // The report first: the migration ran, whatever became of the kept file.
             if let (Ok(text), Err(_)) = (&report, &kept) {
                 print!("{text}");

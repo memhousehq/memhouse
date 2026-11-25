@@ -535,9 +535,21 @@ carry such writes over; it refuses to finish when it sees one.
 | Lite (a SQLite file) | The command refuses to start while another process has the file open, and holds the file's write lock from the start until after the configuration file is switched: no other process can write to it in that time. |
 | Standard (Postgres) | The command cannot lock out a server. It notes other sessions on the database, refuses to start while a worker holds a live claim on queued work, and compares the source with what it held at the start three times: after the copy, after the verification, and immediately before the configuration file is switched. A difference fails the migration and nothing is switched. |
 
-The comparison is of the number of records by tenant, type and state, the number of vectors,
-the row count of every table that moves, the newest change time of any record, and the last
-audit event. Every write through MemHouse changes at least one of them.
+What is compared, each time:
+
+- the number of records by tenant, type and state, the number of vectors, and the newest
+  change time of any record;
+- the last audit event (its id and hash) and the row count of every table that moves;
+- a digest of every row of every table that moves row by row, except the audit log: policies
+  and policy specs with their activations, principals, API keys, signing keys, links, grants,
+  evaluation suites and runs, the deletion ledger, the intake queue and the extraction jobs.
+  These rows are read again each time, so a row changed in place (a queued job that failed,
+  a key that was revoked) is seen even when no row was added and no audit event written.
+
+Records are not read a second time for this: a record that is added, changed or deleted moves
+a count or the newest change time. The audit log is not digested again either: it only grows,
+and its last event stands for every event before it. The same comparison decides whether a
+migration that completed earlier is still complete when the command is run again.
 
 What remains, for a Postgres source: a write that lands after the last comparison, in the
 moment before the file is rewritten, is not seen. And whatever the source is, a server that is

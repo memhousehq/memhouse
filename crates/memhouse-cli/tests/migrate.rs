@@ -153,6 +153,33 @@ async fn the_next_steps_follow_what_the_server_would_use() {
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert!(stdout.contains("now names the target") && stdout.contains("do not start it yet") && stdout.contains("MEMHOUSE_DATABASE_URL"), "{stdout}");
     assert!(!stdout.contains("no longer used") && !stdout.contains("Start the server again"), "{stdout}");
+
+    // The other way round: the file names a third database and is left alone, and the
+    // environment names the target. The server would open the target: that is a cutover, with
+    // a word about the file.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let (source, config) = installation(&home).await;
+    let mut cfg = Config::load_file(Some(&config)).unwrap();
+    cfg.database.url = format!("sqlite:{}", home.join("third.db").display());
+    cfg.save(Some(&config)).unwrap();
+    let original = std::fs::read(&config).unwrap();
+    let to = format!("sqlite:{}", home.join("moved.db").display());
+    let out = Command::new(env!("CARGO_BIN_EXE_memhouse"))
+        .args(["migrate", "--from", &format!("sqlite:{}", source.display()), "--to", &to, "--yes"])
+        .env("MEMHOUSE_HOME", &home)
+        .env("MEMHOUSE_DATABASE_URL", &to)
+        .env_remove("MEMHOUSE_CONFIG")
+        .env_remove("DATABASE_URL")
+        .env_remove("MEMHOUSE_MIGRATE_FROM")
+        .env_remove("MEMHOUSE_MIGRATE_TO")
+        .output()
+        .expect("run memhouse");
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(std::fs::read(&config).unwrap(), original, "a file that names another database is left alone");
+    assert!(stdout.contains("names another database") && stdout.contains("Start the server again") && stdout.contains("no longer used"), "{stdout}");
+    assert!(stdout.contains("named by the environment") && !stdout.contains("do not start it yet"), "{stdout}");
 }
 
 #[tokio::test]
@@ -179,6 +206,40 @@ async fn a_source_written_to_after_its_migration_is_not_switched_away_from() {
         store.audit("agent-1", "memory.admit", "acme", Some("user:ada"), None, serde_json::json!({})).await.unwrap();
     }
     // A rerun that would switch the file: refused, and the file is as it was.
+    let err = format!("{:#}", run(&request(Some(config.clone()))).await.unwrap_err());
+    assert!(err.contains("the source has changed since"), "{err}");
+    assert_eq!(std::fs::read(&config).unwrap(), original);
+    let beside: Vec<_> = std::fs::read_dir(&home).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().contains("before-migrate")).collect();
+    assert!(beside.is_empty(), "a backup of a configuration that was not switched");
+}
+
+#[tokio::test]
+async fn a_queue_change_without_an_audit_event_after_a_migration_refuses_the_switch() {
+    use memhouse_server::migrate::{endpoint, run, Request, Switch};
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let (source, config) = installation(&home).await;
+    let original = std::fs::read(&config).unwrap();
+    let request = |config_path| Request {
+        from: endpoint(&format!("sqlite:{}", source.display())).unwrap(),
+        to: endpoint(&format!("sqlite:{}", home.join("moved.db").display())).unwrap(),
+        cfg: Config::load_file(Some(&config)).unwrap(),
+        config_path,
+        progress: None,
+    };
+    let (report, switch) = run(&request(None)).await.unwrap();
+    assert!(report.ran && switch == Switch::NotAsked);
+    // A worker on the source gives up on a queued job: one row changes in place. No row is
+    // added, no record changes, no audit event is written.
+    {
+        let store = SqliteStore::open(&source, PREFIX).unwrap();
+        store.migrate(DIM, EMBEDDER).await.unwrap();
+        let events = store.audit_verify().await.unwrap();
+        let job = store.enrich_claim_for("acme", "user:ada", 1, 0).await.unwrap().remove(0);
+        store.enrich_fail(job.id, "the model is down", 1).await.unwrap();
+        assert_eq!(store.audit_verify().await.unwrap(), events);
+        assert_eq!(store.enrich_status("acme", None).await.unwrap().pending, 0);
+    }
     let err = format!("{:#}", run(&request(Some(config.clone()))).await.unwrap_err());
     assert!(err.contains("the source has changed since"), "{err}");
     assert_eq!(std::fs::read(&config).unwrap(), original);
