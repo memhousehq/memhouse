@@ -192,21 +192,104 @@ async fn a_restore_refuses_a_changed_snapshot_and_an_unknown_deletion() {
     assert!(e.contains("does not match its manifest") && e.contains(&manifest.snapshot.sha256), "{e}");
 }
 
+/// An erasure missing from a snapshot's ledger was made after the snapshot, so it takes all the
+/// snapshot holds of the subject or tenant, whatever time a record carries: one imported with a
+/// `created_at` ahead of the clock is dated after the erasure and must still go. What is written
+/// after the erasure is not in the snapshot; a later backup has it, and knows the erasure.
 #[tokio::test]
-async fn a_deletion_reapplied_keeps_what_was_written_after_it() {
+async fn a_restore_reapplies_an_erasure_to_records_dated_after_it() {
+    const OTHER: &str = "globex";
     let home = tempfile::tempdir().unwrap();
-    let store = open(&home.path().join("memhouse.db")).await;
-    let old = record("user:bo", "Bo is allergic to walnuts");
-    store.insert(std::slice::from_ref(&old)).await.unwrap();
-    let erased_at = Utc::now() + Duration::milliseconds(5);
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let new = record("user:bo", "Bo signed up again");
-    store.insert(std::slice::from_ref(&new)).await.unwrap();
-    let erasure = LedgerEntry { at: erased_at, tenant: T.into(), subject: Some("user:bo".into()), memory_id: None, scope: "subject".into(), actor: "dpo".into() };
-    let r = store.apply_ledger(&[erasure], "cli").unwrap();
-    assert_eq!((r.applied, r.records_removed), (1, 1));
-    assert!(store.get(T, old.memory.id).await.unwrap().is_none());
-    assert!(store.get(T, new.memory.id).await.unwrap().is_some());
+    let db = home.path().join("memhouse.db");
+    let store = open(&db).await;
+    let ahead = |subject: &str, content: &str, tenant: &str| {
+        let mut n = record(subject, content);
+        n.memory.tenant = tenant.into();
+        n.memory.created_at = Utc::now() + Duration::days(1);
+        n
+    };
+    let (old, dated_ahead) = (record("user:bo", "Bo is allergic to walnuts"), ahead("user:bo", "Bo's address, imported with a time ahead of the clock", T));
+    let (theirs, bystander) = (ahead("user:cy", "Cy's phone number, dated ahead", OTHER), record("user:di", "Di likes tea"));
+    store.insert(&[old.clone(), dated_ahead.clone(), theirs.clone(), bystander.clone()]).await.unwrap();
+    let take = |name: &str| {
+        let (store, dir) = (store.clone(), home.path().join(name));
+        async move {
+            let (snapshot, manifest) = backup::create(&store, &dir, "test").await.unwrap();
+            drop(snapshot);
+            manifest.write(&dir).unwrap();
+            manifest.verified_snapshot(&dir).unwrap()
+        }
+    };
+    let before = take("before").await;
+
+    // After the backup: the subject and the other tenant are erased, and the subject signs up again.
+    assert_eq!(store.delete_subject(T, "user:bo", "dpo", true).await.unwrap(), 2);
+    assert_eq!(store.delete_tenant(OTHER, "dpo").await.unwrap(), 1);
+    let again = record("user:bo", "Bo signed up again");
+    store.insert(std::slice::from_ref(&again)).await.unwrap();
+    let after = take("after").await;
+    let ledger = store.ledger().unwrap();
+    drop(store);
+
+    // The backup from before the erasures: both come back applied, the records dated ahead too.
+    let r = backup::restore(&before, &db, &ledger, "cli", T, json!({})).await.unwrap();
+    assert_eq!(r.ledger.records_removed, 3, "{:?}", r.ledger);
+    let store = open(&db).await;
+    assert_eq!(ids(&store).await, [bystander.memory.id]);
+    assert!(store.get(OTHER, theirs.memory.id).await.unwrap().is_none(), "a record dated after its tenant's erasure came back");
+    drop(store);
+
+    // The backup from after them knows both: what the subject wrote since is kept.
+    let r = backup::restore(&after, &db, &ledger, "cli", T, json!({})).await.unwrap();
+    assert_eq!((r.ledger.applied, r.ledger.records_removed), (0, 0));
+    let store = open(&db).await;
+    let mut kept = [bystander.memory.id, again.memory.id];
+    kept.sort();
+    assert_eq!(ids(&store).await, kept);
+}
+
+/// A record still queued in the snapshot, written after the backup and then purged by
+/// retention: the restored queue must not write it again.
+#[tokio::test]
+async fn a_restore_does_not_write_again_a_queued_record_that_retention_purged() {
+    let home = tempfile::tempdir().unwrap();
+    let db = home.path().join("memhouse.db");
+    let dir = home.path().join("backup");
+    let store = open(&db).await;
+    let (purged, kept) = (record("user:ada", "Ada's one-time code"), record("user:ada", "Ada likes tea"));
+    let pending =
+        |n: &NewMemory| PendingRecord { content_hash: n.content_hash.clone(), memory: n.memory.clone(), redactions: vec![], focus: None, structured: None, code_refs: vec![] };
+    let proposal = Proposal {
+        id: Uuid::now_v7(),
+        tenant: T.into(),
+        subject: "user:ada".into(),
+        actor: "agent".into(),
+        user: None,
+        source: "test".into(),
+        op: Op::Remember,
+        entry: Entry::Commit,
+        records: vec![pending(&purged), pending(&kept)],
+        session_id: None,
+        enqueued_at: Utc::now(),
+    };
+    store.enqueue(&proposal).await.unwrap();
+    let (snapshot, manifest) = backup::create(&store, &dir, "test").await.unwrap();
+    drop(snapshot);
+    manifest.write(&dir).unwrap();
+
+    // What the ledger of the live store says once the worker has written the record and
+    // retention has purged it: one `retention` row naming it.
+    let ledger =
+        [LedgerEntry { at: Utc::now(), tenant: T.into(), subject: Some("user:ada".into()), memory_id: Some(purged.memory.id), scope: "retention".into(), actor: "system".into() }];
+    drop(store);
+
+    let from = manifest.verified_snapshot(&dir).unwrap();
+    let r = backup::restore(&from, &db, &ledger, "cli", T, json!({})).await.unwrap();
+    assert_eq!((r.ledger.applied, r.ledger.records_removed), (1, 0));
+    let store = open(&db).await;
+    assert!(store.pending(T, purged.memory.id).await.unwrap().is_none(), "a record purged by retention is queued again");
+    let claimed = store.claim(5, 60, Some((T, "user:ada"))).await.unwrap();
+    assert_eq!(claimed[0].proposal.records.iter().map(|r| r.memory.id).collect::<Vec<_>>(), [kept.memory.id]);
 }
 
 /// TR-WF-03: a deletion is re-applied to the record it names wherever the snapshot holds it:

@@ -1679,6 +1679,21 @@ which is named.
     database. Declined, with reasons on the threads: fencing queue and job updates by attempt
     on both stores, a model revision in the embedding identity, unique scratch database names,
     and a rule for writable parent directories (documented as a limit instead).
+  - **Review fixes, second round (2026-11-25, pull request 34).** A cached extraction answer
+    is stored together with its key on the job, in one transaction, so an erasure finds it at
+    any moment and an answer that returns after the deletion is not stored (both stores; a job
+    now records the key of every model that read it). A restore re-applies a purge by
+    retention to queued records too, and re-applies an erasure of a subject or tenant to
+    everything the snapshot holds, with no cutoff by time (a backup of a copy written
+    elsewhere therefore loses what the copy wrote about an erased subject). The database file
+    and its directory are created with their final modes; a failed flush of a parent
+    directory is an error. `memhouse up` takes the profile from the configuration file and
+    refuses an environment URL of the other profile; a Lite benchmark never uses the
+    configured file; `memhouse doctor` reports a model as verified only when every file it
+    loaded has a checksum; attribute matching compares an integer and a float exactly. The
+    directory checks are Unix only, which the exception and the Lite page now say. Declined:
+    rebuilding source references written by earlier Lite builds (there are none), and
+    batching a per-record query (an optimisation).
   - **Decided by the user (2026-11-25).** Lite ships with the documented exception for the
     bundled SQLite's advisory (below), with its two stated limits.
   - **For the user to decide.** (1) The bundled SQLite has a known advisory (RUSTSEC-2026-0459,

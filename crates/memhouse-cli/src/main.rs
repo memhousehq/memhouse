@@ -397,21 +397,31 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             // run must not end up in the file.
             let mut cfg = if path_or_default.exists() { Config::load_file(Some(&path_or_default))? } else { Config::default() };
             let fresh = !path_or_default.exists();
-            // Which database this run uses is still the environment's choice, as for every command.
-            let is_lite = memhouse_server::sqlite_path(&Config::env_database_url().unwrap_or_else(|| cfg.database.url.clone())).is_some();
+            // Whether this installation is Lite is what its file says: a URL the environment
+            // gives for one run does not change the profile.
+            let is_lite = memhouse_server::sqlite_path(&cfg.database.url).is_some();
             anyhow::ensure!(
                 !lite || fresh || is_lite,
                 "{} already configures a Postgres database; `memhouse up --lite` only sets up a new installation",
                 path_or_default.display()
             );
+            // Lite: the database is one file beside the configuration.
+            let db = memhouse_core::config::home_dir().join("memhouse.db");
             if lite && fresh {
-                // Lite: the database is one file beside the configuration. One model session
-                // keeps the embedder within its memory budget (ADR 0002).
-                let db = memhouse_core::config::home_dir().join("memhouse.db");
+                cfg.database.url = format!("sqlite:{}", db.display());
+            }
+            // A database URL in the environment that names the other profile, or another file
+            // than a Lite installation's, would send the schema preparation below to a database
+            // the saved configuration does not name: refused before anything is started,
+            // written or opened.
+            if let Some(conflict) = up::env_conflict(&cfg.database.url, Config::env_database_url().as_deref()) {
+                anyhow::bail!(conflict);
+            }
+            if lite && fresh {
+                // One model session keeps the embedder within its memory budget (ADR 0002).
                 if db.exists() {
                     eprintln!("Using the database that is already at {} (its memories are kept; this configuration gets a new API key).", db.display());
                 }
-                cfg.database.url = format!("sqlite:{}", db.display());
                 cfg.database.container = None;
                 cfg.embedding.sessions = 1;
                 cfg.server.api_keys = vec![format!("mh_{}", random_token(32))];
@@ -434,18 +444,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if let Some(t) = template {
                 let t = templates::find(&t).ok_or_else(|| anyhow::anyhow!("unknown template '{t}'"))?;
                 templates::apply(&mut cfg, t);
-            }
-            // A Lite installation is its own file. A database URL in the environment would send
-            // the schema preparation below to another database: refused before anything is
-            // written or opened.
-            if memhouse_server::sqlite_path(&cfg.database.url).is_some() {
-                if let Some(other) = Config::env_database_url().filter(|u| *u != cfg.database.url) {
-                    anyhow::bail!(
-                        "MEMHOUSE_DATABASE_URL or DATABASE_URL is set to another database ({}), but this installation uses {}. Unset the variable and run `memhouse up` again; nothing was changed",
-                        memhouse_store_postgres::redact_url(&other),
-                        cfg.database.url
-                    );
-                }
             }
             let path = cfg.save(Some(&path_or_default))?;
             eprintln!("Loading the embedding model ({}) and preparing the schema ...", cfg.embedding.model);

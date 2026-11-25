@@ -285,6 +285,15 @@ pub trait Store: Send + Sync {
     /// Content-addressed cache of extraction answers (purged with the subject on erasure).
     async fn llm_cache_get(&self, key: &str) -> anyhow::Result<Option<String>>;
     async fn llm_cache_put(&self, key: &str, model: &str, text: &str) -> anyhow::Result<()>;
+    /// Cache the answer to an extraction of job `job` and record its key on the job (which may
+    /// hold several, comma-separated: one per model that read the session), in one transaction:
+    /// the erasure that removes the job with any of its rounds then finds the entry whenever
+    /// it runs, also between the model call and the end of the job. Returns false, storing
+    /// nothing, when the job is gone: its rounds were deleted during the call, and nothing
+    /// derived from them is kept (TR-WF-01). The default caches without that guarantee.
+    async fn llm_cache_put_for(&self, _job: i64, key: &str, model: &str, text: &str) -> anyhow::Result<bool> {
+        self.llm_cache_put(key, model, text).await.map(|_| true)
+    }
 
     // Schema v2: the rest of a logical record, links, policies and request keys.
     /// Full records for an export, in id order after `after` (TR-CORE-03).

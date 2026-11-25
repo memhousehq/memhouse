@@ -35,19 +35,20 @@ version = 2
 # Unmaintained or yanked crates are reported; vulnerabilities fail the build.
 unmaintained = "workspace"
 yanked = "warn"
-# Exception for RUSTSEC-2026-0459, FIRST REVIEWED 12 November 2026 FOR A NARROWER CASE AND
-# WIDENED IN G16: THE WIDER CASE NEEDS THE MAINTAINER'S REVIEW (it is called out in that pull
-# request). SQLite before 3.54.0 can return stale memory when it opens a database with a
+# Exception for RUSTSEC-2026-0459, first reviewed 12 November 2026 for a narrower case and
+# widened in G16 (the wider case was accepted on 25 November 2026, below). SQLite before 3.54.0 can return stale memory when it opens a database with a
 # crafted `-wal` file. Until G16 `libsqlite3-sys` reached the graph only through the optional
 # `spike` examples, which no shipped binary enabled. Since G16 the Lite profile's store
 # (memhouse-store-sqlite) links the bundled SQLite into the `memhouse` binary.
-# What limits the exposure: `SqliteStore::open` refuses, on every open, a database whose
-# directory is not owned by the running user or is writable by anyone else, so no other local
-# user can place a `-wal` beside the database; and MemHouse creates that directory with mode
-# 0700 and the file with 0600. What it does not cover: a database directory copied from an
-# untrusted source (a backup or an archive someone else prepared) and then opened; and a
-# database directory under a parent that another user can write to, who could swap the
-# directory between the check and the open (the check looks at the directory itself only).
+# What limits the exposure, ON UNIX ONLY: `SqliteStore::open` refuses, on every open, a
+# database whose directory is not owned by the running user or is writable by anyone else, so
+# no other local user can place a `-wal` beside the database; and MemHouse creates that
+# directory with mode 0700 and the file with 0600. What it does not cover: any other platform
+# (Windows has no such check: the directory's access list is the operator's to set); a database
+# directory copied from an untrusted source (a backup or an archive someone else prepared) and
+# then opened; and a database directory under a parent that another user can write to, who
+# could swap the directory between the check and the open (the check looks at the directory
+# itself only).
 # ACCEPTED BY THE MAINTAINER ON 25 November 2026 for the Lite profile, with these limits.
 # The fixed release (libsqlite3-sys 0.39) can't be selected while sqlx 0.9 holds
 # `libsqlite3-sys` below 0.38. Remove this entry as soon as sqlx allows it.

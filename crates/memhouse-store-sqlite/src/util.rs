@@ -130,12 +130,21 @@ pub(crate) fn json_contains(a: &serde_json::Value, b: &serde_json::Value) -> boo
         // An array contains a scalar that is one of its elements (top level only in Postgres;
         // attributes are objects, so the difference is never reached).
         (Array(_), _) | (Object(_), _) | (_, Array(_)) | (_, Object(_)) => false,
-        // Numbers by value, as `jsonb` compares them: 1 equals 1.0. Two integers are compared
-        // exactly, so integers beyond a float's precision stay distinct.
-        (Number(x), Number(y)) => match (x.as_i64().map(i128::from).or(x.as_u64().map(i128::from)), y.as_i64().map(i128::from).or(y.as_u64().map(i128::from))) {
-            (Some(i), Some(j)) => i == j,
-            _ => x.as_f64() == y.as_f64(),
-        },
+        // Numbers by value, as `jsonb` compares them: 1 equals 1.0. An integer is never rounded
+        // to a float for it, so integers beyond a float's precision stay distinct from each
+        // other and from the float next to them.
+        (Number(x), Number(y)) => {
+            let int = |n: &serde_json::Number| n.as_i64().map(i128::from).or(n.as_u64().map(i128::from));
+            // The integer a float is exactly, if it is one. Floats at or beyond 2^127 are no
+            // integer JSON holds here (the cast would saturate).
+            let whole = |f: f64| (f.fract() == 0.0 && f.abs() < 1.7e38).then_some(f as i128);
+            match (int(x), int(y)) {
+                (Some(i), Some(j)) => i == j,
+                (Some(i), None) => y.as_f64().and_then(whole) == Some(i),
+                (None, Some(j)) => x.as_f64().and_then(whole) == Some(j),
+                (None, None) => x.as_f64() == y.as_f64(),
+            }
+        }
         _ => a == b,
     }
 }
@@ -158,6 +167,14 @@ mod tests {
         assert!(json_contains(&a, &json!({ "geo": { "lat": 41.0 } })) && json_contains(&json!({ "n": 2.0 }), &json!({ "n": 2 })));
         assert!(!json_contains(&a, &json!({ "geo": { "lat": 41.5 } })) && !json_contains(&a, &json!({ "geo": { "lat": "41" } })));
         assert!(!json_contains(&json!({ "n": 9007199254740993u64 }), &json!({ "n": 9007199254740992u64 })));
+        // An integer against a float: equal only when the float is exactly that integer.
+        // 9007199254740993 rounds to the float 9007199254740992.0, and is not equal to it.
+        let (odd, even) = (json!({ "n": 9007199254740993u64 }), json!({ "n": 9007199254740992u64 }));
+        let float = json!({ "n": 9007199254740992.0 });
+        assert!(!json_contains(&odd, &float) && !json_contains(&float, &odd));
+        assert!(json_contains(&even, &float) && json_contains(&float, &even));
+        assert!(!json_contains(&json!({ "n": u64::MAX }), &json!({ "n": 1.8446744073709552e19 })) && json_contains(&json!({ "n": -3 }), &json!({ "n": -3.0 })));
+        assert!(!json_contains(&json!({ "n": 0 }), &json!({ "n": 1e300 })));
     }
 
     #[test]

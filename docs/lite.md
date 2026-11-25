@@ -63,12 +63,13 @@ The design is recorded in [ADR 0002](adr/0002-lite-embedded-store.md) and
 ## The database file
 
 - The file is created readable and writable by its owner only (mode 0600).
-- **Its directory must be yours alone.** The store refuses to open a database in a directory
+- **Its directory must be yours alone.** On Linux and macOS the store refuses to open a database in a directory
   that another user owns or that others can write to, and says how to fix it (`chmod 700`).
   SQLite trusts the journal files it finds beside a database, so nobody else may be able to
   put one there. Keep it under directories that only you can write to as well: the check looks
   at the database's own directory, not at its parents. For the same reason, do not open a
-  database directory you were given by someone you do not trust: the bundled SQLite has a known flaw in reading a crafted journal
+  database directory you were given by someone you do not trust, and on Windows (where there
+  is no such check) set the directory's access yourself: the bundled SQLite has a known flaw in reading a crafted journal
   file (RUSTSEC-2026-0459; the fixed version cannot be used yet, see `deny.toml`).
 - A second process on the same file waits up to 10 seconds for the writer.
 - Erased content can remain in the file's free pages until SQLite reuses them. Old backups
@@ -107,7 +108,11 @@ Where there is no current database (another machine, a lost file), the restore h
 of its own: export the ledger from the live installation with
 `memhouse backup <dir> --ledger-only` and pass it with `--ledger <file>`. Without it, the
 restore warns that what was deleted after the backup is back. A re-applied erasure of a subject
-or tenant removes what existed at its time; what was written again afterwards is kept. Each re-applied
+or tenant removes everything the snapshot holds of it: the erasure was made after the backup, so
+all of that was written before it, whatever time a record carries. That holds for a backup of
+the same installation. A backup of a copy that went on being written elsewhere loses what the
+copy wrote about an erased subject, too: the restore cannot tell it from the erased data, and
+removes it. Each re-applied
 deletion is audited (`deletion.reapply`), with `backup.create` and `backup.restore` for the two
 commands.
 

@@ -14,7 +14,7 @@
 
 use anyhow::Context;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -154,6 +154,31 @@ impl Expect {
             None => format!("{repo}: {} file checksums {by}, no revision", self.sha256.len()),
         })
     }
+
+    /// `describe` for a model whose loader reads `files`: `Ok` only when each of them has a
+    /// checksum. A table that covers some of the files leaves the others unchecked, and the
+    /// line names them.
+    pub fn describe_loaded(&self, repo: &str, files: &[String]) -> Result<String, String> {
+        let line = self.describe(repo)?;
+        let unchecked: Vec<&str> = files.iter().filter(|f| !self.sha256.contains_key(*f)).map(String::as_str).collect();
+        if unchecked.is_empty() {
+            return Ok(line);
+        }
+        Err(format!(
+            "{line}, but {} of the {} files it loads have no checksum and are used as downloaded, unchecked: {}. Add them to `sha256` in the configuration",
+            unchecked.len(),
+            files.len(),
+            unchecked.join(", ")
+        ))
+    }
+}
+
+/// The files this process has asked each repository for: what its models load.
+static LOADED: Mutex<Option<HashMap<String, BTreeSet<String>>>> = Mutex::new(None);
+
+/// The files of `repo` this process has loaded so far (none before its model is built).
+pub fn loaded(repo: &str) -> Vec<String> {
+    LOADED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(repo)).into_iter().flatten().cloned().collect()
 }
 
 pub fn sha256_file(path: &Path) -> anyhow::Result<String> {
@@ -226,6 +251,7 @@ impl Repo {
     /// HTTP client runs on a thread of its own).
     pub fn get(&self, files: &[&str]) -> anyhow::Result<Vec<PathBuf>> {
         self.warn_unpinned(files);
+        LOADED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).entry(self.model.clone()).or_default().extend(files.iter().map(|f| f.to_string()));
         // A pinned model never follows `refs/main`: a cache of another commit is not its files.
         let rev = match &self.expect.revision {
             Some(r) => Some(r.clone()),
@@ -456,6 +482,8 @@ mod tests {
         let pinned = [("model.onnx", sha(b"the model")), ("config.json", sha(b"{}"))];
         let good = repo(&root, NOWHERE, Some("rev1"), &pinned);
         assert_eq!(good.get(&["model.onnx", "config.json"]).unwrap(), [snapshot.join("model.onnx"), snapshot.join("config.json")]);
+        // What the model loaded is known to `doctor`, which reports the files without a checksum.
+        assert!(["model.onnx", "config.json"].iter().all(|f| loaded("org/m").iter().any(|l| l == f)));
 
         // Checked once per process: the same file is not hashed again by the next session or command.
         assert!(VERIFIED.lock().unwrap().as_ref().unwrap().contains(&(snapshot.join("model.onnx"), sha(b"the model"))));
@@ -516,6 +544,13 @@ mod tests {
         let moved = Expect::of(pin.repo, Some("0123456789abcdef0123456789abcdef01234567"), &BTreeMap::from([("config.json".to_string(), "AB".repeat(32))]));
         assert_eq!(moved.sha256, BTreeMap::from([("config.json".to_string(), "ab".repeat(32))]));
         assert!(moved.configured && moved.describe(pin.repo).unwrap().contains("by the configuration"));
+        // Its one checksum covers one of the files the model loads: the others are named, and
+        // the model is not reported as verified. With every file covered it is.
+        let files = |names: &[&str]| names.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+        let partly = moved.describe_loaded(pin.repo, &files(&["onnx/model.onnx", "config.json", "tokenizer.json"])).unwrap_err();
+        assert!(partly.contains("2 of the 3 files") && partly.contains("onnx/model.onnx, tokenizer.json") && !partly.contains("config.json,"), "{partly}");
+        assert_eq!(moved.describe_loaded(pin.repo, &files(&["config.json"])), moved.describe(pin.repo));
+        assert!(built_in.describe_loaded(pin.repo, &pin.files.iter().map(|(f, _)| f.to_string()).collect::<Vec<_>>()).is_ok());
         // A revision alone fetches that commit but checks nothing: not reported as verified.
         let unchecked = Expect::of(pin.repo, Some("0123456789abcdef0123456789abcdef01234567"), &none);
         assert!(unchecked.pinned() && unchecked.describe(pin.repo).unwrap_err().contains("without checksums"));

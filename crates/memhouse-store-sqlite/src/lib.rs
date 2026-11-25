@@ -60,16 +60,33 @@ pub struct SqliteStore {
 /// trustworthy as the directory that can hold its journal.
 pub fn private_dir(dir: &Path) -> anyhow::Result<()> {
     if !dir.exists() {
-        std::fs::create_dir_all(dir).map_err(|e| anyhow::anyhow!("cannot create the database directory {}: {e}", dir.display()))?;
+        // The levels that are missing, innermost first.
+        let mut missing = vec![];
+        let mut at = Some(dir);
+        while let Some(level) = at.filter(|l| !l.as_os_str().is_empty() && !l.exists()) {
+            missing.push(level);
+            at = level.parent();
+        }
+        for level in missing.into_iter().rev() {
+            let mut make = std::fs::DirBuilder::new();
+            // The database's own directory is closed to others from the moment it exists, not
+            // narrowed afterwards; the directories above it are made as any other.
+            #[cfg(unix)]
+            if level == dir {
+                std::os::unix::fs::DirBuilderExt::mode(&mut make, 0o700);
+            }
+            match make.create(level) {
+                Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => anyhow::bail!("cannot create the database directory {}: {e}", level.display()),
+                _ => {}
+            }
+            // The new entry in the directory above (the current one for a relative path), so
+            // what is written below it next is not lost with it in a power failure.
+            sync_dir(level.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))?;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-        }
-        // The new directory's entry, so what is written into it next is not lost with it in a
-        // power failure. A parent this user cannot open for reading is left to the OS.
-        if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
-            let _ = sync_dir(parent);
         }
     }
     #[cfg(unix)]
@@ -154,8 +171,15 @@ impl SqliteStore {
                 &path.display().to_string(),
             )?;
         }
+        // A new file is the user's alone from the moment it exists: SQLite would create it with
+        // the default mode, readable by others until it is narrowed below.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(path).map_err(|e| anyhow::anyhow!("cannot create {}: {e}", path.display()))?;
+        }
         let conn = Connection::open(path).map_err(|e| anyhow::anyhow!("cannot open the SQLite database {}: {e}", path.display()))?;
-        // The memories are the user's alone: no other account reads the file.
+        // The memories are the user's alone: no other account reads a file that was already there.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -296,4 +320,31 @@ fn meta(c: &Connection, key: &str) -> anyhow::Result<Option<String>> {
 /// of it: two tenants' subjects of one name never share a token.
 fn subject_token(tenant: &str, subject: &str) -> String {
     format!("s{}0", &memhouse_core::engine::content_hash(&format!("{tenant}\u{1f}{subject}"))[..24])
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(p: &Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    // What a test cannot show is the moment in between: both are made with their final mode,
+    // where they used to be made with the default one and narrowed afterwards.
+    #[test]
+    fn a_new_database_and_the_directory_made_for_it_are_private() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("a/b/data");
+        private_dir(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        let db = dir.join("memhouse.db");
+        let store = SqliteStore::open(&db, "").unwrap();
+        assert_eq!(mode(&db), 0o600);
+        drop(store);
+        // A directory another user may write to is still refused.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(SqliteStore::open(&db, "").err().unwrap().to_string().contains("can be written by other users"));
+    }
 }

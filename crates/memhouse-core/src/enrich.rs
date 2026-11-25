@@ -432,7 +432,12 @@ impl Engine {
         let cfg = &self.cfg.enrich;
         let model = chat.id();
         let key = cache_key(&model, prompt);
+        // An erasure removes a job with its rounds, and the cached answers the job names. A job
+        // that is gone has no rounds left to read: its answer is neither kept nor used.
+        const GONE: &str = "the session's rounds were deleted while it was being read: nothing extracted from them is kept";
         if let Some(a) = self.store.llm_cache_get(&key).await? {
+            // The answer an earlier job left is this job's too from here on.
+            anyhow::ensure!(self.store.llm_cache_put_for(job.id, &key, &model, &a).await?, GONE);
             outcome.cached = true;
             return Ok((key, a));
         }
@@ -471,7 +476,7 @@ impl Engine {
         outcome.calls += 1;
         // Cache only answers that parse, so a malformed one is retried next time.
         parse(&a)?;
-        self.store.llm_cache_put(&key, &model, &a).await?;
+        anyhow::ensure!(self.store.llm_cache_put_for(job.id, &key, &model, &a).await?, GONE);
         Ok((key, a))
     }
 

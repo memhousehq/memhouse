@@ -278,28 +278,27 @@ impl SqliteStore {
                 rep.known += 1;
                 continue;
             }
-            // An erasure of a subject or tenant removes only what existed when it was made: a
-            // subject written again after its erasure keeps the new records.
-            let upto = Some(key.0);
+            // No cutoff by time. A deletion this database's ledger does not have was made after
+            // the snapshot was taken, so everything the snapshot holds was written before it,
+            // whatever a record's `created_at` says (an import keeps the file's times).
             let need = |v: Option<&str>, what: &str| v.map(String::from).ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a {what}", e.scope, e.at.to_rfc3339()));
             let removed = match e.scope.as_str() {
                 "memory" | "retention" => {
                     let id = e.memory_id.ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a memory id", e.scope, e.at.to_rfc3339()))?;
-                    // An id names one record, so the row is removed whatever its `created_at` says
-                    // (an import keeps the file's times, and a clock can step back): no cutoff.
                     // Retention keeps what was promoted from a purged record; a deletion does not.
                     let removed = self.delete_in(&tx, &e.tenant, id, e.scope == "memory")?.map_or(0, |(_, n)| n);
+                    // The snapshot may hold the record still queued (the worker wrote it only
+                    // after the backup, and it was deleted or purged after that): it leaves its
+                    // proposal, or the restored queue would write it again.
+                    crate::intake::drop_queued_record(&tx, &e.tenant, id)?;
                     if e.scope == "memory" {
-                        // The snapshot may hold the record still queued (the worker had not
-                        // written it yet): it leaves its proposal, with what was promoted from it.
-                        crate::intake::drop_queued_record(&tx, &e.tenant, id)?;
                         crate::intake::drop_promotions_of(&tx, &e.tenant, &HashSet::from([id]))?;
                     }
                     removed
                 }
-                "subject" => self.erase_subject(&tx, &e.tenant, &need(e.subject.as_deref(), "subject")?, true, upto)?,
-                "subject-reset" => self.erase_subject(&tx, &e.tenant, &need(e.subject.as_deref(), "subject")?, false, upto)?,
-                "tenant" => self.erase_tenant(&tx, &e.tenant, None, upto)?,
+                "subject" => self.erase_subject(&tx, &e.tenant, &need(e.subject.as_deref(), "subject")?, true)?,
+                "subject-reset" => self.erase_subject(&tx, &e.tenant, &need(e.subject.as_deref(), "subject")?, false)?,
+                "tenant" => self.erase_tenant(&tx, &e.tenant, None)?,
                 // Refused, not skipped: an unknown kind of deletion left out would be an erasure undone.
                 other => anyhow::bail!("unknown deletion-ledger scope {other:?} (row of {}); nothing was applied", e.at.to_rfc3339()),
             };
@@ -375,8 +374,10 @@ pub struct Restored {
 
 /// Put the snapshot file `snapshot` in place as the database `db`, with every deletion of
 /// `ledger` it does not know applied first. The work happens on a copy beside `db`, which
-/// replaces `db` only once it is complete: a restore that fails leaves `db` as it was. Nothing
-/// may have `db` open. `detail` goes into the `backup.restore` audit event of `tenant`.
+/// replaces `db` only once it is complete: a restore that fails before that move leaves `db`
+/// as it was. After the move only the flush of the directory can fail: `db` is then the
+/// restored database, and the error says so. Nothing may have `db` open. `detail` goes into the
+/// `backup.restore` audit event of `tenant`.
 pub async fn restore(snapshot: &Path, db: &Path, ledger: &[LedgerEntry], actor: &str, tenant: &str, detail: serde_json::Value) -> anyhow::Result<Restored> {
     let dir = db.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     crate::private_dir(dir)?;

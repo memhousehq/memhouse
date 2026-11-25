@@ -2028,7 +2028,7 @@ impl Store for PgStore {
         .await?;
         sqlx::query(
             "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND round_ids @> ARRAY[$2]::uuid[] RETURNING cache_key) \
-             DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key",
+             DELETE FROM mh_llm_cache c USING j WHERE c.key = ANY(string_to_array(j.cache_key, ','))",
         )
         .bind(tenant)
         .bind(id)
@@ -2070,7 +2070,7 @@ impl Store for PgStore {
         if purge_cache {
             sqlx::query(
                 "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND subject = $2 RETURNING cache_key) \
-                 DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key",
+                 DELETE FROM mh_llm_cache c USING j WHERE c.key = ANY(string_to_array(j.cache_key, ','))",
             )
             .bind(tenant)
             .bind(subject)
@@ -2143,7 +2143,7 @@ impl Store for PgStore {
             .await?;
             sqlx::query(
                 "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND round_ids && $2::uuid[] RETURNING cache_key) \
-                 DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key",
+                 DELETE FROM mh_llm_cache c USING j WHERE c.key = ANY(string_to_array(j.cache_key, ','))",
             )
             .bind(tenant)
             .bind(&ids)
@@ -2504,10 +2504,12 @@ impl Store for PgStore {
         sqlx::query("DELETE FROM mh_eval_run WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_recall WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
-        sqlx::query("WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 RETURNING cache_key) DELETE FROM mh_llm_cache c USING j WHERE c.key = j.cache_key")
-            .bind(tenant)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 RETURNING cache_key) DELETE FROM mh_llm_cache c USING j WHERE c.key = ANY(string_to_array(j.cache_key, ','))",
+        )
+        .bind(tenant)
+        .execute(&self.pool)
+        .await?;
         sqlx::query("INSERT INTO mh_deletion_ledger (tenant, scope, actor) VALUES ($1, 'tenant', $2)").bind(tenant).bind(actor).execute(&self.pool).await?;
         Ok(total)
     }
@@ -2595,7 +2597,8 @@ impl Store for PgStore {
     async fn enrich_finish(&self, id: i64, cache_key: Option<&str>, outcome: &EnrichOutcome) -> anyhow::Result<()> {
         // The lag is measured in the database so it is not skewed by the worker's clock.
         sqlx::query(
-            "UPDATE mh_enrich_job SET status = 'done', finished_at = now(), locked_until = NULL, cache_key = $2, \
+            // The keys recorded when the answers were cached stand (there may be more than this one).
+            "UPDATE mh_enrich_job SET status = 'done', finished_at = now(), locked_until = NULL, cache_key = coalesce(cache_key, $2), \
              outcome = jsonb_set($3::jsonb, '{lag_ms}', to_jsonb(extract(epoch FROM now() - enqueued_at) * 1000)) WHERE id = $1",
         )
         .bind(id)
@@ -2666,6 +2669,26 @@ impl Store for PgStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn llm_cache_put_for(&self, job: i64, key: &str, model: &str, text: &str) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        // The job's row is locked from here to the commit: a deletion of any of its rounds
+        // either removed it already (nothing is cached), or waits and then finds this key on it.
+        let job = sqlx::query(
+            "UPDATE mh_enrich_job SET cache_key = CASE WHEN cache_key IS NULL THEN $2 WHEN $2 = ANY(string_to_array(cache_key, ',')) THEN cache_key ELSE cache_key || ',' || $2 END \
+             WHERE id = $1",
+        )
+        .bind(job)
+        .bind(key)
+        .execute(&mut *tx)
+        .await?;
+        if job.rows_affected() == 0 {
+            return Ok(false);
+        }
+        sqlx::query("INSERT INTO mh_llm_cache (key, model, response) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING").bind(key).bind(model).bind(text).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn export_records(&self, tenant: &str, subject: Option<&str>, after: Option<Uuid>, limit: usize) -> anyhow::Result<Vec<RecordLine>> {

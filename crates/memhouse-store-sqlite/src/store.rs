@@ -951,7 +951,8 @@ impl Store for SqliteStore {
         outcome["lag_ms"] = serde_json::json!((now - enqueued) as f64 / 1000.0);
         exec(
             &tx,
-            "UPDATE mh_enrich_job SET status = 'done', finished_at = ?2, locked_until = NULL, cache_key = ?3, outcome = ?4 WHERE id = ?1",
+            // The keys recorded when the answers were cached stand (there may be more than this one).
+            "UPDATE mh_enrich_job SET status = 'done', finished_at = ?2, locked_until = NULL, cache_key = coalesce(cache_key, ?3), outcome = ?4 WHERE id = ?1",
             params![id, now, cache_key, outcome.to_string()],
         )?;
         Ok(tx.commit()?)
@@ -1007,6 +1008,21 @@ impl Store for SqliteStore {
     async fn llm_cache_put(&self, key: &str, model: &str, text: &str) -> anyhow::Result<()> {
         exec(&self.conn(), "INSERT INTO mh_llm_cache (key, model, response, created_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (key) DO NOTHING", params![key, model, text, now()])?;
         Ok(())
+    }
+
+    async fn llm_cache_put_for(&self, job: i64, key: &str, model: &str, text: &str) -> anyhow::Result<bool> {
+        let mut c = self.conn();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // A deletion of any of the job's rounds removed the job: nothing derived from them is cached after it.
+        let Some(known) = first(&tx, "SELECT cache_key FROM mh_enrich_job WHERE id = ?1", [job], |r| Ok(r.get::<_, Option<String>>(0)?))? else { return Ok(false) };
+        let mut keys: Vec<&str> = known.as_deref().map(|k| k.split(',').collect()).unwrap_or_default();
+        if !keys.contains(&key) {
+            keys.push(key);
+            exec(&tx, "UPDATE mh_enrich_job SET cache_key = ?2 WHERE id = ?1", params![job, keys.join(",")])?;
+        }
+        exec(&tx, "INSERT INTO mh_llm_cache (key, model, response, created_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (key) DO NOTHING", params![key, model, text, now()])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     async fn export_records(&self, tenant: &str, subject: Option<&str>, after: Option<Uuid>, limit: usize) -> anyhow::Result<Vec<RecordLine>> {
@@ -1268,7 +1284,7 @@ impl Store for SqliteStore {
     async fn delete_tenant(&self, tenant: &str, actor: &str) -> anyhow::Result<u64> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let total = self.erase_tenant(&tx, tenant, Some(actor), None)?;
+        let total = self.erase_tenant(&tx, tenant, Some(actor))?;
         exec(&tx, "INSERT INTO mh_deletion_ledger (at, tenant, scope, actor) VALUES (?1, ?2, 'tenant', ?3)", params![now(), tenant, actor])?;
         tx.commit()?;
         Ok(total)

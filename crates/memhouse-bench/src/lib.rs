@@ -222,7 +222,10 @@ async fn bench_database(base_url: &str, model: &str) -> anyhow::Result<String> {
     let db = format!("memhouse_bench_{}", slug(model)).chars().take(60).collect::<String>();
     // Lite: a file of its own beside the user's database, in the same private directory.
     if let Some(path) = memhouse_server::sqlite_path(base_url) {
-        return Ok(format!("sqlite:{}", path.with_file_name(format!("{db}.db")).display()));
+        let bench = path.with_file_name(format!("{db}.db"));
+        // The configured file may carry the benchmark's own name: a run must never write into it.
+        anyhow::ensure!(bench != path, "the benchmark database would be the configured database itself ({}); name another file with --database-url", path.display());
+        return Ok(format!("sqlite:{}", bench.display()));
     }
     let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(base_url).await?;
     let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '{db}')"))).fetch_one(&pool).await?;
@@ -616,4 +619,19 @@ fn price(flag: Option<&str>, model: &str) -> anyhow::Result<Option<(f64, f64)>> 
         "gpt-4.1-nano" => Some((0.10, 0.40)),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_lite_benchmark_file_is_never_the_configured_database() {
+        let beside = bench_database("sqlite:/data/memhouse.db", "local_bge-small").await.unwrap();
+        assert_eq!(beside, "sqlite:/data/memhouse_bench_local_bge_small.db");
+        let e = bench_database(&beside, "local_bge-small").await.unwrap_err().to_string();
+        assert!(e.contains("the configured database itself"), "{e}");
+        // Another model's file beside it is still its own.
+        assert_eq!(bench_database(&beside, "local_other").await.unwrap(), "sqlite:/data/memhouse_bench_local_other.db");
+    }
 }

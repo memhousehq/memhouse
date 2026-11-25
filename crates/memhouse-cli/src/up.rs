@@ -137,3 +137,46 @@ pub fn stop(name: &str) -> anyhow::Result<()> {
 pub fn managed(cfg: &Config) -> Option<&str> {
     cfg.database.container.as_deref()
 }
+
+/// Why `memhouse up` must not run with the database URL the environment gives (`env`), when the
+/// installation is `configured`; `None` when it may. Which profile an installation is, and
+/// which file a Lite one is, is what its configuration says: a URL given for one run that
+/// names a SQLite file over a Postgres installation, or anything else over a Lite one, would
+/// set up one database and save the configuration of another. Another Postgres over a
+/// Postgres installation stays the environment's choice, as for every command.
+pub fn env_conflict(configured: &str, env: Option<&str>) -> Option<String> {
+    let other = env.filter(|u| *u != configured)?;
+    if memhouse_server::sqlite_path(configured).is_some() {
+        return Some(format!(
+            "MEMHOUSE_DATABASE_URL or DATABASE_URL is set to another database ({}), but this installation uses {configured}. Unset the variable and run `memhouse up` again; nothing was changed",
+            memhouse_store_postgres::redact_url(other)
+        ));
+    }
+    memhouse_server::sqlite_path(other).is_some().then(|| {
+        format!(
+            "MEMHOUSE_DATABASE_URL or DATABASE_URL names a SQLite file ({other}), but this installation uses Postgres. Unset the variable and run `memhouse up` again \
+             (`memhouse up --lite` sets up a new Lite installation); nothing was changed"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::env_conflict;
+
+    #[test]
+    fn a_database_url_in_the_environment_never_changes_the_profile() {
+        let (pg, lite) = ("postgres://memhouse:pw@localhost:5433/memhouse", "sqlite:/home/ada/.memhouse/memhouse.db");
+        // No override, or the same URL: nothing to refuse.
+        assert_eq!((env_conflict(pg, None), env_conflict(lite, None), env_conflict(lite, Some(lite)), env_conflict(pg, Some(pg))), (None, None, None, None));
+        // A SQLite file over a Postgres installation: it would be saved as Postgres and opened as Lite.
+        let e = env_conflict(pg, Some("sqlite:/tmp/other.db")).unwrap();
+        assert!(e.contains("names a SQLite file (sqlite:/tmp/other.db)") && e.contains("uses Postgres") && !e.contains("pw"), "{e}");
+        // Postgres, or another file, over a Lite installation; a password is not printed.
+        let e = env_conflict(lite, Some(pg)).unwrap();
+        assert!(e.contains("another database") && e.contains(lite) && !e.contains("pw"), "{e}");
+        assert!(env_conflict(lite, Some("sqlite:/tmp/other.db")).is_some());
+        // Another Postgres over a Postgres installation is the environment's choice, as for every command.
+        assert_eq!(env_conflict(pg, Some("postgres://memhouse:pw@db:5432/memhouse")), None);
+    }
+}

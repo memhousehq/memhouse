@@ -405,13 +405,14 @@ impl Embedder for OpenAiEmbedder {
 }
 
 /// How the files of a local model (`local:<repository>`, an embedder's or reranker's id) are
-/// pinned, for `memhouse doctor`: `Ok` with the revision, `Err` when nothing pins them. `None`
+/// pinned, for `memhouse doctor`: `Ok` with the revision when every file the model has loaded
+/// in this process has a checksum, `Err` when nothing pins them or some are unchecked. `None`
 /// for a model that is not local.
 pub fn pin_status(model_id: &str, revision: &Option<String>, sha256: &std::collections::BTreeMap<String, String>) -> Option<Result<String, String>> {
     let repo = model_id.strip_prefix("local:")?;
     #[cfg(feature = "local")]
     {
-        Some(hub::Expect::of(repo, revision.as_deref(), sha256).describe(repo))
+        Some(hub::Expect::of(repo, revision.as_deref(), sha256).describe_loaded(repo, &hub::loaded(repo)))
     }
     #[cfg(not(feature = "local"))]
     {

@@ -19,6 +19,7 @@ const S: &str = "user:ada";
 struct DeletesDuringTheCall {
     store: SqliteStore,
     delete: Mutex<Vec<Uuid>>,
+    prompts: Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -27,6 +28,7 @@ impl ChatModel for DeletesDuringTheCall {
         "test:deletes-during-the-call".into()
     }
     async fn chat(&self, system: &str, user: &str) -> anyhow::Result<(String, LlmUsage)> {
+        self.prompts.lock().unwrap().push(user.to_string());
         let ids = std::mem::take(&mut *self.delete.lock().unwrap());
         for id in ids {
             self.store.delete(T, id, "dpo").await?;
@@ -48,7 +50,7 @@ async fn a_fact_is_not_stored_after_its_round_was_deleted_during_the_model_call(
     cfg.enrich.min_user_chars = 1;
     cfg.enrich.workers = 0;
     cfg.governance.audit_reads = false;
-    let chat = Arc::new(DeletesDuringTheCall { store: store.clone(), delete: Mutex::new(vec![]) });
+    let chat = Arc::new(DeletesDuringTheCall { store: store.clone(), delete: Mutex::new(vec![]), prompts: Mutex::new(vec![]) });
     let e = Engine::new(Arc::new(store.clone()), embedder, None, cfg).with_chat(Some(chat.clone()));
     let ingest = |session: &'static str, text: &'static str| {
         let e = e.clone();
@@ -74,6 +76,13 @@ async fn a_fact_is_not_stored_after_its_round_was_deleted_during_the_model_call(
     ingest("s1", "We adopted a kitten called Marzipan last weekend.").await;
     assert!(e.enrich_once_for(T, S, &spend).await.unwrap());
     assert!(derived().await.iter().any(|m| m.content.contains("Marzipan")));
+    // And its answer is cached.
+    let cached = |n: usize| {
+        let key = memhouse_core::enrich::cache_key(&chat.id(), &chat.prompts.lock().unwrap()[n]);
+        let store = store.clone();
+        async move { store.llm_cache_get(&key).await.unwrap() }
+    };
+    assert!(cached(0).await.is_some());
 
     // The round is deleted while the model reads it: its fact is not written afterwards.
     let erased = ingest("s2", "My bank card PIN is 4471.").await;
@@ -84,7 +93,52 @@ async fn a_fact_is_not_stored_after_its_round_was_deleted_during_the_model_call(
     }
     let left = derived().await;
     assert!(left.iter().all(|m| !m.content.contains("4471")), "a fact of the deleted round was stored: {:?}", left.iter().map(|m| &m.content).collect::<Vec<_>>());
+    // Nor is the model's answer, which holds the round's text, kept in the cache.
+    assert_eq!(chat.prompts.lock().unwrap().len(), 2);
+    assert_eq!(cached(1).await, None, "the extraction of a deleted round stayed in the cache");
+    assert!(cached(0).await.is_some());
     // Nothing is left to retry: the job went with its round.
     let st = store.enrich_status(T, Some(S)).await.unwrap();
     assert_eq!(st.pending + st.running, 0);
+}
+
+/// A cached answer belongs to its job from the moment it is stored: a deletion of one of the
+/// job's rounds at any later time removes it (also before the job has finished, and whichever
+/// model gave it), and nothing is cached for a job that is gone.
+#[tokio::test]
+async fn a_cached_extraction_goes_with_its_job_whenever_a_round_is_deleted() {
+    let store = SqliteStore::in_memory("").unwrap();
+    let embedder = HashEmbedder::new(8);
+    store.migrate(8, &embedder.id).await.unwrap();
+    let mut cfg = Config::default();
+    cfg.memory.tenant = T.into();
+    cfg.embedding.dim = 8;
+    cfg.enrich.enabled = true;
+    cfg.enrich.workers = 0;
+    cfg.governance.audit_reads = false;
+    let e = Engine::new(Arc::new(store.clone()), Arc::new(embedder), None, cfg);
+    let ingested = e
+        .ingest(IngestRequest {
+            subject: Some(S.into()),
+            session_id: Some("s1".into()),
+            messages: vec![Message { role: "user".into(), content: "My bank card PIN is 4471.".into(), timestamp: None, id: Some("m1".into()) }],
+            actor: Some("test".into()),
+            wait: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let round = ingested.ids[0];
+    let job = store.enrich_claim_for(T, S, 1, 300).await.unwrap().pop().expect("the session's job").id;
+    // Two models read the session (the small one, then the large one); the job is still running.
+    assert!(store.llm_cache_put_for(job, "key-small", "small", "the PIN is 4471").await.unwrap());
+    assert!(store.llm_cache_put_for(job, "key-large", "large", "PIN: 4471").await.unwrap());
+    assert!(store.llm_cache_put_for(job, "key-small", "small", "the PIN is 4471").await.unwrap());
+    assert!(store.llm_cache_get("key-small").await.unwrap().is_some() && store.llm_cache_get("key-large").await.unwrap().is_some());
+
+    assert!(store.delete(T, round, "dpo").await.unwrap());
+    assert_eq!((store.llm_cache_get("key-small").await.unwrap(), store.llm_cache_get("key-large").await.unwrap()), (None, None));
+    // An answer that comes back after the deletion is not stored.
+    assert!(!store.llm_cache_put_for(job, "key-small", "small", "the PIN is 4471").await.unwrap());
+    assert_eq!(store.llm_cache_get("key-small").await.unwrap(), None);
 }
