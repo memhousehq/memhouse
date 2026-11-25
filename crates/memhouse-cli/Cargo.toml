@@ -28,3 +28,7 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 rand.workspace = true
 sqlx.workspace = true
+
+[dev-dependencies]
+memhouse-conformance.workspace = true
+tempfile = "3"

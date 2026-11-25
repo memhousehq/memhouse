@@ -29,6 +29,7 @@
 
 mod authorizer;
 pub mod fakes;
+pub mod migration;
 mod models;
 pub mod profile;
 mod queue;

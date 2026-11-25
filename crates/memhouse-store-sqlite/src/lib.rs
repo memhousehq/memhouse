@@ -11,6 +11,7 @@ mod records;
 mod schema;
 mod search;
 mod store;
+pub mod transfer;
 mod util;
 pub mod vector;
 

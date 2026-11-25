@@ -446,4 +446,40 @@ pub trait Store: Send + Sync {
     async fn reembed_abort(&self) -> anyhow::Result<bool> {
         anyhow::bail!("this store can't re-embed in place")
     }
+
+    // Moving an installation to another store (`migrate`, TR-MIG-01). Stores that can't say so.
+    /// The stored vectors of these records, exactly as they are held: a migration copies them,
+    /// it does not embed again. Records without a vector are returned with none.
+    async fn export_vectors(&self, _tenant: &str, _ids: &[Uuid]) -> anyhow::Result<Vec<crate::migrate::RecordVectors>> {
+        anyhow::bail!("this store cannot export vectors")
+    }
+    /// What the store holds, for a migration's plan and its checks. Reads only, and answers with
+    /// an empty summary on a database that has no schema yet.
+    async fn migration_summary(&self) -> anyhow::Result<crate::migrate::Summary> {
+        anyhow::bail!("this store cannot be migrated from or to")
+    }
+    /// Up to `limit` rows of one table of [`crate::migrate::TABLES`], in key order after the row
+    /// `after` (a row of an earlier page). Each row is an object of the table's columns.
+    async fn migration_dump(&self, _table: &str, _after: Option<&serde_json::Value>, _limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+        anyhow::bail!("this store cannot be migrated from")
+    }
+    /// Insert rows of one table exactly as given, with their keys (an audit event keeps its id
+    /// and its hashes, so the chain verifies here as it did there). Rows already present are
+    /// left as they are. Returns how many were inserted.
+    async fn migration_load(&self, _table: &str, _rows: &[serde_json::Value]) -> anyhow::Result<u64> {
+        anyhow::bail!("this store cannot be migrated to")
+    }
+    /// Told once everything has been loaded: the store gets itself ready to be read at its new
+    /// size (Postgres refreshes the planner's statistics, without which the first statements
+    /// over a freshly filled table scan it whole).
+    async fn migration_loaded(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// The marker a migration left in this store ([`crate::migrate::Marker`]), if one did.
+    async fn migration_marker(&self) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+    async fn set_migration_marker(&self, _marker: &serde_json::Value) -> anyhow::Result<()> {
+        anyhow::bail!("this store cannot be migrated to")
+    }
 }

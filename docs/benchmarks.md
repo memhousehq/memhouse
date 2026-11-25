@@ -455,6 +455,26 @@ memhouse bench run --suite governance --database-url sqlite:/path/to/new.db
 Without `--database-url`, a Lite configuration runs benchmarks on a SQLite file of their own
 beside the configured database (`memhouse_bench_<model>.db`), never on the database itself.
 
+### Migration at size
+
+`memhouse migrate` ([operations.md](operations.md#moving-between-profiles)) measured by
+`memhouse bench migrate`, Lite to Postgres, on 25 November 2026: one run, on a laptop that was
+also running a CI job. The source is synthetic: 1,000,000 records with 384-dimension vectors
+and 1,000,000 audit events in a 2.7 GB file.
+
+| | |
+|---|---|
+| Dry run | 21.3 s |
+| Copy: records with their vectors, every other table, the audit log | 63.4 s |
+| Verification: every record read back and compared by hash, tables row for row, the audit chain | 45.7 s |
+| The whole migration, which is the downtime | 120.1 s (8,327 records a second) |
+| PROF-03: downtime per million records | 2.0 min (target ≤ 5) |
+| Records differing after the copy | 0 of 1,000,000 |
+| Vectors compared on a sample | 50,000, identical |
+
+At 100,000 records: Lite to Postgres 11.0 s, Lite to Lite 14.9 s. Postgres to Lite and Lite to
+Lite were not measured at one million.
+
 ## Governance suite
 
 `memhouse bench run --suite governance` runs 18 checks; all pass:

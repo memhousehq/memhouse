@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 15 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
+| Progress | 16 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 68 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 72 governance checks;
 - the Lite profile (G16): the same engine on one SQLite file, `memhouse up --lite`, backup and restore with the deletion ledger re-applied;
 - conformance kits for every adapter type and a profile suite over REST, MCP and the command line (G15);
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
@@ -143,7 +143,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 68 / 68 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 72 / 72 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -349,7 +349,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 
 - [x] [G15 — Adapter and profile conformance kits](#g15--adapter-and-profile-conformance-kits) (20 November 2026)
 - [x] [G16 — Lite profile: embedded store](#g16--lite-profile-embedded-store) (21 November 2026)
-- [ ] [G17 — Profile migration](#g17--profile-migration)
+- [x] [G17 — Profile migration](#g17--profile-migration) (25 November 2026)
 - [ ] [G18 — SDKs, embedded bindings and first framework adapters](#g18--sdks-embedded-bindings-and-first-framework-adapters)
 - [ ] [G19 — Coding template v1](#g19--coding-template-v1)
 - [ ] [G20 — Memory browser v2 and admin console](#g20--memory-browser-v2-and-admin-console)
@@ -1705,16 +1705,54 @@ which is named.
 
 #### G17 — Profile migration
 
-- [ ] **Done**
+- [x] **Done** (25 November 2026)
 
 > `/goal Add memhouse migrate: Lite to Standard (export, import, per-record hash verification, switch-over) with a dry-run mode reporting counts, size, duration and records needing attention; prove lossless round trips in every direction between profiles. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **TR-MIG-01**, **TR-MIG-03**, PROF-03 (the Standard → Scale half is G32), **PROF-02**.
 - **Deliverables:**
-  - [ ] `memhouse migrate --from lite://… --to postgres://… [--dry-run]`
-  - [ ] a migration test with 1 million records (synthetic)
+  - [x] `memhouse migrate --from lite://… --to postgres://… [--dry-run]`
+  - [x] a migration test with 1 million records (synthetic)
 - **Done when:** Lite → Standard → export → Lite is identical by record hashes.
 - **Guard:** T1. **Depends on:** G16.
+- **Result (2026-11-25):**
+  - **The command.** `memhouse migrate --from <url> --to <url> [--dry-run] [--yes]` works in
+    every direction: Lite to Standard, Standard to Lite, and between two databases of one
+    kind. The source defaults to the configured database and is only read. Everything moves:
+    records in every state with their versions, vectors as stored (nothing is embedded
+    again), policies and approvals, principals, key hashes and signing keys, links, grants,
+    evaluation suites and runs, the deletion ledger, the audit log with its ids and hashes,
+    and queued work. Caches, recall explanations and idempotency keys are left behind. After
+    the copy every record is read back and compared by hash, the other tables row for row,
+    and the audit chain is verified; only then is the configuration switched, with the old
+    file kept beside it. A failed verification names the records and changes nothing. An
+    interrupted run resumes. A dry run reports counts, size, an estimated duration and what
+    needs attention, and fails when something blocks. Documented in
+    [operations.md](operations.md#moving-between-profiles).
+  - **Done when: met.** Governance check `migrate_round_trip`: Lite → Standard → Lite,
+    12 records identical by hash and 33 table rows equal; Standard → Lite → Standard,
+    13 records identical by hash.
+  - **Where a copy is not bit-identical.** Vectors moved to Lite are rounded once to half
+    precision (largest change of a component 0.000107), reported by the command; later moves
+    are exact. A number in JSON attributes that Postgres writes differently (`1e16`) changes
+    that record's hash: such records are reported as equal in value, and any other difference
+    fails. Text with NUL characters blocks a migration to Postgres in the dry run.
+  - **One million records** (`memhouse bench migrate`, Lite to Postgres, one run on a laptop
+    that was also running a CI job): dry run 21.3 s, copy 63.4 s, verification 45.7 s,
+    120.1 s in all, **2.0 minutes per million against PROF-03's 5**; 0 of 1,000,000 records
+    differ. Export now pages along the id index on both stores: before, each page sorted the
+    whole tenant on SQLite.
+  - **Governance: four new checks**, on both profiles: `migrate_round_trip`,
+    `migrate_erasure_and_audit` (the ledger moves, erased text is absent, the chain verifies),
+    `migrate_no_credentials` (no database password in any output, log or audit event) and
+    `migrate_failed_verification`. Postgres: 72 of 72. SQLite: 69 of 69 applicable, 3 not
+    applicable as before (its round trip is Lite → Lite → Lite, having no Postgres).
+  - **Not measured or not tested.** Postgres to Lite and Lite to Lite at one million records.
+    Resuming is tested on a half-copied target, not by killing a run. A write to a Postgres
+    source during the copy is caught by the end-of-copy check, which is tested on SQLite
+    only. A source whose audit chain is already broken is copied as it is and reported; that
+    path has no test. The store conformance kit does not cover the new transfer methods; the
+    governance checks do.
 
 #### G18 — SDKs, embedded bindings and first framework adapters
 

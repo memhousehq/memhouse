@@ -23,7 +23,7 @@ fn word(n: u64) -> String {
     format!("{}{}{}", SYL[a as usize], SYL[b as usize], SYL[c as usize])
 }
 
-fn sentence(seed: u64) -> String {
+pub(crate) fn sentence(seed: u64) -> String {
     let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     let mut next = || {
         x ^= x << 13;

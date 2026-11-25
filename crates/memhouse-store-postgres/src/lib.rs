@@ -12,6 +12,8 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use uuid::Uuid;
 
+mod transfer;
+
 /// A statement `format!`ted from this file's constants, numbers and fixed column names only;
 /// values from callers are always bound, never formatted in (what sqlx's `AssertSqlSafe` asserts).
 macro_rules! trusted_sql {
@@ -619,11 +621,22 @@ impl PgStore {
     }
 }
 
+/// A database URL without its credentials: the user and password before the host, and the
+/// value of any password parameter after it (`?password=…`, `sslpassword=…`).
 pub fn redact_url(url: &str) -> String {
-    match (url.find("://"), url.rfind('@')) {
+    let url = match (url.find("://"), url.rfind('@')) {
         (Some(s), Some(at)) if at > s => format!("{}://***@{}", &url[..s], &url[at + 1..]),
         _ => url.to_string(),
-    }
+    };
+    let Some((head, query)) = url.split_once('?') else { return url };
+    let params: Vec<String> = query
+        .split('&')
+        .map(|p| match p.split_once('=') {
+            Some((k, _)) if k.to_ascii_lowercase().contains("pass") => format!("{k}=***"),
+            _ => p.to_string(),
+        })
+        .collect();
+    format!("{head}?{}", params.join("&"))
 }
 
 /// The scope filter on the agent level. A reader with grants (INT-06) gets its own statement,
@@ -2697,8 +2710,11 @@ impl Store for PgStore {
                coalesce((SELECT jsonb_agg(jsonb_build_object('path', c.path, 'blob_hash', c.blob_hash) ORDER BY c.path) \
                          FROM mh_code_ref c WHERE c.memory_id = m.id), '[]'::jsonb) AS code_refs \
              FROM mh_memory m LEFT JOIN mh_structured s ON s.memory_id = m.id \
-             WHERE m.tenant = $1 AND ($2::text IS NULL OR m.subject = $2) AND ($3::uuid IS NULL OR m.id > $3) \
-             ORDER BY m.id LIMIT $4"
+             WHERE m.tenant = $1 AND ($2::text IS NULL OR m.subject = $2) AND {} \
+             ORDER BY m.id LIMIT $4",
+            // Said outright, so a page starts at its place in the primary key whatever plan is
+            // cached: with `$3 IS NULL OR m.id > $3` a generic plan walks the key from its start.
+            if after.is_some() { "m.id > $3::uuid" } else { "$3::uuid IS NULL" }
         ))
         .bind(tenant)
         .bind(subject)
@@ -3250,11 +3266,53 @@ impl Store for PgStore {
         tx.commit().await?;
         Ok(removed > 0)
     }
+
+    async fn export_vectors(&self, tenant: &str, ids: &[Uuid]) -> anyhow::Result<Vec<memhouse_core::migrate::RecordVectors>> {
+        self.vectors_of(tenant, ids).await
+    }
+
+    async fn migration_summary(&self) -> anyhow::Result<memhouse_core::migrate::Summary> {
+        self.summary().await
+    }
+
+    async fn migration_dump(&self, table: &str, after: Option<&serde_json::Value>, limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.dump(table, after, limit).await
+    }
+
+    async fn migration_load(&self, table: &str, rows: &[serde_json::Value]) -> anyhow::Result<u64> {
+        self.load(table, rows).await
+    }
+
+    async fn migration_loaded(&self) -> anyhow::Result<()> {
+        // Autovacuum would get to it in its own time; the verification and the server's first
+        // recalls come before that.
+        sqlx::raw_sql("ANALYZE").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn migration_marker(&self) -> anyhow::Result<Option<serde_json::Value>> {
+        self.marker().await
+    }
+
+    async fn set_migration_marker(&self, marker: &serde_json::Value) -> anyhow::Result<()> {
+        self.set_marker(marker).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn urls_are_printed_without_credentials() {
+        assert_eq!(redact_url("postgres://memhouse:s3cret@db.internal:5432/memhouse"), "postgres://***@db.internal:5432/memhouse"); // secret-scan: allow (fake fixture)
+        assert_eq!(
+            redact_url("postgres://db.internal/memhouse?sslmode=require&password=s3cret&sslpassword=k3y"),
+            "postgres://db.internal/memhouse?sslmode=require&password=***&sslpassword=***"
+        );
+        assert_eq!(redact_url("postgres://u:p@ss@h/db?application_name=x"), "postgres://***@h/db?application_name=x");
+        assert_eq!(redact_url("sqlite:/var/lib/memhouse.db"), "sqlite:/var/lib/memhouse.db");
+    }
 
     #[test]
     fn or_query_is_safe() {

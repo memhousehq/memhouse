@@ -17,6 +17,7 @@ pub mod intake;
 pub mod lang;
 pub mod langcheck;
 pub mod metrics;
+pub mod migrate;
 pub mod pack;
 pub mod policy;
 pub mod preference;
