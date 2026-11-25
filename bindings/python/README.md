@@ -41,8 +41,13 @@ class Lite:
   is sent.
 - `close()` stops the background workers, releases the file and ends the native threads the
   deployment ran on (after the last request still running on another thread has returned), so
-  a closed `Lite` you still hold costs nothing. It may be called more than once, also from
-  several threads at once: each call returns when the workers have stopped.
+  a closed `Lite` you still hold costs nothing. It returns when the workers have stopped: each
+  ends after its current job, and one still busy after ten seconds (a slow model call) is
+  cancelled, its job to be run again the next time the deployment is open. It may be called
+  more than once, also from several threads at once: each call returns when the workers have
+  stopped. A write whose request was answered just before `close()` is finished on a task of
+  its own, which `close()` does not wait for: if it is still under way when the native threads
+  end, it is cut off there and run again the next time the deployment is open.
 
 One process opens a Lite file for writing at a time: do not open the same file from two
 processes that both write.

@@ -44,8 +44,13 @@ class Lite {
   format for `GET /metrics`. A header name may appear once in `headers`: two that differ only
   in letter case (`Authorization` and `authorization`) reject the call, and nothing is sent.
 - `close()` stops the background workers and releases the file. Call it: the workers otherwise
-  keep the process's native runtime busy until exit. It may be called more than once, also
-  while another call is still closing: each resolves when the workers have stopped.
+  keep the process's native runtime busy until exit. It resolves when the workers have stopped:
+  each ends after its current job, and one still busy after ten seconds (a slow model call) is
+  cancelled, its job to be run again the next time the deployment is open. It may be called
+  more than once, also while another call is still closing: each resolves when the workers
+  have stopped. A write whose request was answered just before `close()` is finished on a task
+  of its own, which `close()` does not wait for: it can complete, and keep the database file
+  open, for a moment after `close()` has resolved.
 
 One process opens a Lite file for writing at a time: do not open the same file from two
 processes that both write.

@@ -193,6 +193,38 @@ def test_the_key_is_not_sent_to_another_origin_by_a_redirect():
             server.close()
 
 
+def test_a_key_that_a_header_cannot_carry_is_refused_without_repeating_it(monkeypatch):
+    # A key read from a file with its newline: http.client would quote the whole header.
+    for key in (FAKE_KEY + "\n", FAKE_KEY + "\r\n", "\n" + FAKE_KEY, FAKE_KEY + " ", FAKE_KEY + "\x00", FAKE_KEY + "\u00e9"):
+        # (The environment cannot hold a NUL; the key given as an argument can.)
+        monkeypatch.setenv("MEMHOUSE_API_KEY", key.replace("\x00", "\t"))
+        for build in (lambda: MemHouse("http://127.0.0.1:1"), lambda: MemHouse("http://127.0.0.1:1", key), lambda: MemHouse("embedded:", key, transport=RecordingTransport())):
+            with pytest.raises(ValueError) as raised:
+                build()
+            assert FAKE_KEY not in str(raised.value) and FAKE_KEY not in repr(raised.value)
+    # An ordinary key, and the empty one that sends none, are as before.
+    monkeypatch.setenv("MEMHOUSE_API_KEY", FAKE_KEY + "\n")
+    mh, sent = client()
+    mh.whoami()
+    MemHouse("http://memhouse.test", "", transport=sent.__class__()).whoami()
+    assert sent.requests[0]["headers"]["authorization"] == f"Bearer {FAKE_KEY}"
+
+
+def test_a_request_that_http_cannot_carry_is_an_error_without_the_key():
+    # Whatever else in a request is refused by http.client (here a user with a line break, then
+    # a key that reached the transport unchecked), the error is the client's own, and constant.
+    mh = MemHouse("http://127.0.0.1:1", FAKE_KEY, user="user:ana\nx-injected: 1")
+    transport = HttpTransport("http://127.0.0.1:1")
+    for send in (mh.whoami, lambda: transport.request("GET", "/health", None, {"authorization": f"Bearer {FAKE_KEY}\n"}), lambda: transport.request("G\nT", "/health", None, {})):
+        with pytest.raises(MemHouseError) as raised:
+            send()
+        e = raised.value
+        assert (e.status, e.code) == (0, "transport") and "could not be built" in e.error
+        assert FAKE_KEY not in str(e) and FAKE_KEY not in repr(e)
+        # Nor is the error that quoted it kept behind this one.
+        assert e.__cause__ is None and e.__context__ is None
+
+
 def test_a_failure_while_reading_an_error_body_is_a_transport_error(monkeypatch):
     class Stalled:
         def read(self, *args):

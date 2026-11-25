@@ -69,9 +69,15 @@ impl Lite {
         Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
     }
 
-    /// Stop the workers, release the database file and end the runtime's threads. Safe to
-    /// call more than once: every call, also one made on another thread while this one is
-    /// still closing, returns when the workers have stopped.
+    /// Stop the workers, release the database file and end the runtime's threads. Returns
+    /// when the workers have stopped: each ends after its current job, and one still busy
+    /// after ten seconds is cancelled, its job to be run again the next time the deployment
+    /// is open. Safe to call more than once: every call, also one made on another thread
+    /// while this one is still closing, returns when the workers have stopped.
+    ///
+    /// A write whose request was answered just before `close()` is finished on a task of its
+    /// own, which `close()` does not wait for: if it is still under way when the runtime
+    /// ends, it is cut off there and run again the next time the deployment is open.
     fn close(&self, py: Python<'_>) {
         // The deployment stays in its place until the shutdown is over: a call that arrives
         // meanwhile finds it and waits in `shutdown` for the same workers.

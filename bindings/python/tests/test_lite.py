@@ -131,17 +131,24 @@ def runtime_threads():
     return len(listed.stdout.splitlines()) - 1, False
 
 
-def test_close_ends_the_native_threads_of_a_lite_still_referenced(config):
+# The worker threads of the runtime in the test below: a number of the test's own, not the
+# machine's (the runtime otherwise starts one per core, or what the environment says), and
+# large enough to stand out from the few threads the system starts and ends by itself.
+WORKERS = 16
+
+
+def test_close_ends_the_native_threads_of_a_lite_still_referenced(config, monkeypatch):
     if runtime_threads() is None:
         pytest.skip("the threads of this process cannot be counted here")
+    # Read by the runtime (tokio) when it is built, as for any program that uses it.
+    monkeypatch.setenv("TOKIO_WORKER_THREADS", str(WORKERS))
     lite = Lite(config=config)
     assert lite.request("GET", "/health")[0] == 200
     opened, exact = runtime_threads()
-    # The runtime has one worker thread per core. Where only the total is known, that many
-    # must go; where the threads are known by name, all of them.
-    workers = os.cpu_count() or 1
-    assert opened >= (1 if exact else workers)
-    allowed = 0 if exact else opened - workers
+    # Where only the total is known, the workers must go; where the threads are known by
+    # name, all of them.
+    assert opened >= WORKERS
+    allowed = 0 if exact else opened - WORKERS
     lite.close()
     # The object is still here (`lite`): its runtime's threads are not.
     deadline = time.monotonic() + 5

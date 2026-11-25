@@ -20,9 +20,16 @@ use tower::ServiceExt;
 /// [`Embedded`] both start exactly this.
 pub struct Background {
     stop: Arc<AtomicBool>,
+    /// The workers not yet known to have ended.
     workers: Vec<JoinHandle<()>>,
-    retention: JoinHandle<()>,
+    /// `None` once it has ended.
+    retention: Option<JoinHandle<()>>,
+    /// How long [`Background::stop`] lets a worker finish its job before cancelling it.
+    grace: std::time::Duration,
 }
+
+/// The time a worker gets to finish its current job at shutdown.
+const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Background {
     /// Start the workers on the current tokio runtime.
@@ -40,19 +47,54 @@ impl Background {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
             }
         });
-        Background { stop, workers, retention }
+        Background { stop, workers, retention: Some(retention), grace: GRACE }
     }
 
-    /// Stop the workers. Each stops after its current job; one stuck on a model call is left
-    /// behind after the grace period (its proposal is claimed again after `intake.lease_secs`).
-    pub async fn stop(mut self) {
+    /// Stop the workers, and return when none of them runs any more.
+    ///
+    /// Each worker stops after its current job. One that is still busy ten seconds on (a slow
+    /// model call) is cancelled where it waits, and its end is awaited too. What it leaves is
+    /// what a process that died there would leave, and is taken up the same way (TR-LT-05):
+    ///
+    /// - a proposal of the write pipeline stays claimed and is run again from its start once
+    ///   the claim lapses (`intake.lease_secs`). Its records reach the store in one
+    ///   transaction at the end of the job, so nothing of it is half stored;
+    /// - an enrichment job stays claimed for its lease (five minutes) and is then run again.
+    ///   A model answer it had already got is in the cache, and its facts are stored in one
+    ///   transaction, so the second run pays for no call twice and stores no fact twice.
+    ///
+    /// Not covered: the writes that the request path finishes on tasks of its own right after
+    /// answering (`Engine::nudge`). Those tasks are not this value's, see [`Embedded::shutdown`].
+    ///
+    /// The value keeps its workers until they have ended: if the future is dropped before it
+    /// returns, calling `stop` again waits for the workers that are left, with a new grace
+    /// period.
+    pub async fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        self.retention.abort();
-        let grace = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        for w in std::mem::take(&mut self.workers) {
-            if tokio::time::timeout_at(grace, w).await.is_err() {
-                tracing::warn!("a worker was still busy at shutdown; its job resumes after the lease");
+        // It checks no flag: it sleeps an hour between passes. Cancelled first, so that the
+        // grace period is the workers' alone.
+        if let Some(retention) = self.retention.as_mut() {
+            retention.abort();
+            let _ = retention.await;
+            self.retention = None;
+        }
+        // A handle leaves the list only once its task has ended (a handle must not be awaited
+        // again after that), so dropping this future loses none.
+        let deadline = tokio::time::Instant::now() + self.grace;
+        while let Some(worker) = self.workers.last_mut() {
+            if tokio::time::timeout_at(deadline, worker).await.is_err() {
                 break;
+            }
+            self.workers.pop();
+        }
+        if !self.workers.is_empty() {
+            tracing::warn!("{} worker(s) still busy {} s after shutdown began: cancelled; their jobs are run again after their lease", self.workers.len(), self.grace.as_secs());
+            for worker in &self.workers {
+                worker.abort();
+            }
+            while let Some(worker) = self.workers.last_mut() {
+                let _ = worker.await;
+                self.workers.pop();
             }
         }
     }
@@ -63,7 +105,9 @@ impl Background {
 impl Drop for Background {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        self.retention.abort();
+        if let Some(retention) = &self.retention {
+            retention.abort();
+        }
     }
 }
 
@@ -186,20 +230,110 @@ impl Embedded {
         Ok((status, bytes.to_vec()))
     }
 
-    /// Stop the background workers and refuse further requests. Safe to call more than once,
-    /// also at the same time: every call returns only when the workers have stopped.
-    /// The store is closed when the value is dropped.
+    /// Stop the background workers and refuse further requests. Returns when no worker runs
+    /// any more: each ends after its current job, and one still busy ten seconds on is
+    /// cancelled, its job to be run again after its lease ([`Background::stop`]).
+    ///
+    /// Safe to call more than once, also at the same time: every call returns only when the
+    /// workers have ended. That holds after a call that was dropped before it returned too:
+    /// the workers stay with this value until they have ended, and the next call waits for
+    /// those that are left.
+    ///
+    /// One thing can still run after it returns. A write whose request was answered just
+    /// before is finished on a task of the engine's own (`Engine::nudge`), which this value
+    /// does not hold: that task ends when the write's job does, and keeps the store open
+    /// until then. The store is closed when the value is dropped and no such task is left.
     pub async fn shutdown(&self) {
         self.closed.store(true, Ordering::Release);
-        // Held until the workers have stopped: a call that arrives meanwhile waits here.
+        // Held until the workers have ended: a call that arrives meanwhile waits here.
         let mut background = self.background.lock().await;
-        if let Some(b) = background.take() {
+        if let Some(b) = background.as_mut() {
             b.stop().await;
         }
+        // Only now: had this call been dropped while it waited, the next would find them.
+        *background = None;
     }
 
     /// Whether [`Embedded::shutdown`] was called: requests are refused from then on.
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Sets its flag when dropped: a task that owns one has ended, finished or cancelled.
+    struct Ended(Arc<AtomicBool>);
+    impl Drop for Ended {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A stand-in for the workers: `worker` gets the stop flag, as a real one does.
+    fn background<F: std::future::Future<Output = ()> + Send + 'static>(grace: Duration, worker: impl FnOnce(Arc<AtomicBool>) -> F) -> Background {
+        let stop = Arc::new(AtomicBool::new(false));
+        let retention = tokio::spawn(std::future::pending::<()>());
+        Background { workers: vec![tokio::spawn(worker(stop.clone()))], stop, retention: Some(retention), grace }
+    }
+
+    /// A worker that, once told to stop, needs `rest` to finish its job, then sets `done`.
+    fn finishing(rest: Duration, done: Arc<AtomicBool>) -> impl FnOnce(Arc<AtomicBool>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        move |stop| {
+            Box::pin(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                tokio::time::sleep(rest).await;
+                done.store(true, Ordering::SeqCst);
+            })
+        }
+    }
+
+    fn embedded(background: Background) -> Embedded {
+        Embedded { router: Router::new(), key: None, background: tokio::sync::Mutex::new(Some(background)), closed: AtomicBool::new(false) }
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_a_worker_to_finish_its_job() {
+        let done = Arc::new(AtomicBool::new(false));
+        let mut b = background(Duration::from_secs(10), finishing(Duration::from_millis(150), done.clone()));
+        b.stop().await;
+        assert!(done.load(Ordering::SeqCst), "stop returned before the worker had finished");
+        assert!(b.workers.is_empty() && b.retention.is_none());
+        // Nothing is left to wait for.
+        b.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_worker_still_busy_after_the_grace_period_is_cancelled_before_stop_returns() {
+        let ended = Arc::new(AtomicBool::new(false));
+        let owned = Ended(ended.clone());
+        // Never finishes, whatever the flag says: a model call that does not return.
+        let mut b = background(Duration::from_millis(100), |_stop| async move {
+            let _owned = owned;
+            std::future::pending::<()>().await
+        });
+        let started = std::time::Instant::now();
+        b.stop().await;
+        assert!(started.elapsed() >= Duration::from_millis(100), "the worker was not given its grace period");
+        assert!(ended.load(Ordering::SeqCst), "stop returned while the worker's task was still there");
+        assert!(b.workers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_that_was_dropped_leaves_the_workers_to_the_next_call() {
+        let done = Arc::new(AtomicBool::new(false));
+        let lite = embedded(background(Duration::from_secs(10), finishing(Duration::from_millis(200), done.clone())));
+        // The caller gives up on the first call while it waits for the worker.
+        assert!(tokio::time::timeout(Duration::from_millis(20), lite.shutdown()).await.is_err());
+        assert!(lite.is_closed() && !done.load(Ordering::SeqCst));
+        // The second still has the worker to wait for, and does.
+        lite.shutdown().await;
+        assert!(done.load(Ordering::SeqCst), "the second shutdown returned while the worker was still running");
+        assert!(lite.background.lock().await.is_none());
     }
 }

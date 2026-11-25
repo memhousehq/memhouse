@@ -37,7 +37,14 @@ class Lite:
     def close(self) -> None:
         """Stop the background workers, release the database file and end the native threads.
 
-        Idempotent, also across threads: every call returns when the workers have stopped.
+        Returns when the workers have stopped: each ends after its current job, and one still
+        busy after ten seconds is cancelled, its job to be run again the next time the
+        deployment is open. Idempotent, also across threads: every call returns when the
+        workers have stopped.
+
+        A write whose request was answered just before ``close()`` is finished on a task of
+        its own, which ``close()`` does not wait for: if it is still under way when the
+        runtime ends, it is cut off there and run again the next time the deployment is open.
         """
         ...
     @property

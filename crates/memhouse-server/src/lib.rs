@@ -304,13 +304,15 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     if embedded::enrichment_runs(&engine) {
         eprintln!("Enrichment: {} workers, model {}", engine.cfg.enrich.workers, engine.cfg.enrich.llm.model);
     }
-    let background = embedded::Background::start(&engine);
-    axum::serve(listener, router(engine))
+    let mut background = embedded::Background::start(&engine);
+    let served = axum::serve(listener, router(engine))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
-        .await?;
+        .await;
+    // Also when serving failed: the workers end their jobs before the process does.
     background.stop().await;
+    served?;
     Ok(())
 }
 

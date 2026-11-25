@@ -46,6 +46,21 @@ class Transport(Protocol):
     def request(self, method: str, path: str, body: Optional[str], headers: Dict[str, str]) -> Tuple[int, str]: ...
 
 
+_KEY_FORM = (
+    "the API key has a character that an HTTP header cannot carry (a line break, a space, a control or non-ASCII character): "
+    "check `api_key` or MEMHOUSE_API_KEY, for a trailing newline for one"
+)
+_UNSENDABLE = "the request could not be built: a header value, the method or the path has a character that HTTP cannot carry (a line break, for one)"
+
+
+def _checked_key(key: Optional[str]) -> Optional[str]:
+    """`key`, when a header can carry it. Refused otherwise, without repeating it: `http.client`
+    would refuse it too, in a `ValueError` that quotes the whole `Authorization` value."""
+    if key and not all("!" <= c <= "~" for c in key):
+        raise ValueError(_KEY_FORM)
+    return key
+
+
 _URL_FORM = "the MemHouse URL must be http(s)://host[:port], with an optional path prefix"
 
 
@@ -97,6 +112,16 @@ class HttpTransport:
         self._opener = urllib.request.build_opener(_SameOriginRedirects())
 
     def request(self, method: str, path: str, body: Optional[str], headers: Dict[str, str]) -> Tuple[int, str]:
+        try:
+            return self._exchange(method, path, body, headers)
+        except (ValueError, TypeError):
+            # `http.client` refuses a header value, a method or a path it cannot send with an
+            # error that quotes it, and a header value may be the credential. The error is
+            # replaced once it is out of the way, so that it is not kept as this one's context.
+            pass
+        raise MemHouseError(0, "transport", _UNSENDABLE)
+
+    def _exchange(self, method: str, path: str, body: Optional[str], headers: Dict[str, str]) -> Tuple[int, str]:
         data = body.encode("utf-8") if body is not None else None
         req = urllib.request.Request(self.base_url + path, data=data, method=method, headers=headers)
         # One handler for the whole exchange: reading the body of an error answer can fail
@@ -144,7 +169,7 @@ class MemHouse(GeneratedClient):
         transport: Optional[Transport] = None,
     ) -> None:
         self.base_url = base_url or os.environ.get("MEMHOUSE_URL") or DEFAULT_URL
-        self._api_key = api_key if api_key is not None else os.environ.get("MEMHOUSE_API_KEY")
+        self._api_key = _checked_key(api_key if api_key is not None else os.environ.get("MEMHOUSE_API_KEY"))
         self.user = user
         self.actor = actor
         self.transport: Transport = transport if transport is not None else HttpTransport(self.base_url, timeout)

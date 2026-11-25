@@ -91,7 +91,10 @@ new MemHouse({ baseUrl?, apiKey?, user?, actor?, timeoutMs?, transport? })
 - `base_url` / `baseUrl` is `http(s)://host[:port]`, with a path prefix when the API is served
   under one (`https://example.com/memhouse`). A URL with credentials in it, a query string or a
   fragment is refused, with a message that does not repeat the URL: the key goes in `api_key` /
-  `apiKey` or `MEMHOUSE_API_KEY`. The key is sent to that origin only: a redirect to another
+  `apiKey` or `MEMHOUSE_API_KEY`. A key with a character an HTTP header cannot carry (a line
+  break, a space, a control or non-ASCII character; in practice a trailing newline from a file)
+  is refused when the client is built, with a message that does not repeat it. The key is sent
+  to that origin only: a redirect to another
   origin is not followed by the Python client (the call fails with the redirect's status), and
   `fetch` drops the `Authorization` header when it follows one.
 - `user` is the user every call acts for (the `x-memhouse-user` header), unless a call names

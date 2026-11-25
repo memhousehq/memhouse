@@ -55,6 +55,20 @@ export interface Transport {
   close?(): void | Promise<void>;
 }
 
+const KEY_FORM =
+  "the API key has a character that an HTTP header cannot carry (a line break, a space, a control or non-ASCII character): " +
+  "check `apiKey` or MEMHOUSE_API_KEY, for a trailing newline for one";
+const UNSENDABLE = "the request could not be built: a header value has a character that HTTP cannot carry (a line break, for one)";
+
+/**
+ * `key`, when a header can carry it. Refused otherwise, without repeating it: `fetch` would
+ * refuse it too, in a `TypeError` that quotes the whole `Authorization` value.
+ */
+function checkedKey(key: string | undefined): string | undefined {
+  if (key && !/^[\x21-\x7e]+$/.test(key)) throw new TypeError(KEY_FORM);
+  return key;
+}
+
 const URL_FORM = "the MemHouse URL must be http(s)://host[:port], with an optional path prefix";
 
 /** `text` with the user and password of every URL in it removed (`scheme://user:pass@host`). */
@@ -96,9 +110,17 @@ export class HttpTransport implements Transport {
   }
 
   async request(method: string, path: string, body: string | null, headers: Record<string, string>): Promise<TransportResponse> {
+    // Built apart from the request: a header value that cannot be sent is refused with an
+    // error that quotes it, and the value may be the credential. This one says nothing of it.
+    let sent: Headers;
+    try {
+      sent = new Headers(headers);
+    } catch {
+      throw new MemHouseError(0, "transport", UNSENDABLE);
+    }
     let response: Response;
     try {
-      response = await fetch(this.baseUrl + path, { method, headers, body: body ?? undefined, signal: AbortSignal.timeout(this.timeoutMs) });
+      response = await fetch(this.baseUrl + path, { method, headers: sent, body: body ?? undefined, signal: AbortSignal.timeout(this.timeoutMs) });
       // An error status is an answer: the client maps its body to MemHouseError.
       return { status: response.status, body: await response.text() };
     } catch (e) {
@@ -150,7 +172,7 @@ export class MemHouse extends GeneratedClient {
   constructor(options: MemHouseOptions = {}) {
     super();
     this.baseUrl = options.baseUrl || env("MEMHOUSE_URL") || DEFAULT_URL;
-    this.#apiKey = options.apiKey ?? env("MEMHOUSE_API_KEY");
+    this.#apiKey = checkedKey(options.apiKey ?? env("MEMHOUSE_API_KEY"));
     this.user = options.user;
     this.actor = options.actor;
     this.transport = options.transport ?? new HttpTransport(this.baseUrl, options.timeoutMs);

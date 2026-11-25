@@ -23,9 +23,15 @@ export declare class Lite {
    */
   request(method: string, path: string, body?: string | undefined | null, headers?: Record<string, string> | undefined | null): Promise<LiteResponse>
   /**
-   * Stop the background workers and release the database file. Safe to call more than once:
-   * every call, also one made while another is still closing, resolves when the workers
-   * have stopped.
+   * Stop the background workers and release the database file. Resolves when the workers
+   * have stopped: each ends after its current job, and one still busy after ten seconds is
+   * cancelled, its job to be run again the next time the deployment is open. Safe to call
+   * more than once: every call, also one made while another is still closing, resolves
+   * when the workers have stopped.
+   *
+   * A write whose request was answered just before `close()` is finished on a task of its
+   * own, which `close()` does not wait for: it can complete, and keep the database file
+   * open, for a moment after `close()` has resolved.
    */
   close(): Promise<void>
   /** Whether `close()` was called. */

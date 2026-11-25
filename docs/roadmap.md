@@ -1868,6 +1868,16 @@ committed record's own write event and the refusals of each phase. Declined: pat
 loader that the napi-rs tool generates. Kept: `put` on the LangGraph store revises and the
 corrected record gets a new key, as documented.
 
+**Review fixes, second round (2026-11-26):** both clients refuse an API key with a character a
+header cannot carry, with a message that does not repeat it, and no error raised while sending
+carries the key; the TypeScript client cuts credentials from a URL named by a transport
+failure; a session-end flush that found nothing is not kept as the one under way. Stopping the
+background workers (`memhouse serve` and the embedded library) now ends them: one still busy
+after ten seconds is cancelled and its job run again after its lease, and a cancelled
+`shutdown` no longer detaches them. Declined and documented as a limit of `close()`: a write
+answered just before it is finished on a task of the engine's own, which `close()` does not
+wait for.
+
 #### G19 — Coding template v1
 
 - [ ] **Done**

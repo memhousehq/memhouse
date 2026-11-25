@@ -83,6 +83,45 @@ test("a key repeated by an error answer is not in the error", async () => {
   }
 });
 
+test("a key that a header cannot carry is refused without repeating it", async () => {
+  const before = process.env.MEMHOUSE_API_KEY;
+  const shown = (e) => `${e} ${e.message} ${inspect(e, { depth: 5, showHidden: true })} ${inspect(e.cause)}`;
+  try {
+    // A key read from a file with its newline: fetch would quote the whole header.
+    for (const key of [`${FAKE_KEY}\n`, `${FAKE_KEY}\r\n`, `\n${FAKE_KEY}`, `${FAKE_KEY} `, `${FAKE_KEY}\0`, `${FAKE_KEY}\u00e9`]) {
+      // (The environment cannot hold a NUL; the key given as an option can.)
+      process.env.MEMHOUSE_API_KEY = key.replace("\0", "\t");
+      for (const build of [() => new MemHouse({ baseUrl: "http://127.0.0.1:1" }), () => new MemHouse({ baseUrl: "http://127.0.0.1:1", apiKey: key }), () => new MemHouse({ apiKey: key, transport: new RecordingTransport() })]) {
+        assert.throws(build, (e) => e instanceof TypeError && !shown(e).includes(FAKE_KEY));
+      }
+    }
+    // An ordinary key, and the empty one that sends none, are as before.
+    const [mh, sent] = client();
+    await mh.whoami();
+    await new MemHouse({ baseUrl: "http://memhouse.test", apiKey: "", transport: sent }).whoami();
+    assert.deepEqual(sent.requests.map((r) => r.headers["authorization"]), [`Bearer ${FAKE_KEY}`, undefined]);
+  } finally {
+    if (before === undefined) delete process.env.MEMHOUSE_API_KEY;
+    else process.env.MEMHOUSE_API_KEY = before;
+  }
+});
+
+test("a request that HTTP cannot carry is an error without the key", async () => {
+  // Whatever else in a request is refused by fetch (here a user with a line break, then a key
+  // with one that reached the transport unchecked), the error is the client's own, and constant.
+  const shown = (e) => `${e} ${e.message} ${inspect(e, { depth: 5, showHidden: true })} ${inspect(e.cause)}`;
+  const mh = new MemHouse({ baseUrl: "http://127.0.0.1:1", apiKey: FAKE_KEY, user: "user:ana\nx-injected: 1" });
+  const transport = new HttpTransport("http://127.0.0.1:1");
+  for (const send of [() => mh.whoami(), () => transport.request("GET", "/health", null, { authorization: `Bearer ${FAKE_KEY}\nx` })]) {
+    await assert.rejects(send(), (e) => {
+      assert.ok(e instanceof MemHouseError && e.status === 0 && e.code === "transport" && /could not be built/.test(e.error), String(e));
+      assert.ok(!shown(e).includes(FAKE_KEY), shown(e));
+      assert.equal(e.cause, undefined);
+      return true;
+    });
+  }
+});
+
 test("an answer that is a JSON array is returned as one", async () => {
   const event = { id: 1, action: "memory.write" };
   const [mh, sent] = client([[], [event], [409, { code: "conflict" }]]);

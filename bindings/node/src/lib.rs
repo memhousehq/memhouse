@@ -67,9 +67,15 @@ impl Lite {
         Ok(LiteResponse { status: status.into(), body: String::from_utf8_lossy(&bytes).into_owned() })
     }
 
-    /// Stop the background workers and release the database file. Safe to call more than once:
-    /// every call, also one made while another is still closing, resolves when the workers
-    /// have stopped.
+    /// Stop the background workers and release the database file. Resolves when the workers
+    /// have stopped: each ends after its current job, and one still busy after ten seconds is
+    /// cancelled, its job to be run again the next time the deployment is open. Safe to call
+    /// more than once: every call, also one made while another is still closing, resolves
+    /// when the workers have stopped.
+    ///
+    /// A write whose request was answered just before `close()` is finished on a task of its
+    /// own, which `close()` does not wait for: it can complete, and keep the database file
+    /// open, for a moment after `close()` has resolved.
     #[napi]
     pub async fn close(&self) -> Result<()> {
         // The deployment stays in its place until the shutdown is over: a call that arrives

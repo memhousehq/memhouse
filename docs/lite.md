@@ -107,9 +107,19 @@ main()
   letter case (`Authorization` and `authorization`) are an error, and nothing is sent.
 - **One writer.** The embedding process is the one process that writes the file; do not run
   `memhouse serve` on the same file at the same time and expect both to keep up.
-- **Close it.** `close()` stops the workers (it can take about a second) and releases the
-  file; in Python it also ends the native threads the deployment ran on. It can be called more
-  than once, also at the same time: every call returns when the workers have stopped.
+- **Close it.** `close()` stops the workers and releases the file; in Python it also ends the
+  native threads the deployment ran on. It returns when the workers have stopped, usually
+  within a second: each ends after its current job, and one still busy after ten seconds (a
+  slow model call) is cancelled, its job to be run again the next time the deployment is open
+  (once its claim has lapsed: `[intake] lease_secs` for a write, five minutes for an
+  enrichment job). It can be called more than once, also at the same time: every call returns
+  when the workers have stopped.
+- **What `close()` does not wait for.** A write whose request was answered just before
+  `close()` is finished on a task of its own, not by a worker. In Node.js it can complete, and
+  keep the file open, for a moment after `close()` has resolved; in Python it is cut off when
+  the native threads end and is run again the next time the deployment is open. Nothing is
+  lost either way. Send the last writes with `wait: true` to have their outcome before you
+  close.
 
 **Building.** Nothing is published yet: wheels and npm packages for each platform are release
 work, planned with the packaging goal. Until then the libraries are built from a checkout, and
