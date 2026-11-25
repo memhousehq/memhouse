@@ -133,16 +133,35 @@ const CLEAR_NEXT: &str = "UPDATE mh_memory SET embedding_next = NULL, embedding_
 
 impl SqliteStore {
     /// Fail recall in a process whose model is no longer the database's (after `memhouse
-    /// reembed`). Writes are refused by the database itself; this covers reads.
-    fn ensure_current(&self, c: &Connection) -> anyhow::Result<()> {
+    /// reembed`). The whole identity is compared: a re-embedding can keep the model's name and
+    /// change its dimension or passage prefix. The database's trigger refuses writes under
+    /// another model name; `write_rows` calls this for the rest.
+    pub(crate) fn ensure_current(&self, c: &Connection) -> anyhow::Result<()> {
         let Some(mine) = self.ident() else { return Ok(()) };
-        match meta(c, "embedder")? {
+        let mine = EmbeddingIdentity { embedder: mine.embedder, dim: mine.dim, passage_prefix: self.inner.passage_prefix.clone() };
+        match identity_of(c, "")? {
             // A conflict, not a failure: recall refuses instead of degrading to an empty result.
-            Some(db) if db != mine.embedder => {
-                Err(memhouse_core::error::conflict(format!("this database is now embedded with {db}, not {}; restart with the new [embedding] configuration", mine.embedder)))
+            Some(db) if db != mine => {
+                // The model's name where it changed; the whole identity where only the rest did.
+                let (now, was) = if db.embedder != mine.embedder { (db.embedder, mine.embedder) } else { (db.to_string(), mine.to_string()) };
+                Err(memhouse_core::error::conflict(format!("this database is now embedded with {now}, not {was}; restart with the new [embedding] configuration")))
             }
             _ => Ok(()),
         }
+    }
+
+    /// Refuse a database embedded with another model than `mine` (see `Store::migrate`).
+    fn refuse_other_embedder(c: &Connection, mine: &EmbeddingIdentity) -> anyhow::Result<()> {
+        let Some(db) = identity_of(c, "")?.filter(|db| db != mine) else { return Ok(()) };
+        let unfinished = identity_of(c, "reembed_target_")?.is_some_and(|t| t == *mine);
+        anyhow::bail!(
+            "this database's memories are embedded with {db}, but the configuration says {mine}. {}",
+            if unfinished {
+                "A re-embedding to it is unfinished: run `memhouse reembed` to complete it."
+            } else {
+                "Run `memhouse reembed` to re-embed every memory with the configured model, or go back to the previous [embedding] settings."
+            }
+        )
     }
 
     fn claim_jobs(&self, limit: usize, lease_secs: i64, subject: Option<(&str, &str)>) -> anyhow::Result<Vec<EnrichJob>> {
@@ -188,19 +207,7 @@ impl Store for SqliteStore {
     async fn migrate(&self, dim: usize, embedder_id: &str) -> anyhow::Result<()> {
         let mine = EmbeddingIdentity { embedder: embedder_id.to_string(), dim, passage_prefix: self.inner.passage_prefix.clone() };
         let mut c = self.conn();
-        if let Some(db) = identity_of(&c, "")? {
-            if db != mine {
-                let unfinished = identity_of(&c, "reembed_target_")?.is_some_and(|t| t == mine);
-                anyhow::bail!(
-                    "this database's memories are embedded with {db}, but the configuration says {mine}. {}",
-                    if unfinished {
-                        "A re-embedding to it is unfinished: run `memhouse reembed` to complete it."
-                    } else {
-                        "Run `memhouse reembed` to re-embed every memory with the configured model, or go back to the previous [embedding] settings."
-                    }
-                );
-            }
-        }
+        Self::refuse_other_embedder(&c, &mine)?;
         let version = |c: &Connection| -> anyhow::Result<Option<u32>> { Ok(meta(c, "schema_version")?.map(|v| v.parse()).transpose()?) };
         if let Some(v) = version(&c)?.filter(|v| *v != SCHEMA_VERSION) {
             if v > SCHEMA_VERSION {
@@ -230,6 +237,9 @@ impl Store for SqliteStore {
         for (k, v) in [("embedding_dim", dim.to_string()), ("embedder", embedder_id.to_string()), ("passage_prefix", self.inner.passage_prefix.clone())] {
             exec(&tx, "INSERT INTO mh_meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO NOTHING", [k, v.as_str()])?;
         }
+        // Again under the write lock: another process may have opened the same new file with
+        // another model and recorded its identity first.
+        Self::refuse_other_embedder(&tx, &mine)?;
         set_meta(&tx, "schema_version", &SCHEMA_VERSION.to_string())?;
         tx.commit()?;
         drop(c);
@@ -435,21 +445,31 @@ impl Store for SqliteStore {
     #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "sqlite", db.operation = "SELECT", probes = 1))]
     async fn search(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
         let c = self.read();
-        self.ensure_current(&c)?;
-        self.search_in(&c, q, true)
+        // One read transaction: the ranking and the rows read for it are one state of the file,
+        // whatever another process writes meanwhile.
+        let tx = c.unchecked_transaction()?;
+        self.ensure_current(&tx)?;
+        self.search_in(&tx, q, true)
     }
 
     #[tracing::instrument(name = "db.search", skip_all, fields(db.system = "sqlite", db.operation = "SELECT", probes = qs.len()))]
     async fn search_many(&self, qs: &[SearchQuery]) -> anyhow::Result<Vec<Vec<Hit>>> {
-        // The probes of one recall read one state of the file: nothing is written between them.
+        // The probes of one recall read one state of the file: one read transaction for all.
         let c = self.read();
-        self.ensure_current(&c)?;
-        qs.iter().map(|q| self.search_in(&c, q, true)).collect()
+        let tx = c.unchecked_transaction()?;
+        self.ensure_current(&tx)?;
+        qs.iter().map(|q| self.search_in(&tx, q, true)).collect()
     }
 
     #[tracing::instrument(name = "db.search_unfiltered", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn search_unfiltered(&self, q: &SearchQuery) -> anyhow::Result<Vec<Hit>> {
-        self.search_in(&self.read(), q, false)
+        let c = self.read();
+        let tx = c.unchecked_transaction()?;
+        // A vector probe is only comparable with vectors of the same model; keywords need no check.
+        if q.embedding.is_some() && q.mode != RetrievalMode::Keyword {
+            self.ensure_current(&tx)?;
+        }
+        self.search_in(&tx, q, false)
     }
 
     #[tracing::instrument(name = "db.get", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
@@ -575,7 +595,7 @@ impl Store for SqliteStore {
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some((subject, _)) = self.delete_in(&tx, tenant, id, true, None)? else { return Ok(false) };
+        let Some((subject, _)) = self.delete_in(&tx, tenant, id, true)? else { return Ok(false) };
         exec(
             &tx,
             "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'memory', ?5)",
@@ -938,11 +958,12 @@ impl Store for SqliteStore {
     }
 
     async fn enrich_fail(&self, id: i64, error: &str, max_attempts: i32) -> anyhow::Result<()> {
-        // Retry after 2^attempts seconds.
+        // Retry after 2^attempts seconds. Only a job that is not finished: a worker that
+        // outlived its lease must not reopen a job another worker has completed since.
         exec(
             &self.conn(),
             "UPDATE mh_enrich_job SET error = ?2, locked_until = NULL, status = CASE WHEN attempts >= ?3 THEN 'failed' ELSE 'pending' END, \
-             run_after = ?4 + (1 << min(attempts, 30)) * 1000000 WHERE id = ?1",
+             run_after = ?4 + (1 << min(attempts, 30)) * 1000000 WHERE id = ?1 AND status IN ('pending', 'running')",
             params![id, error, max_attempts, now()],
         )?;
         Ok(())
@@ -990,6 +1011,9 @@ impl Store for SqliteStore {
 
     async fn export_records(&self, tenant: &str, subject: Option<&str>, after: Option<Uuid>, limit: usize) -> anyhow::Result<Vec<RecordLine>> {
         let c = self.conn();
+        // One read transaction: a record and its code references are read from one state of
+        // the file, whatever another process deletes between the two statements.
+        let c = c.unchecked_transaction()?;
         let sql = format!(
             "SELECT {COLS}, m.content_hash, m.superseded_by, m.updated_at, m.alt_hash, s.record_type, s.attrs \
              FROM mh_memory m LEFT JOIN mh_structured s ON s.memory_id = m.id \
@@ -1425,6 +1449,9 @@ impl Store for SqliteStore {
         let config = target.config_hash();
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Checked with the write: a run aborted (and another started) while these vectors were
+        // being made must not find them in its staging columns.
+        anyhow::ensure!(identity_of(&tx, "reembed_target_")?.as_ref() == Some(target), "no re-embedding to {target} is in progress; its vectors were not staged");
         for v in vectors {
             let alt = v.alt.as_ref().map(|(_, a)| a.as_slice());
             exec(
@@ -1450,8 +1477,8 @@ impl Store for SqliteStore {
         let mut c = self.conn();
         // The one writer: nothing is written between the count and the switch.
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let recorded = meta(&tx, "reembed_target_embedder")?;
-        anyhow::ensure!(recorded.as_deref() == Some(target.embedder.as_str()), "no re-embedding to {} is in progress", target.embedder);
+        // The whole recorded target: the staged vectors have its dimension and prefix, not only its name.
+        anyhow::ensure!(identity_of(&tx, "reembed_target_")?.as_ref() == Some(target), "no re-embedding to {target} is in progress");
         let pending: i64 = first(&tx, "SELECT count(*) FROM mh_memory WHERE embedding IS NOT NULL AND embedding_next IS NULL", [], |r| Ok(r.get(0)?))?.unwrap_or(0);
         if pending > 0 {
             return Ok(Some(pending as u64));

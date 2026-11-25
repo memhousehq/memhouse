@@ -210,7 +210,11 @@ async fn records_round_trip_and_filters() {
     assert!(s.search(&SearchQuery { tenant: "other".into(), ..kw("bicycle") }).await.unwrap().is_empty());
     // The second vector counts: the query along its axis ranks the record first.
     let dense = |v: Vec<f32>| SearchQuery { mode: RetrievalMode::Dense, ..query(S, "", Some(v)) };
-    assert_eq!(s.search(&dense(axis(3, 0.0))).await.unwrap()[0].memory.id, ida);
+    // Its similarity is the second vector's: every first vector is orthogonal to this query, so
+    // a scan that ignored the second one would tie them all at 0.
+    let by_alt = s.search(&dense(axis(3, 0.0))).await.unwrap();
+    assert_eq!(by_alt[0].memory.id, ida);
+    assert!(by_alt[0].similarity.unwrap() > 0.99 && by_alt[1].similarity.unwrap() < 0.01, "{:?}", by_alt.iter().map(|h| h.similarity).collect::<Vec<_>>());
     let with = s.search(&SearchQuery { with_vectors: true, limit: 1, ..dense(axis(1, 0.0)) }).await.unwrap();
     assert_eq!((with[0].memory.id, with[0].embedding.as_ref().map(|v| v.len())), (idb, Some(DIM)));
     assert_eq!(ids(&s.search(&SearchQuery { kinds: Some(vec![MemoryKind::Working]), ..dense(axis(0, 0.0)) }).await.unwrap()), vec![idw]);
@@ -843,4 +847,77 @@ async fn export_import_and_reembedding() {
     let hits = restarted.search(&SearchQuery { mode: RetrievalMode::Dense, ..query(S, "", Some(big(7))) }).await.unwrap();
     assert_eq!((hits[0].memory.id, hits[0].similarity.map(|x| x > 0.99)), (a.id, Some(true)));
     assert_eq!(restarted.export_records(T, Some(S), None, 1).await.unwrap()[0].alt_hash.as_deref(), Some("alt-new"));
+}
+
+/// MEM-05 and TR-WF-01: a record that names its source in another spelling of the id goes with
+/// the source, and both of its cached vectors go with it.
+#[tokio::test]
+async fn a_dependent_goes_with_its_source_however_the_id_is_spelled() {
+    let (_dir, s) = store().await;
+    let prefix_hash = |text: &str| memhouse_core::engine::content_hash(&format!("passage: {text}"));
+    let source = memory(S, "user: The alarm code is 4471.");
+    let mut fact = memory(S, "The alarm code is 4471.");
+    fact.metadata = json!({ "derived": true, "source_ids": [source.id.to_string().to_uppercase()] });
+    let mut promoted = memory(S, "Alarm code: 4471.");
+    promoted.metadata = json!({ "promoted_from": [fact.id.to_string().to_uppercase()] });
+    let (ids, idf, idp) = (source.id, fact.id, promoted.id);
+    let mut nf = new(fact.clone(), Some(axis(0, 0.0)));
+    nf.alt = Some(("alt-of-fact".into(), axis(1, 0.0)));
+    s.insert(&[new(source, None), nf, new(promoted, None)]).await.unwrap();
+    s.embed_cache_put("test:model", &[(prefix_hash(&fact.content), axis(0, 0.0)), ("alt-of-fact".into(), axis(1, 0.0))]).await.unwrap();
+
+    assert!(s.delete(T, ids, "tester").await.unwrap());
+    for gone in [idf, idp] {
+        assert!(s.get(T, gone).await.unwrap().is_none(), "{gone} should have gone with its source");
+    }
+    assert!(s.embed_cache_get("test:model", &[prefix_hash(&fact.content), "alt-of-fact".into()]).await.unwrap().is_empty(), "a cached vector of the fact is left");
+}
+
+/// TR-MS-04: the staging columns and the switch belong to the recorded target, the whole of it;
+/// and a process on the identity of before a switch is refused, also when only the dimension
+/// changed.
+#[tokio::test]
+async fn re_embedding_checks_the_whole_identity() {
+    let (dir, s) = store().await;
+    let a = memory(S, "Embedded twice.");
+    s.insert(&[new(a.clone(), Some(axis(0, 0.0)))]).await.unwrap();
+    let wide = |n: usize, i: usize| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect::<Vec<f32>>();
+    let to = EmbeddingIdentity { embedder: "test:model".into(), dim: 12, passage_prefix: "passage: ".into() };
+    let other = EmbeddingIdentity { dim: 16, ..to.clone() };
+    let vectors = |n: usize| [ReembedVectors { id: a.id, embedding: wide(n, 5), alt: None }];
+
+    // No run: nothing is staged. A run to one target: another target's vectors are not staged.
+    assert!(s.reembed_write(&to, &vectors(12)).await.unwrap_err().to_string().contains("no re-embedding"));
+    s.reembed_begin(&to).await.unwrap();
+    assert!(s.reembed_write(&other, &vectors(16)).await.is_err(), "vectors of a target that is not the run's");
+    assert_eq!(s.reembed_estimate().await.unwrap().done, 0);
+    s.reembed_write(&to, &vectors(12)).await.unwrap();
+    // The switch names the recorded target, dimension included.
+    assert!(s.reembed_cutover(&other).await.unwrap_err().to_string().contains("no re-embedding"));
+    assert_eq!(s.embedding_identity().await.unwrap().1, Some(to.clone()));
+    assert_eq!(s.reembed_cutover(&to).await.unwrap(), None);
+
+    // This process still has 8 dimensions under the same model name: refused, not served.
+    let refused = s.search(&SearchQuery { mode: RetrievalMode::Dense, ..query(S, "", Some(axis(0, 0.0))) }).await.unwrap_err();
+    assert_eq!(memhouse_core::error::code_of(&refused), memhouse_core::error::ErrorCode::Conflict, "{refused}");
+    assert!(refused.to_string().contains("12 dims") && refused.to_string().contains("8 dims"), "{refused}");
+    let refused = s.search_unfiltered(&SearchQuery { mode: RetrievalMode::Dense, ..query(S, "", Some(axis(0, 0.0))) }).await.unwrap_err();
+    assert_eq!(memhouse_core::error::code_of(&refused), memhouse_core::error::ErrorCode::Conflict, "{refused}");
+    assert!(s.search_unfiltered(&SearchQuery { mode: RetrievalMode::Keyword, ..query(S, "embedded", None) }).await.is_ok(), "keywords need no model");
+    assert!(s.insert(&[new(memory(S, "An 8-dimensional vector beside 12-dimensional ones."), Some(axis(0, 0.0)))]).await.is_err());
+    let restarted = SqliteStore::open(&dir.path().join("memhouse.db"), "passage: ").unwrap();
+    restarted.migrate(12, "test:model").await.unwrap();
+    assert_eq!(restarted.search(&SearchQuery { mode: RetrievalMode::Dense, ..query(S, "", Some(wide(12, 5))) }).await.unwrap().len(), 1);
+}
+
+/// A failure reported late, by a worker whose lease ran out, does not reopen a finished job.
+#[tokio::test]
+async fn a_late_failure_does_not_reopen_a_finished_job() {
+    let (_dir, s) = store().await;
+    let job = s.enrich_enqueue(T, S, "sess", &[]).await.unwrap();
+    assert_eq!(s.enrich_claim_for(T, S, 1, 60).await.unwrap().len(), 1);
+    s.enrich_finish(job, None, &EnrichOutcome::default()).await.unwrap();
+    s.enrich_fail(job, "the first worker's call timed out", 3).await.unwrap();
+    let st = s.enrich_status(T, Some(S)).await.unwrap();
+    assert_eq!((st.done, st.pending, st.failed), (1, 0, 0));
 }

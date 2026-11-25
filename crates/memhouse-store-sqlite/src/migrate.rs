@@ -71,9 +71,12 @@ pub(crate) fn snapshot(c: &Connection, dest: &Path) -> anyhow::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         open.mode(0o600);
     }
-    let file = open.open(dest).map_err(|e| anyhow::anyhow!("cannot create the snapshot {}: {e}", dest.display()))?;
+    // Before the file is created: a path SQLite cannot be given must not leave an empty file behind.
     let name = dest.to_str().ok_or_else(|| anyhow::anyhow!("the snapshot path {} is not valid UTF-8", dest.display()))?;
-    let written = c.execute("VACUUM INTO ?1", [name]).map_err(anyhow::Error::from).and_then(|_| Ok(file.sync_all()?));
+    let file = open.open(dest).map_err(|e| anyhow::anyhow!("cannot create the snapshot {}: {e}", dest.display()))?;
+    // The file, then its name: the copy must outlive a power failure before anything is upgraded.
+    let dir = dest.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let written = c.execute("VACUUM INTO ?1", [name]).map_err(anyhow::Error::from).and_then(|_| Ok(file.sync_all()?)).and_then(|_| crate::sync_dir(dir));
     if let Err(e) = written {
         let _ = std::fs::remove_file(dest);
         anyhow::bail!("cannot write the snapshot {}: {e}", dest.display());
@@ -210,6 +213,34 @@ mod tests {
         assert!(e.contains(&format!("schema version {newer}")) && e.contains("newer MemHouse") && e.contains("memhouse.db"), "{e}");
         assert_eq!(std::fs::read(&path).unwrap(), before, "the file was changed");
         assert!(snapshots(dir.path()).is_empty());
+    }
+
+    /// A newer process that stopped without closing leaves its last commits in the write-ahead
+    /// log. The refusal reads them (the file alone still says the older version) and folds
+    /// nothing into the file.
+    #[tokio::test]
+    async fn a_newer_file_with_a_write_ahead_log_is_refused_and_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memhouse.db");
+        SqliteStore::open(&path, "").unwrap().migrate(4, EMBEDDER).await.unwrap();
+        let newer = (crate::SCHEMA_VERSION + 1).to_string();
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch("PRAGMA wal_autocheckpoint = 0;").unwrap();
+        writer.execute("UPDATE mh_meta SET value = ?1 WHERE key = 'schema_version'", [&newer]).unwrap();
+        // The files as a stopped process leaves them: the database and its log, no one holding them.
+        let left = dir.path().join("left");
+        std::fs::create_dir(&left).unwrap();
+        let (db, wal) = (left.join("memhouse.db"), left.join("memhouse.db-wal"));
+        std::fs::copy(&path, &db).unwrap();
+        std::fs::copy(dir.path().join("memhouse.db-wal"), &wal).unwrap();
+        drop(writer);
+        let before = (std::fs::read(&db).unwrap(), std::fs::read(&wal).unwrap());
+        assert!(!before.1.is_empty(), "the newer version is only in the log");
+
+        let e = SqliteStore::open(&db, "").err().expect("a newer file is not opened").to_string();
+        assert!(e.contains(&format!("schema version {newer}")) && e.contains("newer MemHouse"), "{e}");
+        assert_eq!(std::fs::read(&db).unwrap(), before.0, "the log was folded into the file");
+        assert_eq!(std::fs::read(&wal).unwrap(), before.1, "the log was changed or removed");
     }
 
     #[tokio::test]

@@ -96,6 +96,7 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    /// Written last: flushing its directory also makes the names of the files written before it durable.
     pub fn write(&self, dir: &Path) -> anyhow::Result<()> {
         write_private(&dir.join(MANIFEST_FILE), (serde_json::to_string_pretty(self)? + "\n").as_bytes())
     }
@@ -150,10 +151,13 @@ pub fn create_private(path: &Path) -> anyhow::Result<std::fs::File> {
     open.open(path).map_err(|e| anyhow::anyhow!("cannot create {}: {e}", path.display()))
 }
 
+/// A new private file with this content, durable when it returns: the file is flushed, then
+/// its directory (a flushed file whose name is lost in a power failure is no backup).
 fn write_private(path: &Path, content: &[u8]) -> anyhow::Result<()> {
     let mut file = create_private(path)?;
     file.write_all(content)?;
-    Ok(file.sync_all()?)
+    file.sync_all()?;
+    crate::sync_dir(path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")))
 }
 
 /// The directory a backup is written into: the user's own and closed to others, like the
@@ -227,9 +231,10 @@ impl SqliteStore {
         })
     }
 
-    /// Every tenant with a record.
+    /// Every tenant with something a canonical export holds of its own: a record or a link
+    /// (policies are not a tenant's: every export carries them all).
     pub fn tenants(&self) -> anyhow::Result<Vec<String>> {
-        rows(&self.conn(), "SELECT DISTINCT tenant FROM mh_memory ORDER BY tenant", [], |r| Ok(r.get(0)?))
+        rows(&self.conn(), "SELECT tenant FROM mh_memory UNION SELECT tenant FROM mh_link ORDER BY 1", [], |r| Ok(r.get(0)?))
     }
 
     pub fn counts(&self) -> anyhow::Result<Counts> {
@@ -273,14 +278,24 @@ impl SqliteStore {
                 rep.known += 1;
                 continue;
             }
-            // Only what existed when the deletion was made: a subject written again after its erasure keeps the new records.
+            // An erasure of a subject or tenant removes only what existed when it was made: a
+            // subject written again after its erasure keeps the new records.
             let upto = Some(key.0);
             let need = |v: Option<&str>, what: &str| v.map(String::from).ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a {what}", e.scope, e.at.to_rfc3339()));
             let removed = match e.scope.as_str() {
                 "memory" | "retention" => {
                     let id = e.memory_id.ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a memory id", e.scope, e.at.to_rfc3339()))?;
+                    // An id names one record, so the row is removed whatever its `created_at` says
+                    // (an import keeps the file's times, and a clock can step back): no cutoff.
                     // Retention keeps what was promoted from a purged record; a deletion does not.
-                    self.delete_in(&tx, &e.tenant, id, e.scope == "memory", upto)?.map_or(0, |(_, n)| n)
+                    let removed = self.delete_in(&tx, &e.tenant, id, e.scope == "memory")?.map_or(0, |(_, n)| n);
+                    if e.scope == "memory" {
+                        // The snapshot may hold the record still queued (the worker had not
+                        // written it yet): it leaves its proposal, with what was promoted from it.
+                        crate::intake::drop_queued_record(&tx, &e.tenant, id)?;
+                        crate::intake::drop_promotions_of(&tx, &e.tenant, &HashSet::from([id]))?;
+                    }
+                    removed
                 }
                 "subject" => self.erase_subject(&tx, &e.tenant, &need(e.subject.as_deref(), "subject")?, true, upto)?,
                 "subject-reset" => self.erase_subject(&tx, &e.tenant, &need(e.subject.as_deref(), "subject")?, false, upto)?,
@@ -399,10 +414,15 @@ pub async fn restore(snapshot: &Path, db: &Path, ledger: &[LedgerEntry], actor: 
         std::fs::File::open(&work)?.sync_all()?;
         // The write-ahead log of the database being replaced must not be read into the new one.
         // Folded into its file first, so that file is still whole if the move below fails.
+        // A log that cannot be folded in holds committed writes the file does not: the restore
+        // stops there, with both files as they were.
         if db.exists() {
-            if let Ok(old) = Connection::open(db) {
-                let _ = old.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-            }
+            let unfolded = |e: &dyn std::fmt::Display| anyhow::anyhow!("cannot fold the write-ahead log of {} into it ({e}); the database was left as it was", db.display());
+            let old = Connection::open(db).map_err(|e| unfolded(&e))?;
+            old.busy_timeout(std::time::Duration::from_secs(10)).map_err(|e| unfolded(&e))?;
+            // The first column is 1 when another connection kept the checkpoint from completing.
+            let busy: i64 = old.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0)).map_err(|e| unfolded(&e))?;
+            anyhow::ensure!(busy == 0, "{}", unfolded(&"another process has the database open: stop `memhouse serve` and the agents using it"));
         }
         for old in [side("-wal"), side("-shm")] {
             match std::fs::remove_file(&old) {
@@ -411,9 +431,14 @@ pub async fn restore(snapshot: &Path, db: &Path, ledger: &[LedgerEntry], actor: 
             }
         }
         std::fs::rename(&work, db).map_err(|e| anyhow::anyhow!("cannot move the restored database to {}: {e}", db.display()))?;
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
-        }
+        // The move is durable once the directory is flushed. From here the database is the
+        // restored one, so a failure must not read as "nothing changed".
+        crate::sync_dir(dir).map_err(|e| {
+            anyhow::anyhow!(
+                "the restored database is in place at {}, but {e:#}: the restore may not survive a power failure. Run `memhouse restore` again to be sure",
+                db.display()
+            )
+        })?;
         Ok(Restored { ledger: applied, schema_from, counts, audit_events, audit_broken_at })
     }
     .await;

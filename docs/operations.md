@@ -413,9 +413,13 @@ is safe to run twice, and export → import → export reproduces every line. It
 audit chain or the deletion ledger: back those up with the database.
 
 On the [Lite profile](lite.md#backup-and-restore), `memhouse backup <dir>` writes a consistent
-snapshot of the SQLite file together with the export and the deletion ledger, and
-`memhouse restore <dir>` re-applies the ledger for you. The two commands refuse a Postgres
-installation: use `pg_dump` and the procedure below.
+snapshot of the SQLite file together with the export and the deletion ledger. The ledger in
+the backup ends where the backup was taken, so a restore needs the later one:
+`memhouse restore <dir> --force` over the current database carries that database's ledger over
+and re-applies it; on a machine without the current database, export the ledger first with
+`memhouse backup <dir> --ledger-only` and pass it with `memhouse restore <dir> --ledger <file>`.
+A plain `memhouse restore <dir>` there brings back what was deleted after the backup, and says
+so. The two commands refuse a Postgres installation: use `pg_dump` and the procedure below.
 
 ### Re-applying deletions after a restore
 

@@ -39,6 +39,38 @@ pub(crate) fn drop_promotions_of(c: &Connection, tenant: &str, gone: &HashSet<Uu
     Ok(n)
 }
 
+/// Take one record out of every proposal that still holds it with its content (queued, running
+/// or set aside); a proposal left without records goes. The other records stay queued. Returns
+/// how many proposals changed, and the subject of one that held the record.
+pub(crate) fn drop_queued_record(c: &Connection, tenant: &str, id: Uuid) -> anyhow::Result<(u64, Option<String>)> {
+    let held = rows(
+        c,
+        concat!(
+            "SELECT seq, record_ids, payload, subject FROM mh_intake WHERE tenant = ?1 AND ",
+            holds!(2),
+            " AND payload IS NOT NULL AND status IN ('pending', 'running', 'dead')"
+        ),
+        params![tenant, id.to_string()],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
+    )?;
+    let mut n = 0;
+    let mut of = None;
+    for (seq, record_ids, payload, subject) in held {
+        of = Some(subject);
+        let left: Vec<Uuid> = uuids(&record_ids)?.into_iter().filter(|r| *r != id).collect();
+        if left.is_empty() {
+            n += exec(c, "DELETE FROM mh_intake WHERE seq = ?1", [seq])?;
+            continue;
+        }
+        let mut payload = value(&payload)?;
+        if let Some(records) = payload["records"].as_array_mut() {
+            records.retain(|r| r["memory"]["id"].as_str() != Some(id.to_string().as_str()));
+        }
+        n += exec(c, "UPDATE mh_intake SET record_ids = ?2, payload = ?3 WHERE seq = ?1", params![seq, ids_json(&left), payload.to_string()])?;
+    }
+    Ok((n, of))
+}
+
 #[async_trait]
 impl memhouse_core::IntakeQueue for SqliteStore {
     fn name(&self) -> &'static str {
@@ -222,28 +254,20 @@ impl memhouse_core::IntakeQueue for SqliteStore {
             // One record leaves its proposal; the other records stay queued (or kept for the operator).
             let id: Uuid = value.parse()?;
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let held = rows(
-                &tx,
-                concat!(
-                    "SELECT seq, record_ids, payload FROM mh_intake WHERE tenant = ?1 AND ",
-                    holds!(2),
-                    " AND payload IS NOT NULL AND status IN ('pending', 'running', 'dead')"
-                ),
-                params![tenant, id.to_string()],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-            )?;
-            let mut n = 0;
-            for (seq, record_ids, payload) in held {
-                let left: Vec<Uuid> = uuids(&record_ids)?.into_iter().filter(|r| *r != id).collect();
-                if left.is_empty() {
-                    n += exec(&tx, "DELETE FROM mh_intake WHERE seq = ?1", [seq])?;
-                    continue;
+            let (n, subject) = drop_queued_record(&tx, tenant, id)?;
+            // A record that was only queued has no row for `Store::delete` to find, so its
+            // deletion is recorded here, with the removal: a backup taken while it was queued
+            // still holds it, and a restore re-applies the ledger (TR-WF-03). A stored record
+            // gets its ledger row from `delete`, which follows.
+            if let Some(subject) = subject {
+                let stored = first(&tx, "SELECT 1 FROM mh_memory WHERE tenant = ?1 AND id = ?2", params![tenant, id.to_string()], |_| Ok(()))?.is_some();
+                if !stored {
+                    exec(
+                        &tx,
+                        "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'memory', 'intake.discard')",
+                        params![now(), tenant, subject, id.to_string()],
+                    )?;
                 }
-                let mut payload = crate::util::value(&payload)?;
-                if let Some(records) = payload["records"].as_array_mut() {
-                    records.retain(|r| r["memory"]["id"].as_str() != Some(id.to_string().as_str()));
-                }
-                n += exec(&tx, "UPDATE mh_intake SET record_ids = ?2, payload = ?3 WHERE seq = ?1", params![seq, ids_json(&left), payload.to_string()])?;
             }
             // A promotion of this record that is still queued (or set aside with its content)
             // goes with it (MEM-05): it is no longer readable by its id, and never written.

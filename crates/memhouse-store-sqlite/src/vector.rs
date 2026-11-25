@@ -4,9 +4,13 @@
 
 use half::f16;
 
-/// 2 bytes per dimension, little-endian.
+/// 2 bytes per dimension, little-endian. A vector with a component beyond the half-precision
+/// range is scaled down to fit first: the component would be stored as infinity and every
+/// cosine with the row would come out NaN, and cosine does not depend on a vector's length.
 pub fn to_half(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|x| f16::from_f32(*x).to_le_bytes()).collect()
+    let largest = v.iter().filter(|x| x.is_finite()).fold(0f32, |m, x| m.max(x.abs()));
+    let scale = if largest > f16::MAX.to_f32() { 1.0 / largest } else { 1.0 };
+    v.iter().flat_map(|x| f16::from_f32(*x * scale).to_le_bytes()).collect()
 }
 
 pub fn from_half(b: &[u8]) -> Vec<f32> {
@@ -82,6 +86,10 @@ mod tests {
         assert!((p.cosine(&blob).unwrap() - 1.0).abs() < 1e-3);
         assert!(p.cosine(&blob[..6]).is_err());
         assert_eq!(Probe::new(&[0.0; 4]).cosine(&blob).unwrap(), 0.0);
+        // Components beyond the half-precision range: scaled to fit, the direction kept.
+        let big = to_half(&[300_000.0, -400_000.0, 0.0, 0.0]);
+        assert!(from_half(&big).iter().all(|x| x.is_finite()));
+        assert!((p.cosine(&big).unwrap() - 1.0).abs() < 1e-3);
     }
 
     #[test]

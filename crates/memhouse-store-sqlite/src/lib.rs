@@ -66,6 +66,11 @@ pub fn private_dir(dir: &Path) -> anyhow::Result<()> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         }
+        // The new directory's entry, so what is written into it next is not lost with it in a
+        // power failure. A parent this user cannot open for reading is left to the OS.
+        if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+            let _ = sync_dir(parent);
+        }
     }
     #[cfg(unix)]
     {
@@ -86,6 +91,17 @@ pub fn private_dir(dir: &Path) -> anyhow::Result<()> {
             dir.display()
         );
     }
+    Ok(())
+}
+
+/// Flush a directory, so the entries of files created in it or moved into it survive a power
+/// failure: flushing a file does not make its name durable. Windows has no such call, and
+/// keeps directory entries with the file.
+pub(crate) fn sync_dir(dir: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir).and_then(|d| d.sync_all()).map_err(|e| anyhow::anyhow!("cannot flush the directory {}: {e}", dir.display()))?;
+    #[cfg(not(unix))]
+    let _ = dir;
     Ok(())
 }
 
@@ -121,17 +137,24 @@ impl SqliteStore {
     ///
     /// The file's directory must be the user's own and closed to others (see [`private_dir`]):
     /// SQLite trusts the `-wal` and `-shm` files it finds beside a database, so nobody else may
-    /// be able to put one there.
+    /// be able to put one there. The check is of that directory alone, and the file is then
+    /// opened by its path: a directory above it that another user can write to (and so rename
+    /// this one away) is outside what the check covers.
     pub fn open(path: &Path, passage_prefix: &str) -> anyhow::Result<SqliteStore> {
         let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         private_dir(dir)?;
+        // Before anything is written to it: a file of a newer MemHouse is left exactly as it is
+        // (TR-LT-10). Looked at through a read-only connection, because closing a writable one
+        // folds a write-ahead log left by that newer process into the file and removes the log.
+        if path.exists() {
+            let look = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+                .map_err(|e| anyhow::anyhow!("cannot open the SQLite database {}: {e}", path.display()))?;
+            migrate::refuse_newer(
+                meta(&look, "schema_version").map_err(|e| anyhow::anyhow!("{} is not a MemHouse database: {e}", path.display()))?.as_deref(),
+                &path.display().to_string(),
+            )?;
+        }
         let conn = Connection::open(path).map_err(|e| anyhow::anyhow!("cannot open the SQLite database {}: {e}", path.display()))?;
-        // Before anything is written to it, journal mode included: a file of a newer MemHouse
-        // is left exactly as it is (TR-LT-10).
-        migrate::refuse_newer(
-            meta(&conn, "schema_version").map_err(|e| anyhow::anyhow!("{} is not a MemHouse database: {e}", path.display()))?.as_deref(),
-            &path.display().to_string(),
-        )?;
         // The memories are the user's alone: no other account reads the file.
         #[cfg(unix)]
         {

@@ -130,6 +130,12 @@ pub(crate) fn json_contains(a: &serde_json::Value, b: &serde_json::Value) -> boo
         // An array contains a scalar that is one of its elements (top level only in Postgres;
         // attributes are objects, so the difference is never reached).
         (Array(_), _) | (Object(_), _) | (_, Array(_)) | (_, Object(_)) => false,
+        // Numbers by value, as `jsonb` compares them: 1 equals 1.0. Two integers are compared
+        // exactly, so integers beyond a float's precision stay distinct.
+        (Number(x), Number(y)) => match (x.as_i64().map(i128::from).or(x.as_u64().map(i128::from)), y.as_i64().map(i128::from).or(y.as_u64().map(i128::from))) {
+            (Some(i), Some(j)) => i == j,
+            _ => x.as_f64() == y.as_f64(),
+        },
         _ => a == b,
     }
 }
@@ -148,6 +154,10 @@ mod tests {
         assert!(!json_contains(&a, &json!({ "city": "porto" })));
         assert!(!json_contains(&a, &json!({ "tags": ["c"] })));
         assert!(!json_contains(&a, &json!({ "missing": null })));
+        // Numbers by value: an integer and the same number written as a float are equal.
+        assert!(json_contains(&a, &json!({ "geo": { "lat": 41.0 } })) && json_contains(&json!({ "n": 2.0 }), &json!({ "n": 2 })));
+        assert!(!json_contains(&a, &json!({ "geo": { "lat": 41.5 } })) && !json_contains(&a, &json!({ "geo": { "lat": "41" } })));
+        assert!(!json_contains(&json!({ "n": 9007199254740993u64 }), &json!({ "n": 9007199254740992u64 })));
     }
 
     #[test]

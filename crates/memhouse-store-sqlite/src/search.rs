@@ -262,7 +262,9 @@ impl SqliteStore {
         let use_kw = q.mode != RetrievalMode::Dense;
         let mut fused: HashMap<String, Fused> = HashMap::new();
 
-        // Keyword candidates: BM25 over the subject's rows only (the token is part of the MATCH).
+        // Keyword candidates: only the subject's rows match (the token is part of the MATCH).
+        // BM25 ranks them with the statistics of the whole table (document frequencies, average
+        // length), as FTS5 keeps them: other subjects' records can change the order, never the set.
         if let Some(m) = match_query(&crate::subject_token(&q.tenant, &q.subject), &q.text).filter(|_| use_kw) {
             let sql = format!(
                 "SELECT m.id FROM mh_memory_fts f JOIN mh_memory m ON m.rid = f.rowid \

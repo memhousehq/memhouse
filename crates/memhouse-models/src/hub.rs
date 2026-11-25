@@ -135,10 +135,18 @@ impl Expect {
         self.revision.is_some() || !self.sha256.is_empty()
     }
 
-    /// One line for `memhouse doctor`: `Err` when nothing pins the model.
+    /// One line for `memhouse doctor`: `Err` when nothing pins the model, or when only a
+    /// revision does (the files are then fetched at that commit but compared with nothing).
     pub fn describe(&self, repo: &str) -> Result<String, String> {
         if !self.pinned() {
             return Err(format!("{repo} is not pinned: its files are used as downloaded, unchecked. Set `revision` and `sha256` for it in the configuration"));
+        }
+        if self.sha256.is_empty() {
+            let r = self.revision.as_deref().unwrap_or_default();
+            return Err(format!(
+                "{repo} is pinned to revision {} without checksums: its files are used as downloaded, unchecked. Set `sha256` for them in the configuration",
+                &r[..r.len().min(12)]
+            ));
         }
         let by = if self.configured { "by the configuration" } else { "in this build" };
         Ok(match &self.revision {
@@ -508,6 +516,9 @@ mod tests {
         let moved = Expect::of(pin.repo, Some("0123456789abcdef0123456789abcdef01234567"), &BTreeMap::from([("config.json".to_string(), "AB".repeat(32))]));
         assert_eq!(moved.sha256, BTreeMap::from([("config.json".to_string(), "ab".repeat(32))]));
         assert!(moved.configured && moved.describe(pin.repo).unwrap().contains("by the configuration"));
+        // A revision alone fetches that commit but checks nothing: not reported as verified.
+        let unchecked = Expect::of(pin.repo, Some("0123456789abcdef0123456789abcdef01234567"), &none);
+        assert!(unchecked.pinned() && unchecked.describe(pin.repo).unwrap_err().contains("without checksums"));
         // A model the binary does not name: unpinned, then pinned by the configuration.
         let unknown = Expect::of("org/other", None, &none);
         assert!(!unknown.pinned() && unknown.describe("org/other").unwrap_err().contains("not pinned"));

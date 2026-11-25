@@ -91,8 +91,11 @@ pub(crate) fn write_rows_of<'a>(lines: &'a [RecordLine], records: &'a [NewMemory
 }
 
 /// The ids in one of the metadata lists a deletion follows (`source_ids`, `promoted_from`).
+/// An id is indexed in the form a deletion looks it up by (`Uuid`'s lower-case text), however
+/// the metadata spells it.
 fn listed(metadata: &serde_json::Value, key: &str) -> Vec<String> {
-    metadata.get(key).and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect()
+    let canonical = |s: &str| Uuid::parse_str(s).map_or_else(|_| s.to_string(), |u| u.to_string());
+    metadata.get(key).and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str().map(canonical)).collect()
 }
 
 /// Index the sources a record's metadata names (see `mh_source_ref`).
@@ -129,6 +132,11 @@ impl SqliteStore {
             (1..=42).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", "),
             if skip_existing { " ON CONFLICT (id) DO NOTHING" } else { "" }
         );
+        // Under the write lock: a process still on the identity of before a re-embedding writes
+        // no vector of the old size or prefix beside the new ones.
+        if rows.iter().any(|w| w.embedding.is_some() || w.alt.is_some()) {
+            self.ensure_current(c)?;
+        }
         let mut inserted = vec![];
         for w in rows {
             let r = w.r;
@@ -227,16 +235,17 @@ impl SqliteStore {
     pub(crate) fn delete_dependents(&self, c: &Connection, tenant: &str, sources: &[Uuid], facts: bool, promotions: bool) -> anyhow::Result<Vec<Uuid>> {
         let found = rows(
             c,
-            "SELECT DISTINCT m.id, m.content FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id \
+            "SELECT DISTINCT m.id, m.content, m.alt_hash FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id \
              WHERE r.tenant = ?1 AND m.tenant = ?1 AND r.source_id IN (SELECT value FROM json_each(?2)) \
                AND ((?3 AND r.via = 'source') OR (?4 AND r.via = 'promoted'))",
             params![tenant, ids_json(sources), facts, promotions],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
         )?;
         let mut ids = Vec::with_capacity(found.len());
-        for (id, content) in &found {
+        for (id, content, alt_hash) in &found {
             exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, id.as_str()])?;
-            self.purge_vectors(c, [content.as_str()], [])?;
+            // Both cached vectors, as a direct deletion drops them.
+            self.purge_vectors(c, [content.as_str()], alt_hash.as_deref())?;
             ids.push(uuid_of(id)?);
         }
         Ok(ids)
@@ -244,15 +253,13 @@ impl SqliteStore {
 
     /// Delete one record with everything derived from it (see `Store::delete`), inside the
     /// caller's transaction and without the ledger row. `promotions` also removes what was
-    /// promoted from it (a deletion does, retention does not). With `upto`, only a record
-    /// written by then: a deletion re-applied after a restore removes what existed when it
-    /// was made. Returns the record's subject and how many records went.
-    pub(crate) fn delete_in(&self, c: &Connection, tenant: &str, id: Uuid, promotions: bool, upto: Option<i64>) -> anyhow::Result<Option<(String, u64)>> {
+    /// promoted from it (a deletion does, retention does not). Returns the record's subject
+    /// and how many records went.
+    pub(crate) fn delete_in(&self, c: &Connection, tenant: &str, id: Uuid, promotions: bool) -> anyhow::Result<Option<(String, u64)>> {
         let ids = id.to_string();
-        let row =
-            first(c, "SELECT subject, content, alt_hash FROM mh_memory WHERE tenant = ?1 AND id = ?2 AND (?3 IS NULL OR created_at <= ?3)", params![tenant, ids, upto], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
-            })?;
+        let row = first(c, "SELECT subject, content, alt_hash FROM mh_memory WHERE tenant = ?1 AND id = ?2", params![tenant, ids], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
+        })?;
         let Some((subject, content, alt_hash)) = row else { return Ok(None) };
         exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
         // Also drop the cached embeddings of this content (every representation goes, TR-WF-01).
@@ -294,7 +301,8 @@ impl SqliteStore {
     }
 
     /// Everything held about a subject, without the ledger row. With `upto`, only what was
-    /// written by then (see `delete_in`).
+    /// written by then: an erasure re-applied after a restore removes what existed when it was
+    /// made, and a subject written again since keeps its new records.
     pub(crate) fn erase_subject(&self, c: &Connection, tenant: &str, subject: &str, purge_cache: bool, upto: Option<i64>) -> anyhow::Result<u64> {
         // Queued writes first: nothing lands after an erasure.
         exec(c, "DELETE FROM mh_intake WHERE tenant = ?1 AND subject = ?2 AND (?3 IS NULL OR enqueued_at <= ?3)", params![tenant, subject, upto])?;
@@ -320,7 +328,7 @@ impl SqliteStore {
 
     /// Everything of a tenant (see `Store::delete_tenant`), without the tenant's ledger row.
     /// With `ledger_actor` each subject gets its own ledger row, as an erasure writes them;
-    /// with `upto`, only what was written by then (see `delete_in`).
+    /// with `upto`, only what was written by then (see `erase_subject`).
     pub(crate) fn erase_tenant(&self, c: &Connection, tenant: &str, ledger_actor: Option<&str>, upto: Option<i64>) -> anyhow::Result<u64> {
         exec(c, "DELETE FROM mh_intake WHERE tenant = ?1 AND (?2 IS NULL OR enqueued_at <= ?2)", params![tenant, upto])?;
         // Every subject, in any state (`subjects` lists only those with committed records).

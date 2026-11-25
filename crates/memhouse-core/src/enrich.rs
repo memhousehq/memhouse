@@ -288,6 +288,11 @@ fn kind_of(k: Option<&str>) -> MemoryKind {
     }
 }
 
+/// The rounds a derived fact names as its sources (`metadata.source_ids`).
+fn source_ids(m: &Memory) -> Vec<Uuid> {
+    m.metadata["source_ids"].as_array().into_iter().flatten().filter_map(|v| v.as_str()?.parse().ok()).collect()
+}
+
 /// Enrichment as a job of the [`crate::intake::JobRunner`]: one session per run.
 pub struct EnrichWorker {
     pub engine: Engine,
@@ -574,6 +579,12 @@ impl Engine {
         );
         let n = items.len();
         let signals = crate::intake::signals_of(&items);
+        // The rounds the facts were read from must still be stored when the facts are written
+        // (checked in the insert's transaction): a deletion that ran during the model call took
+        // the rounds and this job with it, and nothing derived from them lands after it (TR-WF-01).
+        let mut requires: Vec<Uuid> = items.iter().flat_map(|i| source_ids(&i.rec.memory)).collect();
+        requires.sort();
+        requires.dedup();
         let w = IntakeWrite {
             proposal: None,
             tenant: job.tenant.clone(),
@@ -581,6 +592,7 @@ impl Engine {
             supersede,
             confirm,
             signals,
+            requires,
             audit,
             ..Default::default()
         };

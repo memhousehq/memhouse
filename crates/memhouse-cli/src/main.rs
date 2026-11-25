@@ -282,7 +282,9 @@ enum Cmd {
         /// Replace the existing database (its deletion ledger is carried over)
         #[arg(long)]
         force: bool,
-        /// A deletion ledger to re-apply as well (from `memhouse backup --ledger-only`, or a later backup's deletion-ledger.jsonl)
+        /// A deletion ledger to re-apply as well (from `memhouse backup --ledger-only`, or a later backup's deletion-ledger.jsonl).
+        /// Needed when there is no current database to take the ledger from (another machine, a lost file):
+        /// without it, records deleted after the backup was taken come back
         #[arg(long)]
         ledger: Option<PathBuf>,
     },
@@ -390,9 +392,13 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let path_or_default = cfg_path.clone().unwrap_or_else(default_config_path);
     match cli.cmd {
         Cmd::Up { port, name, template, lite } => {
-            let mut cfg = if path_or_default.exists() { Config::load(Some(&path_or_default))? } else { Config::default() };
+            // What the file says, without the environment's overrides: this command saves the
+            // configuration again, and a key or database URL given in the environment for one
+            // run must not end up in the file.
+            let mut cfg = if path_or_default.exists() { Config::load_file(Some(&path_or_default))? } else { Config::default() };
             let fresh = !path_or_default.exists();
-            let is_lite = memhouse_server::sqlite_path(&cfg.database.url).is_some();
+            // Which database this run uses is still the environment's choice, as for every command.
+            let is_lite = memhouse_server::sqlite_path(&Config::env_database_url().unwrap_or_else(|| cfg.database.url.clone())).is_some();
             anyhow::ensure!(
                 !lite || fresh || is_lite,
                 "{} already configures a Postgres database; `memhouse up --lite` only sets up a new installation",
@@ -401,7 +407,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if lite && fresh {
                 // Lite: the database is one file beside the configuration. One model session
                 // keeps the embedder within its memory budget (ADR 0002).
-                cfg.database.url = format!("sqlite:{}", memhouse_core::config::home_dir().join("memhouse.db").display());
+                let db = memhouse_core::config::home_dir().join("memhouse.db");
+                if db.exists() {
+                    eprintln!("Using the database that is already at {} (its memories are kept; this configuration gets a new API key).", db.display());
+                }
+                cfg.database.url = format!("sqlite:{}", db.display());
                 cfg.database.container = None;
                 cfg.embedding.sessions = 1;
                 cfg.server.api_keys = vec![format!("mh_{}", random_token(32))];
@@ -424,6 +434,18 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if let Some(t) = template {
                 let t = templates::find(&t).ok_or_else(|| anyhow::anyhow!("unknown template '{t}'"))?;
                 templates::apply(&mut cfg, t);
+            }
+            // A Lite installation is its own file. A database URL in the environment would send
+            // the schema preparation below to another database: refused before anything is
+            // written or opened.
+            if memhouse_server::sqlite_path(&cfg.database.url).is_some() {
+                if let Some(other) = Config::env_database_url().filter(|u| *u != cfg.database.url) {
+                    anyhow::bail!(
+                        "MEMHOUSE_DATABASE_URL or DATABASE_URL is set to another database ({}), but this installation uses {}. Unset the variable and run `memhouse up` again; nothing was changed",
+                        memhouse_store_postgres::redact_url(&other),
+                        cfg.database.url
+                    );
+                }
             }
             let path = cfg.save(Some(&path_or_default))?;
             eprintln!("Loading the embedding model ({}) and preparing the schema ...", cfg.embedding.model);

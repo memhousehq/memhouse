@@ -43,6 +43,9 @@ fn rss_kb() -> Option<u64> {
 /// Load `memories` records (`per_subject` in each subject) into a fresh SQLite file and measure.
 /// Returns the report as Markdown.
 pub async fn run(memories: usize, per_subject: usize, dir: &std::path::Path) -> anyhow::Result<String> {
+    // Before anything is opened: with none per subject nothing would be loaded, and the report
+    // would measure the probes alone.
+    anyhow::ensure!(per_subject > 0, "the number of memories per subject must be at least 1");
     let path = dir.join("footprint.db");
     let mut cfg = Config::default();
     cfg.database.url = format!("sqlite:{}", path.display());
@@ -56,7 +59,7 @@ pub async fn run(memories: usize, per_subject: usize, dir: &std::path::Path) -> 
     let rss_empty = rss_kb();
 
     // Load, a session of 50 rounds at a time.
-    let subjects = memories.div_ceil(per_subject.max(1)).max(1);
+    let subjects = memories.div_ceil(per_subject).max(1);
     let t_load = Instant::now();
     let mut n = 0u64;
     for s in 0..subjects {
@@ -87,7 +90,8 @@ pub async fn run(memories: usize, per_subject: usize, dir: &std::path::Path) -> 
         }
     }
     let load_secs = t_load.elapsed().as_secs_f64();
-    let last = format!("bench:footprint:{}", subjects - 1);
+    // The first subject is the largest: the last one holds only what was left over.
+    let last = "bench:footprint:0".to_string();
 
     // Write acknowledgement: the request returns once the write is durable in the queue. One
     // write at a time first (each is through the pipeline before the next is sent), then a

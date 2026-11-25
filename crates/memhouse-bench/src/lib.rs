@@ -216,9 +216,14 @@ fn slug(s: &str) -> String {
 }
 
 /// Create (if needed) a dedicated benchmark database next to the user's one, so benchmark data
-/// never mixes with real memories and each embedding model gets its own schema dimension.
+/// never mixes with real memories and each embedding model gets its own schema dimension. On
+/// the Lite profile it is another SQLite file, created when it is first opened.
 async fn bench_database(base_url: &str, model: &str) -> anyhow::Result<String> {
     let db = format!("memhouse_bench_{}", slug(model)).chars().take(60).collect::<String>();
+    // Lite: a file of its own beside the user's database, in the same private directory.
+    if let Some(path) = memhouse_server::sqlite_path(base_url) {
+        return Ok(format!("sqlite:{}", path.with_file_name(format!("{db}.db")).display()));
+    }
     let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect(base_url).await?;
     let exists: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = '{db}')"))).fetch_one(&pool).await?;
     if !exists {

@@ -1665,6 +1665,22 @@ which is named.
     Erased
     content can stay in the file's free pages, and backups and pre-upgrade copies keep what
     was erased after they were made. The container image is G21's.
+  - **Review fixes (2026-11-25, pull request 34).** 31 of the reviewer's 40 points were
+    fixed. Restore and backup: a deletion of a record that was still queued is written to the
+    ledger and replayed against queued records; a record deletion is replayed whatever the
+    clocks said; the restore stops if the database it replaces cannot be checkpointed; backup
+    files, the pre-upgrade copy and the restored database flush their directory. The store:
+    the embedding identity (model, size, prefix) is checked inside write transactions and on
+    re-embedding; a recall runs in one read transaction; the newer-version check no longer
+    opens the file for writing; source references are indexed in canonical form. The engine,
+    on both stores: facts extracted from a round are refused if the round was deleted during
+    the model call. `memhouse up` never writes a key or database URL from the environment into
+    the configuration, and `up --lite` refuses an environment override that names another
+    database. Declined, with reasons on the threads: fencing queue and job updates by attempt
+    on both stores, a model revision in the embedding identity, unique scratch database names,
+    and a rule for writable parent directories (documented as a limit instead).
+  - **Decided by the user (2026-11-25).** Lite ships with the documented exception for the
+    bundled SQLite's advisory (below), with its two stated limits.
   - **For the user to decide.** (1) The bundled SQLite has a known advisory (RUSTSEC-2026-0459,
     a crafted `-wal` file); its reviewed exception covered only the spike examples, and Lite
     now ships that SQLite. The private-directory check limits the exposure to a database

@@ -452,6 +452,9 @@ memhouse bench run --dataset locomo --database-url sqlite:/path/to/new.db
 memhouse bench run --suite governance --database-url sqlite:/path/to/new.db
 ```
 
+Without `--database-url`, a Lite configuration runs benchmarks on a SQLite file of their own
+beside the configured database (`memhouse_bench_<model>.db`), never on the database itself.
+
 ## Governance suite
 
 `memhouse bench run --suite governance` runs 18 checks; all pass:

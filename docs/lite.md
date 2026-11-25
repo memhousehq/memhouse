@@ -44,7 +44,8 @@ The design is recorded in [ADR 0002](adr/0002-lite-embedded-store.md) and
   [schema.md](schema.md); only physical types differ (timestamps are integer microseconds, ids
   and JSON are text).
 - **Keyword search** is SQLite's FTS5 with BM25. The subject is a token inside every query, so
-  a search never ranks another subject's rows.
+  a search never returns or ranks another subject's rows. The BM25 statistics (how common a
+  word is, the average length) are those of the whole table, as FTS5 keeps them.
 - **Vector search is exact.** Vectors are stored at half precision (2 bytes per dimension) and
   every vector of the subject is scored in process on each recall. There is no approximate
   index. The half-precision scan returns the same top 10 as full precision; two neighbours
@@ -65,8 +66,9 @@ The design is recorded in [ADR 0002](adr/0002-lite-embedded-store.md) and
 - **Its directory must be yours alone.** The store refuses to open a database in a directory
   that another user owns or that others can write to, and says how to fix it (`chmod 700`).
   SQLite trusts the journal files it finds beside a database, so nobody else may be able to
-  put one there. For the same reason, do not open a database directory you were given by
-  someone you do not trust: the bundled SQLite has a known flaw in reading a crafted journal
+  put one there. Keep it under directories that only you can write to as well: the check looks
+  at the database's own directory, not at its parents. For the same reason, do not open a
+  database directory you were given by someone you do not trust: the bundled SQLite has a known flaw in reading a crafted journal
   file (RUSTSEC-2026-0459; the fixed version cannot be used yet, see `deny.toml`).
 - A second process on the same file waits up to 10 seconds for the writer.
 - Erased content can remain in the file's free pages until SQLite reuses them. Old backups
@@ -84,7 +86,7 @@ A database written by a newer version than the binary is refused and left untouc
 
 ```bash
 memhouse backup /path/to/backup-2026-11-21        # while the server runs
-memhouse restore /path/to/backup-2026-11-21       # into an installation without a database
+memhouse restore /path/to/backup-2026-11-21       # into an installation without a database: see the ledger below
 memhouse restore /path/to/backup-2026-11-21 --force   # over the current database
 ```
 
@@ -97,12 +99,15 @@ A backup directory (created for its owner only) holds:
 | `deletion-ledger.jsonl` | every deletion and erasure up to the backup |
 | `manifest.json` | when, schema version, embedder, counts, and the SHA-256 of each file |
 
-**A restore never brings back what was deleted after the backup.** Restoring over the current
-database (`--force`) first reads the current deletion ledger and re-applies every deletion and
-erasure made since the snapshot: the record, its derived facts, a whole subject, a whole tenant.
-For a restore on another machine, export the ledger from the live installation with
-`memhouse backup <dir> --ledger-only` and pass it with `--ledger <file>`. A re-applied erasure
-removes what existed at its time; what was written again afterwards is kept. Each re-applied
+**A restore given the current deletion ledger never brings back what was deleted after the
+backup.** Restoring over the current database (`--force`) first reads the current deletion
+ledger and re-applies every deletion and erasure made since the snapshot: the record (also
+where the snapshot holds it still queued), its derived facts, a whole subject, a whole tenant.
+Where there is no current database (another machine, a lost file), the restore has no ledger
+of its own: export the ledger from the live installation with
+`memhouse backup <dir> --ledger-only` and pass it with `--ledger <file>`. Without it, the
+restore warns that what was deleted after the backup is back. A re-applied erasure of a subject
+or tenant removes what existed at its time; what was written again afterwards is kept. Each re-applied
 deletion is audited (`deletion.reapply`), with `backup.create` and `backup.restore` for the two
 commands.
 

@@ -450,13 +450,17 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine, db: &Db) -> anyhow::Resu
             let text = "payroll salary grievance dispute";
             let narrow =
                 SearchQuery { text: text.into(), embedding: Some(e.embedder.embed(&[text.to_string()], memhouse_core::EmbedKind::Query).await?.remove(0)), per_retriever: 3, ..q };
-            let hits = e.store.search(&narrow).await?;
-            if hits.len() != 3 || hits.iter().any(|h| !h.memory.labels.is_empty()) {
-                problems.push(format!(
-                    "the label filter is not applied before each retriever's limit: {} hits with a limit of 3 per retriever, labels {:?}",
-                    hits.len(),
-                    hits.iter().map(|h| h.memory.labels.clone()).collect::<Vec<_>>()
-                ));
+            // Each retriever alone as well: fused, one that filtered after its limit could hide
+            // behind the other's three permitted records.
+            for mode in [RetrievalMode::Hybrid, RetrievalMode::Keyword, RetrievalMode::Dense] {
+                let hits = e.store.search(&SearchQuery { mode, ..narrow.clone() }).await?;
+                if hits.len() != 3 || hits.iter().any(|h| !h.memory.labels.is_empty()) {
+                    problems.push(format!(
+                        "the label filter is not applied before each retriever's limit ({mode:?}): {} hits with a limit of 3 per retriever, labels {:?}",
+                        hits.len(),
+                        hits.iter().map(|h| h.memory.labels.clone()).collect::<Vec<_>>()
+                    ));
+                }
             }
         }
     }

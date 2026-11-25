@@ -3,8 +3,9 @@
 //! restored with a deletion ledger kept outside it, never brings back what was deleted since.
 
 use chrono::{Duration, Utc};
+use memhouse_core::intake::{Entry, Op, PendingRecord, Proposal};
 use memhouse_core::types::*;
-use memhouse_core::Store;
+use memhouse_core::{IntakeQueue, Store};
 use memhouse_store_sqlite::backup::{self, LedgerEntry, Manifest};
 use memhouse_store_sqlite::SqliteStore;
 use serde_json::json;
@@ -206,4 +207,80 @@ async fn a_deletion_reapplied_keeps_what_was_written_after_it() {
     assert_eq!((r.applied, r.records_removed), (1, 1));
     assert!(store.get(T, old.memory.id).await.unwrap().is_none());
     assert!(store.get(T, new.memory.id).await.unwrap().is_some());
+}
+
+/// TR-WF-03: a deletion is re-applied to the record it names wherever the snapshot holds it:
+/// still queued (the worker had not written it when the backup was taken), or stored with a
+/// `created_at` later than the deletion (an imported record keeps its file's time).
+#[tokio::test]
+async fn a_restore_removes_a_record_deleted_while_queued_and_one_dated_after_its_deletion() {
+    let home = tempfile::tempdir().unwrap();
+    let db = home.path().join("memhouse.db");
+    let dir = home.path().join("backup");
+    let store = open(&db).await;
+    let mut dated_ahead = record("user:ada", "Ada's passport number, imported with a time ahead of the clock");
+    dated_ahead.memory.created_at = Utc::now() + Duration::days(1);
+    store.insert(std::slice::from_ref(&dated_ahead)).await.unwrap();
+    let (forgotten, kept) = (record("user:ada", "Ada's PIN, forgotten before it was written"), record("user:ada", "Ada likes tea"));
+    let pending =
+        |n: &NewMemory| PendingRecord { content_hash: n.content_hash.clone(), memory: n.memory.clone(), redactions: vec![], focus: None, structured: None, code_refs: vec![] };
+    let proposal = Proposal {
+        id: Uuid::now_v7(),
+        tenant: T.into(),
+        subject: "user:ada".into(),
+        actor: "agent".into(),
+        user: None,
+        source: "test".into(),
+        op: Op::Remember,
+        entry: Entry::Commit,
+        records: vec![pending(&forgotten), pending(&kept)],
+        session_id: None,
+        enqueued_at: Utc::now(),
+    };
+    store.enqueue(&proposal).await.unwrap();
+
+    // The backup holds the proposal with both records, and the stored record.
+    let (snapshot, manifest) = backup::create(&store, &dir, "test").await.unwrap();
+    drop(snapshot);
+    manifest.write(&dir).unwrap();
+
+    // After it: the queued record is forgotten (it never had a row), the stored one deleted.
+    assert_eq!(store.discard(T, ForgetScope::Record, &forgotten.memory.id.to_string()).await.unwrap(), 1);
+    assert!(!store.delete(T, forgotten.memory.id, "ada").await.unwrap(), "it was only queued");
+    assert!(store.delete(T, dated_ahead.memory.id, "ada").await.unwrap());
+    let ledger = store.ledger().unwrap();
+    assert_eq!(ledger.iter().map(|e| (e.scope.as_str(), e.memory_id)).collect::<Vec<_>>(), [("memory", Some(forgotten.memory.id)), ("memory", Some(dated_ahead.memory.id))]);
+    drop(store);
+
+    let from = manifest.verified_snapshot(&dir).unwrap();
+    let r = backup::restore(&from, &db, &ledger, "cli", T, json!({})).await.unwrap();
+    assert_eq!((r.ledger.applied, r.ledger.records_removed), (2, 1));
+    let store = open(&db).await;
+    assert!(store.get(T, dated_ahead.memory.id).await.unwrap().is_none(), "a record dated after its deletion came back");
+    assert!(store.pending(T, forgotten.memory.id).await.unwrap().is_none(), "a record forgotten while queued is queued again");
+    // The other record of the proposal is still queued, and is the only one a worker gets.
+    assert_eq!(store.pending(T, kept.memory.id).await.unwrap().map(|m| m.content), Some("Ada likes tea".to_string()));
+    let claimed = store.claim(5, 60, Some((T, "user:ada"))).await.unwrap();
+    assert_eq!(claimed[0].proposal.records.iter().map(|r| r.memory.id).collect::<Vec<_>>(), [kept.memory.id]);
+    assert_eq!(store.ledger().unwrap(), ledger);
+}
+
+/// A backup's tenants are those with a record or a link: a tenant that only links subjects
+/// gets its canonical export too.
+#[tokio::test]
+async fn a_tenant_with_links_alone_is_exported() {
+    let home = tempfile::tempdir().unwrap();
+    let store = open(&home.path().join("memhouse.db")).await;
+    store.insert(&[record("user:ada", "Ada lives in Porto")]).await.unwrap();
+    let link = Link {
+        tenant: "links-only".into(),
+        subject: "user:bo".into(),
+        linked_subject: "team:ops".into(),
+        link_type: "member".into(),
+        memory_id: None,
+        created_by: "test".into(),
+        created_at: Utc::now(),
+    };
+    store.link_put(&link).await.unwrap();
+    assert_eq!(store.tenants().unwrap(), [T, "links-only"]);
 }

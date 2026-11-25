@@ -627,6 +627,24 @@ impl Config {
     /// Load from `path` (or the default location). A missing file yields defaults.
     /// Environment variables override file values.
     pub fn load(path: Option<&Path>) -> anyhow::Result<Config> {
+        Self::read(path, true)
+    }
+
+    /// What the file at `path` (or the default location) says, without the environment's
+    /// overrides: for a command that saves the configuration again. A value that came from the
+    /// environment (a key, a database URL with its password) must not be written into the file,
+    /// where it would outlive the variable.
+    pub fn load_file(path: Option<&Path>) -> anyhow::Result<Config> {
+        Self::read(path, false)
+    }
+
+    /// The database URL the environment sets over the file's, if it sets one.
+    pub fn env_database_url() -> Option<String> {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        var("MEMHOUSE_DATABASE_URL").or_else(|| var("DATABASE_URL"))
+    }
+
+    fn read(path: Option<&Path>, env: bool) -> anyhow::Result<Config> {
         let path = path.map(PathBuf::from).unwrap_or_else(default_config_path);
         let mut cfg = if path.exists() {
             let text = std::fs::read_to_string(&path)?;
@@ -634,7 +652,9 @@ impl Config {
         } else {
             Config::default()
         };
-        cfg.apply_env();
+        if env {
+            cfg.apply_env();
+        }
         cfg.check_floor().map_err(|e| anyhow::anyhow!("{e} (config {})", path.display()))?;
         cfg.check_ranges().map_err(|e| anyhow::anyhow!("{e} (config {})", path.display()))?;
         Ok(cfg)
@@ -685,7 +705,7 @@ impl Config {
 
     fn apply_env(&mut self) {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        if let Some(v) = var("MEMHOUSE_DATABASE_URL").or_else(|| var("DATABASE_URL")) {
+        if let Some(v) = Self::env_database_url() {
             self.database.url = v;
         }
         if let Some(v) = var("MEMHOUSE_SUBJECT") {
@@ -773,6 +793,32 @@ mod tests {
         assert!(cfg.server.api_keys.is_empty());
         assert_eq!(cfg.access.admission, Admission::Auto);
         assert!(cfg.access.token_ttl_secs <= 3600);
+    }
+
+    /// A configuration read to be saved again holds what the file says, not the environment's
+    /// overrides: a key or a database URL given for one run is not written into the file.
+    #[test]
+    fn a_file_read_for_saving_has_no_environment_overrides() {
+        // Names no other test of this crate reads, set for this test alone.
+        let dir = std::env::temp_dir().join(format!("memhouse-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[database]\nurl = \"sqlite:/tmp/x/memhouse.db\"\n\n[server]\napi_keys = [\"mh_file\"]\n").unwrap();
+        std::env::set_var("MEMHOUSE_API_KEY", "mh_from_env");
+        std::env::set_var("MEMHOUSE_DATABASE_URL", "postgres://u:pw@elsewhere/db");
+        let (file, effective) = (Config::load_file(Some(&path)).unwrap(), Config::load(Some(&path)).unwrap());
+        let overridden = Config::env_database_url();
+        std::env::remove_var("MEMHOUSE_API_KEY");
+        std::env::remove_var("MEMHOUSE_DATABASE_URL");
+        assert_eq!((file.database.url.as_str(), file.server.api_keys.as_slice()), ("sqlite:/tmp/x/memhouse.db", ["mh_file".to_string()].as_slice()));
+        assert_eq!(effective.database.url, "postgres://u:pw@elsewhere/db");
+        assert!(effective.server.api_keys.contains(&"mh_from_env".to_string()));
+        assert_eq!(overridden.as_deref(), Some("postgres://u:pw@elsewhere/db"));
+        // Saved and read back, the file still holds nothing of the environment.
+        file.save(Some(&path)).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("mh_from_env") && !text.contains("elsewhere"), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// TR-CORE-05: the baseline can't be configured off.
