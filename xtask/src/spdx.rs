@@ -11,7 +11,7 @@ const TAG: &str = "SPDX-License-Identifier:";
 /// generated reports, licence texts).
 pub fn expected(path: &str) -> Option<&'static str> {
     let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    let covered = matches!(ext, "rs" | "sh" | "py" | "html" | "md");
+    let covered = matches!(ext, "rs" | "sh" | "py" | "ts" | "mjs" | "html" | "md");
     let generated = path.starts_with("bench-results/");
     if !covered || generated {
         return None;
@@ -21,7 +21,7 @@ pub fn expected(path: &str) -> Option<&'static str> {
 
 fn header(path: &str, licence: &str) -> String {
     match path.rsplit_once('.').map(|(_, e)| e).unwrap_or("") {
-        "rs" => format!("// {TAG} {licence}"),
+        "rs" | "ts" | "mjs" => format!("// {TAG} {licence}"),
         "sh" | "py" => format!("# {TAG} {licence}"),
         _ => format!("<!-- {TAG} {licence} -->"),
     }
@@ -65,6 +65,8 @@ mod tests {
     fn licence_follows_the_path() {
         assert_eq!(expected("crates/memhouse-core/src/gate.rs"), Some("Apache-2.0"));
         assert_eq!(expected("docs/api.md"), Some("CC-BY-4.0"));
+        assert_eq!(expected("sdk/typescript/src/client.ts"), Some("Apache-2.0"));
+        assert_eq!(header("sdk/typescript/conformance/driver.mjs", "Apache-2.0"), "// SPDX-License-Identifier: Apache-2.0");
         assert_eq!(expected("Cargo.toml"), None);
         assert_eq!(expected("bench-results/run/report.md"), None);
     }

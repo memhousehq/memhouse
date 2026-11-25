@@ -423,7 +423,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             // Lite: the database is one file beside the configuration.
             let db = memhouse_core::config::home_dir().join("memhouse.db");
             if lite && fresh {
-                cfg.database.url = format!("sqlite:{}", db.display());
+                memhouse_server::lite_defaults(&mut cfg, &db);
             }
             // A database URL in the environment that names the other profile, or another file
             // than a Lite installation's, would send the schema preparation below to a database
@@ -433,12 +433,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 anyhow::bail!(conflict);
             }
             if lite && fresh {
-                // One model session keeps the embedder within its memory budget (ADR 0002).
                 if db.exists() {
                     eprintln!("Using the database that is already at {} (its memories are kept; this configuration gets a new API key).", db.display());
                 }
-                cfg.database.container = None;
-                cfg.embedding.sessions = 1;
                 cfg.server.api_keys = vec![format!("mh_{}", random_token(32))];
             } else if is_lite {
                 eprintln!("Using the SQLite database from {}.", path_or_default.display());
@@ -514,17 +511,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             if let Some(b) = bind {
                 cfg.server.bind = b;
             }
-            let eng = engine(cfg).await?;
-            let e2 = eng.clone();
-            tokio::spawn(async move {
-                loop {
-                    if let Err(e) = e2.apply_retention().await {
-                        tracing::warn!("retention: {e:#}");
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-                }
-            });
-            memhouse_server::serve(eng).await?;
+            // `serve` also runs the workers and the hourly retention pass.
+            memhouse_server::serve(engine(cfg).await?).await?;
         }
         Cmd::Mcp { subject, key, actor: _ } => {
             let mut cfg = Config::load(cfg_path.as_deref())?;

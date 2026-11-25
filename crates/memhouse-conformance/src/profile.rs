@@ -4,8 +4,10 @@
 //! the same outcomes step by step, since one engine answers behind each.
 //!
 //! A [`Way`] carries one of five operations (`remember`, `recall`, `revise`, `forget`,
-//! `ingest`) with the request as JSON and returns the response as JSON. Three are built in:
-//! [`Rest`], [`Mcp`] (MCP over HTTP) and [`Cli`] (the `memhouse` binary). An SDK adds its own.
+//! `ingest`) with the request as JSON and returns the response as JSON. Four are built in:
+//! [`Rest`], [`Mcp`] (MCP over HTTP), [`Cli`] (the `memhouse` binary) and [`Process`] (a
+//! program that answers requests on its standard input, which is how an SDK in another
+//! language is run).
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -272,6 +274,114 @@ impl Way for Cli {
     }
 }
 
+/// A program that stays running and speaks JSON lines: the way an SDK in another language is
+/// run (G18). For each call the way writes one line on the program's standard input,
+/// `{"op": "remember", "body": {...}}`, and reads one line from its standard output:
+/// `{"ok": true, "result": {...}}` (the response of the operation) or
+/// `{"ok": false, "error": "..."}`. The program is started at the first call and stopped when
+/// the way is dropped; what it writes to standard error is shown as it is.
+pub struct Process {
+    name: String,
+    program: std::path::PathBuf,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    timeout: std::time::Duration,
+    running: tokio::sync::Mutex<Option<Running>>,
+}
+
+struct Running {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+}
+
+impl Process {
+    /// A way called `name` (as it appears in reports) that runs `program`.
+    pub fn new(name: &str, program: impl Into<std::path::PathBuf>) -> Process {
+        Process { name: name.into(), program: program.into(), args: vec![], env: vec![], timeout: std::time::Duration::from_secs(60), running: tokio::sync::Mutex::new(None) }
+    }
+
+    pub fn arg(mut self, arg: impl Into<String>) -> Process {
+        self.args.push(arg.into());
+        self
+    }
+
+    /// An environment variable for the program, on top of this process's own.
+    pub fn env(mut self, key: &str, value: impl Into<String>) -> Process {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// How long one call may take (60 s unless set). A program that does not answer in time
+    /// is stopped; the next call starts it again.
+    pub fn timeout(mut self, timeout: std::time::Duration) -> Process {
+        self.timeout = timeout;
+        self
+    }
+
+    fn start(&self) -> anyhow::Result<Running> {
+        use anyhow::Context;
+        let mut child = tokio::process::Command::new(&self.program)
+            .args(&self.args)
+            .envs(self.env.iter().cloned())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .with_context(|| format!("starting {}", self.program.display()))?;
+        let (stdin, stdout) = (child.stdin.take().context("the program has no standard input")?, child.stdout.take().context("the program has no standard output")?);
+        Ok(Running { child, stdin, stdout: tokio::io::AsyncBufReadExt::lines(tokio::io::BufReader::new(stdout)) })
+    }
+
+    /// One request line out, one answer line back.
+    async fn exchange(&self, running: &mut Running, line: &str) -> anyhow::Result<Value> {
+        use tokio::io::AsyncWriteExt;
+        running.stdin.write_all(line.as_bytes()).await?;
+        running.stdin.write_all(b"\n").await?;
+        running.stdin.flush().await?;
+        loop {
+            let Some(answer) = running.stdout.next_line().await? else {
+                let status = running.child.wait().await?;
+                anyhow::bail!("{} ended without answering ({status})", self.program.display());
+            };
+            // Anything else the program prints on standard output is not an answer.
+            match serde_json::from_str::<Value>(&answer) {
+                Ok(v) if v["ok"].is_boolean() => return Ok(v),
+                _ => continue,
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Way for Process {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+    async fn call(&self, op: &str, body: Value) -> anyhow::Result<Value> {
+        let mut running = self.running.lock().await;
+        if running.is_none() {
+            *running = Some(self.start()?);
+        }
+        let line = serde_json::to_string(&json!({ "op": op, "body": body }))?;
+        let Some(process) = running.as_mut() else { anyhow::bail!("the program is not running") };
+        let answer = match tokio::time::timeout(self.timeout, self.exchange(process, &line)).await {
+            Ok(Ok(v)) => v,
+            // The conversation with the program is out of step: stop it.
+            Ok(Err(e)) => {
+                *running = None;
+                return Err(e);
+            }
+            Err(_) => {
+                *running = None;
+                anyhow::bail!("{} did not answer {op} within {} s", self.program.display(), self.timeout.as_secs_f32());
+            }
+        };
+        anyhow::ensure!(answer["ok"] == true, "{} {op} failed: {}", self.name, answer["error"].as_str().unwrap_or("no error message"));
+        Ok(answer["result"].clone())
+    }
+}
+
 /// What one way did with the scenario.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WayResult {
@@ -522,6 +632,63 @@ steps:
         let text = bad.failure_text();
         assert!(text.contains("three: step 4 (recall): docks is among the hits, and must not be"), "{text}");
         assert!(text.contains("step 4: one gave `recall: hits=[]`, three gave `recall: hits=[docks=\"Docks: the warehouse has four.\"]`"), "{text}");
+    }
+
+    /// A stand-in for an SDK's driver: a shell loop that answers each request line.
+    #[cfg(unix)]
+    fn stand_in(script: &str) -> Process {
+        Process::new("stand-in", "sh").arg("-c").arg(script)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_process_way_sends_one_line_per_call_and_reads_one_answer() {
+        // Answers with the request it read and the variable it was started with; a line of
+        // chatter before the answer is skipped.
+        let way = stand_in(r#"while read -r line; do echo "starting up"; echo "{\"ok\":true,\"result\":{\"request\":$line,\"mark\":\"$MARK\"}}"; done"#)
+            .env("MARK", "from the environment");
+        assert_eq!(way.name(), "stand-in");
+        let first = way.call("remember", json!({ "content": "four docks", "wait": true })).await.unwrap();
+        assert_eq!(first["request"], json!({ "op": "remember", "body": { "content": "four docks", "wait": true } }));
+        assert_eq!(first["mark"], "from the environment");
+        // The same program answers the next call: it is started once.
+        let second = way.call("recall", json!({ "query": "docks" })).await.unwrap();
+        assert_eq!(second["request"]["op"], "recall");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_process_way_reports_errors_exits_and_silence() {
+        let refusing = stand_in(r#"while read -r line; do echo '{"ok":false,"error":"MemHouseError: 403 forbidden: not yours"}'; done"#);
+        let e = refusing.call("forget", json!({})).await.unwrap_err().to_string();
+        assert_eq!(e, "stand-in forget failed: MemHouseError: 403 forbidden: not yours");
+        let leaving = stand_in("read -r line; exit 3");
+        let e = leaving.call("recall", json!({})).await.unwrap_err().to_string();
+        assert!(e.contains("ended without answering") && e.contains('3'), "{e}");
+        let silent = stand_in("sleep 30").timeout(std::time::Duration::from_millis(200));
+        let e = silent.call("recall", json!({})).await.unwrap_err().to_string();
+        assert!(e.contains("did not answer recall within 0.2 s"), "{e}");
+        let missing = Process::new("missing", "/no/such/program");
+        let e = format!("{:#}", missing.call("recall", json!({})).await.unwrap_err());
+        assert!(e.contains("starting /no/such/program"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_process_way_runs_a_scenario_like_any_other() {
+        // The toy memory of the tests above, behind a process: one committed record, recalled
+        // until it is forgotten.
+        let script = r#"kept=1; while read -r line; do case "$line" in
+            *'"op":"remember"'*) echo '{"ok":true,"result":{"id":"id-1","status":"committed","deduplicated":false}}';;
+            *'"op":"recall"'*) if [ "$kept" = 1 ]; then echo '{"ok":true,"result":{"hits":[{"memory":{"id":"id-1","content":"Docks: the warehouse has four."}}]}}'; else echo '{"ok":true,"result":{"hits":[]}}'; fi;;
+            *'"op":"forget"'*) kept=0; echo '{"ok":true,"result":{"deleted":1}}';;
+            *) echo '{"ok":false,"error":"no such operation"}';;
+        esac; done"#;
+        let s = Scenario::parse(SMALL).unwrap();
+        let (toy, process) = (Toy::new("toy", false), stand_in(script));
+        let report = run_profile_suite(&s, &[&toy, &process]).await;
+        assert!(report.passed(), "{}", report.failure_text());
+        assert_eq!(report.ways[1].way, "stand-in");
     }
 
     #[test]

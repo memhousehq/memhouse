@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! HTTP gateway: REST API, streamable-HTTP MCP endpoint and the Memory Browser page.
 
+pub mod embedded;
 pub mod mcp;
 pub mod migrate;
 pub mod openapi;
@@ -293,35 +294,23 @@ pub async fn serve_listener(listener: tokio::net::TcpListener, engine: Engine) -
     Ok(())
 }
 
+/// Serve the API on `[server] bind` with the background workers ([`embedded::Background`]:
+/// enrichment, the write pipeline, retention) until Ctrl-C.
 pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     let bind = engine.cfg.server.bind.clone();
     let listener = tokio::net::TcpListener::bind(&bind).await.map_err(|e| anyhow::anyhow!("cannot listen on {bind}: {e}"))?;
     tracing::info!("MemHouse listening on http://{bind}");
     eprintln!("MemHouse is running on http://{bind}  (Memory Browser: http://{bind}/ , MCP: http://{bind}/mcp)");
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut workers = if engine.cfg.enrich.enabled && engine.chat.is_some() && engine.cfg.enrich.workers > 0 {
+    if embedded::enrichment_runs(&engine) {
         eprintln!("Enrichment: {} workers, model {}", engine.cfg.enrich.workers, engine.cfg.enrich.llm.model);
-        engine.spawn_enrichment(engine.cfg.enrich.workers, stop.clone(), Default::default())
-    } else {
-        vec![]
-    };
-    // The write pipeline's workers resume proposals left by a restart (TR-LT-05).
-    workers.extend(engine.spawn_intake(engine.cfg.intake.workers, stop.clone()));
+    }
+    let background = embedded::Background::start(&engine);
     axum::serve(listener, router(engine))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await?;
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    // Workers stop after their current job; one stuck on a model call is left behind after the
-    // grace period (its proposal is claimed again after `intake.lease_secs`).
-    let grace = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    for w in workers {
-        if tokio::time::timeout_at(grace, w).await.is_err() {
-            tracing::warn!("a worker was still busy at shutdown; its job resumes after the lease");
-            break;
-        }
-    }
+    background.stop().await;
     Ok(())
 }
 
@@ -572,6 +561,8 @@ async fn browser() -> Html<&'static str> {
 
 /// Keep a handle to the trait so downstream crates can name it without importing core.
 pub type DynStore = Arc<dyn Store>;
+
+pub use embedded::{embedded_config, lite_defaults, Embedded};
 
 #[cfg(test)]
 mod tests {

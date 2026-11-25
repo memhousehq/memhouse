@@ -1118,6 +1118,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // Migration between profiles: lossless round trips, erasure, credentials, a failed verification (G17).
     checks.extend(crate::migrate_checks::run(engine).await);
 
+    // The embedded transport runs the server's controls (G18).
+    checks.extend(crate::embedded_checks::run(engine).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;

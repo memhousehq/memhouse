@@ -11,3 +11,21 @@ bench-results/logs/
 
 # Publication settings (G09): founder decisions, kept local
 scripts/publish/publish.env
+
+# Embedded bindings (G18): build outputs
+/bindings/python/.venv/
+/bindings/python/python/memhouse_lite/*.so
+/bindings/python/python/memhouse_lite/*.pyd
+/bindings/python/.pytest_cache/
+/bindings/**/__pycache__/
+/bindings/node/node_modules/
+/bindings/node/*.node
+
+# SDKs (G18): environments and build outputs
+/sdk/python/.venv/
+/sdk/python/.pytest_cache/
+/sdk/python/.mypy_cache/
+/sdk/python/dist/
+/sdk/**/__pycache__/
+/sdk/typescript/node_modules/
+/sdk/typescript/dist/

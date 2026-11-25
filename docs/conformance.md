@@ -92,17 +92,90 @@ must be quarantined and never recalled, an ingested conversation, and a deletion
 
 `run_profile_suite(&scenario, &ways)` runs the scenario through each **way**, each on a subject
 of its own, and requires two things: every way meets every expectation, and all ways give the
-same outcome at every step (ids replaced by their saved names). Three ways are built in:
+same outcome at every step (ids replaced by their saved names). Four ways are built in:
 
 | Way | How it calls |
 |---|---|
 | `Rest` | `POST {base}/v1/{operation}` with a bearer key |
 | `Mcp` | `tools/call` at `{base}/mcp` with a bearer key, reading the tool's structured result |
 | `Cli` | the `memhouse` binary with a configuration file (`remember`, `recall --json`, `revise --json`, `forget --json`, `ingest --json`) |
+| `Process` | a program that stays running and answers one JSON line per request on its standard input and output: how an SDK in another language is run |
 
-An SDK adds its own way by implementing the `Way` trait (one method: carry out an operation
-with a JSON request and return the JSON response). The Lite profile (G16) and the SDKs (G18)
-are run through the same scenario.
+Anything else adds its own way by implementing the `Way` trait (one method: carry out an
+operation with a JSON request and return the JSON response). The Lite profile (G16) and the
+SDKs (G18) are run through the same scenario.
+
+### The `Process` way
+
+`Process::new(name, program)` (with `.arg(...)`, `.env(key, value)` and `.timeout(...)`) starts
+the program at the first call and keeps it running. For each call it writes one line on the
+program's standard input and reads one line from its standard output:
+
+```text
+→ {"op": "remember", "body": {"subject": "profile:basic:…", "content": "…", "wait": true}}
+← {"ok": true, "result": {"id": "01a2…", "status": "committed", "deduplicated": false}}
+
+→ {"op": "forget", "body": {"id": "…"}}
+← {"ok": false, "error": "MemHouseError: 404 not_found: no such memory"}
+```
+
+`op` is `remember`, `recall`, `revise`, `forget` or `ingest`; `body` has the fields of the REST
+request; `result` is the operation's response. An answer with `"ok": false`, a program that
+ends, and one that does not answer within the timeout (60 s unless set) are each a failed step
+with a message that says which. Lines on standard output that are not such an answer are
+skipped; standard error is shown as it is.
+
+### The SDKs
+
+Each [SDK](sdk.md) has a driver that serves this protocol with the SDK's public client:
+[`sdk/python/conformance/driver.py`](../sdk/python/conformance/driver.py) and
+[`sdk/typescript/conformance/driver.mjs`](../sdk/typescript/conformance/driver.mjs). A driver
+talks to the deployment at `MEMHOUSE_URL` with `MEMHOUSE_API_KEY`, or, with
+`MEMHOUSE_EMBEDDED=<database file>`, to the embedded Lite engine through the SDK's embedded
+transport.
+
+The two [framework adapters](sdk.md#framework-adapters) of the Python SDK are ways of their
+own, `openai-agents-adapter` and `langgraph-adapter`. Their drivers carry out each operation
+through the adapter, the way the framework invokes it, with no model in the loop:
+
+| Operation | [`driver_openai_agents.py`](../sdk/python/conformance/driver_openai_agents.py) | [`driver_langgraph.py`](../sdk/python/conformance/driver_langgraph.py) |
+|---|---|---|
+| `remember`, `recall`, `revise`, `forget` | the function tool's `on_invoke_tool`, with a tool context and the arguments as JSON text, as the runner calls it for a model's tool call | a compiled graph of one `ToolNode` with the adapter's tools, given an assistant message that carries the tool call |
+| `ingest` | the run hook `on_agent_end`, with the user message as the run's input and the reply as the final output | a compiled graph of the adapter's propose node, given the user message and the reply, with the session as the run's thread |
+
+The request's `subject`, `session_id` and `wait` are what the adapter's memory object is built
+with; the rest are the tool call's arguments. The result is the API's answer as the adapter
+hands it back: the tool's output, or what the after-turn path recorded. A request field the
+adapter has no place for, and an `ingest` of anything but one user/assistant round, fail the
+step instead of going around the adapter. The one request a driver sends with the bare client
+is the suite's cleanup after a run (`forget` of the whole subject), which is not a step of the
+scenario: the adapters give an agent no tool that erases a subject.
+
+The test `sdk_profile` of `memhouse-conformance` runs the basic scenario through `Rest`, the
+Python driver, the TypeScript driver and the two adapter drivers, prints each way's outcomes
+step by step, and fails on any unmet expectation or any difference between the ways. It is
+ignored by default, since it needs a running deployment, Python, `uv` and Node:
+
+```bash
+scripts/sdk-conformance.sh              # starts a throwaway Lite deployment, runs it, and the SDKs' and adapters' own tests
+scripts/sdk-conformance.sh --embedded   # also through both SDKs over the embedded bindings
+
+# or against a deployment of your own
+MEMHOUSE_URL=http://127.0.0.1:7077 MEMHOUSE_API_KEY=$(memhouse key) \
+  cargo test -p memhouse-conformance --test sdk_profile -- --ignored --nocapture
+```
+
+| Variable | Meaning |
+|---|---|
+| `MEMHOUSE_SDK_PYTHON`, `MEMHOUSE_SDK_NODE` | the interpreters to run the drivers with (default `python3`, `node`) |
+| `MEMHOUSE_SDK_ADAPTER_PYTHON` | the Python the adapter drivers run on, a version or an interpreter (default `3.12`; the frameworks need 3.10 or newer) |
+| `MEMHOUSE_SDK_EMBEDDED` | a directory: run both SDKs over their embedded transport, each on a database file of its own there. No server is used, so the two SDKs are compared with each other; the interpreters must be able to import the bindings. The adapters are not part of this run |
+
+The Python driver runs from the source tree (the SDK has no dependencies); the TypeScript one
+needs the SDK built (`pnpm install && pnpm build` in `sdk/typescript`, which the script does).
+The adapter drivers are started with `uv run --project sdk/python --extra openai-agents --extra
+langgraph --locked`, in an environment of their own (`target/sdk-adapters-venv`) that `uv`
+builds from the SDK's lock file; the first run downloads the two frameworks.
 
 ## Where they run
 
@@ -118,6 +191,12 @@ are run through the same scenario.
   Postgres deployment.
 
 Hosted CI runs the governance suite on every pull request, so both run there.
+
+The run through the SDKs is not part of the governance suite, which must not need Python or
+Node: it is `scripts/sdk-conformance.sh`, for a machine or a CI job that has `uv` and `pnpm`.
+Hosted CI runs it, with `--embedded`, in a job of its own (`SDKs, embedded bindings and
+adapters`). What the suite does check of the embedded transport is that it runs the server's
+controls (`embedded_same_controls`, on a throwaway store of the profile under test).
 
 The suite itself is store-neutral: `memhouse bench run --suite governance --database-url
 sqlite:/path/to/a/new/file.db` runs it on the [Lite profile](lite.md). A check that cannot

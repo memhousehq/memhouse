@@ -60,6 +60,61 @@ The design is recorded in [ADR 0002](adr/0002-lite-embedded-store.md) and
   the access check on every call, redaction, the write gate and injection screen, the audit
   chain, deletion across derived data.
 
+## Embedded: Python and Node
+
+Lite also runs inside your own process, with no server and no socket: `memhouse_lite` for
+Python and `@memhouse/lite` for Node.js ([bindings/python](../bindings/python/README.md),
+[bindings/node](../bindings/node/README.md)).
+
+The library is not a second API. It embeds the router that `memhouse serve` runs and passes
+each request to it in process, so what you call is the REST API of [api.md](api.md), and what
+runs on the way is what runs on the server: the authentication middleware, the access check, the
+write gate and injection screen, redaction, the audit trail. It also starts what a served
+deployment runs beside the router: the write pipeline's workers, enrichment when it is
+configured, and the hourly retention pass. The SDKs use it as a transport in place of HTTP
+([sdk.md](sdk.md)).
+
+```python
+from memhouse_lite import Lite
+
+with Lite("/home/ada/.memhouse/memhouse.db") as lite:
+    status, body = lite.request("POST", "/v1/recall", '{"subject": "user:ada", "query": "tea or coffee?"}')
+```
+
+```js
+const { Lite } = require('@memhouse/lite')
+
+const lite = await Lite.open({ path: '/home/ada/.memhouse/memhouse.db' })
+const { status, body } = await lite.request('POST', '/v1/recall', '{"subject": "user:ada", "query": "tea or coffee?"}')
+await lite.close()
+```
+
+- **What to open.** A file path opens (or creates) that SQLite file with the defaults
+  `memhouse up --lite` writes. A `config.toml` (`config=`) is read as every command reads it.
+  With neither, the installation's configuration under `MEMHOUSE_HOME` is used.
+- **Authentication is not skipped.** Every request is verified by the same middleware. The
+  embedding process holds the configuration and so the bootstrap key: a request that carries
+  no credential is sent with that key, as a local client reading the same file would send it,
+  and runs as `admin:bootstrap`. For a bare file path there is no configuration file, so a
+  random key is made for the process and kept in memory only. A request that names a
+  credential is verified as it stands, and a wrong one is refused with 401 and audited
+  (`auth.failed`). Code that acts for an agent or a user passes that principal's key or token
+  and is held to its permissions.
+- **One writer.** The embedding process is the one process that writes the file; do not run
+  `memhouse serve` on the same file at the same time and expect both to keep up.
+- **Close it.** `close()` stops the workers (it can take about a second) and releases the file.
+
+**Building.** Nothing is published yet: wheels and npm packages for each platform are release
+work, planned with the packaging goal. Until then the libraries are built from a checkout, and
+have been built and tested on macOS (Apple silicon) only:
+
+```bash
+cd bindings/python && ./test.sh && uvx maturin build         # a wheel in target/wheels/ (CPython 3.9+, stable ABI)
+cd bindings/node && pnpm install && pnpm build && pnpm test  # memhouse-lite.<platform>.node beside index.js
+```
+
+Both need a Rust toolchain; Python needs [uv](https://docs.astral.sh/uv/), Node needs pnpm.
+
 ## The database file
 
 - The file is created readable and writable by its owner only (mode 0600).

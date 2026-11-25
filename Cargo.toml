@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "xtask"]
+members = ["crates/*", "xtask", "bindings/python", "bindings/node"]
 
 [workspace.package]
 version = "2.0.0"
@@ -51,3 +51,12 @@ tracing-opentelemetry = "0.34"
 [profile.release]
 lto = "thin"
 codegen-units = 4
+
+# The embedded bindings (bindings/python, bindings/node) are built for distribution with this
+# profile, not `release`. With LTO, the Apple build of a cdylib loses a runtime symbol of the
+# standard library (`__isPlatformVersionAtLeast`) that the bundled ONNX Runtime calls; an
+# extension module is linked with `-undefined dynamic_lookup`, so the linker does not notice and
+# the module fails when it is loaded.
+[profile.bindings]
+inherits = "release"
+lto = "off"

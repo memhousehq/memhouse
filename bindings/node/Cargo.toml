@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "memhouse-lite-node"
+description = "MemHouse Lite embedded in a Node.js process: the REST API in process, with the same governance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "memhouse_lite_node"
+crate-type = ["cdylib"]
+# An addon links against the Node.js process that loads it: nothing here runs as a Rust test.
+# The tests are in test/ (node --test).
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+memhouse-server.workspace = true
+napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = "3"
+
+[build-dependencies]
+napi-build = "2"

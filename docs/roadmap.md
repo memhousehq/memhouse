@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 16 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
+| Progress | 17 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,9 +39,10 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 72 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 73 governance checks;
 - the Lite profile (G16): the same engine on one SQLite file, `memhouse up --lite`, backup and restore with the deletion ledger re-applied;
 - conformance kits for every adapter type and a profile suite over REST, MCP and the command line (G15);
+- Python and TypeScript SDKs with lifecycle hooks, embedded Lite bindings for Python and Node, and adapters for the OpenAI Agents SDK and LangGraph (G18);
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -143,7 +144,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 72 / 72 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 73 / 73 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -350,7 +351,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 - [x] [G15 — Adapter and profile conformance kits](#g15--adapter-and-profile-conformance-kits) (20 November 2026)
 - [x] [G16 — Lite profile: embedded store](#g16--lite-profile-embedded-store) (21 November 2026)
 - [x] [G17 — Profile migration](#g17--profile-migration) (25 November 2026)
-- [ ] [G18 — SDKs, embedded bindings and first framework adapters](#g18--sdks-embedded-bindings-and-first-framework-adapters)
+- [x] [G18 — SDKs, embedded bindings and first framework adapters](#g18--sdks-embedded-bindings-and-first-framework-adapters) (25 November 2026)
 - [ ] [G19 — Coding template v1](#g19--coding-template-v1)
 - [ ] [G20 — Memory browser v2 and admin console](#g20--memory-browser-v2-and-admin-console)
 - [ ] [G21 — Packaging and release v1 (developer launch)](#g21--packaging-and-release-v1-developer-launch)
@@ -1782,18 +1783,76 @@ which is named.
 
 #### G18 — SDKs, embedded bindings and first framework adapters
 
-- [ ] **Done**
+- [x] **Done** (25 November 2026)
 
 > `/goal Ship Python and TypeScript SDKs generated from the OpenAPI spec with lifecycle hooks (before model call, after turn, on tool result, at session end) that only call the API, embedded Lite bindings for Python and Node, and adapters for the first two agent frameworks; run the profile conformance scenarios through each. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **INT-03**, **PK-04**, TR-LT-01 (bindings), INT-05 (two adapters now, the rest in
   G23). Candidates: OpenAI Agents SDK and LangGraph.
 - **Deliverables:**
-  - [ ] `sdk/python` (uv) and `sdk/typescript` (pnpm) packages; hook test proving governance holds with hooks removed
-  - [ ] PyO3 / napi-rs Lite bindings
-  - [ ] two framework adapters with examples
+  - [x] `sdk/python` (uv) and `sdk/typescript` (pnpm) packages; hook test proving governance holds with hooks removed
+  - [x] PyO3 / napi-rs Lite bindings (`bindings/python`, `bindings/node`; built and tested on macOS arm64 and in the hosted Linux job; wheels and npm packages for the platform matrix are release work, G21)
+  - [x] two framework adapters with examples (OpenAI Agents SDK, LangGraph)
+  - [x] added: the governance check `embedded_same_controls`, the generator `cargo xtask sdk` with a check in CI, and a hosted CI job for the SDKs, bindings and adapters
 - **Done when:** the profile scenario suite passes through both SDKs and both adapters.
 - **Guard:** T1. **Depends on:** G17.
+
+**Result (2026-11-25):**
+
+- **SDKs.** `sdk/python` (package `memhouse`, uv, Python 3.9 or newer, no runtime dependencies)
+  and `sdk/typescript` (package `@memhouse/sdk`, pnpm, Node 20 or newer, no runtime
+  dependencies). The low-level client of each is generated from `api/openapi.json` by
+  `cargo xtask sdk` (35 operations, 95 schema types, API 1.8.0); `cargo xtask sdk --check` is a
+  step of `cargo xtask ci`, so a change to the API without regenerated clients fails CI. Both
+  have one client, `MemHouse`, over a transport: HTTP, or the embedded library. See
+  [sdk.md](sdk.md).
+- **Hooks (INT-03).** `MemoryHooks` in both languages: before a model call (`recall`, rendered
+  for a prompt), after a turn (`ingest`), on a tool result (`remember`), at session end (sends
+  buffered turns through `ingest` under the session id, which is the unit of background
+  enrichment; there is no separate consolidation route, and without buffering every turn is
+  already written, so the hook has nothing to send). The hooks hold no enforcement: tests in
+  each SDK record the calls every hook makes, and against a live server get the same outcome
+  with the hooks and with the bare client (an injection attempt quarantined and never recalled,
+  a plan held as a candidate).
+- **Embedded bindings (TR-LT-01, PK-04).** `memhouse_server::Embedded` runs the server's own
+  router in process, with no socket, so the embedded library offers exactly the REST API and
+  every request passes the same authentication, authorizer, write gate and audit. A request
+  that carries no credential is sent with the configuration's bootstrap key, which the
+  embedding process holds; any credential it does carry is verified as it stands; with no
+  configured key nothing authenticates. `bindings/python` (PyO3, `abi3-py39`, module
+  `memhouse_lite`) and `bindings/node` (napi-rs 3, package `@memhouse/lite`) expose it as
+  `Lite` with `request` and `close`. `memhouse serve` and the embedded library start the same
+  background workers (`Background`). The bindings are built with the cargo profile `bindings`
+  (release without link-time optimisation: with it the macOS library loses a symbol the bundled
+  ONNX Runtime calls and fails when it is loaded). See [lite.md](lite.md).
+- **Adapters (INT-05, two of four; the rest in G23).** `memhouse.adapters.openai_agents`
+  (function tools, a model-input filter that recalls before each model call, run hooks for
+  turns and tool results) and `memhouse.adapters.langgraph` (tools, recall and propose nodes,
+  and a `BaseStore`), as extras of the Python SDK, each with an example that runs on a stand-in
+  model. Tested with `openai-agents` 0.26.0 and `langgraph` 1.2.24 on Python 3.12. What the
+  LangGraph store cannot express honestly raises `NotImplementedError` (a `put` under a key the
+  caller chose, since MemHouse assigns ids and a write is a proposal; filters, offsets, listing
+  namespaces). The Agents SDK adapter has no `Session`: a session must return the transcript
+  exactly, and governed memory cannot.
+- **Done when.** The profile suite gained a way `Process` (a child process speaking JSON
+  lines). `scripts/sdk-conformance.sh` starts a throwaway Lite server and runs the basic
+  scenario: 13 steps through REST, the Python SDK, the TypeScript SDK, the OpenAI Agents SDK
+  adapter and the LangGraph adapter, 0 unmet expectations and 0 differences between ways; then
+  the same 13 steps through both SDKs over the embedded bindings, 0 and 0.
+- **Governance.** New check `embedded_same_controls` (wrong credentials refused and audited,
+  nothing authenticates without a configured key, an injection write quarantined and not
+  recalled, writes audited, all through the embedded transport). Postgres: 73 of 73. SQLite:
+  70 of 70 applicable, 3 not applicable.
+- **Guard.** T1 passed, with every quality metric equal to its baseline; no paid spend. A first
+  run on a loaded machine failed on `search_p50_ms` alone (15.0 against 14.7 and 15.8 against
+  14.0) and the second passed (13.6 against 14.0 on LoCoMo): the latency limits are close on
+  this machine.
+- **CI.** A third hosted job, `SDKs, embedded bindings and adapters`, builds both bindings and
+  runs the script. It is not a required check.
+- **Differs from the plan / not done.** Nothing was published: packages on PyPI and npm, and
+  bindings for the platform matrix, are release work (G21). The bindings were built on macOS
+  arm64 only before the hosted job. No real model was called by the adapter examples. Node 20
+  was not run locally (Node 26 was).
 
 #### G19 — Coding template v1
 
