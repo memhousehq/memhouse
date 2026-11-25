@@ -29,12 +29,16 @@ class Lite:
         """Send one request to the REST API in process; returns ``(status, body)``.
 
         Without an ``Authorization`` or ``x-api-key`` header, the request is sent with the
-        deployment's configured bootstrap key. The GIL is released while it runs. Raises
+        deployment's configured bootstrap key. A header name may appear once: two that differ
+        only in letter case raise ``RuntimeError``. The GIL is released while it runs. Raises
         ``RuntimeError`` after ``close()``.
         """
         ...
     def close(self) -> None:
-        """Stop the background workers and release the database file. Idempotent."""
+        """Stop the background workers, release the database file and end the native threads.
+
+        Idempotent, also across threads: every call returns when the workers have stopped.
+        """
         ...
     @property
     def closed(self) -> bool: ...

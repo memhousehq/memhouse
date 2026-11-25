@@ -11,7 +11,7 @@ const TAG: &str = "SPDX-License-Identifier:";
 /// generated reports, licence texts).
 pub fn expected(path: &str) -> Option<&'static str> {
     let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    let covered = matches!(ext, "rs" | "sh" | "py" | "ts" | "mjs" | "html" | "md");
+    let covered = matches!(ext, "rs" | "sh" | "py" | "ts" | "js" | "mjs" | "html" | "md");
     let generated = path.starts_with("bench-results/");
     if !covered || generated {
         return None;
@@ -21,7 +21,7 @@ pub fn expected(path: &str) -> Option<&'static str> {
 
 fn header(path: &str, licence: &str) -> String {
     match path.rsplit_once('.').map(|(_, e)| e).unwrap_or("") {
-        "rs" | "ts" | "mjs" => format!("// {TAG} {licence}"),
+        "rs" | "ts" | "js" | "mjs" => format!("// {TAG} {licence}"),
         "sh" | "py" => format!("# {TAG} {licence}"),
         _ => format!("<!-- {TAG} {licence} -->"),
     }

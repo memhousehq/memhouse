@@ -88,6 +88,12 @@ MemHouse(base_url=None, api_key=None, *, user=None, actor=None, timeout=30.0, tr
 new MemHouse({ baseUrl?, apiKey?, user?, actor?, timeoutMs?, transport? })
 ```
 
+- `base_url` / `baseUrl` is `http(s)://host[:port]`, with a path prefix when the API is served
+  under one (`https://example.com/memhouse`). A URL with credentials in it, a query string or a
+  fragment is refused, with a message that does not repeat the URL: the key goes in `api_key` /
+  `apiKey` or `MEMHOUSE_API_KEY`. The key is sent to that origin only: a redirect to another
+  origin is not followed by the Python client (the call fails with the redirect's status), and
+  `fetch` drops the `Authorization` header when it follows one.
 - `user` is the user every call acts for (the `x-memhouse-user` header), unless a call names
   another. `actor` is sent as `x-memhouse-actor`, which the API has ignored since 1.1.
 - **One method per operation.** The method is the operation's id in the specification, in the
@@ -106,6 +112,9 @@ new MemHouse({ baseUrl?, apiKey?, user?, actor?, timeoutMs?, transport? })
   await mh.remember({ subject: "customer:acme", content: "Acme's champion is Priya" }, { idempotencyKey: "crm-sync-8812" });
   const page = await mh.listMemories("customer:acme", { limit: 20, includeInactive: true });
   ```
+
+  A path parameter is percent-encoded. One that is empty, `.` or `..` is refused before
+  anything is sent (`ValueError`, `TypeError`): in a URL it would name another route.
 
 - **Types.** Every schema of the specification is a type: a `TypedDict` in Python (a request
   is a plain `dict`, checked by a type checker), an interface in TypeScript. They are exported
@@ -191,6 +200,13 @@ enrichment is on. So by default, where `after_turn` sends each turn as it happen
 `at_session_end` has nothing left to send and calls nothing. With `buffer_turns`, the turns are
 kept in memory and `at_session_end` sends the whole conversation in one `ingest`; a process that
 stops before then loses them, which is why buffering is off by default.
+
+If that `ingest` fails, call `at_session_end` again. The batch is sent under an
+[idempotency key](api.md#conventions) of its own and a repeat sends the same batch under the
+same key, so it is stored once even when the first request arrived and only its answer was
+lost. Turns buffered since then follow in a batch of their own. In TypeScript, where calls can
+overlap, one flush runs at a time: an `atSessionEnd` called while another is under way resolves
+with that one's outcome, and no buffered turn is sent twice or dropped.
 
 ### The hooks hold no enforcement
 
@@ -362,8 +378,22 @@ record as the API returns it:
 | `search(namespace, query=..., limit=...)` | `recall` in that subject; each item has the hit's `score` |
 | `search(namespace)` | the subject's current records ([`list_memories`](api.md)) |
 | `get(namespace, key)` | the record with that id; `None` when the subject has no such record |
-| `put(namespace, key, value)` | `revise` of the record `key`: `value["content"]` is the corrected text, the other entries are fields of the request |
-| `delete(namespace, key)` | `forget` of the record `key` |
+| `put(namespace, key, value)` | `revise` of the record `key`, when the subject has it: `value["content"]` is the corrected text, the other entries are fields of the request |
+| `delete(namespace, key)` | `forget` of the record `key`, when the subject has it; nothing otherwise |
+
+- **One namespace, one subject.** Labels joined with `:` must not be empty or contain `:`
+  themselves (`ValueError`): `("customer", "a:b")` and `("customer:a", "b")` would be the same
+  subject, and each would read and change the other's records. For namespaces of another form
+  give `subject_of`; it must map different namespaces to different subjects.
+- **The namespace is part of the address.** `get`, `put` and `delete` read the record first
+  and touch it only when it belongs to the namespace's subject, also when the client's key
+  could reach the other subject.
+- **A corrected record gets a new key.** MemHouse keeps versions: `revise` stores the corrected
+  text as a new record with a new id and marks the old one superseded. After `put`, the old
+  key still names the old version (`get` returns it with `status: "superseded"`, and a second
+  `put` to it fails with the API's `conflict`), and `BaseStore.put` returns nothing. To correct
+  a record and get the new key, call `store.revise(namespace, key, content, **fields)` (not
+  part of `BaseStore`): its answer's `id` is the new version. `search` also finds it.
 
 A `BaseStore` is a key-value store, and MemHouse is not one. What cannot be expressed raises
 `NotImplementedError` instead of being imitated:
@@ -424,8 +454,8 @@ The hand-written parts are small: the client's transport and error handling (`cl
 ## Tests and the conformance run
 
 ```bash
-cd sdk/python && uv run pytest          # Python
-cd sdk/typescript && pnpm install && pnpm test      # TypeScript: type check, build, node --test
+(cd sdk/python && uv run pytest)                        # Python
+(cd sdk/typescript && pnpm install && pnpm test)        # TypeScript: type check, build, node --test
 ```
 
 Without a deployment these run the offline tests. With `MEMHOUSE_URL` and `MEMHOUSE_API_KEY` set

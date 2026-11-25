@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ._generated import IngestRequest, IngestResult, Message, RecallResult, RememberRequest, RememberResult
 from .client import MemHouse
@@ -56,6 +56,9 @@ class MemoryHooks:
         self.last_recall: Optional[RecallResult] = None
         """The whole answer of the latest `before_model_call` (hits, ids, `recall_id`)."""
         self._buffer: List[Message] = []
+        # A batch taken from the buffer and not yet known to be stored, with the idempotency
+        # key it is sent under.
+        self._pending: Optional[Tuple[str, List[Message]]] = None
 
     def before_model_call(self, query: str, **recall_options: Any) -> str:
         """Recall what is known for `query` and return it as a text block ready for the prompt.
@@ -110,22 +113,31 @@ class MemoryHooks:
         The API has no separate consolidation route. A session is the unit of background
         enrichment: every `ingest` under a session id queues the session for it (when
         enrichment is on), so turns already sent by `after_turn` need nothing more here.
-        """
-        if not self._buffer:
-            return None
-        messages = list(self._buffer)
-        result = self._ingest(messages)
-        # Dropped only once the API has them: a failed call can be tried again.
-        del self._buffer[: len(messages)]
-        return result
 
-    def _ingest(self, messages: List[Message]) -> IngestResult:
+        A call that failed can be made again. The batch is sent under an idempotency key of
+        its own, and a repeat sends the same batch under the same key, so the API stores it
+        once even if the first request arrived and only its answer was lost. Turns buffered
+        since go in a batch of their own after it (the answer returned is then the last one).
+        """
+        result: Optional[IngestResult] = None
+        while True:
+            if self._pending is None:
+                if not self._buffer:
+                    return result
+                self._pending = (f"session-end-{uuid.uuid4()}", list(self._buffer))
+                self._buffer.clear()
+            key, messages = self._pending
+            result = self._ingest(messages, key)
+            # Let go only once the API has them.
+            self._pending = None
+
+    def _ingest(self, messages: List[Message], idempotency_key: Optional[str] = None) -> IngestResult:
         request: IngestRequest = {"subject": self.subject, "session_id": self.session_id, "messages": messages}
         if self.source:
             request["source"] = self.source
         if self.wait:
             request["wait"] = True
-        return self.client.ingest(request)
+        return self.client.ingest(request, idempotency_key=idempotency_key)
 
 
 __all__ = ["MemoryHooks"]

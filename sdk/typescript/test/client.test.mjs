@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { inspect } from "node:util";
 
 import { API_VERSION, HttpTransport, MemHouse, MemHouseError } from "../dist/index.js";
-import { RecordingTransport } from "./fakes.mjs";
+import { RecordingTransport, withStatus } from "./fakes.mjs";
 
 const FAKE_KEY = "mh_test_0000"; // secret-scan: allow (fake fixture)
 
@@ -51,7 +51,7 @@ test("a text answer is returned as text", async () => {
 });
 
 test("an error answer rejects with the code, the message and the status", async () => {
-  const [mh] = client([[409, { error: "request key 'k' was already used for a different request", code: "conflict" }]]);
+  const [mh] = client([withStatus(409, { error: "request key 'k' was already used for a different request", code: "conflict" })]);
   await assert.rejects(mh.remember({ content: "x" }), (e) => {
     assert.ok(e instanceof MemHouseError);
     assert.deepEqual([e.status, e.code], [409, "conflict"]);
@@ -62,9 +62,63 @@ test("an error answer rejects with the code, the message and the status", async 
 });
 
 test("an error without a JSON body gets the code of its status", async () => {
-  const [mh] = client([[503, "upstream is down"], [418, ""]]);
+  const [mh] = client([withStatus(503, "upstream is down"), withStatus(418, "")]);
   await assert.rejects(mh.stats(), (e) => e.status === 503 && e.code === "unavailable" && e.error === "upstream is down");
   await assert.rejects(mh.stats(), (e) => e.status === 418 && e.code === "unknown");
+});
+
+test("a key repeated by an error answer is not in the error", async () => {
+  // A proxy that echoes the request's headers in its error page, as text or as JSON.
+  const [mh] = client([
+    withStatus(502, `bad gateway; request was: Authorization: Bearer ${FAKE_KEY}`),
+    withStatus(401, { error: `the key ${FAKE_KEY} is not known`, code: `unauthorized:${FAKE_KEY}` }),
+    withStatus(500, "x".repeat(495) + FAKE_KEY),
+  ]);
+  for (const status of [502, 401, 500]) {
+    await assert.rejects(mh.stats(), (e) => {
+      assert.equal(e.status, status);
+      assert.ok(!`${e} ${e.message} ${e.error} ${e.code}`.includes(FAKE_KEY.slice(0, 8)), String(e));
+      return true;
+    });
+  }
+});
+
+test("an answer that is a JSON array is returned as one", async () => {
+  const event = { id: 1, action: "memory.write" };
+  const [mh, sent] = client([[], [event], [409, { code: "conflict" }]]);
+  assert.deepEqual(await mh.audit(), []);
+  assert.deepEqual(await mh.audit(), [event]);
+  // An array is a body whatever is in it: a status is given with `withStatus`.
+  assert.deepEqual(await mh.audit(), [409, { code: "conflict" }]);
+  assert.deepEqual(sent.calls, ["GET /v1/audit", "GET /v1/audit", "GET /v1/audit"]);
+});
+
+test("a path parameter cannot name another route", async () => {
+  const [mh, sent] = client([{ items: [] }]);
+  // `/v1/subjects/../memories` is `/v1/memories` to a URL parser, encoded or not.
+  for (const subject of ["..", ".", ""]) {
+    await assert.rejects(mh.listMemories(subject), (e) => e instanceof TypeError && /path parameter/.test(e.message));
+  }
+  await assert.rejects(mh.getMemory(""), TypeError);
+  assert.deepEqual(sent.calls, []);
+  // Dots inside a longer value, and an encoded slash, are one segment as before.
+  await mh.listMemories("../x");
+  assert.deepEqual(sent.calls, ["GET /v1/subjects/..%2Fx/memories"]);
+});
+
+test("the key from the environment is sent, and an explicit one replaces it", async () => {
+  const before = process.env.MEMHOUSE_API_KEY;
+  process.env.MEMHOUSE_API_KEY = FAKE_KEY;
+  try {
+    const transport = new RecordingTransport();
+    await new MemHouse({ baseUrl: "http://memhouse.test", transport }).whoami();
+    await new MemHouse({ baseUrl: "http://memhouse.test", apiKey: "mh_test_1111", transport }).whoami(); // secret-scan: allow (fake fixture)
+    await new MemHouse({ baseUrl: "http://memhouse.test", apiKey: "", transport }).whoami();
+    assert.deepEqual(transport.requests.map((r) => r.headers["authorization"]), [`Bearer ${FAKE_KEY}`, "Bearer mh_test_1111", undefined]);
+  } finally {
+    if (before === undefined) delete process.env.MEMHOUSE_API_KEY;
+    else process.env.MEMHOUSE_API_KEY = before;
+  }
 });
 
 test("URL and key come from the environment, and the key is not shown", async () => {
@@ -89,6 +143,27 @@ test("URL and key come from the environment, and the key is not shown", async ()
 test("only http URLs are accepted", () => {
   assert.throws(() => new HttpTransport("file:///etc/passwd"), TypeError);
   assert.throws(() => new HttpTransport("not a url"), TypeError);
+});
+
+test("a URL that would change the request target is refused", () => {
+  // Appending `/health` to these would put the path into the query or the fragment.
+  for (const url of ["https://memhouse.test/gateway?region=west", "https://memhouse.test/gateway#api", "https://memhouse.test?"]) {
+    assert.throws(() => new HttpTransport(url), /query string or a fragment/);
+  }
+  // A path prefix is kept in front of every operation's path.
+  assert.equal(new HttpTransport("https://memhouse.test/gateway/").baseUrl, "https://memhouse.test/gateway");
+  assert.equal(new HttpTransport("http://127.0.0.1:7077").baseUrl, "http://127.0.0.1:7077");
+});
+
+test("credentials in the URL are refused and not repeated", async () => {
+  for (const url of [`https://ada:${FAKE_KEY}@memhouse.test`, `ftp://ada:${FAKE_KEY}@memhouse.test`, `https://ada:${FAKE_KEY}@memhouse.test:port`, `https://${FAKE_KEY}@memhouse.test`]) {
+    assert.throws(
+      () => new MemHouse({ baseUrl: url }),
+      (e) => e instanceof TypeError && !e.message.includes(FAKE_KEY) && !e.message.includes("ada"),
+    );
+  }
+  // A failed connection names the endpoint, which has no credentials in it.
+  await assert.rejects(new HttpTransport("http://127.0.0.1:1/prefix/").request("GET", "/health", null, {}), (e) => e.code === "transport" && e.error.startsWith("no answer from http://127.0.0.1:1/prefix: "));
 });
 
 test("embedded says what to install when the binding is missing", async (t) => {

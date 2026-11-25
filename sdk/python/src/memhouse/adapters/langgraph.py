@@ -22,7 +22,7 @@
 | `MemHouseMemory.recall` | a node for before the model node | `recall`; the rendered memories go to the state |
 | `MemHouseMemory.propose` | a node for after the model node | `ingest` of the turn |
 | `MemHouseMemory.propose_tool_results` | a node for after the tool node | `remember` of each tool result |
-| `MemHouseStore` | a `BaseStore`: search, get, replace and delete records by id | `recall`, `list_memories`, `get_memory`, `revise`, `forget` |
+| `MemHouseStore` | a `BaseStore`: search, get, correct and delete records by id | `recall`, `list_memories`, `get_memory`, `revise`, `forget` |
 
 It is wiring only. Every part calls the SDK client or `MemoryHooks` and nothing is decided
 here: what is stored, held, quarantined or returned is decided by the MemHouse engine (INT-03).
@@ -190,16 +190,29 @@ class MemHouseStore(BaseStore):
     """A LangGraph `BaseStore` over MemHouse, as far as the two agree.
 
     A namespace is a subject: its labels joined with `:` (`("customer", "acme")` is
-    `customer:acme`), or what `subject_of` makes of it. An item's key is the record's id, and
-    its value the record as the API returns it (`content`, `kind`, `status`, `tags`, ...).
+    `customer:acme`), or what `subject_of` makes of it. Joined labels must not be empty or
+    contain `:` themselves (`ValueError`): `("customer", "a:b")` and `("customer:a", "b")`
+    would otherwise be one subject. Give `subject_of` for namespaces of another form; it must
+    give different namespaces different subjects. An item's key is the record's id, and its
+    value the record as the API returns it (`content`, `kind`, `status`, `tags`, ...).
 
     | `BaseStore` | MemHouse |
     |---|---|
     | `search(namespace, query=...)` | `recall` in that subject, `limit` as `k`; items carry the hit's `score` |
     | `search(namespace)` | `list_memories` of that subject (current committed records) |
     | `get(namespace, key)` | `get_memory`; `None` when there is no such record in that subject |
-    | `put(namespace, key, value)` | `revise` of the record `key`: `value["content"]` is the corrected text, its other entries are fields of the request |
-    | `delete(namespace, key)` | `forget` of the record `key` |
+    | `put(namespace, key, value)` | `revise` of the record `key`, when it is in that subject: `value["content"]` is the corrected text, its other entries are fields of the request |
+    | `delete(namespace, key)` | `forget` of the record `key`, when it is in that subject (nothing otherwise) |
+
+    The namespace is part of an item's address: `get`, `put` and `delete` read the record
+    first and touch it only when it belongs to the namespace's subject.
+
+    A corrected record gets a new key. MemHouse keeps versions: `revise` writes the corrected
+    text as a new record with a new id and marks the old one superseded. So after
+    `put(namespace, key, value)` the key still names the old version (`get` returns it, its
+    `status` says `superseded`, and a second `put` to it fails with the API's `conflict`),
+    and `BaseStore.put` returns nothing. Call `revise` here instead (not part of `BaseStore`)
+    to correct a record and get the id of the new version, or find it with `search`.
 
     What MemHouse cannot express raises `NotImplementedError`:
 
@@ -214,7 +227,7 @@ class MemHouseStore(BaseStore):
 
     def __init__(self, client: MemHouse, *, subject_of: Optional[Callable[[Tuple[str, ...]], str]] = None, wait: bool = False) -> None:
         self.client = client
-        self.subject_of: Callable[[Tuple[str, ...]], str] = subject_of or ":".join
+        self.subject_of: Callable[[Tuple[str, ...]], str] = subject_of or _joined
         self.wait = wait
 
     def remember(self, namespace: Tuple[str, ...], content: str, **fields: Any) -> RememberResult:
@@ -225,6 +238,14 @@ class MemHouseStore(BaseStore):
             request["wait"] = True
         request.update(fields)
         return self.client.remember(request)  # type: ignore[arg-type]
+
+    def revise(self, namespace: Tuple[str, ...], key: str, content: str, **fields: Any) -> RememberResult:
+        """Correct the record `key` of the namespace's subject (`fields`: further fields of the
+        `revise` request). The answer's `id` is the key of the new version: the old key keeps
+        naming the version it replaced. What `put` does, with the answer returned."""
+        request: Dict[str, Any] = dict(fields)
+        request["content"] = content
+        return self._revise(tuple(namespace), key, request)
 
     def batch(self, ops: Iterable[Op]) -> List[Result]:
         return [self._run(op) for op in ops]
@@ -245,19 +266,23 @@ class MemHouseStore(BaseStore):
             raise NotImplementedError("MemHouseStore has no list_namespaces: namespaces are MemHouse subjects, listed by the client's list_subjects()")
         raise NotImplementedError(f"MemHouseStore has no operation {type(op).__name__}")
 
-    def _get(self, op: GetOp) -> Optional[Item]:
-        if not _is_id(op.key):
+    def _held(self, namespace: Tuple[str, ...], key: str) -> Optional[Memory]:
+        """The record `key`, when there is one and it is in the namespace's subject."""
+        subject = self.subject_of(namespace)
+        if not _is_id(key):
             return None
         try:
-            memory = self.client.get_memory(op.key)
+            memory = self.client.get_memory(key)
         except MemHouseError as e:
             if e.code == "not_found":
                 return None
             raise
         # A record of another subject is not in this namespace.
-        if memory.get("subject") != self.subject_of(tuple(op.namespace)):
-            return None
-        return _item(Item, tuple(op.namespace), memory)
+        return memory if memory.get("subject") == subject else None
+
+    def _get(self, op: GetOp) -> Optional[Item]:
+        memory = self._held(tuple(op.namespace), op.key)
+        return None if memory is None else _item(Item, tuple(op.namespace), memory)
 
     def _search(self, op: SearchOp) -> List[SearchItem]:
         if op.filter:
@@ -274,7 +299,9 @@ class MemHouseStore(BaseStore):
 
     def _put(self, op: PutOp) -> None:
         if op.value is None:  # how BaseStore.delete arrives
-            self.client.forget(_tools.forget_request(op.key))
+            # Only a record of this namespace: the same id under another one names nothing.
+            if self._held(tuple(op.namespace), op.key) is not None:
+                self.client.forget(_tools.forget_request(op.key))
             return
         if op.index is not None:
             raise NotImplementedError("MemHouseStore.put has no `index`: MemHouse indexes a record's text itself")
@@ -283,21 +310,38 @@ class MemHouseStore(BaseStore):
         content = op.value.get("content")
         if not isinstance(content, str):
             raise ValueError('MemHouseStore.put: the value needs the text under "content"')
-        request: Dict[str, Any] = dict(op.value)
-        request["id"] = op.key
+        self._revise(tuple(op.namespace), op.key, dict(op.value))
+
+    def _revise(self, namespace: Tuple[str, ...], key: str, request: Dict[str, Any]) -> RememberResult:
+        request["id"] = key
         if self.wait:
             request.setdefault("wait", True)
-        if _is_id(op.key):
+        # The record must be in this namespace: a key alone would also reach another subject's.
+        if self._held(namespace, key) is not None:
             try:
-                self.client.revise(request)  # type: ignore[arg-type]
-                return
+                return self.client.revise(request)  # type: ignore[arg-type]
             except MemHouseError as e:
                 if e.code != "not_found":
                     raise
         raise NotImplementedError(
-            f"MemHouseStore.put can only replace a record MemHouse holds, and {op.key!r} is not the id of one. MemHouse assigns ids itself: "
+            f"MemHouseStore can only replace a record MemHouse holds in the namespace, and {key!r} is not the id of one in {namespace!r}. MemHouse assigns ids itself: "
             "write a new memory with MemHouseStore.remember(), the remember tool or the propose node"
         )
+
+
+def _joined(namespace: Tuple[str, ...]) -> str:
+    """The subject of a namespace when no `subject_of` is given: its labels joined with `:`.
+
+    Different namespaces must not share a subject, so a label that is empty or holds the
+    separator is refused: `("customer", "a:b")` and `("customer:a", "b")` would both be
+    `customer:a:b`, and each would see and change the other's records.
+    """
+    if not namespace:
+        raise ValueError("MemHouseStore: an empty namespace names no subject")
+    for part in namespace:
+        if not part or ":" in part:
+            raise ValueError(f"MemHouseStore: the namespace {namespace!r} has a part that is empty or contains `:`, so joining its parts with `:` would not name one subject. Give `subject_of` to map such namespaces")
+    return ":".join(namespace)
 
 
 def _is_id(key: str) -> bool:

@@ -313,7 +313,8 @@ impl Process {
     }
 
     /// How long one call may take (60 s unless set). A program that does not answer in time
-    /// is stopped; the next call starts it again.
+    /// is stopped; the next call starts it again. So is one whose call was dropped before its
+    /// answer was read: the answer would otherwise be taken for the next call's.
     pub fn timeout(mut self, timeout: std::time::Duration) -> Process {
         self.timeout = timeout;
         self
@@ -359,24 +360,23 @@ impl Way for Process {
         self.name.clone()
     }
     async fn call(&self, op: &str, body: Value) -> anyhow::Result<Value> {
-        let mut running = self.running.lock().await;
-        if running.is_none() {
-            *running = Some(self.start()?);
-        }
         let line = serde_json::to_string(&json!({ "op": op, "body": body }))?;
-        let Some(process) = running.as_mut() else { anyhow::bail!("the program is not running") };
-        let answer = match tokio::time::timeout(self.timeout, self.exchange(process, &line)).await {
-            Ok(Ok(v)) => v,
-            // The conversation with the program is out of step: stop it.
-            Ok(Err(e)) => {
-                *running = None;
-                return Err(e);
-            }
-            Err(_) => {
-                *running = None;
-                anyhow::bail!("{} did not answer {op} within {} s", self.program.display(), self.timeout.as_secs_f32());
-            }
+        let mut slot = self.running.lock().await;
+        // The program leaves the slot for the length of the exchange and returns only after a
+        // whole one. If this call fails, times out or is dropped half-way (its answer would
+        // then be read as the answer to the next call), the program is dropped, which stops
+        // it, and the next call starts a new one.
+        let mut process = match slot.take() {
+            Some(running) => running,
+            None => self.start()?,
         };
+        let answer = match tokio::time::timeout(self.timeout, self.exchange(&mut process, &line)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => anyhow::bail!("{} did not answer {op} within {} s", self.program.display(), self.timeout.as_secs_f32()),
+        };
+        *slot = Some(process);
+        drop(slot);
         anyhow::ensure!(answer["ok"] == true, "{} {op} failed: {}", self.name, answer["error"].as_str().unwrap_or("no error message"));
         Ok(answer["result"].clone())
     }
@@ -671,6 +671,21 @@ steps:
         let missing = Process::new("missing", "/no/such/program");
         let e = format!("{:#}", missing.call("recall", json!({})).await.unwrap_err());
         assert!(e.contains("starting /no/such/program"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_call_dropped_before_its_answer_does_not_hand_that_answer_to_the_next() {
+        // Answers each request with its operation, the first one late.
+        let way = stand_in(r#"n=0; while read -r line; do n=$((n+1)); [ "$n" = 1 ] && sleep 0.4; echo "{\"ok\":true,\"result\":$line}"; done"#);
+        // The caller gives up on the first call after its request was written.
+        let dropped = tokio::time::timeout(std::time::Duration::from_millis(150), way.call("remember", json!({}))).await;
+        assert!(dropped.is_err(), "the first call was meant to be dropped while waiting: {dropped:?}");
+        // Long enough for the late answer to be in the pipe, had the program been kept.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let next = way.call("recall", json!({})).await.unwrap();
+        assert_eq!(next["op"], "recall", "the next call got the answer of the dropped one");
+        assert_eq!(way.call("forget", json!({})).await.unwrap()["op"], "forget");
     }
 
     #[cfg(unix)]

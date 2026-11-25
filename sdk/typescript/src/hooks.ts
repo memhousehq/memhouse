@@ -42,6 +42,11 @@ export class MemoryHooks {
   /** The whole answer of the latest `beforeModelCall` (hits, ids, `recall_id`). */
   lastRecall: RecallResult | undefined;
   #buffer: Message[] = [];
+  // A batch taken from the buffer and not yet known to be stored, with the idempotency key it
+  // is sent under.
+  #pending: { key: string; messages: Message[] } | undefined;
+  // The `atSessionEnd` under way, if any.
+  #flush: Promise<IngestResult | null> | undefined;
 
   constructor(client: MemHouse, subject: string, sessionId?: string, options: MemoryHooksOptions = {}) {
     this.client = client;
@@ -114,20 +119,38 @@ export class MemoryHooks {
    * The API has no separate consolidation route. A session is the unit of background
    * enrichment: every `ingest` under a session id queues the session for it (when enrichment
    * is on), so turns already sent by `afterTurn` need nothing more here.
+   *
+   * One flush runs at a time: a call made while another is under way gets that one's outcome,
+   * and a turn buffered meanwhile is sent by it in a batch of its own (the answer is then the
+   * last batch's). A call that failed can be made again. Each batch is sent under an
+   * idempotency key of its own, and a repeat sends the same batch under the same key, so the
+   * API stores it once even if the first request arrived and only its answer was lost.
    */
-  async atSessionEnd(): Promise<IngestResult | null> {
-    if (this.#buffer.length === 0) return null;
-    const messages = [...this.#buffer];
-    const result = await this.#ingest(messages);
-    // Dropped only once the API has them: a failed call can be tried again.
-    this.#buffer.splice(0, messages.length);
-    return result;
+  atSessionEnd(): Promise<IngestResult | null> {
+    this.#flush ??= this.#sendBuffered().finally(() => {
+      this.#flush = undefined;
+    });
+    return this.#flush;
   }
 
-  #ingest(messages: Message[]): Promise<IngestResult> {
+  async #sendBuffered(): Promise<IngestResult | null> {
+    let result: IngestResult | null = null;
+    for (;;) {
+      if (this.#pending === undefined) {
+        if (this.#buffer.length === 0) return result;
+        // Taken out of the buffer: what `afterTurn` adds from here on is another batch.
+        this.#pending = { key: `session-end-${crypto.randomUUID()}`, messages: this.#buffer.splice(0) };
+      }
+      result = await this.#ingest(this.#pending.messages, this.#pending.key);
+      // Let go only once the API has them.
+      this.#pending = undefined;
+    }
+  }
+
+  #ingest(messages: Message[], idempotencyKey?: string): Promise<IngestResult> {
     const request: IngestRequest = { subject: this.subject, session_id: this.sessionId, messages };
     if (this.options.source) request.source = this.options.source;
     if (this.options.wait) request.wait = true;
-    return this.client.ingest(request);
+    return this.client.ingest(request, { idempotencyKey });
   }
 }

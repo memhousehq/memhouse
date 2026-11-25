@@ -3,6 +3,9 @@
 
 import json
 import os
+import subprocess
+import threading
+import time
 
 import pytest
 
@@ -68,6 +71,7 @@ def test_a_quarantined_injection_stays_out_of_recall(config):
         _, recalled = call(lite, "POST", "/v1/recall", {"subject": "user:ada", "query": INJECTION})
         assert any("wiki" in c for c in contents(recalled)), recalled
         assert not any("Ignore all previous" in c for c in contents(recalled)), recalled
+        assert stored["id"] not in [hit["memory"]["id"] for hit in recalled["hits"]], recalled
 
 
 def test_close(config):
@@ -78,6 +82,90 @@ def test_close(config):
     assert lite.closed
     with pytest.raises(RuntimeError, match="closed"):
         lite.request("GET", "/health")
+
+
+def test_closes_made_at_the_same_time_all_wait_for_the_workers(config, slow_embeddings):
+    lite = Lite(config=config)
+    # Not waited for: the answer comes at once, the first attempt fails, and a worker makes
+    # the next one.
+    status, _ = call(lite, "POST", "/v1/remember", {"subject": "user:ada", "content": "Ada prefers tea over coffee"})
+    assert status == 200
+    assert slow_embeddings.arrived.wait(10)
+    assert not slow_embeddings.finished.is_set(), "the worker was meant to be busy when close() is called"
+    first = threading.Thread(target=lite.close)
+    first.start()
+    time.sleep(0.1)
+    # The second call must not return while the first is still stopping that worker.
+    lite.close()
+    assert slow_embeddings.finished.is_set(), "a second close() returned while a worker was still running"
+    first.join(15)
+    assert not first.is_alive() and lite.closed
+    with pytest.raises(RuntimeError, match="closed"):
+        lite.request("GET", "/health")
+
+
+def runtime_threads():
+    """The threads of this process that the binding's runtime started, or None where they
+    cannot be counted. Linux lists every thread with its name, and the runtime names its own
+    `memhouse-lite`. Elsewhere only the number of all threads is known (`ps -M`, macOS): the
+    system starts and ends some of its own there, so the test compares with a margin."""
+    try:
+        tasks = os.listdir("/proc/self/task")
+    except OSError:
+        tasks = None
+    if tasks is not None:
+        named = 0
+        for task in tasks:
+            try:
+                with open(f"/proc/self/task/{task}/comm") as f:
+                    named += f.read().startswith("memhouse-lite")
+            except OSError:
+                pass  # the thread ended meanwhile
+        return named, True
+    try:
+        listed = subprocess.run(["ps", "-M", "-p", str(os.getpid())], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if listed.returncode != 0 or not listed.stdout:
+        return None
+    return len(listed.stdout.splitlines()) - 1, False
+
+
+def test_close_ends_the_native_threads_of_a_lite_still_referenced(config):
+    if runtime_threads() is None:
+        pytest.skip("the threads of this process cannot be counted here")
+    lite = Lite(config=config)
+    assert lite.request("GET", "/health")[0] == 200
+    opened, exact = runtime_threads()
+    # The runtime has one worker thread per core. Where only the total is known, that many
+    # must go; where the threads are known by name, all of them.
+    workers = os.cpu_count() or 1
+    assert opened >= (1 if exact else workers)
+    allowed = 0 if exact else opened - workers
+    lite.close()
+    # The object is still here (`lite`): its runtime's threads are not.
+    deadline = time.monotonic() + 5
+    while runtime_threads()[0] > allowed and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert runtime_threads()[0] <= allowed, f"{opened} threads while open"
+    assert lite.closed
+
+
+def test_a_header_named_twice_in_different_letter_case_is_refused(config):
+    with Lite(config=config) as lite:
+        # Which of the two would be verified depended on the order of a map.
+        for headers in (
+            {"Authorization": f"Bearer {KEY}", "authorization": "Bearer mh_not_the_key"},
+            {"authorization": "Bearer mh_not_the_key", "AUTHORIZATION": f"Bearer {KEY}"},
+            {"X-Api-Key": KEY, "x-api-key": "mh_not_the_key"},
+        ):
+            with pytest.raises(RuntimeError, match="given more than once") as raised:
+                lite.request("GET", "/v1/whoami", None, headers)
+            assert KEY not in str(raised.value)
+        # Nothing was sent, so nothing was refused by the middleware; one name once is as before.
+        assert call(lite, "GET", "/v1/whoami", headers={"AUTHORIZATION": f"Bearer {KEY}", "Accept": "application/json"})[0] == 200
+        _, audit = call(lite, "GET", "/v1/audit?limit=50")
+        assert not [e for e in audit if e["action"] == "auth.failed"], audit
 
 
 def test_arguments(tmp_path, config):

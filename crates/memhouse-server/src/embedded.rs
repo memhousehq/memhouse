@@ -142,7 +142,8 @@ impl Embedded {
     }
 
     /// One API request: `path` is the path and query of the REST API (`/v1/recall`), `body` a
-    /// JSON document. Returns the status and the response body.
+    /// JSON document. Returns the status and the response body. A header may be given once:
+    /// a name repeated in any letter case is an error, and nothing is sent.
     ///
     /// Authentication is the server's (GOV-01): the middleware verifies the credential of every
     /// request. The process that embeds MemHouse holds its configuration, and with it the
@@ -151,6 +152,16 @@ impl Embedded {
     /// names a credential is verified as it stands: a wrong one is refused and audited.
     pub async fn request(&self, method: &str, path: &str, headers: &[(String, String)], body: Option<&[u8]>) -> anyhow::Result<(u16, Vec<u8>)> {
         anyhow::ensure!(!self.closed.load(Ordering::Acquire), "this embedded MemHouse is closed");
+        // Header names are case-insensitive, and the API reads one value of each. Two entries
+        // for one name (`Authorization` and `authorization` in a map whose order is arbitrary)
+        // would make which credential is verified a matter of chance: refuse them.
+        for (i, (name, _)) in headers.iter().enumerate() {
+            anyhow::ensure!(
+                !headers[..i].iter().any(|(k, _)| k.eq_ignore_ascii_case(name)),
+                "invalid request: the header {} is given more than once (header names are case-insensitive)",
+                name.to_ascii_lowercase()
+            );
+        }
         let mut req = Request::builder().method(method).uri(path);
         let named = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
         for (k, v) in headers {
@@ -175,12 +186,20 @@ impl Embedded {
         Ok((status, bytes.to_vec()))
     }
 
-    /// Stop the background workers and refuse further requests. Safe to call more than once.
+    /// Stop the background workers and refuse further requests. Safe to call more than once,
+    /// also at the same time: every call returns only when the workers have stopped.
     /// The store is closed when the value is dropped.
     pub async fn shutdown(&self) {
         self.closed.store(true, Ordering::Release);
-        if let Some(b) = self.background.lock().await.take() {
+        // Held until the workers have stopped: a call that arrives meanwhile waits here.
+        let mut background = self.background.lock().await;
+        if let Some(b) = background.take() {
             b.stop().await;
         }
+    }
+
+    /// Whether [`Embedded::shutdown`] was called: requests are refused from then on.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 }

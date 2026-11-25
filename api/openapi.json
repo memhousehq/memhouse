@@ -986,7 +986,7 @@
           },
           "status": {
             "$ref": "#/components/schemas/MemoryStatus",
-            "description": "Lifecycle state; only `committed` records are recalled."
+            "description": "Lifecycle state. A recall returns `committed` records, and `candidate` ones only when it\nasks with `include_candidates`: check this field before treating such a hit as admitted."
           },
           "subject": {
             "description": "Whose memory it is.",
@@ -1112,7 +1112,7 @@
         "type": "object"
       },
       "MemoryStatus": {
-        "description": "Lifecycle of a record (CORE-02). Only `committed` records are recalled.\n\n```text\ncandidate ──► committed ──► superseded\n    │  │          │  └────► expired\n    │  └► rejected │\n    └──► quarantined ◄┘ ──► rejected   (quarantined ──► committed on release)\n```",
+        "description": "Lifecycle of a record (CORE-02). By default only `committed` records are recalled; a recall\nthat asks with `include_candidates` also returns `candidate` ones, each labelled by its status.\n\n```text\ncandidate ──► committed ──► superseded\n    │  │          │  └────► expired\n    │  └► rejected │\n    └──► quarantined ◄┘ ──► rejected   (quarantined ──► committed on release)\n```",
         "oneOf": [
           {
             "enum": [

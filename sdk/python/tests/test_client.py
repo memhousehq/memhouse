@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """The client offline: how requests are built and how answers and errors are read."""
 
+import socket
 import sys
+import threading
+import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from fakes import RecordingTransport
@@ -71,6 +75,17 @@ def test_an_error_without_a_json_body_gets_the_code_of_its_status():
     assert (raised.value.status, raised.value.code) == (418, "unknown")
 
 
+def test_a_key_repeated_by_an_error_answer_is_not_in_the_error():
+    # A proxy that echoes the request's headers in its error page, as text or as JSON.
+    mh, _ = client((502, f"bad gateway; request was: Authorization: Bearer {FAKE_KEY}"), (401, {"error": f"the key {FAKE_KEY} is not known", "code": f"unauthorized:{FAKE_KEY}"}), (500, "x" * 495 + FAKE_KEY))
+    for status in (502, 401, 500):
+        with pytest.raises(MemHouseError) as raised:
+            mh.stats()
+        e = raised.value
+        assert e.status == status and FAKE_KEY not in f"{e} {e.error} {e.code}" and FAKE_KEY[:8] not in e.error
+    assert "[redacted]" in e.error or status == 500
+
+
 def test_url_and_key_come_from_the_environment_and_the_key_is_not_shown(monkeypatch):
     monkeypatch.setenv("MEMHOUSE_URL", "http://127.0.0.1:1")
     monkeypatch.setenv("MEMHOUSE_API_KEY", FAKE_KEY)
@@ -87,6 +102,113 @@ def test_url_and_key_come_from_the_environment_and_the_key_is_not_shown(monkeypa
 def test_only_http_urls_are_accepted():
     with pytest.raises(ValueError):
         HttpTransport("file:///etc/passwd")
+    with pytest.raises(ValueError):
+        HttpTransport("http://")
+
+
+def test_a_url_that_would_change_the_request_target_is_refused():
+    # Appending `/health` to these would put the path into the query or the fragment.
+    for url in ("https://memhouse.test/gateway?region=west", "https://memhouse.test/gateway#api", "https://memhouse.test?"):
+        with pytest.raises(ValueError, match="query string or a fragment"):
+            HttpTransport(url)
+    # A path prefix is kept in front of every operation's path.
+    assert HttpTransport("https://memhouse.test/gateway/").base_url == "https://memhouse.test/gateway"
+    assert HttpTransport("http://127.0.0.1:7077").base_url == "http://127.0.0.1:7077"
+
+
+def test_credentials_in_the_url_are_refused_and_not_repeated():
+    for url in ("https://ada:" + FAKE_KEY + "@memhouse.test", "ftp://ada:" + FAKE_KEY + "@memhouse.test", "https://ada:" + FAKE_KEY + "@memhouse.test:port"):
+        with pytest.raises(ValueError) as raised:
+            MemHouse(url)
+        assert FAKE_KEY not in str(raised.value) and "ada" not in str(raised.value)
+
+
+def test_a_path_parameter_cannot_name_another_route():
+    mh, sent = client({"items": []})
+    # `/v1/subjects/../memories` is `/v1/memories` to a URL parser, encoded or not.
+    for subject in ("..", ".", ""):
+        with pytest.raises(ValueError, match="path parameter"):
+            mh.list_memories(subject)
+    with pytest.raises(ValueError, match="path parameter"):
+        mh.get_memory("")
+    assert sent.calls == []
+    # Dots inside a longer value, and an encoded slash, are one segment as before.
+    mh.list_memories("../x")
+    assert sent.calls == [("GET", "/v1/subjects/..%2Fx/memories")]
+
+
+class _Server:
+    """A local HTTP server that answers every request with `answer(handler)` and records them."""
+
+    def __init__(self, answer):
+        seen = self.seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 (the name http.server calls)
+                seen.append((self.path, self.headers.get("Authorization")))
+                answer(self)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _answer(status, body=b"", **headers):
+    def answer(handler):
+        handler.send_response(status)
+        for name, value in headers.items():
+            handler.send_header(name, value)
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    return answer
+
+
+def test_the_key_is_not_sent_to_another_origin_by_a_redirect():
+    health = b'{"status": "ok", "version": "x", "api_version": "y"}'
+    other = _Server(_answer(200, health))
+    moved = _Server(_answer(302, Location=f"{other.url}/health"))
+    within = _Server(lambda handler: _answer(200, health)(handler) if handler.path == "/v2/health" else _answer(307, Location="/v2/health")(handler))
+    try:
+        with pytest.raises(MemHouseError) as raised:
+            MemHouse(moved.url, FAKE_KEY).health()
+        e = raised.value
+        assert e.status == 302 and "was not followed" in e.error and other.url in e.error
+        assert FAKE_KEY not in str(e)
+        # The other origin was never called, with the key or without it.
+        assert other.seen == [] and moved.seen == [("/health", f"Bearer {FAKE_KEY}")]
+        # Within the origin the request follows, credential included.
+        assert MemHouse(within.url, FAKE_KEY).health()["status"] == "ok"
+        assert within.seen == [("/health", f"Bearer {FAKE_KEY}"), ("/v2/health", f"Bearer {FAKE_KEY}")]
+    finally:
+        for server in (other, moved, within):
+            server.close()
+
+
+def test_a_failure_while_reading_an_error_body_is_a_transport_error(monkeypatch):
+    class Stalled:
+        def read(self, *args):
+            raise socket.timeout("timed out")
+
+        def close(self):
+            pass
+
+    def unavailable(self, request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 503, "Service Unavailable", {}, Stalled())
+
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", unavailable)
+    with pytest.raises(MemHouseError) as raised:
+        MemHouse("http://memhouse.test", FAKE_KEY).health()
+    assert (raised.value.status, raised.value.code) == (0, "transport") and "timed out" in raised.value.error
+    assert FAKE_KEY not in str(raised.value)
 
 
 def test_embedded_says_what_to_install_when_the_binding_is_missing(monkeypatch):

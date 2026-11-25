@@ -12,15 +12,21 @@ export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-was
 
 /** One embedded MemHouse Lite deployment. Create it with `await Lite.open(...)`. */
 export declare class Lite {
+  /** Not constructible: open one with `await Lite.open(...)`. */
+  private constructor()
   /** Open the deployment: load the models, migrate the file, start the background workers. */
   static open(options?: LiteOptions | undefined | null): Promise<Lite>
   /**
    * Send one request to the REST API in process. Without an `Authorization` or `x-api-key`
-   * header, it is sent with the deployment's configured bootstrap key. Rejects after
-   * `close()`.
+   * header, it is sent with the deployment's configured bootstrap key. A header name may
+   * appear once: two that differ only in letter case are rejected. Rejects after `close()`.
    */
   request(method: string, path: string, body?: string | undefined | null, headers?: Record<string, string> | undefined | null): Promise<LiteResponse>
-  /** Stop the background workers and release the database file. Safe to call more than once. */
+  /**
+   * Stop the background workers and release the database file. Safe to call more than once:
+   * every call, also one made while another is still closing, resolves when the workers
+   * have stopped.
+   */
   close(): Promise<void>
   /** Whether `close()` was called. */
   get closed(): boolean
@@ -41,6 +47,9 @@ export interface LiteOptions {
 export interface LiteResponse {
   /** The HTTP status the API answered with. */
   status: number
-  /** The response body as text (JSON for every API route). */
+  /**
+   * The response body as text, as the route answered: JSON for the API's routes, the
+   * Prometheus text format for `GET /metrics`. Parse it according to the route.
+   */
   body: string
 }

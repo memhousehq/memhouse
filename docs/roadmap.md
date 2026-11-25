@@ -1854,6 +1854,20 @@ which is named.
   arm64 only before the hosted job. No real model was called by the adapter examples. Node 20
   was not run locally (Node 26 was).
 
+**Review fixes (2026-11-26, pull request 37):** the LangGraph store refuses a namespace label
+that is empty or contains `:` (two namespaces could map to one subject), checks that a record
+belongs to the namespace before revising or deleting it, and gained `revise`, which returns the
+new version's id; the Python client follows redirects only within its origin, so the key is not
+sent elsewhere; both clients refuse a base URL with credentials, a query or a fragment, refuse
+a path parameter of `.` or `..`, and remove their own key from an error message; the session-end
+hook sends each batch once, under an idempotency key, and overlapping calls share one flush;
+the embedded transport refuses a header given twice in different letter case; `close()` called
+twice waits for the same shutdown, and the Python binding ends its runtime at `close()`; the
+`Process` way drops its child after an unfinished exchange; `embedded_same_controls` counts the
+committed record's own write event and the refusals of each phase. Declined: patching the
+loader that the napi-rs tool generates. Kept: `put` on the LangGraph store revises and the
+corrected record gets a new key, as documented.
+
 #### G19 — Coding template v1
 
 - [ ] **Done**

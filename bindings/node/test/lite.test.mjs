@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -31,6 +31,10 @@ function embed(text) {
 
 let embeddings
 const directories = []
+// Set by a test that needs a pipeline worker to be busy: the stand-in fails the first request
+// (the attempt made right after the answer, outside the workers), then takes `ms` for the
+// next one (the retry, which a worker makes): `{ ms, arrived(), finished() }`.
+let hold = null
 
 before(async () => {
   // The configuration under test is the file's: no override from the developer's shell.
@@ -40,10 +44,20 @@ before(async () => {
   embeddings = createServer((req, res) => {
     let text = ''
     req.on('data', (chunk) => (text += chunk))
-    req.on('end', () => {
+    req.on('end', async () => {
+      const held = hold
+      if (held && !held.failed) {
+        held.failed = true
+        res.writeHead(500, { 'content-type': 'application/json' }).end('{"error":"not this time"}')
+        return
+      }
+      if (held) {
+        held.arrived()
+        await new Promise((resolve) => setTimeout(resolve, held.ms))
+      }
       const { input } = JSON.parse(text)
       const data = (Array.isArray(input) ? input : [input]).map((t, index) => ({ index, embedding: embed(t) }))
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data }))
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data }), () => held?.finished())
     })
   })
   await new Promise((resolve) => embeddings.listen(0, '127.0.0.1', resolve))
@@ -156,6 +170,7 @@ test('a quarantined injection stays out of recall', async () => {
     const [, recalled] = await call(lite, 'POST', '/v1/recall', { subject: 'user:ada', query: INJECTION })
     assert.ok(contents(recalled).some((c) => c.includes('wiki')), JSON.stringify(recalled))
     assert.ok(!contents(recalled).some((c) => c.includes('Ignore all previous')), JSON.stringify(recalled))
+    assert.ok(!recalled.hits.some((hit) => hit.memory.id === stored.id), JSON.stringify(recalled))
   } finally {
     await lite.close()
   }
@@ -168,6 +183,58 @@ test('close', async () => {
   await lite.close()
   assert.equal(lite.closed, true)
   await assert.rejects(lite.request('GET', '/health'), /closed/)
+})
+
+test('closes made at the same time all wait for the workers', async () => {
+  const lite = await Lite.open({ config: config() })
+  let finished = false
+  const busy = new Promise((arrived) => (hold = { ms: 700, arrived, finished: () => (finished = true) }))
+  try {
+    // Not waited for: the answer comes at once, the first attempt fails, and a worker makes
+    // the next one.
+    const [status] = await call(lite, 'POST', '/v1/remember', { subject: 'user:ada', content: 'Ada prefers tea over coffee' })
+    assert.equal(status, 200)
+    await busy
+    assert.equal(finished, false, 'the worker was meant to be busy when close() is called')
+    const first = lite.close()
+    // The second call must not resolve while the first is still stopping that worker.
+    await lite.close()
+    assert.equal(finished, true, 'a second close() resolved while a worker was still running')
+    await first
+    assert.equal(lite.closed, true)
+    await assert.rejects(lite.request('GET', '/health'), /closed/)
+  } finally {
+    hold = null
+    await lite.close()
+  }
+})
+
+test('a header named twice in different letter case is refused', async () => {
+  const lite = await Lite.open({ config: config() })
+  try {
+    // Which of the two would be verified depended on the order of a map.
+    for (const headers of [
+      { Authorization: `Bearer ${KEY}`, authorization: 'Bearer mh_not_the_key' },
+      { authorization: 'Bearer mh_not_the_key', AUTHORIZATION: `Bearer ${KEY}` },
+      { 'X-Api-Key': KEY, 'x-api-key': 'mh_not_the_key' },
+    ]) {
+      await assert.rejects(lite.request('GET', '/v1/whoami', undefined, headers), (e) => /given more than once/.test(e.message) && !e.message.includes(KEY))
+    }
+    // Nothing was sent, so nothing was refused by the middleware; one name once is as before.
+    assert.equal((await call(lite, 'GET', '/v1/whoami', undefined, { AUTHORIZATION: `Bearer ${KEY}`, Accept: 'application/json' }))[0], 200)
+    const [, audit] = await call(lite, 'GET', '/v1/audit?limit=50')
+    assert.equal(audit.filter((e) => e.action === 'auth.failed').length, 0, JSON.stringify(audit))
+  } finally {
+    await lite.close()
+  }
+})
+
+test('the declaration does not offer a constructor', () => {
+  // `new Lite()` throws at run time (only `open` is registered): TypeScript must refuse it too.
+  assert.throws(() => new Lite())
+  const declaration = readFileSync(new URL('../index.d.ts', import.meta.url), 'utf8')
+  assert.match(declaration, /export declare class Lite \{\n(.*\n)?\s*private constructor\(\)/)
+  assert.ok(readFileSync(new URL('../index.js', import.meta.url), 'utf8').startsWith('// SPDX-License-Identifier: Apache-2.0\n'))
 })
 
 test('arguments', async () => {

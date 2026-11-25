@@ -87,6 +87,33 @@ def test_a_failed_flush_keeps_the_turns_for_another_try():
     assert sent.requests[0]["body"] == sent.requests[1]["body"]
 
 
+def test_a_repeated_flush_sends_the_same_batch_under_the_same_idempotency_key():
+    # The first request may have arrived although its answer did not: the repeat must be
+    # recognisable as the same request, or the rounds are stored twice.
+    stored = {"stored": 1, "quarantined": 0, "deduplicated": 0, "ids": ["1"]}
+    h, sent = hooks((503, {"error": "the answer was lost", "code": "unavailable"}), stored, stored, stored, buffer_turns=True)
+    h.after_turn("a", "b")
+    with pytest.raises(Exception):
+        h.at_session_end()
+    # A turn buffered between the tries is not added to the batch already sent once.
+    h.after_turn("c", "d")
+    assert h.at_session_end()["stored"] == 1
+    first, again, later = sent.requests
+    assert first["headers"]["idempotency-key"] == again["headers"]["idempotency-key"]
+    assert first["body"] == again["body"] and [m["content"] for m in again["body"]["messages"]] == ["a", "b"]
+    # It goes in a batch of its own, under another key, in the same call.
+    assert [m["content"] for m in later["body"]["messages"]] == ["c", "d"]
+    assert later["headers"]["idempotency-key"] != first["headers"]["idempotency-key"]
+    # Each flush is a request of its own; a turn sent at once carries no key.
+    h.after_turn("e", "f")
+    h.at_session_end()
+    assert sent.requests[3]["headers"]["idempotency-key"] not in (first["headers"]["idempotency-key"], later["headers"]["idempotency-key"])
+    assert h.at_session_end() is None and len(sent.requests) == 4
+    plain, plainly_sent = hooks(stored)
+    plain.after_turn("a", "b")
+    assert "idempotency-key" not in plainly_sent.requests[0]["headers"]
+
+
 def test_a_hook_passes_what_it_is_given_whatever_it_says():
     # Nothing is screened in the hook: an injection attempt is sent as it is, for the engine to judge.
     h, sent = hooks({"stored": 0, "quarantined": 1, "deduplicated": 0, "ids": ["1"]}, {"id": "2", "status": "quarantined", "deduplicated": False})

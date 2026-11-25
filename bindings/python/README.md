@@ -34,9 +34,15 @@ class Lite:
   downloads the pinned local embedding model.
 - `Lite(config=...)` reads a `config.toml` instead, as `memhouse serve` would, environment
   overrides included. With neither argument, the installation's own configuration is read.
-- `request` returns the status and the response body as text. It releases the GIL while it
-  runs, so it can be called from several threads.
-- `close()` stops the background workers and releases the file.
+- `request` returns the status and the response body as text (JSON for the API's routes, the
+  Prometheus text format for `GET /metrics`). It releases the GIL while it runs, so it can be
+  called from several threads. A header name may appear once in `headers`: two that differ
+  only in letter case (`Authorization` and `authorization`) raise `RuntimeError`, and nothing
+  is sent.
+- `close()` stops the background workers, releases the file and ends the native threads the
+  deployment ran on (after the last request still running on another thread has returned), so
+  a closed `Lite` you still hold costs nothing. It may be called more than once, also from
+  several threads at once: each call returns when the workers have stopped.
 
 One process opens a Lite file for writing at a time: do not open the same file from two
 processes that both write.
@@ -62,8 +68,9 @@ cd bindings/python
 uvx maturin build                           # a wheel under target/wheels/, to `pip install`
 ```
 
-Both build with the workspace's `bindings` profile (set in `pyproject.toml`): optimised, without
-LTO, which on macOS produces a module that cannot be loaded. Do not pass `--release`.
+Both build with the workspace's `bindings` profile (set in `pyproject.toml`): optimised, and
+without LTO. A build with LTO (the `release` profile) produces on macOS a module that cannot be
+loaded, so do not pass `--release`.
 
 The wheel uses Python's stable ABI (`abi3`): one build serves CPython 3.9 and later on its
 platform. It has been built and tested on macOS (Apple silicon).

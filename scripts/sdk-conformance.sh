@@ -56,7 +56,9 @@ if [ -z "${MEMHOUSE_URL:-}" ]; then
   [ -x "$BIN" ] || { echo "$BIN is missing: cargo build --release -p memhouse-cli (or set BIN)" >&2; exit 1; }
   LITE_HOME="$SCRATCH/home"
   mkdir -p "$LITE_HOME" && chmod 700 "$LITE_HOME"
-  if [ -d "$MODELS" ]; then ln -s "$MODELS" "$LITE_HOME/models"; fi
+  # As an absolute path: a relative one (MEMHOUSE_MODEL_CACHE=target/model-cache) would be read
+  # from the link's own directory, and name nothing there.
+  if [ -d "$MODELS" ]; then ln -s "$(cd "$MODELS" && pwd)" "$LITE_HOME/models"; fi
   # The developer's own deployment is not touched: everything below reads this home only.
   unset MEMHOUSE_CONFIG MEMHOUSE_DATABASE_URL DATABASE_URL MEMHOUSE_API_KEY
   export MEMHOUSE_HOME="$LITE_HOME"

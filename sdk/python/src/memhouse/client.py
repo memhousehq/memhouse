@@ -8,12 +8,13 @@ with the same operations and the same engine behind them.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional, Protocol, Tuple
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 from ._generated import GeneratedClient
 
@@ -45,28 +46,82 @@ class Transport(Protocol):
     def request(self, method: str, path: str, body: Optional[str], headers: Dict[str, str]) -> Tuple[int, str]: ...
 
 
+_URL_FORM = "the MemHouse URL must be http(s)://host[:port], with an optional path prefix"
+
+
+def _origin(url: str) -> Tuple[str, str, Optional[int]]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), parts.port or {"http": 80, "https": 443}.get(scheme)
+
+
+class _SameOriginRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect within the origin it was sent to, and no other.
+
+    urllib repeats the request's headers, the `Authorization` one too, at wherever a redirect
+    points. One that leaves the origin is not followed, so the API key reaches no other host:
+    urllib then reports the redirect itself, as an error status.
+    """
+
+    def redirect_request(self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Optional[urllib.request.Request]:
+        if _origin(urljoin(req.full_url, newurl)) != _origin(req.full_url):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class HttpTransport:
-    """HTTP through `urllib`: no dependency outside the standard library."""
+    """HTTP through `urllib`: no dependency outside the standard library.
+
+    `base_url` is `http(s)://host[:port]`, with a path prefix when the API is served under one.
+    A URL with credentials, a query string or a fragment is refused (the message does not
+    repeat the URL). A redirect is followed within the same origin only.
+    """
 
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
-        parts = urlsplit(base_url)
+        # The URL is not quoted in these messages: it may hold credentials.
+        try:
+            parts = urlsplit(base_url)
+            parts.port  # raises for a port that is not a number
+        except ValueError:
+            raise ValueError(f"{_URL_FORM}; this one cannot be read as a URL") from None
         # urllib would also open file: and ftp: URLs.
-        if parts.scheme not in ("http", "https") or not parts.netloc:
-            raise ValueError(f"the MemHouse URL must be http(s)://host[:port], not {base_url!r}")
-        self.base_url = base_url.rstrip("/")
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise ValueError(f"{_URL_FORM}; this one is not an http(s) URL with a host")
+        if "@" in parts.netloc:
+            raise ValueError(f"{_URL_FORM}; this one has credentials in it: give the key as `api_key` or in MEMHOUSE_API_KEY")
+        if "?" in base_url or "#" in base_url:
+            raise ValueError(f"{_URL_FORM}; this one has a query string or a fragment, which would swallow the path of every request")
+        self.base_url = f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}"
         self.timeout = timeout
+        # The default opener (proxies from the environment and so on) but for its redirects.
+        self._opener = urllib.request.build_opener(_SameOriginRedirects())
 
     def request(self, method: str, path: str, body: Optional[str], headers: Dict[str, str]) -> Tuple[int, str]:
         data = body.encode("utf-8") if body is not None else None
         req = urllib.request.Request(self.base_url + path, data=data, method=method, headers=headers)
+        # One handler for the whole exchange: reading the body of an error answer can fail
+        # like any other read (a stalled or cut connection), and is no answer either.
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:  # noqa: S310 (scheme checked above)
-                return response.status, response.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            # An error status is an answer: the client maps its body to MemHouseError.
-            return e.code, e.read().decode("utf-8", "replace")
-        except (urllib.error.URLError, OSError) as e:
-            reason = getattr(e, "reason", e)
+            try:
+                with self._opener.open(req, timeout=self.timeout) as response:
+                    return response.status, response.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                # An error status is an answer: the client maps its body to MemHouseError.
+                try:
+                    answer = e.code, e.read().decode("utf-8", "replace")
+                finally:
+                    e.close()
+                target = _origin(urljoin(req.full_url, e.headers.get("Location") or "")) if 300 <= e.code < 400 else None
+                if target is not None and target != _origin(req.full_url):
+                    scheme, host, port = target
+                    raise MemHouseError(
+                        e.code,
+                        _STATUS_CODES.get(e.code, "unknown"),
+                        f"{self.base_url} redirects to {scheme}://{host}:{port}, which was not followed: the API key is sent only to the URL's own origin. Give the URL the API is served at",
+                    ) from None
+                return answer
+        except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+            reason = getattr(e, "reason", None) or e
             raise MemHouseError(0, "transport", f"no answer from {self.base_url}: {reason}") from None
 
 
@@ -143,6 +198,10 @@ class MemHouse(GeneratedClient):
         for name, value in (headers or {}).items():
             if value is not None:
                 sent[name.lower()] = str(value)
+        # A path parameter that is empty or a dot segment would name another route: `..` is
+        # resolved away by URL parsers and proxies even when percent-encoded.
+        if any(segment in ("", ".", "..") for segment in path.split("/")[1:]):
+            raise ValueError(f"{method} {path}: a path parameter cannot be empty, `.` or `..`: the request would go to another route")
         pairs = [(k, _query_value(v)) for k, v in (query or {}).items() if v is not None]
         if pairs:
             path = f"{path}?{urlencode(pairs)}"
@@ -155,7 +214,7 @@ class MemHouse(GeneratedClient):
             if text:
                 return answer
             return json.loads(answer) if answer.strip() else None
-        raise _error(status, answer)
+        raise _error(status, answer, self._api_key)
 
 
 def _query_value(value: Any) -> str:
@@ -164,9 +223,15 @@ def _query_value(value: Any) -> str:
     return str(value)
 
 
-def _error(status: int, answer: str) -> MemHouseError:
+def _error(status: int, answer: str, key: Optional[str] = None) -> MemHouseError:
+    """The error of an answer. `key` is taken out of it, should whatever answered have repeated it."""
+
+    def clean(text: str) -> str:
+        return text.replace(key, "[redacted]") if key else text
+
     code = _STATUS_CODES.get(status, "unknown")
-    message = answer.strip()[:500] or f"HTTP {status}"
+    # Cut after the key is out: a cut through the key would leave a part of it.
+    message = clean(answer).strip()[:500] or f"HTTP {status}"
     try:
         parsed = json.loads(answer)
         if isinstance(parsed, dict):
@@ -174,4 +239,4 @@ def _error(status: int, answer: str) -> MemHouseError:
             message = str(parsed.get("error") or message)
     except ValueError:
         pass
-    return MemHouseError(status, code, message)
+    return MemHouseError(status, clean(code), clean(message))

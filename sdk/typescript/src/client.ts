@@ -55,22 +55,38 @@ export interface Transport {
   close?(): void | Promise<void>;
 }
 
-/** HTTP through the global `fetch`: no dependency. */
+const URL_FORM = "the MemHouse URL must be http(s)://host[:port], with an optional path prefix";
+
+/**
+ * HTTP through the global `fetch`: no dependency.
+ *
+ * `baseUrl` is `http(s)://host[:port]`, with a path prefix when the API is served under one. A
+ * URL with credentials, a query string or a fragment is refused (the message does not repeat
+ * the URL).
+ */
 export class HttpTransport implements Transport {
+  /** The URL as it is used: origin and path prefix, without a trailing slash. */
   readonly baseUrl: string;
   readonly timeoutMs: number;
 
   constructor(baseUrl: string, timeoutMs = 30_000) {
+    // The URL is not quoted in these messages: it may hold credentials.
     let url: URL;
     try {
       url = new URL(baseUrl);
     } catch {
-      throw new TypeError(`the MemHouse URL must be http(s)://host[:port], not ${JSON.stringify(baseUrl)}`);
+      throw new TypeError(`${URL_FORM}; this one cannot be read as a URL`);
     }
     if (url.protocol !== "http:" && url.protocol !== "https:") {
-      throw new TypeError(`the MemHouse URL must be http(s)://host[:port], not ${JSON.stringify(baseUrl)}`);
+      throw new TypeError(`${URL_FORM}; this one is not an http(s) URL`);
     }
-    this.baseUrl = baseUrl.replace(/\/+$/, "");
+    if (url.username || url.password || url.host.includes("@")) {
+      throw new TypeError(`${URL_FORM}; this one has credentials in it: give the key as \`apiKey\` or in MEMHOUSE_API_KEY`);
+    }
+    if (baseUrl.includes("?") || baseUrl.includes("#")) {
+      throw new TypeError(`${URL_FORM}; this one has a query string or a fragment, which would swallow the path of every request`);
+    }
+    this.baseUrl = url.origin + url.pathname.replace(/\/+$/, "");
     this.timeoutMs = timeoutMs;
   }
 
@@ -81,6 +97,9 @@ export class HttpTransport implements Transport {
       // An error status is an answer: the client maps its body to MemHouseError.
       return { status: response.status, body: await response.text() };
     } catch (e) {
+      // `baseUrl` has no credentials (see the constructor). The failure's own text is the
+      // runtime's, about the connection; should it ever repeat the request's URL, that URL is
+      // this one plus the path.
       const cause = e instanceof Error ? ((e.cause as { message?: string } | undefined)?.message ?? e.message) : String(e);
       throw new MemHouseError(0, "transport", `no answer from ${this.baseUrl}: ${cause}`);
     }
@@ -170,6 +189,11 @@ export class MemHouse extends GeneratedClient {
     for (const [name, value] of Object.entries(options.headers ?? {})) {
       if (value !== undefined && value !== null) sent[name.toLowerCase()] = String(value);
     }
+    // A path parameter that is empty or a dot segment would name another route: `..` is
+    // resolved away by URL parsers and proxies even when percent-encoded.
+    if (path.split("/").slice(1).some((segment) => segment === "" || segment === "." || segment === "..")) {
+      throw new TypeError(`${method} ${path}: a path parameter cannot be empty, \`.\` or \`..\`: the request would go to another route`);
+    }
     const query = new URLSearchParams();
     for (const [name, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined && value !== null) query.append(name, String(value));
@@ -185,13 +209,15 @@ export class MemHouse extends GeneratedClient {
       if (options.text) return body as T;
       return (body.trim() ? JSON.parse(body) : null) as T;
     }
-    throw toError(status, body);
+    throw toError(status, body, this.#apiKey);
   }
 }
 
-function toError(status: number, body: string): MemHouseError {
+/** The error of an answer. `key` is taken out of it, should whatever answered have repeated it. */
+function toError(status: number, body: string, key?: string): MemHouseError {
   let code = STATUS_CODES[status] ?? "unknown";
-  let message = body.trim().slice(0, 500) || `HTTP ${status}`;
+  // Cut after the key is out: a cut through the key would leave a part of it.
+  let message = (key ? body.split(key).join("[redacted]") : body).trim().slice(0, 500) || `HTTP ${status}`;
   try {
     const parsed: unknown = JSON.parse(body);
     if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -202,5 +228,6 @@ function toError(status: number, body: string): MemHouseError {
   } catch {
     // not JSON: the status decides
   }
-  return new MemHouseError(status, code, message);
+  const clean = (text: string): string => (key ? text.split(key).join("[redacted]") : text);
+  return new MemHouseError(status, clean(code), clean(message));
 }

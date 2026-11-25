@@ -32,14 +32,16 @@ pub struct LiteOptions {
 pub struct LiteResponse {
     /// The HTTP status the API answered with.
     pub status: u32,
-    /// The response body as text (JSON for every API route).
+    /// The response body as text, as the route answered: JSON for the API's routes, the
+    /// Prometheus text format for `GET /metrics`. Parse it according to the route.
     pub body: String,
 }
 
 /// One embedded MemHouse Lite deployment. Create it with `await Lite.open(...)`.
 #[napi]
 pub struct Lite {
-    /// `None` once closed.
+    /// `None` once `close()` has finished. While it runs the deployment is still here, so
+    /// that a second `close()` waits for the same shutdown.
     embedded: Mutex<Option<Arc<Embedded>>>,
 }
 
@@ -55,22 +57,26 @@ impl Lite {
     }
 
     /// Send one request to the REST API in process. Without an `Authorization` or `x-api-key`
-    /// header, it is sent with the deployment's configured bootstrap key. Rejects after
-    /// `close()`.
+    /// header, it is sent with the deployment's configured bootstrap key. A header name may
+    /// appear once: two that differ only in letter case are rejected. Rejects after `close()`.
     #[napi]
     pub async fn request(&self, method: String, path: String, body: Option<String>, headers: Option<HashMap<String, String>>) -> Result<LiteResponse> {
-        let embedded = self.embedded.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or_else(|| error("this Lite is closed"))?;
+        let embedded = self.current().ok_or_else(|| error("this Lite is closed"))?;
         let headers: Vec<(String, String)> = headers.unwrap_or_default().into_iter().collect();
         let (status, bytes) = embedded.request(&method, &path, &headers, body.as_deref().map(str::as_bytes)).await.map_err(error)?;
         Ok(LiteResponse { status: status.into(), body: String::from_utf8_lossy(&bytes).into_owned() })
     }
 
-    /// Stop the background workers and release the database file. Safe to call more than once.
+    /// Stop the background workers and release the database file. Safe to call more than once:
+    /// every call, also one made while another is still closing, resolves when the workers
+    /// have stopped.
     #[napi]
     pub async fn close(&self) -> Result<()> {
-        let taken = self.embedded.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if let Some(embedded) = taken {
+        // The deployment stays in its place until the shutdown is over: a call that arrives
+        // meanwhile finds it and waits in `shutdown` for the same workers.
+        if let Some(embedded) = self.current() {
             embedded.shutdown().await;
+            self.embedded.lock().unwrap_or_else(|e| e.into_inner()).take();
         }
         Ok(())
     }
@@ -78,6 +84,12 @@ impl Lite {
     /// Whether `close()` was called.
     #[napi(getter)]
     pub fn closed(&self) -> bool {
-        self.embedded.lock().unwrap_or_else(|e| e.into_inner()).is_none()
+        self.current().is_none_or(|e| e.is_closed())
+    }
+}
+
+impl Lite {
+    fn current(&self) -> Option<Arc<Embedded>> {
+        self.embedded.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }

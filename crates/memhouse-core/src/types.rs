@@ -78,7 +78,8 @@ impl std::fmt::Display for MemoryKind {
     }
 }
 
-/// Lifecycle of a record (CORE-02). Only `committed` records are recalled.
+/// Lifecycle of a record (CORE-02). By default only `committed` records are recalled; a recall
+/// that asks with `include_candidates` also returns `candidate` ones, each labelled by its status.
 ///
 /// ```text
 /// candidate ──► committed ──► superseded
@@ -392,7 +393,8 @@ pub struct Memory {
     /// Whose memory it is.
     pub subject: String,
     pub kind: MemoryKind,
-    /// Lifecycle state; only `committed` records are recalled.
+    /// Lifecycle state. A recall returns `committed` records, and `candidate` ones only when it
+    /// asks with `include_candidates`: check this field before treating such a hit as admitted.
     pub status: MemoryStatus,
     /// The text, after redaction.
     pub content: String,

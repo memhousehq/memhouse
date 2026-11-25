@@ -180,7 +180,9 @@ def test_the_store_searches_gets_replaces_and_deletes_records_by_id():
         RECORD,
         (404, {"error": "no such memory", "code": "not_found"}),
         {**RECORD, "subject": "customer:other"},
+        RECORD,
         {**WRITTEN, "id": M2, "superseded": M1},
+        {**RECORD, "id": M2},
         {"deleted": 1, "scope": "record"},
         WRITTEN,
     )
@@ -208,14 +210,68 @@ def test_the_store_searches_gets_replaces_and_deletes_records_by_id():
         ("GET", f"/v1/memories/{M1}"),
         ("GET", f"/v1/memories/{M2}"),
         ("GET", f"/v1/memories/{M1}"),
+        # A record is read before it is changed: it must be in the namespace.
+        ("GET", f"/v1/memories/{M1}"),
         ("POST", "/v1/revise"),
+        ("GET", f"/v1/memories/{M2}"),
         ("POST", "/v1/forget"),
         ("POST", "/v1/remember"),
     ]
     assert sent.requests[0]["body"] == {"subject": "customer:acme", "query": "when does Acme renew?", "k": 3}
-    assert sent.requests[5]["body"] == {"content": "Acme renews in April", "tags": ["contract"], "id": M1, "wait": True}
-    assert sent.requests[6]["body"] == {"id": M2}
-    assert sent.requests[7]["body"] == {"subject": "customer:acme", "content": ATTACK, "wait": True, "kind": "preference"}
+    assert sent.requests[6]["body"] == {"content": "Acme renews in April", "tags": ["contract"], "id": M1, "wait": True}
+    assert sent.requests[8]["body"] == {"id": M2}
+    assert sent.requests[9]["body"] == {"subject": "customer:acme", "content": ATTACK, "wait": True, "kind": "preference"}
+
+
+def test_a_record_of_another_namespace_is_neither_replaced_nor_deleted():
+    # The client may reach both subjects: the namespace still decides what a key names.
+    elsewhere = {**RECORD, "subject": "customer:other"}
+    mh, sent = client(elsewhere, elsewhere, elsewhere, (404, {"error": "no such memory", "code": "not_found"}))
+    store = MemHouseStore(mh)
+    namespace = ("customer", "acme")
+    with pytest.raises(NotImplementedError, match="not the id of one in"):
+        store.put(namespace, M1, {"content": "Acme renews in April"})
+    with pytest.raises(NotImplementedError):
+        store.revise(namespace, M1, "Acme renews in April")
+    assert store.delete(namespace, M1) is None
+    # Deleting what is not there is nothing, as for any store; a key of another form is not asked about.
+    assert store.delete(namespace, M2) is None
+    assert store.delete(namespace, "a-key-of-my-own") is None
+    assert sent.calls == [("GET", f"/v1/memories/{M1}")] * 3 + [("GET", f"/v1/memories/{M2}")]
+
+
+def test_revise_returns_the_key_of_the_new_version():
+    mh, sent = client(RECORD, {**WRITTEN, "id": M2, "superseded": M1})
+    store = MemHouseStore(mh)
+    answer = store.revise(("customer", "acme"), M1, "Acme renews in April", tags=["contract"])
+    assert (answer["id"], answer["superseded"]) == (M2, M1)
+    assert sent.calls == [("GET", f"/v1/memories/{M1}"), ("POST", "/v1/revise")]
+    assert sent.requests[1]["body"] == {"tags": ["contract"], "content": "Acme renews in April", "id": M1}
+
+
+def test_namespaces_that_would_join_to_one_subject_are_refused():
+    mh, sent = client({"items": []}, {"hits": []})
+    store = MemHouseStore(mh)
+    # Both would be the subject customer:a:b, and each would read and change the other's records.
+    for namespace in (("customer", "a:b"), ("customer:a", "b"), ("customer", ""), ()):
+        for operation in (
+            lambda: store.search(namespace),
+            lambda: store.search(namespace, query="q"),
+            lambda: store.get(namespace, M1),
+            lambda: store.delete(namespace, M1),
+            lambda: store.remember(namespace, "x"),
+            lambda: store.revise(namespace, M1, "x"),
+        ):
+            with pytest.raises(ValueError, match="(?i)namespace"):
+                operation()
+    with pytest.raises(ValueError, match="(?i)namespace"):
+        store.put(("customer", "a:b"), M1, {"content": "x"})
+    assert sent.calls == []
+    # Labels without the separator join as before, and a subject function maps what it likes.
+    store.search(("customer", "acme"))
+    MemHouseStore(mh, subject_of=lambda namespace: namespace[0]).search(("customer:a:b",), query="q")
+    assert sent.calls[0] == ("GET", "/v1/subjects/customer%3Aacme/memories?limit=10")
+    assert sent.requests[1]["body"]["subject"] == "customer:a:b"
 
 
 def test_the_store_works_from_an_event_loop_and_with_a_subject_function():
@@ -248,16 +304,23 @@ def test_what_the_store_cannot_express_is_refused_not_faked():
 
 def test_a_put_under_a_key_of_the_callers_own_is_refused():
     # MemHouse assigns ids: the store does not pretend to keep a value under another key.
-    mh, sent = client((404, {"error": "no such memory", "code": "not_found"}), (409, {"error": "not the current version", "code": "conflict"}))
+    mh, sent = client(
+        (404, {"error": "no such memory", "code": "not_found"}),
+        RECORD,
+        (404, {"error": "no such memory", "code": "not_found"}),
+        {**RECORD, "id": M2, "status": "superseded"},
+        (409, {"error": "not the current version", "code": "conflict"}),
+    )
     store = MemHouseStore(mh)
-    for key in ("my-own-key", M1):
+    # No such record; then one that was erased between the look and the correction.
+    for key in ("my-own-key", M1, M1):
         with pytest.raises(NotImplementedError, match="remember"):
             store.put(("customer", "acme"), key, {"content": "Acme prefers email"})
-    # Any other error of the API is the caller's to see.
+    # Any other error of the API is the caller's to see: here, a key that names an old version.
     with pytest.raises(Exception, match="conflict"):
         store.put(("customer", "acme"), M2, {"content": "Acme prefers email"})
     # Only a key in the form of an id was worth asking about.
-    assert sent.calls == [("POST", "/v1/revise")] * 2
+    assert sent.calls == [("GET", f"/v1/memories/{M1}"), ("GET", f"/v1/memories/{M1}"), ("POST", "/v1/revise"), ("GET", f"/v1/memories/{M2}"), ("POST", "/v1/revise")]
 
 
 def example():
@@ -310,10 +373,22 @@ def test_the_store_against_a_live_deployment():
         assert store.get(("sdk-langgraph", "another"), key) is None
         assert store.get(namespace, "00000000-0000-0000-0000-000000000000") is None
 
+        # The namespace is part of the address: the same key under another one changes nothing.
+        with pytest.raises(NotImplementedError):
+            store.put(("sdk-langgraph", "another"), key, {"content": "The warehouse in Tallinn has five loading docks."})
+        store.delete(("sdk-langgraph", "another"), key)
+        assert store.get(namespace, key).value["status"] == "committed"
+
         store.put(namespace, key, {"content": "The warehouse in Tallinn has six loading docks."})
         revised = store.search(namespace, query="How many loading docks does the Tallinn warehouse have?")
         assert revised[0].key != key and "six loading docks" in revised[0].value["content"]
         assert key not in [item.key for item in revised]
+        # The old key names the old version; `revise` answers with the key of the new one.
+        assert store.get(namespace, key).value["status"] == "superseded"
+        again = store.revise(namespace, revised[0].key, "The warehouse in Tallinn has seven loading docks.")
+        assert again["superseded"] == revised[0].key and "seven" in store.get(namespace, again["id"]).value["content"]
+        revised = store.search(namespace, query="How many loading docks does the Tallinn warehouse have?")
+        assert revised[0].key == again["id"]
         for unknown in ("a-key-of-my-own", "00000000-0000-0000-0000-000000000000"):
             with pytest.raises(NotImplementedError):
                 store.put(namespace, unknown, {"content": "The warehouse opens at eight."})

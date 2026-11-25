@@ -84,9 +84,13 @@ with Lite("/home/ada/.memhouse/memhouse.db") as lite:
 ```js
 const { Lite } = require('@memhouse/lite')
 
-const lite = await Lite.open({ path: '/home/ada/.memhouse/memhouse.db' })
-const { status, body } = await lite.request('POST', '/v1/recall', '{"subject": "user:ada", "query": "tea or coffee?"}')
-await lite.close()
+async function main() {
+  const lite = await Lite.open({ path: '/home/ada/.memhouse/memhouse.db' })
+  const { status, body } = await lite.request('POST', '/v1/recall', '{"subject": "user:ada", "query": "tea or coffee?"}')
+  await lite.close()
+}
+
+main()
 ```
 
 - **What to open.** A file path opens (or creates) that SQLite file with the defaults
@@ -99,21 +103,25 @@ await lite.close()
   random key is made for the process and kept in memory only. A request that names a
   credential is verified as it stands, and a wrong one is refused with 401 and audited
   (`auth.failed`). Code that acts for an agent or a user passes that principal's key or token
-  and is held to its permissions.
+  and is held to its permissions. A header is given once: two names that differ only in
+  letter case (`Authorization` and `authorization`) are an error, and nothing is sent.
 - **One writer.** The embedding process is the one process that writes the file; do not run
   `memhouse serve` on the same file at the same time and expect both to keep up.
-- **Close it.** `close()` stops the workers (it can take about a second) and releases the file.
+- **Close it.** `close()` stops the workers (it can take about a second) and releases the
+  file; in Python it also ends the native threads the deployment ran on. It can be called more
+  than once, also at the same time: every call returns when the workers have stopped.
 
 **Building.** Nothing is published yet: wheels and npm packages for each platform are release
 work, planned with the packaging goal. Until then the libraries are built from a checkout, and
 have been built and tested on macOS (Apple silicon) only:
 
 ```bash
-cd bindings/python && ./test.sh && uvx maturin build         # a wheel in target/wheels/ (CPython 3.9+, stable ABI)
-cd bindings/node && pnpm install && pnpm build && pnpm test  # memhouse-lite.<platform>.node beside index.js
+(cd bindings/python && ./test.sh && uvx maturin build)         # a wheel in target/wheels/ (CPython 3.9+, stable ABI)
+(cd bindings/node && pnpm install && pnpm build && pnpm test)  # memhouse-lite.<platform>.node beside index.js
 ```
 
-Both need a Rust toolchain; Python needs [uv](https://docs.astral.sh/uv/), Node needs pnpm.
+Both need a Rust toolchain; Python needs [uv](https://docs.astral.sh/uv/), Node needs pnpm and,
+to build, Node.js 20.17+, 22.13+ or 24+ (the built addon runs on Node.js 18 and later).
 
 ## The database file
 
