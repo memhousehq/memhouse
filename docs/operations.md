@@ -548,8 +548,10 @@ What is compared, each time:
 
 Records are not read a second time for this: a record that is added, changed or deleted moves
 a count, the newest change time, or the sum of all records' change times (which moves also
-when the changed record is not the newest, as after an import that kept later times). The audit log is not digested again either: it only grows,
-and its last event stands for every event before it. The same comparison decides whether a
+when the changed record is not the newest, as after an import that kept later times). One
+change is not seen: extending the session of a working record that was imported with a change
+time in the future leaves that time where it was. The audit log is not digested again either:
+it only grows, and its last event stands for every event before it. The same comparison decides whether a
 migration that completed earlier is still complete when the command is run again.
 
 What remains, for a Postgres source: a write that lands after the last comparison, in the
@@ -561,9 +563,11 @@ find the source was written to after a migration, the target is missing those wr
 again into a new, empty target.
 
 After the migration the command says what to do next, and that depends on what the server
-would use: when the configuration file names the target and no `MEMHOUSE_DATABASE_URL` or
-`DATABASE_URL` overrides it, start the server; otherwise it says that MemHouse is not pointed at the target yet
-and which of the two to change, and does not call the source unused.
+would use, which is `MEMHOUSE_DATABASE_URL` or `DATABASE_URL` when one is set and the
+configuration file's `[database] url` otherwise. When that names the target, it says to start
+the server (and, when only the environment names it, to set the file as well). Otherwise it
+says that MemHouse is not pointed at the target yet and what to change, and does not call the
+source unused.
 
 **The managed container** (`[database] container`, set by `memhouse up`) is kept in the
 configuration only when the target is another database on the same Postgres host and port;

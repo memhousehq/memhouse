@@ -434,8 +434,8 @@ pub fn describe_report(req: &Request, report: &Report, switch: &Switch) -> Strin
         if !file_on_target {
             let _ = writeln!(
                 o,
-                "  ! The target is named by the environment (MEMHOUSE_DATABASE_URL or DATABASE_URL); the configuration file does not name it. \
-                 Set [database] url to the target as well, or a start without that variable opens whatever the file names."
+                "  ! The target is named by the environment (MEMHOUSE_DATABASE_URL or DATABASE_URL); this command did not set it in a configuration file. \
+                 Set [database] url to the target as well, or a start without that variable opens whatever the configuration names."
             );
         }
     } else {

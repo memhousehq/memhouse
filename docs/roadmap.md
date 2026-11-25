@@ -1769,7 +1769,9 @@ which is named.
     database URL is refused by the command and its value never printed; the closing
     instructions no longer say which database is in use when the command cannot know.
     Declined: refusing unknown parameters on every Postgres connection, server start
-    included (existing behaviour outside this goal; `memhouse migrate` refuses them).
+    included (existing behaviour outside this goal; `memhouse migrate` refuses them), and
+    reading every record again for the comparison: one change is not seen and is documented,
+    extending the session of a working record imported with a change time in the future.
   - **Not measured or not tested.** Postgres to Lite and Lite to Lite at one million records;
     the timing was not measured again after the review fixes, which add two summaries of the
     source. Resuming is tested on a half-copied target, not by killing a run. A write to a

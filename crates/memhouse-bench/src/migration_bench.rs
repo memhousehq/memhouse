@@ -103,8 +103,9 @@ async fn scratch_postgres(cfg: &Config) -> anyhow::Result<(sqlx::PgPool, String,
     // socket directory given as a parameter would be kept, or cut, with it.
     let query = cfg.database.url.split_once('?').map(|(_, q)| q).unwrap_or_default();
     anyhow::ensure!(
-        !query.split('&').any(|p| p.starts_with("dbname=") || p.starts_with("host=")),
-        "this benchmark needs the configured database URL to name the host and the database before the `?` (not as `host=` or `dbname=` parameters)"
+        !query.split('&').any(|p| p.starts_with("dbname=") || p.starts_with("host=")) && !query.contains(['/', '%']),
+        "this benchmark needs the configured database URL to name the host and the database before the `?` (not as `host=` or `dbname=` parameters), \
+         and no `/` or percent-encoding in its parameters"
     );
     let admin = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
