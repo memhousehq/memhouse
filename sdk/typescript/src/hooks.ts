@@ -47,6 +47,7 @@ export class MemoryHooks {
   #pending: { key: string; messages: Message[] } | undefined;
   // The `atSessionEnd` under way, if any.
   #flush: Promise<IngestResult | null> | undefined;
+  #flushing = false;
 
   constructor(client: MemHouse, subject: string, sessionId?: string, options: MemoryHooksOptions = {}) {
     this.client = client;
@@ -127,23 +128,32 @@ export class MemoryHooks {
    * API stores it once even if the first request arrived and only its answer was lost.
    */
   atSessionEnd(): Promise<IngestResult | null> {
-    this.#flush ??= this.#sendBuffered().finally(() => {
-      this.#flush = undefined;
-    });
-    return this.#flush;
+    if (this.#flush) return this.#flush;
+    const flush = this.#sendBuffered();
+    // A flush with nothing to send has already ended: it is not one to share.
+    if (this.#flushing) this.#flush = flush;
+    return flush;
   }
 
   async #sendBuffered(): Promise<IngestResult | null> {
     let result: IngestResult | null = null;
-    for (;;) {
-      if (this.#pending === undefined) {
-        if (this.#buffer.length === 0) return result;
-        // Taken out of the buffer: what `afterTurn` adds from here on is another batch.
-        this.#pending = { key: `session-end-${crypto.randomUUID()}`, messages: this.#buffer.splice(0) };
+    this.#flushing = true;
+    try {
+      for (;;) {
+        if (this.#pending === undefined) {
+          if (this.#buffer.length === 0) return result;
+          // Taken out of the buffer: what `afterTurn` adds from here on is another batch.
+          this.#pending = { key: `session-end-${crypto.randomUUID()}`, messages: this.#buffer.splice(0) };
+        }
+        result = await this.#ingest(this.#pending.messages, this.#pending.key);
+        // Let go only once the API has them.
+        this.#pending = undefined;
       }
-      result = await this.#ingest(this.#pending.messages, this.#pending.key);
-      // Let go only once the API has them.
-      this.#pending = undefined;
+    } finally {
+      // In the same step as the look at the empty buffer (or the failure): a turn buffered
+      // after it finds no flush under way, and the next call sends it.
+      this.#flushing = false;
+      this.#flush = undefined;
     }
   }
 

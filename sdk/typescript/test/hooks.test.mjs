@@ -145,6 +145,18 @@ test("overlapping flushes send each turn once and lose none", async () => {
   assert.equal(requests.length, 2);
 });
 
+test("a turn buffered after a flush found nothing is sent by the next call", async () => {
+  const [h, sent] = hooks([{ stored: 1, quarantined: 0, deduplicated: 0, ids: ["1"] }], { bufferTurns: true });
+  const first = h.atSessionEnd();
+  const turn = h.afterTurn("user", "assistant");
+  const second = h.atSessionEnd();
+  const [a, , b] = await Promise.all([first, turn, second]);
+  assert.equal(a, null);
+  assert.equal(b.stored, 1);
+  assert.deepEqual(sent.calls, ["POST /v1/ingest"]);
+  assert.equal(await h.atSessionEnd(), null);
+});
+
 test("a hook passes what it is given, whatever it says", async () => {
   // Nothing is screened in the hook: an injection attempt is sent as it is, for the engine to judge.
   const [h, sent] = hooks([
