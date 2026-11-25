@@ -432,22 +432,22 @@ pub fn describe_report(req: &Request, report: &Report, switch: &Switch) -> Strin
         if !file_on_target {
             let _ = writeln!(
                 o,
-                "  ! The target is named by the environment (MEMHOUSE_DATABASE_URL or DATABASE_URL) only; the configuration file still names another database. \
-                 Set [database] url to the target as well, or a start without that variable opens the other database."
+                "  ! The target is named by the environment (MEMHOUSE_DATABASE_URL or DATABASE_URL); the configuration file does not name it. \
+                 Set [database] url to the target as well, or a start without that variable opens whatever the file names."
             );
         }
     } else {
         let what = if env.is_some() {
             "the environment sets the database URL (MEMHOUSE_DATABASE_URL or DATABASE_URL) over the configuration file, and it does not name the target: change it to the target, or unset it"
         } else {
-            "set [database] url to the target"
+            "set the database URL to the target ([database] url in the configuration file)"
         };
-        let _ = writeln!(o, "  ! The server would still use another database than the target ({}): do not start it yet.", req.to.label);
+        let _ = writeln!(o, "  ! MemHouse is not pointed at the target ({}) yet, as far as this command can tell: do not start the server before it is.", req.to.label);
         let _ = writeln!(o, "  1. Point MemHouse at the target: {what}.");
         let _ = writeln!(o, "  2. Then start the server (`memhouse serve`) and check with `memhouse doctor` and `memhouse audit --verify`.");
         let _ = writeln!(
             o,
-            "  3. The source was not changed: {}. Until MemHouse is pointed at the target it is still the database in use; a write made to it now is not in the target.",
+            "  3. The source was not changed: {}. A write made to it from now on is not in the target; check which database MemHouse opens before you start anything.",
             req.from.label
         );
     }

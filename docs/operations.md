@@ -547,7 +547,8 @@ What is compared, each time:
   a key that was revoked) is seen even when no row was added and no audit event written.
 
 Records are not read a second time for this: a record that is added, changed or deleted moves
-a count or the newest change time. The audit log is not digested again either: it only grows,
+a count, the newest change time, or the sum of all records' change times (which moves also
+when the changed record is not the newest, as after an import that kept later times). The audit log is not digested again either: it only grows,
 and its last event stands for every event before it. The same comparison decides whether a
 migration that completed earlier is still complete when the command is run again.
 
@@ -561,8 +562,8 @@ again into a new, empty target.
 
 After the migration the command says what to do next, and that depends on what the server
 would use: when the configuration file names the target and no `MEMHOUSE_DATABASE_URL` or
-`DATABASE_URL` overrides it, start the server; otherwise it says which of the two still names
-another database, and the source is still the database in use until you change it.
+`DATABASE_URL` overrides it, start the server; otherwise it says that MemHouse is not pointed at the target yet
+and which of the two to change, and does not call the source unused.
 
 **The managed container** (`[database] container`, set by `memhouse up`) is kept in the
 configuration only when the target is another database on the same Postgres host and port;

@@ -395,6 +395,42 @@ fn fail_a_queued_job(file: &Path) {
     assert_eq!(n, 1);
 }
 
+/// A record changed after a migration, while another record carries a later change time (an
+/// import keeps the file's times): the newest change does not move, the sum over all does.
+#[tokio::test]
+async fn a_record_changed_below_the_newest_change_is_a_changed_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a.db"), dir.path().join("b.db"));
+    seeded(&a).await;
+    {
+        let writer = rusqlite::Connection::open(&a).unwrap();
+        let n = writer.execute("UPDATE mh_memory SET updated_at = updated_at + 86400000000 WHERE id = (SELECT max(id) FROM mh_memory)", []).unwrap();
+        assert_eq!(n, 1);
+    }
+    migrate_files(&a, &b).await.unwrap();
+    assert!(!migrate_files(&a, &b).await.unwrap().ran);
+    let summary = |file: &Path| {
+        let file = file.to_path_buf();
+        async move { SqliteStore::open_read_only(&file, "").unwrap().migration_summary().await.unwrap() }
+    };
+    let before = summary(&a).await;
+    {
+        // What extending a session does to a record: a new expiry, changed now. No audit event.
+        let writer = rusqlite::Connection::open(&a).unwrap();
+        let n = writer.execute("UPDATE mh_memory SET expires_at = updated_at + 5000000, updated_at = updated_at + 1000 WHERE id = (SELECT min(id) FROM mh_memory)", []).unwrap();
+        assert_eq!(n, 1);
+    }
+    let after = summary(&a).await;
+    assert_eq!(
+        (after.last_change, &after.records, &after.audit_head),
+        (before.last_change, &before.records, &before.audit_head),
+        "the newest change, the counts and the audit head stand"
+    );
+    assert_ne!(after.change_sum, before.change_sum);
+    let err = migrate_files(&a, &b).await.unwrap_err().to_string();
+    assert!(err.contains("the source has changed since"), "{err}");
+}
+
 #[tokio::test]
 async fn a_row_changed_in_place_is_a_changed_source() {
     let dir = tempfile::tempdir().unwrap();

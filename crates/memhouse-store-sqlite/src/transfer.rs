@@ -93,10 +93,11 @@ impl SqliteStore {
         s.records = rows(&c, "SELECT tenant, kind, status, count(*) FROM mh_memory GROUP BY 1, 2, 3 ORDER BY 1, 2, 3", [], |r| {
             Ok(RecordCount { tenant: r.get(0)?, kind: r.get(1)?, status: r.get(2)?, records: r.get::<_, i64>(3)? as u64 })
         })?;
-        (s.vectors, s.second_vectors, s.last_change) = first(&c, "SELECT count(embedding), count(embedding_alt), max(updated_at) FROM mh_memory", [], |r| {
-            Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64, r.get(2)?))
-        })?
-        .unwrap_or_default();
+        (s.vectors, s.second_vectors, s.last_change, s.change_sum) =
+            first(&c, "SELECT count(embedding), count(embedding_alt), max(updated_at), sum(updated_at % 1000000007) FROM mh_memory", [], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64, r.get(2)?, r.get(3)?))
+            })?
+            .unwrap_or_default();
         for t in TABLES {
             let n = if has(&format!("mh_{}", t.name))? { count(&format!("SELECT count(*) FROM mh_{}", t.name))? } else { 0 };
             s.tables.insert(t.name.into(), n);

@@ -151,7 +151,7 @@ async fn the_next_steps_follow_what_the_server_would_use() {
         .expect("run memhouse");
     let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "{stdout}\n{stderr}");
-    assert!(stdout.contains("now names the target") && stdout.contains("do not start it yet") && stdout.contains("MEMHOUSE_DATABASE_URL"), "{stdout}");
+    assert!(stdout.contains("now names the target") && stdout.contains("do not start the server before it is") && stdout.contains("MEMHOUSE_DATABASE_URL"), "{stdout}");
     assert!(!stdout.contains("no longer used") && !stdout.contains("Start the server again"), "{stdout}");
 
     // The other way round: the file names a third database and is left alone, and the
@@ -179,7 +179,7 @@ async fn the_next_steps_follow_what_the_server_would_use() {
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert_eq!(std::fs::read(&config).unwrap(), original, "a file that names another database is left alone");
     assert!(stdout.contains("names another database") && stdout.contains("Start the server again") && stdout.contains("no longer used"), "{stdout}");
-    assert!(stdout.contains("named by the environment") && !stdout.contains("do not start it yet"), "{stdout}");
+    assert!(stdout.contains("named by the environment") && !stdout.contains("do not start the server before it is"), "{stdout}");
 }
 
 #[tokio::test]

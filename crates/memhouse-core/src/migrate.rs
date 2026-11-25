@@ -281,6 +281,11 @@ pub struct Summary {
     pub nul_records: u64,
     /// The newest `updated_at` of any record, in microseconds.
     pub last_change: Option<i64>,
+    /// A sum over every record's `updated_at` (each taken modulo a prime, so the sum fits): it
+    /// moves when any record's change time moves, also one that is not the newest (a record
+    /// imported with a later time keeps the maximum where it is).
+    #[serde(default)]
+    pub change_sum: Option<i64>,
     /// Id and hash of the last audit event.
     pub audit_head: Option<(i64, String)>,
     /// The database's size as the store reports it.
@@ -450,6 +455,10 @@ pub struct SourceState {
     pub second_vectors: u64,
     pub tables: BTreeMap<String, u64>,
     pub last_change: Option<i64>,
+    /// See [`Summary::change_sum`]. Absent in a marker written before it was recorded, which
+    /// therefore never equals a state that was read.
+    #[serde(default)]
+    pub change_sum: Option<i64>,
     pub audit_head: Option<(i64, String)>,
     /// A digest of the rows of every table of [`DIGESTED`]: a row whose contents changed in
     /// place (a queued job that failed, a key that was revoked) changes no count and may write
@@ -475,6 +484,7 @@ impl SourceState {
             second_vectors: s.second_vectors,
             tables: s.tables.clone(),
             last_change: s.last_change,
+            change_sum: s.change_sum,
             audit_head: s.audit_head.clone(),
             digests: BTreeMap::new(),
         }

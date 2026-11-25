@@ -139,10 +139,16 @@ impl PgStore {
         }
         // By bytes, as the other store orders them: the database's collation is its own.
         s.records.sort_by(|a, b| (&a.tenant, &a.kind, &a.status).cmp(&(&b.tenant, &b.kind, &b.status)));
-        let r = sqlx::query("SELECT count(embedding) AS v, count(embedding_alt) AS a, max(updated_at) AS last FROM mh_memory").fetch_one(&self.pool).await?;
+        let r = sqlx::query(
+            "SELECT count(embedding) AS v, count(embedding_alt) AS a, max(updated_at) AS last, \
+             sum((extract(epoch FROM updated_at) * 1000000)::bigint % 1000000007)::bigint AS changes FROM mh_memory",
+        )
+        .fetch_one(&self.pool)
+        .await?;
         s.vectors = r.try_get::<i64, _>("v")? as u64;
         s.second_vectors = r.try_get::<i64, _>("a")? as u64;
         s.last_change = r.try_get::<Option<DateTime<Utc>>, _>("last")?.map(|t| t.timestamp_micros());
+        s.change_sum = r.try_get("changes")?;
         let names = TABLES.iter().map(|t| (t.name, true)).chain(["embed_cache", "llm_cache", "recall", "request_key"].map(|t| (t, false)));
         for (name, moves) in names {
             // A database of an older schema may lack a table: it counts as empty.
