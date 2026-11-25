@@ -325,10 +325,21 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
         BenchCmd::Migrate { records, per_subject, to_sqlite, source, keep, out } => {
             let dir = std::env::temp_dir().join(format!("memhouse-migrate-bench-{}", std::process::id()));
             let report = migration_bench::run(&cfg, records, per_subject, to_sqlite, source.as_deref(), &dir).await;
-            if let (Some(to), true) = (&keep, report.is_ok() && source.is_none()) {
-                std::fs::rename(dir.join("source.db"), to).with_context(|| format!("keeping the source file as {}", to.display()))?;
-            }
+            let kept = match (&keep, report.is_ok() && source.is_none()) {
+                (Some(to), true) => {
+                    let from = dir.join("source.db");
+                    // A rename only works within one filesystem; elsewhere the file is copied,
+                    // and the original goes with the directory below.
+                    std::fs::rename(&from, to).or_else(|_| std::fs::copy(&from, to).map(drop)).with_context(|| format!("keeping the source file as {}", to.display()))
+                }
+                _ => Ok(()),
+            };
             let _ = std::fs::remove_dir_all(&dir);
+            // The report first: the migration ran, whatever became of the kept file.
+            if let (Ok(text), Err(_)) = (&report, &kept) {
+                print!("{text}");
+            }
+            kept?;
             let report = report?;
             if let Some(p) = &out {
                 std::fs::write(p, &report).with_context(|| format!("writing {}", p.display()))?;

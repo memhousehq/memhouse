@@ -208,6 +208,7 @@ async fn an_interrupted_migration_resumes_and_a_changed_record_fails_it() {
         state: "copying".into(),
         started_at: chrono::Utc::now(),
         completed_at: None,
+        verified: None,
     })
     .unwrap();
     let source_records = SqliteStore::open_read_only(&a, "").unwrap().export_records(TENANT, None, None, 1000).await.unwrap();
@@ -331,6 +332,60 @@ async fn a_source_that_changes_during_the_copy_fails_the_migration() {
     assert!(failed.problems.iter().any(|p| p.contains("the source changed while it was being copied")), "{:?}", failed.problems);
     let marker: Marker = serde_json::from_value(SqliteStore::open_read_only(&b, "").unwrap().migration_marker().await.unwrap().unwrap()).unwrap();
     assert_eq!(marker.state, "copying");
+
+    // The same once the copy is done and the target is being read back: the target matches
+    // what was copied, and the source no longer does.
+    let (c, d) = (dir.path().join("c.db"), dir.path().join("d.db"));
+    seeded(&c).await;
+    let mut o = options(&c, &d);
+    let file = c.clone();
+    o.progress = Some(Arc::new(move |said: &str| {
+        if said.starts_with("records: read back") {
+            let writer = rusqlite::Connection::open(&file).unwrap();
+            writer.execute("UPDATE mh_memory SET status = 'rejected', updated_at = updated_at + 1000000 WHERE status = 'quarantined'", []).unwrap();
+        }
+    }));
+    let err = migrate::run(Arc::new(SqliteStore::open(&c, PREFIX).unwrap()), Arc::new(SqliteStore::open(&d, PREFIX).unwrap()), &o).await.unwrap_err();
+    let failed = err.downcast_ref::<VerificationFailed>().expect("a verification failure");
+    assert_eq!(failed.problems.len(), 1, "{:?}", failed.problems);
+    assert!(failed.problems[0].contains("the source changed while the copy was being verified"), "{:?}", failed.problems);
+    let target = SqliteStore::open_read_only(&d, "").unwrap();
+    let marker: Marker = serde_json::from_value(target.migration_marker().await.unwrap().unwrap()).unwrap();
+    assert_eq!((marker.state.as_str(), marker.verified), ("copying", None));
+    assert!(target.audit_log(TENANT, 100).await.unwrap().iter().all(|e| e.action != AUDIT_ACTION));
+}
+
+#[tokio::test]
+async fn a_completed_migration_is_complete_only_while_the_source_is_what_was_verified() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a.db"), dir.path().join("b.db"));
+    seeded(&a).await;
+    migrate_files(&a, &b).await.unwrap();
+    // The marker records what the source held; a rerun over the same source has nothing to do.
+    let marker: Marker = serde_json::from_value(SqliteStore::open_read_only(&b, "").unwrap().migration_marker().await.unwrap().unwrap()).unwrap();
+    let verified = marker.verified.clone().expect("the verified state of the source");
+    {
+        let (source, _lock) = SqliteStore::open_source(&a, "").unwrap();
+        migrate::ensure_source_unchanged(&source, &verified, "since").await.unwrap();
+    }
+    assert!(!migrate_files(&a, &b).await.unwrap().ran);
+
+    // The source is written to afterwards (the server was started on it again): the target
+    // does not hold that, and a rerun says so instead of reporting a completed migration.
+    {
+        let store = SqliteStore::open(&a, PREFIX).unwrap();
+        store.migrate(DIM, EMBEDDER).await.unwrap();
+        store.audit("agent-1", "memory.admit", TENANT, Some("user:ada"), None, serde_json::json!({})).await.unwrap();
+    }
+    let (source, lock) = SqliteStore::open_source(&a, "").unwrap();
+    assert!(migrate::ensure_source_unchanged(&source, &verified, "since").await.is_err());
+    let target = SqliteStore::open_read_only(&b, "").unwrap();
+    let plan = migrate::inspect(&source, Some(&target), &options(&a, &b), false).await.unwrap();
+    assert_eq!(plan.target_state, TargetState::Complete);
+    assert!(plan.attention.iter().any(|a| a.blocking && a.text.contains("the source has changed since")), "{:?}", plan.attention);
+    drop((source, lock, target));
+    let err = migrate_files(&a, &b).await.unwrap_err().to_string();
+    assert!(err.contains("cannot start") && err.contains("the source has changed since"), "{err}");
 }
 
 #[tokio::test]

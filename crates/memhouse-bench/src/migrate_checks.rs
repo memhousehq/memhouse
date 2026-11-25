@@ -64,9 +64,25 @@ impl Places {
         Ok(url)
     }
 
-    async fn drop_all(self) {
+    /// Drop every scratch store, whatever the scenario returned, and give its outcome back. A
+    /// store that could not be dropped is a problem of the check (a pass must not leave a
+    /// database behind); when the scenario itself failed, its error stays the one reported,
+    /// with the teardown's beside it.
+    async fn drop_all<T>(self, ran: anyhow::Result<(Vec<String>, T)>) -> anyhow::Result<(Vec<String>, T)> {
+        let mut left = vec![];
         for s in self.0 {
-            let _ = s.drop().await;
+            let what = memhouse_store_postgres::redact_url(&s.url);
+            if let Err(e) = s.drop().await {
+                left.push(format!("the scratch store {what} was not removed: {e:#}"));
+            }
+        }
+        match ran {
+            Ok((mut problems, value)) => {
+                problems.extend(left);
+                Ok((problems, value))
+            }
+            Err(e) if left.is_empty() => Err(e),
+            Err(e) => Err(anyhow::anyhow!("{e:#} (and afterwards: {})", left.join("; "))),
         }
     }
 }
@@ -98,6 +114,17 @@ async fn seed(url: &str) -> anyhow::Result<Seeded> {
 async fn fingerprint(url: &str) -> anyhow::Result<Fingerprint> {
     let store = open_store(url, 2, kit::PREFIX).await?;
     kit::fingerprint(store.as_ref()).await
+}
+
+/// What a migration does not carry (the caches, the idempotency keys), as the source holds it:
+/// a migration must leave that alone too. Compared only with the same store at another time.
+async fn left_behind(url: &str) -> anyhow::Result<String> {
+    let store = open_store(url, 2, kit::PREFIX).await?;
+    let counts = store.migration_summary().await?.left_behind;
+    let request = store.request_get(kit::TENANT, "req-77").await?;
+    let extraction = store.llm_cache_get("cache-key-1").await?;
+    let vectors = store.embed_cache_get(kit::EMBEDDER, &[memhouse_core::engine::content_hash("cached text")]).await?;
+    Ok(format!("{counts:?} {request:?} {extraction:?} {vectors:?}"))
 }
 
 fn request(engine: &Engine, from: &str, to: &str, config: Option<std::path::PathBuf>) -> anyhow::Result<Request> {
@@ -156,16 +183,18 @@ async fn round_trip_check(engine: &Engine) -> Outcome {
             let middle = fingerprint(&e).await?;
             let back = migrate_between(engine, &e, &f).await?;
             let end = fingerprint(&f).await?;
-            // Standard → Lite: everything but that one vector.
+            // Standard → Lite: everything as it was, and that one vector exactly what half
+            // precision makes of it (the nearest value, not a neighbour of it).
+            let expected = memhouse_store_sqlite::vector::from_half(&memhouse_store_sqlite::vector::to_half(&full));
             let rounded = middle.vectors.get(&extra).and_then(|v| v.embedding.clone()).unwrap_or_default();
-            let gap = rounded.iter().zip(&full).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
-            for p in kit::differences(&start, &middle, 1) {
-                if p != "the vectors of 1 records differ" {
-                    problems.push(format!("Standard → Lite: {p}"));
-                }
+            let gap = expected.iter().zip(&full).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+            let mut as_lite_holds_it = start.clone();
+            if let Some(v) = as_lite_holds_it.vectors.get_mut(&extra) {
+                v.embedding = Some(expected.clone());
             }
-            if !(gap > 0.0 && gap < 2.5e-4) || rounded.len() != full.len() {
-                problems.push(format!("a single-precision vector landed in the Lite store {gap} away from itself (expected: rounded to half precision)"));
+            problems.extend(kit::differences(&as_lite_holds_it, &middle, 1).into_iter().map(|p| format!("Standard → Lite: {p}")));
+            if rounded != expected || expected == full {
+                problems.push("a single-precision vector did not land in the Lite store as its exact half-precision rounding".to_string());
             }
             if there.vector_max_gap <= 0.0 {
                 problems.push("the migration's report did not say that vectors were rounded".into());
@@ -210,8 +239,7 @@ async fn round_trip_check(engine: &Engine) -> Outcome {
         anyhow::Ok((problems, said))
     }
     .await;
-    places.drop_all().await;
-    let (problems, said) = ran?;
+    let (problems, said) = places.drop_all(ran).await?;
     let passed = problems.is_empty();
     Ok((passed, said.join("; "), if passed { "every trip ended where it started".into() } else { problems.into_iter().take(8).collect::<Vec<_>>().join("; ") }))
 }
@@ -268,17 +296,21 @@ async fn erasure_and_audit(engine: &Engine) -> Outcome {
         anyhow::Ok((problems, format!("{} ledger rows moved, {} erased texts absent, {events} audit events verify", ledger.len(), seeded.gone_words.len())))
     }
     .await;
-    places.drop_all().await;
-    let (problems, value) = ran?;
+    let (problems, value) = places.drop_all(ran).await?;
     let passed = problems.is_empty();
     Ok((passed, value, if passed { "nothing erased came back; the chain verifies".into() } else { problems.join("; ") }))
 }
 
-/// The password of a database URL (`scheme://user:password@host/…`), if it has one.
-fn password_of(url: &str) -> Option<String> {
-    let rest = url.split_once("://")?.1;
-    let userinfo = rest.rsplit_once('@')?.0;
-    userinfo.split_once(':').map(|(_, p)| p.to_string()).filter(|p| !p.is_empty())
+/// The passwords a database URL carries, in either form the endpoint accepts: before the host
+/// (`scheme://user:password@host/…`) and as a parameter (`?password=…`).
+fn passwords_of(url: &str) -> Vec<String> {
+    let Some((_, rest)) = url.split_once("://") else { return vec![] };
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let mut found: Vec<String> = authority.rsplit_once('@').and_then(|(userinfo, _)| userinfo.split_once(':')).map(|(_, p)| p.to_string()).into_iter().collect();
+    let query = rest.split_once('?').map_or("", |(_, q)| q.split('#').next().unwrap_or(""));
+    found.extend(query.split('&').filter_map(|p| p.split_once('=')).filter(|(k, _)| k.to_ascii_lowercase().contains("pass")).map(|(_, v)| v.to_string()));
+    found.retain(|p| !p.is_empty());
+    found
 }
 
 async fn no_credentials(engine: &Engine) -> Outcome {
@@ -309,7 +341,7 @@ async fn no_credentials(engine: &Engine) -> Outcome {
         let mut secrets = vec![MADE_UP.to_string()];
         // A real migration into the profile under test (on Postgres its URL carries a password).
         let b = places.add(Profile::of(engine), engine, "mig3b").await?;
-        secrets.extend(password_of(&b));
+        secrets.extend(passwords_of(&b));
         let req = request(engine, &a, &b, None)?;
         let plan = migrate::plan(&req).await?;
         texts.push(("the plan".into(), migrate::describe_plan(&req, &plan)));
@@ -326,7 +358,8 @@ async fn no_credentials(engine: &Engine) -> Outcome {
         let event = events.iter().find(|e| e["action"] == AUDIT_ACTION).ok_or_else(|| anyhow::anyhow!("the migration wrote no audit event"))?;
         texts.push(("the audit event".into(), event.to_string()));
         if !event["detail"].as_str().is_some_and(|d| d.contains(&req.from.label) && d.contains("\"records_differing\":0")) {
-            problems.push(format!("the audit event does not name the source and the verification result: {}", event["detail"]));
+            // The field by name only: what a faulty event holds is not repeated here.
+            problems.push("the audit event's `detail` does not name the source and the verification result".to_string());
         }
         // And one out of it again, so the password is the source's.
         let c = places.add(Profile::Sqlite, engine, "mig3c").await?;
@@ -346,8 +379,7 @@ async fn no_credentials(engine: &Engine) -> Outcome {
         anyhow::Ok((problems, format!("{} texts searched for {} password(s)", texts.len(), secrets.len())))
     }
     .await;
-    places.drop_all().await;
-    let (problems, value) = ran?;
+    let (problems, value) = places.drop_all(ran).await?;
     let passed = problems.is_empty();
     Ok((passed, value, if passed { "no password in any of them".into() } else { problems.join("; ") }))
 }
@@ -361,6 +393,7 @@ async fn failed_verification(engine: &Engine) -> Outcome {
             (places.add(Profile::of(engine), engine, "mig4a").await?, places.add(other(engine), engine, "mig4b").await?, places.add(other(engine), engine, "mig4c").await?);
         seed(&a).await?;
         let before = fingerprint(&a).await?;
+        let kept_back = left_behind(&a).await?;
         // A configuration file that names the source.
         memhouse_store_sqlite::private_dir(&dir)?;
         let mut cfg = (*engine.cfg).clone();
@@ -385,6 +418,7 @@ async fn failed_verification(engine: &Engine) -> Outcome {
                 state: "copying".into(),
                 started_at: chrono::Utc::now(),
                 completed_at: None,
+                verified: None,
             };
             target.set_migration_marker(&serde_json::to_value(&marker)?).await?;
             target.import_records(&[ImportRow { record, embedding: vectors.embedding, alt: None }]).await?;
@@ -414,6 +448,9 @@ async fn failed_verification(engine: &Engine) -> Outcome {
             problems.push(format!("files were written beside the configuration: {beside:?}"));
         }
         problems.extend(kit::differences(&before, &fingerprint(&a).await?, 0).into_iter().map(|p| format!("the source changed: {p}")));
+        if left_behind(&a).await? != kept_back {
+            problems.push("the source changed: its caches or idempotency keys are not what they were".to_string());
+        }
         {
             let target = open_store(&b, 2, kit::PREFIX).await?;
             let marker: Marker = serde_json::from_value(target.migration_marker().await?.unwrap_or_default())?;
@@ -439,12 +476,14 @@ async fn failed_verification(engine: &Engine) -> Outcome {
             other => problems.push(format!("a verified migration did not switch the configuration over: {other:?}")),
         }
         problems.extend(kit::differences(&before, &fingerprint(&a).await?, 0).into_iter().map(|p| format!("the source changed in the migration that verified: {p}")));
+        if left_behind(&a).await? != kept_back {
+            problems.push("the source changed in the migration that verified: its caches or idempotency keys are not what they were".to_string());
+        }
         anyhow::Ok((problems, format!("record {changed} named; configuration and source unchanged, then switched after a verified run")))
     }
     .await;
     let _ = std::fs::remove_dir_all(&dir);
-    places.drop_all().await;
-    let (problems, value) = ran?;
+    let (problems, value) = places.drop_all(ran).await?;
     let passed = problems.is_empty();
     Ok((passed, value, if passed { "the failure changed nothing; the success switched over".into() } else { problems.join("; ") }))
 }

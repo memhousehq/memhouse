@@ -624,9 +624,18 @@ impl PgStore {
 /// A database URL without its credentials: the user and password before the host, and the
 /// value of any password parameter after it (`?password=…`, `sslpassword=…`).
 pub fn redact_url(url: &str) -> String {
-    let url = match (url.find("://"), url.rfind('@')) {
-        (Some(s), Some(at)) if at > s => format!("{}://***@{}", &url[..s], &url[at + 1..]),
-        _ => url.to_string(),
+    // The user and password are in the authority, which ends at the first `/`, `?` or `#`: an
+    // `@` after that (in a password parameter, say) is not their separator.
+    let url = match url.find("://") {
+        Some(s) => {
+            let rest = &url[s + 3..];
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            match rest[..end].rfind('@') {
+                Some(at) => format!("{}://***@{}", &url[..s], &rest[at + 1..]),
+                None => url.to_string(),
+            }
+        }
+        None => url.to_string(),
     };
     let Some((head, query)) = url.split_once('?') else { return url };
     let params: Vec<String> = query
@@ -3310,7 +3319,12 @@ mod tests {
             redact_url("postgres://db.internal/memhouse?sslmode=require&password=s3cret&sslpassword=k3y"),
             "postgres://db.internal/memhouse?sslmode=require&password=***&sslpassword=***"
         );
-        assert_eq!(redact_url("postgres://u:p@ss@h/db?application_name=x"), "postgres://***@h/db?application_name=x");
+        assert_eq!(redact_url("postgres://u:p@ss@h/db?application_name=x"), "postgres://***@h/db?application_name=x"); // secret-scan: allow (fake fixture)
+                                                                                                                       // An `@` after the authority is no separator: the host stays, and no part of a password does.
+        assert_eq!(redact_url("postgres://h/db?password=p@ss"), "postgres://h/db?password=***"); // secret-scan: allow (fake fixture)
+        assert_eq!(redact_url("postgres://u:pw@h:5433/db?application_name=x@y"), "postgres://***@h:5433/db?application_name=x@y"); // secret-scan: allow (fake fixture)
+        assert_eq!(redact_url("postgres://u:pw@h/d@b#frag@ment"), "postgres://***@h/d@b#frag@ment"); // secret-scan: allow (fake fixture)
+        assert_eq!(redact_url("postgres://u:pw@h"), "postgres://***@h"); // secret-scan: allow (fake fixture)
         assert_eq!(redact_url("sqlite:/var/lib/memhouse.db"), "sqlite:/var/lib/memhouse.db");
     }
 

@@ -1597,7 +1597,7 @@ which is named.
 
 #### G16 — Lite profile: embedded store
 
-- [x] **Done** (21 November 2026; two things wait for the user: the review of the SQLite advisory exception, and the three governance checks reported as not applicable on Lite)
+- [x] **Done** (21 November 2026; one thing waits for the user: whether the three governance checks reported as not applicable on Lite are acceptable)
 
 > `/goal Implement the Lite profile: an embedded store (per ADR, SQLite + FTS5) with in-process exact per-subject vector scoring (binary-quantised prefilter, half-precision rescoring), in-process jobs, automatic migrations with a pre-upgrade snapshot, optional file encryption, backup by snapshot plus export with deletion-ledger replay; make it the default for memhouse up --lite; pass every conformance kit, the governance suite and the guard within noise of Postgres. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -1696,12 +1696,9 @@ which is named.
     batching a per-record query (an optimisation).
   - **Decided by the user (2026-11-25).** Lite ships with the documented exception for the
     bundled SQLite's advisory (below), with its two stated limits.
-  - **For the user to decide.** (1) The bundled SQLite has a known advisory (RUSTSEC-2026-0459,
-    a crafted `-wal` file); its reviewed exception covered only the spike examples, and Lite
-    now ships that SQLite. The private-directory check limits the exposure to a database
-    directory taken from an untrusted source; the fixed version is blocked by a bound in sqlx.
-    `deny.toml` states this and asks for review. (2) Whether three not-applicable checks are
-    acceptable as "governance 100%" on Lite.
+  - **For the user to decide.** Whether three not-applicable checks are acceptable as
+    "governance 100%" on Lite. (The other question raised here, the exception for the bundled
+    SQLite's advisory RUSTSEC-2026-0459, was decided on 25 November 2026, above.)
 
 #### G17 — Profile migration
 
@@ -1747,9 +1744,25 @@ which is named.
     `migrate_no_credentials` (no database password in any output, log or audit event) and
     `migrate_failed_verification`. Postgres: 72 of 72. SQLite: 69 of 69 applicable, 3 not
     applicable as before (its round trip is Lite → Lite → Lite, having no Postgres).
-  - **Not measured or not tested.** Postgres to Lite and Lite to Lite at one million records.
-    Resuming is tested on a half-copied target, not by killing a run. A write to a Postgres
-    source during the copy is caught by the end-of-copy check, which is tested on SQLite
+  - **Review fixes (2026-11-25, pull request 36).** 12 of the reviewer's 15 points were
+    fixed. The source is compared again after verification and immediately before the
+    configuration is switched; a SQLite source is locked against writes for the whole run, and
+    for a Postgres source the window after the last comparison is documented. A rerun on a
+    target that is already complete is refused when the source has changed since it was
+    verified. The closing instructions say the source is unused only after a real cutover,
+    also when the environment sets the database URL. The managed container is kept in the
+    configuration only for another database on the same server. `redact_url` looks for
+    credentials in the authority only. The migration checks compare the exact half-precision
+    vector, cover data that does not migrate in "source unchanged", search for passwords
+    given as query parameters, and report a failed teardown. The benchmark's scratch database
+    has a fixed name of its own, no longer one derived from the configured database.
+    Declined: unique names for governance scratch databases (as in G16), and keeping the
+    scratch database URL out of the temporary configuration file of one check (the
+    configuration file holds the URL by design; the directory is removed).
+  - **Not measured or not tested.** Postgres to Lite and Lite to Lite at one million records;
+    the timing was not measured again after the review fixes, which add two summaries of the
+    source. Resuming is tested on a half-copied target, not by killing a run. A write to a
+    Postgres source is caught by the comparisons, which are tested with a live write on SQLite
     only. A source whose audit chain is already broken is copied as it is and reported; that
     path has no test. The store conformance kit does not cover the new transfer methods; the
     governance checks do.
@@ -2115,7 +2128,7 @@ current code already meets it and the named goal re-verifies it; it isn't reopen
 | Workflows | TR-WF-01 G22 · TR-WF-02 G22/G31 · TR-WF-03 G22 |
 | Operations | TR-OPS-01 G29 · TR-OPS-02 G29 · TR-OPS-03 G21 · TR-OPS-04 G30 · TR-OPS-05 G30 · TR-OPS-06 G07 |
 | Core library | TR-CORE-01 G15 (done, verified) · TR-CORE-02 G15 · TR-CORE-03 G04 · TR-CORE-04 G04 · TR-CORE-05 G06 |
-| Lite | TR-LT-01 G16/G18 · TR-LT-02 G03 · TR-LT-03 G16 · TR-LT-04 G16 · TR-LT-05 G10 · TR-LT-06 G16 · TR-LT-07 G06 · TR-LT-08 G16 · TR-LT-09 G16 · TR-LT-10 G16 |
+| Lite | TR-LT-01 G16/G18 · TR-LT-02 G03 · TR-LT-03 G16 · TR-LT-04 G16 · TR-LT-05 G10 · TR-LT-06 G16 · TR-LT-07 G06 · TR-LT-08 G29 · TR-LT-09 G16 · TR-LT-10 G16 |
 | Migration | TR-MIG-01 G17 · TR-MIG-02 G32 · TR-MIG-03 G17 · TR-MIG-04 G28 · TR-MIG-05 G23 |
 | Template tech | TR-TPL-01 G24 · TR-TPL-02 G19 · TR-TPL-03 G19 · TR-TPL-04 G19 (done, verified) · TR-TPL-05 G24 · TR-TPL-06 G23 |
 | Repository | RP-01 G01 · RP-03 G02 · RP-04 G02 · RP-05 G02/G09 · RP-06 G04/G09 |

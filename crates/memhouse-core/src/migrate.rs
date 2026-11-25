@@ -303,16 +303,6 @@ impl Summary {
         self.record_total() == 0 && self.tables.values().all(|n| *n == 0)
     }
 
-    /// Whether the store holds what it held at `earlier`, as far as a copy can tell: on the
-    /// source, anything else means something wrote to it meanwhile.
-    fn unchanged_since(&self, earlier: &Summary) -> bool {
-        self.records == earlier.records
-            && (self.vectors, self.second_vectors) == (earlier.vectors, earlier.second_vectors)
-            && self.tables == earlier.tables
-            && self.last_change == earlier.last_change
-            && self.audit_head == earlier.audit_head
-    }
-
     /// What is in the target but not as in the source, by name.
     fn differences(&self, target: &Summary, extra_audit: u64) -> Vec<String> {
         let mut out = vec![];
@@ -445,6 +435,46 @@ pub struct Marker {
     pub started_at: chrono::DateTime<chrono::Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// What the source held when the target was verified against it: a later run compares the
+    /// source with this before it calls the migration complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<SourceState>,
+}
+
+/// What a source held at one moment, as far as a migration can tell without reading every
+/// record: counts, the newest change of a record, and the last audit event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceState {
+    pub records: Vec<RecordCount>,
+    pub vectors: u64,
+    pub second_vectors: u64,
+    pub tables: BTreeMap<String, u64>,
+    pub last_change: Option<i64>,
+    pub audit_head: Option<(i64, String)>,
+}
+
+impl SourceState {
+    pub fn of(s: &Summary) -> SourceState {
+        SourceState {
+            records: s.records.clone(),
+            vectors: s.vectors,
+            second_vectors: s.second_vectors,
+            tables: s.tables.clone(),
+            last_change: s.last_change,
+            audit_head: s.audit_head.clone(),
+        }
+    }
+}
+
+/// Fails when the source no longer holds what it held at `then`: something wrote to it.
+pub async fn ensure_source_unchanged(source: &dyn Store, then: &SourceState, when: &str) -> anyhow::Result<()> {
+    let now = SourceState::of(&source.migration_summary().await?);
+    anyhow::ensure!(
+        now == *then,
+        "the source changed {when} (a server or an agent is still writing to it): what was written is not in the target. \
+         Stop them, and migrate again into a new, empty target"
+    );
+    Ok(())
 }
 
 /// The sha256 of a record's canonical export line: what "the same record" means (TR-MIG-01).
@@ -601,7 +631,15 @@ pub async fn inspect(source: &dyn Store, target: Option<&dyn Store>, o: &Options
             t.record_total(),
             s.record_total()
         ))),
-        TargetState::Complete => attention.push(Attention::note("this migration already completed: there is nothing left to copy".to_string())),
+        // Complete as of then: only if the source still is what the target was verified against.
+        TargetState::Complete if ours.and_then(|m| m.verified.as_ref()) == Some(&SourceState::of(&s)) => {
+            attention.push(Attention::note("this migration already completed: there is nothing left to copy".to_string()))
+        }
+        TargetState::Complete => attention.push(Attention::stop(
+            "this migration completed earlier, and the source has changed since: the target does not hold what was written to the source after it. \
+             Nothing is switched over. Migrate again into a new, empty target (or, if the target is the database in use now, leave the source alone)"
+                .to_string(),
+        )),
         TargetState::Empty => {}
     }
     if let (Some(a), Some(b)) = (&identity, &t.identity) {
@@ -735,7 +773,7 @@ pub async fn run(source: Arc<dyn Store>, target: Arc<dyn Store>, o: &Options) ->
     anyhow::ensure!(theirs.as_ref() == Some(&identity), "the target was not set up for the source's vectors ({identity}): it says {theirs:?}");
     let mut marker = match marker_of(target.as_ref()).await? {
         Some(m) => m,
-        None => Marker { source: o.source_label.clone(), identity: identity.clone(), state: "copying".into(), started_at: chrono::Utc::now(), completed_at: None },
+        None => Marker { source: o.source_label.clone(), identity: identity.clone(), state: "copying".into(), started_at: chrono::Utc::now(), completed_at: None, verified: None },
     };
     target.set_migration_marker(&serde_json::to_value(&marker)?).await?;
 
@@ -767,7 +805,7 @@ pub async fn run(source: Arc<dyn Store>, target: Arc<dyn Store>, o: &Options) ->
     o.say("verifying");
     let mut problems: Vec<String> = vec![];
     let after_copy = source.migration_summary().await?;
-    if !after_copy.unchanged_since(&before_copy) {
+    if SourceState::of(&after_copy) != SourceState::of(&before_copy) {
         problems.push("the source changed while it was being copied (a server or an agent is still writing to it): stop them and run the migration again".into());
     }
     let (mut differing, mut missing, mut unexpected) = (vec![], vec![], vec![]);
@@ -884,6 +922,12 @@ pub async fn run(source: Arc<dyn Store>, target: Arc<dyn Store>, o: &Options) ->
             None => format!("the target's audit chain has {events} events, the source's {}", plan.source_audit.0),
         });
     }
+    // Once more, now that the target has been read back: a write made during the verification
+    // is as missing from the target as one made during the copy.
+    let verified = SourceState::of(&before_copy);
+    if problems.is_empty() && SourceState::of(&source.migration_summary().await?) != verified {
+        problems.push("the source changed while the copy was being verified (a server or an agent is still writing to it): stop them and run the migration again".into());
+    }
     report.verify_secs = started.elapsed().as_secs_f64();
     if !problems.is_empty() {
         return Err(VerificationFailed { problems }.into());
@@ -912,6 +956,7 @@ pub async fn run(source: Arc<dyn Store>, target: Arc<dyn Store>, o: &Options) ->
         });
         target.audit(&o.actor, AUDIT_ACTION, &o.tenant, None, None, detail).await?;
     }
+    marker.verified = Some(verified);
     marker.state = "complete".into();
     marker.completed_at = Some(chrono::Utc::now());
     target.set_migration_marker(&serde_json::to_value(&marker)?).await?;

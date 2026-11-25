@@ -118,3 +118,70 @@ async fn migrate_dry_run_then_migrate_then_switch_over() {
     assert!(!out.status.success() && stdout.contains("✗") && stderr.contains("cannot run yet"), "{stdout}\n{stderr}");
     assert_eq!(sha256_file(&source).unwrap(), bytes);
 }
+
+/// A seeded Lite installation in `home`: the database, and a configuration that names it.
+async fn installation(home: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let source = home.join("memhouse.db");
+    let store = SqliteStore::open(&source, PREFIX).unwrap();
+    store.migrate(DIM, EMBEDDER).await.unwrap();
+    seed(&store).await.unwrap();
+    let mut cfg = Config::default();
+    cfg.database.url = format!("sqlite:{}", source.display());
+    cfg.memory.tenant = "acme".into();
+    (source, cfg.save(Some(&home.join("config.toml"))).unwrap())
+}
+
+#[tokio::test]
+async fn the_next_steps_follow_what_the_server_would_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let (source, _config) = installation(&home).await;
+    let to = format!("sqlite:{}", home.join("moved.db").display());
+    // The environment names the source over the file: the file is switched, and the server
+    // would still open the source.
+    let out = Command::new(env!("CARGO_BIN_EXE_memhouse"))
+        .args(["migrate", "--to", &to, "--yes"])
+        .env("MEMHOUSE_HOME", &home)
+        .env("MEMHOUSE_DATABASE_URL", format!("sqlite:{}", source.display()))
+        .env_remove("MEMHOUSE_CONFIG")
+        .env_remove("DATABASE_URL")
+        .env_remove("MEMHOUSE_MIGRATE_FROM")
+        .env_remove("MEMHOUSE_MIGRATE_TO")
+        .output()
+        .expect("run memhouse");
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("now names the target") && stdout.contains("do not start it yet") && stdout.contains("MEMHOUSE_DATABASE_URL"), "{stdout}");
+    assert!(!stdout.contains("no longer used") && !stdout.contains("Start the server again"), "{stdout}");
+}
+
+#[tokio::test]
+async fn a_source_written_to_after_its_migration_is_not_switched_away_from() {
+    use memhouse_server::migrate::{endpoint, run, Request, Switch};
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let (source, config) = installation(&home).await;
+    let original = std::fs::read(&config).unwrap();
+    let request = |config_path| Request {
+        from: endpoint(&format!("sqlite:{}", source.display())).unwrap(),
+        to: endpoint(&format!("sqlite:{}", home.join("moved.db").display())).unwrap(),
+        cfg: Config::load_file(Some(&config)).unwrap(),
+        config_path,
+        progress: None,
+    };
+    // Migrated and verified, the configuration not switched (as when it named another database).
+    let (report, switch) = run(&request(None)).await.unwrap();
+    assert!(report.ran && switch == Switch::NotAsked);
+    // The server goes on writing to the source.
+    {
+        let store = SqliteStore::open(&source, PREFIX).unwrap();
+        store.migrate(DIM, EMBEDDER).await.unwrap();
+        store.audit("agent-1", "memory.admit", "acme", Some("user:ada"), None, serde_json::json!({})).await.unwrap();
+    }
+    // A rerun that would switch the file: refused, and the file is as it was.
+    let err = format!("{:#}", run(&request(Some(config.clone()))).await.unwrap_err());
+    assert!(err.contains("the source has changed since"), "{err}");
+    assert_eq!(std::fs::read(&config).unwrap(), original);
+    let beside: Vec<_> = std::fs::read_dir(&home).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().contains("before-migrate")).collect();
+    assert!(beside.is_empty(), "a backup of a configuration that was not switched");
+}

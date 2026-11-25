@@ -482,9 +482,9 @@ memhouse migrate --from postgres://… --to lite:///home/ada/.memhouse/memhouse.
   `postgres://…`, or `sqlite:<path>` (also spelled `lite://<path>`) for a Lite file.
 - **Passwords:** give a URL in `MEMHOUSE_MIGRATE_FROM` or `MEMHOUSE_MIGRATE_TO` instead of on
   the command line. Whatever the command prints or audits shows URLs without credentials.
-- **Stop `memhouse serve` and the agents first.** The migration is the downtime. A write made
-  to the source during the copy fails the migration; a worker's live claim on queued work
-  refuses it at the start.
+- **Stop `memhouse serve` and the agents first, and keep them stopped until the command has
+  finished.** The migration is the downtime. What the command does about a source that is
+  still written to is under [Writes to the source](#writes-to-the-source-during-a-migration).
 - **The source is only read.** It is left as it was, whether the migration succeeds or not.
 
 **What a dry run reports** (`--dry-run`, and the first thing every run prints): records by type
@@ -520,7 +520,42 @@ Agents keep their keys and tokens. The target's audit log gains one event,
 `migration.complete`.
 
 **An interrupted migration** is run again with the same command: it continues where it stopped
-and verifies everything.
+and verifies everything. Running the command again after it completed copies nothing; it
+switches the configuration file if that was still to do, and only if the source is still what
+the target was verified against (the target records that). If the source was written to in
+between, the command fails and switches nothing: migrate again into a new, empty target.
+
+### Writes to the source during a migration
+
+A write made to the source after its copy began is not in the target. The command does not
+carry such writes over; it refuses to finish when it sees one.
+
+| Source | What is guaranteed |
+|---|---|
+| Lite (a SQLite file) | The command refuses to start while another process has the file open, and holds the file's write lock from the start until after the configuration file is switched: no other process can write to it in that time. |
+| Standard (Postgres) | The command cannot lock out a server. It notes other sessions on the database, refuses to start while a worker holds a live claim on queued work, and compares the source with what it held at the start three times: after the copy, after the verification, and immediately before the configuration file is switched. A difference fails the migration and nothing is switched. |
+
+The comparison is of the number of records by tenant, type and state, the number of vectors,
+the row count of every table that moves, the newest change time of any record, and the last
+audit event. Every write through MemHouse changes at least one of them.
+
+What remains, for a Postgres source: a write that lands after the last comparison, in the
+moment before the file is rewritten, is not seen. And whatever the source is, a server that is
+still running after the switch keeps writing to the source, because it read its configuration
+when it started; those writes are not in the target either. So the rule above is the
+guarantee: the server and the agents stay stopped until the command has finished. If you
+find the source was written to after a migration, the target is missing those writes: migrate
+again into a new, empty target.
+
+After the migration the command says what to do next, and that depends on what the server
+would use: when the configuration file names the target and no `MEMHOUSE_DATABASE_URL` or
+`DATABASE_URL` overrides it, start the server; otherwise it says which of the two still names
+another database, and the source is still the database in use until you change it.
+
+**The managed container** (`[database] container`, set by `memhouse up`) is kept in the
+configuration only when the target is another database on the same Postgres host and port;
+for a file or another server it is removed, so `memhouse down` never stops a container that
+does not serve the configured database.
 
 Where a migrated database is not bit-identical to its source:
 

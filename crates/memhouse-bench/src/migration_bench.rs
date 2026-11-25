@@ -87,18 +87,26 @@ async fn load(store: &dyn Store, records: usize, per_subject: usize) -> anyhow::
     Ok(())
 }
 
-/// A scratch Postgres database beside the configured one, empty. Returns (admin pool, name, URL).
+/// The benchmark's scratch database: a fixed name among the benchmark's own (`memhouse_bench_…`,
+/// as the benchmark databases are named), never one derived from the configured database's
+/// name. Whatever an earlier run left under it is this benchmark's, and is dropped first, so a
+/// run that was killed does not block the next.
+const SCRATCH_DB: &str = "memhouse_bench_migrate_scratch";
+
+/// The scratch Postgres database, empty, on the configured server. Returns (admin pool, name, URL).
 async fn scratch_postgres(cfg: &Config) -> anyhow::Result<(sqlx::PgPool, String, String)> {
     anyhow::ensure!(
         memhouse_server::sqlite_path(&cfg.database.url).is_none(),
-        "the scratch database is created beside the configured one, which must be Postgres (or use --to sqlite)"
+        "the scratch database is created on the configured server, which must be Postgres (or use --to-sqlite)"
     );
     let admin = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .connect(&cfg.database.url)
         .await
         .map_err(|e| anyhow::anyhow!("cannot connect to Postgres at {}: {e}", migrate::redact(&cfg.database.url)))?;
-    let db: String = sqlx::query_scalar("SELECT current_database() || '_migrate_bench'").fetch_one(&admin).await?;
+    let db = SCRATCH_DB.to_string();
+    let current: String = sqlx::query_scalar("SELECT current_database()").fetch_one(&admin).await?;
+    anyhow::ensure!(current != db, "the configured database is the benchmark's scratch database ({db}): it would be dropped");
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE)"))).execute(&admin).await?;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{db}\""))).execute(&admin).await?;
     let (head, tail) = cfg.database.url.rsplit_once('/').ok_or_else(|| anyhow::anyhow!("unexpected database url"))?;

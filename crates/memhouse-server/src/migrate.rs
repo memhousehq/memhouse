@@ -190,12 +190,28 @@ pub async fn run(req: &Request) -> anyhow::Result<(Report, Switch)> {
     let o = open(req, false).await?;
     let target = o.target.clone().ok_or_else(|| anyhow::anyhow!("the target was not opened"))?;
     let report = core::run(o.source.clone(), target, &o.options).await?;
-    // Only now, with every record verified (TR-MIG-01).
+    // The target holds what the source held when it was verified (in this run, or in the
+    // earlier one that completed: `core::run` refuses a source that changed since). The last
+    // look at the source comes immediately before the file is changed; a SQLite source is also
+    // locked against writes until this function returns.
     let switch = match &req.config_path {
-        Some(path) => switch_config(path, &req.from, &req.to)?,
+        Some(path) => {
+            core::ensure_source_unchanged(o.source.as_ref(), &core::SourceState::of(&report.source), "after it was verified, before the configuration was switched").await?;
+            switch_config(path, &req.from, &req.to)?
+        }
         None => Switch::NotAsked,
     };
     Ok((report, switch))
+}
+
+/// The server and port of a Postgres URL (`host:5432` when it names no port).
+fn server_of(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_ascii_lowercase();
+    // A port follows the last colon, unless that colon is inside an IPv6 address.
+    let has_port = host.rsplit_once(':').is_some_and(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    Some(if has_port { host } else { format!("{host}:5432") })
 }
 
 /// Whether a configured database URL names this endpoint.
@@ -226,8 +242,11 @@ pub fn switch_config(path: &Path, from: &Endpoint, to: &Endpoint) -> anyhow::Res
     std::io::Write::write_all(&mut out, &std::fs::read(path)?)?;
     out.sync_all()?;
     cfg.database.url = to.url.clone();
-    if to.place != Place::Postgres {
-        // No container to start for a database that is a file.
+    // The managed container is the one that serves the source. It still serves the target only
+    // when that is another database on the same server; a file needs none, and another server
+    // is not this container (`memhouse down` would stop the wrong thing).
+    let same_server = from.place == Place::Postgres && to.place == Place::Postgres && server_of(&from.url).is_some_and(|s| Some(s) == server_of(&to.url));
+    if !same_server {
         cfg.database.container = None;
     }
     cfg.save(Some(path))?;
@@ -391,13 +410,78 @@ pub fn describe_report(req: &Request, report: &Report, switch: &Switch) -> Strin
         Switch::NoConfigFile { config } => writeln!(o, "! there is no configuration file at {}: set the database URL to the target where you configure MemHouse", config.display()),
         Switch::NotAsked => Ok(()),
     };
+    // Cut over only when the URL the server will read names the target: the file's, unless the
+    // environment sets one over it.
+    let file_on_target = matches!(switch, Switch::Switched { .. } | Switch::AlreadyOnTarget { .. });
+    let env = Config::env_database_url();
+    let env_elsewhere = env.as_deref().is_some_and(|url| !names(url, &req.to));
     let _ = writeln!(o, "\nNext:");
-    let _ = writeln!(o, "  1. Start the server again: `memhouse serve`. Agents keep their configuration and their keys.");
-    let _ = writeln!(o, "  2. `memhouse doctor` checks the new database; `memhouse audit --verify` checks the audit chain.");
-    let _ = writeln!(
-        o,
-        "  3. The source was not changed and is no longer used: {}. Keep it until you are satisfied, then remove it yourself; it holds everything, including what you erase from now on.",
-        req.from.label
-    );
+    if file_on_target && !env_elsewhere {
+        let _ = writeln!(o, "  1. Start the server again: `memhouse serve`. Agents keep their configuration and their keys.");
+        let _ = writeln!(o, "  2. `memhouse doctor` checks the new database; `memhouse audit --verify` checks the audit chain.");
+        let _ = writeln!(
+            o,
+            "  3. The source was not changed and is no longer used: {}. Keep it until you are satisfied, then remove it yourself; it holds everything, including what you erase from now on.",
+            req.from.label
+        );
+    } else {
+        let what = if env_elsewhere {
+            "the environment sets the database URL (MEMHOUSE_DATABASE_URL or DATABASE_URL) over the configuration file, and it does not name the target: change it to the target, or unset it"
+        } else if env.is_some() {
+            "the environment's database URL names the target; the configuration file does not: set [database] url to the target as well"
+        } else {
+            "set [database] url to the target"
+        };
+        let _ = writeln!(o, "  ! The server would still use another database than the target ({}): do not start it yet.", req.to.label);
+        let _ = writeln!(o, "  1. Point MemHouse at the target: {what}.");
+        let _ = writeln!(o, "  2. Then start the server (`memhouse serve`) and check with `memhouse doctor` and `memhouse audit --verify`.");
+        let _ = writeln!(
+            o,
+            "  3. The source was not changed: {}. Until MemHouse is pointed at the target it is still the database in use; a write made to it now is not in the target.",
+            req.from.label
+        );
+    }
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_postgres_url_names_its_server() {
+        assert_eq!(server_of("postgres://u:pw@Db.Internal:5433/memhouse?sslmode=require").as_deref(), Some("db.internal:5433")); // secret-scan: allow (fake fixture)
+        assert_eq!(server_of("postgres://db.internal/memhouse").as_deref(), Some("db.internal:5432"));
+        assert_eq!(server_of("postgres://u@[::1]/memhouse").as_deref(), Some("[::1]:5432"));
+        assert_eq!(server_of("postgres://h/db?password=p@x:1").as_deref(), Some("h:5432")); // secret-scan: allow (fake fixture)
+        assert_eq!(server_of("sqlite:/var/lib/memhouse.db"), None);
+    }
+
+    /// Switch a configuration that names `from` (with a managed container) to `to`; the container afterwards.
+    fn container_after(from: &str, to: &str) -> Option<String> {
+        let dir = std::env::temp_dir().join(format!("memhouse-switch-test-{}", uuid::Uuid::now_v7().simple()));
+        memhouse_store_sqlite::private_dir(&dir).unwrap();
+        let mut cfg = Config::default();
+        cfg.database.url = from.into();
+        cfg.database.container = Some("memhouse-pg".into());
+        let path = cfg.save(Some(&dir.join("config.toml"))).unwrap();
+        let switch = switch_config(&path, &endpoint(from).unwrap(), &endpoint(to).unwrap()).unwrap();
+        let now = Config::load_file(Some(&path)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(switch, Switch::Switched { .. }), "{switch:?}");
+        assert_eq!(endpoint(&now.database.url).unwrap().label, endpoint(to).unwrap().label);
+        now.database.container
+    }
+
+    #[test]
+    fn the_managed_container_is_kept_only_for_another_database_on_its_server() {
+        let source = "postgres://memhouse@127.0.0.1:54329/memhouse";
+        // Another database of the same server: the container still serves it.
+        assert_eq!(container_after(source, "postgres://memhouse@127.0.0.1:54329/memhouse_new").as_deref(), Some("memhouse-pg"));
+        // Another port, another host, a file: it does not.
+        assert_eq!(container_after(source, "postgres://memhouse@127.0.0.1:5432/memhouse"), None);
+        assert_eq!(container_after(source, "postgres://memhouse@db.internal:54329/memhouse"), None);
+        assert_eq!(container_after(source, "sqlite:/var/lib/memhouse/memhouse.db"), None);
+        assert_eq!(container_after("sqlite:/var/lib/memhouse/memhouse.db", "postgres://memhouse@db.internal/memhouse"), None);
+    }
 }
