@@ -489,7 +489,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-72 checks pass on the current release on Postgres; on the Lite profile 69 apply and pass, and 3
+73 checks pass on the current release on Postgres; on the Lite profile 70 apply and pass, and 3
 are reported as not applicable ([conformance.md](conformance.md#where-they-run)). The core ones:
 
 | Check | What it proves |
@@ -546,6 +546,7 @@ are reported as not applicable ([conformance.md](conformance.md#where-they-run))
 | `migrate_erasure_and_audit` | the deletion ledger moves with the data, erased text is nowhere on the target, and the audit chain verifies there |
 | `migrate_no_credentials` | no password of either database URL appears in the plan, the report, an error, the log or the audit event |
 | `migrate_failed_verification` | when a record differs on the target the command names it and fails, and the configuration and the source are unchanged; a verified run switches the configuration |
+| `embedded_same_controls` | MemHouse embedded in a process ([sdk.md](sdk.md)) runs the server's controls: with no configured key nothing authenticates, a wrong credential is refused with 401 and audited as `auth.failed` (every refused request has its own event), an injection attempt is quarantined and never recalled, and the committed write is audited (`memory.write` for its record) (G18) |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 

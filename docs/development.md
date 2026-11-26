@@ -18,6 +18,8 @@ extend it with a new store, model, transport, governance rule, template or data 
   - [Add a redaction or injection rule](#add-a-redaction-or-injection-rule)
   - [Add a template](#add-a-template)
   - [Feed data from other systems (context providers)](#feed-data-from-other-systems-context-providers)
+- [Change the API](#change-the-api)
+- [The SDKs](#the-sdks)
 - [Change the schema](#change-the-schema)
 - [Benchmark a change](#benchmark-a-change)
 - [Conventions](#conventions)
@@ -62,9 +64,10 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (72 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier, conformance and migration checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (73 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier, conformance, migration and embedded-transport checks are in `*_checks.rs` next to it |
 | `store-sqlite/src/*.rs` | the Lite profile's store: schema, FTS5 and the exact half-precision vector scan, the queues, migrations with a pre-upgrade copy, backup and restore ([lite.md](lite.md)) |
-| `conformance/src/*.rs` | the conformance kits, one per adapter type, and the profile suite with its three ways in ([conformance.md](conformance.md)) |
+| `conformance/src/*.rs` | the conformance kits, one per adapter type, and the profile suite with its ways in: REST, MCP, the command line, and a child process for the SDKs ([conformance.md](conformance.md)) |
+| `xtask/src/sdk.rs`, `sdk/` | the SDK generator, and the Python and TypeScript SDKs it writes the low-level clients of ([sdk.md](sdk.md)); not Rust crates, so outside the workspace |
 | `core/src/lang.rs`, `langcheck.rs` | language packs: the format, validation, compilation to patterns, detection; a pack's labelled test set. The packs are in `languages/`, their test sets in `languages/tests/` |
 
 ## Build
@@ -103,6 +106,7 @@ cargo xtask ci
 | fmt | `cargo fmt --all -- --check` (settings in `rustfmt.toml`) | — |
 | spdx headers | `cargo xtask spdx`: every source and doc file carries the licence its path requires | — |
 | secret scan | `cargo xtask secrets`: no credentials or credential files in the tree ([secrets.md](security/secrets.md)) | — |
+| generated SDKs | `cargo xtask sdk --check`: the generated clients in `sdk/` are what `api/openapi.json` gives ([the SDKs](#the-sdks)) | — |
 | dependency policy | `cargo deny check -D unmatched-wrapper`: permissive licences only, no known vulnerabilities, crates.io only, no bundled CA lists (`deny.toml`) | `cargo install cargo-deny --locked` |
 | clippy | `cargo clippy --workspace --all-targets --release -- -D warnings` (MSRV in `clippy.toml`) | — |
 | unit tests | `cargo test --workspace --release`: gate (including `proptest` properties), query analysis, enrichment parsing, metrics, batching, SQL quoting, plan checker | — |
@@ -111,13 +115,22 @@ cargo xtask ci
 | benchmark guard | `memhouse bench guard`: the governance suite plus the T1 benchmark runs, compared with `bench/baselines.json` | a benchmark database (`memhouse up` once) and the datasets (`memhouse bench download longmemeval-s`, `locomo`) |
 
 It takes about 5 minutes on a laptop. Options: `--tier 2` (adds LoCoMo with cached enrichment,
-about $0.01), `--fix` (apply rustfmt and add missing SPDX headers), `--skip-e2e` (no Docker), `--skip-guard` (no benchmark
+about $0.01), `--fix` (apply rustfmt, add missing SPDX headers and regenerate the SDK clients), `--skip-e2e` (no Docker), `--skip-guard` (no benchmark
 database), `--skip-latency` (report the guard's timings without failing on them, for a machine
 known to be busy; `MEMHOUSE_CI_SKIP_LATENCY=1` does the same for the pre-push hook, which passes no
 options). `scripts/ci.sh` is the same command.
 
 Hosted CI (`.github/workflows/ci.yml`) runs every step on each pull request except the benchmark
-guard: the e2e step there includes the governance suite. Benchmarks need the public datasets
+guard, in three jobs:
+
+| Job | Runs |
+|---|---|
+| `checks` | the DCO sign-off of every commit, `cargo xtask ci --skip-e2e --skip-guard`, and the secret scan of the whole history |
+| `end-to-end and governance suite` | `scripts/e2e.sh`, which includes the governance suite |
+| `SDKs, embedded bindings and adapters` | builds and tests the embedded bindings (`bindings/python/test.sh`; `pnpm install --frozen-lockfile && pnpm build && pnpm test` in `bindings/node`), then `scripts/sdk-conformance.sh --embedded` ([below](#the-sdks)) |
+
+The second and third start when `checks` has passed. None holds a secret or makes a paid call.
+Benchmarks need the public datasets
 (LoCoMo is licensed for non-commercial use only) and, for paid tiers, an LLM key, so they run on a
 maintainer's machine, on demand, and their results are published with the commands that produced
 them ([benchmarks.md](benchmarks.md#where-benchmarks-run)).
@@ -409,10 +422,43 @@ API v1 is frozen ([stability policy](api-stability.md)). Within v1 a change may 
    edit to the old one.
 5. Cover the behaviour in the governance check `api_contract` (`crates/memhouse-bench/src/api_checks.rs`).
    It fails if a documented operation is never called.
+6. Regenerate the SDK clients: `cargo xtask sdk`. Commit the two generated files with the
+   change; `cargo xtask ci` fails while they differ from the specification.
 
 Deprecating a route: add it to `openapi::DEPRECATED` with its successor. The server then sends
 the deprecation headers, and the document marks it. List it in the deprecation table of the
 stability policy.
+
+## The SDKs
+
+The Python and TypeScript SDKs are in `sdk/` ([sdk.md](sdk.md)). Their low-level clients are
+generated from `api/openapi.json` by `xtask/src/sdk.rs`:
+
+```bash
+cargo xtask sdk            # write sdk/python/src/memhouse/_generated.py and sdk/typescript/src/generated.ts
+cargo xtask sdk --check    # fail if they differ from what the specification gives (a step of `cargo xtask ci`)
+```
+
+Never edit the generated files: change the generator or the specification. The generator's own
+tests are `cargo test -p xtask`.
+
+The SDKs' tests need `uv` and `pnpm`, which `cargo xtask ci` does not ask for, so they are run
+apart from it (hosted CI runs them in its `SDKs, embedded bindings and adapters` job, on Node 20
+and with the embedded bindings built):
+
+```bash
+(cd sdk/python && uv run pytest)                        # offline; Python 3.9+
+(cd sdk/python && uv run --python 3.12 --extra openai-agents --extra langgraph pytest)   # with the framework adapters
+(cd sdk/typescript && pnpm install && pnpm test)        # type check and build (tsc), then node --test
+scripts/sdk-conformance.sh                              # both, with the live tests and the profile scenario
+```
+
+`scripts/sdk-conformance.sh` builds nothing in Rust but the conformance test: build the binary
+first (`cargo build --release -p memhouse-cli`). It starts a throwaway Lite deployment, runs
+the [profile scenario](conformance.md#the-sdks) through REST, both SDKs and the two
+[framework adapters](sdk.md#framework-adapters), and then each SDK's tests with the live ones:
+the hooks give the same governance outcome as the bare client. Run it after a change to an SDK,
+an adapter, the generator, or the API.
 
 ## Change the schema
 

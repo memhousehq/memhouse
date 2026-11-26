@@ -951,8 +951,8 @@ version that was already superseded is now `409 conflict` (it used to fork the h
 
 ## Client examples
 
-The SDKs (G18) will be generated from the OpenAPI document. Until then a thin wrapper is all you
-need.
+The [Python and TypeScript SDKs](sdk.md) have a typed method for every operation, generated
+from the OpenAPI document. Without them, a thin wrapper is all you need.
 
 ### Python (`httpx` or `requests`)
 

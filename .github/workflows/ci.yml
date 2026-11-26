@@ -105,3 +105,63 @@ jobs:
           BIN: ./target/release/memhouse
           MEMHOUSE_MODEL_CACHE: ${{ runner.temp }}/models
         run: MEMHOUSE_HOME="$RUNNER_TEMP/e2e-home" bash scripts/e2e.sh
+
+  # The Python and TypeScript SDKs, the embedded bindings they can run on, and the two framework
+  # adapters (roadmap G18). Needs uv, pnpm and Node, which the two jobs above do not. No model is
+  # called and no key is needed: the adapters' tests use a stand-in model.
+  sdk:
+    name: SDKs, embedded bindings and adapters
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      # A cache of its own: beside the release build this job compiles the bindings and the
+      # scenario's test, which the end-to-end job does not.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: sdk-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: sdk-${{ runner.os }}-
+      # The embedding model (MIT), downloaded once from Hugging Face.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/models
+          key: models-${{ hashFiles('crates/memhouse-models/src/lib.rs') }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          package-manager-cache: false
+      # uv and pnpm are installed at fixed versions from their registries, with the installers the
+      # runner already has: the repository allows only GitHub's own actions and the two used
+      # above, so their setup actions cannot run here. uv fetches Python 3.12 for the adapters
+      # when the runner does not have it.
+      - name: uv and pnpm
+        run: |
+          pipx install uv==0.13.8
+          npm install --global pnpm@12.18.0
+          uv --version && pnpm --version
+      - name: build
+        run: cargo build --release -p memhouse-cli
+      - name: embedded binding for Python (build and tests)
+        run: bindings/python/test.sh
+      - name: embedded binding for Node.js (build and tests)
+        working-directory: bindings/node
+        run: pnpm install --frozen-lockfile && pnpm build && pnpm test
+      # sdk-conformance.sh starts its own Lite deployment (one SQLite file), runs the profile
+      # scenario through REST, both SDKs and both adapters, each SDK's tests, and the scenario
+      # once more over the embedded bindings built above.
+      - name: SDK conformance, over HTTP and embedded
+        env:
+          BIN: ./target/release/memhouse
+          MEMHOUSE_MODEL_CACHE: ${{ runner.temp }}/models
+        run: MEMHOUSE_HOME="$RUNNER_TEMP/sdk-home" bash scripts/sdk-conformance.sh --embedded

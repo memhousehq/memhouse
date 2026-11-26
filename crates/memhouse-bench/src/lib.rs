@@ -7,6 +7,7 @@ mod api_checks;
 pub mod baselines;
 mod conformance_checks;
 pub mod datasets;
+mod embedded_checks;
 mod eval_checks;
 mod footprint;
 pub mod governance;

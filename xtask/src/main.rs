@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Development tasks for MemHouse (goals G01 and G02 of docs/roadmap.md).
 //!
-//! `cargo xtask ci` is the one local CI entry point: fmt, licence headers, secret scan,
-//! dependency policy, clippy, unit tests, release build, the end-to-end script, and the benchmark
+//! `cargo xtask ci` is the one local CI entry point: fmt, licence headers, secret scan, the
+//! generated SDK clients, dependency policy, clippy, unit tests, release build, the end-to-end script, and the benchmark
 //! guard (which includes the governance suite). It stops at the first failing step.
 //! `cargo xtask install-hooks` runs the secret scan before every commit, checks the DCO sign-off on
 //! every commit message, and runs the CI before every `git push`.
 
 mod links;
+mod sdk;
 mod secrets;
 mod spdx;
 
@@ -19,9 +20,9 @@ const USAGE: &str = "\
 usage: cargo xtask <task> [options]
 
 tasks:
-  ci              fmt, SPDX headers, secret scan, cargo-deny, clippy, tests, release build, e2e, benchmark guard
+  ci              fmt, SPDX headers, links, secret scan, generated SDK clients, cargo-deny, clippy, tests, release build, e2e, benchmark guard
     --tier <n>      guard tier: 1 (default, free) or 2 (adds cached enrichment, ~$0.01)
-    --fix           apply rustfmt and add missing SPDX headers instead of checking them
+    --fix           apply rustfmt, add missing SPDX headers and regenerate the SDK clients instead of checking them
     --skip-e2e      skip scripts/e2e.sh (no Docker needed)
     --skip-guard    skip the benchmark guard (no benchmark database needed)
     --skip-latency  report the guard's timings without failing on them (a machine known to be busy);
@@ -29,6 +30,8 @@ tasks:
   spdx [--fix]    check (or add) SPDX licence identifiers
   links           check relative links and #anchors in the Markdown docs
     --external      also list the external links (not fetched)
+  sdk [--check]   write the generated SDK clients from api/openapi.json (sdk/python, sdk/typescript),
+                  or check that the ones on disk are up to date
   secrets         scan for credentials: the working tree (default), --staged changes, or the whole --history
     --repo <path>   scan another repository (e.g. ../other-repo)
   install-hooks   pre-commit secret scan, commit-msg DCO check, pre-push `cargo xtask ci`
@@ -48,6 +51,7 @@ fn main() -> ExitCode {
         Some("ci") => ci(&root, &args[1..]),
         Some("spdx") => spdx_task(&root, args[1..].iter().any(|a| a == "--fix")),
         Some("links") => links_task(&root, args[1..].iter().any(|a| a == "--external")),
+        Some("sdk") => sdk_task(&root, &args[1..]),
         Some("secrets") => secrets_task(&root, &args[1..]),
         Some("install-hooks") => install_hooks(&root, &args[1..]),
         _ => {
@@ -120,6 +124,11 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
         let t = Instant::now();
         let ok = report(secrets::scan_tree(root)?, "working tree").is_ok();
         record("secret scan", t, ok)?;
+        // A change to the API without regenerated SDK clients stops here (G18).
+        eprintln!("\n== generated SDK clients");
+        let t = Instant::now();
+        let ok = sdk::task(root, !fix).map_err(|e| eprintln!("{e}")).is_ok();
+        record("generated SDKs", t, ok)?;
         if which("cargo-deny").is_none() {
             eprintln!("\n== dependency policy\ncargo-deny is not installed: `cargo install cargo-deny --locked`");
             record("dependency policy", Instant::now(), false)?;
@@ -208,6 +217,14 @@ fn spdx_task(root: &Path, fix: bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{} file(s) with a missing or wrong SPDX licence identifier", problems.len()))
+    }
+}
+
+fn sdk_task(root: &Path, args: &[String]) -> Result<(), String> {
+    match args {
+        [] => sdk::task(root, false),
+        [flag] if flag == "--check" => sdk::task(root, true),
+        _ => Err(format!("unknown option for sdk\n{USAGE}")),
     }
 }
 

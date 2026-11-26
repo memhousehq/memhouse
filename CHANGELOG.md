@@ -106,6 +106,12 @@ path from 0.x data other than export and import.
   scenario through REST, MCP and the command line and requires the same outcomes. `revise`,
   `forget` and `ingest` take `--json` on the command line. See
   [docs/conformance.md](docs/conformance.md).
+- Python and TypeScript SDKs (`sdk/python`, `sdk/typescript`), generated from the OpenAPI
+  document, with lifecycle hooks that only call the API; MemHouse embedded in a Python or Node
+  process (`bindings/python`, `bindings/node`): the whole REST API in process, with the same
+  authentication, write gate and audit; adapters for the OpenAI Agents SDK and LangGraph. The
+  profile scenario gives the same outcomes through each. Packages are not published yet. See
+  [docs/sdk.md](docs/sdk.md).
 - A proposal that fails and will be retried always keeps its content in the intake queue (found
   by the queue's kit).
 - Identifiers and words are matched with Unicode letter classes ("Č-1001" is an identifier).

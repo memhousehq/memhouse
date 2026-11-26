@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "memhouse-lite-python"
+description = "MemHouse Lite embedded in a Python process: the REST API in process, with the same governance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "memhouse_lite_python"
+crate-type = ["cdylib"]
+# An extension module links against the interpreter that loads it: nothing here runs as a
+# Rust test. The tests are in tests/ (pytest).
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+memhouse-server.workspace = true
+tokio.workspace = true
+# `extension-module`: never link libpython, in any build of the workspace (`cargo build`,
+# `cargo clippy`, `cargo test --workspace`), not only under maturin. Its known cost, Rust tests
+# that cannot link, does not apply: this crate has none.
+pyo3 = { version = "0.30", features = ["abi3-py39", "extension-module"] }
+
+[build-dependencies]
+pyo3-build-config = "0.30"
