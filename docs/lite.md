@@ -119,7 +119,9 @@ main()
   keep the file open, for a moment after `close()` has resolved; in Python it is cut off when
   the native threads end and is run again the next time the deployment is open. Nothing is
   lost either way. Send the last writes with `wait: true` to have their outcome before you
-  close.
+  close. That wait is bounded by `[intake] wait_timeout_ms` (ten seconds by default): a write
+  still being processed then is answered as `candidate` and finished the same way, so an
+  answer of `candidate` after a wait that long is not yet the outcome.
 
 **Building.** Nothing is published yet: wheels and npm packages for each platform are release
 work, planned with the packaging goal. Until then the libraries are built from a checkout, and
