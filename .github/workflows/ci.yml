@@ -137,17 +137,19 @@ jobs:
         with:
           path: ${{ runner.temp }}/models
           key: models-${{ hashFiles('crates/memhouse-models/src/lib.rs') }}
-      # uv fetches Python 3.12 for the adapters when the runner does not have it.
-      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
-        with:
-          enable-cache: false
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        with:
-          version: 12
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 20
           package-manager-cache: false
+      # uv and pnpm are installed at fixed versions from their registries, with the installers the
+      # runner already has: the repository allows only GitHub's own actions and the two used
+      # above, so their setup actions cannot run here. uv fetches Python 3.12 for the adapters
+      # when the runner does not have it.
+      - name: uv and pnpm
+        run: |
+          pipx install uv==0.13.8
+          npm install --global pnpm@12.18.0
+          uv --version && pnpm --version
       - name: build
         run: cargo build --release -p memhouse-cli
       - name: embedded binding for Python (build and tests)

@@ -1878,6 +1878,10 @@ after ten seconds is cancelled and its job run again after its lease, and a canc
 answered just before it is finished on a task of the engine's own, which `close()` does not
 wait for.
 
+**Hosted job fix (2026-11-26):** the hosted `ci` workflow did not start on this pull request:
+the repository allows only GitHub's own actions and two others, and the new job used the setup
+actions of uv and pnpm. The job now installs both at fixed versions with `pipx` and `npm`.
+
 #### G19 — Coding template v1
 
 - [ ] **Done**
