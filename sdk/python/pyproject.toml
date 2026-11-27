@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [project]
 name = "memhouse"
-version = "2.0.0rc1"
+version = "2.0.0rc2"
 description = "Python SDK for MemHouse, a governed memory service for AI agents: a client generated from the OpenAPI specification, and lifecycle hooks that only call the API"
 readme = "README.md"
 license = "Apache-2.0"
