@@ -351,8 +351,9 @@ impl Repo {
         std::fs::create_dir_all(dir)?;
         reclaim_parts(path, ABANDONED_AFTER);
         let (part, mut file) = part_file(path)?;
+        // `file` stays open, and with it the lock that tells `reclaim_parts` in another
+        // process that this download is alive, until the file has its final name.
         let copied = resp.copy_to(&mut file).map_err(anyhow::Error::from).and_then(|_| file.flush().map_err(anyhow::Error::from));
-        drop(file);
         let checked = copied.and_then(|_| match self.expect.sha256.get(name) {
             Some(expected) => verify_file(&part, &self.model, name, expected).context("the download was discarded; nothing was added to the cache"),
             None => Ok(()),
@@ -362,6 +363,7 @@ impl Repo {
             return Err(e);
         }
         std::fs::rename(&part, path)?;
+        drop(file);
         if let Some(expected) = self.expect.sha256.get(name) {
             first_time(&VERIFIED, (path.to_path_buf(), expected.clone()));
         }
@@ -373,14 +375,21 @@ impl Repo {
 /// process id is not enough to tell two downloads apart: in a container every server is
 /// process 1, and two replicas that share a model cache (one volume) would write to, and
 /// then remove, each other's file. The name also carries the time, and the file is created
-/// exclusively, so two processes can never hold the same one.
+/// exclusively, so two processes can never hold the same one. The file comes back locked:
+/// the lock lasts as long as the handle and is what [`reclaim_parts`] asks about.
+// `File::try_lock` is in the standard library since 1.89; the workspace asks for 1.94.
+#[allow(clippy::incompatible_msrv)]
 fn part_file(path: &Path) -> anyhow::Result<(PathBuf, std::fs::File)> {
     let stem = part_stem(path);
     for attempt in 0..100u32 {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let part = path.with_file_name(format!("{stem}{}-{nanos:x}-{attempt}", std::process::id()));
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&part) {
-            Ok(file) => return Ok((part, file)),
+            Ok(file) => {
+                // Best effort: a filesystem without locks leaves the age rule alone to decide.
+                let _ = file.try_lock();
+                return Ok((part, file));
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e).with_context(|| format!("creating {}", part.display())),
         }
@@ -399,9 +408,12 @@ const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(60 *
 /// Remove the download files of `path` that no process is writing any more. Every download
 /// has a file of its own since [`part_file`], so one that was killed (a container restarted
 /// during a model fetch) leaves its file behind, and a cache on a volume would fill with
-/// them. A download in progress writes to its file all the time, so a file untouched for
-/// `older_than` is abandoned; one written more recently is another replica's and is left
-/// alone. Best effort: what cannot be read or removed stays.
+/// them. A file is removed only when both hold: it was not written to for `older_than`, and
+/// its lock can be taken, so the process that made it is gone. A download that stalled for
+/// longer than that but is still alive (another replica's, on a shared volume) keeps its
+/// lock until its file is checked and renamed, and is left alone. Best effort: what cannot
+/// be read, locked or removed stays.
+#[allow(clippy::incompatible_msrv)]
 fn reclaim_parts(path: &Path, older_than: std::time::Duration) {
     let (Some(dir), stem) = (path.parent(), part_stem(path)) else { return };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -410,7 +422,11 @@ fn reclaim_parts(path: &Path, older_than: std::time::Duration) {
             continue;
         }
         let idle = entry.metadata().and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok());
-        if idle.is_some_and(|idle| idle >= older_than) {
+        if !idle.is_some_and(|idle| idle >= older_than) {
+            continue;
+        }
+        let Ok(file) = std::fs::OpenOptions::new().write(true).open(entry.path()) else { continue };
+        if file.try_lock().is_ok() {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -431,6 +447,9 @@ mod tests {
         old_file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60)).unwrap();
         drop(old_file);
         let (live, _live_file) = part_file(&target).unwrap();
+        // A download that stalled for two hours and is still alive: old, but its lock is held.
+        let (stalled, stalled_file) = part_file(&target).unwrap();
+        stalled_file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60)).unwrap();
         let other = root.join("model_optimized.part1-0-0");
         let unrelated = root.join("tokenizer.json");
         for f in [&other, &unrelated] {
@@ -440,6 +459,11 @@ mod tests {
         reclaim_parts(&target, ABANDONED_AFTER);
         assert!(!old.exists(), "the abandoned file is still there");
         assert!(live.exists() && other.exists() && unrelated.exists());
+        assert!(stalled.exists(), "an old file whose download is alive was removed");
+        // Once that download is gone, its file is reclaimed.
+        drop(stalled_file);
+        reclaim_parts(&target, ABANDONED_AFTER);
+        assert!(!stalled.exists(), "the file of a download that ended is still there");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

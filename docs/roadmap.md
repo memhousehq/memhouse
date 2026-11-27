@@ -2645,7 +2645,9 @@ hosted checks; what changed:
   ([development.md](development.md#build)).
 - **Model downloads.** A download file not written to for an hour is removed by the next
   download of that file, so a container restarting during a fetch no longer fills the cache;
-  a file another replica is writing is recent and stays (unit test).
+  a file another replica is writing is recent and stays (unit test). A download also holds
+  a lock on its file until it is checked and renamed, and only a file whose lock can be
+  taken is removed: one that stalled for longer than an hour but is alive is left (tested).
 - **Helm.** Whole numbers from a values file reached the configuration as floats
   (`max_connections = 32.0`, which stops the server): the chart turns them back into
   integers, and `helm-check.sh` renders a values file with numbers. Its hardening assertions
