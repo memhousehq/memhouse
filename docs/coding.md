@@ -333,7 +333,8 @@ words are added.
   `--key-file` and `--subject` with their values. A group of another program with the same
   words, one where the hook is chained with a command of yours (`... && ./lint.sh`), or one
   you gave another option (`--timeout-ms 700`), is left as it is, and the new group is added
-  beside it: remove the old one yourself.
+  beside it: remove the old one yourself. A group that is ours is written anew with the
+  installer's `matcher` and `timeout`: a value you changed there is not kept.
 - **The post-commit summary is per commit.** A memory flagged by one part of a large commit
   and cleared by another is counted as neither.
 - **Any writer can report a hash.** A key with `memory:write` in the repository's subject can

@@ -2130,6 +2130,11 @@ round's commit, each checked against the code; what changed:
 **Review fixes, third round (2026-11-27, pull request 39):** the findings on the second
 round's commit; what changed:
 
+**Review fixes, fourth round (2026-11-27):** labels are compared as sets, so a repeat that
+names a label twice still counts on its held record. Declined: keeping a `matcher` or
+`timeout` the user changed on a hook group the installer owns; a reinstall writes its own
+values, which the guide now says.
+
 - **A held record is matched by a write with its own labels** (GOV-02). The lookup of held
   signals, corrections and plans (`Held.labels`, in both stores, before the limit), the
   pipeline's comparison and the update that counts, confirms or commits the record all

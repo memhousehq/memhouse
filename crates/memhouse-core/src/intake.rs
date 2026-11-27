@@ -116,9 +116,25 @@ pub struct IntakeJob {
     pub attempts: i32,
 }
 
-/// Whether two records carry the same labels, in any order.
+/// Whether two records carry the same set of labels: in any order, a label given twice
+/// counting once.
 pub fn same_labels(a: &[String], b: &[String]) -> bool {
-    a.len() == b.len() && a.iter().all(|l| b.contains(l)) && b.iter().all(|l| a.contains(l))
+    a.iter().all(|l| b.contains(l)) && b.iter().all(|l| a.contains(l))
+}
+
+#[cfg(test)]
+mod same_labels_tests {
+    use super::same_labels;
+
+    #[test]
+    fn labels_are_compared_as_sets() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(same_labels(&l(&["code"]), &l(&["code", "code"])));
+        assert!(same_labels(&l(&["a", "b"]), &l(&["b", "a"])));
+        assert!(same_labels(&[], &[]));
+        assert!(!same_labels(&l(&["a"]), &l(&["a", "b"])));
+        assert!(!same_labels(&l(&["a"]), &[]));
+    }
 }
 
 /// One audit event written with an insert.
