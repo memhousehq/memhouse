@@ -47,6 +47,12 @@ pub fn headings(text: &str) -> Vec<(String, String)> {
                     h.push_str(&t);
                 }
             }
+            // A heading written over two lines is one title, with a space where the line ends.
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(h) = heading.as_mut() {
+                    h.push(' ');
+                }
+            }
             Event::End(TagEnd::Heading(_)) => {
                 let title = heading.take().unwrap_or_default();
                 let base = slug(&title);

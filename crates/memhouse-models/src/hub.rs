@@ -402,6 +402,17 @@ fn part_stem(path: &Path) -> String {
     format!("{}.part", path.file_stem().and_then(|s| s.to_str()).unwrap_or("download"))
 }
 
+/// Whether `name` is a download file of this stem as [`part_file`] names them:
+/// `<stem><process id>-<time in hex>-<attempt>`. A file that merely starts the same way
+/// (`model.partial.onnx` beside `model.onnx`) is somebody's data and is never removed.
+fn is_part_name(name: &str, stem: &str) -> bool {
+    let Some(rest) = name.strip_prefix(stem) else { return false };
+    let mut fields = rest.split('-');
+    let (Some(pid), Some(time), Some(attempt), None) = (fields.next(), fields.next(), fields.next(), fields.next()) else { return false };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    digits(pid) && digits(attempt) && !time.is_empty() && time.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// A download file not written to for this long was left by a process that is gone.
 const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
@@ -418,7 +429,7 @@ fn reclaim_parts(path: &Path, older_than: std::time::Duration) {
     let (Some(dir), stem) = (path.parent(), part_stem(path)) else { return };
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
-        if !entry.file_name().to_str().is_some_and(|name| name.starts_with(&stem)) {
+        if !entry.file_name().to_str().is_some_and(|name| is_part_name(name, &stem)) {
             continue;
         }
         let idle = entry.metadata().and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok());
@@ -452,13 +463,16 @@ mod tests {
         stalled_file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60)).unwrap();
         let other = root.join("model_optimized.part1-0-0");
         let unrelated = root.join("tokenizer.json");
-        for f in [&other, &unrelated] {
+        // A completed file whose name only starts like a download file's.
+        let lookalike = root.join("model.partial.onnx");
+        for f in [&other, &unrelated, &lookalike] {
             let file = std::fs::File::create(f).unwrap();
             file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60)).unwrap();
         }
         reclaim_parts(&target, ABANDONED_AFTER);
         assert!(!old.exists(), "the abandoned file is still there");
         assert!(live.exists() && other.exists() && unrelated.exists());
+        assert!(lookalike.exists(), "a file that is not a download file was removed");
         assert!(stalled.exists(), "an old file whose download is alive was removed");
         // Once that download is gone, its file is reclaimed.
         drop(stalled_file);

@@ -772,11 +772,18 @@ jobs:
           # A release that exists (an earlier attempt, a draft it left) is completed, never
           # rewritten: a file already there with the same digest is left alone, a missing one is
           # uploaded, and one that differs stops the job. Nothing published is deleted.
-          gh release view "$TAG" --json assets --jq '.assets[] | [.name, (.digest // "")] | @tsv' >"$RUNNER_TEMP/assets.tsv"
+          # An upload that failed can leave an empty asset in state "starter": that one, and
+          # only that one, is removed and uploaded again.
+          gh release view "$TAG" --json assets --jq '.assets[] | [.name, (.digest // ""), (.state // ""), .apiUrl] | @tsv' >"$RUNNER_TEMP/assets.tsv"
           for file in dist/*; do
             name=$(basename "$file")
             have=$(awk -F '\t' -v n="$name" '$1 == n { print ($2 == "" ? "unknown" : $2) }' "$RUNNER_TEMP/assets.tsv")
+            state=$(awk -F '\t' -v n="$name" '$1 == n { print tolower($3) }' "$RUNNER_TEMP/assets.tsv")
             want="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            if [ "$state" = starter ]; then
+              gh api --method DELETE "$(awk -F '\t' -v n="$name" '$1 == n { print $4 }' "$RUNNER_TEMP/assets.tsv")"
+              have=""
+            fi
             if [ -z "$have" ]; then
               gh release upload "$TAG" "$file"
             elif [ "$have" != "$want" ]; then
