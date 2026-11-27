@@ -54,6 +54,16 @@ pub enum Operation {
     CodeObserve,
     /// Confirm that a stale memory still holds for its files as they are now (TPL-04).
     Revalidate,
+    /// Create, change, disable or list principals and their keys (PROF-09).
+    PrincipalManage,
+    /// Read the tenant's evaluation suites, runs and quality trend (QUAL-11).
+    EvalRead,
+    /// Read the profile advisor's report (PROF-11).
+    Advisor,
+    /// Open, read or close a console session (T3). It needs no particular permission, since
+    /// the session only carries those of its key, but a credential that carries none is
+    /// refused here as everywhere.
+    Session,
 }
 
 impl Operation {
@@ -191,12 +201,13 @@ impl ScopeAuthorizer {
             Operation::Relabel => perm::LABEL,
             Operation::Review => perm::REVIEW,
             Operation::IssueToken => perm::TOKEN,
-            Operation::Stats | Operation::Subjects | Operation::EnrichStatus | Operation::Metrics => perm::OPS,
+            Operation::Stats | Operation::Subjects | Operation::EnrichStatus | Operation::Metrics | Operation::EvalRead | Operation::Advisor => perm::OPS,
+            Operation::PrincipalManage => perm::PRINCIPAL,
             Operation::Audit => perm::AUDIT,
             Operation::PolicyRead => perm::POLICY_READ,
             Operation::PolicyPropose => perm::POLICY_PROPOSE,
             Operation::PolicyApprove => perm::POLICY_APPROVE,
-            Operation::Whoami => return None,
+            Operation::Whoami | Operation::Session => return None,
         })
     }
 }
@@ -251,6 +262,9 @@ impl Authorizer for ScopeAuthorizer {
             if !who.has(need) {
                 return deny(d, "permission", format!("{} needs {need}, which this credential doesn't carry", op.name()));
             }
+        }
+        if op == Operation::Session && who.scopes.is_empty() {
+            return deny(d, "permission", "a console session needs a credential that carries a permission; this one carries none".into());
         }
         if let Some(t) = &req.tenant {
             if *t != p.tenant {
@@ -397,6 +411,11 @@ mod tests {
         let mut r = AccessRequest::new(Operation::Recall).subject("user:x");
         r.own_partition = true;
         assert_eq!(decide(&ana, r).await.rule, "subject");
+        // A console session needs no particular permission, but not none at all.
+        assert!(decide(&agent, AccessRequest::new(Operation::Session)).await.allowed);
+        assert_eq!(decide(&none, AccessRequest::new(Operation::Session)).await.rule, "permission");
+        assert_eq!(decide(&agent, AccessRequest::new(Operation::PrincipalManage)).await.rule, "permission");
+        assert!(decide(&admin, AccessRequest::new(Operation::PrincipalManage)).await.allowed);
         // Grants are an admin's to manage.
         assert_eq!(decide(&agent, AccessRequest::new(Operation::GrantManage)).await.rule, "permission");
         assert!(decide(&admin, AccessRequest::new(Operation::GrantManage)).await.allowed);

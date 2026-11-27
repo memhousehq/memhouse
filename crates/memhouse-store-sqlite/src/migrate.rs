@@ -16,7 +16,11 @@ pub(crate) struct Step {
 
 /// In version order, without gaps. A file is upgraded by every step above its version; what a
 /// step adds is also in `schema::DDL`, which creates a new file at the current version.
-pub(crate) const STEPS: &[Step] = &[Step { to: 9, what: "the record's language", run: add_language }, Step { to: 10, what: "staleness of code references", run: add_staleness }];
+pub(crate) const STEPS: &[Step] = &[
+    Step { to: 9, what: "the record's language", run: add_language },
+    Step { to: 10, what: "staleness of code references", run: add_staleness },
+    Step { to: 11, what: "console sessions", run: add_sessions },
+];
 
 /// The oldest version the steps start from.
 pub(crate) fn oldest() -> u32 {
@@ -63,6 +67,12 @@ fn add_staleness(c: &Connection) -> anyhow::Result<()> {
             "schema upgrade: code references whose path has no canonical form (it leaves the repository with `..`, or is too long) were left as stored; they match no file report (docs/schema.md)"
         );
     }
+    Ok(())
+}
+
+/// Version 11: the table of console sessions (`mh_session`). It is a new table and starts
+/// empty, so the step has nothing to move: `schema::DDL`, run after the steps, creates it.
+fn add_sessions(_c: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -161,16 +171,76 @@ mod tests {
     }
 
     /// Take a file of this build back to logical schema version 8, which differs from the
-    /// current one by the `language` column (version 9) and the staleness columns (version 10,
-    /// `docs/schema.md`): the file a version-8 Lite build would have left.
+    /// current one by the `language` column (version 9), the staleness columns (version 10)
+    /// and the session table (version 11, `docs/schema.md`): the file a version-8 Lite build
+    /// would have left.
     fn make_version_8(path: &Path) {
         let c = Connection::open(path).unwrap();
         c.execute_batch(
             "ALTER TABLE mh_memory DROP COLUMN language; ALTER TABLE mh_memory DROP COLUMN stale_since; \
              ALTER TABLE mh_code_ref DROP COLUMN stale_since; ALTER TABLE mh_code_ref DROP COLUMN seen_hash; \
+             DROP TABLE mh_session; \
              UPDATE mh_meta SET value = '8' WHERE key = 'schema_version';",
         )
         .unwrap();
+    }
+
+    fn session(secret_hash: &str) -> memhouse_core::identity::Session {
+        let now = chrono::DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap();
+        memhouse_core::identity::Session {
+            id: secret_hash.into(),
+            tenant: "acme".into(),
+            principal_id: "admin:ada".into(),
+            key_id: "k1".into(),
+            key_check: None,
+            created_at: now,
+            expires_at: now + chrono::Duration::hours(8),
+            last_seen_at: now,
+        }
+    }
+
+    /// Version 11 adds a table and moves nothing: a version 10 file is copied, gains
+    /// `mh_session` empty, and keeps every row it had.
+    #[tokio::test]
+    async fn a_version_10_file_gains_the_session_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memhouse.db");
+        let a = record("Ada lives in Porto");
+        {
+            let store = SqliteStore::open(&path, "").unwrap();
+            store.migrate(4, EMBEDDER).await.unwrap();
+            store.insert(std::slice::from_ref(&a)).await.unwrap();
+        }
+        Connection::open(&path).unwrap().execute_batch("DROP TABLE mh_session; UPDATE mh_meta SET value = '10' WHERE key = 'schema_version';").unwrap();
+        let store = SqliteStore::open(&path, "").unwrap();
+        store.migrate(4, EMBEDDER).await.unwrap();
+        assert_eq!(version_of(&path), crate::SCHEMA_VERSION.to_string());
+        let copies = snapshots(dir.path());
+        assert_eq!((copies.len(), version_of(&copies[0]).as_str()), (1, "10"));
+        assert_eq!(store.get("acme", a.memory.id).await.unwrap().unwrap().content, "Ada lives in Porto");
+        // The table works: put, read, touch, purge by end and by idleness, delete.
+        let s = session("hash-one");
+        store.session_put(&s).await.unwrap();
+        assert_eq!(store.session_get("hash-one").await.unwrap().as_ref(), Some(&s));
+        assert!(store.session_put(&s).await.is_err(), "a session id is stored once");
+        let later = s.last_seen_at + chrono::Duration::minutes(5);
+        store.session_touch("hash-one", later).await.unwrap();
+        store.session_touch("hash-one", s.last_seen_at).await.unwrap();
+        assert_eq!(store.session_get("hash-one").await.unwrap().unwrap().last_seen_at, later, "the last use never moves back");
+        let mut ended = session("hash-ended");
+        ended.expires_at = s.created_at - chrono::Duration::seconds(1);
+        let mut idle = session("hash-idle");
+        idle.last_seen_at = s.created_at - chrono::Duration::hours(2);
+        store.session_put(&ended).await.unwrap();
+        store.session_put(&idle).await.unwrap();
+        assert_eq!(store.sessions_purge(s.created_at, None).await.unwrap(), 1);
+        assert_eq!(store.sessions_purge(s.created_at, Some(s.created_at - chrono::Duration::hours(1))).await.unwrap(), 1);
+        assert!(store.session_get("hash-one").await.unwrap().is_some());
+        assert!(store.session_delete("hash-one").await.unwrap() && !store.session_delete("hash-one").await.unwrap());
+        // Erasing the tenant ends its sessions with everything else.
+        store.session_put(&session("hash-two")).await.unwrap();
+        store.delete_tenant("acme", "test").await.unwrap();
+        assert!(store.session_get("hash-two").await.unwrap().is_none());
     }
 
     fn snapshots(dir: &Path) -> Vec<PathBuf> {

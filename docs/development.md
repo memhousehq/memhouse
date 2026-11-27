@@ -31,7 +31,7 @@ flowchart BT
     core[memhouse-core<br/>engine · types · config · gate · query · enrich · templates · traits]
     pg[memhouse-store-postgres<br/>Store impl · DDL · hybrid SQL · audit chain]
     models[memhouse-models<br/>local ONNX embedder/reranker · OpenAI-compatible embeddings · LLM client]
-    server[memhouse-server<br/>axum REST · MCP stdio + HTTP · Memory Browser]
+    server[memhouse-server<br/>axum REST · MCP stdio + HTTP · admin console]
     bench[memhouse-bench<br/>datasets · runner · metrics · governance suite · reports]
     cli[memhouse-cli<br/>the memhouse binary: up · init · connect · doctor · …]
     lite[memhouse-store-sqlite<br/>Store impl on one SQLite file · FTS5 · exact vector scan · backup]
@@ -64,7 +64,7 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (79 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier, conformance, migration, embedded-transport and coding-template checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (85 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier, conformance, migration, embedded-transport and coding-template checks are in `*_checks.rs` next to it |
 | `core/src/staleness.rs` | git-aware staleness: the rules for a file seen changed, deleted or renamed (one pure function every store applies), the git blob hash, file-touched recall and revalidation |
 | `server/src/hook.rs`, `cli/src/hook.rs` | the harness hook adapters (`memhouse hook file-opened`, `file-edited`, `post-commit`) and their installers ([coding.md](coding.md)) |
 | `store-sqlite/src/*.rs` | the Lite profile's store: schema, FTS5 and the exact half-precision vector scan, the queues, migrations with a pre-upgrade copy, backup and restore ([lite.md](lite.md)) |

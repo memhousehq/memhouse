@@ -723,6 +723,107 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
         }
         .await,
     );
+    // The admin console (G20): sessions kept by the hash of their secret, the review queue,
+    // and what the profile advisor measures.
+    r.outcome(
+        "sessions_review_queue_and_usage",
+        "a session is stored, touched, purged and deleted by its id; the review queue lists a tenant's candidates and quarantined records newest first; usage counts what the store holds",
+        async {
+            let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros()).unwrap_or_default();
+            let session = |id: &str| memhouse_core::identity::Session {
+                id: format!("{id}-{}", Uuid::new_v4().simple()),
+                tenant: t.into(),
+                principal_id: "admin:kit".into(),
+                key_id: "kit".into(),
+                key_check: Some("kid.check".into()),
+                created_at: now,
+                expires_at: now + chrono::Duration::hours(1),
+                last_seen_at: now,
+            };
+            let (live, mut ended, mut idle) = (session("live"), session("ended"), session("idle"));
+            ended.expires_at = now - chrono::Duration::seconds(1);
+            idle.last_seen_at = now - chrono::Duration::hours(3);
+            for s in [&live, &ended, &idle] {
+                store.session_put(s).await?;
+            }
+            let read = store.session_get(&live.id).await? == Some(live.clone()) && store.session_get("kit-no-such-session").await?.is_none();
+            let twice = store.session_put(&live).await.is_err();
+            store.session_touch(&live.id, now + chrono::Duration::minutes(2)).await?;
+            store.session_touch(&live.id, now).await?;
+            let touched = store.session_get(&live.id).await?.is_some_and(|s| s.last_seen_at == now + chrono::Duration::minutes(2));
+            let by_end = store.sessions_purge(now, None).await?;
+            let by_idle = store.sessions_purge(now, Some(now - chrono::Duration::hours(2))).await?;
+            let kept = store.session_get(&live.id).await?.is_some() && store.session_get(&ended.id).await?.is_none() && store.session_get(&idle.id).await?.is_none();
+            let deleted = store.session_delete(&live.id).await? && !store.session_delete(&live.id).await?;
+            let sessions = read && twice && touched && by_end == 1 && by_idle == 1 && kept && deleted;
+
+            // The queue: records in the asked states, of the tenant, newest first, by keyset.
+            let queue = "review:kit";
+            let before = store.usage(t).await?;
+            let mut made = vec![];
+            for (i, status) in [MemoryStatus::Quarantined, MemoryStatus::Candidate, MemoryStatus::Committed, MemoryStatus::Quarantined].into_iter().enumerate() {
+                let mut n = NewMemory::new(
+                    Memory {
+                        id: Uuid::now_v7(),
+                        tenant: t.into(),
+                        subject: queue.into(),
+                        kind: MemoryKind::Semantic,
+                        status,
+                        content: format!("review queue record {i}"),
+                        session_id: None,
+                        turn_ref: None,
+                        occurred_at: None,
+                        valid_from: now,
+                        valid_to: None,
+                        supersedes: None,
+                        labels: vec![],
+                        tags: vec![],
+                        source: "conformance".into(),
+                        confidence: 1.0,
+                        metadata: serde_json::json!({}),
+                        created_at: now + chrono::Duration::milliseconds(i as i64),
+                        expires_at: None,
+                        scope: Scope::default(),
+                        provenance: Provenance::default(),
+                        language: None,
+                        stale_since: None,
+                    },
+                    memhouse_core::engine::content_hash(&format!("review queue record {i}")),
+                );
+                n.embedding = Some(vec![1.0; DIM]);
+                made.push(n.memory.id);
+                store.insert(&[n]).await?;
+            }
+            let both = [MemoryStatus::Candidate, MemoryStatus::Quarantined];
+            let ids = |ms: &[Memory]| ms.iter().map(|m| m.id).collect::<Vec<_>>();
+            let all = store.review_queue(t, &both, Some(queue), None, 10).await?;
+            let first = store.review_queue(t, &both, None, None, 2).await?;
+            let rest = match first.last() {
+                Some(m) => store.review_queue(t, &both, Some(queue), Some((m.created_at, m.id)), 10).await?,
+                None => vec![],
+            };
+            let quarantined = store.review_queue(t, &[MemoryStatus::Quarantined], Some(queue), None, 10).await?;
+            let foreign = store.review_queue("kit-someone-else", &both, None, None, 10).await?;
+            let queued = ids(&all) == vec![made[3], made[1], made[0]]
+                && ids(&first) == vec![made[3], made[1]]
+                && ids(&rest) == vec![made[0]]
+                && ids(&quarantined) == vec![made[3], made[0]]
+                && foreign.is_empty();
+            let after = store.usage(t).await?;
+            let counted = after.records == before.records + 4 && after.writes_last_hour >= 4 && after.largest_subject.as_ref().is_some_and(|(_, n)| *n >= 4);
+            Ok(unless(sessions && queued && counted, || {
+                format!(
+                    "session read back: {read}; a second put of its id refused: {twice}; last use moved forward only: {touched}; purged {by_end} past its end and {by_idle} idle (expected 1 and 1); the live one kept: {kept}; deleted once: {deleted}; the queue: {:?}, first page {:?}, rest {:?}, quarantined {:?}, another tenant {} (made {made:?}); usage {before:?} then {after:?}",
+                    ids(&all),
+                    ids(&first),
+                    ids(&rest),
+                    ids(&quarantined),
+                    foreign.len()
+                )
+            }))
+        }
+        .await,
+    );
     // Leave the store as it was found, apart from its audit log.
     let _ = e.forget_by(ForgetRequest { tenant: Some(tenant.clone()), all: true, confirm: Some(tenant.clone()), actor: Some("conformance".into()), ..Default::default() }).await;
     r

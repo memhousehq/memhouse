@@ -12,7 +12,7 @@ that the Scale profile can replace adapters, not rewrite the engine (TR-CORE-01)
 | Engine | `memhouse-core::Engine` | One implementation of write gate, routing, ranking, supersession, deletion and audit events. Every transport (REST, MCP stdio, MCP HTTP, CLI, benchmark) calls it. |
 | Store adapter | `memhouse-store-postgres` | Implements the `Store` trait. Sharded Postgres and an embedded store can be added behind the same trait. |
 | Model adapters | `memhouse-models` | `Embedder` / `Reranker` traits: local ONNX (offline), any OpenAI-compatible endpoint. |
-| Gateway | `memhouse-server` | axum REST and MCP-over-HTTP, bearer-key auth, Memory Browser page. |
+| Gateway | `memhouse-server` | axum REST and MCP-over-HTTP, bearer-key auth, the [admin console](console.md)'s pages and session. |
 | MCP stdio | `memhouse-server::mcp` | JSON-RPC 2.0, protocol 2025-06-18 (also accepts 2025-03-26 and 2024-11-05). |
 | Validation tool | `memhouse-bench` | Public datasets, governance gates, statistics, reports. |
 

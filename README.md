@@ -23,7 +23,7 @@ That's the whole setup. There are no API keys to obtain and no cloud account. Em
 |---|---|
 | **Easy** | One binary. `memhouse up` starts a managed Postgres in Docker, writes `~/.memhouse/config.toml`, downloads a small local embedding model and migrates the schema (about 15 seconds on a laptop). `memhouse connect <agent>` writes the agent's MCP config and verifies a real recall through it. |
 | **Governed** | Every write passes a deterministic write gate: secrets, card numbers, SSNs and IBANs are redacted before storage. Prompt-injection attempts are quarantined, never recalled. Writes, updates and deletions go into a hash-chained, tamper-evident audit log. Deletion removes the record, its cached embedding and every recall path, and is recorded in a deletion ledger. |
-| **Measurable** | `memhouse bench` runs LongMemEval and LoCoMo through the same engine your agents use, plus 79 governance checks. It reports confidence intervals, latency percentiles and published reference results side by side. |
+| **Measurable** | `memhouse bench` runs LongMemEval and LoCoMo through the same engine your agents use, plus 85 governance checks. It reports confidence intervals, latency percentiles and published reference results side by side. |
 | **Multilingual** | The rules that read statements, questions and injection attempts are data: one [language pack](docs/languages.md) per language. Packs for the 24 official EU languages are built in (English is reviewed; the others are drafts with test sets), several can be enabled at once, and you can add your own. |
 | **Yours** | Plain Postgres (16+) with pgvector. Point it at your own database with `memhouse init --database-url ...`. Export everything as JSONL at any time. |
 | **Made for customer-facing teams** | Templates for `support`, `sales` and `success` (plus `coding` and `personal`) set how subjects are named, what gets remembered and how the agent is instructed. |
@@ -81,7 +81,7 @@ The MCP `instructions` field tells the agent how to use memory for the active te
 ## Use it from code (REST)
 
 ```bash
-memhouse serve                                   # http://127.0.0.1:7077, Memory Browser at /
+memhouse serve                                   # http://127.0.0.1:7077, admin console at /
 KEY=$(memhouse key)
 curl -s localhost:7077/v1/remember -H "authorization: Bearer $KEY" -H "content-type: application/json" \
   -d '{"subject":"customer:acme","content":"Acme is on the Enterprise plan; renewal due 2027-03-01","kind":"semantic","tags":["plan"]}'
@@ -237,7 +237,7 @@ memhouse down                    # stop the container; data stays in the Docker 
 | `memhouse-core` | Engine: types, config, write gate, ranking, templates, adapter traits |
 | `memhouse-store-postgres` | Postgres adapter: schema, single-statement hybrid recall, audit chain, deletion ledger |
 | `memhouse-models` | Local ONNX embedder and reranker, OpenAI-compatible embeddings, chat client for the benchmark |
-| `memhouse-server` | REST API, MCP (stdio + HTTP), Memory Browser |
+| `memhouse-server` | REST API, MCP (stdio + HTTP), the [admin console](docs/console.md) |
 | `memhouse-bench` | Datasets, runner, metrics, governance suite, reports |
 | `memhouse-cli` | The `memhouse` binary |
 

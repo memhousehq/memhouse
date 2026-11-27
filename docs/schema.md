@@ -5,7 +5,7 @@ This is the data model every MemHouse store holds, independent of how a store la
 (TR-CORE-04). The Postgres store maps it to the tables at the end; the Lite store (G16) will map
 the same model to SQLite. Exports carry exactly this model ([Memory Format v2](memory-format.md)).
 
-Schema version **10** (`mh_meta.schema_version`). Version 1 to 9 databases upgrade in place on
+Schema version **11** (`mh_meta.schema_version`). Version 1 to 10 databases upgrade in place on
 start-up; see [Upgrading from v1](#upgrading-from-v1). Version 3 added the identity tables
 (principals, API keys, token signing keys), version 4 the recall explanations, version 5 the
 policy specs and their activations, version 6 the write pipeline's intake queue, version 7
@@ -18,7 +18,8 @@ paths of stored references in the one form they are matched in (`./src//a.rs` be
 `src/a.rs`; of two references of a record to one file, the one already in that form is kept).
 On Postgres a trigger on `mh_code_ref` keeps new rows in that form too, so a version 9
 process still running during a rolling upgrade cannot store another spelling; a Lite file is
-opened by one build at a time, and an older build refuses a newer file.
+opened by one build at a time, and an older build refuses a newer file. Version 11 added the
+[console sessions](#session): one new table, which is not memory and is not exported.
 
 A stored path that has no such form is left as it is. With `\` read as `/`, that is a path
 with a `..` segment (`../x`, `src/../a.rs`), a path with nothing but empty and `.` segments
@@ -211,6 +212,27 @@ was seen before returns the stored response if the request is the same, and fail
 (CORE-06). Erasing the subject removes its keys. Exactly-once under concurrent repeats of the same
 key arrives with the intake queue (G10).
 
+## Session
+
+`{id, tenant, principal_id, key_id, key_check, created_at, expires_at, last_seen_at}` (v11): a
+session of the [admin console](console.md), opened by presenting an API key once (threat
+model T3).
+
+- `id` is the SHA-256 of the session's secret. The secret itself is only in the browser's
+  cookie, so a reader of the database cannot use a session.
+- `key_id` is the key that opened it, or `admin:bootstrap`. Every request made with the
+  session is checked against that key and its principal: a revoked or expired key, or a
+  disabled principal, ends the session. For a bootstrap key, which has no row to revoke,
+  `key_check` holds an HMAC of the key under a token signing key, so the session ends when
+  that key leaves the configuration.
+- `last_seen_at` is written at most once a minute per session.
+- **A row exists only while its session can be used.** Logging out deletes it; so does
+  presenting it past `expires_at` or past the idle limit, and the hourly retention pass
+  removes the ones nobody came back for. Erasing a tenant deletes its sessions.
+- It holds no memory content and no subject data: a principal id, a key id and three times.
+  It is not exported and not migrated between profiles (`memhouse migrate`): after a
+  migration, log in again.
+
 ## Postgres mapping
 
 | Logical | Postgres |
@@ -229,6 +251,7 @@ key arrives with the intake queue (G10).
 | Intake queue (v6, not exported) | `mh_intake` (the proposal's id, a `seq` for per-subject order, tenant, subject, record ids, writer, user, source and scope for erasure, `status` `pending`, `running`, `done` or `dead`, attempts, lease, the redacted proposal as JSON until it is stored, its outcome, error, embedder with the same guard trigger as `mh_memory`); erased with the subject or tenant, by user, agent or source, pruned after `intake.keep_done_secs` |
 | Evaluation (v8, not exported) | `mh_eval_suite` (tenant, name, hash, the suite as JSON, who added it) and `mh_eval_run` (id, tenant, suite, suite hash, policy version, trigger, the run as JSON: counts, metrics, per-conversation counts, record outcomes, engine fingerprint); erased with the tenant ([evaluation.md](evaluation.md)) |
 | Grants (v7, not exported) | `mh_grant` (id, tenant, grantor and grantee agents, subject pattern, kinds, who created it, expiry, revocation); erased with the tenant. v7 also adds two partial indexes on `mh_memory`: on `metadata -> 'promoted_from'` (what was promoted from a record) and on `(tenant, subject, scope_session)` (a session's records) |
+| Console sessions (v11, not exported, not migrated) | `mh_session` (sha256 of the session secret, tenant, principal, the key that opened it, a check value for a bootstrap key, created, expires, last seen); deleted at logout, at expiry, by the retention pass and with the tenant |
 | Identity (v3, not exported) | `mh_principal` (kind, tenant, subjects, kinds, denied labels, org, team, `can_commit`, `act_as`), `mh_api_key` (sha256 of the secret, permissions, expiry, revocation), `mh_signing_key` (token signing secrets) |
 
 ## Changing the schema

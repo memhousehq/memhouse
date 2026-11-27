@@ -397,6 +397,24 @@ CREATE OR REPLACE TRIGGER mh_code_ref_canonical_path BEFORE INSERT OR UPDATE OF 
   FOR EACH ROW EXECUTE FUNCTION mh_code_ref_canonical_path();
 "#;
 
+/// Schema v11 (G20): console sessions (threat model T3). Only the sha256 of a session's secret
+/// is kept. A row exists while its session can be used: logout, expiry and the retention pass
+/// delete it. Expand-only: a new table that a version 10 process never reads. No reference to
+/// `mh_principal`: the bootstrap principal has no row there.
+const SCHEMA_V11_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS mh_session (
+  id           text PRIMARY KEY,
+  tenant       text NOT NULL,
+  principal_id text NOT NULL,
+  key_id       text NOT NULL,
+  key_check    text,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS mh_session_expires_idx ON mh_session (expires_at);
+"#;
+
 /// Schema v9 (G36): the language of each record, and a keyword index in that language's
 /// text-search configuration. Expand-only: `tsv` (the `english` index) stays on every row;
 /// `tsv_lang` is filled, by the trigger, only for a record whose language has another
@@ -563,6 +581,19 @@ fn row_to_key(r: &PgRow) -> anyhow::Result<memhouse_core::identity::ApiKey> {
         revoked_at: r.try_get("revoked_at")?,
         created_at: r.try_get("created_at")?,
         created_by: r.try_get("created_by")?,
+    })
+}
+
+fn row_to_session(r: &PgRow) -> anyhow::Result<memhouse_core::identity::Session> {
+    Ok(memhouse_core::identity::Session {
+        id: r.try_get("id")?,
+        tenant: r.try_get("tenant")?,
+        principal_id: r.try_get("principal_id")?,
+        key_id: r.try_get("key_id")?,
+        key_check: r.try_get("key_check")?,
+        created_at: r.try_get("created_at")?,
+        expires_at: r.try_get("expires_at")?,
+        last_seen_at: r.try_get("last_seen_at")?,
     })
 }
 
@@ -1662,6 +1693,7 @@ impl Store for PgStore {
         sqlx::raw_sql(SCHEMA_V8_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V9_DDL).execute(&self.pool).await?;
         sqlx::raw_sql(SCHEMA_V10_DDL).execute(&self.pool).await?;
+        sqlx::raw_sql(SCHEMA_V11_DDL).execute(&self.pool).await?;
         for (k, v) in [
             ("schema_version", SCHEMA_VERSION.to_string()),
             ("embedding_dim", dim.to_string()),
@@ -2595,6 +2627,76 @@ impl Store for PgStore {
             .collect()
     }
 
+    async fn session_put(&self, s: &memhouse_core::identity::Session) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO mh_session (id, tenant, principal_id, key_id, key_check, created_at, expires_at, last_seen_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
+            .bind(&s.id)
+            .bind(&s.tenant)
+            .bind(&s.principal_id)
+            .bind(&s.key_id)
+            .bind(&s.key_check)
+            .bind(s.created_at)
+            .bind(s.expires_at)
+            .bind(s.last_seen_at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn session_get(&self, id: &str) -> anyhow::Result<Option<memhouse_core::identity::Session>> {
+        sqlx::query("SELECT * FROM mh_session WHERE id = $1").bind(id).fetch_optional(&self.pool).await?.as_ref().map(row_to_session).transpose()
+    }
+
+    async fn session_touch(&self, id: &str, at: DateTime<Utc>) -> anyhow::Result<()> {
+        sqlx::query("UPDATE mh_session SET last_seen_at = greatest(last_seen_at, $2) WHERE id = $1").bind(id).bind(at).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn session_delete(&self, id: &str) -> anyhow::Result<bool> {
+        Ok(sqlx::query("DELETE FROM mh_session WHERE id = $1").bind(id).execute(&self.pool).await?.rows_affected() > 0)
+    }
+
+    async fn sessions_purge(&self, now: DateTime<Utc>, idle_before: Option<DateTime<Utc>>) -> anyhow::Result<u64> {
+        Ok(sqlx::query("DELETE FROM mh_session WHERE expires_at <= $1 OR ($2::timestamptz IS NOT NULL AND last_seen_at <= $2)")
+            .bind(now)
+            .bind(idle_before)
+            .execute(&self.pool)
+            .await?
+            .rows_affected())
+    }
+
+    async fn review_queue(
+        &self,
+        tenant: &str,
+        statuses: &[MemoryStatus],
+        subject: Option<&str>,
+        before: Option<(DateTime<Utc>, Uuid)>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Memory>> {
+        let statuses: Vec<&str> = statuses.iter().map(|s| s.as_str()).collect();
+        let rows = sqlx::query(trusted_sql!(
+            "SELECT {COLS} FROM mh_memory m WHERE m.tenant = $1 AND m.status = ANY($2) AND ($3::text IS NULL OR m.subject = $3) \
+             AND ($4::timestamptz IS NULL OR (m.created_at, m.id) < ($4, $5)) ORDER BY m.created_at DESC, m.id DESC LIMIT $6"
+        ))
+        .bind(tenant)
+        .bind(&statuses)
+        .bind(subject)
+        .bind(before.map(|b| b.0))
+        .bind(before.map(|b| b.1))
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_memory).collect()
+    }
+
+    async fn usage(&self, tenant: &str) -> anyhow::Result<StoreUsage> {
+        let records: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory").fetch_one(&self.pool).await?;
+        let largest_subject: Option<(String, i64)> =
+            sqlx::query_as("SELECT subject, count(*) FROM mh_memory WHERE tenant = $1 GROUP BY subject ORDER BY 2 DESC, 1 LIMIT 1").bind(tenant).fetch_optional(&self.pool).await?;
+        let writes_last_hour: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE created_at > now() - interval '1 hour'").fetch_one(&self.pool).await?;
+        let bytes: i64 = sqlx::query_scalar("SELECT pg_database_size(current_database())").fetch_one(&self.pool).await?;
+        Ok(StoreUsage { records, largest_subject, bytes: Some(bytes.max(0) as u64), writes_last_hour })
+    }
+
     async fn signing_key(&self, kid: &str) -> anyhow::Result<Option<Vec<u8>>> {
         Ok(sqlx::query_scalar("SELECT secret FROM mh_signing_key WHERE id = $1").bind(kid).fetch_optional(&self.pool).await?)
     }
@@ -2654,6 +2756,7 @@ impl Store for PgStore {
         sqlx::query("DELETE FROM mh_eval_suite WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_eval_run WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_request_key WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM mh_session WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query("DELETE FROM mh_recall WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
         sqlx::query(
             "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 RETURNING cache_key) DELETE FROM mh_llm_cache c USING j WHERE c.key = ANY(string_to_array(j.cache_key, ','))",

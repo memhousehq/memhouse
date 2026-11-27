@@ -1,0 +1,184 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>MemHouse console</title>
+<link rel="stylesheet" href="/console.css">
+</head>
+<body>
+<header>
+  <h1>Mem<span>House</span> console</h1>
+  <div id="who" class="muted"></div>
+  <button id="logout" type="button" hidden>Log out</button>
+</header>
+
+<section id="login" hidden>
+  <form id="login-form" class="card narrow" autocomplete="off">
+    <h2>Log in</h2>
+    <p class="muted">Present an API key once. The page does not keep it: the server answers with a session cookie that script cannot read, and every action runs with the key's permissions.</p>
+    <label for="login-key">API key</label>
+    <input id="login-key" type="password" autocomplete="off" spellcheck="false" required>
+    <button class="primary" type="submit">Log in</button>
+    <p id="login-error" class="bad" role="alert"></p>
+  </form>
+</section>
+
+<main id="app" hidden>
+  <nav id="tabs" aria-label="Console pages">
+    <button type="button" data-tab="memories" class="on">Memories</button>
+    <button type="button" data-tab="review">Review</button>
+    <button type="button" data-tab="principals">Principals and keys</button>
+    <button type="button" data-tab="policies">Policies</button>
+    <button type="button" data-tab="evaluation">Evaluation</button>
+    <button type="button" data-tab="status">Status and advisor</button>
+    <button type="button" data-tab="audit">Audit</button>
+  </nav>
+  <p id="notice" role="status"></p>
+
+  <section id="tab-memories" class="tab">
+    <div class="split">
+      <aside>
+        <h2>Subjects</h2>
+        <form id="subject-form" class="row">
+          <input id="subject-input" placeholder="subject, e.g. user:ada" aria-label="Subject">
+          <button type="submit">Open</button>
+        </form>
+        <div id="subjects"></div>
+      </aside>
+      <div>
+        <form id="search-form" class="row">
+          <input id="search-q" placeholder="Search this subject's memory" aria-label="Search" class="grow">
+          <select id="search-kind" aria-label="Kind"><option value="">all kinds</option></select>
+          <button class="primary" type="submit">Recall</button>
+          <button type="button" id="search-clear">List</button>
+          <label class="muted"><input type="checkbox" id="show-inactive"> all states</label>
+        </form>
+        <form id="add-form" class="row">
+          <input id="add-content" placeholder="Remember something for this subject" aria-label="New memory" class="grow">
+          <button type="submit">Remember</button>
+        </form>
+        <p id="memories-summary" class="muted"></p>
+        <div id="memories"></div>
+        <button type="button" id="memories-more" hidden>More</button>
+        <div id="explanation"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-review" class="tab" hidden>
+    <form id="queue-form" class="row">
+      <select id="queue-status" aria-label="State">
+        <option value="">candidates and quarantined</option>
+        <option value="candidate">candidates</option>
+        <option value="quarantined">quarantined</option>
+      </select>
+      <input id="queue-subject" placeholder="subject (all)" aria-label="Subject">
+      <button type="submit">Show</button>
+    </form>
+    <p id="queue-summary" class="muted"></p>
+    <div id="queue"></div>
+    <button type="button" id="queue-more" hidden>More</button>
+  </section>
+
+  <section id="tab-principals" class="tab" hidden>
+    <h2>Principals</h2>
+    <div id="principals"></div>
+    <form id="principal-form" class="card">
+      <h3>Add or change a principal</h3>
+      <div class="grid">
+        <label>Id <input id="p-id" placeholder="agent:support-bot" required></label>
+        <label>Name <input id="p-name"></label>
+        <label>Subjects (comma-separated, * for all) <input id="p-subjects" value="*"></label>
+        <label>Kinds (comma-separated, empty for all) <input id="p-kinds"></label>
+        <label>Denied labels (comma-separated) <input id="p-labels"></label>
+        <label>Org <input id="p-org"></label>
+        <label>Team <input id="p-team"></label>
+        <label><input type="checkbox" id="p-commit"> agent commits directly</label>
+        <label><input type="checkbox" id="p-actas"> may state the user it acts for</label>
+      </div>
+      <button class="primary" type="submit">Save principal</button>
+    </form>
+    <h2>Keys</h2>
+    <div id="new-key" class="card warn" hidden>
+      <p>Store this key now. It is shown once and kept nowhere.</p>
+      <code id="new-key-value"></code>
+      <button type="button" id="new-key-dismiss">Done</button>
+    </div>
+    <div id="keys"></div>
+    <form id="key-form" class="card">
+      <h3>Create a key</h3>
+      <div class="grid">
+        <label>Principal <input id="k-principal" placeholder="agent:support-bot" required></label>
+        <label>Permissions (comma-separated; empty for all the principal may have) <input id="k-scopes"></label>
+        <label>Expires in days (empty: never) <input id="k-days" type="number" min="1"></label>
+      </div>
+      <button class="primary" type="submit">Create key</button>
+    </form>
+  </section>
+
+  <section id="tab-policies" class="tab" hidden>
+    <p id="policy-running" class="muted"></p>
+    <p id="policy-warning" class="bad"></p>
+    <h2>Versions</h2>
+    <div id="policy-specs"></div>
+    <div class="row">
+      <button type="button" id="policy-rollback">Roll back to the policy before this one</button>
+    </div>
+    <h2>Activations</h2>
+    <div id="policy-history"></div>
+    <form id="policy-form" class="card">
+      <h3>Propose a version</h3>
+      <label for="policy-spec">Spec (JSON)</label>
+      <textarea id="policy-spec" rows="10" spellcheck="false"></textarea>
+      <label>Note <input id="policy-note"></label>
+      <div class="row">
+        <button type="button" id="policy-validate">Validate</button>
+        <button type="button" id="policy-diff">Diff against the running policy</button>
+        <button class="primary" type="submit">Propose</button>
+      </div>
+      <pre id="policy-output"></pre>
+    </form>
+  </section>
+
+  <section id="tab-evaluation" class="tab" hidden>
+    <h2>Quality by policy version</h2>
+    <p class="muted">For each suite, the latest replay under each policy version, oldest version first, and the change from the version before it.</p>
+    <div id="eval-trend"></div>
+    <h2>Suites</h2>
+    <div id="eval-suites"></div>
+    <h2>Replays</h2>
+    <div id="eval-runs"></div>
+  </section>
+
+  <section id="tab-status" class="tab" hidden>
+    <h2>Profile advisor</h2>
+    <div id="advisor"></div>
+    <h2>Counts</h2>
+    <div id="stats"></div>
+    <h2>This session</h2>
+    <div id="session"></div>
+  </section>
+
+  <section id="tab-audit" class="tab" hidden>
+    <div id="audit"></div>
+  </section>
+</main>
+
+<dialog id="dialog">
+  <form id="dialog-form">
+    <h3 id="dialog-title"></h3>
+    <p id="dialog-text" class="muted"></p>
+    <textarea id="dialog-input" rows="6"></textarea>
+    <div class="row">
+      <button class="primary" type="submit" id="dialog-ok">OK</button>
+      <button type="button" id="dialog-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/console.js"></script>
+</body>
+</html>

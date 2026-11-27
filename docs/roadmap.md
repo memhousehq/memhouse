@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 18 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
+| Progress | 19 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -37,9 +37,9 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
   cross-encoder, token budget);
 - asynchronous LLM enrichment (Postgres job queue, workers, LLM cache, cost cap);
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
-- REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
+- REST, MCP (stdio and HTTP), `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 79 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 85 governance checks;
 - the Lite profile (G16): the same engine on one SQLite file, `memhouse up --lite`, backup and restore with the deletion ledger re-applied;
 - conformance kits for every adapter type and a profile suite over REST, MCP and the command line (G15);
 - Python and TypeScript SDKs with lifecycle hooks, embedded Lite bindings for Python and Node, and adapters for the OpenAI Agents SDK and LangGraph (G18);
@@ -48,6 +48,12 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
   recall through `memhouse hook` adapters for Claude Code and Gemini CLI and a git
   `post-commit` hook; procedural memory promoted on repeated correction and recalled by task;
   a coding evaluation suite in the benchmark guard;
+- the admin console (G20, API 1.10, schema v11) at `/` on both profiles: view, search, edit,
+  supersede and delete memories, recall explanations, the review queue with quarantined
+  records (reject, or rephrase and approve), principals and keys, policy versions, evaluation
+  by policy version and the profile advisor; session login with a cookie script cannot read,
+  a CSRF token, a Content-Security-Policy without inline script or style, and a CORS origin
+  allow-list that is empty by default;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -149,7 +155,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 79 / 79 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 85 / 85 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -364,7 +370,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 - [x] [G17 — Profile migration](#g17--profile-migration) (25 November 2026)
 - [x] [G18 — SDKs, embedded bindings and first framework adapters](#g18--sdks-embedded-bindings-and-first-framework-adapters) (25 November 2026)
 - [x] [G19 — Coding template v1](#g19--coding-template-v1) (27 November 2026)
-- [ ] [G20 — Memory browser v2 and admin console](#g20--memory-browser-v2-and-admin-console)
+- [x] [G20 — Memory browser v2 and admin console](#g20--memory-browser-v2-and-admin-console) (27 November 2026)
 - [ ] [G21 — Packaging and release v1 (developer launch)](#g21--packaging-and-release-v1-developer-launch)
 
 **E. Governance, connectors, templates**
@@ -2184,17 +2190,136 @@ bytes, as the upgrade does.
 
 #### G20 — Memory browser v2 and admin console
 
-- [ ] **Done**
+- [x] **Done** (27 November 2026)
 
 > `/goal Upgrade the Memory Browser to an admin console: view, search, edit, supersede and delete; recall explanations; candidate review and the quarantine console (approve or reject, audited); principals and keys; policy versions; and a profile advisor that warns near Lite limits with the migrate command. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **PROF-09**, **GOV-11**, **PROF-11**.
 - **Deliverables:**
-  - [ ] console pages; every action audited; works on Lite and Standard
-  - [ ] evaluation in the console: REST routes for a tenant's suites and runs, and the quality metrics with their trend by policy version (the console half of QUAL-11, moved from G13, which stores the runs and has the `memhouse eval` commands)
-  - [ ] session login instead of a key in `localStorage`, a Content-Security-Policy without inline script, and a CORS origin allow-list (threat model T3)
+  - [x] console pages; every action audited; works on Lite and Standard
+  - [x] evaluation in the console: REST routes for a tenant's suites and runs, and the quality metrics with their trend by policy version (the console half of QUAL-11, moved from G13, which stores the runs and has the `memhouse eval` commands)
+  - [x] session login instead of a key in `localStorage`, a Content-Security-Policy without inline script, and a CORS origin allow-list (threat model T3)
+  - [x] added: API 1.10 (`POST`, `GET` and `DELETE /v1/session`; `GET /v1/review/queue`; `content` on `POST /v1/review` and `rephrased_from` on its answer; `GET` and `PUT /v1/principals`, `POST /v1/principals/{id}/disable` and `/enable`; `GET` and `POST /v1/keys`, `POST /v1/keys/{id}/rotate` and `/revoke`; `GET /v1/eval/suites`, `/runs`, `/trend` and `GET /v1/advisor` as preview), the `principal:manage` permission, regenerated SDK clients
+  - [x] added: schema v11 (`mh_session`: console sessions by the hash of their secret) in both stores, expand-only, with the `schema_upgrade` check and the Lite upgrade test extended, a store kit check (19 to 20), sessions deleted with a tenant, by the retention pass and by `memhouse restore`
+  - [x] added: the profile advisor (PROF-11): `GET /v1/advisor`, a console panel and a line of `memhouse doctor`; `[advisor]` settings
+  - [x] added: `[server] console`, `cors_origins`, `session_ttl_secs`, `session_idle_secs`, `session_cookie_secure`
+  - [x] added: six governance checks (`console_actions`, `console_session`, `console_csp_cors`, `quarantine_review`, `console_evaluation`, `profile_advisor`), 79 to 85
+  - [x] added: the guide [console.md](console.md)
+  - [x] added: the governance checks run their recalls without `memory.recall_timeout_ms` (a recall past its budget answers empty, which a check on a loaded machine read as "not recalled"); see the result
 - **Done when:** each PROF-09 action works and is audited on both profiles; a quarantined candidate can be rejected or rephrased and approved.
 - **Guard:** T1. **Depends on:** G19.
+
+**Result (2026-11-27):**
+
+- **The console (PROF-09).** Three static files served at `/`, `/console.css` and
+  `/console.js` by `memhouse serve` on both profiles, with no build step and nothing loaded
+  from elsewhere: memories (list, search, the explanation of a recall, remember, edit,
+  supersede, delete), review, principals and keys, policies, evaluation, status and advisor,
+  audit. It replaces the Memory Browser page. The console holds no rule: every action is an
+  API call as the logged-in principal, and the server decides. See [console.md](console.md).
+- **Session login (threat model T3).** `POST /v1/session` opens a session for the key the
+  request presents; the browser keeps a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`;
+  `Secure` under the name `__Host-memhouse_session`, except for a request to a loopback host,
+  where it is `memhouse_session` without `Secure`: `[server] session_cookie_secure`). The
+  store keeps the SHA-256 of the session secret (`mh_session`, schema v11), so sessions
+  survive a restart and are valid on every replica. A request made with the cookie must come
+  from the server's own origin (`Host` or `X-Forwarded-Host`) and, to change anything, carry
+  the session's CSRF token (derived from the secret, stored nowhere) in `x-memhouse-csrf`;
+  a refusal is audited (`access.denied`, rule `csrf`). The session is checked against its
+  key and principal on every request, uncached: revoking the key or disabling the principal
+  ends it with the next request. It also ends after `session_ttl_secs` (8 hours), after
+  `session_idle_secs` without use (30 minutes), and on logout (`DELETE /v1/session`), which
+  deletes the row. Audit actions `session.login` and `session.logout`.
+- **The pages.** Served with `Content-Security-Policy: default-src 'none'; script-src 'self';
+  style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none';
+  frame-ancestors 'none'`, `nosniff`, `X-Frame-Options: DENY` and no referrer. No
+  `unsafe-inline` for styles either: the page has no `style` attribute and the script sets
+  classes only. The script builds the page from data as text nodes and keeps nothing in the
+  browser's storage.
+- **CORS.** `CorsLayer::permissive()` is gone. A request with an `Origin` that is neither the
+  server's own nor in `[server] cors_origins` (empty by default; a wildcard is a
+  configuration error) is refused with 403 before anything runs. A listed origin is answered
+  with that origin and never with credentials: its pages use a key, not the cookie.
+- **Review and the quarantine (GOV-11).** `GET /v1/review/queue` lists candidates and
+  quarantined records. `POST /v1/review` gained `content`: the reviewer's wording is written
+  through the whole write gate and committed, and the reviewed record is rejected and names
+  its replacement (`memory.rephrase`). A quarantined record is not committed as it stands
+  (409, as before; the message now says what to do); a rephrasing the gate holds changes
+  nothing.
+- **Principals and keys.** `GET` and `PUT /v1/principals`, `disable` and `enable`, `GET` and
+  `POST /v1/keys`, `rotate` and `revoke`, under the new permission `principal:manage`. A key
+  carries at most the permissions of the credential that creates it; a principal gets
+  subjects within the manager's own and at least its denied labels. `memhouse principal` and
+  `memhouse key` call the same engine methods.
+- **Evaluation (QUAL-11).** `GET /v1/eval/suites`, `/v1/eval/runs` and `/v1/eval/trend`
+  (preview): the tenant's suites without their conversations, its replays, and for each suite
+  the metrics of the latest replay under each policy version, which the console shows with
+  the change from the version before.
+- **Profile advisor (PROF-11).** `GET /v1/advisor` (preview), a console panel and a line of
+  `memhouse doctor`: records in the store against 100,000 and the largest subject against
+  10,000 (the sizes [lite.md](lite.md) states), with the file size and the writes of the
+  last hour reported and judged only when a limit is configured (`[advisor]`). From 80% of a
+  limit it recommends Standard and names `memhouse migrate --to postgres://<user>@<host>:5432/<database> --dry-run`.
+- **Done when.** `console_actions`: remember, view, list, search, explanation, edit,
+  supersede, delete, and a principal and a key, each through a session and each with its
+  audit event by the logged-in principal; 15 requests of a principal with `memory:read` alone
+  refused with 403, 15 `access.denied` events, nothing changed. `quarantine_review`: 50
+  quarantined records, 25 rejected and 25 rephrased and approved; 50 of 50 decisions applied
+  and 50 audited; the queue empty; recall returns the 25 approved wordings only. The same on
+  Postgres and on SQLite.
+- **Governance.** 85 checks. Postgres: 85 of 85. SQLite: 82 of 82 applicable, 3 not applicable. The store kit passes its 20 checks on both.
+- **Guard.** T1, run with `MEMHOUSE_CI_SKIP_LATENCY=1` on a loaded machine: passed, every
+  quality metric equal to its baseline (LoCoMo session nDCG@10 78.7 against 78.6); no paid
+  spend. Timings, reported and not gated: SQL search p50 13.6 ms on LongMemEval_S (limit
+  14.7) and 15.7 ms on LoCoMo (limit 14.0). `min_checks` raised to 85 by hand; no other
+  baseline changed.
+- **The load-dependent misses** (two governance checks had shown rare misses on SQLite under
+  load). One cause was found, in the checks: a recall that overruns
+  `[memory] recall_timeout_ms` (450 ms) answers empty and flagged `degraded` (PERF-07, as
+  designed), and the checks did not look at the flag, so on a loaded machine "nothing
+  recalled" was read as a missing record, and a check that expects a record to be left out
+  could pass for the wrong reason. The engines the governance suite runs on now have no
+  recall deadline (the evaluation replay already did this); `degradation` sets the budget it
+  tests. The other, not established: a `wait: true` write answered `candidate` with the note
+  "still in the intake queue". That answer is given when the bounded wait
+  (`[intake] wait_timeout_ms`) ends first, and at once when the write's first pipeline
+  attempt fails (it is then retried behind the answer); which of the two happened, and
+  why an attempt would fail on SQLite under load, was not found by reading the code. Ruled
+  out by reading: a reader connection with an old snapshot (every statement is reset when
+  its rows are dropped), the completion committing apart from the records (one transaction),
+  the claim order. `promotion` now waits for the gate's decision when it gets that answer
+  and its failure message carries the note. An experiment that ran four suites at once to
+  provoke the miss exhausted the machine's memory and was stopped; it gave no result.
+- **Differs from the plan / not done.**
+  - **The pages are not driven in a browser by any test.** They were tried once by hand in a
+    browser on a new Lite installation (2026-11-27): login with a bootstrap key, remember,
+    list, the audit page, the advisor, every tab opened, logout; no script error. The review,
+    key, policy and evaluation forms were opened, not used. No browser-test tooling was added. What is
+    tested is every request the pages make (in process on a Lite file with all headers, and
+    over HTTP on both stores in the governance suite), the headers they are served with, and
+    their text (no inline script, style or handler; no browser storage; no markup from
+    data). A typo in the script that only shows when a page runs would not be caught.
+  - The requirement's acceptance test names the Scale profile too; it does not exist yet.
+  - The console does not start an evaluation replay (the command line does), edit labels,
+    manage grants or erase a subject; it lists one subject's memories at a time.
+  - `/v1/subjects`, `/v1/stats`, `/v1/audit`, `/v1/enrich/status` and `/metrics` stay
+    preview: the plan had them become stable or be replaced with this goal; the console was
+    built on them as they are, without paging or filters.
+  - Changes of behaviour, recorded in the [stability policy](api-stability.md): browser
+    requests from other origins are refused unless listed; an admin key created before
+    API 1.10 does not carry `principal:manage` (keys list their permissions), so it cannot
+    manage principals over the API until a new key is made; bootstrap keys can.
+  - A credential that carries no permission opens no session, so the rule that such a key
+    is refused on every route but `/v1/whoami` still holds (`route_authorization`).
+  - `memhouse restore` (Lite) now ends every console session, and
+    [operations.md](operations.md#console-sessions-after-a-restore) gives the statement for
+    a restored Postgres dump: a session logged out after the backup must not come back.
+    Sessions are not moved by `memhouse migrate`.
+  - No limit on login attempts (failed ones are audited), and no single sign-on.
+  - The advisor's counts read the whole memory table; on a large Standard database that is
+    slow. On Standard nothing is judged: there is no next profile to recommend yet.
+  - Behind a reverse proxy that passes neither `Host` nor `X-Forwarded-Host` on, the
+    console's own requests look foreign and are refused; the operations guide says so.
 
 #### G21 — Packaging and release v1 (developer launch)
 

@@ -8,6 +8,10 @@
 //!   agent principal, optionally the user it acts for (verified when a user key issued it, or
 //!   asserted by a principal trusted to act for users), and narrower permissions.
 //! - Keys in `[server] api_keys` are bootstrap keys of the built-in principal `admin:bootstrap`.
+//! - A **console session** (threat model T3) is opened by presenting an API key once. The
+//!   browser then holds only a random session secret in an `HttpOnly` cookie; the store keeps
+//!   its hash. Every request made with it is checked against the key that opened it and its
+//!   principal, so revoking the key or disabling the principal ends the session.
 //!
 //! [`Authenticator`] turns a presented credential into an [`Identity`], with a 5-second cache so a
 //! revocation or a disabled principal takes effect within 5 seconds.
@@ -44,7 +48,10 @@ pub mod perm {
     pub const POLICY_APPROVE: &str = "policy:approve";
     /// Create, list and revoke grants between agents (INT-06).
     pub const GRANT: &str = "grant:manage";
-    pub const ALL: [&str; 13] = [READ, WRITE, FORGET, ERASE, LABEL, REVIEW, TOKEN, OPS, AUDIT, POLICY_READ, POLICY_PROPOSE, POLICY_APPROVE, GRANT];
+    /// Create, change, disable and list principals and their API keys (PROF-09 console, G20).
+    /// A key made with it carries at most the permissions of the credential that made it.
+    pub const PRINCIPAL: &str = "principal:manage";
+    pub const ALL: [&str; 14] = [READ, WRITE, FORGET, ERASE, LABEL, REVIEW, TOKEN, OPS, AUDIT, POLICY_READ, POLICY_PROPOSE, POLICY_APPROVE, GRANT, PRINCIPAL];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -165,6 +172,41 @@ pub struct ApiKey {
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub created_by: String,
+}
+
+/// A console session as stored: who it acts as and until when. A session row exists only
+/// while the session can be used: logging out, expiry and the retention pass delete it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Session {
+    /// sha256 of the session secret, hex. The secret itself is only in the browser's cookie.
+    pub id: String,
+    pub tenant: String,
+    pub principal_id: String,
+    /// The key that opened the session ([`BOOTSTRAP`] for a key of `[server] api_keys`). The
+    /// session has that key's permissions and ends with it.
+    pub key_id: String,
+    /// For a bootstrap key, which has no row to revoke: `<signing key id>.<HMAC of the key>`,
+    /// so the session ends when that key leaves the configuration.
+    #[serde(default)]
+    pub key_check: Option<String>,
+    pub created_at: DateTime<Utc>,
+    /// The end of the session whatever its use (`[server] session_ttl_secs`).
+    pub expires_at: DateTime<Utc>,
+    /// The last request made with it, to within [`SESSION_TOUCH_SECS`].
+    pub last_seen_at: DateTime<Utc>,
+}
+
+/// How stale `Session::last_seen_at` may be: a request writes it only when it is older than
+/// this, so reading pages does not write a row per request.
+pub const SESSION_TOUCH_SECS: i64 = 60;
+
+/// The prefix of a session secret, as the cookie carries it.
+pub const SESSION_PREFIX: &str = "mhs_";
+
+/// The CSRF token of a session: derived from the session secret, so it needs no storage and
+/// cannot be computed from what the store holds (the secret's hash).
+pub fn csrf_token(session_secret: &str) -> String {
+    hex::encode(&hmac_sha256(session_secret.as_bytes(), b"memhouse console csrf")[..16])
 }
 
 const KEY_CHARS: &[u8] = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -290,6 +332,8 @@ pub enum Via {
     Bootstrap,
     /// The CLI and the benchmark, which hold the database credentials themselves.
     Operator,
+    /// A console session opened with a key (`POST /v1/session`).
+    Session,
 }
 
 /// A verified caller.
@@ -438,11 +482,7 @@ impl Authenticator {
             });
         }
         if self.cfg.server.api_keys.iter().any(|k| constant_time_eq(k.as_bytes(), presented.as_bytes())) {
-            let mut id = Identity::operator(&self.cfg, "bootstrap");
-            id.via = Via::Bootstrap;
-            id.key_id = Some(BOOTSTRAP.into());
-            id.user = asserted_user.map(String::from);
-            return Ok(id);
+            return Ok(self.bootstrap_identity(asserted_user));
         }
         let (key_id, secret) = parse_key(presented).ok_or_else(|| fail("unknown credential", None, None))?;
         let key = match self.store.api_key_get(key_id).await {
@@ -452,23 +492,151 @@ impl Authenticator {
         if !constant_time_eq(key.hash.as_bytes(), sha256_hex(secret.as_bytes()).as_bytes()) {
             return Err(fail("wrong key secret", Some(key_id), Some(&key.principal_id)));
         }
+        self.key_identity(&key, asserted_user).await
+    }
+
+    /// The identity a stored key gives now: refused when it is revoked or expired or its
+    /// principal is gone or disabled. The secret was checked by the caller (a presented key),
+    /// or is not needed (a session opened with the key).
+    async fn key_identity(&self, key: &ApiKey, asserted_user: Option<&str>) -> Result<Identity, AuthFailure> {
+        let key_id = key.id.as_str();
+        let fail = |reason, principal: Option<&str>| AuthFailure { reason, key_id: Some(key_id.to_string()), principal: principal.map(String::from) };
         if key.revoked_at.is_some() {
-            return Err(fail("revoked key", Some(key_id), Some(&key.principal_id)));
+            return Err(fail("revoked key", Some(&key.principal_id)));
         }
         if key.expires_at.is_some_and(|e| e <= Utc::now()) {
-            return Err(fail("expired key", Some(key_id), Some(&key.principal_id)));
+            return Err(fail("expired key", Some(&key.principal_id)));
         }
-        let principal = self.live_principal(&key.principal_id).await.map_err(|r| fail(r, Some(key_id), Some(&key.principal_id)))?;
+        let principal = self.live_principal(&key.principal_id).await.map_err(|r| fail(r, Some(&key.principal_id)))?;
         let allowed = principal.kind.permissions();
         let scopes = key.scopes.iter().filter(|s| allowed.contains(s)).cloned().collect();
         let user = match (principal.kind, asserted_user) {
-            (PrincipalKind::User, Some(u)) if u != principal.id => return Err(fail("a user key acts only for its own user", Some(key_id), Some(&principal.id))),
+            (PrincipalKind::User, Some(u)) if u != principal.id => return Err(fail("a user key acts only for its own user", Some(&principal.id))),
             (PrincipalKind::User, _) => Some(principal.id.clone()),
             (_, Some(u)) if principal.act_as || principal.kind == PrincipalKind::Admin => Some(u.to_string()),
-            (_, Some(_)) => return Err(fail("this principal may not state which user it acts for (act_as)", Some(key_id), Some(&principal.id))),
+            (_, Some(_)) => return Err(fail("this principal may not state which user it acts for (act_as)", Some(&principal.id))),
             (_, None) => None,
         };
         Ok(Identity { principal, user, scopes, key_id: Some(key_id.into()), expires_at: key.expires_at, via: Via::Key })
+    }
+
+    /// The identity of a bootstrap key (`[server] api_keys`).
+    fn bootstrap_identity(&self, asserted_user: Option<&str>) -> Identity {
+        let mut id = Identity::operator(&self.cfg, "bootstrap");
+        id.via = Via::Bootstrap;
+        id.key_id = Some(BOOTSTRAP.into());
+        id.user = asserted_user.map(String::from);
+        id
+    }
+
+    /// `<signing key id>.<HMAC of a bootstrap key>`: what a session keeps of the bootstrap key
+    /// that opened it.
+    fn bootstrap_check(kid: &str, secret: &[u8], key: &str) -> String {
+        format!("{kid}.{}", hex::encode(hmac_sha256(secret, key.as_bytes())))
+    }
+
+    /// Open a console session for a caller that just presented `presented`, a key (T3). Agent
+    /// tokens open none: they are short-lived credentials of software, not of a person at a
+    /// browser. Returns the session secret (for the cookie, shown to nobody else) and the row.
+    pub async fn session_open(&self, who: &Identity, presented: &str) -> anyhow::Result<(String, Session)> {
+        let key_id = match who.via {
+            Via::Key | Via::Bootstrap => who.key_id.clone().ok_or_else(|| error::forbidden("this credential can't open a session"))?,
+            Via::Session => return Err(error::forbidden("a session can't open another session: present an API key")),
+            Via::Token | Via::Operator => return Err(error::forbidden("a session is opened with an API key, not a token")),
+        };
+        let key_check = match who.via {
+            Via::Bootstrap => {
+                let (kid, secret) = self.store.signing_key_current().await?;
+                Some(Self::bootstrap_check(&kid, &secret, presented.trim()))
+            }
+            _ => None,
+        };
+        let secret = format!("{SESSION_PREFIX}{}", random(43));
+        let now = Utc::now();
+        let mut expires_at = now + chrono::Duration::seconds(self.cfg.server.session_ttl_secs.max(1) as i64);
+        // Never longer than the key that opened it.
+        if let Some(e) = who.expires_at {
+            expires_at = expires_at.min(e);
+        }
+        let session = Session {
+            id: sha256_hex(secret.as_bytes()),
+            tenant: who.principal.tenant.clone(),
+            principal_id: who.principal.id.clone(),
+            key_id,
+            key_check,
+            created_at: now,
+            expires_at,
+            last_seen_at: now,
+        };
+        self.store.session_put(&session).await?;
+        Ok((secret, session))
+    }
+
+    /// Verify a session secret from the cookie. Nothing is cached: logging out, revoking the
+    /// key and disabling the principal end the session with the next request.
+    pub async fn session_identity(&self, secret: &str, asserted_user: Option<&str>) -> Result<(Identity, Session), AuthFailure> {
+        let fail = |reason, s: Option<&Session>| AuthFailure { reason, key_id: s.map(|s| s.key_id.clone()), principal: s.map(|s| s.principal_id.clone()) };
+        if !secret.starts_with(SESSION_PREFIX) || secret.len() > 200 {
+            return Err(fail("unknown session", None));
+        }
+        let id = sha256_hex(secret.as_bytes());
+        let s = match self.store.session_get(&id).await {
+            Ok(Some(s)) => s,
+            Ok(None) => return Err(fail("unknown session", None)),
+            Err(_) => return Err(fail("session store unavailable", None)),
+        };
+        let now = Utc::now();
+        let idle = self.cfg.server.session_idle_secs;
+        if s.expires_at <= now || (idle > 0 && s.last_seen_at + chrono::Duration::seconds(idle as i64) <= now) {
+            // The row has no further use; a failure to delete leaves it to the retention pass.
+            let _ = self.store.session_delete(&id).await;
+            return Err(fail("expired session", Some(&s)));
+        }
+        let mut who = if s.key_id == BOOTSTRAP {
+            let live = match s.key_check.as_deref().and_then(|c| c.split_once('.')) {
+                Some((kid, _)) => match self.store.signing_key(kid).await {
+                    Ok(Some(secret)) => {
+                        let stored = s.key_check.as_deref().unwrap_or_default();
+                        self.cfg.server.api_keys.iter().any(|k| constant_time_eq(Self::bootstrap_check(kid, &secret, k).as_bytes(), stored.as_bytes()))
+                    }
+                    _ => false,
+                },
+                None => false,
+            };
+            if !live {
+                let _ = self.store.session_delete(&id).await;
+                return Err(fail("the key that opened this session is no longer configured", Some(&s)));
+            }
+            self.bootstrap_identity(asserted_user)
+        } else {
+            let key = match self.store.api_key_get(&s.key_id).await {
+                Ok(Some(k)) if k.principal_id == s.principal_id => k,
+                _ => {
+                    let _ = self.store.session_delete(&id).await;
+                    return Err(fail("the key that opened this session is gone", Some(&s)));
+                }
+            };
+            match self.key_identity(&key, asserted_user).await {
+                Ok(who) => who,
+                Err(f) => {
+                    let _ = self.store.session_delete(&id).await;
+                    return Err(AuthFailure { reason: session_reason(f.reason), ..f });
+                }
+            }
+        };
+        who.via = Via::Session;
+        who.expires_at = Some(s.expires_at);
+        if (now - s.last_seen_at).num_seconds() >= SESSION_TOUCH_SECS {
+            if let Err(e) = self.store.session_touch(&id, now).await {
+                tracing::warn!("session last-seen time not written: {e:#}");
+            }
+        }
+        Ok((who, s))
+    }
+
+    /// End a session (log out). False when there was none.
+    pub async fn session_close(&self, secret: &str) -> anyhow::Result<bool> {
+        self.store.session_delete(&sha256_hex(secret.as_bytes())).await
     }
 
     async fn live_principal(&self, id: &str) -> Result<Principal, &'static str> {
@@ -496,6 +664,17 @@ impl Authenticator {
             exp: exp.timestamp(),
         };
         Ok(TokenResponse { token: sign_token(&claims, &secret), expires_at: DateTime::from_timestamp(exp.timestamp(), 0).unwrap_or(exp), agent: agent.id.clone(), user, scopes })
+    }
+}
+
+/// Why a session ended, in the words of the audit log, from why its key stopped working.
+fn session_reason(key_reason: &'static str) -> &'static str {
+    match key_reason {
+        "revoked key" => "the key that opened this session is revoked",
+        "expired key" => "the key that opened this session is expired",
+        "disabled principal" => "the principal of this session is disabled",
+        "unknown principal" => "the principal of this session is gone",
+        other => other,
     }
 }
 

@@ -396,6 +396,64 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     expect(rv.status == 200 && rv.body["revoked"] == gr.body["id"], format!("revoke: {} {}", rv.status, rv.body));
     let rv = api.call("DELETE", "/v1/grants/{id}", &format!("/v1/grants/{grant_id}"), None, &[]).await?;
     expect(rv.status == 404, format!("revoke twice: {}", rv.status));
+    // The admin console (G20, API 1.10): the session, the review queue, principals and keys,
+    // evaluation and the profile advisor. Their rules are checked in `console_checks`.
+    let login = api.call("POST", "/v1/session", "/v1/session", None, &[]).await?;
+    let cookie = login.headers.get("set-cookie").and_then(|v| v.to_str().ok()).and_then(|v| v.split(';').next()).unwrap_or_default().to_string();
+    let csrf = login.body["csrf_token"].as_str().unwrap_or_default().to_string();
+    expect(
+        login.status == 200 && cookie.starts_with("memhouse_session=mhs_") && login.body["principal"] == "admin:bootstrap",
+        format!("open session: {} {}", login.status, login.body),
+    );
+    let by_cookie = [("authorization", ""), ("cookie", cookie.as_str())];
+    let me = api.call("GET", "/v1/session", "/v1/session", None, &by_cookie).await?;
+    expect(me.status == 200 && me.body["csrf_token"] == csrf.as_str(), format!("session: {} {}", me.status, me.body));
+    let none = api.call("GET", "/v1/session", "/v1/session", None, &[]).await?;
+    expect(none.status == 404, format!("session of a request made with a key: {}", none.status));
+    let q = api.call("GET", "/v1/review/queue", "/v1/review/queue?status=candidate,quarantined&limit=5", None, &by_cookie).await?;
+    expect(q.status == 200 && q.body["items"].is_array(), format!("review queue: {} {}", q.status, q.body));
+    let q = api.call("GET", "/v1/review/queue", "/v1/review/queue?status=committed", None, &[]).await?;
+    expect(q.status == 400, format!("review queue of committed records: {}", q.status));
+    let made = api.call("PUT", "/v1/principals/{id}", "/v1/principals/agent:gov-api-console", Some(json!({"subjects": ["gov:*"], "name": "contract check"})), &[]).await?;
+    expect(made.status == 200 && made.body["kind"] == "agent" && made.body["subjects"] == json!(["gov:*"]), format!("put principal: {} {}", made.status, made.body));
+    let bad = api.call("PUT", "/v1/principals/{id}", "/v1/principals/robot:x", Some(json!({})), &[]).await?;
+    expect(bad.status == 400, format!("put principal with an unknown kind: {}", bad.status));
+    let listed = api.call("GET", "/v1/principals", "/v1/principals", None, &[]).await?;
+    expect(listed.status == 200 && listed.body.as_array().is_some_and(|a| a.iter().any(|p| p["id"] == "agent:gov-api-console")), format!("principals: {}", listed.status));
+    let off = api.call("POST", "/v1/principals/{id}/disable", "/v1/principals/agent:gov-api-console/disable", None, &[]).await?;
+    expect(off.status == 200 && off.body["disabled_at"].is_string(), format!("disable: {} {}", off.status, off.body));
+    let on = api.call("POST", "/v1/principals/{id}/enable", "/v1/principals/agent:gov-api-console/enable", None, &[]).await?;
+    expect(on.status == 200 && on.body["disabled_at"].is_null(), format!("enable: {} {}", on.status, on.body));
+    let missing = api.call("POST", "/v1/principals/{id}/disable", "/v1/principals/agent:gov-api-nobody/disable", None, &[]).await?;
+    expect(missing.status == 404, format!("disable an unknown principal: {}", missing.status));
+    let key = api.post("/v1/keys", json!({"principal": "agent:gov-api-console", "scopes": ["memory:read"], "expires_in_secs": 600})).await?;
+    let key_id = key.body["info"]["id"].as_str().unwrap_or_default().to_string();
+    expect(
+        key.status == 200 && key.body["key"].as_str().is_some_and(|k| k.starts_with("mh_")) && key.body["info"]["state"] == "active",
+        format!("create key: {} {}", key.status, key.body["info"]),
+    );
+    let keys = api.call("GET", "/v1/keys", "/v1/keys?principal=agent:gov-api-console", None, &[]).await?;
+    expect(keys.status == 200 && keys.body.as_array().is_some_and(|a| a.len() == 1 && a[0]["id"] == key_id.as_str()), format!("keys: {} {}", keys.status, keys.body));
+    let rotated = api.call("POST", "/v1/keys/{id}/rotate", &format!("/v1/keys/{key_id}/rotate"), Some(json!({"grace_secs": 0})), &[]).await?;
+    let new_id = rotated.body["info"]["id"].as_str().unwrap_or_default().to_string();
+    expect(rotated.status == 200 && rotated.body["replaces"] == key_id.as_str() && new_id != key_id, format!("rotate key: {} {}", rotated.status, rotated.body["info"]));
+    let revoked = api.call("POST", "/v1/keys/{id}/revoke", &format!("/v1/keys/{new_id}/revoke"), None, &[]).await?;
+    expect(revoked.status == 200 && revoked.body["revoked"] == new_id.as_str(), format!("revoke key: {} {}", revoked.status, revoked.body));
+    let again = api.call("POST", "/v1/keys/{id}/revoke", &format!("/v1/keys/{new_id}/revoke"), None, &[]).await?;
+    expect(again.status == 409, format!("revoke a revoked key: {}", again.status));
+    for path in ["/v1/eval/suites", "/v1/eval/runs", "/v1/eval/trend"] {
+        let r = api.call("GET", path, path, None, &[]).await?;
+        expect(r.status == 200, format!("{path}: {} {}", r.status, r.body));
+    }
+    let adv = api.call("GET", "/v1/advisor", "/v1/advisor", None, &[]).await?;
+    expect(
+        adv.status == 200 && matches!(adv.body["profile"].as_str(), Some("lite" | "standard")) && adv.body["measures"].as_array().is_some_and(|m| m.len() >= 3),
+        format!("advisor: {} {}", adv.status, adv.body),
+    );
+    let out = api.call("DELETE", "/v1/session", "/v1/session", None, &[("authorization", ""), ("cookie", cookie.as_str()), ("x-memhouse-csrf", csrf.as_str())]).await?;
+    expect(out.status == 200 && out.body["closed"] == true, format!("close session: {} {}", out.status, out.body));
+    let after = api.call("GET", "/v1/session", "/v1/session", None, &by_cookie).await?;
+    expect(after.status == 401, format!("a closed session: {}", after.status));
     // The coding template (G19, API 1.9): file-touched recall, files changed, revalidation.
     let code = "gov:api-code";
     let linked = api

@@ -27,6 +27,8 @@ pub struct Config {
     pub eval: EvalConfig,
     /// The enabled languages and the operator's own language packs (G36).
     pub language: LanguageConfig,
+    /// The profile advisor (PROF-11).
+    pub advisor: AdvisorConfig,
 }
 
 /// Languages (G36): which language packs the server reads statements, questions and injection
@@ -461,11 +463,71 @@ pub struct ServerConfig {
     /// Also list the pre-v1 MCP tool names (`memory_recall`, ...) in `tools/list`. They are always
     /// callable until the sunset date; listing them helps agents configured with the old names.
     pub mcp_legacy_tools: bool,
+    /// Serve the admin console at `/` (PROF-09). Off: the API and MCP only.
+    pub console: bool,
+    /// Origins, besides the server's own, whose pages may call the API from a browser
+    /// (threat model T3): exact values such as `https://admin.example.com`. Empty (the
+    /// default): same origin only. Such a page sends a key or token itself; the console's
+    /// session cookie is never accepted from another origin. `*` is refused.
+    pub cors_origins: Vec<String>,
+    /// How long a console session lasts from login, whatever its use.
+    pub session_ttl_secs: u64,
+    /// A console session ends when it was not used for this long; 0 turns the idle limit off.
+    pub session_idle_secs: u64,
+    /// Whether the session cookie is marked `Secure` (and named with the `__Host-` prefix):
+    /// `auto` does so unless the request came for a loopback host (`localhost`, `127.0.0.1`,
+    /// `[::1]`), where browsers have no TLS to send it over; `always`; `never` (plain HTTP on
+    /// a network you trust: the cookie can then be read on the wire).
+    pub session_cookie_secure: CookieSecure,
+}
+
+/// See [`ServerConfig::session_cookie_secure`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CookieSecure {
+    #[default]
+    Auto,
+    Always,
+    Never,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        ServerConfig { bind: "127.0.0.1:7077".into(), api_keys: vec![], mcp_legacy_tools: false }
+        ServerConfig {
+            bind: "127.0.0.1:7077".into(),
+            api_keys: vec![],
+            mcp_legacy_tools: false,
+            console: true,
+            cors_origins: vec![],
+            session_ttl_secs: 8 * 3600,
+            session_idle_secs: 30 * 60,
+            session_cookie_secure: CookieSecure::Auto,
+        }
+    }
+}
+
+/// The profile advisor (PROF-11): the sizes the Lite profile is measured at
+/// (`docs/lite.md`), and how near to them a deployment may come before the advisor recommends
+/// the next profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdvisorConfig {
+    /// The share of a limit from which the advisor warns.
+    pub warn_at: f64,
+    /// Records in the store, in every state: the size Lite is measured at.
+    pub lite_max_records: u64,
+    /// Records of one subject: every vector of a subject is scored on each recall.
+    pub lite_max_subject_records: u64,
+    /// Size of the database file in megabytes; 0: reported, not judged (no size is stated
+    /// for the profile).
+    pub lite_max_file_mb: u64,
+    /// Records written in an hour; 0: reported, not judged. Lite has one writer.
+    pub lite_max_writes_per_hour: u64,
+}
+
+impl Default for AdvisorConfig {
+    fn default() -> Self {
+        AdvisorConfig { warn_at: 0.8, lite_max_records: 100_000, lite_max_subject_records: 10_000, lite_max_file_mb: 0, lite_max_writes_per_hour: 0 }
     }
 }
 
@@ -676,9 +738,19 @@ impl Config {
             ("intake.large_below", self.intake.large_below),
             ("enrich.large_max_share", self.enrich.large_max_share),
             ("enrich.escalate_below", self.enrich.escalate_below),
+            ("advisor.warn_at", self.advisor.warn_at as f32),
         ] {
             anyhow::ensure!(v.is_finite() && (0.0..=1.0).contains(&v), "{name} must be a fraction from 0 to 1, not {v}");
         }
+        // T3: a wildcard would let any page call the API from a visitor's browser.
+        for o in &self.server.cors_origins {
+            let rest = o.strip_prefix("https://").or_else(|| o.strip_prefix("http://"));
+            anyhow::ensure!(
+                rest.is_some_and(|r| !r.is_empty() && !r.contains(['/', '*', ' ', ','])),
+                "server.cors_origins takes exact origins such as https://admin.example.com (scheme, host and port; no path, no wildcard), not {o:?}"
+            );
+        }
+        anyhow::ensure!(self.server.session_ttl_secs >= 60 && self.server.session_ttl_secs <= 30 * 86_400, "server.session_ttl_secs must be between 60 and 2592000 (30 days)");
         Ok(())
     }
 

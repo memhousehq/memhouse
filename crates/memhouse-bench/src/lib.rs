@@ -7,6 +7,7 @@ mod api_checks;
 pub mod baselines;
 mod code_checks;
 mod conformance_checks;
+mod console_checks;
 pub mod datasets;
 mod embedded_checks;
 mod eval_checks;

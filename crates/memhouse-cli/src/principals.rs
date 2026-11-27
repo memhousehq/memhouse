@@ -3,6 +3,7 @@
 //! the database credentials, so it acts as the operator; every change is audited.
 
 use clap::Subcommand;
+use memhouse_core::admin::PrincipalRequest;
 use memhouse_core::identity::{self, perm, Principal, PrincipalKind};
 use memhouse_core::types::MemoryKind;
 use memhouse_core::Engine;
@@ -148,34 +149,23 @@ pub async fn principal(eng: &Engine, cmd: PrincipalCmd) -> anyhow::Result<()> {
             let kind = kind_of(&id)?;
             anyhow::ensure!(!commit || kind == PrincipalKind::Agent, "--commit is a grant for agents (users and admins always commit)");
             let tenant = tenant.unwrap_or_else(|| eng.cfg.memory.tenant.clone());
-            let mut p = match eng.store.principal_get(&id).await? {
-                Some(p) => {
-                    anyhow::ensure!(p.tenant == tenant, "{id} exists in tenant {}", p.tenant);
-                    p
-                }
-                None => Principal::new(&id, &tenant, kind, "cli"),
-            };
-            if !subjects.is_empty() {
-                p.subjects = subjects;
+            let existing = eng.store.principal_get(&id).await?;
+            if let Some(p) = &existing {
+                anyhow::ensure!(p.tenant == tenant, "{id} exists in tenant {}", p.tenant);
             }
-            p.kinds = kinds.iter().map(|k| MemoryKind::parse(k).ok_or_else(|| anyhow::anyhow!("unknown kind '{k}'"))).collect::<anyhow::Result<_>>()?;
-            p.denied_labels = denied_labels;
-            p.org = org;
-            p.team = team;
-            p.can_commit = commit;
-            p.act_as = act_as;
-            p.name = name.or(p.name);
-            eng.store.principal_put(&p).await?;
-            eng.store
-                .audit(
-                    "cli",
-                    "principal.put",
-                    &p.tenant,
-                    None,
-                    None,
-                    json!({ "principal": p.id, "kind": kind.as_str(), "subjects": p.subjects, "can_commit": p.can_commit, "act_as": p.act_as, "denied_labels": p.denied_labels }),
-                )
-                .await?;
+            let req = PrincipalRequest {
+                name,
+                // Subjects are kept unless given; the other attributes are the command's.
+                subjects: if subjects.is_empty() { existing.map(|p| p.subjects).unwrap_or_default() } else { subjects },
+                kinds: kinds.iter().map(|k| MemoryKind::parse(k).ok_or_else(|| anyhow::anyhow!("unknown kind '{k}'"))).collect::<anyhow::Result<_>>()?,
+                denied_labels,
+                org,
+                team,
+                can_commit: commit,
+                act_as,
+            };
+            // The same engine method the API calls (`PUT /v1/principals/{id}`), as the operator.
+            let p = eng.principal_put(&tenant, &id, &req, "cli").await?;
             println!(
                 "{} ({}, tenant {}) subjects {}{}{}",
                 p.id,
@@ -200,15 +190,14 @@ pub async fn principal(eng: &Engine, cmd: PrincipalCmd) -> anyhow::Result<()> {
 }
 
 async fn set_disabled(eng: &Engine, id: &str, disabled: bool) -> anyhow::Result<()> {
-    let mut p = eng.store.principal_get(id).await?.ok_or_else(|| anyhow::anyhow!("no principal {id}"))?;
-    p.disabled_at = disabled.then(chrono::Utc::now);
-    eng.store.principal_put(&p).await?;
-    eng.store.audit("cli", if disabled { "principal.disable" } else { "principal.enable" }, &p.tenant, None, None, json!({ "principal": id })).await?;
+    let tenant = eng.store.principal_get(id).await?.ok_or_else(|| anyhow::anyhow!("no principal {id}"))?.tenant;
+    eng.principal_set_disabled(&tenant, id, disabled, "cli").await?;
     println!("{id} {}", if disabled { "disabled" } else { "enabled" });
     Ok(())
 }
 
-/// Create a key and record it; returns the full key (shown once).
+/// Create a key and record it; returns the full key (shown once). The operator at the command
+/// line is not held to a credential's permissions: the key may carry all its principal's kind allows.
 pub async fn create_key(
     eng: &Engine,
     principal: &str,
@@ -216,16 +205,7 @@ pub async fn create_key(
     expires: Option<chrono::Duration>,
     created_by: &str,
 ) -> anyhow::Result<(identity::ApiKey, String)> {
-    let p = eng.store.principal_get(principal).await?.ok_or_else(|| anyhow::anyhow!("no principal {principal}; add it with `memhouse principal add {principal}`"))?;
-    let allowed = p.kind.permissions();
-    let scopes = scopes.unwrap_or_else(|| allowed.clone());
-    if let Some(s) = scopes.iter().find(|s| !allowed.contains(s)) {
-        anyhow::bail!("a {} key can't carry {s} (allowed: {})", p.kind.as_str(), allowed.join(", "));
-    }
-    let (key, full) = identity::new_key(&p.id, scopes, expires.map(|d| chrono::Utc::now() + d), created_by);
-    eng.store.api_key_put(&key).await?;
-    eng.store.audit(created_by, "key.create", &p.tenant, None, None, json!({ "key": key.id, "principal": p.id, "scopes": key.scopes, "expires_at": key.expires_at })).await?;
-    Ok((key, full))
+    eng.key_create(&tenant_of(eng, principal).await?, principal, scopes, expires, created_by, None).await
 }
 
 pub async fn key(eng: &Engine, cmd: KeyCmd) -> anyhow::Result<()> {
@@ -255,18 +235,12 @@ pub async fn key(eng: &Engine, cmd: KeyCmd) -> anyhow::Result<()> {
         }
         KeyCmd::Revoke { id } => {
             let k = eng.store.api_key_get(&id).await?.ok_or_else(|| anyhow::anyhow!("no key {id}"))?;
-            anyhow::ensure!(eng.store.api_key_end(&id, None).await?, "key {id} was already revoked");
-            eng.store.audit("cli", "key.revoke", &tenant_of(eng, &k.principal_id).await?, None, None, json!({ "key": id, "principal": k.principal_id })).await?;
-            println!("revoked {id} (its tokens stop working within 5 seconds)");
+            eng.key_revoke(&tenant_of(eng, &k.principal_id).await?, &id, "cli").await?;
+            println!("revoked {id} (its tokens and console sessions stop working within 5 seconds)");
         }
         KeyCmd::Rotate { id, grace } => {
             let old = eng.store.api_key_get(&id).await?.ok_or_else(|| anyhow::anyhow!("no key {id}"))?;
-            anyhow::ensure!(old.revoked_at.is_none(), "key {id} is revoked");
-            let lifetime = old.expires_at.map(|e| e - old.created_at);
-            let (k, full) = create_key(eng, &old.principal_id, Some(old.scopes.clone()), lifetime, "cli").await?;
-            let until = chrono::Utc::now() + duration(&grace)?;
-            eng.store.api_key_end(&id, Some(until)).await?;
-            eng.store.audit("cli", "key.rotate", &tenant_of(eng, &old.principal_id).await?, None, None, json!({ "old": id, "new": k.id, "old_expires_at": until })).await?;
+            let (k, full, until) = eng.key_rotate(&tenant_of(eng, &old.principal_id).await?, &id, duration(&grace)?, "cli", None).await?;
             eprintln!("Key {} replaces {id}, which keeps working until {until}. Store the new key now.", k.id);
             println!("{full}");
         }

@@ -374,4 +374,19 @@ CREATE TABLE IF NOT EXISTS mh_eval_run (
   created_at     INTEGER NOT NULL
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS mh_eval_run_suite_idx ON mh_eval_run (tenant, suite, created_at DESC);
+
+-- Console sessions (schema 11, threat model T3). Only the sha256 of a session's secret is
+-- kept. A row exists while its session can be used: logout, expiry and the retention pass
+-- delete it. No reference to mh_principal: the bootstrap principal has no row there.
+CREATE TABLE IF NOT EXISTS mh_session (
+  id           TEXT PRIMARY KEY,
+  tenant       TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  key_id       TEXT NOT NULL,
+  key_check    TEXT,
+  created_at   INTEGER NOT NULL,
+  expires_at   INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS mh_session_expires_idx ON mh_session (expires_at);
 "#;

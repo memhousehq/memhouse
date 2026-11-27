@@ -1359,6 +1359,21 @@ pub struct Stats {
     pub by_kind: Vec<(String, i64)>,
 }
 
+/// What a store holds, as the profile advisor reads it (PROF-11). Counts are of every record
+/// in every state: a superseded version takes room like a current one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StoreUsage {
+    /// Records of every tenant in this store: on Lite they share one file and one writer.
+    pub records: i64,
+    /// The subject of the tenant with the most records, and how many it has.
+    pub largest_subject: Option<(String, i64)>,
+    /// The size of the database on disk, where the store can tell (Lite: the file and its
+    /// write-ahead log).
+    pub bytes: Option<u64>,
+    /// Records of every tenant created in the last hour.
+    pub writes_last_hour: i64,
+}
+
 /// Tokens, cost and wall time of one logical LLM call (retries included).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmUsage {
@@ -1434,6 +1449,12 @@ pub struct ReviewRequest {
     /// Why, for the audit log (a rejection's reason).
     #[serde(default)]
     pub reason: Option<String>,
+    /// With `commit`: approve this wording instead of the record's own (GOV-11). The text is
+    /// written as the reviewer's and passes the write gate like any write; the reviewed
+    /// record is then rejected and names its replacement. The way to approve a quarantined
+    /// record, which is never committed as it stands.
+    #[serde(default)]
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1450,6 +1471,10 @@ pub struct ReviewResult {
     pub status: MemoryStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded: Option<Uuid>,
+    /// For a rephrased approval: the reviewed record, now `rejected`; `id` is then the record
+    /// that holds the new wording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rephrased_from: Option<Uuid>,
 }
 
 /// Replace a record's sensitivity labels (`POST /v1/labels`, ACC-04). No new version and no
@@ -1499,7 +1524,7 @@ pub struct WhoAmI {
     /// these and of broader levels. Empty for an admin, who reads every scope.
     #[serde(default, skip_serializing_if = "Scope::is_empty")]
     pub scope: Scope,
-    /// `key`, `token`, `bootstrap` or `operator`.
+    /// `key`, `token`, `bootstrap`, `operator` or `session` (the console).
     pub via: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,

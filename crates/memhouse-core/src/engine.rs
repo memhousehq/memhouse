@@ -1431,6 +1431,10 @@ impl Engine {
     pub(crate) async fn admit(&self, tenant: &str, id: Uuid, by: &str) -> anyhow::Result<(MemoryStatus, Option<Uuid>)> {
         self.settle_record(tenant, id).await?;
         let m = self.store.get(tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
+        if m.status == MemoryStatus::Quarantined {
+            // GOV-11: what the injection screen held is never committed as it stands.
+            return Err(error::conflict(format!("memory {id} is quarantined; only candidates are admitted: reject it, or approve another wording of it (review with `content`)")));
+        }
         if m.status != MemoryStatus::Candidate {
             return Err(error::conflict(format!("memory {id} is {}; only candidates are admitted", m.status.as_str())));
         }
@@ -1698,6 +1702,41 @@ impl Engine {
         Ok(MemoryPage { items, next_cursor })
     }
 
+    /// One page of the review queue (GOV-11): records in `statuses` that `visible` lets the
+    /// reviewer see, newest first. Records the reviewer may not see are passed over, so a
+    /// page is filled from further down the queue.
+    pub(crate) async fn review_queue_page(
+        &self,
+        tenant: &str,
+        statuses: &[MemoryStatus],
+        subject: Option<&str>,
+        limit: usize,
+        cursor: Option<&str>,
+        visible: &(dyn Fn(&Memory) -> bool + Sync),
+    ) -> anyhow::Result<MemoryPage> {
+        let limit = limit.clamp(1, 200);
+        let mut before = cursor.map(decode_cursor).transpose()?;
+        let mut items = Vec::with_capacity(limit);
+        // Bounded: a reviewer who may see almost nothing gets a cursor to go on with.
+        for _ in 0..20 {
+            let batch = self.store.review_queue(tenant, statuses, subject, before, limit + 1).await?;
+            let full = batch.len() > limit;
+            for m in batch {
+                if items.len() == limit {
+                    return Ok(MemoryPage { items, next_cursor: before.map(|(at, id)| encode_cursor(at, id)) });
+                }
+                before = Some((m.created_at, m.id));
+                if visible(&m) {
+                    items.push(m);
+                }
+            }
+            if !full {
+                return Ok(MemoryPage { items, next_cursor: None });
+            }
+        }
+        Ok(MemoryPage { items, next_cursor: before.map(|(at, id)| encode_cursor(at, id)) })
+    }
+
     /// The committed working memory of a session, newest first, and whether it was read from the
     /// store (a cache miss: one statement) rather than the session cache.
     /// `more`: the caller wants up to this many, more than the cache keeps per session; they are
@@ -1771,6 +1810,10 @@ impl Engine {
         if expired > 0 {
             self.store.audit("system", "retention.expire", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": expired })).await?;
         }
+        // Console sessions past their end or their idle limit (T3): no row outlives its use.
+        let idle = self.cfg.server.session_idle_secs;
+        let now = Utc::now();
+        self.store.sessions_purge(now, (idle > 0).then(|| now - chrono::Duration::seconds(idle as i64))).await?;
         let policy = self.policy_for(&self.cfg.memory.tenant).await?;
         let mut purged = 0;
         for kind in MemoryKind::ALL {

@@ -88,7 +88,7 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Run the HTTP server: REST API, MCP over HTTP at /mcp, Memory Browser at /
+    /// Run the HTTP server: REST API, MCP over HTTP at /mcp, the admin console at /
     Serve {
         #[arg(long)]
         bind: Option<String>,
@@ -416,7 +416,7 @@ fn print_next_steps(path: &std::path::Path) {
     println!("Try it from the terminal:");
     println!("  memhouse remember \"Alice prefers email over phone\" --subject user:alice");
     println!("  memhouse recall \"how should I contact Alice?\" --subject user:alice");
-    println!("Run the HTTP API and Memory Browser:");
+    println!("Run the HTTP API and the admin console:");
     println!("  memhouse serve                     # http://127.0.0.1:7077");
     println!("Benchmark it:");
     println!("  memhouse bench run --suite governance && memhouse bench run --dataset longmemeval-s --limit 50");
@@ -950,6 +950,12 @@ async fn doctor(cfg_path: &Option<PathBuf>) -> anyhow::Result<()> {
             match eng.store.audit_verify().await? {
                 (n, None) => ok(&format!("audit chain intact ({n} events)")),
                 (_, Some(id)) => bad(&format!("audit chain broken at event {id}")),
+            }
+            // The profile advisor (PROF-11): the same report as `GET /v1/advisor`.
+            match eng.advisor(&cfg.memory.tenant).await {
+                Ok(a) if a.status == "ok" => ok(&format!("profile {} {}", a.profile, a.line())),
+                Ok(a) => bad(&format!("profile {} {}", a.profile, a.line())),
+                Err(e) => bad(&format!("profile advisor: {e:#}")),
             }
         }
         Err(e) => {

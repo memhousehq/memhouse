@@ -84,6 +84,20 @@ async fn a_restore_reapplies_deletions_made_after_the_snapshot() {
     store.insert(std::slice::from_ref(&early)).await.unwrap();
     assert!(store.delete(T, early.memory.id, "ada").await.unwrap());
 
+    // A console session that is open when the backup is made (and logged out after it).
+    let now = chrono::Utc::now();
+    let session = memhouse_core::identity::Session {
+        id: "hash-of-a-session-secret".into(),
+        tenant: T.into(),
+        principal_id: "admin:ada".into(),
+        key_id: "k1".into(),
+        key_check: None,
+        created_at: now,
+        expires_at: now + chrono::Duration::hours(8),
+        last_seen_at: now,
+    };
+    store.session_put(&session).await.unwrap();
+
     // Back up while the store stays open.
     let (snapshot, manifest) = backup::create(&store, &dir, "test").await.unwrap();
     assert_eq!((manifest.counts.records, manifest.counts.subjects, manifest.counts.ledger_entries, manifest.counts.audit_events), (6, 3, 1, 1));
@@ -136,6 +150,8 @@ async fn a_restore_reapplies_deletions_made_after_the_snapshot() {
     assert_eq!(store.get(T, kept.memory.id).await.unwrap().unwrap().content, "Ada lives in Porto");
     assert!(store.get(T, later.memory.id).await.unwrap().is_none());
     assert!(store.subjects(T, 10).await.unwrap().iter().all(|(s, _)| s != "user:bo"));
+    // No console session comes back with a restore: one may have been logged out since.
+    assert!(store.session_get(&session.id).await.unwrap().is_none());
     // Keywords and cached vectors of the removed text went with it.
     drop(store);
     assert_eq!((keyword_hits(&db, "walnuts"), keyword_hits(&db, "euros"), keyword_hits(&db, "porto")), (0, 0, 1));

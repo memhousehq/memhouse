@@ -2,6 +2,7 @@
 //! MemHouse core: the memory engine shared by every profile, transport and adapter.
 
 pub mod access;
+pub mod admin;
 pub mod caller;
 pub mod classify;
 pub mod config;

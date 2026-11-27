@@ -10,7 +10,7 @@ use crate::{meta, Ident, SqliteStore, SCHEMA_VERSION};
 use async_trait::async_trait;
 use chrono::{DateTime, SubsecRound, Utc};
 use memhouse_core::format::{PolicyLine, RecordLine};
-use memhouse_core::identity::{ApiKey, Principal, PrincipalKind};
+use memhouse_core::identity::{ApiKey, Principal, PrincipalKind, Session};
 use memhouse_core::intake::AuditEntry;
 use memhouse_core::policy::{PolicyActivation, PolicySpecRecord, SpecStatus};
 use memhouse_core::types::*;
@@ -89,6 +89,19 @@ fn key_of(r: &Row) -> anyhow::Result<ApiKey> {
         revoked_at: opt_at(r, "revoked_at")?,
         created_at: at(r.get("created_at")?),
         created_by: r.get("created_by")?,
+    })
+}
+
+fn session_of(r: &Row) -> anyhow::Result<Session> {
+    Ok(Session {
+        id: r.get("id")?,
+        tenant: r.get("tenant")?,
+        principal_id: r.get("principal_id")?,
+        key_id: r.get("key_id")?,
+        key_check: r.get("key_check")?,
+        created_at: at(r.get("created_at")?),
+        expires_at: at(r.get("expires_at")?),
+        last_seen_at: at(r.get("last_seen_at")?),
     })
 }
 
@@ -1429,6 +1442,70 @@ impl Store for SqliteStore {
 
     async fn api_keys(&self, principal: Option<&str>) -> anyhow::Result<Vec<ApiKey>> {
         rows(&self.conn(), "SELECT * FROM mh_api_key WHERE ?1 IS NULL OR principal_id = ?1 ORDER BY principal_id, created_at", [principal], key_of)
+    }
+
+    async fn session_put(&self, s: &Session) -> anyhow::Result<()> {
+        exec(
+            &self.conn(),
+            "INSERT INTO mh_session (id, tenant, principal_id, key_id, key_check, created_at, expires_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![s.id, s.tenant, s.principal_id, s.key_id, s.key_check, us(s.created_at), us(s.expires_at), us(s.last_seen_at)],
+        )?;
+        Ok(())
+    }
+
+    async fn session_get(&self, id: &str) -> anyhow::Result<Option<Session>> {
+        // The writer's connection: a session is read right after it is written or deleted.
+        first(&self.conn(), "SELECT * FROM mh_session WHERE id = ?1", [id], session_of)
+    }
+
+    async fn session_touch(&self, id: &str, at: DateTime<Utc>) -> anyhow::Result<()> {
+        exec(&self.conn_relaxed(), "UPDATE mh_session SET last_seen_at = max(last_seen_at, ?2) WHERE id = ?1", params![id, us(at)])?;
+        Ok(())
+    }
+
+    async fn session_delete(&self, id: &str) -> anyhow::Result<bool> {
+        Ok(exec(&self.conn(), "DELETE FROM mh_session WHERE id = ?1", [id])? > 0)
+    }
+
+    async fn sessions_purge(&self, now: DateTime<Utc>, idle_before: Option<DateTime<Utc>>) -> anyhow::Result<u64> {
+        exec(&self.conn(), "DELETE FROM mh_session WHERE expires_at <= ?1 OR (?2 IS NOT NULL AND last_seen_at <= ?2)", params![us(now), idle_before.map(us)])
+    }
+
+    async fn review_queue(
+        &self,
+        tenant: &str,
+        statuses: &[MemoryStatus],
+        subject: Option<&str>,
+        before: Option<(DateTime<Utc>, Uuid)>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Memory>> {
+        let statuses = json(&statuses.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+        rows(
+            &self.read(),
+            &format!(
+                "SELECT {COLS} FROM mh_memory m WHERE m.tenant = ?1 AND m.status IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR m.subject = ?3) \
+                 AND (?4 IS NULL OR (m.created_at, m.id) < (?4, ?5)) ORDER BY m.created_at DESC, m.id DESC LIMIT ?6"
+            ),
+            params![tenant, statuses, subject, before.map(|b| us(b.0)), before.map(|b| b.1.to_string()), lim(limit)],
+            memory_of,
+        )
+    }
+
+    async fn usage(&self, tenant: &str) -> anyhow::Result<StoreUsage> {
+        let c = self.read();
+        let records = first(&c, "SELECT count(*) FROM mh_memory", [], |r| Ok(r.get(0)?))?.unwrap_or(0);
+        let largest_subject =
+            first(&c, "SELECT subject, count(*) FROM mh_memory WHERE tenant = ?1 GROUP BY subject ORDER BY 2 DESC, 1 LIMIT 1", [tenant], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let writes_last_hour = first(&c, "SELECT count(*) FROM mh_memory WHERE created_at > ?1", [now() - micros(3600)], |r| Ok(r.get(0)?))?.unwrap_or(0);
+        drop(c);
+        // The file and its write-ahead log, as they are on disk now; nothing for a database in memory.
+        let bytes = self.inner.path.as_deref().map(|p| {
+            let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            let mut wal = p.as_os_str().to_os_string();
+            wal.push("-wal");
+            size(p) + size(std::path::Path::new(&wal))
+        });
+        Ok(StoreUsage { records, largest_subject, bytes, writes_last_hour })
     }
 
     async fn signing_key(&self, kid: &str) -> anyhow::Result<Option<Vec<u8>>> {

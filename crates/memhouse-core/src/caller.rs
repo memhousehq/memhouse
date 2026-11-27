@@ -6,6 +6,10 @@
 //! checked, never trusted (GOV-02). A denial is audited (`access.denied`) and fails closed.
 
 use crate::access::{AccessRequest, Decision, Operation};
+use crate::admin::{
+    AdvisorReport, EvalRunInfo, EvalSuiteInfo, EvalTrend, KeyCreated, KeyInfo, KeyRequest, KeyRevoked, KeyRotateRequest, PrincipalInfo, PrincipalRequest, SessionClosed,
+    SessionInfo,
+};
 use crate::config::Admission;
 use crate::engine::{Engine, Entry, Page};
 use crate::error;
@@ -578,11 +582,172 @@ impl Caller {
             self.denied(&a, &d).await;
             return Err(error::forbidden(d.reasons.join("; ")));
         }
+        if let Some(content) = req.content.as_deref() {
+            if req.action != ReviewAction::Commit {
+                return Err(error::invalid("content is given with action commit: it is the wording to approve; expected no content with reject"));
+            }
+            // The new wording is a write of the reviewer's in the record's subject, under the
+            // record's labels and scope: authorized as one, and gated as one by the engine.
+            let mut w = AccessRequest::new(Operation::Remember).record(&m);
+            w.own_partition = self.own(&m);
+            self.decide(&w).await?;
+            return self.engine.rephrase(self.tenant(), &m, content, self.who.id(), self.who.user.clone(), req.reason.as_deref()).await;
+        }
         let (status, superseded) = match req.action {
             ReviewAction::Commit => self.engine.admit(self.tenant(), m.id, self.who.id()).await?,
             ReviewAction::Reject => (self.engine.reject(self.tenant(), m.id, self.who.id(), req.reason.as_deref().unwrap_or("rejected by a reviewer")).await?, None),
         };
-        Ok(ReviewResult { id: m.id, status, superseded })
+        Ok(ReviewResult { id: m.id, status, superseded, rephrased_from: None })
+    }
+
+    /// The records waiting for a reviewer (GOV-11): candidates and quarantined records of the
+    /// subjects the caller may use, newest first. Needs `memory:review`.
+    pub async fn review_queue(&self, statuses: Vec<MemoryStatus>, subject: Option<String>, limit: usize, cursor: Option<&str>) -> anyhow::Result<MemoryPage> {
+        let mut a = AccessRequest::new(Operation::Review);
+        a.subject = subject.clone();
+        let d = self.decide(&a).await?;
+        let statuses = if statuses.is_empty() { vec![MemoryStatus::Candidate, MemoryStatus::Quarantined] } else { statuses };
+        if let Some(s) = statuses.iter().find(|s| !matches!(s, MemoryStatus::Candidate | MemoryStatus::Quarantined)) {
+            return Err(error::invalid(format!("the review queue holds candidate and quarantined records; expected one of them, not {}", s.as_str())));
+        }
+        let p = &self.who.principal;
+        let visible = |m: &Memory| p.may_use_subject(&m.subject) && d.visible(m);
+        self.engine.review_queue_page(&d.tenant, &statuses, subject.as_deref(), limit, cursor, &visible).await
+    }
+
+    /// Open a console session with the key just presented (T3). Any key may: the session has
+    /// that key's permissions and nothing more. Audited as `session.login`.
+    pub async fn session_open(&self, presented: &str) -> anyhow::Result<(String, SessionInfo)> {
+        self.decide(&AccessRequest::new(Operation::Session)).await?;
+        let (secret, session) = self.engine.auth.session_open(&self.who, presented).await?;
+        self.engine.store.audit(self.who.id(), "session.login", self.tenant(), None, None, json!({ "key": session.key_id, "expires_at": session.expires_at })).await?;
+        let info = self.session_info(&secret, session.expires_at);
+        Ok((secret, info))
+    }
+
+    /// The caller may use the session routes at all: any credential that carries a permission.
+    pub async fn session_allowed(&self) -> anyhow::Result<()> {
+        self.decide(&AccessRequest::new(Operation::Session)).await.map(drop)
+    }
+
+    /// What the console shows of its session, with the CSRF token of that session.
+    pub fn session_info(&self, secret: &str, expires_at: chrono::DateTime<chrono::Utc>) -> SessionInfo {
+        let p = &self.who.principal;
+        SessionInfo {
+            principal: p.id.clone(),
+            kind: p.kind.as_str().into(),
+            tenant: p.tenant.clone(),
+            scopes: self.who.scopes.clone(),
+            expires_at,
+            idle_secs: self.engine.cfg.server.session_idle_secs,
+            csrf_token: crate::identity::csrf_token(secret),
+        }
+    }
+
+    /// End the caller's session (log out). Audited as `session.logout`.
+    pub async fn session_close(&self, secret: &str) -> anyhow::Result<SessionClosed> {
+        self.session_allowed().await?;
+        let closed = self.engine.auth.session_close(secret).await?;
+        if closed {
+            self.engine.store.audit(self.who.id(), "session.logout", self.tenant(), None, None, json!({ "key": self.who.key_id })).await?;
+        }
+        Ok(SessionClosed { closed })
+    }
+
+    /// The tenant's principals. Needs `principal:manage`.
+    pub async fn principals(&self) -> anyhow::Result<Vec<PrincipalInfo>> {
+        self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        Ok(self.engine.principal_list(self.tenant()).await?.into_iter().map(PrincipalInfo::from).collect())
+    }
+
+    /// A caller gives a principal no more than it has itself: subjects within its own, at
+    /// least its own denied labels, kinds within its own.
+    fn within_own(&self, req: &PrincipalRequest) -> anyhow::Result<()> {
+        let me = &self.who.principal;
+        let covered = |pattern: &str| match pattern.strip_suffix('*') {
+            Some(prefix) => me.subjects.iter().any(|s| s == "*" || s.strip_suffix('*').is_some_and(|mine| prefix.starts_with(mine))),
+            None => me.may_use_subject(pattern),
+        };
+        let asked: Vec<String> = if req.subjects.is_empty() { vec!["*".into()] } else { req.subjects.clone() };
+        if let Some(s) = asked.iter().find(|s| !covered(s)) {
+            return Err(error::forbidden(format!("subjects {s} are outside this principal's own subjects")));
+        }
+        if let Some(l) = me.denied_labels.iter().find(|l| !req.denied_labels.contains(l)) {
+            return Err(error::forbidden(format!("label {l} is denied to this principal, so it is denied to the principals it manages")));
+        }
+        if !me.kinds.is_empty() && (req.kinds.is_empty() || req.kinds.iter().any(|k| !me.kinds.contains(k))) {
+            return Err(error::forbidden("kinds must be within this principal's own kinds"));
+        }
+        Ok(())
+    }
+
+    /// Create a principal or replace its attributes. Audited as `principal.put`.
+    pub async fn principal_put(&self, id: &str, req: &PrincipalRequest) -> anyhow::Result<PrincipalInfo> {
+        self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        self.within_own(req)?;
+        Ok(self.engine.principal_put(self.tenant(), id, req, self.who.id()).await?.into())
+    }
+
+    /// Disable or enable a principal. Audited as `principal.disable` or `principal.enable`.
+    pub async fn principal_set_disabled(&self, id: &str, disabled: bool) -> anyhow::Result<PrincipalInfo> {
+        self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        if disabled && id == self.who.id() {
+            return Err(error::invalid("a principal does not disable itself; expected another principal"));
+        }
+        Ok(self.engine.principal_set_disabled(self.tenant(), id, disabled, self.who.id()).await?.into())
+    }
+
+    /// The keys of the tenant's principals, without secrets.
+    pub async fn keys(&self, principal: Option<&str>) -> anyhow::Result<Vec<KeyInfo>> {
+        self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        let now = chrono::Utc::now();
+        Ok(self.engine.key_list(self.tenant(), principal).await?.iter().map(|k| KeyInfo::of(k, now)).collect())
+    }
+
+    /// Create a key; it carries at most the caller's own permissions.
+    pub async fn key_create(&self, req: &KeyRequest) -> anyhow::Result<KeyCreated> {
+        self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        let expires = req.expires_in_secs.map(|s| chrono::Duration::seconds(s.min(10 * 365 * 86_400) as i64));
+        let (k, key) = self.engine.key_create(self.tenant(), &req.principal, req.scopes.clone(), expires, self.who.id(), Some(&self.who.scopes)).await?;
+        Ok(KeyCreated { key, info: KeyInfo::of(&k, chrono::Utc::now()), replaces: None, old_expires_at: None })
+    }
+
+    pub async fn key_revoke(&self, id: &str) -> anyhow::Result<KeyRevoked> {
+        self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        self.engine.key_revoke(self.tenant(), id, self.who.id()).await?;
+        Ok(KeyRevoked { revoked: id.to_string() })
+    }
+
+    /// Replace a key; the caller must carry every permission of it, since it gets the new one.
+    pub async fn key_rotate(&self, id: &str, req: &KeyRotateRequest) -> anyhow::Result<KeyCreated> {
+        self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        let grace = chrono::Duration::seconds(req.grace_secs.unwrap_or(86_400).min(30 * 86_400) as i64);
+        let (k, key, until) = self.engine.key_rotate(self.tenant(), id, grace, self.who.id(), Some(&self.who.scopes)).await?;
+        Ok(KeyCreated { key, info: KeyInfo::of(&k, chrono::Utc::now()), replaces: Some(id.to_string()), old_expires_at: Some(until) })
+    }
+
+    /// The tenant's evaluation suites (QUAL-11). Needs `ops:read`.
+    pub async fn eval_suites(&self) -> anyhow::Result<Vec<EvalSuiteInfo>> {
+        self.decide(&AccessRequest::new(Operation::EvalRead)).await?;
+        self.engine.eval_suite_infos(self.tenant()).await
+    }
+
+    /// Stored replays, newest first.
+    pub async fn eval_runs(&self, suite: Option<&str>, limit: usize) -> anyhow::Result<Vec<EvalRunInfo>> {
+        self.decide(&AccessRequest::new(Operation::EvalRead)).await?;
+        Ok(self.engine.store.eval_runs(self.tenant(), suite, limit.clamp(1, 1000)).await?.iter().map(EvalRunInfo::from).collect())
+    }
+
+    /// The quality metrics of each suite by policy version (QUAL-11), from the latest 1000 replays.
+    pub async fn eval_trend(&self, suite: Option<&str>) -> anyhow::Result<EvalTrend> {
+        self.decide(&AccessRequest::new(Operation::EvalRead)).await?;
+        Ok(crate::admin::trend(&self.engine.store.eval_runs(self.tenant(), suite, 1000).await?))
+    }
+
+    /// The profile advisor's report (PROF-11). Needs `ops:read`.
+    pub async fn advisor(&self) -> anyhow::Result<AdvisorReport> {
+        self.decide(&AccessRequest::new(Operation::Advisor)).await?;
+        self.engine.advisor(self.tenant()).await
     }
 
     /// Issue a short-lived agent token (GOV-13). The token's user is verified: the calling user
@@ -645,6 +810,7 @@ impl Caller {
             Via::Token => "token",
             Via::Bootstrap => "bootstrap",
             Via::Operator => "operator",
+            Via::Session => "session",
         };
         Ok(WhoAmI {
             principal: p.id.clone(),

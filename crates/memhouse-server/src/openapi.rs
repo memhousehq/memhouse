@@ -10,7 +10,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{json, Map, Value};
 
 /// The API version, separate from the crate version. Minor and patch releases only add.
-pub const API_VERSION: &str = "1.9.0";
+pub const API_VERSION: &str = "1.10.0";
 
 /// Routes kept from before v1, with the route that replaces each. They answer as before and add
 /// `Deprecation`, `Sunset` and `Link` headers; they are removed no earlier than [`SUNSET`].
@@ -152,6 +152,23 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
     let diff_res = s(g.subschema_for::<pol::PolicyDiff>());
     let compiled = s(g.subschema_for::<pol::CompiledPolicy>());
     let rollback_req = s(g.subschema_for::<pol::RollbackRequest>());
+    use memhouse_core::admin as adm;
+    let session = s(g.subschema_for::<adm::SessionInfo>());
+    let session_closed = s(g.subschema_for::<adm::SessionClosed>());
+    let principal = s(g.subschema_for::<adm::PrincipalInfo>());
+    let principal_list = s(g.subschema_for::<Vec<adm::PrincipalInfo>>());
+    let principal_req = s(g.subschema_for::<adm::PrincipalRequest>());
+    let key_list = s(g.subschema_for::<Vec<adm::KeyInfo>>());
+    let key_req = s(g.subschema_for::<adm::KeyRequest>());
+    let key_created = s(g.subschema_for::<adm::KeyCreated>());
+    let key_revoked = s(g.subschema_for::<adm::KeyRevoked>());
+    let key_rotate_req = s(g.subschema_for::<adm::KeyRotateRequest>());
+    let eval_suites = s(g.subschema_for::<Vec<adm::EvalSuiteInfo>>());
+    let eval_runs = s(g.subschema_for::<Vec<adm::EvalRunInfo>>());
+    let eval_trend = s(g.subschema_for::<adm::EvalTrend>());
+    let advisor = s(g.subschema_for::<adm::AdvisorReport>());
+    let principal_param = || path_param("id", "A principal id, e.g. `agent:support-bot` (URL-encoded).");
+    let key_param = || path_param("id", "A key's public id.");
     s(g.subschema_for::<ErrorBody>());
     let id_param = || path_param("id", "A memory id.");
     let subject_param = || path_param("subject", "A subject, e.g. `customer:acme` (URL-encoded).");
@@ -256,7 +273,7 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             tag: "memory",
             stability: Stable,
             body: None,
-            ok: page,
+            ok: page.clone(),
             params: vec![
                 subject_param(),
                 query_param("kinds", "Comma-separated kinds.", json!({"type": "string"})),
@@ -447,6 +464,254 @@ fn ops(g: &mut SchemaGenerator) -> Vec<Op> {
             stability: Stable,
             body: None,
             ok: whoami,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/session",
+            id: "openSession",
+            summary: "Log in to the console",
+            description: "Opens a console session for the key presented with this request (`Authorization: Bearer <key>`; an agent token opens none). The answer sets the session cookie: `HttpOnly`, `SameSite=Strict`, and `Secure` under the name `__Host-memhouse_session` unless the request came for a loopback host (`[server] session_cookie_secure`). The session has the key's permissions, lasts `[server] session_ttl_secs` at most and ends when unused for `session_idle_secs`, on logout, and when the key is revoked or its principal disabled. The session secret is not in the body. Audited as `session.login`.",
+            tag: "console",
+            stability: Stable,
+            body: None,
+            ok: session.clone(),
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/session",
+            id: "session",
+            summary: "The console session of this request",
+            description: "For a request made with the session cookie: who it acts as, when it ends, and its CSRF token. A request made with the cookie that changes anything must send that token as `x-memhouse-csrf`, and every request made with the cookie must come from the server's own origin; otherwise it is refused with 403 and audited (`access.denied`, rule `csrf`). Answers 404 to a request made with a key or token.",
+            tag: "console",
+            stability: Stable,
+            body: None,
+            ok: session,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "delete",
+            path: "/v1/session",
+            id: "closeSession",
+            summary: "Log out",
+            description: "Ends the session on the server and clears the cookie. Audited as `session.logout`.",
+            tag: "console",
+            stability: Stable,
+            body: None,
+            ok: session_closed,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/review/queue",
+            id: "reviewQueue",
+            summary: "Records waiting for a reviewer",
+            description: "Candidates and quarantined records of the subjects the caller may use, newest first (GOV-11). Settle one with `POST /v1/review`: commit or reject a candidate; reject a quarantined record, or approve another wording of it (`content`). Needs `memory:review`.",
+            tag: "memory",
+            stability: Stable,
+            body: None,
+            ok: page,
+            params: vec![
+                query_param("status", "`candidate`, `quarantined`, or both separated by a comma (the default).", json!({"type": "string"})),
+                query_param("subject", "Only this subject.", json!({"type": "string"})),
+                query_param("limit", "1 to 200 (default 50).", json!({"type": "integer", "minimum": 1, "maximum": 200})),
+                query_param("cursor", "`next_cursor` of the previous page.", json!({"type": "string"})),
+            ],
+            idempotent: false,
+            errors: &[400, 401, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/principals",
+            id: "listPrincipals",
+            summary: "The tenant's principals",
+            description: "Agents, users and admins of the caller's tenant. Needs `principal:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: None,
+            ok: principal_list,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 500],
+            open: false,
+        },
+        Op {
+            method: "put",
+            path: "/v1/principals/{id}",
+            id: "putPrincipal",
+            summary: "Create or change a principal",
+            description: "Creates the principal, or replaces the attributes of an existing one. The kind is the prefix of the id (`agent:`, `user:`, `admin:`). A caller gives no more than it has: subjects within its own, at least its own denied labels, kinds within its own. Audited as `principal.put`. Needs `principal:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: Some(principal_req),
+            ok: principal.clone(),
+            params: vec![principal_param()],
+            idempotent: false,
+            errors: &[400, 401, 409, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/principals/{id}/disable",
+            id: "disablePrincipal",
+            summary: "Disable a principal",
+            description: "Its keys, tokens and console sessions are refused from now on (a credential verified in the last 5 seconds may still pass). A principal does not disable itself. Audited as `principal.disable`. Needs `principal:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: None,
+            ok: principal.clone(),
+            params: vec![principal_param()],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/principals/{id}/enable",
+            id: "enablePrincipal",
+            summary: "Enable a disabled principal",
+            description: "Audited as `principal.enable`. Needs `principal:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: None,
+            ok: principal,
+            params: vec![principal_param()],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/keys",
+            id: "listKeys",
+            summary: "API keys of the tenant's principals",
+            description: "Ids, permissions and state; never a secret or its hash. Needs `principal:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: None,
+            ok: key_list,
+            params: vec![query_param("principal", "Only this principal's keys.", json!({"type": "string"}))],
+            idempotent: false,
+            errors: &[401, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/keys",
+            id: "createKey",
+            summary: "Create an API key",
+            description: "A key for a principal of the tenant. The answer is the only time the key is shown. It carries at most the permissions of the credential that creates it, within what the principal's kind allows. Audited as `key.create`. Needs `principal:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: Some(key_req),
+            ok: key_created.clone(),
+            params: vec![],
+            idempotent: false,
+            errors: &[400, 401, 404, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/keys/{id}/revoke",
+            id: "revokeKey",
+            summary: "Revoke an API key",
+            description: "The key, the tokens it issued and the console sessions it opened stop working (a credential verified in the last 5 seconds may still pass; a session ends with its next request). Audited as `key.revoke`. Needs `principal:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: None,
+            ok: key_revoked,
+            params: vec![key_param()],
+            idempotent: false,
+            errors: &[400, 401, 404, 409, 500],
+            open: false,
+        },
+        Op {
+            method: "post",
+            path: "/v1/keys/{id}/rotate",
+            id: "rotateKey",
+            summary: "Replace an API key",
+            description: "A new key with the same permissions for the same principal; the old one works until the grace period ends. The caller must carry every permission of the key, since it receives the new one. The body is optional. Audited as `key.create` and `key.rotate`. Needs `principal:manage`.",
+            tag: "identity",
+            stability: Stable,
+            body: Some(key_rotate_req),
+            ok: key_created,
+            params: vec![key_param()],
+            idempotent: false,
+            errors: &[400, 401, 404, 409, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/eval/suites",
+            id: "evalSuites",
+            summary: "The tenant's evaluation suites",
+            description: "Preview. Name, size and hash of each stored suite, without its conversations (QUAL-11). Suites are added and replayed with `memhouse eval`. Needs `ops:read`.",
+            tag: "operations",
+            stability: Preview,
+            body: None,
+            ok: eval_suites,
+            params: vec![],
+            idempotent: false,
+            errors: &[401, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/eval/runs",
+            id: "evalRuns",
+            summary: "Stored evaluation replays",
+            description: "Preview. Newest first, each with the policy version it ran under and its quality metrics: storage and retrieval precision, recall and F1, the stale-fact rate and the contamination rate (QUAL-11). Needs `ops:read`.",
+            tag: "operations",
+            stability: Preview,
+            body: None,
+            ok: eval_runs,
+            params: vec![
+                query_param("suite", "Only this suite.", json!({"type": "string"})),
+                query_param("limit", "1 to 1000 (default 50).", json!({"type": "integer", "minimum": 1, "maximum": 1000})),
+            ],
+            idempotent: false,
+            errors: &[400, 401, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/eval/trend",
+            id: "evalTrend",
+            summary: "Quality metrics by policy version",
+            description: "Preview. For each suite, one point per policy version it was replayed under, oldest version first: the metrics of the latest replay under that version (QUAL-11). Read from the latest 1000 replays. Needs `ops:read`.",
+            tag: "operations",
+            stability: Preview,
+            body: None,
+            ok: eval_trend,
+            params: vec![query_param("suite", "Only this suite.", json!({"type": "string"}))],
+            idempotent: false,
+            errors: &[400, 401, 500],
+            open: false,
+        },
+        Op {
+            method: "get",
+            path: "/v1/advisor",
+            id: "advisor",
+            summary: "The profile advisor",
+            description: "Preview. How much the deployment holds against what its profile is measured at (PROF-11): records, the largest subject, the size on disk, writes in the last hour. On Lite, a value at or above `[advisor] warn_at` of its limit gives `near_limit`, with the recommendation to move to Standard and the `memhouse migrate` command. On Standard the values are reported and not judged. Needs `ops:read`.",
+            tag: "operations",
+            stability: Preview,
+            body: None,
+            ok: advisor,
             params: vec![],
             idempotent: false,
             errors: &[401, 500],
@@ -826,10 +1091,11 @@ pub fn spec() -> Value {
             "license": {"name": "Apache-2.0", "identifier": "Apache-2.0"}
         },
         "servers": [{"url": "http://127.0.0.1:7077", "description": "default `memhouse serve`"}],
-        "security": [{"bearer": []}, {"apiKey": []}],
+        "security": [{"bearer": []}, {"apiKey": []}, {"session": []}],
         "tags": [
             {"name": "memory", "description": "The core operations (CORE-01)."},
-            {"name": "identity", "description": "Who is calling: tokens and the verified identity (GOV-01, GOV-13)."},
+            {"name": "identity", "description": "Who is calling: tokens and the verified identity (GOV-01, GOV-13); principals and their keys."},
+            {"name": "console", "description": "The admin console's session (threat model T3): opened with a key, kept in a cookie script cannot read."},
             {"name": "operations", "description": "Health, counts and audit."},
             {"name": "policy", "description": "Behaviour policy: structured specs, compiled under governance, approved, versioned and rolled back (POL-01, POL-03, POL-04, POL-08)."},
             {"name": "deprecated", "description": format!("Routes from before v1, deprecated on {DEPRECATED_ON}, removed no earlier than {SUNSET}.")}
@@ -844,7 +1110,8 @@ pub fn spec() -> Value {
             },
             "securitySchemes": {
                 "bearer": {"type": "http", "scheme": "bearer", "description": "`Authorization: Bearer <key or token>`: a principal's API key (`mh_…`, from `memhouse key create`), a short-lived agent token (`mht.…`, from `POST /v1/tokens`), or a bootstrap key from `[server] api_keys`."},
-                "apiKey": {"type": "apiKey", "in": "header", "name": "x-api-key"}
+                "apiKey": {"type": "apiKey", "in": "header", "name": "x-api-key"},
+                "session": {"type": "apiKey", "in": "cookie", "name": "__Host-memhouse_session", "description": "The console's session cookie, set by `POST /v1/session` (`memhouse_session` on a loopback host). Read only when the request carries no key or token. A request made with it must come from the server's own origin and, to change anything, send the session's `x-memhouse-csrf` token."}
             }
         }
     })

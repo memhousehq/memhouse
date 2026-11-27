@@ -240,6 +240,8 @@ async fn routes(api: &mut Api, keys: &Keys, db: &Db) -> anyhow::Result<Outcome> 
             "/v1/code/touched" | "/v1/code/changed" => json!({"subject": "customer:1", "files": [{"path": "src/a.rs", "blob_hash": "h1"}]}),
             "/v1/code/revalidate" => json!({"id": id}),
             "/v1/grants" => json!({"grantor": "agent:a", "grantee": "agent:trusted"}),
+            "/v1/principals/{id}" => json!({}),
+            "/v1/keys" => json!({"principal": "agent:a"}),
             _ => return None,
         })
     };

@@ -75,6 +75,9 @@ flowchart LR
 | Content size limit | 20,000 chars | `max_content_chars` | 400 response |
 | Git-aware staleness: a memory about a file that changed is left out of recall until revalidated or revised ([coding.md](coding.md)) | always on, for memories with `code_refs` | — | `code_staleness`, `stale_until_revalidated`, `file_touched_access` checks; `memory.stale` / `memory.fresh` / `memory.revalidate` events |
 | Procedural memory promoted only by a reviewer or by a repeated correction | on (3 repeats) | `[intake] procedural_corrections` (0: reviewer only) | `procedural_promotion` check; `memory.signal` / `memory.admit` events |
+| Console session: a cookie script cannot read, CSRF token, own origin only, ended by logout, expiry, key revocation ([console.md](console.md#security)) | on | `[server] session_ttl_secs`, `session_idle_secs`, `session_cookie_secure` | `console_session` check; `session.login` / `session.logout` events |
+| Console pages under a Content-Security-Policy without inline script or style; other origins refused unless listed | on (no origin listed) | `[server] cors_origins`, `console` | `console_csp_cors` check |
+| Review of candidates and quarantined records: a quarantined record is never committed as held | always on | `memory:review` | `quarantine_review` check; `memory.reject` / `memory.rephrase` / `memory.admit` events |
 
 ## Redaction
 
@@ -321,10 +324,18 @@ appended to `mh_audit`. Recalls are added when `audit_reads = true`.
 | `memory.revalidate` | revalidate | per reference: `path`, `from` and `to` hash, `was_stale`; `stale` after it |
 | `memory.signal` | the write gate (actor `engine`): an inferred preference or a correction was seen again | `signals`, `seen_in`, `reason`; for a correction also `corrections` and `threshold` |
 | `memory.admit` | the write gate or a reviewer: a candidate was committed | who and why; for a procedure promoted by repeated correction: `reason` (`repeated_correction: …`), `corrections`, `threshold` |
+| `memory.reject` | a reviewer (or the gate, for a revision whose predecessor is no longer current) | `reason` |
+| `memory.rephrase` | a reviewer approved another wording of a candidate or a quarantined record (`POST /v1/review` with `content`); on the reviewed record, which is rejected | `replaced_by` (the record with the new wording), `from` (the state it was in), `reason`, `deduplicated` |
+| `session.login`, `session.logout` | the [console](console.md): a session opened with a key, and ended by its user | `key` (the id of the key that opened it), `expires_at` |
+| `principal.put`, `principal.disable`, `principal.enable` | `PUT /v1/principals/{id}`, `…/disable`, `…/enable`; `memhouse principal` | `principal`, and for `put` its kind, subjects, denied labels, `can_commit`, `act_as` |
+| `key.create`, `key.rotate`, `key.revoke` | `POST /v1/keys`, `…/rotate`, `…/revoke`; `memhouse key` | the key's id (never the key), its principal and permissions; for a rotation the old and the new id and until when the old one works |
+| `auth.failed` | every request with a missing, wrong, revoked or expired credential, or an ended session | `reason`, the key's id when it is known, the route |
+| `access.denied` | every request the authorizer refused, and every request made with a session cookie from another origin or without its CSRF token | `op`, `rule` (`permission`, `subject`, `label`, …, `csrf`), `reasons`, the key's id |
 
-`actor` is the `x-memhouse-actor` header for REST, `--actor` for `memhouse mcp`, `cli` for the
-CLI, `enrich` for enrichment workers and `system` for scheduled jobs. Use one actor name per integration so the log shows which
-bot or person did what.
+`actor` is the authenticated principal for REST and MCP (in the console: the principal that
+logged in), `cli` for the CLI, `enrich` for enrichment workers and `system` for scheduled
+jobs. Give each integration and each person a principal of its own so the log shows which bot
+or person did what.
 
 ### How the chain works
 
@@ -384,10 +395,23 @@ flowchart LR
 **Keys.** `memhouse key create <principal>` prints a key once; only a hash of its secret is
 stored. A key carries permissions (`memory:read`, `memory:write`, `memory:forget`,
 `memory:erase`, `memory:label`, `memory:review`, `token:issue`, `ops:read`, `audit:read`,
-`policy:read`, `policy:propose`, `policy:approve`, `grant:manage`) within
+`policy:read`, `policy:propose`, `policy:approve`, `grant:manage`, `principal:manage`) within
 what the principal's kind allows. A key without permissions is refused everywhere. `memhouse key
 rotate` issues a replacement and lets the old key work for a grace period; `memhouse key revoke`
 ends it. Revocations and disabled principals take effect within 5 seconds.
+
+**Principals and keys over the API (G20).** A principal with `principal:manage` does the
+same through `GET` and `PUT /v1/principals`, `POST /v1/keys` and their `disable`, `enable`,
+`rotate` and `revoke` routes, and in the [admin console](console.md#principals-and-keys). It
+cannot hand out more than it holds: a key it creates carries at most its own permissions, and a
+principal it creates gets subjects within its own and at least its own denied labels.
+`principal:manage` is new in API 1.10: an admin key created before it does not carry it (keys
+list their permissions), so create a new key for that admin.
+
+**Console sessions (T3).** A person at the [console](console.md#security) presents a key once
+and works with a session: a cookie script cannot read, bound to that key and its principal,
+with the key's permissions, ended by logout, expiry, idleness, revoking the key or disabling
+the principal. A request made with it is authorized like any other.
 
 **Agent tokens (GOV-13).** `POST /v1/tokens` issues a signed token that lasts at most an hour
 (`[access] token_ttl_secs`, 15 minutes by default), with narrower permissions than the key that
@@ -456,8 +480,9 @@ each agent it connects.
 refuses a configuration that tries (TR-CORE-05).
 - The database credentials grant full access. Protect them as you would any production database
   credential, and use TLS to the database (`sslmode=require`).
-- Put TLS in front of `memhouse serve`. It speaks plain HTTP and allows any CORS origin (see
-  [operations.md](operations.md#reverse-proxy-and-tls)).
+- Put TLS in front of `memhouse serve`: it speaks plain HTTP (see
+  [operations.md](operations.md#reverse-proxy-and-tls)). Browser pages of other origins are
+  refused unless listed in `[server] cors_origins`.
 
 ## Policies
 
@@ -498,7 +523,7 @@ memhouse bench run --suite governance
 ```
 
 It runs against an isolated benchmark database and writes a report under `bench-results/`. All
-79 checks pass on the current release on Postgres; on the Lite profile 76 apply and pass, and 3
+85 checks pass on the current release on Postgres; on the Lite profile 82 apply and pass, and 3
 are reported as not applicable ([conformance.md](conformance.md#where-they-run)). The core ones:
 
 | Check | What it proves |
@@ -562,6 +587,12 @@ are reported as not applicable ([conformance.md](conformance.md#where-they-run))
 | `file_touched_access` | file-touched recall tells a caller of no memory it could not recall (a denied label, another agent's scope, a candidate, a quarantined record, another tenant); a read-only caller records nothing; marking staleness and revalidating need `memory:write`; a memory the caller can't see is not revalidated nor confirmed to exist |
 | `procedural_promotion` | one correction is held, the configured number of the same correction promotes it, audited with reason, count and threshold; another correction or a plain proposal is not counted; a reviewer still confirms; a threshold of 1 needs a repeat and 0 leaves it to the reviewer; under an `approval` gate repeats never commit; a procedure is recalled only for a matching task, by words or by a file of the task (MEM-02) |
 | `hooks_only_call_api` | the harness hook adapters print exactly what the API answers their credential (a label the credential is denied is kept out by the server), record nothing a read-only credential may not write, and add nothing when the server refuses them or can't be reached (TR-TPL-03) |
+| `console_actions` | through a console session, view, search, edit, supersede, delete and the recall explanation work, each audited as the logged-in principal; a principal without the permission is refused each of them and the console's other pages by the server (403), every refusal audited, nothing changed; a key carries no more than the credential that creates it (PROF-09, [console.md](console.md)) |
+| `console_session` | the session cookie is `HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` under the `__Host-` name unless the host is loopback; the login answer holds neither the key nor the session secret; the store holds the secret's hash; a write with the cookie is refused without the session's CSRF token, with another session's, and from any other origin, also a listed one; nothing forged is written and each refusal is audited; a session past its end or its idle limit is refused and its row deleted; logout ends it on the server; revoking its key or disabling its principal ends it with the next request; an agent token opens none (threat model T3) |
+| `console_csp_cors` | each of the console's files is served with a Content-Security-Policy that allows no inline script or style and no other source than the server; the page has no inline script, style or event handler and loads only files the server serves; the script uses no browser storage and builds no markup from data; a preflight or a request from an origin that is not listed is refused with nothing a browser takes as permission; a listed origin is answered with that origin, never `*`, never credentials; a wildcard in the list is a configuration error (T3) |
+| `quarantine_review` | 50 quarantined records are decided by a reviewer, half rejected and half rephrased and approved: every reviewed record ends rejected, every new wording is a committed record of the reviewer's that names what it replaces, each decision has its audit event, the queue is empty and recall returns the approved wordings only; a quarantined record is not committed as it stands, a rephrasing the gate holds changes nothing, and a principal without `memory:review` decides nothing (GOV-11) |
+| `console_evaluation` | after replays under two policy versions the API gives the tenant's suites (without their conversations), its replays newest first, and for each suite the metrics of the latest replay under each policy version, oldest version first; nothing of another tenant (QUAL-11) |
+| `profile_advisor` | a subject filled to 90% of the Lite limit turns the advisor's report from `ok` to `near_limit`, with the recommendation of the Standard profile and the `memhouse migrate` command, and the size of the file is measured; on Standard the same usage is reported and nothing is recommended (PROF-11) |
 
 Run it in CI and keep the reports: they are audit evidence for every release.
 
@@ -612,7 +643,11 @@ reviewers don't have to find them:
 - **Redaction is pattern-based** and doesn't detect names, addresses or free-text health data.
 - **No encryption at the application layer.** Rely on Postgres or disk encryption at rest and TLS
   in transit.
-- **No built-in TLS or origin restriction.** Use a reverse proxy.
+- **No built-in TLS.** Use a reverse proxy; the console's session cookie needs it on any host
+  but a loopback one. (Origins are restricted by the server since G20: `[server] cors_origins`.)
+- **The console's pages are not tested in a browser.** The checks cover the requests the
+  pages make, the headers they are served with and their text ([console.md](console.md#what-is-checked)).
+- **No limit on login attempts** (failed ones are audited); quotas arrive with G25.
 
 ## Questionnaire answers
 

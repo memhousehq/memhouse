@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # Threat model
 
-STRIDE analysis of MemHouse as built (Standard shape, one binary on Postgres), written in goal G03.
+STRIDE analysis of MemHouse as built (Standard shape, one binary on Postgres), written in goal G03
+and reviewed in G20, which added the console's session as a second way to authenticate.
 Each threat lists today's control, the gap if any, and the goal that closes it. Review it in every
 goal that adds an interface, a store or an outbound call.
 
@@ -35,7 +36,7 @@ flowchart LR
     subgraph U[Untrusted]
         N[network clients]
         C[conversation content]
-        B[browser page]
+        B[console page in a browser]
     end
     subgraph S[memhouse process]
         A[auth: bearer key] --> G[write gate] --> E[engine]
@@ -43,7 +44,7 @@ flowchart LR
     end
     N -- REST / HTTP MCP --> A
     L[local agent] -- stdio MCP, OS user --> E
-    B -- key in localStorage --> A
+    B -- session cookie, CSRF token --> A
     C --> G
     E --> P[(Postgres)]
     R --> P
@@ -58,8 +59,8 @@ flowchart LR
 |---|---|---|---|---|
 | T1 | Spoofing | Unauthenticated calls to REST or HTTP MCP | every `/v1/*` route and `/mcp` require a bearer key, compared in constant time; no unauthenticated mode; server binds `127.0.0.1` by default | closed in G06: principals with their own keys and permissions, agent tokens of at most an hour, failed attempts audited (`authentication` check) |
 | T2 | Spoofing | Key stolen from the config file or environment | config written with mode 0600; keys never logged | principals' keys are stored as hashes and rotate with a grace period (G06); bootstrap keys in the config are still plain text, so remove them after set-up; secrets policy in `docs/security/secrets.md` |
-| T3 | Spoofing / Info disclosure | Memory Browser key theft through script injection | page escapes all memory text; **G03 fixed a stored XSS** where a crafted subject name could run script from the subject list, with a regression test (`browser_never_interpolates_data_into_inline_handlers`) | key kept in `localStorage`; no Content-Security-Policy; CORS allows any origin → **G20** (console with session login, CSP, origin allow-list) |
-| T4 | Tampering | Memory poisoning: instructions stored as memories and later recalled into an agent's context | deterministic injection screen on every write path, including LLM-extracted facts; quarantined records never recalled (governance checks `injection_persistence`, `enrich_async_gate`) | pattern-based, so novel phrasings get through; no candidate review or per-source trust → **G10** (candidates, classification), **G22** (untrusted-source candidates, bulk purge by source), **G20** (quarantine console) |
+| T3 | Spoofing / Info disclosure | Console credential theft through script injection, or a forged request from another site | closed in G20 ([console.md](console.md#security)): the key is presented once and the browser keeps only a session cookie script cannot read (`HttpOnly`, `SameSite=Strict`, `Secure` under the `__Host-` name except on a loopback host), of which the store keeps a hash; a request made with it must come from the server's own origin and carry the session's CSRF token to change anything; the session ends on logout, expiry, idleness, key revocation and a disabled principal; the pages are served with a Content-Security-Policy without inline script or style and build the page from data as text; other origins are refused unless on `[server] cors_origins`, never with a wildcard or credentials (`console_session`, `console_csp_cors` checks). **G03 fixed a stored XSS** in the page this replaces | the pages are checked by their text and headers and by the requests they make, not by running them in a browser; no limit on login attempts → **G25** (quotas); TLS is the proxy's: over plain HTTP on a host that is not loopback the session cookie is not set |
+| T4 | Tampering | Memory poisoning: instructions stored as memories and later recalled into an agent's context | deterministic injection screen on every write path, including LLM-extracted facts; quarantined records never recalled (governance checks `injection_persistence`, `enrich_async_gate`) | pattern-based, so novel phrasings get through; a reviewer decides candidates and quarantined records in the console (G20: reject, or rephrase and approve through the gate; never committed as held; `quarantine_review` check); no per-source trust → **G22** (untrusted-source candidates, bulk purge by source) |
 | T5 | Tampering | Silent overwrite or rewrite of history | supersession keeps prior versions; hash-chained audit with an independent verifier | a database superuser can rewrite the whole chain → **G22** (head anchoring to WORM storage or a SIEM) |
 | T6 | Tampering | Direct database edits bypass the gate | the service is the only writer by convention | no second line of defence → **G22** (row-level security keyed on tenant and subject) |
 | T7 | Repudiation | An agent denies a write or a deletion | audit event per write, revision, deletion, erasure, import and retention purge, with actor | actor is the verified principal (G06); every recall keeps an explanation of what was returned and excluded (G07, 30 days by default); reads are in the audit log only with `audit_reads` |

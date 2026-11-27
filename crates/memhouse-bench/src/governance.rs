@@ -197,6 +197,10 @@ async fn all_records(engine: &Engine, subject: &str) -> anyhow::Result<Vec<Memor
 
 pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceReport> {
     let start = Instant::now();
+    // No check depends on how long a recall takes on this machine (see `NO_RECALL_DEADLINE`).
+    let mut cfg = (*engine.cfg).clone();
+    cfg.memory.recall_timeout_ms = NO_RECALL_DEADLINE;
+    let engine = &engine.clone().reconfigure(cfg);
     let mut rng = StdRng::seed_from_u64(42);
     let mut checks = vec![];
     let s = |name: &str| format!("bench:{run_id}:gov:{name}");
@@ -1126,6 +1130,10 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // The coding template: staleness, file-touched recall, procedural promotion, the hooks (G19).
     checks.extend(crate::code_checks::run(engine).await);
 
+    // The admin console: actions, the session, the pages' policy and CORS, the review queue,
+    // evaluation and the profile advisor (G20).
+    checks.extend(crate::console_checks::run(engine).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;
@@ -1225,6 +1233,13 @@ impl memhouse_core::Embedder for StubEmbedder {
     }
 }
 
+/// `[memory] recall_timeout_ms` for the engines the checks run on: no deadline. A recall that
+/// overruns its budget answers empty and flagged (PERF-07), so on a loaded machine a check
+/// would read "nothing recalled" where the record is there, or pass "left out of recall" for
+/// the wrong reason. The checks judge what is recalled, not how fast; `degradation` sets the
+/// budget it tests.
+pub(crate) const NO_RECALL_DEADLINE: u64 = 0;
+
 pub(crate) async fn stub_engine(base: &Engine, url: &str, id: &str, dim: usize, prefix: &str, migrate: bool) -> anyhow::Result<Engine> {
     let mut cfg = (*base.cfg).clone();
     cfg.database.url = url.to_string();
@@ -1234,6 +1249,7 @@ pub(crate) async fn stub_engine(base: &Engine, url: &str, id: &str, dim: usize, 
     cfg.embedding.query_prefix = None;
     cfg.rerank.enabled = false;
     cfg.enrich.enabled = false;
+    cfg.memory.recall_timeout_ms = NO_RECALL_DEADLINE;
     let store = crate::scratch::open_store(url, 4, prefix).await?;
     if migrate {
         store.migrate(dim, id).await?;

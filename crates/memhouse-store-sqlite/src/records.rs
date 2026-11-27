@@ -339,7 +339,7 @@ impl SqliteStore {
             };
         }
         // What is left without a record: links, remembered responses, queued jobs and writes.
-        for table in ["mh_link", "mh_grant", "mh_eval_suite", "mh_eval_run", "mh_request_key", "mh_recall"] {
+        for table in ["mh_link", "mh_grant", "mh_eval_suite", "mh_eval_run", "mh_request_key", "mh_recall", "mh_session"] {
             exec(c, &format!("DELETE FROM {table} WHERE tenant = ?1"), [tenant])?;
         }
         let jobs = rows(c, "SELECT id, cache_key FROM mh_enrich_job WHERE tenant = ?1", params![tenant], |r| Ok((r.get(0)?, r.get(1)?)))?;
