@@ -100,6 +100,9 @@ pub struct PendingRecord {
     /// See [`NewMemory::refs_inherited`].
     #[serde(default)]
     pub refs_inherited: bool,
+    /// See [`NewMemory::refs_from`].
+    #[serde(default)]
+    pub refs_from: Option<Uuid>,
 }
 
 impl Proposal {
@@ -618,6 +621,7 @@ impl Engine {
             rec.structured = r.structured.clone();
             rec.code_refs = r.code_refs.clone();
             rec.refs_inherited = r.refs_inherited;
+            rec.refs_from = r.refs_from;
             // The erasure guarantee of a promotion holds on this path too.
             self.without_erased_sources(&p.tenant, &mut rec).await?;
             records.push(rec);
@@ -665,6 +669,7 @@ impl Engine {
                 rec.structured = r.structured.clone();
                 rec.code_refs = r.code_refs.clone();
                 rec.refs_inherited = r.refs_inherited;
+                rec.refs_from = r.refs_from;
                 Item::new(rec, r.focus.clone(), r.redactions.clone())
             })
             .collect();

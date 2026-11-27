@@ -433,6 +433,43 @@ pub trait Store: Send + Sync {
         anyhow::bail!("this store has no API keys")
     }
     /// A token signing secret by id, and the current one (created on first use).
+    /// Store a console session (threat model T3). The row holds the hash of the session
+    /// secret, never the secret.
+    async fn session_put(&self, _s: &crate::identity::Session) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no sessions")
+    }
+    /// A session by the hash of its secret.
+    async fn session_get(&self, _id: &str) -> anyhow::Result<Option<crate::identity::Session>> {
+        Ok(None)
+    }
+    /// Record that a session was used at `at`.
+    async fn session_touch(&self, _id: &str, _at: chrono::DateTime<chrono::Utc>) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// End a session: its row is deleted. False when there was none.
+    async fn session_delete(&self, _id: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+    /// Delete every session past its end at `now`, or last used before `idle_before`.
+    async fn sessions_purge(&self, _now: chrono::DateTime<chrono::Utc>, _idle_before: Option<chrono::DateTime<chrono::Utc>>) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    /// Records waiting for a reviewer (GOV-11): those of `statuses`, newest first, of one
+    /// subject or of every subject, after the keyset position `before`.
+    async fn review_queue(
+        &self,
+        _tenant: &str,
+        _statuses: &[MemoryStatus],
+        _subject: Option<&str>,
+        _before: Option<(chrono::DateTime<chrono::Utc>, Uuid)>,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<Memory>> {
+        anyhow::bail!("this store has no review queue")
+    }
+    /// What the profile advisor measures (PROF-11): how much the deployment holds.
+    async fn usage(&self, _tenant: &str) -> anyhow::Result<StoreUsage> {
+        anyhow::bail!("this store does not report its usage")
+    }
     async fn signing_key(&self, _kid: &str) -> anyhow::Result<Option<Vec<u8>>> {
         anyhow::bail!("this store can't sign tokens")
     }

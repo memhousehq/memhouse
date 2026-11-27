@@ -528,7 +528,7 @@ async fn until_revalidated(e: &Engine) -> Outcome {
         })
         .await?;
     let held = stale_of(proposed.id).await?;
-    let admitted = root.review(ReviewRequest { id: proposed.id, action: ReviewAction::Commit, reason: None }).await?;
+    let admitted = root.review(ReviewRequest { id: proposed.id, action: ReviewAction::Commit, reason: None, content: None }).await?;
     let after_admit = stale_of(proposed.id).await?;
     s.case(
         "a proposed revision about content its file no longer has is committed stale by its reviewer",
@@ -558,8 +558,8 @@ async fn until_revalidated(e: &Engine) -> Outcome {
         })
         .await?;
     root.files_changed(changed(subj, vec![FileState::present("tools/index.toml", "i2")])).await?;
-    root.review(ReviewRequest { id: current_proposal.id, action: ReviewAction::Commit, reason: None }).await?;
-    root.review(ReviewRequest { id: waiting_proposal.id, action: ReviewAction::Commit, reason: None }).await?;
+    root.review(ReviewRequest { id: current_proposal.id, action: ReviewAction::Commit, reason: None, content: None }).await?;
+    root.review(ReviewRequest { id: waiting_proposal.id, action: ReviewAction::Commit, reason: None, content: None }).await?;
     let (fresh_commit, flagged_commit) = (stale_of(current_proposal.id).await?, stale_of(waiting_proposal.id).await?);
     s.case(
         "a proposed revision is committed fresh when it names the content last seen, and stale when its file changed while it waited",
@@ -959,9 +959,9 @@ async fn promotion(e: &Engine) -> Outcome {
         agent.remember(plain(proposal)).await?;
     }
     s.case("a proposal that is no correction is never promoted by repeating it", state(p1.id).await?.map(|x| x.0) == Some(MemoryStatus::Candidate), || format!("{:?}", p1.status));
-    let confirmed = root.review(ReviewRequest { id: p1.id, action: ReviewAction::Commit, reason: None }).await?;
+    let confirmed = root.review(ReviewRequest { id: p1.id, action: ReviewAction::Commit, reason: None, content: None }).await?;
     s.case("a reviewer's confirmation commits a procedure", confirmed.status == MemoryStatus::Committed, || confirmed.status.as_str().to_string());
-    let reviewed_correction = root.review(ReviewRequest { id: unrelated.id, action: ReviewAction::Commit, reason: None }).await?;
+    let reviewed_correction = root.review(ReviewRequest { id: unrelated.id, action: ReviewAction::Commit, reason: None, content: None }).await?;
     s.case("a reviewer confirms a held correction before its repeats do", reviewed_correction.status == MemoryStatus::Committed, || {
         reviewed_correction.status.as_str().to_string()
     });

@@ -669,7 +669,7 @@ fn typescript(version: &str, schemas: &[(&String, &Value)], ops: &[Op]) -> Strin
         let mut args: Vec<String> = op.params.iter().filter(positional).map(|p| format!("{}: {}", camel(&p.name), ts_type(&p.schema))).collect();
         if let Some((schema, required)) = &op.body {
             let t = ts_type(schema);
-            args.push(if *required { format!("body: {t}") } else { format!("body: {t} | undefined") });
+            args.push(if *required { format!("body: {t}") } else { format!("body?: {t}") });
         }
         let named: Vec<&Param> = op.params.iter().filter(|p| !positional(p)).collect();
         if !named.is_empty() {

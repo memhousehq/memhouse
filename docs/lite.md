@@ -12,7 +12,7 @@ on each profile, and the governance suite runs on both ([conformance.md](conform
 ```bash
 memhouse up --lite                 # writes the config, creates the file, downloads the embedding model
 memhouse connect claude-code       # as on Standard
-memhouse serve                     # REST, MCP over HTTP, the Memory Browser
+memhouse serve                     # REST, MCP over HTTP, the admin console
 ```
 
 `memhouse up --lite` only sets up a new installation. It writes `config.toml` and the database
@@ -34,6 +34,16 @@ Choose Standard when several processes or hosts write, when subjects grow well p
 memories, or when you need keyword stemming in languages other than English. `memhouse migrate` moves a
 Lite installation to Standard, or back, with everything in it
 ([operations.md](operations.md#moving-between-profiles)).
+
+**The profile advisor tells you when.** It compares what the installation holds with the
+sizes in the table above and, from 80% of one, recommends Standard and names the migrate
+command: in the [admin console](console.md#the-profile-advisor), at `GET /v1/advisor`, and as
+a line of `memhouse doctor`. The limits are the `[advisor]` settings
+([configuration.md](configuration.md#advisor)).
+
+The [admin console](console.md) works on Lite as on Standard. Its sessions are rows in the
+same file. A backup holds the hashes of the sessions that were open when it was made, never
+their secrets, and a restore brings no session back: everyone logs in again.
 
 ## How it works
 
@@ -194,6 +204,8 @@ commands.
 Things to know:
 
 - Stop `memhouse serve` before a restore; the command cannot detect a running server.
+- A restore ends every console session: one that was logged out after the backup must not
+  come back with it.
 - The restore checks the snapshot against the manifest's SHA-256 and refuses a changed one.
 - Audit events written between the backup and the restore go with the replaced database; the
   re-applied deletions are recorded with their original time and actor.

@@ -637,7 +637,8 @@ impl Embedder for Hanging {
 
 /// PERF-07: kill each dependency in turn.
 async fn degradation(base: &Engine) -> Outcome {
-    let (scratch, e, db) = scratch_engine(base, "int5", |_| {}).await?;
+    // This check is about the deadline: the default budget, whatever the other checks run with.
+    let (scratch, e, db) = scratch_engine(base, "int5", |c| c.memory.recall_timeout_ms = memhouse_core::config::MemoryConfig::default().recall_timeout_ms).await?;
     let result = async {
         let mut problems = vec![];
         let subj = "customer:degrade";

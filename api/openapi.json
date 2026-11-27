@@ -12,6 +12,15 @@
           "type": "string"
         }
       },
+      "Csrf": {
+        "description": "The session's CSRF token (`csrf_token` of `GET /v1/session`). Every request made with the session cookie that is not a `GET` must carry it; a request made with a key or token does not.",
+        "in": "header",
+        "name": "x-memhouse-csrf",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
       "IdempotencyKey": {
         "description": "1 to 255 characters. A repeat with the same key and request returns the first response; the same key with another request is a 409. Same as the body's `request_key`.",
         "in": "header",
@@ -48,6 +57,95 @@
             "type": "string"
           }
         ]
+      },
+      "AdvisorMeasure": {
+        "description": "How one measured value stands against the limit of the profile (PROF-11).",
+        "properties": {
+          "detail": {
+            "description": "What the value counts, and for `largest_subject_records` which subject.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "The limit the profile is measured at or configured with; absent: reported, not judged.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "`records`, `largest_subject_records`, `file_mb` or `writes_per_hour`.",
+            "type": "string"
+          },
+          "ratio": {
+            "description": "`value / limit`.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`ok`, `near_limit` (at or above `[advisor] warn_at` of the limit) or `over_limit`.",
+            "type": "string"
+          },
+          "value": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "status",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "AdvisorReport": {
+        "description": "The profile advisor's report (`GET /v1/advisor`, `memhouse doctor`).",
+        "properties": {
+          "command": {
+            "description": "The command that moves the installation to the recommended profile.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "measures": {
+            "items": {
+              "$ref": "#/components/schemas/AdvisorMeasure"
+            },
+            "type": "array"
+          },
+          "profile": {
+            "description": "`lite` (SQLite) or `standard` (Postgres).",
+            "type": "string"
+          },
+          "recommendation": {
+            "description": "What to do, when a measure is near or over its limit.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "The worst status among the measures: `ok`, `near_limit` or `over_limit`.",
+            "type": "string"
+          },
+          "warn_at": {
+            "description": "The share of a limit from which a measure is `near_limit`.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "profile",
+          "status",
+          "warn_at",
+          "measures"
+        ],
+        "type": "object"
       },
       "Approver": {
         "description": "Who commits a candidate of a type.",
@@ -354,6 +452,219 @@
           {
             "const": "unavailable",
             "description": "A dependency is down for now (the intake queue, the database): retry later (503, with\n`Retry-After`). Nothing was written (PERF-07).",
+            "type": "string"
+          }
+        ]
+      },
+      "EvalMetrics": {
+        "description": "The quality metrics of a replay, each 0 to 1; `None` when the suite has nothing to measure it\non (no question, no correction, no plan).",
+        "properties": {
+          "contamination_rate": {
+            "description": "Of the plans and guesses, the part committed as facts.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "retrieval_f1": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "retrieval_precision": {
+            "description": "Of the questions, the part whose first hit is the current fact.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "retrieval_recall": {
+            "description": "Of the questions, the part with the current fact in the top k.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "stale_rate": {
+            "description": "Of the questions about a corrected fact, the part answered with a stale version in the top k.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "stale_withheld": {
+            "default": null,
+            "description": "Of the questions about a memory whose file changed since, the part where it was\nwithheld (suites with code).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "storage_f1": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "storage_precision": {
+            "description": "Of the scored records committed and valid at a checkpoint, the part that are current facts.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "storage_recall": {
+            "description": "Of the current facts at a checkpoint, the part that is stored.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "touched_recall": {
+            "default": null,
+            "description": "Of the file-touched questions about a memory that is not stale, the part answered with\nit among the linked memories (suites with code).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "EvalRunInfo": {
+        "description": "One stored replay without its per-conversation detail (`GET /v1/eval/runs`).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "gate_passed": {
+            "description": "For a replay made by the regression gate: whether the gate passed.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/EvalMetrics"
+          },
+          "policy_version": {
+            "description": "The policy version the replay ran under.",
+            "type": "string"
+          },
+          "suite": {
+            "type": "string"
+          },
+          "suite_hash": {
+            "type": "string"
+          },
+          "took_ms": {
+            "format": "double",
+            "type": "number"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/EvalTrigger"
+          }
+        },
+        "required": [
+          "id",
+          "suite",
+          "suite_hash",
+          "policy_version",
+          "trigger",
+          "metrics",
+          "took_ms",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "EvalSuiteInfo": {
+        "description": "A stored evaluation suite without its conversations (`GET /v1/eval/suites`).",
+        "properties": {
+          "conversations": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "turns": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "hash",
+          "description",
+          "conversations",
+          "turns",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "EvalTrend": {
+        "description": "`GET /v1/eval/trend`.",
+        "properties": {
+          "suites": {
+            "items": {
+              "$ref": "#/components/schemas/SuiteTrend"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "suites"
+        ],
+        "type": "object"
+      },
+      "EvalTrigger": {
+        "description": "Why a suite was replayed.",
+        "oneOf": [
+          {
+            "const": "manual",
+            "description": "Asked for (`memhouse eval run`).",
+            "type": "string"
+          },
+          {
+            "const": "policy_change",
+            "description": "A policy version waiting for approval, and the active policy it is compared with.",
+            "type": "string"
+          },
+          {
+            "const": "model_change",
+            "description": "The engine or a model changed (`memhouse eval gate`).",
             "type": "string"
           }
         ]
@@ -1146,6 +1457,151 @@
           "deduplicated",
           "ids"
         ],
+        "type": "object"
+      },
+      "KeyCreated": {
+        "description": "A new key. `key` is the only time its secret is shown: nothing stores it.",
+        "properties": {
+          "info": {
+            "$ref": "#/components/schemas/KeyInfo"
+          },
+          "key": {
+            "description": "The full key, `mh_<id>_<secret>`: send it as `Authorization: Bearer <key>`.",
+            "type": "string"
+          },
+          "old_expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replaces": {
+            "description": "For a rotation: the key it replaces and until when that one works.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "info"
+        ],
+        "type": "object"
+      },
+      "KeyInfo": {
+        "description": "An API key as the API shows it: never its secret or the hash of it.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The public id of the key (the middle part of `mh_<id>_<secret>`).",
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scopes": {
+            "description": "The permissions it carries.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "description": "`active`, `expired` or `revoked`, at the time of the answer.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "principal",
+          "scopes",
+          "created_at",
+          "created_by",
+          "state"
+        ],
+        "type": "object"
+      },
+      "KeyRequest": {
+        "description": "Create a key for a principal (`POST /v1/keys`).",
+        "properties": {
+          "expires_in_secs": {
+            "default": null,
+            "description": "Lifetime in seconds. Default: no expiry.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "string"
+          },
+          "scopes": {
+            "default": null,
+            "description": "The permissions the key carries. Default: every permission the principal's kind allows\nthat the calling credential carries itself. A key never carries more than its maker.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "principal"
+        ],
+        "type": "object"
+      },
+      "KeyRevoked": {
+        "description": "The answer to revoking a key.",
+        "properties": {
+          "revoked": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "type": "object"
+      },
+      "KeyRotateRequest": {
+        "description": "Replace a key (`POST /v1/keys/{id}/rotate`).",
+        "properties": {
+          "grace_secs": {
+            "default": null,
+            "description": "How long the old key keeps working, in seconds. Default: 86400 (a day); 0 ends it now.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "LegacyDeleted": {
@@ -2673,6 +3129,177 @@
         ],
         "type": "object"
       },
+      "PrincipalInfo": {
+        "description": "A principal as the API shows it (`GET /v1/principals`).",
+        "properties": {
+          "act_as": {
+            "description": "May state which user it acts for.",
+            "type": "boolean"
+          },
+          "can_commit": {
+            "description": "Agents only: writes commit directly instead of being proposed (GOV-08).",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "denied_labels": {
+            "description": "Labels it may never read or write.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "disabled_at": {
+            "description": "Set while the principal is disabled: its keys, tokens and sessions are refused.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "`agent:<name>`, `user:<name>` or `admin:<name>`.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PrincipalKind"
+          },
+          "kinds": {
+            "description": "Memory kinds it may use; empty is all.",
+            "items": {
+              "$ref": "#/components/schemas/MemoryKind"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "org": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subjects": {
+            "description": "Subjects it may use: exact names or prefixes ending in `*`; `*` is all.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "team": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant",
+          "kind",
+          "subjects",
+          "kinds",
+          "denied_labels",
+          "can_commit",
+          "act_as",
+          "created_at",
+          "created_by"
+        ],
+        "type": "object"
+      },
+      "PrincipalKind": {
+        "oneOf": [
+          {
+            "const": "agent",
+            "description": "Software acting for users: proposes memories, recalls them.",
+            "type": "string"
+          },
+          {
+            "const": "user",
+            "description": "A person, calling directly or through an agent it delegates to.",
+            "type": "string"
+          },
+          {
+            "const": "admin",
+            "description": "Operates the deployment: erasure, review, audit.",
+            "type": "string"
+          }
+        ]
+      },
+      "PrincipalRequest": {
+        "description": "Create a principal or replace its attributes (`PUT /v1/principals/{id}`). The kind is the\nprefix of the id. Every field is the whole new value: one left out takes its default,\nexcept `name`, which is then kept.",
+        "properties": {
+          "act_as": {
+            "default": false,
+            "description": "May state which user it acts for (a backend that authenticates its users).",
+            "type": "boolean"
+          },
+          "can_commit": {
+            "default": false,
+            "description": "Agents only: commit writes directly instead of proposing them (GOV-08).",
+            "type": "boolean"
+          },
+          "denied_labels": {
+            "default": [],
+            "description": "Labels it may never read or write.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kinds": {
+            "default": [],
+            "description": "Memory kinds it may use. Default: all.",
+            "items": {
+              "$ref": "#/components/schemas/MemoryKind"
+            },
+            "type": "array"
+          },
+          "name": {
+            "default": null,
+            "description": "A display name. The one field that is kept when left out: absent, `null` or empty\nleaves the principal's current name as it is (a name is replaced, never cleared).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "org": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subjects": {
+            "default": [],
+            "description": "Subjects it may use: exact names or prefixes ending in `*`. Default: `[\"*\"]`, all.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "team": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "PromoteRequest": {
         "description": "Promote memories to another type (`POST /v1/promote`, MEM-05): a new record of `kind` in the\nsame subject, through that type's own gate, linked to its sources (`metadata.promoted_from`)\nand audited (`memory.promote`). The sources stay as they are.",
         "properties": {
@@ -3899,6 +4526,14 @@
           "action": {
             "$ref": "#/components/schemas/ReviewAction"
           },
+          "content": {
+            "default": null,
+            "description": "With `commit`: approve this wording instead of the record's own (GOV-11). The text is\nwritten as the reviewer's and passes the write gate like any write; the reviewed\nrecord is then rejected and names its replacement. The way to approve a quarantined\nrecord, which is never committed as it stands.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "format": "uuid",
             "type": "string"
@@ -3923,6 +4558,14 @@
           "id": {
             "format": "uuid",
             "type": "string"
+          },
+          "rephrased_from": {
+            "description": "For a rephrased approval: the reviewed record, now `rejected`; `id` is then the record\nthat holds the new wording.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "$ref": "#/components/schemas/MemoryStatus",
@@ -4184,6 +4827,66 @@
         ],
         "type": "string"
       },
+      "SessionClosed": {
+        "description": "The answer to `DELETE /v1/session`.",
+        "properties": {
+          "closed": {
+            "description": "False when the session had ended already.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "closed"
+        ],
+        "type": "object"
+      },
+      "SessionInfo": {
+        "description": "A console session (`POST` and `GET /v1/session`). The session itself is the cookie the\nanswer sets; nothing here is a credential except `csrf_token`, which only works with it.",
+        "properties": {
+          "csrf_token": {
+            "description": "Send as `x-memhouse-csrf` with every request that changes something.",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "When the session ends whatever its use.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "idle_secs": {
+            "description": "The session also ends when unused for this long; 0: no idle limit.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "`agent`, `user` or `admin`.",
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "scopes": {
+            "description": "The permissions of the key that opened the session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tenant": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "kind",
+          "tenant",
+          "scopes",
+          "expires_at",
+          "idle_secs",
+          "csrf_token"
+        ],
+        "type": "object"
+      },
       "Statement": {
         "description": "What a statement asserts, as the write gate reads it (QUAL-02). Plans and speculation stay\ncandidates until confirmed or expired (PR-7); a correction supersedes what it corrects.",
         "oneOf": [
@@ -4313,6 +5016,25 @@
         ],
         "type": "object"
       },
+      "SuiteTrend": {
+        "description": "The quality metrics of one suite by policy version, oldest version first (QUAL-11).",
+        "properties": {
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/TrendPoint"
+            },
+            "type": "array"
+          },
+          "suite": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "suite",
+          "points"
+        ],
+        "type": "object"
+      },
       "TimeWindow": {
         "properties": {
           "end": {
@@ -4420,6 +5142,40 @@
         ],
         "type": "object"
       },
+      "TrendPoint": {
+        "description": "A suite's quality under one policy version: the latest replay that ran under it.",
+        "properties": {
+          "first_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "last_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/EvalMetrics",
+            "description": "The metrics of the latest replay under this version."
+          },
+          "policy_version": {
+            "type": "string"
+          },
+          "runs": {
+            "description": "Replays stored under this version (within the runs read).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "policy_version",
+          "runs",
+          "first_at",
+          "last_at",
+          "metrics"
+        ],
+        "type": "object"
+      },
       "TypeGate": {
         "description": "What a write of a type must pass before it is committed (MEM-01), loosest first. The\ninjection screen and redaction are not part of it: they apply to every type (security\nbaseline).",
         "oneOf": [
@@ -4509,7 +5265,7 @@
             ]
           },
           "via": {
-            "description": "`key`, `token`, `bootstrap` or `operator`.",
+            "description": "`key`, `token`, `bootstrap`, `operator` or `session` (the console).",
             "type": "string"
           }
         },
@@ -4536,6 +5292,12 @@
         "description": "`Authorization: Bearer <key or token>`: a principal's API key (`mh_…`, from `memhouse key create`), a short-lived agent token (`mht.…`, from `POST /v1/tokens`), or a bootstrap key from `[server] api_keys`.",
         "scheme": "bearer",
         "type": "http"
+      },
+      "session": {
+        "description": "The console's session cookie, set by `POST /v1/session` (`memhouse_session` on a loopback host). Read only when the request carries no key or token. A request made with it must come from the server's own origin and, unless it is a `GET`, send the session's CSRF token in the `x-memhouse-csrf` header (the `Csrf` parameter); this applies to every operation called with the cookie, not only to those that list the parameter.",
+        "in": "cookie",
+        "name": "__Host-memhouse_session",
+        "type": "apiKey"
       }
     }
   },
@@ -4547,7 +5309,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.9.0"
+    "version": "1.10.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",
@@ -4625,9 +5387,105 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Prometheus metrics",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
+      }
+    },
+    "/v1/advisor": {
+      "get": {
+        "description": "Preview. How much the deployment holds against what its profile is measured at (PROF-11): records, the largest subject, the size on disk, writes in the last hour. On Lite, a value at or above `[advisor] warn_at` of its limit gives `near_limit`, with the recommendation to move to Standard and the `memhouse migrate` command. On Standard the values are reported and not judged. Needs `ops:read`.",
+        "operationId": "advisor",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorReport"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "The profile advisor",
         "tags": [
           "operations"
         ],
@@ -4697,6 +5555,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Newest audit events",
@@ -4787,7 +5664,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -4907,7 +5784,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -5007,7 +5884,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -5075,9 +5952,314 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Background enrichment queue",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
+      }
+    },
+    "/v1/eval/runs": {
+      "get": {
+        "description": "Preview. Newest first, each with the policy version it ran under and its quality metrics: storage and retrieval precision, recall and F1, the stale-fact rate and the contamination rate (QUAL-11). Needs `ops:read`.",
+        "operationId": "evalRuns",
+        "parameters": [
+          {
+            "description": "Only this suite.",
+            "in": "query",
+            "name": "suite",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 to 1000 (default 50).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EvalRunInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Stored evaluation replays",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
+      }
+    },
+    "/v1/eval/suites": {
+      "get": {
+        "description": "Preview. Name, size and hash of each stored suite, without its conversations (QUAL-11). Suites are added and replayed with `memhouse eval`. Needs `ops:read`.",
+        "operationId": "evalSuites",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EvalSuiteInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "The tenant's evaluation suites",
+        "tags": [
+          "operations"
+        ],
+        "x-stability": "preview"
+      }
+    },
+    "/v1/eval/trend": {
+      "get": {
+        "description": "Preview. For each suite, one point per policy version it was replayed under, oldest version first: the metrics of the latest replay under that version (QUAL-11). Read from the latest 1000 replays. Needs `ops:read`.",
+        "operationId": "evalTrend",
+        "parameters": [
+          {
+            "description": "Only this suite.",
+            "in": "query",
+            "name": "suite",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalTrend"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Quality metrics by policy version",
         "tags": [
           "operations"
         ],
@@ -5179,6 +6361,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Delete memories by record, subject, user, agent, source or tenant",
@@ -5240,6 +6441,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Grants between agents",
@@ -5319,6 +6539,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Share one agent's memory with another",
@@ -5409,6 +6648,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Revoke a grant",
@@ -5512,7 +6770,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -5527,6 +6785,451 @@
         "summary": "Store a conversation as episodic memory",
         "tags": [
           "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/keys": {
+      "get": {
+        "description": "Ids, permissions and state; never a secret or its hash. Needs `principal:manage`.",
+        "operationId": "listKeys",
+        "parameters": [
+          {
+            "description": "Only this principal's keys.",
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/KeyInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "API keys of the tenant's principals",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      },
+      "post": {
+        "description": "A key for a principal of the tenant. The answer is the only time the key is shown. It carries at most the permissions of the credential that creates it, within what the principal's kind allows. Audited as `key.create`. Needs `principal:manage`.",
+        "operationId": "createKey",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyCreated"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Create an API key",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/keys/{id}/revoke": {
+      "post": {
+        "description": "The key, the tokens it issued and the console sessions it opened stop working (a credential verified in the last 5 seconds may still pass; a session ends with its next request). Audited as `key.revoke`. Needs `principal:manage`.",
+        "operationId": "revokeKey",
+        "parameters": [
+          {
+            "description": "A key's public id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyRevoked"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Revoke an API key",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/keys/{id}/rotate": {
+      "post": {
+        "description": "A new key with the same permissions for the same principal; the old one works until the grace period ends. The caller must carry every permission of the key, since it receives the new one. The body is optional. Audited as `key.create` and `key.rotate`. Needs `principal:manage`.",
+        "operationId": "rotateKey",
+        "parameters": [
+          {
+            "description": "A key's public id.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyRotateRequest"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyCreated"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Replace an API key",
+        "tags": [
+          "identity"
         ],
         "x-stability": "stable"
       }
@@ -5613,6 +7316,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Set a memory's sensitivity labels",
@@ -5733,6 +7455,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use GET /v1/subjects/{subject}/memories",
@@ -5837,7 +7578,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -5940,6 +7681,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use POST /v1/forget with `id`",
@@ -6027,6 +7787,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Read one memory and its state",
@@ -6156,7 +7935,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -6250,6 +8029,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The tenant's policy: running, versions and history",
@@ -6329,6 +8127,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Propose a policy spec",
@@ -6420,6 +8237,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Compare two policies",
@@ -6511,6 +8347,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Activate an earlier policy",
@@ -6592,6 +8447,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Compile a spec without storing it",
@@ -6692,11 +8566,447 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Approve a proposed version and activate it",
         "tags": [
           "policy"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/principals": {
+      "get": {
+        "description": "Agents, users and admins of the caller's tenant. Needs `principal:manage`.",
+        "operationId": "listPrincipals",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PrincipalInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "The tenant's principals",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/principals/{id}": {
+      "put": {
+        "description": "Creates the principal, or replaces the attributes of an existing one. The kind is the prefix of the id (`agent:`, `user:`, `admin:`). A caller gives no more than it has: subjects within its own, at least its own denied labels, kinds within its own. Audited as `principal.put`. Needs `principal:manage`.",
+        "operationId": "putPrincipal",
+        "parameters": [
+          {
+            "description": "A principal id, e.g. `agent:support-bot` (URL-encoded).",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrincipalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalInfo"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Conflict with the stored state (`conflict`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Create or change a principal",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/principals/{id}/disable": {
+      "post": {
+        "description": "Its keys, tokens and console sessions are refused from now on (a credential verified in the last 5 seconds may still pass). A principal does not disable itself. Audited as `principal.disable`. Needs `principal:manage`.",
+        "operationId": "disablePrincipal",
+        "parameters": [
+          {
+            "description": "A principal id, e.g. `agent:support-bot` (URL-encoded).",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalInfo"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Disable a principal",
+        "tags": [
+          "identity"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/principals/{id}/enable": {
+      "post": {
+        "description": "Audited as `principal.enable`. Needs `principal:manage`.",
+        "operationId": "enablePrincipal",
+        "parameters": [
+          {
+            "description": "A principal id, e.g. `agent:support-bot` (URL-encoded).",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalInfo"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Enable a disabled principal",
+        "tags": [
+          "identity"
         ],
         "x-stability": "stable"
       }
@@ -6805,7 +9115,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -6896,6 +9206,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Retrieve memories for a context",
@@ -6983,6 +9312,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Why a recall returned what it did",
@@ -7086,7 +9434,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -7197,9 +9545,153 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Commit or reject a candidate",
+        "tags": [
+          "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/review/queue": {
+      "get": {
+        "description": "Candidates and quarantined records of the subjects the caller may use, newest first (GOV-11). Settle one with `POST /v1/review`: commit or reject a candidate; reject a quarantined record, or approve another wording of it (`content`). Needs `memory:review`.",
+        "operationId": "reviewQueue",
+        "parameters": [
+          {
+            "description": "`candidate`, `quarantined`, or both separated by a comma (the default).",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only this subject.",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 to 200 (default 50).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`next_cursor` of the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryPage"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Invalid request (`invalid_request`)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Records waiting for a reviewer",
         "tags": [
           "memory"
         ],
@@ -7310,7 +9802,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -7325,6 +9817,280 @@
         "summary": "Supersede a memory with a new version",
         "tags": [
           "memory"
+        ],
+        "x-stability": "stable"
+      }
+    },
+    "/v1/session": {
+      "delete": {
+        "description": "Ends the session on the server and clears the cookie. Audited as `session.logout`.",
+        "operationId": "closeSession",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          },
+          {
+            "$ref": "#/components/parameters/Csrf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionClosed"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "Log out",
+        "tags": [
+          "console"
+        ],
+        "x-stability": "stable"
+      },
+      "get": {
+        "description": "For a request made with the session cookie: who it acts as, when it ends, and its CSRF token. A request made with the cookie that changes anything must send that token as `x-memhouse-csrf`, and every request made with the cookie must come from the server's own origin; otherwise it is refused with 403 and audited (`access.denied`, rule `csrf`). Answers 404 to a request made with a key or token.",
+        "operationId": "session",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not found (`not_found`)."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "The console session of this request",
+        "tags": [
+          "console"
+        ],
+        "x-stability": "stable"
+      },
+      "post": {
+        "description": "Opens a console session for the key presented with this request (`Authorization: Bearer <key>`; an agent token opens none). The answer sets the session cookie: `HttpOnly`, `SameSite=Strict`, and `Secure` under the name `__Host-memhouse_session` unless the request came for a loopback host (`[server] session_cookie_secure`). The session has the key's permissions, lasts `[server] session_ttl_secs` at most and ends when unused for `session_idle_secs`, on logout, and when the key is revoked or its principal disabled. The session secret is not in the body. Audited as `session.login`.",
+        "operationId": "openSession",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/User"
+          },
+          {
+            "$ref": "#/components/parameters/Actor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Missing, wrong, expired or revoked key or token (`unauthorized`)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The caller may not do this (`forbidden`): a missing permission, another tenant, subject, label, user or scope."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "summary": "Log in to the console",
+        "tags": [
+          "console"
         ],
         "x-stability": "stable"
       }
@@ -7378,6 +10144,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Counts for the configured tenant",
@@ -7439,6 +10224,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Subjects with committed memories (up to 500)",
@@ -7510,6 +10314,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use POST /v1/forget with `subject`",
@@ -7627,6 +10450,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "List a subject's memories, newest first",
@@ -7725,6 +10567,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The preferences that apply to the caller",
@@ -7816,6 +10677,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Issue a short-lived agent token",
@@ -7874,6 +10754,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The verified identity of this credential",
@@ -7890,6 +10789,9 @@
     },
     {
       "apiKey": []
+    },
+    {
+      "session": []
     }
   ],
   "servers": [
@@ -7904,8 +10806,12 @@
       "name": "memory"
     },
     {
-      "description": "Who is calling: tokens and the verified identity (GOV-01, GOV-13).",
+      "description": "Who is calling: tokens and the verified identity (GOV-01, GOV-13); principals and their keys.",
       "name": "identity"
+    },
+    {
+      "description": "The admin console's session (threat model T3): opened with a key, kept in a cookie script cannot read.",
+      "name": "console"
     },
     {
       "description": "Health, counts and audit.",

@@ -144,6 +144,29 @@ path from 0.x data other than export and import.
   authentication, write gate and audit; adapters for the OpenAI Agents SDK and LangGraph. The
   profile scenario gives the same outcomes through each. Packages are not published yet. See
   [docs/sdk.md](docs/sdk.md).
+- Admin console at `/` in both profiles, replacing the Memory Browser page: view, search, edit,
+  supersede and delete memories; the explanation of a recall; the review queue with candidates
+  and quarantined records (approve, reject, or rephrase and approve: the new wording passes
+  the write gate, and a quarantined record is never committed as it stands); principals and
+  keys; policy versions; evaluation suites, replays and each quality metric by policy
+  version; and a profile advisor that warns from 80% of the sizes Lite is measured at and
+  names the `memhouse migrate` command (also `GET /v1/advisor` and a line of `memhouse
+  doctor`). The console holds no rule of its own: every action is an API call as the
+  logged-in principal. **Session login** replaces the key in the browser's storage: a key is
+  presented once (`POST /v1/session`), the browser keeps a cookie script cannot read
+  (`HttpOnly`, `SameSite=Strict`, `Secure` except on a loopback host), requests made with it
+  need the session's CSRF token and the server's own origin, and the session ends on logout,
+  expiry, idleness, key revocation or a disabled principal. The pages are served with a
+  Content-Security-Policy without inline script or style. **CORS is closed by default**:
+  browser pages of other origins are refused unless listed in `[server] cors_origins`
+  (before, every origin was allowed). API 1.10.0: `/v1/session`, `GET /v1/review/queue`,
+  `/v1/principals`, `/v1/keys`, `/v1/eval/*`, `/v1/advisor`, `content` on a review, and the
+  `principal:manage` permission (an admin key created before does not carry it: create a new
+  one). Schema version 11 (`mh_session`; a Lite file is copied before the upgrade, as for
+  every schema version). `memhouse restore` ends every console session. New settings:
+  `[server] console`, `cors_origins`, `public_url` (the server's origin behind a proxy that
+  rewrites `Host`), `session_ttl_secs`, `session_idle_secs`, `session_cookie_secure`, and
+  `[advisor]`. See [docs/console.md](docs/console.md).
 - A proposal that fails and will be retried always keeps its content in the intake queue (found
   by the queue's kit).
 - Identifiers and words are matched with Unicode letter classes ("Č-1001" is an identifier).

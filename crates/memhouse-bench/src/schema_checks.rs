@@ -448,6 +448,35 @@ async fn upgrade_in(base: &Engine, url1: &str, url2: &str) -> Outcome {
             followed.len()
         ));
     }
+    // Version 11 (console sessions) is one new table. A database at version 10 has none: the
+    // upgrade creates it empty and changes nothing else, and a version 10 process that goes on
+    // running never reads it (the v1-style insert above still works on this schema).
+    sqlx::query("DROP TABLE mh_session").execute(&pool).await?;
+    sqlx::query("UPDATE mh_meta SET value = '10' WHERE key = 'schema_version'").execute(&pool).await?;
+    let records_before: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory").fetch_one(&pool).await?;
+    let at_11 = stub_engine(base, url1, id, dim, "", true).await?;
+    let version: String = sqlx::query_scalar("SELECT value FROM mh_meta WHERE key = 'schema_version'").fetch_one(&pool).await?;
+    let records_after: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory").fetch_one(&pool).await?;
+    let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros()).unwrap_or_default();
+    let session = memhouse_core::identity::Session {
+        id: memhouse_core::engine::content_hash("gov-upgrade-session"),
+        tenant: "default".into(),
+        principal_id: "admin:gov-upgrade".into(),
+        key_id: "k1".into(),
+        key_check: None,
+        created_at: now,
+        expires_at: now + chrono::Duration::hours(1),
+        last_seen_at: now,
+    };
+    at_11.store.session_put(&session).await?;
+    let read = at_11.store.session_get(&session.id).await?;
+    let purged = at_11.store.sessions_purge(now + chrono::Duration::hours(2), None).await?;
+    if version != format::SCHEMA_VERSION.to_string() || records_before != records_after || read.as_ref() != Some(&session) || purged != 1 {
+        problems.push(format!(
+            "version 11 on a version 10 database: schema_version {version}, {records_before} records before and {records_after} after, the session read back {}, {purged} purged at its end (expected 1)",
+            if read.as_ref() == Some(&session) { "as written" } else { "differs" }
+        ));
+    }
     let hits =
         upgraded.recall(RecallRequest { subject: Some("customer:acme".into()), query: "contact preference email".into(), k: Some(3), ..Default::default() }).await?.hits.len();
     if hits == 0 {

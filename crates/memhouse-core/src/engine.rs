@@ -99,6 +99,19 @@ fn request_hash(request: &impl serde::Serialize) -> String {
 pub(crate) use crate::intake::Entry;
 use crate::intake::{Op, PendingRecord, Proposal};
 
+/// Where a write's code references come from (TPL-04).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Refs {
+    /// The ones the write names.
+    Own,
+    /// A revision that names none: those of the version it replaces, judged by the store when
+    /// it inserts the revision ([`NewMemory::refs_inherited`]).
+    Inherited,
+    /// Those of this record, exactly as the store holds them when it inserts the write
+    /// ([`NewMemory::refs_from`]).
+    Of(Uuid),
+}
+
 /// What a list may return.
 pub(crate) struct Page {
     pub kinds: Option<Vec<MemoryKind>>,
@@ -439,19 +452,24 @@ impl Engine {
     }
 
     pub(crate) async fn remember_with(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
-        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
-        let span = Self::write_span("memhouse.remember", &policy, &req.actor, &req.subject);
-        retryable(self.traced("remember", span, self.remember_untraced(req, entry, &policy)).await)
+        self.remember_taking(req, entry, Refs::Own).await
     }
 
-    async fn remember_untraced(&self, req: RememberRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
+    /// A write that says where its code references come from ([`Refs`]).
+    pub(crate) async fn remember_taking(&self, req: RememberRequest, entry: Entry, refs: Refs) -> anyhow::Result<RememberResult> {
+        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
+        let span = Self::write_span("memhouse.remember", &policy, &req.actor, &req.subject);
+        retryable(self.traced("remember", span, self.remember_untraced(req, entry, refs, &policy)).await)
+    }
+
+    async fn remember_untraced(&self, req: RememberRequest, entry: Entry, refs: Refs, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember, false), policy).await?;
+        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember, refs), policy).await?;
         self.accepted_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await;
         Ok(result)
     }
@@ -465,11 +483,15 @@ impl Engine {
         tenant: &str,
         subject: &str,
         actor: &str,
-        how: (Entry, Op, bool),
+        how: (Entry, Op, Refs),
         policy: &CompiledPolicy,
     ) -> anyhow::Result<RememberResult> {
-        // The last: a revision that takes the references of the version it replaces.
-        let (entry, op, refs_inherited) = how;
+        let (entry, op, refs) = how;
+        let (refs_inherited, refs_from) = match refs {
+            Refs::Own => (false, None),
+            Refs::Inherited => (true, None),
+            Refs::Of(id) => (false, Some(id)),
+        };
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
         if !policy.allows(kind) {
@@ -609,7 +631,7 @@ impl Engine {
             source,
             op,
             entry,
-            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs, refs_inherited }],
+            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs, refs_inherited, refs_from }],
             session_id: None,
             enqueued_at: now,
         };
@@ -756,6 +778,7 @@ impl Engine {
                 structured: None,
                 code_refs: vec![],
                 refs_inherited: false,
+                refs_from: None,
             });
         }
         if records.is_empty() {
@@ -1421,7 +1444,7 @@ impl Engine {
             code_refs,
             wait: req.wait,
         };
-        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise, refs_inherited), policy).await?;
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise, if refs_inherited { Refs::Inherited } else { Refs::Own }), policy).await?;
         self.accepted_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await;
         Ok(result)
     }
@@ -1431,6 +1454,10 @@ impl Engine {
     pub(crate) async fn admit(&self, tenant: &str, id: Uuid, by: &str) -> anyhow::Result<(MemoryStatus, Option<Uuid>)> {
         self.settle_record(tenant, id).await?;
         let m = self.store.get(tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
+        if m.status == MemoryStatus::Quarantined {
+            // GOV-11: what the injection screen held is never committed as it stands.
+            return Err(error::conflict(format!("memory {id} is quarantined; only candidates are admitted: reject it, or approve another wording of it (review with `content`)")));
+        }
         if m.status != MemoryStatus::Candidate {
             return Err(error::conflict(format!("memory {id} is {}; only candidates are admitted", m.status.as_str())));
         }
@@ -1698,6 +1725,41 @@ impl Engine {
         Ok(MemoryPage { items, next_cursor })
     }
 
+    /// One page of the review queue (GOV-11): records in `statuses` that `visible` lets the
+    /// reviewer see, newest first. Records the reviewer may not see are passed over, so a
+    /// page is filled from further down the queue.
+    pub(crate) async fn review_queue_page(
+        &self,
+        tenant: &str,
+        statuses: &[MemoryStatus],
+        subject: Option<&str>,
+        limit: usize,
+        cursor: Option<&str>,
+        visible: &(dyn Fn(&Memory) -> bool + Sync),
+    ) -> anyhow::Result<MemoryPage> {
+        let limit = limit.clamp(1, 200);
+        let mut before = cursor.map(decode_cursor).transpose()?;
+        let mut items = Vec::with_capacity(limit);
+        // Bounded: a reviewer who may see almost nothing gets a cursor to go on with.
+        for _ in 0..20 {
+            let batch = self.store.review_queue(tenant, statuses, subject, before, limit + 1).await?;
+            let full = batch.len() > limit;
+            for m in batch {
+                if items.len() == limit {
+                    return Ok(MemoryPage { items, next_cursor: before.map(|(at, id)| encode_cursor(at, id)) });
+                }
+                before = Some((m.created_at, m.id));
+                if visible(&m) {
+                    items.push(m);
+                }
+            }
+            if !full {
+                return Ok(MemoryPage { items, next_cursor: None });
+            }
+        }
+        Ok(MemoryPage { items, next_cursor: before.map(|(at, id)| encode_cursor(at, id)) })
+    }
+
     /// The committed working memory of a session, newest first, and whether it was read from the
     /// store (a cache miss: one statement) rather than the session cache.
     /// `more`: the caller wants up to this many, more than the cache keeps per session; they are
@@ -1771,6 +1833,11 @@ impl Engine {
         if expired > 0 {
             self.store.audit("system", "retention.expire", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": expired })).await?;
         }
+        // Console sessions past their end or their idle limit (T3): no row outlives its use.
+        let idle = self.cfg.server.session_idle_secs;
+        let now = Utc::now();
+        let slack = crate::identity::session_touch_secs(idle);
+        self.store.sessions_purge(now, (idle > 0).then(|| now - chrono::Duration::seconds(idle as i64 + slack))).await?;
         let policy = self.policy_for(&self.cfg.memory.tenant).await?;
         let mut purged = 0;
         for kind in MemoryKind::ALL {

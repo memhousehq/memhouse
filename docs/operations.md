@@ -206,8 +206,9 @@ Then:
 
 ## Reverse proxy and TLS
 
-`memhouse serve` speaks plain HTTP and allows all CORS origins. Keep it bound to `127.0.0.1` (the
-default) and put TLS in front of it.
+`memhouse serve` speaks plain HTTP. Keep it bound to `127.0.0.1` (the default) and put TLS in
+front of it. The [admin console](console.md) needs it: on any host but a loopback one its
+session cookie is `Secure`, and a browser sends that only over TLS.
 
 Caddy (gets certificates automatically):
 
@@ -228,14 +229,27 @@ server {
     client_max_body_size 5m;          # large ingest batches
     location / {
         proxy_pass http://127.0.0.1:7077;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;   # the public host with its port, as the browser sent it
         proxy_read_timeout 60s;
     }
 }
 ```
 
-To restrict browser origins, add the `Access-Control-Allow-Origin` header at the proxy and drop
-the upstream's.
+**Tell the server its origin.** The server refuses a browser request whose `Origin` is not
+its own. It takes its own from the `Host` header: `proxy_set_header Host $http_host;` above
+passes it on with its port (`$host` drops the port, which breaks a console on a port other
+than 443), and Caddy does by default. If your proxy sends another `Host` upstream, set
+`[server] public_url = "https://memory.example.com"` instead
+([configuration.md](configuration.md#server)). `X-Forwarded-Host` is not read. With neither,
+the console's own requests are refused with `403`.
+
+**Other origins.** Pages of another origin cannot call the API from a browser unless the
+origin is in `[server] cors_origins` ([configuration.md](configuration.md#server)); there is
+nothing to add at the proxy. Clients that are not browsers (curl, SDKs, agents) send no
+`Origin` and are not affected.
+
+**More than one replica.** Console sessions are rows in the database, so a session opened on
+one `memhouse serve` is valid on every other and survives a restart.
 
 ## Sizing
 
@@ -422,6 +436,19 @@ and re-applies it; on a machine without the current database, export the ledger 
 A plain `memhouse restore <dir>` there brings back what was deleted after the backup, and says
 so. The two commands refuse a Postgres installation: use `pg_dump` and the procedure below.
 
+### Console sessions after a restore
+
+A dump holds the rows of the [console](console.md)'s sessions that were open when it was
+taken: hashes, not the cookies' secrets. One of them may have been logged out since, and a
+restore within the session lifetime (`[server] session_ttl_secs`, 8 hours) would make it
+valid again. After restoring a Postgres dump, end them all:
+
+```sql
+DELETE FROM mh_session;
+```
+
+`memhouse restore` on Lite does this itself.
+
 ### Re-applying deletions after a restore
 
 A backup taken before an erasure request still holds the erased data. The deletion ledger records
@@ -506,8 +533,8 @@ NUL characters on the way to Postgres, which cannot store them.
 | The intake queue and extraction jobs | row by row, in order: queued work continues on the target |
 
 Left behind, because they are rebuilt on use or expire: the embedding and extraction caches,
-recall explanations, and idempotency keys (a request repeated across the migration is carried
-out again).
+recall explanations, idempotency keys (a request repeated across the migration is carried
+out again), and the [admin console](console.md)'s sessions (log in again on the target).
 
 **Verification, then the switch.** After the copy every record is read back from the target
 and its hash compared with the source's; every other table is compared row for row; a sample

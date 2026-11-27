@@ -4,7 +4,8 @@
 MemHouse can measure its own memory quality on scripted conversations with known ground truth,
 and refuse a change that makes it worse. This covers requirements QUAL-03 (the harness), QUAL-04
 (your own suites), QUAL-05 (the regression gate), QUAL-10 (reproducibility) and QUAL-11 (the
-metrics).
+metrics, which the [admin console](console.md#evaluation) shows per tenant with their trend by
+policy version: `GET /v1/eval/suites`, `/v1/eval/runs` and `/v1/eval/trend`).
 
 - A **suite** is a list of multi-session conversations. Each turn says what should become of
   it, and each session ends with a checkpoint of questions.

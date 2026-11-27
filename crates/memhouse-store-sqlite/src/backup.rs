@@ -407,6 +407,9 @@ pub async fn restore(snapshot: &Path, db: &Path, ledger: &[LedgerEntry], actor: 
         let store = SqliteStore::open(&work, &identity.passage_prefix)?.without_upgrade_snapshot();
         store.migrate(identity.dim, &identity.embedder).await?;
         let applied = store.reapply(ledger, actor, Some((tenant, detail)))?;
+        // A console session that was open when the backup was made may have been logged out
+        // since: a restore brings none of them back (T3). Everyone logs in again.
+        store.conn().execute("DELETE FROM mh_session", [])?;
         let (audit_events, audit_broken_at) = store.audit_verify().await?;
         let counts = store.counts()?;
         // Everything into the one file that moves into place.

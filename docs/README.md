@@ -12,6 +12,7 @@
 | [Architecture](architecture.md) | understand how recall, writes and enrichment work inside |
 | [Memory types, scopes, promotion and sharing](memory-types.md) | use working memory in a session, scope memories and preferences, promote a note to a fact, or share one agent's memory with another |
 | [The coding template](coding.md) | give a coding agent memory of a repository: memories linked to files, hooks for Claude Code and Gemini CLI, staleness when a file changes, revalidation, procedures learned from corrections |
+| [The admin console](console.md) | look at memories, review candidates and quarantined records, manage principals and keys, see policy versions, evaluation results and the profile advisor; and know how its session, CSP and CORS allow-list work |
 | [The Lite profile](lite.md) | run MemHouse without a database server: one SQLite file, `memhouse up --lite`, backup and restore, what Lite does not do |
 | [Conformance kits](conformance.md) | write a store, model or authorizer adapter and prove it conforms; check that REST, MCP and the CLI behave the same |
 | [Languages](languages.md) | enable more languages than English, see each language's support level, or write and test your own language pack |

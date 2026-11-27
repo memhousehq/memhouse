@@ -107,6 +107,7 @@ fn proposal(subject: &str, content: &str, at: DateTime<Utc>) -> Proposal {
             structured: None,
             code_refs: vec![],
             refs_inherited: false,
+            refs_from: None,
         }],
         session_id: Some("s-queue".into()),
         enqueued_at: at,

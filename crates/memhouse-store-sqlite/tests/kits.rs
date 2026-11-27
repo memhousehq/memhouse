@@ -181,6 +181,7 @@ async fn queued_proposal_survives_a_restart() {
             structured: None,
             code_refs: vec![],
             refs_inherited: false,
+            refs_from: None,
         }],
         session_id: None,
         enqueued_at: Utc::now(),

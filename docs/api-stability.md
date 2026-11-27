@@ -6,7 +6,7 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.9.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.10.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
 `forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
 (preview); 1.3 added the policy operations under `/v1/policies`; 1.4 made admission asynchronous
@@ -21,7 +21,11 @@ and its compiled form; 1.8 added `language` to a record and `language.enabled` t
 (`languages` in its compiled form); 1.9 added the code routes (`POST /v1/code/touched`,
 `/v1/code/changed`, `/v1/code/revalidate`), `stale_since` on a record and on a code reference
 (with `seen_hash`), `include_stale` and `paths` on a recall, and the `stale` and `task`
-exclusion reasons. Its contract is [`api/openapi.json`](../api/openapi.json), served at
+exclusion reasons; 1.10 added the admin console's routes (`/v1/session`,
+`GET /v1/review/queue`, `/v1/principals`, `/v1/keys`, and as preview `/v1/eval/suites`,
+`/v1/eval/runs`, `/v1/eval/trend` and `/v1/advisor`), `content` on a review and
+`rephrased_from` on its answer, the `principal:manage` permission, the session cookie as a
+third security scheme, and `session` as a value of `via` in `/v1/whoami`. Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -69,7 +73,7 @@ Each operation in the OpenAPI document has `x-stability`:
 | Value | Meaning |
 |---|---|
 | `stable` | covered by this policy: `remember`, `recall`, `revise`, `forget`, `ingest`, get and list memories, `/health`, `/v1/openapi.json`, and the MCP tools of the same names |
-| `preview` | works and is tested, but may change in a minor release, announced in the release notes: `/v1/subjects`, `/v1/stats`, `/v1/audit`, `/v1/enrich/status`, `/metrics` (its metric names follow the Prometheus conventions and are listed in [operations.md](operations.md#traces-metrics-and-recall-explanations)). They become stable, or are replaced by admin routes, with G06 and G20. |
+| `preview` | works and is tested, but may change in a minor release, announced in the release notes: `/v1/subjects`, `/v1/stats`, `/v1/audit`, `/v1/enrich/status`, `/metrics` (its metric names follow the Prometheus conventions and are listed in [operations.md](operations.md#traces-metrics-and-recall-explanations)). Also the console's read-outs added in 1.10: `/v1/eval/suites`, `/v1/eval/runs`, `/v1/eval/trend` and `/v1/advisor`. G20 built the [console](console.md) on the earlier five as they are; they stay preview until they get paging and filters. |
 | `deprecated` | still works exactly as before, with a successor; see below |
 
 ## Known changes inside v1
@@ -95,6 +99,10 @@ names a recorded exception, and they are written here so clients are ready for t
 | G19 (1.9) | A `procedural` memory is returned by a recall only when it matches the task: two content words in common with the query, a requested tag, or a file named in `paths` ([task-matched retrieval](memory-types.md#task-matched-retrieval)). Before, any procedure the search found was returned. | Word the query after the procedure, filter by `tags`, or pass `paths`. |
 | G19 (1.9) | An agent's procedural proposal marked as a correction (`metadata.correction`, or worded as one) is committed without a reviewer once the same correction has been given `[intake] procedural_corrections` times (3). Before, only a reviewer committed it. | Set `procedural_corrections = 0` to keep it to the reviewer. |
 | G19 (1.9) | `code_refs` paths are normalized on write (`./src//a.rs` becomes `src/a.rs`), a path that leaves the repository is refused with `400`, and at most 200 references are accepted. | Send repository-relative paths. |
+| G20 (1.10) | A browser request from another origin is refused with `403` unless the origin is in `[server] cors_origins`; before, every origin was allowed ([recorded exception](#recorded-exception-browser-requests-from-other-origins-110)). Requests without an `Origin` header (curl, SDKs, agents) are not affected. | List the origins of your own browser applications in `cors_origins`. |
+| G20 (1.10) | `/` serves the admin console, which logs in with a session; the Memory Browser page that kept a key in the browser's storage is gone. | Log in to the console with a key ([console.md](console.md)). |
+| G20 (1.10) | Committing a quarantined record with `POST /v1/review` still answers `409`, now with the way out: reject it, or approve another wording with `content`. | Nothing. |
+| G20 (1.10) | The `principal:manage` permission is new, and keys list their permissions: an admin key created before 1.10 cannot manage principals over the API. Bootstrap keys can. | Create a new key for the admin. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ### Recorded exception: session working memory (1.5)
@@ -153,6 +161,23 @@ behaviour change needs a new major version. It was approved by the maintainer on
   gate that blocks a policy, model or engine change that degrades them", 13 November 2026).
 - **What a client does.** Treat `409` from an approval as "not approved", read the report in the
   message, and allow for a slower answer when the tenant has suites.
+
+### Recorded exception: browser requests from other origins (1.10)
+
+- **What changed.** Up to 1.9 the server answered every origin with permissive CORS headers.
+  From 1.10 a request that carries an `Origin` other than the server's own is refused with
+  `403 forbidden` before anything runs, unless the origin is listed in
+  `[server] cors_origins` ([configuration.md](configuration.md#server)).
+- **Who is affected.** A browser application served from another origin that calls the API
+  with a key or token. A client that sends no `Origin` header (curl, the SDKs, agents,
+  servers) is not affected, and neither is the console, which is served by the server itself.
+- **Why it was allowed inside v1.** It closes threat T3 of the
+  [threat model](threat-model.md): with every origin allowed, any page a user visited could
+  call the API from that user's browser. The roadmap named the origin allow-list as a
+  deliverable of G20.
+- **What a client does.** The operator lists the application's origin in `cors_origins`. The
+  application goes on sending its own key or token; the console's session cookie is not
+  accepted from another origin.
 
 No other exception has been made. The compatibility check below compares shapes, not this kind
 of behaviour, so behaviour changes are reviewed against this section by hand.

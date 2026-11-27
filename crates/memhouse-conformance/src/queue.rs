@@ -65,6 +65,7 @@ fn proposal(tenant: &str, subject: &str, content: &str) -> Proposal {
             structured: None,
             code_refs: vec![],
             refs_inherited: false,
+            refs_from: None,
         }],
         session_id: None,
         enqueued_at: Utc::now(),

@@ -466,7 +466,7 @@ async fn memory_types(e: &Engine, db: &Db) -> Outcome {
     let rule = "Always run the integration tests before tagging a release.";
     let proposed = a.remember(write(subj, rule, MemoryKind::Procedural)).await?;
     s.case("procedural: an agent's proposal waits for confirmation", proposed.status == MemoryStatus::Candidate, || proposed.status.as_str().to_string());
-    let confirmed = root.review(ReviewRequest { id: proposed.id, action: ReviewAction::Commit, reason: None }).await?;
+    let confirmed = root.review(ReviewRequest { id: proposed.id, action: ReviewAction::Commit, reason: None, content: None }).await?;
     let own = ana.remember(write(subj, "Tag the release only after the changelog is updated.", MemoryKind::Procedural)).await?;
     s.case("procedural: explicit confirmation commits it", confirmed.status == MemoryStatus::Committed && own.status == MemoryStatus::Committed, || {
         format!("reviewed {}, a user's own {}", confirmed.status.as_str(), own.status.as_str())
@@ -480,7 +480,7 @@ async fn memory_types(e: &Engine, db: &Db) -> Outcome {
         by_agent.status == MemoryStatus::Candidate && by_user.status == MemoryStatus::Candidate && !has(&inactive, by_agent.id),
         || format!("agent's {}, user's {}", by_agent.status.as_str(), by_user.status.as_str()),
     );
-    let approved = root.review(ReviewRequest { id: by_agent.id, action: ReviewAction::Commit, reason: None }).await?;
+    let approved = root.review(ReviewRequest { id: by_agent.id, action: ReviewAction::Commit, reason: None, content: None }).await?;
     let active = a.recall(ask(subj, "ARR annual recurring revenue", None)).await?;
     let direct = root.remember(write(subj, "NRR means net revenue retention.", MemoryKind::Taxonomic)).await?;
     s.case(
@@ -739,10 +739,28 @@ async fn promotion(e: &Engine, db: &Db) -> Outcome {
     }
     let mut promoted: Vec<(Uuid, Vec<Uuid>, MemoryKind)> = vec![];
     for (sources, kind, content) in &plan {
-        let r =
+        let mut r =
             p.promote(PromoteRequest { sources: sources.clone(), kind: *kind, content: content.clone(), reason: Some("bench".into()), wait: true, ..Default::default() }).await?;
+        // `wait` is bounded, and a first attempt that fails is answered at once and retried
+        // behind the answer: such an answer says "still in the intake queue", which is not
+        // the gate's decision. The check is about that decision, so it waits for it here
+        // instead of reading a record that is not written yet (a miss that depended on load).
+        if r.status == MemoryStatus::Candidate && r.note.as_deref() == Some("still in the intake queue") {
+            e.settle_subject(Some(TENANT.into()), subj, std::time::Duration::from_secs(60)).await?;
+            // Read as the answer of a write is built: a record that turned out to be a
+            // duplicate names the record it duplicates, and that one is the outcome.
+            if let Some(m) = e.store.get(TENANT, r.id).await? {
+                r.status = m.status;
+                if let Some(dup) = m.metadata.get("duplicate_of").and_then(|d| serde_json::from_value::<Uuid>(d.clone()).ok()) {
+                    r.id = dup;
+                    r.deduplicated = true;
+                    r.status = e.store.get(TENANT, dup).await?.map(|d| d.status).unwrap_or(MemoryStatus::Committed);
+                }
+            }
+        }
         if r.status != MemoryStatus::Committed || r.deduplicated || sources.contains(&r.id) {
-            problems.push(format!("promotion to {kind} answered {} (deduplicated {})", r.status.as_str(), r.deduplicated));
+            // With the note: "still in the intake queue" says the wait ended before the gate did.
+            problems.push(format!("promotion to {kind} answered {} (deduplicated {}, note {:?})", r.status.as_str(), r.deduplicated, r.note));
         }
         promoted.push((r.id, sources.clone(), *kind));
     }
@@ -785,8 +803,12 @@ async fn promotion(e: &Engine, db: &Db) -> Outcome {
     // The gate of the target type still decides: an agent's promoted procedure waits.
     let own = q.remember(write(subj, &words("habit", 1), MemoryKind::Semantic)).await?.id;
     let waits = q.promote(PromoteRequest { sources: vec![own], kind: MemoryKind::Procedural, wait: true, ..Default::default() }).await?;
-    if waits.status != MemoryStatus::Candidate {
-        problems.push(format!("an agent's promotion to procedural memory is {}", waits.status.as_str()));
+    // `candidate` is also what a write answers before its gate ran: the gate's decision is
+    // the stored record's state once nothing of the subject is queued any more.
+    let settled = e.settle_subject(Some(TENANT.into()), subj, std::time::Duration::from_secs(60)).await?;
+    let stored = e.store.get(TENANT, waits.id).await?.map(|m| m.status);
+    if waits.status != MemoryStatus::Candidate || !settled || stored != Some(MemoryStatus::Candidate) {
+        problems.push(format!("an agent's promotion to procedural memory answered {} and is stored as {stored:?} (intake settled: {settled})", waits.status.as_str()));
     }
     // The whole chain goes with its first source: a note promoted to a fact, the fact to a procedure.
     let mut link = write(subj, &words("chain", 1), MemoryKind::Working);
@@ -958,6 +980,7 @@ async fn promotion(e: &Engine, db: &Db) -> Outcome {
                 structured: None,
                 code_refs: vec![],
                 refs_inherited: false,
+                refs_from: None,
             }],
             session_id: None,
             enqueued_at: chrono::Utc::now(),

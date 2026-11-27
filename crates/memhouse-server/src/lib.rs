@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-//! HTTP gateway: REST API, streamable-HTTP MCP endpoint and the Memory Browser page.
+//! HTTP gateway: REST API, streamable-HTTP MCP endpoint and the admin console's pages.
 
+pub mod console;
 pub mod embedded;
 pub mod hook;
 pub mod mcp;
@@ -11,9 +12,10 @@ pub mod telemetry;
 use axum::extract::{FromRequest, FromRequestParts, MatchedPath, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use memhouse_core::admin::{AdvisorReport, EvalRunInfo, EvalSuiteInfo, EvalTrend, KeyCreated, KeyInfo, KeyRequest, KeyRevoked, KeyRotateRequest, PrincipalInfo, PrincipalRequest};
 use memhouse_core::caller::Caller;
 use memhouse_core::error::{self, ErrorBody, ErrorCode};
 use memhouse_core::identity::Identity;
@@ -191,21 +193,56 @@ pub fn credential(headers: &HeaderMap) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Authenticate every request (GOV-01): a key or token verified against the store, and the user
-/// it states (`x-memhouse-user`). A failure is audited (`auth.failed`) and nothing else runs.
+/// Authenticate every request (GOV-01): a key or token verified against the store, or the
+/// console's session cookie (T3), and the user it states (`x-memhouse-user`). A failure is
+/// audited (`auth.failed`) and nothing else runs. A credential in the header wins: the cookie
+/// is read only when there is none.
 async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
     let asserted = req.headers().get("x-memhouse-user").and_then(|v| v.to_str().ok()).map(String::from);
     let route = req.extensions().get::<MatchedPath>().map(|p| p.as_str().to_string()).unwrap_or_default();
-    let failure = match credential(req.headers()) {
-        None => memhouse_core::identity::AuthFailure { reason: "no credential", key_id: None, principal: None },
-        Some(c) => match st.engine.auth.authenticate(&c, asserted.as_deref()).await {
+    let failure = match (credential(req.headers()), console::session_cookie(&st.engine.cfg, req.headers())) {
+        (None, None) => memhouse_core::identity::AuthFailure { reason: "no credential", key_id: None, principal: None },
+        (Some(c), _) => match st.engine.auth.authenticate(&c, asserted.as_deref()).await {
             Ok(id) => {
                 req.extensions_mut().insert(id);
                 return next.run(req).await;
             }
             Err(f) => f,
         },
+        (None, Some(secret)) => match st.engine.auth.session_identity(&secret, asserted.as_deref()).await {
+            Ok((id, session)) => {
+                // The cookie is sent by the browser, not by the page: a request made with it
+                // must come from the console itself and, to change anything, prove it (CSRF).
+                if let Some(why) = console::guard(&st.engine.cfg, req.headers(), req.method(), &secret) {
+                    memhouse_core::metrics::inc("memhouse_refused_total", &[("kind", "session"), ("reason", "csrf")], 1.0);
+                    let detail = json!({ "rule": "csrf", "reasons": [why], "key": id.key_id, "route": route, "method": req.method().as_str() });
+                    if let Err(e) = st.engine.store.audit(id.id(), "access.denied", &id.principal.tenant, None, None, detail).await {
+                        tracing::error!("audit of a refused session request: {e:#}");
+                    }
+                    return (StatusCode::FORBIDDEN, Json(ErrorBody { error: why.into(), code: ErrorCode::Forbidden })).into_response();
+                }
+                // Only a request that got this far counts as use: a refused one above does
+                // not push the idle limit out. And a use that cannot be recorded is not
+                // accepted, or the session could end before its idle limit after this request.
+                match st.engine.auth.session_used(&session).await {
+                    Ok(()) => {
+                        req.extensions_mut().insert(id);
+                        req.extensions_mut().insert(console::SessionCtx { secret, expires_at: session.expires_at });
+                        return next.run(req).await;
+                    }
+                    Err(f) => f,
+                }
+            }
+            Err(f) => f,
+        },
     };
+    // The store did not answer a lookup: nothing was decided about the credential, so this is
+    // no authentication failure (nothing to audit, and no reason for a console to log out).
+    // Answered like every request that fails for a dependency: retryable.
+    if failure.reason == memhouse_core::identity::STORE_UNAVAILABLE {
+        memhouse_core::metrics::inc("memhouse_refused_total", &[("kind", "unavailable"), ("reason", "auth_store")], 1.0);
+        return ApiError(error::unavailable("the credential could not be checked: the store did not answer. Nothing was done; retry")).into_response();
+    }
     memhouse_core::metrics::inc("memhouse_refused_total", &[("kind", "auth"), ("reason", failure.reason)], 1.0);
     let detail = json!({ "reason": failure.reason, "key": failure.key_id, "route": route });
     let actor = failure.principal.clone().unwrap_or_else(|| "anonymous".into());
@@ -258,6 +295,21 @@ pub fn router(engine: Engine) -> Router {
         .route("/v1/grants/{id}", axum::routing::delete(grant_revoke))
         .route("/v1/tokens", post(issue_token))
         .route("/v1/whoami", get(whoami))
+        // The admin console (G20): sessions, the review queue, principals and keys,
+        // evaluation, the profile advisor.
+        .route("/v1/session", post(console::session_open).get(console::session_get).delete(console::session_close))
+        .route("/v1/review/queue", get(review_queue))
+        .route("/v1/principals", get(principals))
+        .route("/v1/principals/{id}", put(principal_put))
+        .route("/v1/principals/{id}/disable", post(principal_disable))
+        .route("/v1/principals/{id}/enable", post(principal_enable))
+        .route("/v1/keys", get(keys).post(key_create))
+        .route("/v1/keys/{id}/revoke", post(key_revoke))
+        .route("/v1/keys/{id}/rotate", post(key_rotate))
+        .route("/v1/eval/suites", get(eval_suites))
+        .route("/v1/eval/runs", get(eval_runs))
+        .route("/v1/eval/trend", get(eval_trend))
+        .route("/v1/advisor", get(advisor))
         .route("/v1/recalls/{id}/explanation", get(explanation))
         .route("/metrics", get(metrics))
         // Preview (may change in a minor release)
@@ -279,9 +331,13 @@ pub fn router(engine: Engine) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/openapi.json", get(|| async { Json(openapi::spec()) }))
-        .route("/", get(browser))
+        .route("/", get(console::page))
+        .route("/console.css", get(console::stylesheet))
+        .route("/console.js", get(console::script))
         .merge(api)
         .fallback(|| async { ApiError(error::not_found("no such route")) })
+        .layer(middleware::from_fn_with_state(st.clone(), console::cors))
+        .layer(middleware::from_fn(console::security_headers))
         .with_state(st)
         .layer(middleware::from_fn(http_metrics))
         .layer(tower_http::trace::TraceLayer::new_for_http().make_span_with(|req: &Request| {
@@ -289,7 +345,6 @@ pub fn router(engine: Engine) -> Router {
             let route = req.extensions().get::<MatchedPath>().map(|p| p.as_str().to_string()).unwrap_or_else(|| "unmatched".into());
             tracing::info_span!("http.request", http.request.method = %req.method(), http.route = %route, otel.name = %format!("{} {route}", req.method()))
         }))
-        .layer(tower_http::cors::CorsLayer::permissive())
 }
 
 /// Serve the API on a listener the caller bound (tests and embedding applications).
@@ -304,7 +359,7 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     let bind = engine.cfg.server.bind.clone();
     let listener = tokio::net::TcpListener::bind(&bind).await.map_err(|e| anyhow::anyhow!("cannot listen on {bind}: {e}"))?;
     tracing::info!("MemHouse listening on http://{bind}");
-    eprintln!("MemHouse is running on http://{bind}  (Memory Browser: http://{bind}/ , MCP: http://{bind}/mcp)");
+    eprintln!("MemHouse is running on http://{bind}  (console: http://{bind}/ , MCP: http://{bind}/mcp)");
     if embedded::enrichment_runs(&engine) {
         eprintln!("Enrichment: {} workers, model {}", engine.cfg.enrich.workers, engine.cfg.enrich.llm.model);
     }
@@ -575,35 +630,96 @@ async fn mcp_http(Who(c): Who, Body(msg): Body<serde_json::Value>) -> Response {
     }
 }
 
-async fn browser() -> Html<&'static str> {
-    Html(include_str!("browser.html"))
+#[derive(Deserialize)]
+struct QueueParams {
+    status: Option<String>,
+    subject: Option<String>,
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
+/// The review queue (GOV-11): candidates and quarantined records waiting for a reviewer.
+async fn review_queue(Who(c): Who, QueryParams(p): QueryParams<QueueParams>) -> ApiResult<MemoryPage> {
+    let statuses = p
+        .status
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| MemoryStatus::parse(s.trim()).ok_or_else(|| ApiError(error::invalid(format!("unknown status '{s}'; expected candidate or quarantined")))))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(c.review_queue(statuses, p.subject, p.limit.unwrap_or(50), p.cursor.as_deref()).await?))
+}
+
+async fn principals(Who(c): Who) -> ApiResult<Vec<PrincipalInfo>> {
+    Ok(Json(c.principals().await?))
+}
+
+async fn principal_put(Who(c): Who, PathParam(id): PathParam<String>, Body(req): Body<PrincipalRequest>) -> ApiResult<PrincipalInfo> {
+    Ok(Json(c.principal_put(&id, &req).await?))
+}
+
+async fn principal_disable(Who(c): Who, PathParam(id): PathParam<String>) -> ApiResult<PrincipalInfo> {
+    Ok(Json(c.principal_set_disabled(&id, true).await?))
+}
+
+async fn principal_enable(Who(c): Who, PathParam(id): PathParam<String>) -> ApiResult<PrincipalInfo> {
+    Ok(Json(c.principal_set_disabled(&id, false).await?))
+}
+
+#[derive(Deserialize)]
+struct KeyParams {
+    principal: Option<String>,
+}
+
+async fn keys(Who(c): Who, QueryParams(p): QueryParams<KeyParams>) -> ApiResult<Vec<KeyInfo>> {
+    Ok(Json(c.keys(p.principal.as_deref()).await?))
+}
+
+/// The answer holds a key: it is not to be stored by anything between the server and the caller.
+fn secret_answer<T: serde::Serialize>(v: T) -> Response {
+    ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(v)).into_response()
+}
+
+async fn key_create(Who(c): Who, Body(req): Body<KeyRequest>) -> Result<Response, ApiError> {
+    Ok(secret_answer::<KeyCreated>(c.key_create(&req).await?))
+}
+
+async fn key_revoke(Who(c): Who, PathParam(id): PathParam<String>) -> ApiResult<KeyRevoked> {
+    Ok(Json(c.key_revoke(&id).await?))
+}
+
+async fn key_rotate(Who(c): Who, PathParam(id): PathParam<String>, body: axum::body::Bytes) -> Result<Response, ApiError> {
+    // The body is optional: without one the old key keeps working for the default grace period.
+    let req: KeyRotateRequest =
+        if body.iter().all(u8::is_ascii_whitespace) { Default::default() } else { serde_json::from_slice(&body).map_err(|e| ApiError(error::invalid(e.to_string())))? };
+    Ok(secret_answer::<KeyCreated>(c.key_rotate(&id, &req).await?))
+}
+
+async fn eval_suites(Who(c): Who) -> ApiResult<Vec<EvalSuiteInfo>> {
+    Ok(Json(c.eval_suites().await?))
+}
+
+#[derive(Deserialize)]
+struct EvalParams {
+    suite: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn eval_runs(Who(c): Who, QueryParams(p): QueryParams<EvalParams>) -> ApiResult<Vec<EvalRunInfo>> {
+    Ok(Json(c.eval_runs(p.suite.as_deref(), p.limit.unwrap_or(50)).await?))
+}
+
+async fn eval_trend(Who(c): Who, QueryParams(p): QueryParams<EvalParams>) -> ApiResult<EvalTrend> {
+    Ok(Json(c.eval_trend(p.suite.as_deref()).await?))
+}
+
+/// The profile advisor (PROF-11).
+async fn advisor(Who(c): Who) -> ApiResult<AdvisorReport> {
+    Ok(Json(c.advisor().await?))
 }
 
 /// Keep a handle to the trait so downstream crates can name it without importing core.
 pub type DynStore = Arc<dyn Store>;
 
 pub use embedded::{embedded_config, lite_defaults, Embedded};
-
-#[cfg(test)]
-mod tests {
-    /// Data must never be interpolated into inline JavaScript in the Memory Browser: HTML escaping
-    /// doesn't protect a JS string inside an attribute (the browser decodes entities first), so a
-    /// subject name like `x');alert(1);('` would run script and could read the stored API key.
-    #[test]
-    fn browser_never_interpolates_data_into_inline_handlers() {
-        let html = include_str!("browser.html");
-        for (i, line) in html.lines().enumerate() {
-            for attr in ["onclick=\"", "onchange=\"", "oninput=\"", "onkeydown=\"", "onsubmit=\""] {
-                let mut rest = line;
-                while let Some(p) = rest.find(attr) {
-                    let handler = &rest[p + attr.len()..];
-                    let handler = &handler[..handler.find('"').unwrap_or(handler.len())];
-                    // UUIDs from the server (m.id) are the only allowed interpolation.
-                    let bad = handler.contains("${") && !handler.contains("${m.id}");
-                    assert!(!bad, "browser.html:{}: data interpolated into an inline handler: {handler}", i + 1);
-                    rest = &rest[p + attr.len()..];
-                }
-            }
-        }
-    }
-}
