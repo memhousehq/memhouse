@@ -583,8 +583,14 @@ pub trait Store: Send + Sync {
         // `purge_older_than`, and expired working memory stays as `expire_due` left it
         // (`expired`, never recalled). Only a rule within a scope needs a store that knows scopes.
         match (spec.is_plain(), spec.age) {
+            // `purge_older_than` takes everything that is due: a bound it cannot keep is
+            // refused, not ignored.
+            (Some(_), _) if spec.max_batches.is_some() => anyhow::bail!("this store purges a type in one go: it cannot stop a purge after a number of batches"),
             (Some(days), _) => Ok(crate::governance::PurgeOutcome { records: self.purge_older_than(tenant, spec.kind, days).await?, complete: true, ..Default::default() }),
-            (None, crate::governance::PurgeAge::Expired) => Ok(crate::governance::PurgeOutcome { complete: true, ..Default::default() }),
+            // Only the type's own rule: one for a scope is refused below, like an age rule.
+            (None, crate::governance::PurgeAge::Expired) if spec.scope.is_none() && spec.except.is_empty() => {
+                Ok(crate::governance::PurgeOutcome { complete: true, ..Default::default() })
+            }
             (None, _) => anyhow::bail!("this store purges by type and age only: it cannot carry out a retention rule for one scope"),
         }
     }
@@ -614,9 +620,10 @@ pub trait Store: Send + Sync {
     async fn deletion_put(&self, _d: &crate::governance::DeletionRequest) -> anyhow::Result<()> {
         Ok(())
     }
-    /// Store a request as completed, with its certificate and the `deletion.certificate` event,
+    /// Store a request in the state it has reached together with the audit event of that state
+    /// (`deletion.held`, `deletion.unverified`, or `deletion.certificate` with the completion),
     /// in one transaction; nothing is written if it was completed already.
-    async fn deletion_complete(&self, _d: &crate::governance::DeletionRequest, audit: &crate::intake::AuditEntry) -> anyhow::Result<()> {
+    async fn deletion_record(&self, _d: &crate::governance::DeletionRequest, audit: &crate::intake::AuditEntry) -> anyhow::Result<()> {
         self.audit(&audit.actor, &audit.action, &_d.tenant, audit.subject.as_deref(), audit.memory_id, audit.detail.clone()).await
     }
     async fn deletion_get(&self, _tenant: &str, _id: Uuid) -> anyhow::Result<Option<crate::governance::DeletionRequest>> {
@@ -678,6 +685,11 @@ pub trait Store: Send + Sync {
     /// Whether the tenant has an event of `action` whose detail holds `value` under `key`.
     async fn audit_find(&self, _tenant: &str, _action: &str, _key: &str, _value: &str) -> anyhow::Result<bool> {
         Ok(false)
+    }
+    /// Whether the store keeps the small durable state below, and with it the leases that keep
+    /// two processes from doing one job at once. A store that does not has one process.
+    fn keeps_state(&self) -> bool {
+        false
     }
     /// A value of the store's own small durable state (cursors, leases, the instance id).
     async fn state_get(&self, _key: &str) -> anyhow::Result<Option<String>> {

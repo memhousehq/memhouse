@@ -627,12 +627,26 @@ impl Engine {
                 // The error names the stage and the provider's status, never the content.
                 tracing::error!("intake of {} failed (attempt {}{}): {msg}", p.id, job.attempts, if dead { ", set aside" } else { "" });
                 metrics::inc("memhouse_intake_total", &[("outcome", if dead { "dead" } else { "retry" })], 1.0);
-                if dead {
+                // What is set aside is sanitised under the tenant's policy in force. If that
+                // policy cannot be read now, nothing is stored under weaker rules: the
+                // proposal stays queued and is tried again (GOV-05).
+                let rules = if !dead {
+                    None
+                } else {
+                    match self.policy_for(&p.tenant).await {
+                        Ok(policy) => Some(policy.policy.redaction.rules()),
+                        Err(pe) => {
+                            tracing::error!("poison proposal {} is not set aside yet: the tenant's policy could not be read ({pe:#}); it is tried again", p.id);
+                            None
+                        }
+                    }
+                };
+                if let (true, Some(rules)) = (dead, rules) {
                     // Once more if the insert lost a race (a promotion's source deleted meanwhile):
                     // the second pass sees the deletion and stores the record without its content.
-                    let mut stored = self.quarantine_poison(p, &msg).await;
+                    let mut stored = self.quarantine_poison(p, &msg, &rules).await;
                     if stored.is_err() {
-                        stored = self.quarantine_poison(p, &msg).await;
+                        stored = self.quarantine_poison(p, &msg, &rules).await;
                     }
                     if let Err(qe) = &stored {
                         tracing::error!("poison proposal {} could not be stored as quarantined: {qe:#}", p.id);
@@ -649,20 +663,14 @@ impl Engine {
     }
 
     /// A poison proposal's records, stored as quarantined without vectors, for a reviewer.
-    async fn quarantine_poison(&self, p: &Proposal, error: &str) -> anyhow::Result<bool> {
+    async fn quarantine_poison(&self, p: &Proposal, error: &str, rules: &[String]) -> anyhow::Result<bool> {
         let mut records = vec![];
         let mut audit = vec![];
         // What is set aside is stored under the policy in force now, not the one it was queued
         // under: the deterministic rules are applied once more to the text, the metadata and
         // the structured attributes (a category now rejected is redacted), so a proposal that
         // failed for any reason never brings back what the policy forbids (GOV-05).
-        let rules: Vec<String> = match self.policy_for(&p.tenant).await {
-            Ok(policy) => policy.policy.redaction.rules(),
-            Err(_) => crate::policy::default_policy(&self.cfg, &p.tenant).policy.redaction.rules(),
-        }
-        .into_iter()
-        .map(|c| c.strip_suffix(crate::gate::REJECT_MARK).map(String::from).unwrap_or(c))
-        .collect();
+        let rules: Vec<String> = rules.iter().map(|c| c.strip_suffix(crate::gate::REJECT_MARK).map(String::from).unwrap_or(c.clone())).collect();
         for r in &p.records {
             let mut m = r.memory.clone();
             m.content = crate::gate::redact_text(&m.content, &rules).0;

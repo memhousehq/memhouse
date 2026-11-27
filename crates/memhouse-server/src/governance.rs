@@ -44,10 +44,11 @@ fn private(path: &Path, content: &[u8]) -> anyhow::Result<()> {
         f.write_all(content)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", path.display()))?;
-        // The rename itself is durable once the directory is.
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
-        }
+        // The rename itself is durable once the directory is: a directory that cannot be
+        // synced is a write that is not known to have reached the disk, and is said so.
+        // (Only where a directory can be opened and synced at all: not on Windows.)
+        #[cfg(unix)]
+        std::fs::File::open(dir).and_then(|d| d.sync_all()).map_err(|e| anyhow::anyhow!("{} was written but its directory could not be synced: {e}", path.display()))?;
         Ok(())
     })();
     if written.is_err() {
@@ -178,6 +179,9 @@ pub struct EvidenceManifest {
     pub producer: String,
     pub tenant: String,
     pub instance: String,
+    /// The id of this export: the `evidence.export` audit event carries it.
+    #[serde(default)]
+    pub export: String,
     pub files: Vec<EvidenceFile>,
 }
 
@@ -188,21 +192,51 @@ pub struct EvidenceManifest {
 /// holds identifiers, settings, counts and hashes: no memory content, no key and no key hash.
 pub async fn evidence_export(engine: &Engine, dir: &Path, suite_report: Option<&Path>, by: &str) -> anyhow::Result<EvidenceManifest> {
     memhouse_store_sqlite::private_dir(dir)?;
-    anyhow::ensure!(std::fs::read_dir(dir)?.next().is_none(), "{} is not empty: choose a new directory for the evidence bundle", dir.display());
-    // A bundle is there whole, with its audit event written, or not at all: whatever this
-    // attempt wrote is removed if it fails (the directory was empty, so all of it is ours).
-    let done = evidence_write(engine, dir, suite_report, by).await;
+    let not_empty = || anyhow::anyhow!("{} is not empty: choose a new directory for the evidence bundle", dir.display());
+    anyhow::ensure!(std::fs::read_dir(dir)?.next().is_none(), not_empty());
+    // The directory is reserved for this attempt: a second export that also found it empty
+    // stops here, and writes and removes nothing.
+    let marker = dir.join(IN_PROGRESS);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+        .map_err(|e| anyhow::anyhow!("{}: another evidence export is writing here ({e}); choose a new directory", dir.display()))?;
+    // A bundle is there whole, with its audit event written, or not at all: what this attempt
+    // wrote, and only that, is removed if it fails.
+    let mut written = vec![];
+    let done = match std::fs::read_dir(dir).map(|d| d.count()) {
+        // An export that finished between the look and the reservation left its files here.
+        Ok(n) if n > 1 => Err(not_empty()),
+        Ok(_) => evidence_write(engine, dir, suite_report, by, &mut written).await,
+        Err(e) => Err(e.into()),
+    };
     if done.is_err() {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.flatten() {
-                let _ = std::fs::remove_file(e.path());
-            }
+        for path in &written {
+            let _ = std::fs::remove_file(path);
         }
     }
+    let _ = std::fs::remove_file(&marker);
     done
 }
 
-async fn evidence_write(engine: &Engine, dir: &Path, suite_report: Option<&Path>, by: &str) -> anyhow::Result<EvidenceManifest> {
+/// The marker of an export in progress in its directory.
+const IN_PROGRESS: &str = ".export-in-progress";
+
+/// The manifest before its export is on record.
+const STAGED_MANIFEST: &str = "manifest.json.staged";
+
+/// A check of a suite report as the bundle names it: by the catalog's id and requirement, with
+/// the report's outcome. None for an entry whose id is not a check of the suite.
+fn catalogued(c: &serde_json::Value) -> Option<serde_json::Value> {
+    let id = c.get("id").and_then(|v| v.as_str())?;
+    let (id, requirement) = evidence::CHECKS.iter().find(|(known, _)| *known == id)?;
+    Some(
+        json!({ "id": id, "requirement": requirement, "passed": c.get("passed").and_then(|v| v.as_bool()), "not_applicable": c.get("not_applicable").is_some_and(|v| !v.is_null()) }),
+    )
+}
+
+async fn evidence_write(engine: &Engine, dir: &Path, suite_report: Option<&Path>, by: &str, written: &mut Vec<PathBuf>) -> anyhow::Result<EvidenceManifest> {
     let tenant = engine.cfg.memory.tenant.clone();
     let cfg = &engine.cfg;
     let now = Utc::now();
@@ -348,21 +382,20 @@ async fn evidence_write(engine: &Engine, dir: &Path, suite_report: Option<&Path>
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| anyhow::anyhow!("cannot read the governance suite report {}: {e}", p.display()))?;
             let report: serde_json::Value = serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{} is not a governance suite summary: {e}", p.display()))?;
-            // Only what a suite summary is known to hold is copied: the counts and, per check,
-            // its id, requirement and outcome. Whatever else the file holds stays out of the
-            // bundle (the checksum still names the file it was taken from).
+            // Nothing of the file's text reaches the bundle: its counts, and per check the
+            // outcome, under the id and requirement the catalog has for it. An entry that is
+            // not a check of the suite is counted, not copied (the checksum still names the
+            // file it was taken from).
             let g = report.get("governance").unwrap_or(&report);
-            let checks =
+            let listed =
                 g.get("checks").and_then(|c| c.as_array()).ok_or_else(|| anyhow::anyhow!("{} is not a governance suite summary: it has no list of checks", p.display()))?;
-            let text_of = |c: &serde_json::Value, k: &str| c.get(k).and_then(|v| v.as_str()).map(|v| v.chars().take(200).collect::<String>());
-            let checks: Vec<serde_json::Value> = checks
-                .iter()
-                .map(|c| json!({ "id": text_of(c, "id"), "requirement": text_of(c, "requirement"), "passed": c.get("passed").and_then(|v| v.as_bool()), "not_applicable": c.get("not_applicable").is_some_and(|v| !v.is_null()) }))
-                .collect();
+            let checks: Vec<serde_json::Value> = listed.iter().filter_map(catalogued).collect();
+            let unknown = listed.len() - checks.len();
+            let profile = g.get("profile").and_then(|v| v.as_str()).filter(|p| ["postgres", "sqlite"].contains(p));
             let n = |k: &str| g.get(k).and_then(|v| v.as_u64());
             json!({
                 "included": true, "sha256": hex::encode(Sha256::digest(text.as_bytes())),
-                "report": { "profile": text_of(g, "profile"), "passed": n("passed"), "failed": n("failed"), "not_applicable": n("not_applicable"), "checks": checks },
+                "report": { "profile": profile, "passed": n("passed"), "failed": n("failed"), "not_applicable": n("not_applicable"), "checks": checks, "entries_not_in_catalog": unknown },
             })
         }
         None => json!({ "included": false, "how": "run `memhouse bench run --suite governance` and pass its summary.json with --suite-report" }),
@@ -376,10 +409,12 @@ async fn evidence_write(engine: &Engine, dir: &Path, suite_report: Option<&Path>
         producer: format!("memhouse {}", env!("CARGO_PKG_VERSION")),
         tenant: tenant.clone(),
         instance: engine.instance_id().await?,
+        export: uuid::Uuid::new_v4().to_string(),
         files: vec![],
     };
-    let write = |name: &str, v: &serde_json::Value, manifest: &mut EvidenceManifest| -> anyhow::Result<()> {
+    let mut write = |name: &str, v: &serde_json::Value, manifest: &mut EvidenceManifest| -> anyhow::Result<()> {
         let text = serde_json::to_string_pretty(v)?;
+        written.push(dir.join(name));
         private(&dir.join(name), text.as_bytes())?;
         manifest.files.push(EvidenceFile { file: name.into(), sha256: hex::encode(Sha256::digest(text.as_bytes())), bytes: text.len() as u64 });
         Ok(())
@@ -406,12 +441,39 @@ async fn evidence_write(engine: &Engine, dir: &Path, suite_report: Option<&Path>
         }),
         &mut manifest,
     )?;
-    // The audit event first, the manifest last: a directory with a manifest is a bundle whose
-    // export is on record.
-    engine
-        .store
-        .audit(by, "evidence.export", &tenant, None, None, json!({ "files": manifest.files.len(), "controls": evidence::CONTROLS.len(), "suite_report": suite_report.is_some() }))
-        .await?;
-    private(&dir.join("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    // The manifest is written and synced under another name first, so that what can fail in
+    // writing it fails before the export is on record; then the audit event; then the rename
+    // that makes the directory a bundle. A rename that fails after the event is recorded as
+    // such under the same export id, so the event is not read as a bundle that exists.
+    let staged = dir.join(STAGED_MANIFEST);
+    written.push(staged.clone());
+    private(&staged, serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    let detail = json!({ "export": manifest.export, "files": manifest.files.len(), "controls": evidence::CONTROLS.len(), "suite_report": suite_report.is_some() });
+    engine.store.audit(by, "evidence.export", &tenant, None, None, detail).await?;
+    let published = dir.join("manifest.json");
+    written.push(published.clone());
+    if let Err(e) = std::fs::rename(&staged, &published) {
+        let failed = json!({ "export": manifest.export, "error": "the manifest could not be put in place; the bundle was removed" });
+        if let Err(ae) = engine.store.audit(by, "evidence.export_failed", &tenant, None, None, failed).await {
+            tracing::error!("evidence export {}: its failure could not be recorded in the audit log: {ae:#}", manifest.export);
+        }
+        anyhow::bail!("cannot write {}: {e}", published.display());
+    }
     Ok(manifest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_suite_check_is_named_from_the_catalog_not_from_the_report() {
+        let (id, requirement) = evidence::CHECKS[0];
+        // Whatever the report says the requirement is, the bundle has the catalog's text.
+        let named = catalogued(&json!({ "id": id, "requirement": "a secret the file carried", "passed": true, "detail": "more of it" })).unwrap(); // secret-scan: allow (fake fixture)
+        assert_eq!(named, json!({ "id": id, "requirement": requirement, "passed": true, "not_applicable": false }));
+        // An entry that is not a check of the suite is left out.
+        assert!(catalogued(&json!({ "id": "a secret the file carried", "passed": true })).is_none()); // secret-scan: allow (fake fixture)
+        assert!(catalogued(&json!({ "passed": true })).is_none());
+    }
 }

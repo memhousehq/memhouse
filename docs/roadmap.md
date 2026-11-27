@@ -2774,8 +2774,10 @@ hosted checks; what changed:
     `[governance] audit_anchor_path` makes `serve` append one an hour; each anchoring writes an
     `audit.anchor` event, so the SIEM export carries the heads too.
   - **SIEM export (GOV-15).** `[siem]`: CEF in RFC 5424 syslog over TCP or UDP, and OTLP logs
-    over HTTP as JSON; a cursor per receiver kept in the store and moved only after a receiver
-    took a batch; one replica exports at a time (a lease). [operations.md](operations.md#siem-export).
+    over HTTP as JSON; a cursor per receiver kept in the store and moved after a send that
+    succeeded (a collector's 2xx answer, a TCP write that closed without error, datagrams
+    sent), and past an event or log record a collector refuses for good, which is skipped and
+    counted; one replica exports at a time (a lease). [operations.md](operations.md#siem-export).
   - **Evidence (GOV-16).** `memhouse evidence export <dir> [--suite-report summary.json]`:
     twelve controls mapped to SOC 2 criteria and ISO/IEC 27001:2022 Annex A, eleven evidence
     files read from the installation, a manifest with checksums.
@@ -2880,6 +2882,38 @@ hosted checks; what changed:
     changed, by decision:** a forget by user, agent or source does not track a held record
     derived from what it deleted ([governance.md](governance.md#legal-hold)); a keyed retry
     of a record forget whose first answer was lost still answers `404`, as before G22.
+  - **Review fixes, second round (2026-11-28, pull request 42):** an explanation of a recall
+    is not stored after an erasure of its subject or tenant (the write is ordered against the
+    erasure by the store, both profiles). The deletion-recovery lease is taken only on a
+    confirmed compare-and-set, renewed before every request, checked before every step and
+    given back only by its holder. A request waiting for a clean probe erases what it still
+    matches (a record whose hold was released during its first execution); `deletion.held` and
+    `deletion.unverified` are written with their state in one transaction. A record a hold
+    keeps two promotions below a deleted record stays within reach of the deletion (a link in
+    Lite, a note in the store's state on Postgres) and goes when the hold is released. On
+    Postgres a subject erasure keeps a held record committed while it runs, a tenant erasure
+    checks for holds and removes the queue under the hold guard, and a partitioned import
+    looks ids up over every tenant and writes an id given twice once. An exact ledger replay
+    also removes queued copies, queued promotions and extraction jobs of the record; retention
+    drops the jobs that read a purged fact; the audit lookup no longer filters on unescaped
+    text. Poison recovery stores nothing when the tenant's policy cannot be read (the proposal
+    is tried again). The evidence export names suite checks from the product's own list
+    (`evidence::CHECKS`, which the suite verifies against itself), reserves its directory,
+    removes only its own files on failure, stages the manifest before the audit event and
+    records a failed publication (`evidence.export_failed`). SIEM export: a partial success of
+    a collector is counted as skipped, a TCP syslog write is bounded to 15 seconds, no client
+    means no send. The default `purge` of a store refuses a batch bound and a scoped
+    expired rule; the watermark write fails when its directory cannot be synced. Messages and
+    documents corrected (restore and the guard, pending deletions, certificate verification,
+    the by-id MCP forget with held descendants, SIEM delivery per protocol, partition
+    conversion, row-level security and the subject setting). Checks strengthened
+    (`legal_hold` with the two-level hold and a late explanation, `retention_resume` with the
+    lease and a record left by the first execution, `retention_scopes`, `siem_export`);
+    still 97. **Known limits, not changed:** the count of a certificate is added after the
+    erasure commits, not with it, so a process that dies in between certifies fewer records
+    than it removed ([governance.md](governance.md#deletion-and-the-right-to-erasure)); a
+    `forget` by user has no mark in the store to order a late explanation against; TCP syslog
+    has no acknowledgement, so only OTLP delivery is confirmed by the receiver.
 
 #### G23 — Context-provider plugin system, connectors and importers
 

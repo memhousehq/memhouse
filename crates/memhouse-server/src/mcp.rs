@@ -495,6 +495,13 @@ async fn call_legacy(c: &Caller, name: &str, args: &Value) -> anyhow::Result<(St
                         json!({ "deleted": false, "held": true }),
                     ));
                 }
+                // Deleted, but a hold keeps something derived or promoted from it: said too.
+                Ok(r) if r.held > 0 => {
+                    return Ok((
+                        format!("Deleted {id}; {} records derived or promoted from it are under a legal hold and are deleted when the hold is released", r.held),
+                        json!({ "deleted": true, "held": r.held }),
+                    ));
+                }
                 Ok(_) => true,
                 Err(e) if error::code_of(&e) == error::ErrorCode::NotFound => false,
                 Err(e) => return Err(e),

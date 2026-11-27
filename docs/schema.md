@@ -298,7 +298,12 @@ Every change is **expand, backfill, switch, contract** (TR-DB-01), never a rewri
    of the previous version still fit the new schema (the `schema_upgrade` check inserts a row
    the way a v1 process would), so a process that is already running is not broken in the
    middle of an upgrade. It cannot be started again on the upgraded database: a build refuses
-   one whose stored `schema_version` is newer than its own.
+   one whose stored `schema_version` is newer than its own. This holds for nullable columns
+   and new tables only. Turning on `[database] episodic_partitions` is **not** an expand-only
+   change: the conversion moves the primary key from the memory table to its partitions, and
+   an `INSERT ... ON CONFLICT (id)` of a version 11 process that is still running then fails
+   (nothing is corrupted; those writes are refused until the process stops). Stop every older
+   process before enabling it, as the upgrade order above already requires.
 2. **Backfill** in batches of 5,000 rows, idempotent, so it can be interrupted.
 3. **Switch** readers and writers to the new fields; bump `schema_version`.
 4. **Contract** (drop what is no longer used) only in a later version, after every process has

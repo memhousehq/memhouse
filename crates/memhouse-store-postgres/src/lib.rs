@@ -75,6 +75,12 @@ impl PgStore {
     }
 }
 
+/// The items in order, each id once when `dedupe` (the first of an id stays).
+fn first_of_each<T>(items: impl Iterator<Item = T>, id: impl Fn(&T) -> Uuid, dedupe: bool) -> Vec<T> {
+    let mut seen = std::collections::HashSet::new();
+    items.filter(|i| !dedupe || seen.insert(id(i))).collect()
+}
+
 fn drop_next_columns() -> String {
     let cols: Vec<String> = NEXT_COLS.iter().map(|(next, _)| format!("DROP COLUMN IF EXISTS {next}")).collect();
     format!("ALTER TABLE mh_memory {}", cols.join(", "))
@@ -1302,11 +1308,28 @@ impl PgStore {
             // insert, since no index covers an id over every partition.
             sqlx::query("SELECT pg_advisory_xact_lock(7270004)").execute(&mut *tx).await?;
             let ids: Vec<Uuid> = rows.iter().map(|w| w.r.id).collect();
-            sqlx::query_scalar("SELECT id FROM mh_memory WHERE id = ANY($1)").bind(&ids).fetch_all(&mut *tx).await?.into_iter().collect()
+            // An id is unique over every tenant: under row-level security the look is made in
+            // the service scope, or another tenant's row of the same id (in another month's
+            // partition, where no key would refuse it) would not be seen. The transaction's
+            // own scope is put back before anything is written.
+            let scope: Option<String> = if self.rls {
+                let was = sqlx::query_scalar("SELECT coalesce(current_setting('memhouse.scope', true), '')").fetch_one(&mut *tx).await?;
+                sqlx::query("SELECT set_config('memhouse.scope', 'service', true)").execute(&mut *tx).await?;
+                Some(was)
+            } else {
+                None
+            };
+            let found = sqlx::query_scalar("SELECT id FROM mh_memory WHERE id = ANY($1)").bind(&ids).fetch_all(&mut *tx).await;
+            if let Some(was) = scope {
+                sqlx::query("SELECT set_config('memhouse.scope', $1, true)").bind(was).execute(&mut *tx).await?;
+            }
+            found?.into_iter().collect()
         } else {
             Default::default()
         };
-        let fresh: Vec<&WriteRow<'_>> = rows.iter().filter(|w| !present.contains(&w.r.id)).collect();
+        // An id given twice in one batch is written once (the first of them), as a table with
+        // a key over every row would have it: two months' partitions would take both.
+        let fresh = first_of_each(rows.iter().filter(|w| !present.contains(&w.r.id)), |w| w.r.id, partitioned);
         for chunk in fresh.chunks(400) {
             let mut qb = sqlx::QueryBuilder::new(
                 "INSERT INTO mh_memory (id, tenant, subject, kind, status, content, content_hash, embedding, embedding_alt, alt_hash, embedder, embedder_config, \
@@ -2283,7 +2306,9 @@ impl Store for PgStore {
         let mut tx = self.pool.begin().await?;
         let (n, complete, ids) = self.erase_subject_in(&mut tx, tenant, subject, purge_cache, true).await?;
         if complete {
-            sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, scope, actor) VALUES ($1, $2, $4, $3)")
+            // Dated when it is written, not when the transaction began: it is the mark an
+            // explanation written afterwards is compared with (`recall_put`).
+            sqlx::query("INSERT INTO mh_deletion_ledger (at, tenant, subject, scope, actor) VALUES (clock_timestamp(), $1, $2, $4, $3)")
                 .bind(tenant)
                 .bind(subject)
                 .bind(actor)
@@ -2349,7 +2374,7 @@ impl Store for PgStore {
         self.deletion_store(d, None).await
     }
 
-    async fn deletion_complete(&self, d: &memhouse_core::governance::DeletionRequest, audit: &memhouse_core::intake::AuditEntry) -> anyhow::Result<()> {
+    async fn deletion_record(&self, d: &memhouse_core::governance::DeletionRequest, audit: &memhouse_core::intake::AuditEntry) -> anyhow::Result<()> {
         self.deletion_store(d, Some(audit)).await
     }
 
@@ -2410,12 +2435,9 @@ impl Store for PgStore {
     async fn audit_find(&self, tenant: &str, action: &str, key: &str, value: &str) -> anyhow::Result<bool> {
         // `detail` is JSON kept as text. It is read here as `audit_log` reads it, by the same
         // parser, not cast in the database: Postgres' `jsonb` refuses text the writer accepts.
-        let details: Vec<String> = sqlx::query_scalar("SELECT detail FROM mh_audit WHERE tenant = $1 AND action = $2 AND position($3 in detail) > 0")
-            .bind(tenant)
-            .bind(action)
-            .bind(value)
-            .fetch_all(&self.pool)
-            .await?;
+        // No filter on the raw text: a value is stored escaped (a quote, a newline), and a
+        // search for its plain spelling would leave out the very event that holds it.
+        let details: Vec<String> = sqlx::query_scalar("SELECT detail FROM mh_audit WHERE tenant = $1 AND action = $2").bind(tenant).bind(action).fetch_all(&self.pool).await?;
         Ok(details.iter().any(|d| serde_json::from_str::<serde_json::Value>(d).is_ok_and(|v| v.get(key).and_then(|x| x.as_str()) == Some(value))))
     }
 
@@ -2430,6 +2452,10 @@ impl Store for PgStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    fn keeps_state(&self) -> bool {
+        true
     }
 
     async fn state_cas(&self, key: &str, expect: Option<&str>, value: &str) -> anyhow::Result<bool> {
@@ -2599,16 +2625,29 @@ impl Store for PgStore {
 
     #[tracing::instrument(name = "db.recall_put", skip_all, fields(db.system = "postgresql", db.operation = "INSERT"))]
     async fn recall_put(&self, r: &RecallRecord) -> anyhow::Result<()> {
-        sqlx::query("INSERT INTO mh_recall (id, tenant, subject, principal, acting_user, at, body) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING")
-            .bind(r.recall_id)
-            .bind(&r.tenant)
-            .bind(&r.subject)
-            .bind(&r.principal)
-            .bind(&r.user)
-            .bind(r.at)
-            .bind(serde_json::to_value(r)?)
-            .execute(&self.pool)
-            .await?;
+        // Ordered against an erasure of its subject or tenant (GOV-07): the write waits for one
+        // in progress (the same locks), and an explanation of a recall made before an erasure
+        // is not stored after it. The erasure's ledger row is the mark; five seconds cover
+        // the moment between that row and its commit, and the difference between two clocks.
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(governance::TENANT_ERASE_SHARED).bind(&r.tenant).execute(&mut *tx).await?;
+        sqlx::query(SUBJECT_LOCK_SQL).bind(&r.tenant).bind(&r.subject).execute(&mut *tx).await?;
+        sqlx::query(
+            "INSERT INTO mh_recall (id, tenant, subject, principal, acting_user, at, body) SELECT $1, $2, $3, $4, $5, $6, $7 \
+             WHERE NOT EXISTS (SELECT 1 FROM mh_deletion_ledger l WHERE l.tenant = $2 AND ((l.scope = 'subject' AND l.subject = $3) OR l.scope = 'tenant') \
+                               AND l.at + interval '5 seconds' >= $6) \
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(r.recall_id)
+        .bind(&r.tenant)
+        .bind(&r.subject)
+        .bind(&r.principal)
+        .bind(&r.user)
+        .bind(r.at)
+        .bind(serde_json::to_value(r)?)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -2842,10 +2881,15 @@ impl Store for PgStore {
         let mut total = 0;
         // Under a legal hold the tenant's held records stay, and with them its queue, links and
         // the rest: the erasure is finished when the hold is released (GOV-09).
-        let held = self.active_holds(tenant).await? > 0;
-        if !held {
-            sqlx::query("DELETE FROM mh_intake WHERE tenant = $1").bind(tenant).execute(&self.pool).await?;
+        // Looked up and acted on under the hold guard, in one transaction: a hold cannot be
+        // placed between the look and the removal of the queue it would have kept.
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(governance::HOLD_GUARD_SHARED).bind(tenant).execute(&mut *tx).await?;
+        let held: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_legal_hold WHERE tenant = $1 AND released_at IS NULL").bind(tenant).fetch_one(&mut *tx).await?;
+        if held == 0 {
+            sqlx::query("DELETE FROM mh_intake WHERE tenant = $1").bind(tenant).execute(&mut *tx).await?;
         }
+        tx.commit().await?;
         let mut after = String::new();
         loop {
             // Every subject, in any state (`subjects` lists only those with committed records),
@@ -2869,8 +2913,10 @@ impl Store for PgStore {
         }
         // What is left without a record: links, remembered responses, queued jobs and writes.
         let mut tx = self.pool.begin().await?;
+        // No explanation of the tenant is being written while its explanations are removed.
+        sqlx::query(governance::TENANT_ERASE_EXCLUSIVE).bind(tenant).execute(&mut *tx).await?;
         self.erase_tenant_rest(&mut tx, tenant).await?;
-        sqlx::query("INSERT INTO mh_deletion_ledger (tenant, scope, actor) VALUES ($1, 'tenant', $2)").bind(tenant).bind(actor).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mh_deletion_ledger (at, tenant, scope, actor) VALUES (clock_timestamp(), $1, 'tenant', $2)").bind(tenant).bind(actor).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(total)
     }
@@ -3815,6 +3861,14 @@ impl Store for PgStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_id_given_twice_in_a_batch_is_written_once() {
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        // The first of each id, in order; untouched where a key over every row does the work.
+        assert_eq!(first_of_each([(a, "jan"), (b, "jan"), (a, "feb")].into_iter(), |i| i.0, true), vec![(a, "jan"), (b, "jan")]);
+        assert_eq!(first_of_each([(a, "jan"), (a, "feb")].into_iter(), |i| i.0, false).len(), 2);
+    }
 
     #[test]
     fn urls_are_printed_without_credentials() {

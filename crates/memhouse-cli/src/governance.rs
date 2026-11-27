@@ -36,7 +36,7 @@ pub enum DeletionCmd {
     /// Print the completion certificate of a deletion request (the id a forget answers with)
     Certificate {
         id: String,
-        /// Check the certificate's hash and that the audit chain holds its event
+        /// Check the certificate's hash and that the audit log has its event
         #[arg(long)]
         verify: bool,
         /// Write the certificate to a file instead of printing it
@@ -117,7 +117,16 @@ pub async fn hold(eng: &Engine, cmd: HoldCmd) -> anyhow::Result<()> {
                     DeletionStatus::Completed => {
                         println!("  deletion {} ({} {}) completed: {} records; `memhouse deletion certificate {}`", d.id, d.scope.as_str(), d.value, d.deleted, d.id)
                     }
-                    _ => println!("  deletion {} ({} {}) still has {} records under another hold", d.id, d.scope.as_str(), d.value, d.held),
+                    DeletionStatus::Held => println!("  deletion {} ({} {}) still has {} records under another hold", d.id, d.scope.as_str(), d.value, d.held),
+                    // Carried out, but something of a sampled record is still found: not complete yet.
+                    DeletionStatus::Running => println!(
+                        "  deletion {} ({} {}) was carried out ({} records) but is not verified yet: {} traces of its sample are still found. `memhouse retention` checks again and completes it",
+                        d.id,
+                        d.scope.as_str(),
+                        d.value,
+                        d.deleted,
+                        d.certificate.as_ref().map_or(0, |c| c.canaries_found.total())
+                    ),
                 }
             }
         }
@@ -161,7 +170,10 @@ pub async fn deletion(eng: &Engine, cmd: DeletionCmd) -> anyhow::Result<()> {
                 None => println!("{text}"),
             }
             if verify {
-                eprintln!("✓ hash covers the certificate; the audit chain holds its event; {} canaries, none found", cert.canaries_checked);
+                eprintln!(
+                    "✓ hash covers the certificate; the audit log has its `deletion.certificate` event; {} canaries, none found. (The log's own integrity is checked by `memhouse audit --verify`.)",
+                    cert.canaries_checked
+                );
             }
         }
         DeletionCmd::List { status, limit } => {
@@ -286,7 +298,8 @@ pub async fn restore_postgres(cfg: &Config, ledger: Option<&Path>, no_ledger: bo
     if let Some(id) = broken {
         anyhow::bail!(
             "the audit chain is broken at event {id} (of {n}): the backup's audit log was changed before or after it was taken. The deletion ledger has been re-applied \
-             (running this again applies nothing twice), but the database was not recorded as fit to serve: `memhouse serve` still refuses it. Restore a backup whose chain verifies"
+             (running this again applies nothing twice), but this command did not record the database as restored: the restore guard of `memhouse serve` still compares it \
+             with what was served before. (`memhouse serve` does not itself verify the chain.) Restore a backup whose chain verifies"
         );
     }
     println!("  audit chain intact ({n} events)");
@@ -301,7 +314,7 @@ pub async fn record_lite(cfg: &Config, acknowledge: bool) -> anyhow::Result<()> 
     let store = store_of(cfg).await?;
     let (n, broken) = store.audit_verify().await?;
     if let Some(id) = broken {
-        anyhow::bail!("the audit chain is broken at event {id} (of {n}): the database was not recorded as fit to serve, and `memhouse serve` still refuses it. Restore a backup whose chain verifies");
+        anyhow::bail!("the audit chain is broken at event {id} (of {n}): this command did not record the database as restored, so the restore guard of `memhouse serve` still compares it with what was served before. (`memhouse serve` does not itself verify the chain.) Restore a backup whose chain verifies");
     }
     if acknowledge {
         store.audit("cli", "backup.restore", &cfg.memory.tenant, None, None, serde_json::json!({ "ledger_given": false, "acknowledged": true })).await?;

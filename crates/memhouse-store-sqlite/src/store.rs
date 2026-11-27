@@ -756,7 +756,7 @@ impl Store for SqliteStore {
         self.deletion_store(d, None)
     }
 
-    async fn deletion_complete(&self, d: &memhouse_core::governance::DeletionRequest, audit: &AuditEntry) -> anyhow::Result<()> {
+    async fn deletion_record(&self, d: &memhouse_core::governance::DeletionRequest, audit: &AuditEntry) -> anyhow::Result<()> {
         self.deletion_store(d, Some(audit))
     }
 
@@ -813,7 +813,9 @@ impl Store for SqliteStore {
         // `detail` is JSON kept as text, read as `audit_log` reads it: the key is a field's
         // literal name (not a path), as on Postgres.
         let details =
-            rows(&self.conn(), "SELECT detail FROM mh_audit WHERE tenant = ?1 AND action = ?2 AND instr(detail, ?3) > 0", [tenant, action, value], |r| Ok(r.get::<_, String>(0)?))?;
+            // No filter on the raw text: a value is stored escaped (a quote, a newline), and a
+            // search for its plain spelling would leave out the very event that holds it.
+            rows(&self.conn(), "SELECT detail FROM mh_audit WHERE tenant = ?1 AND action = ?2", [tenant, action], |r| Ok(r.get::<_, String>(0)?))?;
         Ok(details.iter().any(|d| serde_json::from_str::<serde_json::Value>(d).is_ok_and(|v| v.get(key).and_then(|x| x.as_str()) == Some(value))))
     }
 
@@ -823,6 +825,10 @@ impl Store for SqliteStore {
 
     async fn state_put(&self, key: &str, value: &str) -> anyhow::Result<()> {
         self.set_state(key, None, value).map(|_| ())
+    }
+
+    fn keeps_state(&self) -> bool {
+        true
     }
 
     async fn state_cas(&self, key: &str, expect: Option<&str>, value: &str) -> anyhow::Result<bool> {
@@ -1468,7 +1474,12 @@ impl Store for SqliteStore {
     async fn recall_put(&self, r: &RecallRecord) -> anyhow::Result<()> {
         exec(
             &self.conn_relaxed(),
-            "INSERT INTO mh_recall (id, tenant, subject, principal, acting_user, at, body) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (id) DO NOTHING",
+            // Not after an erasure of its subject or tenant (GOV-07): an explanation of a recall
+            // made before one (within five seconds after its ledger row, which covers a recall
+            // that read while the erasure was being written) is not stored.
+            "INSERT INTO mh_recall (id, tenant, subject, principal, acting_user, at, body) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 \
+             WHERE NOT EXISTS (SELECT 1 FROM mh_deletion_ledger l WHERE l.tenant = ?2 AND ((l.scope = 'subject' AND l.subject = ?3) OR l.scope = 'tenant') AND l.at + 5000000 >= ?6) \
+             ON CONFLICT (id) DO NOTHING",
             params![r.recall_id.to_string(), r.tenant, r.subject, r.principal, r.user, us(r.at), json(r)?],
         )?;
         Ok(())

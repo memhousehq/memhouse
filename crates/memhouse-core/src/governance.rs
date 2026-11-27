@@ -169,6 +169,17 @@ impl PurgeSpec {
     }
 }
 
+/// How long a recovery pass over a tenant's open deletions holds its lease without renewing it.
+const RECOVERY_LEASE_SECS: i64 = 600;
+
+/// The lease of one recovery pass: the key, this pass's holder id, and the value it last wrote
+/// (what a renewal and the release compare with).
+pub(crate) struct RecoveryLease {
+    key: String,
+    holder: String,
+    value: std::sync::Mutex<String>,
+}
+
 /// What a purge did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PurgeOutcome {
@@ -539,7 +550,12 @@ impl Engine {
         if !self.store.legal_hold_release(tenant, id, by, &audit).await? {
             return Err(error::conflict(format!("legal hold {id} was released already")));
         }
-        let released = self.store.legal_hold_get(tenant, id).await?.unwrap_or(hold);
+        // The release is committed: a failure to read the row back is no failure of the
+        // release, and must not keep the kept deletions from being carried out.
+        let released = match self.store.legal_hold_get(tenant, id).await {
+            Ok(Some(h)) => h,
+            _ => LegalHold { released_by: Some(by.to_string()), released_at: Some(Utc::now()), ..hold },
+        };
         // The release is committed whatever happens next: a failure to carry the kept deletions
         // out is reported beside it, not instead of it (the next retention pass tries again).
         match self.resume_deletions(tenant).await {
@@ -559,25 +575,50 @@ impl Engine {
         // One recovery pass per tenant at a time (a retention pass and a hold release may
         // coincide, also in two processes): two passes over one request could each see the
         // other's deletion as "nothing left to delete".
-        let lock = format!("deletions.resume.{tenant}");
-        let me = Uuid::new_v4().to_string();
+        // A store without durable state has one process and no lease to take.
+        if !self.store.keeps_state() {
+            return self.resume_deletions_locked(tenant, None).await;
+        }
+        let key = format!("deletions.resume.{tenant}");
+        let holder = Uuid::new_v4().to_string();
         let now = Utc::now().timestamp();
-        let current = self.store.state_get(&lock).await.unwrap_or(None);
+        // A lookup or a compare-and-set that fails is not a lease: the pass does not run.
+        let current = self.store.state_get(&key).await?;
         let free = current.as_deref().and_then(|c| c.split_once('|')).is_none_or(|(_, until)| until.parse::<i64>().map_or(true, |u| u < now));
-        // A store without durable state has one process and no lock to take.
-        if !free || !self.store.state_cas(&lock, current.as_deref(), &format!("{me}|{}", now + 600)).await.unwrap_or(true) {
+        let value = format!("{holder}|{}", now + RECOVERY_LEASE_SECS);
+        if !free || !self.store.state_cas(&key, current.as_deref(), &value).await? {
             return Ok(vec![]);
         }
-        let result = self.resume_deletions_locked(tenant).await;
-        let _ = self.store.state_put(&lock, &format!("{me}|0")).await;
+        let lease = RecoveryLease { key, holder, value: std::sync::Mutex::new(value) };
+        let result = self.resume_deletions_locked(tenant, Some(&lease)).await;
+        // Given back only while it is still this pass's: a lease another pass took after this
+        // one's lapsed is not cleared.
+        let mine = lease.value.lock().unwrap().clone();
+        let _ = self.store.state_cas(&lease.key, Some(&mine), &format!("{}|0", lease.holder)).await;
         result
     }
 
-    async fn resume_deletions_locked(&self, tenant: &str) -> anyhow::Result<Vec<DeletionRequest>> {
+    /// Renew the recovery lease; false when it is no longer this pass's (it lapsed and another
+    /// pass took it). Without a lease (a store with one process) there is nothing to lose.
+    async fn lease_held(&self, lease: Option<&RecoveryLease>) -> anyhow::Result<bool> {
+        let Some(lease) = lease else { return Ok(true) };
+        let current = lease.value.lock().unwrap().clone();
+        let next = format!("{}|{}", lease.holder, Utc::now().timestamp() + RECOVERY_LEASE_SECS);
+        if next == current {
+            return Ok(true);
+        }
+        let held = self.store.state_cas(&lease.key, Some(&current), &next).await?;
+        if held {
+            *lease.value.lock().unwrap() = next;
+        }
+        Ok(held)
+    }
+
+    async fn resume_deletions_locked(&self, tenant: &str, lease: Option<&RecoveryLease>) -> anyhow::Result<Vec<DeletionRequest>> {
         let mut out = vec![];
         // Every open request, oldest first, page by page: none is out of reach behind others.
         let mut after = None;
-        loop {
+        'pages: loop {
             let page = self.store.deletions_open(tenant, after, 200).await?;
             let Some(last) = page.last() else { break };
             after = Some((last.requested_at, last.id));
@@ -587,8 +628,13 @@ impl Engine {
                 if d.status == DeletionStatus::Running && d.certificate.is_none() && Utc::now() - d.requested_at < chrono::Duration::minutes(10) {
                     continue;
                 }
+                // The lease is renewed before every request, and checked again before each
+                // step of it: a pass that lost it stops, and leaves the rest to its holder.
+                if !self.lease_held(lease).await? {
+                    break 'pages;
+                }
                 let before = (d.status, d.deleted);
-                self.run_deletion(&mut d).await?;
+                self.run_deletion(&mut d, lease).await?;
                 if (d.status, d.deleted) != before {
                     out.push(d);
                 }
@@ -601,43 +647,63 @@ impl Engine {
     /// (verify the canaries, issue the certificate), leave it `held`, or, when a canary is
     /// still found, leave it open with the residue recorded: it is completed, and certified,
     /// only once a probe is clean.
-    pub(crate) async fn run_deletion(&self, d: &mut DeletionRequest) -> anyhow::Result<()> {
+    pub(crate) async fn run_deletion(&self, d: &mut DeletionRequest, lease: Option<&RecoveryLease>) -> anyhow::Result<()> {
         if d.status == DeletionStatus::Completed {
             return Ok(());
         }
-        // A request that was carried out and is only waiting for a clean probe is not carried
-        // out again: it is probed again.
-        if d.certificate.is_none() {
+        // A request that was carried out and is waiting for a clean probe is carried out again
+        // only when something it matches is still there to erase: a record a legal hold kept
+        // during the first execution and released since (the release may have come between
+        // the erasure and the count of held records, so the request never became `held`).
+        // Otherwise it is only probed again, and writes no event of an erasure of nothing.
+        let execute = match (&d.certificate, d.scope) {
+            (None, _) => true,
+            // Of a record: the record, or what was derived or promoted from it, as the probe finds it.
+            (Some(_), ForgetScope::Record) => self.store.held_count(&d.tenant, d.scope, &d.value).await? == 0 && self.store.canary_probe(&d.tenant, &d.canaries).await?.total() > 0,
+            (Some(_), _) => self.store.forget_count(&d.tenant, d.scope, &d.value).await? > self.store.held_count(&d.tenant, d.scope, &d.value).await?,
+        };
+        if execute {
+            if !self.lease_held(lease).await? {
+                return Ok(());
+            }
             let n = self.execute_forget(&d.tenant, d.scope, &d.value, &d.actor).await?;
             self.deleted.notify_waiters();
-            // The count is added to the stored request at once and atomically: what a later
-            // step fails on, or another pass does, cannot lose it.
-            match self.store.deletion_progress(&d.tenant, d.id, n).await? {
-                Some(fresh) if fresh.status == DeletionStatus::Completed => {
-                    *d = fresh;
-                    return Ok(());
+            // The count is added to the stored request atomically, as a sum: a later step that
+            // fails, or another pass, cannot lose it. (A process that dies between the erasure
+            // and this line does lose that execution's count: see the known limits in
+            // docs/governance.md.)
+            // (A retry that found nothing to erase after all is not counted as an execution.)
+            if n > 0 || d.certificate.is_none() {
+                match self.store.deletion_progress(&d.tenant, d.id, n).await? {
+                    Some(fresh) if fresh.status == DeletionStatus::Completed => {
+                        *d = fresh;
+                        return Ok(());
+                    }
+                    Some(fresh) => (d.deleted, d.executions) = (fresh.deleted, fresh.executions),
+                    None => (d.deleted, d.executions) = (d.deleted + n, d.executions + 1),
                 }
-                Some(fresh) => (d.deleted, d.executions) = (fresh.deleted, fresh.executions),
-                None => (d.deleted, d.executions) = (d.deleted + n, d.executions + 1),
             }
         }
         d.held = self.store.held_count(&d.tenant, d.scope, &d.value).await?;
+        if !self.lease_held(lease).await? {
+            return Ok(());
+        }
         if d.held > 0 {
             let first = d.status != DeletionStatus::Held;
             d.status = DeletionStatus::Held;
             d.certificate = None;
-            self.store.deletion_put(d).await?;
             if first {
-                self.store
-                    .audit(
-                        &d.actor,
-                        "deletion.held",
-                        &d.tenant,
-                        None,
-                        None,
-                        json!({ "request": d.id, "scope": d.scope.as_str(), "value": d.value, "deleted": d.deleted, "held": d.held }),
-                    )
-                    .await?;
+                // The state and its event commit together: neither is there without the other.
+                let audit = AuditEntry {
+                    actor: d.actor.clone(),
+                    action: "deletion.held".into(),
+                    subject: None,
+                    memory_id: None,
+                    detail: json!({ "request": d.id, "scope": d.scope.as_str(), "value": d.value, "deleted": d.deleted, "held": d.held }),
+                };
+                self.store.deletion_record(d, &audit).await?;
+            } else {
+                self.store.deletion_put(d).await?;
             }
             return Ok(());
         }
@@ -672,12 +738,26 @@ impl Engine {
             let found = serde_json::to_value(&cert.canaries_found)?;
             d.status = DeletionStatus::Running;
             d.certificate = Some(cert);
-            self.store.deletion_put(d).await?;
-            if first {
-                self.store
-                    .audit(&d.actor, "deletion.unverified", &d.tenant, None, None, json!({ "request": d.id, "scope": d.scope.as_str(), "records": d.deleted, "found": found }))
-                    .await?;
+            if !self.lease_held(lease).await? {
+                return Ok(());
             }
+            if first {
+                // The residue and its event commit together: an event that could not be
+                // written leaves no residue recorded, so the next pass writes both.
+                let audit = AuditEntry {
+                    actor: d.actor.clone(),
+                    action: "deletion.unverified".into(),
+                    subject: None,
+                    memory_id: None,
+                    detail: json!({ "request": d.id, "scope": d.scope.as_str(), "records": d.deleted, "found": found }),
+                };
+                self.store.deletion_record(d, &audit).await?;
+            } else {
+                self.store.deletion_put(d).await?;
+            }
+            return Ok(());
+        }
+        if !self.lease_held(lease).await? {
             return Ok(());
         }
         d.status = DeletionStatus::Completed;
@@ -694,7 +774,7 @@ impl Engine {
         };
         d.certificate = Some(cert);
         // The certificate, the completed state and the event commit together, once.
-        self.store.deletion_complete(d, &audit).await?;
+        self.store.deletion_record(d, &audit).await?;
         Ok(())
     }
 
@@ -703,7 +783,8 @@ impl Engine {
     }
 
     /// Check a certificate against this installation: its hash covers its fields, and the audit
-    /// chain holds the `deletion.certificate` event that carries that hash.
+    /// log has the `deletion.certificate` event that carries that hash. Whether the log itself
+    /// is intact is another check (`audit_verify`), not made here.
     pub async fn certificate_check(&self, tenant: &str, cert: &DeletionCertificate) -> anyhow::Result<(bool, bool)> {
         let recorded = self.store.audit_find(tenant, "deletion.certificate", "certificate", &cert.hash).await?;
         Ok((cert.hash_ok(), recorded))
@@ -875,6 +956,109 @@ pub mod evidence {
         "siem-export.json",
         "build.json",
         "governance-suite.json",
+    ];
+
+    /// The checks of the governance suite, by id, each with the requirement it tests. An
+    /// evidence bundle names a check of a suite report only by what is listed here: text from
+    /// the report file itself is never copied (the suite fails a check that is missing here).
+    pub const CHECKS: &[(&str, &str)] = &[
+        ("injection_persistence", "QUAL-02 / strategy 7.2"),
+        ("false_quarantine", "QUAL-02"),
+        ("pii_redaction", "GOV-05 / TR-IN-04"),
+        ("subject_isolation", "GOV-02 / TR-RQ-01"),
+        ("tenant_isolation", "GOV-02"),
+        ("deletion", "GOV-07 / TR-WF-01"),
+        ("subject_erasure", "GOV-07"),
+        ("stale_facts", "CORE-03 / strategy 7.2"),
+        ("validity", "CORE-05"),
+        ("dedup", "CORE-06"),
+        ("audit_chain", "GOV-12"),
+        ("determinism", "Strategy 7.1"),
+        ("enrich_async_gate", "QUAL-02 / GOV-05 (derived path)"),
+        ("enrich_deletion", "GOV-07 / TR-WF-01 (derived path)"),
+        ("retention_cascade", "GOV-08 / TR-WF-01 (derived path)"),
+        ("recall_plan_scoped", "TR-RQ-01 / SCALE-04"),
+        ("exact_topk", "TR-RQ-02 / SCALE-03"),
+        ("invariants", "CORE-03 / CORE-04 / CORE-06 / GOV-07"),
+        ("reembed", "TR-MS-04"),
+        ("idempotency", "CORE-06"),
+        ("lifecycle", "CORE-02 / MEM-01"),
+        ("representations", "HYB-02 / HYB-04 / TR-TPL-02 / ACC-06"),
+        ("format_roundtrip", "INT-10 / TR-CORE-03 / RP-06"),
+        ("schema_upgrade", "QUAL-08 / TR-DB-01"),
+        ("api_contract", "CORE-01 / CORE-03 / INT-02 / INT-04 / QUAL-09"),
+        ("api_idempotency", "CORE-06"),
+        ("revise_history", "CORE-04"),
+        ("forget_scopes", "CORE-05 / GOV-07"),
+        ("authentication", "GOV-01 / GOV-13 / TR-LT-07"),
+        ("route_authorization", "GOV-02 / TR-CORE-05"),
+        ("propose_only", "GOV-08"),
+        ("label_filter", "TR-RQ-03 / ACC-04 / GOV-02"),
+        ("authz_latency", "GOV-14"),
+        ("recall_explanation", "GOV-04"),
+        ("recall_round_trip", "PERF-02 / QUAL-07"),
+        ("telemetry_overhead", "QUAL-07 / G07"),
+        ("telemetry_no_content", "T13 / G07"),
+        ("policy_precedence", "POL-04 / PR-1"),
+        ("policy_approval", "POL-03 / GOV-03"),
+        ("policy_rollback", "POL-08 / POL-01"),
+        ("intake_candidates", "CORE-02 / TR-IN-04 / PERF-03"),
+        ("intake_restart", "TR-LT-05 / TR-IN-03 / GOV-05"),
+        ("intake_poison", "TR-IN-07"),
+        ("intake_freshness", "PERF-04"),
+        ("statement_gate", "QUAL-02 / QUAL-01 / PR-7"),
+        ("exact_recall", "HYB-01 / HYB-02 / HYB-03 / HYB-06"),
+        ("degradation", "PERF-07 / PR-5"),
+        ("memory_types", "MEM-01 / MEM-02 / MEM-03"),
+        ("working_session", "PERF-05 / MEM-01"),
+        ("scope_inheritance", "MEM-04"),
+        ("promotion", "MEM-05"),
+        ("agent_grants", "INT-06"),
+        ("partitions", "ACC-10"),
+        ("ranking_weights", "HYB-05"),
+        ("packing_dedup", "ECON-03"),
+        ("token_budget", "PERF-06 / INT-04"),
+        ("eval_harness", "QUAL-03 / QUAL-11"),
+        ("eval_gate", "QUAL-04 / QUAL-05"),
+        ("eval_reproducible", "QUAL-10"),
+        ("language_packs", "QUAL-02 / HYB-03 (G36)"),
+        ("injection_languages", "QUAL-02 / TR-CORE-05 (G36)"),
+        ("language_recall", "HYB-03 / QUAL-01 (G36)"),
+        ("gate_tiers", "ECON-04 / TR-MS-05 / QUAL-02 (G14)"),
+        ("extraction_tiers", "ECON-04 / ECON-06 / SCALE-08 (G14)"),
+        ("corrections_supersede", "QUAL-01 (G14)"),
+        ("ingested_replay", "QUAL-03 / QUAL-11 (G14)"),
+        ("adapter_conformance", "TR-CORE-02 / DEP-02 (G15)"),
+        ("profile_conformance", "PROF-01 / TR-CORE-01 (G15)"),
+        ("migrate_round_trip", "PROF-02 / TR-MIG-01 (G17)"),
+        ("migrate_erasure_and_audit", "TR-MIG-01 / TR-WF-03 (G17)"),
+        ("migrate_no_credentials", "TR-MIG-01 / AP-10 (G17)"),
+        ("migrate_failed_verification", "TR-MIG-01 (G17)"),
+        ("embedded_same_controls", "TR-LT-01 / INT-03 (G18)"),
+        ("code_staleness", "TPL-04 / TR-TPL-02"),
+        ("file_touched_recall", "TPL-05"),
+        ("stale_until_revalidated", "TPL-04"),
+        ("file_touched_access", "TPL-05 / GOV-02 / ACC-04"),
+        ("procedural_promotion", "MEM-02"),
+        ("hooks_only_call_api", "TR-TPL-03 / AP-2"),
+        ("console_actions", "PROF-09 (G20)"),
+        ("console_session", "T3 / GOV-01 (G20)"),
+        ("console_csp_cors", "T3 (G20)"),
+        ("quarantine_review", "GOV-11 (G20)"),
+        ("console_evaluation", "QUAL-11 (G20)"),
+        ("profile_advisor", "PROF-11 (G20)"),
+        ("legal_hold", "GOV-09 (G22)"),
+        ("source_purge", "GOV-10 (G22)"),
+        ("deletion_certificate", "GOV-07 / TR-WF-01 (G22)"),
+        ("retention_scopes", "GOV-06 / MEM-01 (G22)"),
+        ("retention_resume", "TR-WF-02 (G22)"),
+        ("restore_replay", "TR-WF-03 (G22)"),
+        ("rls_bypass", "TR-DB-03 (G22)"),
+        ("episodic_partitions", "TR-DB-04 / GOV-06 (G22)"),
+        ("audit_anchor", "GOV-12 (G22)"),
+        ("siem_export", "GOV-15 (G22)"),
+        ("evidence_export", "GOV-16 (G22)"),
+        ("pii_actions", "GOV-05 (G22)"),
     ];
 
     pub const CONTROLS: &[Control] = &[

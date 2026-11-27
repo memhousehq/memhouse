@@ -412,7 +412,7 @@ pub async fn seed(store: &dyn Store) -> anyhow::Result<Seeded> {
             detail: json!({ "request": done.id, "certificate": cert.hash }),
         };
         done.certificate = Some(cert);
-        store.deletion_complete(&done, &event).await?;
+        store.deletion_record(&done, &event).await?;
     }
 
     // Audit events of several shapes (the grants above wrote three more).

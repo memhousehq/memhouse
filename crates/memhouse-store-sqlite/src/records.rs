@@ -268,20 +268,22 @@ impl SqliteStore {
         Ok(self.delete_with(c, tenant, id, promotions, respect_holds)?.map(|(subject, ids, _)| (subject, ids.len() as u64)))
     }
 
-    /// Whether a record that names any of `sources` is under a legal hold (and so stays when
+    /// The records that name any of `sources` and are under a legal hold (and so stay when
     /// they are deleted with regard to holds).
-    fn held_dependents(&self, c: &Connection, tenant: &str, sources: &[Uuid], facts: bool, promotions: bool) -> anyhow::Result<bool> {
-        Ok(first(
+    fn held_dependents(&self, c: &Connection, tenant: &str, sources: &[Uuid], facts: bool, promotions: bool) -> anyhow::Result<Vec<Uuid>> {
+        rows(
             c,
             &format!(
-                "SELECT 1 FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id WHERE r.tenant = ?1 AND m.tenant = ?1 \
-                 AND r.source_id IN (SELECT value FROM json_each(?2)) AND ((?3 AND r.via = 'source') OR (?4 AND r.via = 'promoted')) AND {} LIMIT 1",
+                "SELECT DISTINCT m.id FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id WHERE r.tenant = ?1 AND m.tenant = ?1 \
+                 AND r.source_id IN (SELECT value FROM json_each(?2)) AND ((?3 AND r.via = 'source') OR (?4 AND r.via = 'promoted')) AND {}",
                 memhouse_core::governance::HELD_SQL
             ),
             params![tenant, ids_json(sources), facts, promotions],
-            |_| Ok(()),
+            |r| Ok(r.get::<_, String>(0)?),
         )?
-        .is_some())
+        .iter()
+        .map(|i| uuid_of(i))
+        .collect()
     }
 
     /// Delete exactly one record and nothing it led to: how a ledger row of scope `record`
@@ -297,14 +299,16 @@ impl SqliteStore {
         exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
         if purge_cache {
             self.purge_vectors(c, [content.as_str()], alt_hash.as_deref())?;
-            let jobs = rows(
-                c,
-                "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value = ?3)",
-                [tenant, subject.as_str(), ids.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            drop_jobs(c, &jobs, true)?;
         }
+        // The jobs that read it go on both paths, as they did when the record was deleted; a
+        // reset leaves their cached answers, like the vectors.
+        let jobs = rows(
+            c,
+            "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value = ?3)",
+            [tenant, subject.as_str(), ids.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        drop_jobs(c, &jobs, purge_cache)?;
         Ok(1)
     }
 
@@ -343,11 +347,19 @@ impl SqliteStore {
             )?;
         }
         let Some(subject) = subject else { return Ok(None) };
-        let mut kept_held = respect_holds && self.held_dependents(c, tenant, &[id], true, promotions)?;
+        let mut kept_held = respect_holds && !self.held_dependents(c, tenant, &[id], true, promotions)?.is_empty();
         let mut level = self.delete_dependents(c, tenant, &[id], true, promotions, respect_holds)?;
         while !level.is_empty() {
             gone.extend(level.iter().copied());
-            kept_held |= respect_holds && promotions && self.held_dependents(c, tenant, &level, false, true)?;
+            if respect_holds && promotions {
+                // A record a hold keeps further down loses its parents here, and with them
+                // every link that leads to it from this record. It is linked to this record
+                // itself, so that the deletion reaches it once its hold is released (GOV-09).
+                for held in self.held_dependents(c, tenant, &level, false, true)? {
+                    kept_held = true;
+                    exec(c, "INSERT OR IGNORE INTO mh_source_ref (memory_id, tenant, source_id, via) VALUES (?1, ?2, ?3, 'promoted')", params![held.to_string(), tenant, ids])?;
+                }
+            }
             level = if promotions { self.delete_dependents(c, tenant, &level, false, true, respect_holds)? } else { vec![] };
         }
         if gone.is_empty() {

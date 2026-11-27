@@ -658,14 +658,18 @@ fn otlp_ids(bodies: &[(chrono::DateTime<Utc>, String)]) -> anyhow::Result<Vec<i6
     for (_, body) in bodies {
         let v: serde_json::Value = serde_json::from_str(body)?;
         for r in v["resourceLogs"][0]["scopeLogs"][0]["logRecords"].as_array().into_iter().flatten() {
-            let id = r["attributes"]
+            // Exactly one audit id that reads as one: a record without it is not passed over.
+            let found: Vec<Option<i64>> = r["attributes"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .find(|a| a["key"] == "memhouse.audit.id")
-                .and_then(|a| a["value"]["intValue"].as_str())
-                .and_then(|s| s.parse::<i64>().ok());
-            ids.extend(id);
+                .filter(|a| a["key"] == "memhouse.audit.id")
+                .map(|a| a["value"]["intValue"].as_str().and_then(|s| s.parse::<i64>().ok()))
+                .collect();
+            match found[..] {
+                [Some(id)] => ids.push(id),
+                _ => anyhow::bail!("a log record at the collector does not carry exactly one valid memhouse.audit.id"),
+            }
         }
     }
     Ok(ids)
@@ -796,10 +800,14 @@ pub(crate) async fn siem_export(base: &Engine, url: String) -> Outcome {
     *refused.lock().unwrap() = None;
     let kept: Vec<i64> = tail.iter().copied().filter(|i| *i != bad).collect();
     received(|| otlp_ids(&bodies.lock().unwrap()).map_or(0, |i| i.len()), all.len() + kept.len()).await;
-    let otlp_tail: Vec<i64> = sorted(otlp_ids(&bodies.lock().unwrap())?).into_iter().filter(|i| tail.contains(i)).collect();
+    // Everything the collector took since the start: every earlier event once, the tail without
+    // the refused one, and nothing sent again.
+    let otlp_all = sorted(otlp_ids(&bodies.lock().unwrap())?);
+    let want_all = sorted(all.iter().chain(kept.iter()).copied().collect());
+    let otlp_tail: Vec<i64> = otlp_all.iter().copied().filter(|i| tail.contains(i)).collect();
     let after = exporter.pass().await?;
     if tail.len() < 9
-        || otlp_tail != kept
+        || otlp_all != want_all
         || split.skipped != 1
         || !split.errors.iter().any(|x| x.contains(&format!("audit event {bad} ")))
         || !after.sent.is_empty()
@@ -823,7 +831,7 @@ pub(crate) async fn siem_export(base: &Engine, url: String) -> Outcome {
             tail.len(),
             otlp_tail.len()
         ),
-        "each event once at both receivers, read from the log in order, no memory content; one replica exports at a time; a receiver that is down delays its events and loses none; an event a collector refuses for good is skipped and named, and does not hold back the ones after it",
+        "each event once at both receivers, read from the log in order, no memory content; one replica exports at a time; a receiver that is detectably down delays its events, which arrive when it is back; an event a collector refuses for good is skipped and named, and does not hold back the ones after it",
     )
 }
 

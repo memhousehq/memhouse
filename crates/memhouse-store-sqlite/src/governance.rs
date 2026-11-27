@@ -137,12 +137,14 @@ impl SqliteStore {
             let fact_ids = self.delete_dependents(&tx, tenant, &ids, true, false, true)?;
             let facts = fact_ids.len();
             let subjects: HashSet<&str> = batch.iter().map(|b| b.1.as_str()).collect();
+            // The jobs that read a purged record or a fact that went with it.
+            let read_list = ids_json(&ids.iter().chain(fact_ids.iter()).copied().collect::<Vec<Uuid>>());
             for subject in subjects {
                 let jobs = rows(
                     &tx,
                     "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 \
                      AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value IN (SELECT value FROM json_each(?3)))",
-                    [tenant, subject, id_list.as_str()],
+                    [tenant, subject, read_list.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )?;
                 drop_jobs(&tx, &jobs, true)?;

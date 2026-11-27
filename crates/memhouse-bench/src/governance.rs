@@ -1147,6 +1147,14 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
         engine.forget_subject(None, &s(&format!("iso{i}")), Some("bench".into())).await?;
     }
 
+    // The evidence export names checks from the catalog in the core crate: a check that is
+    // not listed there, or is listed with another requirement, fails until the catalog is updated.
+    for c in &mut checks {
+        if !memhouse_core::governance::evidence::CHECKS.iter().any(|(id, req)| *id == c.id && *req == c.requirement) {
+            c.passed = false;
+            c.detail = format!("not in memhouse_core::governance::evidence::CHECKS with this requirement ({}); add it there. {}", c.requirement, c.detail);
+        }
+    }
     Ok(GovernanceReport::new(checks, Profile::of(engine).as_str(), start.elapsed().as_secs_f64() * 1000.0))
 }
 

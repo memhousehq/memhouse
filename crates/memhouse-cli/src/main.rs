@@ -1010,7 +1010,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     println!("  {} records are past their retention and kept by a legal hold", r.held);
                 }
                 if r.deletions_completed > 0 {
-                    println!("  {} deletions completed after their hold was released", r.deletions_completed);
+                    println!("  {} pending deletions completed", r.deletions_completed);
                 }
             }
         }

@@ -1630,7 +1630,7 @@ impl Engine {
             // An id is only given out for a request the store keeps: on a store without the
             // deletion workflow the erasure is carried out as before, without a certificate.
             let durable = self.store.deletion_get(&tenant, d.id).await?.is_some();
-            self.run_deletion(&mut d).await?;
+            self.run_deletion(&mut d, None).await?;
             if scope == ForgetScope::Record && d.deleted == 0 && d.held == 0 {
                 // Gone between the lookup and the deletion: nothing was asked of the workflow.
                 return Err(error::not_found(format!("memory {value} not found")));

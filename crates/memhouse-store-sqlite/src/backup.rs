@@ -267,7 +267,11 @@ impl SqliteStore {
                 "record" | "record-reset" => {
                     let id = e.memory_id.ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a memory id", e.scope, e.at.to_rfc3339()))?;
                     let removed = self.delete_exact_in(&tx, &e.tenant, id, e.scope == "record")?;
+                    // A copy of it still queued leaves its proposal, and so does a queued
+                    // promotion of it: the deletion took both, and a promotion whose source
+                    // is gone would not be stored with its content anyway.
                     crate::intake::drop_queued_record(&tx, &e.tenant, id)?;
+                    crate::intake::drop_promotions_of(&tx, &e.tenant, &HashSet::from([id]))?;
                     removed
                 }
                 "memory" | "retention" => {

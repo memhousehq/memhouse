@@ -3,8 +3,13 @@
 //! OpenTelemetry collector as OTLP logs, within seconds of being written.
 //!
 //! The exporter reads the audit log after a cursor it keeps in the store, sends a batch, and
-//! advances the cursor only once the sink has taken it: an event is delivered at least once,
-//! and a sink that is down delays its events without losing them. With several replicas one
+//! advances the cursor once the send succeeded here: a collector's 2xx answer over OTLP, the
+//! bytes written and the connection closed without error over TCP syslog, the datagrams sent
+//! over UDP. A send that fails is repeated, so a sink that is down delays its events; what a
+//! sink does after it accepted the bytes is not known here (syslog has no acknowledgement).
+//! The cursor also moves past an event a collector refuses for good (HTTP 400, 413 or 422 for
+//! the event alone) and past log records it rejects in a partial success: those are named or
+//! counted in the pass and its status, and are not sent again. With several replicas one
 //! holds a lease and exports; the others stand by. Events hold identifiers, counts and hashes,
 //! never memory content (PR-3), so nothing else reaches the SIEM.
 
@@ -135,10 +140,30 @@ async fn send_syslog(target: &str, events: &[AuditEvent], host: &str) -> anyhow:
         out.push_str(&syslog_line(e, host));
         out.push('\n');
     }
-    stream.write_all(out.as_bytes()).await?;
-    stream.flush().await?;
-    stream.shutdown().await?;
+    // Bounded, with the connect above, well inside the lease: a receiver that stops reading
+    // cannot hold a pass in a write until another replica has taken the export over and sent
+    // the same events. A write cut short leaves part of the batch at the receiver, and the
+    // whole batch is sent again: after such a failure a receiver may see events twice.
+    tokio::time::timeout(SYSLOG_WRITE, async {
+        stream.write_all(out.as_bytes()).await?;
+        stream.flush().await?;
+        stream.shutdown().await
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("writing to {addr} timed out after {} s", SYSLOG_WRITE.as_secs()))??;
     Ok(())
+}
+
+/// The longest a batch may take to be written to a TCP syslog receiver. With the ten seconds
+/// to connect it stays under half of [`LEASE_SECS`].
+const SYSLOG_WRITE: Duration = Duration::from_secs(15);
+
+/// The log records of a batch a collector said it rejected in an answer that is otherwise a
+/// success (OTLP partial success): `partialSuccess.rejectedLogRecords`, a number or a string.
+fn rejected_records(body: &str) -> u64 {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return 0 };
+    let n = &v["partialSuccess"]["rejectedLogRecords"];
+    n.as_u64().or_else(|| n.as_str().and_then(|s| s.parse().ok())).unwrap_or(0)
 }
 
 /// A target as it is named in errors, logs and the export's status: scheme, host and port.
@@ -157,7 +182,11 @@ struct SendError {
     permanent: bool,
 }
 
-async fn send_otlp(http: &reqwest::Client, cfg: &SiemConfig, events: &[AuditEvent], service: &str) -> Result<(), SendError> {
+/// Send a batch to the collector. Returns how many of its log records the collector rejected
+/// while accepting the rest.
+async fn send_otlp(http: Option<&reqwest::Client>, cfg: &SiemConfig, events: &[AuditEvent], service: &str) -> Result<u64, SendError> {
+    // No client, no send: there is no falling back to one that follows redirects.
+    let http = http.ok_or_else(|| SendError { message: "OTLP export: the HTTP client could not be set up".into(), permanent: false })?;
     let url = format!("{}/v1/logs", cfg.otlp_endpoint.trim().trim_end_matches('/'));
     let to = target_name(&url);
     let mut req = http.post(&url).timeout(Duration::from_secs(15)).json(&otlp_body(events, service));
@@ -170,7 +199,10 @@ async fn send_otlp(http: &reqwest::Client, cfg: &SiemConfig, events: &[AuditEven
     let resp = req.send().await.map_err(|e| SendError { message: format!("OTLP export to {to}: {}", e.without_url()), permanent: false })?;
     let status = resp.status();
     if status.is_success() {
-        return Ok(());
+        // A success may still say that some records were rejected. They are not sent again
+        // (OTLP forbids repeating a partially accepted request); the caller counts them.
+        let rejected = rejected_records(&resp.text().await.unwrap_or_default()).min(events.len() as u64);
+        return Ok(rejected);
     }
     // A redirect is not followed (it would resend the headers elsewhere, or turn the POST into
     // a GET): it is a failure to be fixed in the configuration, as a refused credential or a
@@ -202,7 +234,8 @@ pub struct Exporter {
     store: Arc<dyn Store>,
     cfg: SiemConfig,
     service: String,
-    http: reqwest::Client,
+    /// None if it could not be built: the OTLP sink then fails every pass, and says so.
+    http: Option<reqwest::Client>,
     /// Who holds the lease when this process does.
     holder: String,
     host: String,
@@ -217,7 +250,11 @@ impl Exporter {
         let host = std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty() && !h.contains(' ')).unwrap_or_else(|| "memhouse".into());
         // No redirects: one would carry the configured headers to another host, or replay the
         // POST as a GET without its events and report them delivered.
-        let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap_or_default();
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| tracing::error!("SIEM export: the HTTP client could not be set up: {e}"))
+            .ok();
         Exporter { store, cfg, service: service.to_string(), http, holder: uuid::Uuid::new_v4().to_string(), host }
     }
 
@@ -271,12 +308,19 @@ impl Exporter {
                 let events = self.store.audit_after(cursor, size).await?;
                 let Some(last) = events.last() else { break };
                 let sent = match sink {
-                    "syslog" => send_syslog(self.cfg.syslog.trim(), &events, &self.host).await.map_err(|e| SendError { message: format!("{e:#}"), permanent: false }),
-                    _ => send_otlp(&self.http, &self.cfg, &events, &self.service).await,
+                    "syslog" => send_syslog(self.cfg.syslog.trim(), &events, &self.host).await.map(|()| 0).map_err(|e| SendError { message: format!("{e:#}"), permanent: false }),
+                    _ => send_otlp(self.http.as_ref(), &self.cfg, &events, &self.service).await,
                 };
                 let mut delivered = events.len() as u64;
                 match sent {
-                    Ok(()) => {}
+                    Ok(0) => {}
+                    // Accepted in part: what the collector rejected is counted, not sent again.
+                    Ok(rejected) => {
+                        tracing::error!("SIEM export: {sink} rejected {rejected} of the {} log records up to audit event {}; they are not sent again", events.len(), last.id);
+                        pass.errors.push(format!("{sink}: {rejected} of {} log records up to audit event {} rejected by the collector and skipped", events.len(), last.id));
+                        pass.skipped += rejected;
+                        delivered -= rejected;
+                    }
                     // The receiver refuses this payload: tried in halves, down to one event.
                     Err(e) if e.permanent && events.len() > 1 => {
                         size = (events.len() / 2).max(1);
@@ -409,6 +453,59 @@ mod tests {
         let attrs = r["attributes"].as_array().unwrap();
         assert!(attrs.iter().any(|a| a["key"] == "memhouse.audit.id" && a["value"]["intValue"] == "42"));
         assert!(attrs.iter().any(|a| a["key"] == "memhouse.audit.hash" && a["value"]["stringValue"] == "bb"));
+    }
+
+    #[test]
+    fn a_partial_success_is_read() {
+        assert_eq!(rejected_records(r#"{"partialSuccess":{"rejectedLogRecords":"3","errorMessage":"x"}}"#), 3);
+        assert_eq!(rejected_records(r#"{"partialSuccess":{"rejectedLogRecords":2}}"#), 2);
+        assert_eq!((rejected_records("{}"), rejected_records(""), rejected_records(r#"{"partialSuccess":{}}"#)), (0, 0, 0));
+    }
+
+    /// One HTTP exchange: read the request, answer with `response`.
+    async fn answer_once(response: &'static str) -> std::net::SocketAddr {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 65536];
+                let mut read = 0;
+                // The head and a body of the length it names.
+                loop {
+                    let n = stream.read(&mut buf[read..]).await.unwrap_or(0);
+                    read += n;
+                    let text = String::from_utf8_lossy(&buf[..read]).to_ascii_lowercase();
+                    let done = text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                        body.len() >= head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0)
+                    });
+                    if n == 0 || done {
+                        break;
+                    }
+                }
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_redirect_is_a_failed_send_and_a_partial_success_is_counted() {
+        let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let cfg = |addr: std::net::SocketAddr| SiemConfig { otlp_endpoint: format!("http://{addr}"), ..Default::default() };
+        // A redirect is not followed: the send fails, to be tried again, and nothing counts as delivered.
+        let moved = answer_once("HTTP/1.1 307 Temporary Redirect\r\nlocation: http://127.0.0.1:9/elsewhere\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
+        let Err(e) = send_otlp(Some(&http), &cfg(moved), &[event()], "memhouse").await else { panic!("a redirect is not a delivery") };
+        assert!(!e.permanent && e.message.contains("307") && !e.message.contains("elsewhere"), "{}", e.message);
+        // Without a client nothing is sent.
+        assert!(send_otlp(None, &cfg(moved), &[event()], "memhouse").await.is_err());
+        // A success that rejects one of two records.
+        let body = r#"{"partialSuccess":{"rejectedLogRecords":"1"}}"#;
+        let partial: &'static str =
+            Box::leak(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).into_boxed_str());
+        let ok = answer_once(partial).await;
+        assert_eq!(send_otlp(Some(&http), &cfg(ok), &[event(), event()], "memhouse").await.ok(), Some(1));
     }
 
     #[test]

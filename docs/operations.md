@@ -659,17 +659,30 @@ otlp_headers_env = { authorization = "SIEM_TOKEN" }
 
 - An event carries what the audit log holds: the action, the actor, the tenant, the subject and
   record identifiers, the detail and the two hashes of the chain. Never memory content.
-- The exporter keeps a cursor per receiver in the database and moves it only once the receiver
-  has taken a batch. Over `tcp://` syslog and OTLP an event is delivered at least once, and a
-  receiver that is down delays its events without losing them (they are sent when it is back;
-  the service logs the outage once). **`udp://` syslog is best effort:** a datagram that left
-  the host counts as sent, so events sent while a UDP receiver is down or the network drops
-  them are lost and not sent again. Use `tcp://` or OTLP where the SIEM must hold every event.
+- The exporter keeps a cursor per receiver in the database and moves it when a send
+  succeeded on this side. What that means differs by protocol:
+  - **OTLP**: the collector answered the request with a 2xx status. This is the only one of
+    the three with an acknowledgement from the receiver. Records a collector rejects inside
+    such an answer (`partialSuccess.rejectedLogRecords`) are counted as skipped and not sent
+    again, as OTLP requires.
+  - **`tcp://` syslog**: the bytes were written and the connection closed without an error.
+    Syslog has no acknowledgement: a receiver that fails after it accepted the bytes, before
+    it processed them, has lost them, and nothing here can tell. A failure that is detected
+    (no connection, a reset, a write that takes more than 15 seconds) leaves the cursor where
+    it was and the batch is sent again whole, so after such a failure a receiver may see
+    events twice.
+  - **`udp://` syslog**: the datagrams left the host. Best effort: events sent while the
+    receiver is down or the network drops them are lost and not sent again.
+
+  A receiver that is detectably down delays its events (they are sent when it is back; the
+  service logs the outage once). Where the SIEM must be known to hold every event, use OTLP.
+  Each event carries its own hash and the hash of the event before it, so a gap can be found
+  in the SIEM afterwards.
 - An OTLP collector that refuses a batch as such (HTTP 400, 413 or 422) gets it again in
   halves; an event it refuses even alone is skipped, so that it does not hold back every later
   one, and is named by its audit id in the service log and in the export's status (`skipped`,
   `errors`). Any other failure (the receiver down, a refused credential, a redirect, which is
-  not followed) is retried and loses nothing.
+  not followed) is retried.
 - A receiver's address is a scheme, a host, a port and, for OTLP, a path: a user, a password,
   a query or a fragment in it is refused at start. Credentials go in `otlp_headers_env`.
 - The export starts with the events written after it is first turned on.
