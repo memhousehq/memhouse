@@ -5,14 +5,49 @@ This is the data model every MemHouse store holds, independent of how a store la
 (TR-CORE-04). The Postgres store maps it to the tables at the end; the Lite store (G16) will map
 the same model to SQLite. Exports carry exactly this model ([Memory Format v2](memory-format.md)).
 
-Schema version **9** (`mh_meta.schema_version`). Version 1 to 8 databases upgrade in place on
+Schema version **10** (`mh_meta.schema_version`). Version 1 to 9 databases upgrade in place on
 start-up; see [Upgrading from v1](#upgrading-from-v1). Version 3 added the identity tables
 (principals, API keys, token signing keys), version 4 the recall explanations, version 5 the
 policy specs and their activations, version 6 the write pipeline's intake queue, version 7
 the grants between agents and version 8 the evaluation suites and their runs; none of them is
 memory, so none is exported. Version 7 also added the
 `taxonomic` kind and made a record's scope part of its deduplication key. Version 9 added the
-record's `language`.
+record's `language`. Version 10 added the staleness of code references (`stale_since` and
+`seen_hash` on a reference, `stale_since` on its record); the upgrade to it also puts the
+paths of stored references in the one form they are matched in (`./src//a.rs` becomes
+`src/a.rs`; of two references of a record to one file, the one already in that form is kept).
+On Postgres a trigger on `mh_code_ref` keeps new rows in that form too, so a version 9
+process still running during a rolling upgrade cannot store another spelling; a Lite file is
+opened by one build at a time, and an older build refuses a newer file.
+
+A stored path that has no such form is left as it is. With `\` read as `/`, that is a path
+with a `..` segment (`../x`, `src/../a.rs`), a path with nothing but empty and `.` segments
+(the empty path, `.`, `./`, `/`), and a path whose canonical form is over 1,024 bytes (UTF-8).
+A leading `/` alone is no such case: `/src/a.rs` becomes `src/a.rs`. Such a reference
+**matches no file report**, so its memory never goes stale. The upgrade logs a warning with
+their number (not the paths). To find them on Postgres:
+
+```sql
+SELECT memory_id, path FROM mh_code_ref, LATERAL (SELECT replace(path, chr(92), '/') AS p) n
+WHERE p = '..' OR p LIKE '../%' OR p LIKE '%/../%' OR p LIKE '%/..'   -- a `..` segment
+   OR p ~ '^(\.?/)*\.?$'                                              -- nothing but '' and '.'
+   OR octet_length(path) > 1024;                                       -- too long
+```
+
+In a Lite file, which has no regular expressions:
+
+```sql
+SELECT memory_id, path FROM (SELECT memory_id, path, replace(path, char(92), '/') AS p FROM mh_code_ref)
+WHERE p = '..' OR p LIKE '../%' OR p LIKE '%/../%' OR p LIKE '%/..'
+   OR trim(p, './') = ''
+   OR length(CAST(path AS BLOB)) > 1024;
+```
+
+Both return every path the upgrade counted, and may return a few it did not: the length test
+is on the stored path, which can be longer than its canonical form (the one the upgrade
+measures), and the Lite query's `trim` test also returns a path made of dots and slashes
+only that has a segment of three or more dots (a valid name). To fix a reference, revise the
+memory with `code_refs` that name the file by its path from the repository root.
 
 ## Entities
 
@@ -64,6 +99,7 @@ structured row and code references are written together and deleted together.
 | `confidence` | 0..1 | yes | |
 | `provenance` | object | yes from v2 | `agent` (writing agent), `user` (acting user), `policy_version`, `request_key`, `extractor` and `extractor_config` for derived records |
 | `language` | text | no | the language the text was detected as, among the enabled ones: a [language pack](languages.md) code (`en`, `de`). From version 9; absent on records written before |
+| `stale_since` | timestamp | no | derived: the earliest `stale_since` of the record's [code references](#code-reference), absent when none is stale. A store keeps it on the record so that recall filters on the record alone; it is not exported (an import derives it from the references). From version 10 |
 | `alt_hash` | sha256 hex | no | the key of the round's second vector (the user's words alone) |
 | `metadata` | JSON object | yes | open attributes (round number, message references, derivation sources), and the engine's own keys, below |
 | `created_at`, `updated_at` | timestamp | yes | |
@@ -130,9 +166,24 @@ is also found by recall.
 
 ## Code reference
 
-`{path, blob_hash}` per record, at most one per path. A recall that sends a file's current hash
-gets back the records whose stored hash differs: those are stale (G19 wires this into recall and
-the coding-agent hooks).
+`{path, blob_hash, stale_since?, seen_hash?}` per record, at most one per path (TR-TPL-02).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `path` | text | the file, relative to the repository root, `/` separators |
+| `blob_hash` | text | the content hash of the file when the memory was written or last revalidated (the git blob hash by convention) |
+| `stale_since` | timestamp, optional | since when the file is known to have other content, or to be deleted. From version 10 |
+| `seen_hash` | text, optional | the content hash the file was last seen with while stale; absent for a deleted file. Only with `stale_since`. From version 10 |
+
+The rules, the same in every store (`memhouse_core::staleness::plan`): a file seen with a hash
+other than the stored one makes the reference stale (from the first time it is seen so); a file
+seen with the stored hash is not stale; a deleted file is stale with no hash seen; a rename
+moves the reference to the new path, and is then judged by the hash like any other (a record
+that already references the new path keeps that reference and the old one is dropped).
+Observations apply to committed and candidate records. A record with a stale reference is left
+out of recall unless the recall asks for stale records; revalidation gives a reference its new
+hash and clears the mark ([coding.md](coding.md)). A writer can't set the marks: `remember` and
+`revise` drop them.
 
 ## Link
 
@@ -167,7 +218,7 @@ key arrives with the intake queue (G10).
 | Record | `mh_memory` (one row; `scope_*` and `prov_*`, `policy_version`, `request_key`, `extractor*` columns; `tsv` generated; `embedding`, `embedding_alt`, `embedder`, `embedder_config`) |
 | Language (v9) | `mh_memory.language`; `ts_config` (the Postgres text-search configuration of the record's language, NULL for `english`) and `tsv_lang` (the keyword index in that configuration, filled by the trigger `mh_memory_tsv_lang` when `ts_config` is set; partial GIN index). `tsv`, the `english` index, stays on every row. Neither `ts_config` nor `tsv_lang` is exported: an import derives them from `language` |
 | Structured | `mh_structured` (`memory_id` → `mh_memory.id ON DELETE CASCADE`, GIN on `attrs`) |
-| Code reference | `mh_code_ref` (`memory_id` → `mh_memory.id ON DELETE CASCADE`) |
+| Code reference | `mh_code_ref` (`memory_id` → `mh_memory.id ON DELETE CASCADE`; v10: `stale_since`, `seen_hash`) and `mh_memory.stale_since` (v10), which the recall statement filters on, so it reads no other table |
 | Link | `mh_link` (`memory_id` → `mh_memory.id ON DELETE CASCADE`) |
 | Policy | `mh_policy` |
 | Request key | `mh_request_key` |

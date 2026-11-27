@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS mh_memory (
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL,
   language         TEXT,
+  -- The earliest `stale_since` of the record's code references (TPL-04); NULL when none is stale.
+  stale_since      INTEGER,
   -- Vectors of a re-embedding target until the switch (Postgres adds and drops these columns).
   embedding_next          BLOB,
   embedding_alt_next      BLOB,
@@ -181,6 +183,9 @@ CREATE TABLE IF NOT EXISTS mh_code_ref (
   subject   TEXT NOT NULL,
   path      TEXT NOT NULL,
   blob_hash TEXT NOT NULL,
+  -- Since when the file has other content than `blob_hash`, and the hash last seen (TPL-04).
+  stale_since INTEGER,
+  seen_hash   TEXT,
   PRIMARY KEY (memory_id, path)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS mh_code_ref_path_idx ON mh_code_ref (tenant, subject, path);

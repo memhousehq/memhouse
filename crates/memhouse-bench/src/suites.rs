@@ -59,13 +59,17 @@ fn k() -> usize {
 /// for that, and validate it. Errors carry the line and column the parser gives.
 pub fn parse(text: &str, origin: &str) -> anyhow::Result<Suite> {
     let f: SuiteFile = serde_yaml_ng::from_str(text).with_context(|| format!("{origin} is not a suite"))?;
-    let conversations = match (&f.generate, f.conversations.is_empty()) {
-        (Some(g), true) => crate::synth::generate(&g.profile, g.seed, g.conversations, Some(&f.name)).with_context(|| format!("{origin}: generate"))?.0.conversations,
-        (None, false) => f.conversations,
+    let (format, conversations) = match (&f.generate, f.conversations.is_empty()) {
+        (Some(g), true) => {
+            // A generated suite has the format of what the profile generates (2 with code).
+            let generated = crate::synth::generate(&g.profile, g.seed, g.conversations, Some(&f.name)).with_context(|| format!("{origin}: generate"))?.0;
+            (f.format.max(generated.format), generated.conversations)
+        }
+        (None, false) => (f.format, f.conversations),
         (Some(_), false) => anyhow::bail!("{origin}: a suite has either `generate` or `conversations`, not both"),
         (None, true) => anyhow::bail!("{origin}: a suite needs `conversations` or `generate`"),
     };
-    let suite = Suite { format: f.format, name: f.name, description: f.description, language: f.language, k: f.k, conversations };
+    let suite = Suite { format, name: f.name, description: f.description, language: f.language, k: f.k, conversations };
     suite.validate().with_context(|| origin.to_string())?;
     Ok(suite)
 }
@@ -116,6 +120,8 @@ fn named(m: &EvalMetrics) -> Vec<(&'static str, Option<f64>)> {
         ("eval/contamination_rate", m.contamination_rate),
         ("eval/stale_free", m.stale_rate.map(|r| 1.0 - r)),
         ("eval/clean", m.contamination_rate.map(|r| 1.0 - r)),
+        ("eval/touched_recall", m.touched_recall),
+        ("eval/stale_withheld", m.stale_withheld),
     ]
 }
 
@@ -207,7 +213,19 @@ pub fn markdown(suite: &Suite, run: &EvalRun, repeats: Option<(usize, f64)>) -> 
     );
     let _ = writeln!(o, "| Rate | Value | Scored |\n|---|---|---|");
     let _ = writeln!(o, "| Stale facts returned | {} | {} of {} questions about a corrected fact |", pct("eval/stale_rate"), c.stale_returned, c.corrected_questions);
-    let _ = writeln!(o, "| Contamination | {} | {} of {} plans and guesses committed |\n", pct("eval/contamination_rate"), c.held_committed, c.held);
+    let _ = writeln!(o, "| Contamination | {} | {} of {} plans and guesses committed |", pct("eval/contamination_rate"), c.held_committed, c.held);
+    if c.touched + c.stale_expected > 0 {
+        let _ =
+            writeln!(o, "| File-touched recall | {} | {} of {} file-touched questions answered with the linked memory |", pct("eval/touched_recall"), c.touched_found, c.touched);
+        let _ = writeln!(
+            o,
+            "| Stale memories withheld | {} | {} of {} questions about a memory whose file changed since |",
+            pct("eval/stale_withheld"),
+            c.stale_withheld,
+            c.stale_expected
+        );
+    }
+    let _ = writeln!(o);
     let _ = writeln!(
         o,
         "Storage precision: of the scored records committed and valid at a checkpoint, the part that are current facts. Storage recall: of the current facts, the part stored. Retrieval precision: the first hit is the current fact; recall: it is in the top {}.\n",
@@ -264,6 +282,14 @@ mod tests {
         );
         assert!(e.contains("bad.yaml") && e.contains("line 7"), "{e}");
         assert!(parse("name: none\n", "none.yaml").is_err());
+        // Code events need format 2; a generated coding suite has it, and a format 1 suite reads as before.
+        let code = "name: code\nformat: 2\nconversations:\n  - id: repo\n    sessions:\n      - turns:\n          - say: Errors are reported as typed enums.\n            key: errors\n            files: [src/errors.rs]\n      - changes:\n          - { path: src/errors.rs, change: rename, to: src/error/mod.rs }\n          - { path: src/error/mod.rs }\n        revalidate: [errors]\n        turns:\n          - say: Thanks.\n            expect: ignore\n        ask:\n          - { q: Opening the errors module, key: errors, touch: src/error/mod.rs }\n          - { q: How are errors reported?, key: errors }\n";
+        let s = parse(code, "code.yaml").unwrap();
+        assert_eq!((s.format, s.conversations[0].sessions[1].changes.len()), (2, 2));
+        assert!(format!("{:#}", parse(&code.replace("format: 2\n", ""), "old.yaml").unwrap_err()).contains("format: 2"));
+        assert!(format!("{:#}", parse(&code.replace(", to: src/error/mod.rs", ""), "rename.yaml").unwrap_err()).contains("rename"));
+        assert_eq!(parse("name: gen\ngenerate: { profile: coding, seed: 7, conversations: 3 }\n", "gen.yaml").unwrap().format, 2);
+        assert_eq!(generated.format, 1);
         assert!(format!("{:#}", parse("name: q\nconversations:\n  - id: a\n    sessions:\n      - turns:\n          - say: hi\n            expect: ignore\n        ask:\n          - q: what?\n            key: city\n", "q.yaml").unwrap_err()).contains("no earlier turn commits"));
     }
 }

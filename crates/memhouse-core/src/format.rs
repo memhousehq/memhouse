@@ -18,7 +18,7 @@ pub const FORMAT: &str = "memhouse.memory";
 /// The format version this build writes. Version 1 files (before schema v2) are still read.
 pub const VERSION: u32 = 2;
 /// The logical schema version (TR-CORE-04, `docs/schema.md`), recorded by every store.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 /// Policy version given to records written before policies were recorded.
 pub const LEGACY_POLICY: &str = "legacy-v1";
 
@@ -144,6 +144,7 @@ impl RecordLine {
             scope: self.scope.clone(),
             provenance: self.provenance.clone(),
             language: self.language.clone(),
+            stale_since: None,
         }
     }
 
@@ -192,6 +193,10 @@ impl RecordLine {
         for c in &self.code_refs {
             if c.path.is_empty() || c.blob_hash.is_empty() || !paths.insert(&c.path) {
                 return fail("code_refs need a path and blob_hash, each path once".into());
+            }
+            // Schema 10: the hash last seen belongs to a reference that is stale.
+            if c.seen_hash.is_some() && c.stale_since.is_none() {
+                return fail(format!("code reference {}: seen_hash is only set on a stale reference (with stale_since)", c.path));
             }
         }
         Ok(())

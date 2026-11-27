@@ -957,6 +957,7 @@ async fn promotion(e: &Engine, db: &Db) -> Outcome {
                 focus: None,
                 structured: None,
                 code_refs: vec![],
+                refs_inherited: false,
             }],
             session_id: None,
             enqueued_at: chrono::Utc::now(),

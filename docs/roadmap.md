@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 17 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
+| Progress | 18 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,10 +39,15 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), Memory Browser v0, `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 73 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 79 governance checks;
 - the Lite profile (G16): the same engine on one SQLite file, `memhouse up --lite`, backup and restore with the deletion ledger re-applied;
 - conformance kits for every adapter type and a profile suite over REST, MCP and the command line (G15);
 - Python and TypeScript SDKs with lifecycle hooks, embedded Lite bindings for Python and Node, and adapters for the OpenAI Agents SDK and LangGraph (G18);
+- the coding template (G19, API 1.9, schema v10): memories linked to files by content hash,
+  left out of recall when a file changes until they are revalidated or revised; file-touched
+  recall through `memhouse hook` adapters for Claude Code and Gemini CLI and a git
+  `post-commit` hook; procedural memory promoted on repeated correction and recalled by task;
+  a coding evaluation suite in the benchmark guard;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -82,7 +87,7 @@ reworked.
 [goal tracker](#goal-tracker)** (G14 onwards, and G12's latency check; G25's re-embedding was done early). Some of those
 goals start from features that already work and are listed above, such as the v1 sales and
 success templates (G24). The largest gaps are relationship-based
-access (ACC), SDKs, the Lite store, the coding template's git-aware features, release
+access (ACC), SDKs, the Lite store, release
 engineering, and all of Scale.
 
 ---
@@ -135,7 +140,7 @@ including the governance suite.
 
 | Tier | When | What runs | Cost | Time |
 |---|---|---|---|---|
-| **T1** | every goal, before each commit that touches the engine, store or models | build + unit tests; governance suite; LongMemEval_S retrieval, stride 10 (50 questions); LoCoMo retrieval (all 1,540 questions); the synthetic starter suite `bench/suites/personal` (from G13) | $0 | ~4 min |
+| **T1** | every goal, before each commit that touches the engine, store or models | build + unit tests; governance suite; LongMemEval_S retrieval, stride 10 (50 questions); LoCoMo retrieval (all 1,540 questions); the synthetic starter suites `bench/suites/personal` (from G13) and `bench/suites/coding` (from G19) | $0 | ~4 min |
 | **T2** | goals that touch enrichment, facts, ranking or the answer context | T1 + LoCoMo retrieval with `--enrich` (served from the LLM cache) | ~$0.01 | ~5 min |
 | **T3** | end of each stage (milestones), after quality goals | T2 + LoCoMo QA (`--qa --answer-model gpt-4o-mini --enrich`, `--max-cost-usd 1.5`) | ~$0.70 | ~20 min |
 | **T4** | releases only, **with the user's approval** | full LongMemEval_S QA with GPT-4o (`--max-cost-usd 10`) | ~$7.50 | ~1 h |
@@ -144,7 +149,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 73 / 73 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 79 / 79 | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -159,6 +164,12 @@ including the governance suite.
 | | retrieval F1 | 97.5 | drops by more than 2.0 |
 | | questions about a corrected fact answered without a stale version | 84.9 | drops by more than 1.0 |
 | | plans and guesses not committed | 100.0 | drops by more than 1.0 |
+| Synthetic coding starter (20 conversations, 27 November 2026) | storage F1 | 97.2 | drops by more than 2.0 |
+| | retrieval F1 | 97.6 | drops by more than 2.0 |
+| | questions about a corrected fact answered without a stale version | 83.6 | drops by more than 1.0 |
+| | plans and guesses not committed | 100.0 | drops by more than 1.0 |
+| | file-touched questions answered with the linked memory | 100.0 | drops at all |
+| | memories about a changed file withheld | 100.0 | drops at all |
 | LoCoMo + enrich (T2) | round recall_all@10 | 66.0 | drops by more than 1.0 |
 | | session recall_all@5 | 79.6 | drops by more than 1.0 |
 | LoCoMo QA (T3) | accuracy, GPT-4o-mini | 83.7 (81.8–85.5) | drops by more than 1.5 |
@@ -352,7 +363,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 - [x] [G16 — Lite profile: embedded store](#g16--lite-profile-embedded-store) (21 November 2026)
 - [x] [G17 — Profile migration](#g17--profile-migration) (25 November 2026)
 - [x] [G18 — SDKs, embedded bindings and first framework adapters](#g18--sdks-embedded-bindings-and-first-framework-adapters) (25 November 2026)
-- [ ] [G19 — Coding template v1](#g19--coding-template-v1)
+- [x] [G19 — Coding template v1](#g19--coding-template-v1) (27 November 2026)
 - [ ] [G20 — Memory browser v2 and admin console](#g20--memory-browser-v2-and-admin-console)
 - [ ] [G21 — Packaging and release v1 (developer launch)](#g21--packaging-and-release-v1-developer-launch)
 
@@ -1884,19 +1895,292 @@ actions of uv and pnpm. The job now installs both at fixed versions with `pipx` 
 
 #### G19 — Coding template v1
 
-- [ ] **Done**
+- [x] **Done** (27 November 2026)
 
 > `/goal Finish the coding template: code-reference table, git-aware staleness (memories linked to file paths and content hashes are excluded when the file changes, until revalidated), file-touched recall through harness hooks for Claude Code and one more harness, procedural memory promoted after repeated corrections, and a coding evaluation suite from the synthetic generator. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
 - **Scope:** **TPL-03**, **TPL-04**, **TPL-05**, **TR-TPL-02**, **TR-TPL-03**, **MEM-02**
   (procedural promotion), **TPL-06** and **TR-TPL-04** (already done; re-verified).
 - **Deliverables:**
-  - [ ] `memhouse hook file-opened|file-edited|post-commit` commands used by harness hook configs
-  - [ ] staleness checker (content hash per path) and revalidation
-  - [ ] coding suite in `bench/suites/coding/`
-  - [ ] procedural memory promoted after the configured number of repeated corrections, and task-matched retrieval for it (moved from G11, which stores procedural memory, holds an agent's proposal until confirmed and counts repeated signals for preferences: `metadata.held = "signal"`, `[intake] preference_signals`)
+  - [x] `memhouse hook file-opened|file-edited|post-commit` commands used by harness hook configs
+  - [x] staleness checker (content hash per path) and revalidation
+  - [x] coding suite in `bench/suites/coding/`
+  - [x] procedural memory promoted after the configured number of repeated corrections, and task-matched retrieval for it (moved from G11, which stores procedural memory, holds an agent's proposal until confirmed and counts repeated signals for preferences: `metadata.held = "signal"`, `[intake] preference_signals`)
+  - [x] added: schema v10 (staleness kept on the code reference and its record) in both stores, exported in Memory Format from schema 10, with store conformance checks
+  - [x] added: API 1.9 (`POST /v1/code/touched`, `/v1/code/changed`, `/v1/code/revalidate`; `include_stale` and `paths` on recall; the `stale` and `task` exclusion reasons), MCP tools `file_memories` and `revalidate`, regenerated SDK clients
+  - [x] added: hook installers (`memhouse connect claude-code --hooks`, `memhouse connect gemini --hooks`, `memhouse hook install-git`) that merge without overwriting, and `memhouse remember --file`
+  - [x] added: suite format 2 (file links, file changes, file-touched questions) and the coding suite as a tier 1 guard run
+  - [x] added: six governance checks (`code_staleness`, `file_touched_recall`, `stale_until_revalidated`, `file_touched_access`, `procedural_promotion`, `hooks_only_call_api`), 73 to 79
+  - [x] added: the guide [coding.md](coding.md)
 - **Done when:** 200 staleness cases: 100% of affected memories flagged, 0 unaffected; 100 file-touched cases: 100% linked memories returned.
 - **Guard:** T1 + coding suite. **Depends on:** G18.
+
+**Result (2026-11-27):**
+
+- **Staleness (TPL-04, TR-TPL-02).** A code reference records since when its file has other
+  content than its stored hash, and the hash last seen (`mh_code_ref.stale_since`,
+  `seen_hash`); its record carries the earliest of them (`mh_memory.stale_since`), which the
+  recall statement of each store filters on, so a stale record never takes one of the `k`
+  places and the statement reads no other table. Schema v10, expand-only (three nullable
+  columns; SQLite upgrade step 10). The rules are one pure function every store applies
+  (`memhouse_core::staleness::plan`): another hash or a deletion makes a reference stale, the
+  stored hash seen again clears it, a rename moves it and it is stale only if the content
+  changed. Store methods `code_refs_observe`, `code_refs_at`, `code_refs_revalidate`, with
+  three checks added to the store kit (15 to 18; 19 with the fix below). Staleness travels with a record: Memory
+  Format gained `stale_since` and `seen_hash` on a code reference (from schema 10, an
+  addition within format version 2, with a vector), so export, import and `memhouse migrate`
+  keep it. See [schema.md](schema.md#code-reference).
+- **Recall.** Default recall leaves stale records out on every path: hybrid search, the exact
+  probe and the session cache. `include_stale` returns them, marked by `stale_since`; an
+  `as_of` recall is not filtered; the explanation names the reason `stale`. A revision
+  supersedes the stale version, and the references it inherits take the hash last seen.
+- **API 1.9.** `POST /v1/code/touched` (file-touched recall, TPL-05: updates staleness from
+  the hashes, then returns every linked memory the caller may recall, with those needing
+  revalidation apart), `POST /v1/code/changed` (a commit's changed, deleted and renamed files)
+  and `POST /v1/code/revalidate`. Access is that of a recall; staleness is recorded only for a
+  caller with `memory:write`. Audit actions `memory.stale`, `memory.fresh`,
+  `memory.code_moved`, `memory.revalidate`. MCP: `file_memories`, `revalidate`, `code_refs` on
+  `remember` and `revise`. See [api.md](api.md#code).
+- **Hooks (TR-TPL-03).** `memhouse hook file-opened | file-edited | post-commit` read the
+  harness's hook input, take the file's git blob hash (from git when it is installed, since
+  the review fixes below; computed in process without a git binary), call the API over HTTP
+  or in process, and print the memories as
+  `hookSpecificOutput.additionalContext`. They hold no rule of their own and exit 0 whatever
+  happens. Installers for Claude Code (`PostToolUse`) and Gemini CLI (`AfterTool`), formats as
+  documented on 27 November 2026, and for git's `post-commit`. An integration test runs the
+  commands with each harness's documented input and with git. See [coding.md](coding.md).
+- **Procedural memory (MEM-02).** An agent's procedural proposal marked as a correction
+  (`metadata.correction`, or worded as one) is counted on one held record and committed at
+  `[intake] procedural_corrections` (3; never by one occurrence; 0 turns it off; not under an
+  `approval` gate), audited as `memory.admit` with reason, count and threshold. Task-matched
+  retrieval: a procedure is returned only for a recall that shares two content words with it,
+  filters by a tag, or names one of its files in `paths`. See
+  [memory-types.md](memory-types.md#procedural-memory).
+- **Coding suite (TPL-03).** The `coding` profile covers conventions, architecture decisions,
+  pitfalls, build and test quirks and their corrections, with file links, edits, renames,
+  deletions, revalidations and file-touched questions (suite format 2; format 1 suites read
+  as before). `bench/suites/coding`, 20 conversations: storage F1 97.2, retrieval F1 97.6,
+  stale facts returned 16.4%, contamination 0.0%, file-touched recall 100.0% (198 of 198),
+  stale memories withheld 100.0% (114 of 114). It is a tier 1 guard run.
+- **Done when.** `code_staleness`: 200 cases (40 each: opened with other content, changed,
+  deleted, renamed and changed, renamed only), 320 of 320 affected memories flagged and left
+  out of the next recall, 0 of 480 unaffected flagged. `file_touched_recall`: 100 cases (50 on
+  open, 50 on edit), 620 of 620 linked, non-stale memories returned, 100 cases exact. The
+  same numbers on Postgres and on SQLite.
+- **Governance.** 79 checks. Postgres: 79 of 79. SQLite: 76 of 76 applicable, 3 not applicable. The
+  store kit passes its 18 checks on both (19 with the fix below).
+- **Guard.** T1 with the coding suite, run with `MEMHOUSE_CI_SKIP_LATENCY=1` on a loaded
+  machine: passed, every quality metric equal to its baseline; no paid spend. Timings,
+  reported and not gated, in two such runs: SQL search p50 13.3 and 13.7 ms on LongMemEval_S
+  (limit 14.7), 18.5 and 14.6 ms on LoCoMo (limit 14.0). An earlier run with timings gated
+  failed on LoCoMo's search p50 alone (see below).
+- **TPL-06 and TR-TPL-04, re-verified.** `memhouse connect cursor --project`, `gemini --project --hooks` and `claude-code --project --hooks` (without the `claude` binary on the path, so its command was printed and the hooks still installed) were run on a new Lite installation with the coding template: each wrote its configuration and verified a recall through the MCP server the agent launches ("8 tools, recall OK") in about 2 seconds; existing hooks and settings in the files were kept. The harnesses themselves were not started.
+- **Differs from the plan / not done.**
+  - No harness was run. The hook commands were tested with the input each harness documents,
+    not inside Claude Code or Gemini CLI, and the installed settings were not loaded by either.
+    Gemini CLI's documentation says it was replaced by another client for some account tiers
+    in June 2026; that client was not looked at. Cursor's documented hooks can report a file
+    but not return context for it from a documented input, so it was not chosen.
+  - The API is frozen at v1, and two changes here are changes of behaviour, recorded in the
+    [stability policy](api-stability.md): a `procedural` memory is no longer returned for a
+    recall it does not match, and an agent's repeated correction now commits a procedure
+    without a reviewer. The second is what MEM-02 asks for; it also means an agent that
+    repeats a correction by itself promotes it, since the server can't tell who gave it.
+  - Any caller with `memory:write` in a repository's subject can report a hash, and so hold a
+    memory back or bring it back; a propose-only agent can also revalidate. Each is audited,
+    none is reviewed. The staleness of a file applies to every memory about it, also those the
+    reporting caller can't read.
+  - Task matching is by words, files and tags; there is no similarity criterion, so a
+    procedure worded unlike the question is not recalled without a file or a tag.
+  - The `coding` profile changed, so `coding` suites generated before this goal are different
+    suites; the published numbers of the old `coding-starter` stay in
+    [benchmarks.md](benchmarks.md) with their date.
+  - Not in the plan: on Postgres the recall statement is no longer kept as a prepared
+    statement (`persistent(false)`), so it is planned for the values of each call. The first
+    guard run of this goal failed on LoCoMo's SQL search p50 alone (18.4 ms against a limit of
+    14.0, after its one rerun). The database's log showed why a run is sometimes slow: after
+    five executions on a connection Postgres may switch a kept statement to a generic plan,
+    which knows no subject and joins by nested loops; on the benchmark's new subjects its
+    estimated cost and the custom plan's are nearly equal, so the choice flips. Measured on a
+    loaded laptop, LoCoMo SQL search p50 per run: this goal's build with the staleness filter
+    left out of the statement 13.2 to 19.3 ms (11 runs, none slow); with the staleness filter and kept statements 15.1 to
+    43.7 ms (17 runs, 7 of them above 28 ms); with the filter and statements planned per call
+    18.5 to 20.7 ms (6 runs, none slow). The same generic plan took 68 ms against 10 ms for a
+    subject the statistics know, with and without the filter, so the change also helps
+    outside the benchmark. Why the filter made the slow choice more frequent was not
+    established. The latency baselines were not changed and should be measured again on a
+    quiet machine.
+  - ~~The post-commit hook's hashes are git's; the file hooks hash the bytes on disk. Where they
+    differ (line-ending conversion, filters), memories are flagged after each commit.
+    `GET /v1/subjects/{subject}/preferences` is not filtered by staleness.~~ Both changed
+    with the review fixes below: the file hooks ask git for the hash, and effective
+    preferences leave stale records out.
+
+**Fix (2026-11-27, flaky `procedural_promotion` on Postgres):** in one guard run the scenario
+"a correction recognised by its wording" ended with the held record still a candidate after
+the third repeat. Cause, in the product: `Store::find_by_hash` took the first row with the
+content hash (`LIMIT 1`, no order). A counted repeat is stored as a rejected record with the
+same hash, and counting it rewrites the held record's row, which Postgres may then place behind
+the repeat. The next identical write (one without the `correction` mark, which goes through
+the lookup) then found the rejected repeat, was answered as a duplicate of it and never reached
+the gate, so it was not counted. Both stores now order the lookup: a committed record, else a
+candidate, else any other, the oldest first. The store kit checks it
+(`find_by_hash_prefers_the_live_record`, 19 checks), and the scenario's failure message now
+gives the state after the third write and what that write answered. The same lookup also made
+an ordinary identical write answer with a rejected duplicate's id and state instead of the
+live record's, when both existed.
+
+**Review fixes (2026-11-27, pull request 39):** the first review round, each finding checked
+against the code; what changed:
+
+- **Staleness is written as one unit.** `code_refs_observe` and `code_refs_revalidate` take
+  the caller's audit events and write them in the transaction that changes the references
+  (before: after it, so a failure between the two left a change without its event). The
+  Postgres store locks the records in id order before their references, so two reports about
+  the same files cannot deadlock. A rename into a path that another reference of the same
+  memory holds, and a chain of renames in one report, no longer collide on the key. The
+  revalidation event is built from the hashes the transaction wrote. Store kit: the observe
+  check covers these (19 checks, no new name).
+- **What a report answers.** A change carries `was_stale` beside `stale`; `flagged` and
+  `cleared` of `POST /v1/code/changed` count the memories whose staleness changed, and only
+  memories a recall could give the caller now are named (valid, unexpired). A read-only
+  caller's `touched` follows a rename (`renamed_from`) without storing anything.
+- **Stale records are left out everywhere a default recall reads.** The working-memory
+  fallback and the effective preferences ask the store for non-stale records (`fresh_only`),
+  so stale notes no longer fill the fallback's limit and a stale narrow preference no longer
+  shadows a live broad one. `GET /v1/subjects/{subject}/preferences` is therefore filtered
+  too.
+- **Task-matched procedures.** Request paths are normalized like stored ones; a procedure
+  returned for another reason is not also listed as excluded; and when off-task procedures
+  are dropped, recall searches once more without procedures so the dropped places are filled
+  (one more store search, only on a recall that dropped one).
+- **Promotion.** A write the statement gate holds as a plan or speculation is never counted
+  as a correction.
+- **A revision that names its own `code_refs`** is judged when it takes effect: a reference
+  whose hash is not the one its file was last seen with starts stale. This is a rule applied
+  after the supersession, not inside its transaction, and a candidate revision admitted
+  later by a reviewer is not judged; the next report of the file settles either.
+- **Hooks.** The file hooks ask `git hash-object` for the hash when git is installed, so it
+  is the hash a commit records (line endings, clean filters); without git they hash the
+  bytes on disk, reading no more than the size limit. Reading the hook input and running git
+  are under the hook's deadline (a harness that keeps stdin open no longer holds the hook).
+  The post-commit hook reports every batch and names the ones refused, instead of stopping
+  at the first. `connect --hooks` recognises its groups by the program's name, not by words
+  in the command; a key file is named per deployment when `--config` names another one;
+  `install-git` writes an absolute key-file path.
+- **Evaluation.** The regression gate compares file-touched recall and stale memories
+  withheld (`max_f1_drop`); a `touch` question about a file that does not exist at that
+  point fails the replay instead of being skipped.
+- **Descriptions.** The `revalidate` tool, the template guidance and the API reference say
+  to pass the hashes actually checked and what a partial revalidation leaves; the `remember`
+  tool and the admission table state when a correction is promoted.
+- **Not changed:** a commit report that arrives after a later edit's report can clear the
+  edit's flag until the file is touched again. Ordering observations needs a time per
+  reference from the reporter, a schema change left for a later goal; it is listed in
+  [coding.md](coding.md#limits).
+- Governance: 79 checks; the new cases are scenarios of `stale_until_revalidated` (25),
+  `file_touched_access` (14), `procedural_promotion` (22) and `hooks_only_call_api` (9).
+
+**Review fixes, second round (2026-11-27, pull request 39):** the findings on the first
+round's commit, each checked against the code; what changed:
+
+- **A revision's references are judged where it is stored.** The stores read the replaced
+  version's references in the transaction that inserts the revision
+  (`staleness::successor_refs`): a revision that names none takes them as they are then (the
+  hash last seen, the path after a rename, a restored file as restored); one that names its
+  own starts stale where the predecessor's reference to that path is stale with another
+  hash. On Postgres an observation and such an insert take the subject's lock, so neither
+  runs inside the other. A proposed revision is judged the same way and is observed while it
+  waits, so a reviewer commits it as stale as its files say. This replaces the first round's
+  rule, which read the predecessor outside the transaction. Not closed, because no state
+  records it: a hash or a path a revision names itself that its predecessor never saw is
+  taken as stated, also when the file was reported back at its old content or renamed after
+  the writer read it ([coding.md](coding.md#limits)).
+- **Revalidation with a hash** no longer clears a mismatch seen with another hash: the
+  reference takes the confirmed hash and stays stale, with the hash seen, until the file is
+  seen with the confirmed content or that hash is confirmed.
+- **Every write of an observation has a change.** A stale reference merged away by a rename
+  is reported (and, when it was the memory's last stale one, as cleared: audited, and the
+  session cache drops its copy). Another hash seen on a reference that is stale already is
+  audited as `memory.code_seen`; it is no transition and in no answer.
+- **A read-only caller's reports** are applied in order to a copy of the references, like a
+  recorded observation: a file changed and changed back in one request is as it was.
+- **References stored before schema 10** with another spelling of their path (`./src//a.rs`)
+  are put in canonical form by the upgrade to version 10, in both stores; of two rows of one
+  record for one file the canonical one is kept.
+- **Promotion.** A proposal marked as a signal and as a correction is counted as a
+  correction. The held correction is looked up among corrections (`Held.counted`, filtered
+  in the store before the limit), so nearer ordinary signals cannot hide it.
+- **Task-matched recall.** The refill after dropping off-task procedures searches all the
+  requested kinds, further down (four times the limit and sixteen more), and holds the
+  procedures it finds to the same test: a matching procedure ranked below one that does not
+  match is returned.
+- **Hooks.** A hook group is ours only when every command in it is one plain MemHouse file
+  hook; a command chained with one of the user's is left alone (and a quoted program with
+  letters outside ASCII no longer panics the parser). The post-commit summary counts each
+  memory once per commit, by its state before the first batch and after the last.
+- **Descriptions.** The changelog and the guide say the hook prefers git's hash and falls
+  back to hashing the file as read; the `revalidate` tool says when it fails without
+  `code_refs` and what to do.
+- **Still not changed:** the order of a late commit report against a newer edit report (first
+  round).
+- Governance: 79 checks, store kit 19; new cases are scenarios of the existing checks and of
+  the store kit's observe and revalidate checks, and one in `schema_upgrade`.
+
+**Review fixes, third round (2026-11-27, pull request 39):** the findings on the second
+round's commit; what changed:
+
+- **A held record is matched by a write with its own labels** (GOV-02). The lookup of held
+  signals, corrections and plans (`Held.labels`, in both stores, before the limit), the
+  pipeline's comparison and the update that counts, confirms or commits the record all
+  require the same label set. A caller that is denied a label writes none of it, so its
+  repeat no longer counts on, commits or names (`duplicate_of`) a record held under that
+  label, and cannot make a keyed preference held under it supersede others. The gap was in
+  the preference signals of G11 (labels were never part of the match) and this goal's
+  corrections inherited it. Scope was already part of the match; a scenario covers both.
+- **Inherited references keep what the reviser read.** The second round let a revision
+  without `code_refs` take the hash its file had when it was stored, also when that changed
+  after the revision was made. Now the hash is the one read when the revision was made, and
+  a file reported with other content in between (changed, restored, deleted) leaves the
+  reference stale; a rename with the same content is followed.
+- **Revalidation.** A given hash other than the stored one is refused (`409`) for a
+  reference that is not stale: after a file changed and changed back, a late confirmation of
+  the content in between would have been written as fresh. The stores check under their lock
+  that the record is still the committed version (a record superseded after the caller read
+  it was revalidated and audited).
+- **Upgrade.** On a version-1 Postgres database the schema version is stamped once, after
+  every backfill (the v2 backfill stamped it before the path backfill ran). A trigger on
+  `mh_code_ref` puts a new row's path in canonical form, for a version 9 process that keeps
+  writing during a rolling upgrade. Lite needs none: an older build refuses a newer file.
+- **Task refill** looks as far in each retriever as it does in all (`per_retriever`), so it
+  works with `ranking.candidates = 1`.
+- **Hook groups:** ours only when the command has exactly the options the installer writes
+  (`--format`, `--key-file`, `--subject`); a line with another option is the user's.
+- **Not changed:** a revision that names its own hash or path its predecessor never saw is
+  still taken as stated ([coding.md](coding.md#limits)); the order of a late commit report.
+- Governance: 79 checks, store kit 19; new cases are scenarios of the existing checks.
+
+**Review fixes, fourth round (2026-11-27):** labels are compared as sets, so a repeat that
+names a label twice still counts on its held record. Declined: keeping a `matcher` or
+`timeout` the user changed on a hook group the installer owns; a reinstall writes its own
+values, which the guide now says. Two more cases of a file reported between a read and a
+write: a revision without `code_refs` whose file was renamed and then deleted before the
+revision was stored keeps the reference, stale (it was dropped, so the revision started
+fresh and nothing could flag it); and a hash given to revalidate a file last reported
+deleted is taken but leaves the reference stale until the file is reported with that
+content (it was cleared). Unit tests and store-kit cases for both; 19 kit checks, 79
+governance checks. The schema-10 path backfill now logs, as a warning, how many stored
+paths it could not put in canonical form (a path with `..`); [schema.md](schema.md) says
+what that means and how to fix them.
+
+**Review fixes, fifth round (2026-11-27):** the rule for a revision without `code_refs` no
+longer pairs anything. Each reference the reviser read is kept with the hash read for it:
+at its path when the replaced version still has it there, at the new path when exactly one
+live file with that content is its rename, and otherwise at the path it was read at, stale
+with no hash seen. The fourth round paired deleted references with reads by time and
+position, which could give a path another file's hash or keep a reference to a file the
+reviser never read. The recovery query in [schema.md](schema.md) measures the path limit in
+bytes, as the upgrade does.
 
 #### G20 — Memory browser v2 and admin console
 

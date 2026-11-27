@@ -799,6 +799,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
             include_candidates: false,
             shared_agents: vec![],
             with_vectors: false,
+            include_stale: false,
         };
         let scoped = SearchQuery { scope: Scope { team: Some("support".into()), user: Some("ana".into()), ..Default::default() }, ..probe(RetrievalMode::Hybrid, vec![], None) };
         let variants = [
@@ -915,6 +916,7 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
                 include_candidates: false,
                 shared_agents: vec![],
                 with_vectors: false,
+                include_stale: false,
             };
             let hits = engine.store.search(&q).await?;
             let dist: std::collections::HashMap<Uuid, f64> = brute.iter().map(|(d, id)| (*id, *d)).collect();
@@ -1120,6 +1122,9 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
 
     // The embedded transport runs the server's controls (G18).
     checks.extend(crate::embedded_checks::run(engine).await);
+
+    // The coding template: staleness, file-touched recall, procedural promotion, the hooks (G19).
+    checks.extend(crate::code_checks::run(engine).await);
 
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {

@@ -362,11 +362,260 @@ pub struct Structured {
 }
 
 /// A file a memory is about (TR-TPL-02): stale when the file's content hash changes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodeRef {
+    /// The file's path in the repository, with `/` separators, relative to its root.
     pub path: String,
+    /// The content hash of the file when the memory was written or last revalidated: the git
+    /// blob hash by convention (`git hash-object`).
     pub blob_hash: String,
+    /// Set by the server when the file was seen with other content, or deleted (TPL-04): the
+    /// memory is then left out of default recall until it is revalidated or revised. Ignored
+    /// on a write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_since: Option<DateTime<Utc>>,
+    /// The content hash the file was last seen with while stale; absent when it was deleted.
+    /// Set by the server, ignored on a write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_hash: Option<String>,
+}
+
+impl CodeRef {
+    pub fn new(path: impl Into<String>, blob_hash: impl Into<String>) -> CodeRef {
+        CodeRef { path: path.into(), blob_hash: blob_hash.into(), stale_since: None, seen_hash: None }
+    }
+
+    /// The reference as a writer may state it: the staleness marks are the server's.
+    pub fn as_written(&self) -> CodeRef {
+        CodeRef::new(self.path.clone(), self.blob_hash.clone())
+    }
+}
+
+/// The longest file path a code reference or a file state may carry.
+pub const MAX_PATH_LEN: usize = 1024;
+/// The most files one file-touched or files-changed request may name.
+pub const MAX_FILES: usize = 1000;
+
+/// What a file of a repository was seen as (TPL-04): its current content hash, or deleted, or
+/// renamed from another path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileState {
+    /// The file's path in the repository, with `/` separators, relative to its root.
+    pub path: String,
+    /// The file's current content hash (the git blob hash by convention). A file named
+    /// without one, and not `deleted`, is only looked up: nothing is recorded about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_hash: Option<String>,
+    /// The file no longer exists.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
+    /// The path the file had before it was renamed to `path`: references to the old path move
+    /// to the new one, and are stale only if the content changed too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_from: Option<String>,
+}
+
+impl FileState {
+    pub fn present(path: impl Into<String>, blob_hash: impl Into<String>) -> FileState {
+        FileState { path: path.into(), blob_hash: Some(blob_hash.into()), ..Default::default() }
+    }
+
+    pub fn deleted(path: impl Into<String>) -> FileState {
+        FileState { path: path.into(), deleted: true, ..Default::default() }
+    }
+
+    pub fn renamed(from: impl Into<String>, to: impl Into<String>, blob_hash: impl Into<String>) -> FileState {
+        FileState { path: to.into(), blob_hash: Some(blob_hash.into()), renamed_from: Some(from.into()), ..Default::default() }
+    }
+
+    /// The rules the API states: never a hash and `deleted` together, and a rename has a hash.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let bad = |m: &str| Err(crate::error::invalid(format!("file {:?}: {m}", self.path)));
+        if self.path.trim().is_empty() || self.path.len() > MAX_PATH_LEN {
+            return bad("a path of 1 to 1024 characters is required");
+        }
+        match (&self.blob_hash, self.deleted) {
+            (Some(_), true) => return bad("a deleted file has no blob_hash"),
+            (None, false) if self.renamed_from.is_some() => return bad("blob_hash is required for a renamed file"),
+            (Some(h), false) if h.trim().is_empty() || h.len() > 128 => return bad("blob_hash is 1 to 128 characters"),
+            _ => {}
+        }
+        match &self.renamed_from {
+            Some(_) if self.deleted => bad("a renamed file is not deleted: name the old path as deleted instead"),
+            Some(f) if f.trim().is_empty() || f.len() > MAX_PATH_LEN || *f == self.path => bad("renamed_from is another path of 1 to 1024 characters"),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// What an observation did to one code reference (see `Store::code_refs_observe`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RefChange {
+    /// The memory the reference belongs to.
+    pub id: Uuid,
+    /// The reference's path, after a rename.
+    pub path: String,
+    /// The path it had before a rename moved it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<String>,
+    /// The reference became stale with this observation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub flagged: bool,
+    /// The reference was stale and the file was seen again with the stored content.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleared: bool,
+    /// Whether the memory has any stale reference after the observation.
+    pub stale: bool,
+    /// Whether the memory had a stale reference before the observation: it became stale with
+    /// this request when `stale` is true and this is false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub was_stale: bool,
+    /// Not a transition: the reference was stale already and only what was last seen of its
+    /// file changed (`seen_hash`; none for a deletion). Recorded and audited
+    /// (`memory.code_seen`), never part of an answer.
+    #[serde(skip)]
+    pub seen_only: bool,
+    /// With `seen_only`: the hash now recorded as last seen.
+    #[serde(skip)]
+    pub seen_hash: Option<String>,
+}
+
+/// A memory linked to a file, with the state of that link (TPL-05).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LinkedMemory {
+    pub memory: Memory,
+    /// The memory's references to the paths the request named.
+    pub code_refs: Vec<CodeRef>,
+}
+
+/// Which hook reported a file (TPL-05).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileEvent {
+    #[default]
+    Opened,
+    Edited,
+}
+
+impl FileEvent {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FileEvent::Opened => "opened",
+            FileEvent::Edited => "edited",
+        }
+    }
+}
+
+/// An agent opened or edited files of a repository (`POST /v1/code/touched`, TPL-05): the
+/// staleness of the memories linked to them is updated from the hashes, and the linked
+/// memories are returned.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct FileTouchedRequest {
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// The repository (`repo:<name>` in the coding template).
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// `opened` (the default) or `edited`.
+    #[serde(default)]
+    pub event: FileEvent,
+    /// The files, each with its current content hash. A file given as `deleted` or with
+    /// `renamed_from` is handled as in `POST /v1/code/changed`; one given by its path alone
+    /// is looked up without recording anything about it.
+    pub files: Vec<FileState>,
+    /// What the agent is doing, in natural language. With it, procedures that match the task
+    /// and are not linked to the files are returned too (`related`, task-matched retrieval).
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Narrower visibility, as for `recall`.
+    #[serde(default)]
+    pub scope: Option<Scope>,
+    /// Also return the memories as a text block ready for a prompt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub render: bool,
+    #[serde(default)]
+    pub actor: Option<String>,
+}
+
+/// The memories linked to the touched files.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct FileTouchedResult {
+    /// Linked memories whose files have the content they were written about: every one the
+    /// caller may recall, however many there are.
+    pub memories: Vec<LinkedMemory>,
+    /// Linked memories whose file changed since: left out of default recall until each is
+    /// revalidated (`POST /v1/code/revalidate`), revised or forgotten.
+    pub needs_revalidation: Vec<LinkedMemory>,
+    /// What this request changed: references flagged stale, cleared or moved by a rename, of
+    /// memories the caller may recall.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<RefChange>,
+    /// Procedures that match `query` and are not linked to the files (only with `query`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<Memory>,
+    /// `memories` and `related` as one text block, with `render`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<String>,
+}
+
+/// Files changed outside the agent's view (`POST /v1/code/changed`, TPL-04): a commit, a
+/// checkout, a merge. Staleness is marked for every file named, opened or not.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct FilesChangedRequest {
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// The repository (`repo:<name>` in the coding template).
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Changed files with their new content hash, deleted files, renamed files.
+    pub files: Vec<FileState>,
+    /// What produced the change, for the audit log: a commit id, `checkout`, ...
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+}
+
+/// What a batch of file changes did.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct FilesChangedResult {
+    /// References flagged stale, cleared or moved, of memories the caller may recall.
+    pub changes: Vec<RefChange>,
+    /// Memories that became stale with this request (they were not stale before it), among
+    /// those the caller may recall.
+    pub flagged: u64,
+    /// Memories that were stale and are no longer (every file they are about was seen with
+    /// its stored content again), among those the caller may recall.
+    pub cleared: u64,
+}
+
+/// Confirm that a memory still holds for the files as they are now (`POST /v1/code/revalidate`,
+/// TPL-04): its references take the new hashes and it returns to default recall.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RevalidateRequest {
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// The memory.
+    pub id: Uuid,
+    /// The references to revalidate, each with the file's current content hash. Without it,
+    /// every stale reference takes the hash its file was last seen with; a reference to a
+    /// deleted file has none, so the memory must be revised (or forgotten) instead.
+    #[serde(default)]
+    pub code_refs: Option<Vec<CodeRef>>,
+    #[serde(default)]
+    pub actor: Option<String>,
+}
+
+/// A revalidated memory.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RevalidateResult {
+    pub id: Uuid,
+    /// The memory's code references after the revalidation.
+    pub code_refs: Vec<CodeRef>,
+    /// Whether any reference is still stale (only some were revalidated).
+    pub stale: bool,
 }
 
 /// A reference from one subject to another (ACC-06), stored with the subject that holds it.
@@ -439,6 +688,10 @@ pub struct Memory {
     /// such as `en` or `de`); absent on records written before languages were recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Set while a file the memory is about has other content than when the memory was written
+    /// or last revalidated (TPL-04): the memory is left out of default recall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_since: Option<DateTime<Utc>>,
 }
 
 /// A record ready to be inserted (embedding already computed).
@@ -451,11 +704,15 @@ pub struct NewMemory {
     pub alt: Option<(String, Vec<f32>)>,
     pub structured: Option<Structured>,
     pub code_refs: Vec<CodeRef>,
+    /// A revision that named no references of its own: it takes those of the version it
+    /// replaces as they are when it is stored (`staleness::successor_refs`), not as they were
+    /// when the revision was made.
+    pub refs_inherited: bool,
 }
 
 impl NewMemory {
     pub fn new(memory: Memory, content_hash: String) -> NewMemory {
-        NewMemory { memory, embedding: None, content_hash, alt: None, structured: None, code_refs: vec![] }
+        NewMemory { memory, embedding: None, content_hash, alt: None, structured: None, code_refs: vec![], refs_inherited: false }
     }
 }
 
@@ -881,6 +1138,14 @@ pub struct RecallRequest {
     /// contain these values are returned first, matched exactly, never by similarity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact: Option<ExactQuery>,
+    /// Also return memories whose file changed since they were written (TPL-04), each marked
+    /// by its `stale_since`. Default recall leaves them out until they are revalidated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_stale: bool,
+    /// Files the task at hand touches (repository paths). A procedure linked to one of them
+    /// matches the task whatever the query says (task-matched retrieval, MEM-02).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 /// An exact structured-record query inside a recall (HYB-02, HYB-03).
@@ -1030,6 +1295,8 @@ pub struct SearchQuery {
     pub shared_agents: Vec<String>,
     /// Also return each hit's vector (`Hit::embedding`), for near-duplicate removal (ECON-03).
     pub with_vectors: bool,
+    /// Also records with a stale code reference (TPL-04); default recall leaves them out.
+    pub include_stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1061,6 +1328,10 @@ pub struct ListQuery {
     /// Only records valid and unexpired at this time.
     #[serde(default)]
     pub live_at: Option<DateTime<Utc>>,
+    /// Leave out records with a stale code reference (TPL-04), inside the statement and so
+    /// before its limit. A list shows them by default.
+    #[serde(default)]
+    pub fresh_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1247,8 +1518,12 @@ pub enum ExclusionReason {
     /// Not valid at the recall's time: before `valid_from`, after `valid_to` or `expires_at`, or
     /// happened after `as_of`.
     Validity,
+    /// A file the memory is about changed since it was written or last revalidated (TPL-04).
+    Stale,
     /// Outside the request's own filters: kinds, tags or time window.
     Filter,
+    /// A procedure that does not match the task the recall is for (MEM-02).
+    Task,
     /// A preference overridden by the same preference at a narrower scope (MEM-04).
     Overridden,
     /// A near-duplicate of a better-ranked memory in the same recall (ECON-03).
@@ -1266,7 +1541,9 @@ impl ExclusionReason {
             ExclusionReason::Access => "access",
             ExclusionReason::Label => "label",
             ExclusionReason::Validity => "validity",
+            ExclusionReason::Stale => "stale",
             ExclusionReason::Filter => "filter",
+            ExclusionReason::Task => "task",
             ExclusionReason::Overridden => "overridden",
             ExclusionReason::Duplicate => "duplicate",
             ExclusionReason::Budget => "budget",
@@ -1353,6 +1630,11 @@ pub struct RecallRecord {
     pub as_of: Option<DateTime<Utc>>,
     /// The time validity was checked at.
     pub valid_at: DateTime<Utc>,
+    /// The recall did not leave out memories whose file had changed: it asked with
+    /// `include_stale`, or with `as_of`. It says what was asked, not that such a memory was
+    /// among the results.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_stale: bool,
     pub mode: RetrievalMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<usize>,

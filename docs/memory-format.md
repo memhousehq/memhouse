@@ -81,7 +81,7 @@ Fields in this order; optional fields are left out when empty.
 | `language` | text | no | the language the text was detected as: a language-pack code (`en`, `de`, `pt-BR`); from schema 9 |
 | `alt_hash` | lowercase sha256 hex | no | the key of the second vector, below |
 | `structured` | `{record_type, attrs}` | no | `attrs` is an object |
-| `code_refs` | `[{path, blob_hash}]` | no | each path once |
+| `code_refs` | `[{path, blob_hash, stale_since?, seen_hash?}]` | no | each path once. From schema 10 a reference may carry `stale_since` (RFC 3339: since when its file has other content, or is deleted) and `seen_hash` (the hash the file was last seen with; only with `stale_since`, and absent for a deleted file) |
 | `metadata` | JSON object | no | |
 | `created_at`, `updated_at` | RFC 3339 | yes | `updated_at` not before `created_at` |
 
@@ -128,7 +128,7 @@ import reports how many).
 
 `schema_version` is the number of the writer's [logical schema](schema.md). It advances with
 every change of the schema, whether or not the change touches the format. Of the schemas so far,
-7 and 9 added to version 2; the others changed nothing in a file. Each addition is marked "from
+7, 9 and 10 added to version 2; the others changed nothing in a file. Each addition is marked "from
 schema N" where it is described.
 
 Within a format version, a change to the format comes with a new schema version, and a reader

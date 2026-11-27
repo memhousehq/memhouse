@@ -136,6 +136,12 @@ fn truncate_chars(s: &str, n: usize) -> &str {
     }
 }
 
+/// How much further than the first search the refill of a task-matched recall looks, when
+/// procedures that do not match the task were dropped: this many times its limit, and this
+/// many more. A bound, so that a recall is at most one search longer.
+const TASK_REFILL_FACTOR: usize = 4;
+const TASK_REFILL_MORE: usize = 16;
+
 impl Engine {
     pub fn new(store: Arc<dyn Store>, embedder: Arc<dyn Embedder>, reranker: Option<Arc<dyn Reranker>>, cfg: Config) -> Engine {
         let authorizer = Arc::new(crate::access::ScopeAuthorizer::new(&cfg));
@@ -445,7 +451,7 @@ impl Engine {
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember), policy).await?;
+        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember, false), policy).await?;
         self.accepted_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await;
         Ok(result)
     }
@@ -459,10 +465,11 @@ impl Engine {
         tenant: &str,
         subject: &str,
         actor: &str,
-        how: (Entry, Op),
+        how: (Entry, Op, bool),
         policy: &CompiledPolicy,
     ) -> anyhow::Result<RememberResult> {
-        let (entry, op) = how;
+        // The last: a revision that takes the references of the version it replaces.
+        let (entry, op, refs_inherited) = how;
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
         if !policy.allows(kind) {
@@ -498,6 +505,9 @@ impl Engine {
             Some(m) => self.redact_attrs(policy, m, &mut redactions).await?,
             None => serde_json::json!({}),
         };
+        // Code references as a writer may state them (TPL-04): repository paths in one form,
+        // each once; the staleness marks are the server's.
+        let code_refs = crate::staleness::written_refs(&req.code_refs)?;
         // Provenance of a promotion is written by `promote` only, never taken from a caller.
         if op != Op::Promote {
             if let Some(o) = metadata.as_object_mut() {
@@ -512,11 +522,19 @@ impl Engine {
             Some(st) => write_hash(format!("{}\u{1f}{}\u{1f}{}\u{1f}{}", kind.as_str(), content, st.record_type, st.attrs), &scope),
         };
         // A signal must reach the gate every time it is seen: the repeat is what commits it.
-        let signal = type_policy.gate.holds_signals() && metadata.get("signal").and_then(|v| v.as_bool()) == Some(true);
+        // So must a correction (MEM-02), which is promoted by being given again.
+        let flag = |k: &str| metadata.get(k).and_then(|v| v.as_bool()) == Some(true);
+        let signal = type_policy.gate.holds_signals() && (flag("signal") || flag("correction"));
 
         if req.supersedes.is_none() && !signal {
-            if let Some(existing) = self.store.find_by_hash(&tenant, &subject, &hash).await? {
-                let stored = self.store.get(&tenant, existing).await?;
+            let existing = self.store.find_by_hash(&tenant, &subject, &hash).await?;
+            let stored = match existing {
+                Some(id) => self.store.get(&tenant, id).await?,
+                None => None,
+            };
+            // A held correction the gate recognised by its wording counts its repeats too.
+            let counted = stored.as_ref().is_some_and(|m| m.status == MemoryStatus::Candidate && m.metadata.get("counted").is_some());
+            if let Some(existing) = existing.filter(|_| !counted) {
                 let status = stored.as_ref().map(|m| m.status).unwrap_or(MemoryStatus::Committed);
                 metrics::inc("memhouse_writes_total", &[("status", "deduplicated")], 1.0);
                 // A promotion that lands on an identical record still happened (MEM-05): its
@@ -580,6 +598,7 @@ impl Engine {
             scope,
             provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
             language: None,
+            stale_since: None,
         };
         let proposal = Proposal {
             id,
@@ -590,7 +609,7 @@ impl Engine {
             source,
             op,
             entry,
-            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs: req.code_refs.clone() }],
+            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs, refs_inherited }],
             session_id: None,
             enqueued_at: now,
         };
@@ -729,12 +748,14 @@ impl Engine {
                     scope: req.scope.clone().unwrap_or_default(),
                     provenance: Self::provenance(policy, &actor, &req.user, &req.request_key),
                     language: None,
+                    stale_since: None,
                 },
                 content_hash: hash,
                 redactions,
                 focus,
                 structured: None,
                 code_refs: vec![],
+                refs_inherited: false,
             });
         }
         if records.is_empty() {
@@ -920,6 +941,9 @@ impl Engine {
         let (mut embeddings, working) = (embeddings?, working?);
         let embed_ms = start.elapsed().as_secs_f64() * 1000.0;
         let now_valid = req.as_of.unwrap_or_else(Utc::now);
+        // TPL-04: a memory about a file that changed since is left out until it is revalidated.
+        // A recall of the past (`as_of`) asks what was known then, so it is not filtered.
+        let include_stale = req.include_stale || req.as_of.is_some();
         // The cache is per session, not per reader: every access rule is applied here.
         let (mut session_hits, session_statements) = match working {
             Some((items, loaded, full)) => {
@@ -930,6 +954,7 @@ impl Engine {
                         && m.valid_from <= now_valid
                         && m.valid_to.is_none_or(|t| t > now_valid)
                         && req.tags.as_ref().is_none_or(|t| t.iter().any(|x| m.tags.contains(x)))
+                        && (include_stale || m.stale_since.is_none())
                 };
                 let mut mine: Vec<Memory> = items.into_iter().filter(visible).collect();
                 let mut statements = usize::from(loaded);
@@ -951,6 +976,9 @@ impl Engine {
                             session: Some(s.clone()),
                             tags: req.tags.clone(),
                             live_at: Some(now_valid),
+                            // Stale notes are left out by the statement too, or the newest
+                            // of them would use up its limit (TPL-04).
+                            fresh_only: !include_stale,
                             ..Default::default()
                         };
                         // Every filter is in the statement, before its limit: however many
@@ -991,6 +1019,7 @@ impl Engine {
             include_candidates: req.include_candidates,
             shared_agents: ctx.shared_agents.clone(),
             with_vectors: rank.dedup,
+            include_stale,
         };
         // Extra probes: the same query inside the time windows it mentions, and one per sub-query.
         let mut probes: Vec<(SearchQuery, f32)> = vec![];
@@ -1095,6 +1124,58 @@ impl Engine {
         let present = Utc::now();
         crate::pack::score(&mut hits, rank, req.as_of.unwrap_or(present), present);
 
+        // MEM-02, task-matched retrieval: a procedure is returned only for a task it matches
+        // (`task_matches`). Similarity alone never brings one in: the vector retriever always
+        // has a nearest record, however unrelated.
+        let mut off_task: Vec<ExcludedRecord> = vec![];
+        let procedure = |h: &Hit| h.memory.kind == MemoryKind::Procedural && h.memory.status == MemoryStatus::Committed;
+        if policy.of(MemoryKind::Procedural).retrieval == crate::policy::Retrieval::TaskMatched && req.as_of.is_none() && hits.iter().chain(&reserve).any(procedure) {
+            // The task's files in the form references are stored in (`./src//a.rs` is `src/a.rs`).
+            let paths: Vec<String> = req.paths.iter().filter_map(|p| crate::staleness::normalize_path(p)).collect();
+            let linked: std::collections::HashSet<Uuid> = if paths.is_empty() {
+                Default::default()
+            } else {
+                statements += 1;
+                within(deadline, self.store.code_refs_at(&tenant, &subject, &paths).instrument(tracing::info_span!("recall.task"))).await?.into_iter().map(|(id, _)| id).collect()
+            };
+            let values = self.languages.values();
+            let on_task = |m: &Memory| linked.contains(&m.id) || req.tags.is_some() || values.matches_task(&req.query, &format!("{} {}", m.content, m.tags.join(" ")));
+            let fetched = hits.len();
+            hits.retain(|h| {
+                let keep = !procedure(h) || on_task(&h.memory);
+                if !keep {
+                    off_task.push(ExcludedRecord {
+                        id: h.memory.id,
+                        reason: ExclusionReason::Task,
+                        detail: "a procedure is returned for a task it matches: a file of the task, a requested tag, or two words in common with the query".into(),
+                    });
+                }
+                keep
+            });
+            reserve.retain(|h| !procedure(h) || on_task(&h.memory));
+            // The places the procedures took are filled from what is ranked below them: the
+            // same search, further down, with the procedures in it held to the same test. So
+            // a procedure that does not match never costs the caller a memory that does, or
+            // a procedure that does (k = 1 would otherwise return nothing).
+            if hits.len() < fetched && !working_only {
+                let mut refill = q.clone();
+                refill.limit = fused_limit * TASK_REFILL_FACTOR + TASK_REFILL_MORE;
+                // Each retriever as far as the refill looks: with `ranking.candidates = 1` it
+                // would otherwise return the one record that was just dropped.
+                refill.per_retriever = refill.per_retriever.max(refill.limit);
+                let mut more = within(deadline, self.store.search(&refill).instrument(tracing::info_span!("recall.task_refill"))).await?;
+                statements += 1;
+                let have: std::collections::HashSet<Uuid> = hits.iter().chain(&reserve).map(|h| h.memory.id).chain(off_task.iter().map(|x| x.id)).collect();
+                more.retain(|h| !have.contains(&h.memory.id) && (!procedure(h) || on_task(&h.memory)));
+                more.truncate(fetched - hits.len());
+                crate::pack::score(&mut more, rank, req.as_of.unwrap_or(present), present);
+                hits.extend(more);
+                // Among themselves in rank order, as every list is; a reranked head keeps its
+                // place, since its scores are on a higher scale.
+                hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+            }
+        }
+
         if !exact_hits.is_empty() {
             let top = hits.first().map(|h| h.score).unwrap_or(0.0);
             let ids: std::collections::HashSet<Uuid> = exact_hits.iter().map(|h| h.memory.id).collect();
@@ -1116,7 +1197,7 @@ impl Engine {
         let mut overridden: Vec<ExcludedRecord> = vec![];
         let keyed = |h: &Hit| h.memory.kind == MemoryKind::Preference && h.memory.status == MemoryStatus::Committed && h.memory.metadata.get("pref_key").is_some();
         if req.as_of.is_none() && policy.of(MemoryKind::Preference).retrieval == crate::policy::Retrieval::ScopeOrdered && hits.iter().any(keyed) {
-            let reader = crate::preference::Reader { scope: &scope, denied_labels: &ctx.denied_labels, shared_agents: &ctx.shared_agents };
+            let reader = crate::preference::Reader { scope: &scope, denied_labels: &ctx.denied_labels, shared_agents: &ctx.shared_agents, include_stale };
             let effective = within(deadline, self.effective_preferences(&tenant, &subject, None, &reader).instrument(tracing::info_span!("recall.preferences"))).await?;
             statements += 1;
             crate::preference::apply_overrides(&mut hits, &effective, req.tags.as_deref(), req.exact.is_some(), &mut overridden);
@@ -1165,6 +1246,9 @@ impl Engine {
             }));
         }
         cut.extend(overridden);
+        // A procedure the exact probe returned after all is not also listed as left out.
+        off_task.retain(|x| !hits.iter().any(|h| h.memory.id == x.id));
+        cut.extend(off_task);
         // PERF-06: the token budget is a hard cap on the returned memories and on the block.
         let format = req.render_format.or(req.render.then_some(RenderFormat::Plain));
         let rendered = crate::pack::pack(&mut hits, req.token_budget, format, &subject, &mut cut);
@@ -1215,6 +1299,7 @@ impl Engine {
                 denied_labels: ctx.denied_labels,
                 as_of: req.as_of,
                 valid_at: req.as_of.unwrap_or(now_valid),
+                include_stale,
                 mode,
                 token_budget: req.token_budget,
                 reranked: use_rerank,
@@ -1293,11 +1378,22 @@ impl Engine {
         if old.status != MemoryStatus::Committed {
             return Err(error::conflict(format!("memory {} is {}; only the current, committed version can be revised", req.id, old.status.as_str())));
         }
+        // References it does not name are the predecessor's, taken again by the store when it
+        // inserts the revision (TPL-04).
+        let mut refs_inherited = false;
         let (structured, code_refs) = if req.structured.is_some() && req.code_refs.is_some() {
             (req.structured.clone(), req.code_refs.clone().unwrap_or_default())
         } else {
             let (s, c) = self.store.representations(&tenant, req.id).await?;
-            (req.structured.clone().or(s), req.code_refs.clone().unwrap_or(c))
+            // A revision ends the staleness of the version it replaces (TPL-04). References it
+            // inherits take the content their file was last seen with, which is what the
+            // reviser had before them; one to a file that was deleted is not carried over.
+            // What the reviser had before them. The store compares it with the predecessor's
+            // references as they are when it inserts the revision: a file seen with other
+            // content in between leaves the revision stale.
+            let inherited = || crate::staleness::inherited_refs(&c);
+            refs_inherited = req.code_refs.is_none() && !c.is_empty();
+            (req.structured.clone().or(s), req.code_refs.clone().unwrap_or_else(inherited))
         };
         // New content that is itself a structured record replaces the old structured form.
         let structured = if req.structured.is_none() && crate::classify::structured_from_content(&req.content).is_some() { None } else { structured };
@@ -1325,7 +1421,7 @@ impl Engine {
             code_refs,
             wait: req.wait,
         };
-        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise), policy).await?;
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise, refs_inherited), policy).await?;
         self.accepted_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await;
         Ok(result)
     }
@@ -1552,6 +1648,7 @@ impl Engine {
                 session: None,
                 tags: None,
                 live_at: None,
+                fresh_only: false,
             })
             .await
     }
@@ -1589,6 +1686,7 @@ impl Engine {
             session: None,
             tags: None,
             live_at: None,
+            fresh_only: false,
         };
         let mut items = self.store.list(&q).await?;
         let next_cursor = if items.len() > limit {

@@ -6,7 +6,7 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.8.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.9.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
 `forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
 (preview); 1.3 added the policy operations under `/v1/policies`; 1.4 made admission asynchronous
@@ -18,7 +18,10 @@ and added `include_candidates`, `exact`, `degraded`, `statement`, `route`, `queu
 `render_format`, the `duplicate` exclusion reason, `features` on an explanation's returned records
 and the ranking fields of a compiled policy; 1.7 added `write_gate.corrections` to a policy spec
 and its compiled form; 1.8 added `language` to a record and `language.enabled` to a policy spec
-(`languages` in its compiled form). Its contract is [`api/openapi.json`](../api/openapi.json), served at
+(`languages` in its compiled form); 1.9 added the code routes (`POST /v1/code/touched`,
+`/v1/code/changed`, `/v1/code/revalidate`), `stale_since` on a record and on a code reference
+(with `seen_hash`), `include_stale` and `paths` on a recall, and the `stale` and `task`
+exclusion reasons. Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -88,6 +91,10 @@ names a recorded exception, and they are written here so clients are ready for t
 | G12 (1.6) | Recall leaves out near-duplicates of a better-ranked hit (cosine 0.97 or text overlap 0.9 by default); they are listed in the explanation as `duplicate`. | Nothing; a policy with `[ranking] dedup = false` returns them. |
 | G13 (1.7) | Approving a policy version answers `409 conflict` when the tenant has evaluation suites and the version degrades them past the limits of `[eval]`; the version stays `proposed`. Tenants without suites are unaffected ([recorded exception](#recorded-exception-the-regression-gate-on-policy-approval-17)). | Read the report in the error message; fix the policy or the suite. |
 | G36 (1.8) | A record carries `language`, the language its text was detected as. With `[language] enabled = ["en"]` (the default) nothing else changes: statements, questions and injection attempts are read as before. | Nothing; enable more languages in `[language]` ([languages.md](languages.md)). |
+| G19 (1.9) | A memory with `code_refs` is left out of recall while a file it is about is known to have other content (reported through the code routes or the [harness hooks](coding.md)), until it is revalidated or revised. Nothing changes for a deployment that reports no file states. | Pass `include_stale` to recall such memories anyway; revalidate or revise them. |
+| G19 (1.9) | A `procedural` memory is returned by a recall only when it matches the task: two content words in common with the query, a requested tag, or a file named in `paths` ([task-matched retrieval](memory-types.md#task-matched-retrieval)). Before, any procedure the search found was returned. | Word the query after the procedure, filter by `tags`, or pass `paths`. |
+| G19 (1.9) | An agent's procedural proposal marked as a correction (`metadata.correction`, or worded as one) is committed without a reviewer once the same correction has been given `[intake] procedural_corrections` times (3). Before, only a reviewer committed it. | Set `procedural_corrections = 0` to keep it to the reviewer. |
+| G19 (1.9) | `code_refs` paths are normalized on write (`./src//a.rs` becomes `src/a.rs`), a path that leaves the repository is refused with `400`, and at most 200 references are accepted. | Send repository-relative paths. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ### Recorded exception: session working memory (1.5)

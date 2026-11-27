@@ -36,6 +36,7 @@ pub(crate) fn memory(tenant: &str, subject: &str, content: &str) -> Memory {
         scope: Scope::default(),
         provenance: Provenance::default(),
         language: None,
+        stale_since: None,
     }
 }
 
@@ -63,6 +64,7 @@ fn proposal(tenant: &str, subject: &str, content: &str) -> Proposal {
             focus: None,
             structured: None,
             code_refs: vec![],
+            refs_inherited: false,
         }],
         session_id: None,
         enqueued_at: Utc::now(),

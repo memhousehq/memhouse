@@ -23,6 +23,11 @@
       "note": "schema 9: records that carry the language their text was detected as (language-pack codes)"
     },
     {
+      "file": "v2-staleness.jsonl",
+      "records": 3,
+      "note": "schema 10: code references that carry since when their file has other content (stale_since) and the hash last seen (seen_hash; none for a deleted file)"
+    },
+    {
       "file": "v1-export.jsonl",
       "records": 4,
       "note": "format v1 (schema v1): read and upgraded"
@@ -80,6 +85,10 @@
     {
       "file": "invalid-structured-attrs.jsonl",
       "error": "attrs object"
+    },
+    {
+      "file": "invalid-seen-hash-without-stale.jsonl",
+      "error": "seen_hash"
     }
   ]
 }

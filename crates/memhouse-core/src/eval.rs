@@ -28,8 +28,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// The suite format version this build reads and writes.
+/// The suite format a suite has unless it says otherwise, and the one written for a suite that
+/// uses nothing newer.
 pub const SUITE_FORMAT: u32 = 1;
+/// Format 2 adds code: a turn's `files`, a session's file `changes` and `revalidate`, and a
+/// question's `touch` and `stale` (the coding template, TPL-03 to TPL-05). A suite that uses
+/// any of them says `format: 2`; a build that reads only format 1 then refuses it by its
+/// number. Format 1 suites are read as before.
+pub const SUITE_FORMAT_CODE: u32 = 2;
 
 /// Part of every scratch tenant's name. A scratch tenant runs a policy pinned in the engine that
 /// replays into it, so the intake queue hands its proposals only to a caller that asks for them
@@ -79,6 +85,35 @@ pub struct SuiteTurn {
     /// turn (it must not be committed).
     #[serde(default, skip_serializing_if = "is_false")]
     pub injection: bool,
+    /// Files of the conversation's repository the statement is about (format 2): the memory
+    /// is written with a code reference to each, at the file's content at that point.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+}
+
+/// What happens to a file of the conversation's repository (format 2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChangeKind {
+    /// Its content changes: memories written about it become stale.
+    #[default]
+    Edit,
+    /// It is removed: memories about it become stale.
+    Delete,
+    /// It moves to `to` with the same content: memories about it follow, and are not stale.
+    Rename,
+}
+
+/// A change to a file between two sessions, reported as a commit would report it (format 2).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SuiteFileChange {
+    pub path: String,
+    #[serde(default)]
+    pub change: FileChangeKind,
+    /// The new path of a renamed file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -103,14 +138,30 @@ pub struct SuiteQuestion {
     /// pack's test set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<String>,
+    /// A file-touched question (format 2): instead of a recall, the agent opens this file, and
+    /// the key's current record must be among the memories linked to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub touch: Option<String>,
+    /// The key's current record was written about an earlier content of its file (format 2):
+    /// it must be withheld. A recall must not return it; a file-touched question must list it
+    /// as needing revalidation.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stale: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SuiteSession {
     /// When the session happened (the event time of its turns).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<DateTime<Utc>>,
+    /// File changes since the session before, reported before this session's turns (format 2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<SuiteFileChange>,
+    /// Keys whose current record is confirmed against its files as they are now, after
+    /// `changes` and before the turns (format 2): the record is revalidated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revalidate: Vec<String>,
     pub turns: Vec<SuiteTurn>,
     /// Asked at the checkpoint after the session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -128,7 +179,7 @@ pub struct SuiteConversation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Suite {
-    /// Suite format; 1.
+    /// Suite format: 1, or 2 for a suite with code (files, file changes, file-touched questions).
     #[serde(default = "suite_format")]
     pub format: u32,
     /// A short name: letters, digits, `.`, `_` and `-`.
@@ -156,8 +207,16 @@ impl Suite {
     /// Check a suite before it is stored or run; the message names the conversation and turn.
     pub fn validate(&self) -> anyhow::Result<()> {
         let bad = |m: String| Err(crate::error::invalid(format!("suite {}: {m}", self.name)));
-        if self.format != SUITE_FORMAT {
-            return bad(format!("format {} is not one this build reads ({SUITE_FORMAT})", self.format));
+        if self.format != SUITE_FORMAT && self.format != SUITE_FORMAT_CODE {
+            return bad(format!("format {} is not one this build reads ({SUITE_FORMAT} or {SUITE_FORMAT_CODE})", self.format));
+        }
+        let code = self
+            .conversations
+            .iter()
+            .flat_map(|c| &c.sessions)
+            .any(|s| !s.changes.is_empty() || !s.revalidate.is_empty() || s.turns.iter().any(|t| !t.files.is_empty()) || s.ask.iter().any(|q| q.touch.is_some() || q.stale));
+        if code && self.format < SUITE_FORMAT_CODE {
+            return bad(format!("files, changes, revalidate, touch and stale need `format: {SUITE_FORMAT_CODE}`"));
         }
         if self.name.is_empty() || self.name.len() > 80 || !self.name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
             return bad("the name must be 1 to 80 letters, digits, '.', '_' or '-'".into());
@@ -212,6 +271,14 @@ impl Suite {
                         ));
                     }
                 }
+                if let Some(ch) =
+                    session.changes.iter().find(|ch| ch.path.trim().is_empty() || (ch.change == FileChangeKind::Rename) != ch.to.as_ref().is_some_and(|t| !t.trim().is_empty()))
+                {
+                    return bad(format!("conversation {}, session {}: the change of '{}' needs a path, and `to` exactly when it is a rename", c.id, s + 1, ch.path));
+                }
+                if let Some(q) = session.ask.iter().find(|q| (q.touch.is_some() || q.stale) && q.key.is_empty()) {
+                    return bad(format!("conversation {}, session {}: the question '{}' has `touch` or `stale`, so it needs a key", c.id, s + 1, q.q));
+                }
                 if let Some(q) = session.ask.iter().find(|q| q.key.is_empty() && q.covers.is_empty() && q.ids.is_empty()) {
                     return bad(format!("conversation {}, session {}: the question '{}' has no key, and tests nothing else (covers, ids)", c.id, s + 1, q.q));
                 }
@@ -258,6 +325,18 @@ pub struct EvalCounts {
     /// Plans and guesses at checkpoints, and how many were committed as facts.
     pub held: u64,
     pub held_committed: u64,
+    /// File-touched questions about a memory that is not stale, and those answered with it
+    /// among the linked memories (TPL-05).
+    #[serde(default)]
+    pub touched: u64,
+    #[serde(default)]
+    pub touched_found: u64,
+    /// Questions about a memory whose file changed since, and those where it was withheld:
+    /// not recalled, and listed as needing revalidation when its file is touched (TPL-04).
+    #[serde(default)]
+    pub stale_expected: u64,
+    #[serde(default)]
+    pub stale_withheld: u64,
 }
 
 impl EvalCounts {
@@ -273,6 +352,10 @@ impl EvalCounts {
         self.stale_returned += o.stale_returned;
         self.held += o.held;
         self.held_committed += o.held_committed;
+        self.touched += o.touched;
+        self.touched_found += o.touched_found;
+        self.stale_expected += o.stale_expected;
+        self.stale_withheld += o.stale_withheld;
     }
 
     pub fn metrics(&self) -> EvalMetrics {
@@ -293,6 +376,8 @@ impl EvalCounts {
             retrieval_f1: f1(rp, rr),
             stale_rate: ratio(self.stale_returned, self.corrected_questions),
             contamination_rate: ratio(self.held_committed, self.held),
+            touched_recall: ratio(self.touched_found, self.touched),
+            stale_withheld: ratio(self.stale_withheld, self.stale_expected),
         }
     }
 }
@@ -315,6 +400,14 @@ pub struct EvalMetrics {
     pub stale_rate: Option<f64>,
     /// Of the plans and guesses, the part committed as facts.
     pub contamination_rate: Option<f64>,
+    /// Of the file-touched questions about a memory that is not stale, the part answered with
+    /// it among the linked memories (suites with code).
+    #[serde(default)]
+    pub touched_recall: Option<f64>,
+    /// Of the questions about a memory whose file changed since, the part where it was
+    /// withheld (suites with code).
+    #[serde(default)]
+    pub stale_withheld: Option<f64>,
 }
 
 /// What the engine ran with, apart from the policy: a change of any part is a model or engine
@@ -439,7 +532,8 @@ impl GateReport {
 /// Compare two replays of the same suite (QUAL-05): storage and retrieval F1 may not fall by more
 /// than `max_f1_drop` points, the stale-fact rate may not rise by more than `max_stale_rise`
 /// points, nor the contamination rate by more than `max_contamination_rise`. A metric the suite
-/// can't measure is left out.
+/// can't measure is left out. For a suite with code, file-touched recall and the share of stale
+/// memories withheld may not fall by more than `max_f1_drop` points either.
 pub fn compare(suite: &str, before: &EvalMetrics, after: &EvalMetrics, limits: &GateLimits) -> Vec<GateFinding> {
     let mut out = vec![];
     let mut check = |metric: &str, b: Option<f64>, a: Option<f64>, limit: f64, higher_is_better: bool| {
@@ -454,6 +548,10 @@ pub fn compare(suite: &str, before: &EvalMetrics, after: &EvalMetrics, limits: &
     check("retrieval_f1", before.retrieval_f1, after.retrieval_f1, limits.max_f1_drop, true);
     check("stale_rate", before.stale_rate, after.stale_rate, limits.max_stale_rise, false);
     check("contamination_rate", before.contamination_rate, after.contamination_rate, limits.max_contamination_rise, false);
+    // Suites with code (format 2): both are shares that must not fall, held to the same limit
+    // as the F1 scores. A suite without code measures neither, and neither is compared.
+    check("touched_recall", before.touched_recall, after.touched_recall, limits.max_f1_drop, true);
+    check("stale_withheld", before.stale_withheld, after.stale_withheld, limits.max_f1_drop, true);
     out
 }
 
@@ -643,7 +741,7 @@ impl Engine {
 
     /// One turn written with `remember`; returns the record it became (nil when the policy
     /// refused the write).
-    async fn eval_remember(&self, tenant: &str, subject: &str, conversation: &str, turn: &SuiteTurn, at: Option<DateTime<Utc>>) -> anyhow::Result<Uuid> {
+    async fn eval_remember(&self, tenant: &str, subject: &str, conversation: &str, turn: &SuiteTurn, at: Option<DateTime<Utc>>, code_refs: Vec<CodeRef>) -> anyhow::Result<Uuid> {
         let written = self
             .remember(RememberRequest {
                 tenant: Some(tenant.into()),
@@ -651,6 +749,7 @@ impl Engine {
                 content: turn.say.clone(),
                 kind: turn.kind,
                 occurred_at: at,
+                code_refs,
                 actor: Some("eval".into()),
                 source: Some("eval".into()),
                 wait: true,
@@ -769,7 +868,49 @@ impl Engine {
         // An ingested replay: extracted facts that restate no turn. They count as stored and
         // not true, so a wrong extraction lowers storage precision.
         let mut unmatched: Vec<Uuid> = vec![];
+        // The conversation's repository (format 2): each file's identity and version. A file's
+        // content hash is made from them, so an edit changes it and a rename does not.
+        let mut repo: HashMap<String, (String, u32)> = HashMap::new();
+        let hash_of = |file: &(String, u32)| crate::engine::content_hash(&format!("{}@{}", file.0, file.1))[..40].to_string();
         for (n, session) in c.sessions.iter().enumerate() {
+            // What changed since the session before, as a post-commit hook reports it.
+            let mut observed: Vec<FileState> = vec![];
+            for ch in &session.changes {
+                match ch.change {
+                    FileChangeKind::Edit => {
+                        let file = repo.entry(ch.path.clone()).or_insert_with(|| (ch.path.clone(), 0));
+                        file.1 += 1;
+                        observed.push(FileState::present(&ch.path, hash_of(file)));
+                    }
+                    FileChangeKind::Delete => {
+                        repo.remove(&ch.path);
+                        observed.push(FileState::deleted(&ch.path));
+                    }
+                    FileChangeKind::Rename => {
+                        let to = ch.to.clone().unwrap_or_default();
+                        let file = repo.remove(&ch.path).unwrap_or_else(|| (ch.path.clone(), 1));
+                        observed.push(FileState::renamed(&ch.path, &to, hash_of(&file)));
+                        repo.insert(to, file);
+                    }
+                }
+            }
+            if !observed.is_empty() {
+                self.files_observed(tenant, &subject, &observed, "eval", serde_json::json!({ "event": "eval.changes" })).await?;
+            }
+            for key in &session.revalidate {
+                // The key's current record, confirmed against its files as they are now.
+                let current = played.iter().rev().find(|p| p.expect == Expect::Commit && p.key.as_deref() == Some(key.as_str())).map(|p| p.id).filter(|id| !id.is_nil());
+                if let Some(m) = match current {
+                    Some(id) => self.store.get(tenant, id).await?,
+                    None => None,
+                } {
+                    let refs = self.store.representations(tenant, m.id).await?.1;
+                    let now: Vec<CodeRef> = refs.iter().filter_map(|r| repo.get(&r.path).map(|f| CodeRef::new(r.path.clone(), hash_of(f)))).collect();
+                    if m.status == MemoryStatus::Committed && !now.is_empty() {
+                        self.revalidate(tenant, &m, Some(&now), "eval").await?;
+                    }
+                }
+            }
             let mut extracted = match mode {
                 ReplayMode::Ingest => {
                     let (per_turn, extra) = self.eval_ingest(tenant, &subject, &c.id, n, session, spend).await?;
@@ -780,7 +921,10 @@ impl Engine {
             };
             for (t, turn) in session.turns.iter().enumerate() {
                 let (id, facts) = match mode {
-                    ReplayMode::Remember => (self.eval_remember(tenant, &subject, &c.id, turn, session.at).await?, vec![]),
+                    ReplayMode::Remember => {
+                        let code_refs = turn.files.iter().map(|path| CodeRef::new(path.clone(), hash_of(repo.entry(path.clone()).or_insert_with(|| (path.clone(), 1))))).collect();
+                        (self.eval_remember(tenant, &subject, &c.id, turn, session.at, code_refs).await?, vec![])
+                    }
                     // Nothing extracted from the turn: nothing of it is stored (the nil id).
                     ReplayMode::Ingest => (Uuid::nil(), std::mem::take(&mut extracted[t])),
                 };
@@ -861,6 +1005,43 @@ impl Engine {
                 // A question is about a corrected fact when an earlier turn stated the same
                 // key, whether or not that turn left a record of its own to go stale.
                 let corrected = played.iter().enumerate().any(|(i, p)| i != answer && p.expect == Expect::Commit && p.key.as_deref() == Some(q.key.as_str()));
+                // A file-touched question (TPL-05): the agent opens the file, with its content
+                // as it is now. Asked only of a replay that wrote the file links.
+                if let Some(path) = &q.touch {
+                    if mode != ReplayMode::Remember {
+                        continue;
+                    }
+                    // A question about a file the conversation never linked, or one it deleted
+                    // or renamed away, tests nothing: the suite is wrong, and says so here
+                    // instead of being scored without the checkpoint.
+                    let file = repo.get(path).ok_or_else(|| {
+                        crate::error::invalid(format!(
+                            "suite conversation {}, session {}: the question '{}' touches '{path}', which is not a file of the conversation's repository at that point (never linked by a turn's `files`, or deleted or renamed before)",
+                            c.id,
+                            n + 1,
+                            q.q
+                        ))
+                    })?;
+                    let t = self
+                        .file_touched(FileTouchedRequest {
+                            tenant: Some(tenant.into()),
+                            subject: Some(subject.clone()),
+                            files: vec![FileState::present(path, hash_of(file))],
+                            actor: Some("eval".into()),
+                            ..Default::default()
+                        })
+                        .await?;
+                    let linked = t.memories.iter().any(|l| right.contains(&l.memory.id));
+                    let held_back = t.needs_revalidation.iter().any(|l| right.contains(&l.memory.id));
+                    if q.stale {
+                        counts.stale_expected += 1;
+                        counts.stale_withheld += u64::from(held_back && !linked);
+                    } else {
+                        counts.touched += 1;
+                        counts.touched_found += u64::from(linked);
+                    }
+                    continue;
+                }
                 let r = self
                     .recall(RecallRequest {
                         tenant: Some(tenant.into()),
@@ -878,6 +1059,15 @@ impl Engine {
                     anyhow::bail!("evaluation: a recall of conversation {} failed ({why:?}); its replay is not scored", c.id);
                 }
                 let ids: Vec<Uuid> = r.hits.iter().map(|h| h.memory.id).collect();
+                if q.stale {
+                    // The memory was written about a file that changed since: a recall that
+                    // returns it would pass off the old state of the code as the current one.
+                    if mode == ReplayMode::Remember {
+                        counts.stale_expected += 1;
+                        counts.stale_withheld += u64::from(!ids.iter().any(|id| right.contains(id)));
+                    }
+                    continue;
+                }
                 counts.questions += 1;
                 counts.first_correct += u64::from(ids.first().is_some_and(|id| right.contains(id)));
                 counts.found += u64::from(ids.iter().any(|id| right.contains(id)));
@@ -1080,6 +1270,7 @@ mod tests {
             stale_returned: 1,
             held: 5,
             held_committed: 1,
+            ..Default::default()
         };
         let m = c.metrics();
         assert_eq!((m.storage_precision, m.storage_recall), (Some(0.8), Some(0.8)));
@@ -1119,5 +1310,11 @@ mod tests {
         );
         // A metric one side can't measure is left out.
         assert_eq!(compare("s", &before, &EvalMetrics::default(), &limits).len(), 0);
+        // A suite with code: its two shares are compared too, and a fall of either fails.
+        let code = EvalMetrics { touched_recall: Some(1.0), stale_withheld: Some(1.0), ..before };
+        assert!(compare("s", &code, &code, &limits).len() == 6);
+        let fell = compare("s", &code, &EvalMetrics { touched_recall: Some(0.0), stale_withheld: Some(0.97), ..code }, &limits);
+        let failed: Vec<&str> = fell.iter().filter(|x| !x.passed).map(|x| x.metric.as_str()).collect();
+        assert_eq!(failed, ["touched_recall", "stale_withheld"]);
     }
 }

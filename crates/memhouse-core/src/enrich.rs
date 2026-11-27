@@ -547,6 +547,7 @@ impl Engine {
                     extractor_config: Some(PROMPT_VERSION.to_string()),
                 },
                 language: None,
+                stale_since: None,
             };
             let mut it = Item::new(NewMemory::new(mem, hash), None, redactions);
             it.derived = true;

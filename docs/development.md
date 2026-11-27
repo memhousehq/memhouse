@@ -64,7 +64,9 @@ replace the defaults without touching the engine.
 | `core/src/policy.rs` | policy specs, the compiler and its precedence checks, the per-type rules (gate, retention, retrieval, access), versions, diff, approval and rollback |
 | `core/src/working.rs` | the session cache of working memory |
 | `core/src/preference.rs`, `promote.rs`, `sharing.rs` | scope-ordered preferences, promotion between types, grants between agents |
-| `bench/src/governance.rs` | the governance suite (73 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier, conformance, migration and embedded-transport checks are in `*_checks.rs` next to it |
+| `bench/src/governance.rs` | the governance suite (79 checks); the API, identity, intake, schema, telemetry, policy, memory-type, packing, evaluation, language, tier, conformance, migration, embedded-transport and coding-template checks are in `*_checks.rs` next to it |
+| `core/src/staleness.rs` | git-aware staleness: the rules for a file seen changed, deleted or renamed (one pure function every store applies), the git blob hash, file-touched recall and revalidation |
+| `server/src/hook.rs`, `cli/src/hook.rs` | the harness hook adapters (`memhouse hook file-opened`, `file-edited`, `post-commit`) and their installers ([coding.md](coding.md)) |
 | `store-sqlite/src/*.rs` | the Lite profile's store: schema, FTS5 and the exact half-precision vector scan, the queues, migrations with a pre-upgrade copy, backup and restore ([lite.md](lite.md)) |
 | `conformance/src/*.rs` | the conformance kits, one per adapter type, and the profile suite with its ways in: REST, MCP, the command line, and a child process for the SDKs ([conformance.md](conformance.md)) |
 | `xtask/src/sdk.rs`, `sdk/` | the SDK generator, and the Python and TypeScript SDKs it writes the low-level clients of ([sdk.md](sdk.md)); not Rust crates, so outside the workspace |
@@ -161,8 +163,8 @@ memhouse bench guard --tier 2     # adds cached enrichment
 ```
 
 It runs the governance suite (every check must pass, and there must be at least as many checks as
-the baseline), LongMemEval_S on a 50-question sample, LoCoMo, and the synthetic starter suite
-`bench/suites/personal` ([evaluation.md](evaluation.md)), then prints a table of each
+the baseline), LongMemEval_S on a 50-question sample, LoCoMo, and the synthetic starter suites
+`bench/suites/personal` and `bench/suites/coding` ([evaluation.md](evaluation.md)), then prints a table of each
 metric against its baseline and threshold (see
 [roadmap section 3](roadmap.md#3-the-benchmark-guard)). The
 report is also written to `bench-results/guard/`.

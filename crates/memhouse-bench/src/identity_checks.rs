@@ -237,6 +237,8 @@ async fn routes(api: &mut Api, keys: &Keys, db: &Db) -> anyhow::Result<Outcome> 
             "/v1/policies/diff" => json!({"to": "default"}),
             "/v1/policies/rollback" => json!({}),
             "/v1/promote" => json!({"sources": [id], "kind": "semantic"}),
+            "/v1/code/touched" | "/v1/code/changed" => json!({"subject": "customer:1", "files": [{"path": "src/a.rs", "blob_hash": "h1"}]}),
+            "/v1/code/revalidate" => json!({"id": id}),
             "/v1/grants" => json!({"grantor": "agent:a", "grantee": "agent:trusted"}),
             _ => return None,
         })
@@ -269,6 +271,8 @@ async fn routes(api: &mut Api, keys: &Keys, db: &Db) -> anyhow::Result<Outcome> 
             "revise" => json!({"id": id, "content": "x"}),
             "forget" => json!({"id": id}),
             "ingest" => json!({"messages": [{"role": "user", "content": "x"}]}),
+            "file_memories" => json!({"files": [{"path": "src/a.rs", "blob_hash": "h1"}]}),
+            "revalidate" => json!({"id": id}),
             _ => json!({}),
         };
         let r = api.mcp_as("tools/call", json!({"name": name, "arguments": args}), &[("authorization", none.as_str())]).await?;
@@ -434,6 +438,7 @@ async fn labels(api: &mut Api, keys: &Keys, e: &Engine, db: &Db) -> anyhow::Resu
         include_candidates: false,
         shared_agents: vec![],
         with_vectors: false,
+        include_stale: false,
     };
     match Profile::of(e) {
         Profile::Postgres => {

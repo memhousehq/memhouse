@@ -44,6 +44,9 @@ pub fn classify(m: &Memory, r: &RecallRecord) -> (ExclusionReason, String) {
             return (ExclusionReason::Validity, format!("occurred_at {} is after as_of", o.to_rfc3339()));
         }
     }
+    if let Some(t) = m.stale_since.filter(|_| !r.include_stale) {
+        return (ExclusionReason::Stale, format!("a file it is about changed (stale since {}); revalidate or revise it", t.to_rfc3339()));
+    }
     if let Some(k) = r.kinds.as_ref().filter(|k| !k.contains(&m.kind)) {
         return (ExclusionReason::Filter, format!("kind {} is not among {}", m.kind, k.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(",")));
     }
@@ -84,6 +87,7 @@ impl Engine {
             include_candidates: false,
             shared_agents: vec![],
             with_vectors: false,
+            include_stale: true,
         };
         let candidates = self.store.search_unfiltered(&q).await?;
         let returned: HashSet<_> = record.returned.iter().map(|r| r.id).collect();
@@ -143,6 +147,7 @@ mod tests {
             denied_labels: vec!["hr".into()],
             as_of: None,
             valid_at: Utc::now(),
+            include_stale: false,
             mode: RetrievalMode::Hybrid,
             token_budget: None,
             reranked: false,
@@ -177,6 +182,7 @@ mod tests {
             scope: Scope::default(),
             provenance: Provenance::default(),
             language: None,
+            stale_since: None,
         }
     }
 

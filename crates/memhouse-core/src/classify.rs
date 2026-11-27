@@ -372,28 +372,49 @@ pub fn structured_text(record_type: &str, attrs: &serde_json::Value) -> String {
     format!("{record_type}: {}", fields.join(", "))
 }
 
+/// Content words a query and a procedure must share for the procedure to match the task.
+pub const TASK_MATCH_WORDS: usize = 2;
+
 impl ValueRules {
-    /// Content words two statements share (a correction must share one with what it supersedes).
-    pub fn shares_content_word(&self, a: &str, b: &str) -> bool {
-        let words = |s: &str| -> std::collections::HashSet<String> {
-            s.split(|c: char| !c.is_alphanumeric())
-                .map(|w| w.to_lowercase())
-                .filter(|w| (w.chars().count() >= 4 || w.chars().any(|c| c.is_ascii_digit())) && !self.stop.contains(w.as_str()))
-                .collect()
-        };
-        let (wa, wb) = (words(a), words(b));
+    /// The content words of a text: four letters or more (or with a digit), lower-cased, and
+    /// not a stop word of an enabled language.
+    pub fn content_words(&self, s: &str) -> std::collections::HashSet<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .map(|w| w.to_lowercase())
+            .filter(|w| (w.chars().count() >= 4 || w.chars().any(|c| c.is_ascii_digit())) && !self.stop.contains(w.as_str()))
+            .collect()
+    }
+
+    /// How many content words of `a` are also in `b`: the same word, or the same stem.
+    pub fn shared_content_words(&self, a: &str, b: &str) -> usize {
+        let (wa, wb) = (self.content_words(a), self.content_words(b));
         // The same stem: five letters in common at the start. Counted in characters, so a word with
         // letters outside ASCII ("Kraków") is cut between letters, never inside one.
         let stem = |w: &str| w.char_indices().nth(5).map(|(i, _)| w[..i].to_string()).or_else(|| (w.chars().count() == 5).then(|| w.to_string()));
-        wa.iter().any(|w| {
-            wb.contains(w)
-                || stem(w).is_some_and(|sw| {
-                    wb.iter().any(|x| match stem(x) {
-                        Some(sx) => x.starts_with(&sw) || w.starts_with(&sx),
-                        None => false,
+        wa.iter()
+            .filter(|w| {
+                wb.contains(*w)
+                    || stem(w).is_some_and(|sw| {
+                        wb.iter().any(|x| match stem(x) {
+                            Some(sx) => x.starts_with(&sw) || w.starts_with(&sx),
+                            None => false,
+                        })
                     })
-                })
-        })
+            })
+            .count()
+    }
+
+    /// Content words two statements share (a correction must share one with what it supersedes).
+    pub fn shares_content_word(&self, a: &str, b: &str) -> bool {
+        self.shared_content_words(a, b) > 0
+    }
+
+    /// Task-matched retrieval (MEM-02): whether a procedure's text is about the task a query
+    /// describes. They share two content words (the same word or the same stem), or the
+    /// query's only content word. Deterministic, and no model is asked.
+    pub fn matches_task(&self, query: &str, procedure: &str) -> bool {
+        let asked = self.content_words(query).len();
+        asked > 0 && self.shared_content_words(query, procedure) >= asked.min(TASK_MATCH_WORDS)
     }
 
     /// Below the full correction threshold, a marked correction must be about the same thing as

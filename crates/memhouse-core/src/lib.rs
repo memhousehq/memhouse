@@ -25,6 +25,7 @@ pub mod promote;
 pub mod query;
 pub mod reembed;
 pub mod sharing;
+pub mod staleness;
 pub mod templates;
 pub mod traits;
 pub mod types;

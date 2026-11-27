@@ -3,5 +3,5 @@
 # checkpoints (docs/evaluation.md). `memhouse bench run --suite bench/suites/coding` replays it;
 # `memhouse eval add bench/suites/coding/starter.yaml` makes it gate a tenant's policy changes.
 name: coding-starter
-description: 20 synthetic coding conversations (facts, corrections, plans carried out or dropped, guesses, small talk).
+description: 20 synthetic coding conversations over the template's memory categories (conventions, architecture decisions, pitfalls, build and test quirks, corrections), with statements linked to files, files edited, renamed and deleted between sessions, and file-touched questions.
 generate: { profile: coding, seed: 7, conversations: 20 }

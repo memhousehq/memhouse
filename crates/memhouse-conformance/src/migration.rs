@@ -99,7 +99,15 @@ fn proposal(subject: &str, content: &str, at: DateTime<Utc>) -> Proposal {
         source: "conformance".into(),
         op: Op::Remember,
         entry: Entry::Commit,
-        records: vec![PendingRecord { content_hash: l.content_hash, memory, redactions: vec!["email".into()], focus: None, structured: None, code_refs: vec![] }],
+        records: vec![PendingRecord {
+            content_hash: l.content_hash,
+            memory,
+            redactions: vec!["email".into()],
+            focus: None,
+            structured: None,
+            code_refs: vec![],
+            refs_inherited: false,
+        }],
         session_id: Some("s-queue".into()),
         enqueued_at: at,
     }
@@ -153,7 +161,7 @@ pub async fn seed(store: &dyn Store) -> anyhow::Result<Seeded> {
         record_type: "address".into(),
         attrs: json!({ "city": "Porto", "floor": 3, "since": 2019.5, "tags": ["a", "b"], "geo": { "lat": 41.15, "lon": -8.61 } }),
     });
-    full.code_refs = vec![CodeRef { path: "src/b.rs".into(), blob_hash: "bb22".into() }, CodeRef { path: "src/a.rs".into(), blob_hash: "aa11".into() }];
+    full.code_refs = vec![CodeRef::new("src/b.rs", "bb22"), CodeRef::new("src/a.rs", "aa11")];
     full.metadata =
         json!({ "n": 7, "ratio": 0.25, "big": 9007199254740993u64, "neg": -3, "ok": true, "none": null, "nested": { "list": [1, "two", 3.5], "text": "naïve café ☕ 日本語" } });
     full.updated_at = t(400);

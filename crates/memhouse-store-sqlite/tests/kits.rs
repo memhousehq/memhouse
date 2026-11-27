@@ -35,6 +35,7 @@ fn memory(tenant: &str, subject: &str, content: &str) -> Memory {
         scope: Scope::default(),
         provenance: Provenance::default(),
         language: None,
+        stale_since: None,
     }
 }
 
@@ -60,6 +61,7 @@ fn dense(tenant: &str, subject: &str, embedding: Vec<f32>, limit: usize) -> Sear
         include_candidates: false,
         shared_agents: vec![],
         with_vectors: false,
+        include_stale: false,
     }
 }
 
@@ -178,6 +180,7 @@ async fn queued_proposal_survives_a_restart() {
             focus: None,
             structured: None,
             code_refs: vec![],
+            refs_inherited: false,
         }],
         session_id: None,
         enqueued_at: Utc::now(),

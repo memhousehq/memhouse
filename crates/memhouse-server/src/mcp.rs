@@ -111,7 +111,7 @@ fn build_tools() -> Value {
             "name": "recall",
             "title": "Recall memories",
             "description": "Search long-term memory for anything relevant to a question or task. Call this before answering questions that may depend on earlier conversations, the user's preferences, or project knowledge. Returns the most relevant memories with ids, dates, kinds and provenance. Pass scope.session to recall inside a session: its working notes come first.",
-            "inputSchema": input_schema::<RecallRequest>(&["query", "subject", "k", "kinds", "tags", "scope", "as_of", "token_budget", "render_format", "include_candidates", "exact"], &["query"],
+            "inputSchema": input_schema::<RecallRequest>(&["query", "subject", "k", "kinds", "tags", "scope", "as_of", "token_budget", "render_format", "include_candidates", "exact", "include_stale", "paths"], &["query"],
                 json!({"k": {"minimum": 1, "maximum": 50, "description": "Number of memories to return (default 10)."}, "as_of": {"description": format!("Recall what was true at this time. {DATE_HINT}")}})),
             "outputSchema": inline_schema::<RecallResult>(),
             "annotations": {"readOnlyHint": true}
@@ -120,15 +120,17 @@ fn build_tools() -> Value {
             "name": "remember",
             "title": "Remember",
             "description": "Store one durable memory: a fact, preference, procedure, decision or commitment worth knowing in future sessions. Write it so it stands alone (who, what, when). Don't store secrets or one-off chatter. Text that tries to instruct the agent reading it (prompt injection) is quarantined; plans and guesses are held until confirmed (store a to-do as kind commitment). For a scratchpad of the current task use kind working with scope.session: it is visible only in that session and expires after it. Returns the new record's id at once, as a candidate; it is recallable within seconds.",
-            "inputSchema": input_schema::<RememberRequest>(&["content", "kind", "subject", "tags", "occurred_at", "valid_to", "expires_at", "labels", "scope", "request_key", "wait"], &["content"],
-                json!({"occurred_at": date, "valid_to": date, "expires_at": date})),
+            "inputSchema": input_schema::<RememberRequest>(&["content", "kind", "subject", "tags", "occurred_at", "valid_to", "expires_at", "labels", "scope", "request_key", "wait", "code_refs", "metadata"], &["content"],
+                json!({"occurred_at": date, "valid_to": date, "expires_at": date,
+                    "code_refs": {"description": "Files the memory is about, each with its content hash (`git hash-object <path>`). When a file changes, the memory is left out of recall until it is revalidated."},
+                    "metadata": {"type": "object", "description": "Free-form JSON object. Set {\"correction\": true} on a procedure (kind procedural) the user corrected you into: where the deployment allows it (a correction threshold is set and the procedural gate is not raised to approval), the same correction given repeatedly becomes a procedure without a reviewer; otherwise it waits for review like any proposal."}})),
             "outputSchema": inline_schema::<RememberResult>()
         },
         {
             "name": "revise",
             "title": "Revise a memory",
             "description": "Replace a memory whose information changed or was wrong with a corrected version. The old version is kept for audit but is no longer recalled. Use this instead of storing a contradicting memory.",
-            "inputSchema": input_schema::<ReviseRequest>(&["id", "content", "kind", "tags", "valid_to", "request_key", "wait"], &["id", "content"],
+            "inputSchema": input_schema::<ReviseRequest>(&["id", "content", "kind", "tags", "valid_to", "request_key", "wait", "code_refs"], &["id", "content"],
                 json!({"id": {"description": "Id of the memory to revise (from recall)."}, "valid_to": date})),
             "outputSchema": inline_schema::<RememberResult>()
         },
@@ -146,6 +148,22 @@ fn build_tools() -> Value {
             "description": "Save conversation turns as episodic memory so they can be recalled later, e.g. at the end of a session.",
             "inputSchema": input_schema::<IngestRequest>(&["messages", "session_id", "session_time", "subject", "request_key", "wait"], &["messages"], json!({"session_time": date})),
             "outputSchema": inline_schema::<IngestResult>()
+        },
+        {
+            "name": "file_memories",
+            "title": "Memories about files",
+            "description": "Get the memories linked to files you are about to read or change: conventions, decisions and pitfalls recorded about them. Call it when you open or edit a file of the repository. Give each file's path, and its content hash (`git hash-object <path>`) when you have it: the hash tells whether the file changed since a memory was written. Memories listed as needing revalidation were written about an earlier version of the file: check each against the file, then call revalidate, revise or forget.",
+            "inputSchema": input_schema::<FileTouchedRequest>(&["files", "subject", "event", "query", "scope"], &["files"], json!({})),
+            "outputSchema": inline_schema::<FileTouchedResult>()
+        },
+        {
+            "name": "revalidate",
+            "title": "Revalidate a memory",
+            "description": "Confirm that a memory written about an earlier version of a file still holds for the file as it is now. Call it only after checking the memory against the file; if it no longer holds, revise or forget it instead. Pass code_refs with the hash of each file as you checked it (`git hash-object <path>`): only those references are revalidated, and the memory returns to recall once none is stale. Without code_refs each stale reference takes the hash its file was last reported with, which is the file you checked only if nothing changed it since; and it fails as a whole when a stale reference is to a deleted file, which has no such hash: then pass code_refs for the references you can confirm, and revise or forget the memory if it no longer applies without the deleted file. If the answer still says stale, a file was seen with other content than the hash you passed: check it again. A hash for a file whose reference is not stale is refused unless it is the stored one.",
+            "inputSchema": input_schema::<RevalidateRequest>(&["id", "code_refs"], &["id"],
+                json!({"id": {"description": "Id of the memory (from file_memories)."},
+                    "code_refs": {"description": "The files you checked the memory against, each with its content hash as you checked it (`git hash-object <path>`)."}})),
+            "outputSchema": inline_schema::<RevalidateResult>()
         },
         {
             "name": "list_memories",
@@ -231,6 +249,20 @@ async fn call_v1(c: &Caller, name: &str, args: &Value) -> anyhow::Result<Option<
             } else {
                 format!("Saved {} rounds ({} quarantined, {} already stored)", r.stored, r.quarantined, r.deduplicated)
             };
+            (text, serde_json::to_value(&r)?)
+        }
+        "file_memories" => {
+            let req: FileTouchedRequest = request(name, args)?;
+            let subject = req.subject.clone().unwrap_or_else(|| c.engine.cfg.memory.default_subject.clone());
+            let files: Vec<String> = req.files.iter().map(|f| f.path.clone()).collect();
+            let r = c.file_touched(req).await?;
+            let text = memhouse_core::staleness::touched_text(&subject, &files, &r);
+            (if text.is_empty() { "No memories are linked to these files.".into() } else { text }, serde_json::to_value(&r)?)
+        }
+        "revalidate" => {
+            let req: RevalidateRequest = request(name, args)?;
+            let r = c.revalidate(req).await?;
+            let text = if r.stale { format!("Revalidated some references of {}; it is still stale", r.id) } else { format!("Revalidated {}: it is recalled again", r.id) };
             (text, serde_json::to_value(&r)?)
         }
         "list_memories" => {
@@ -582,7 +614,7 @@ mod tests {
     fn v1_tools_follow_the_rest_types() {
         let tools = tools().as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["recall", "remember", "revise", "forget", "ingest", "list_memories"]);
+        assert_eq!(names, ["recall", "remember", "revise", "forget", "ingest", "file_memories", "revalidate", "list_memories"]);
         for t in tools {
             assert_eq!(t["outputSchema"]["type"], "object", "{}", t["name"]);
             let text = t["inputSchema"].to_string();

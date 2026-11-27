@@ -322,7 +322,7 @@ max_contamination_rise = 1.0
 | Key | Default | Meaning |
 |---|---|---|
 | `gate` | true | run the regression gate before a policy is approved, for tenants that have suites (`memhouse eval add`); `false` approves without replaying them |
-| `max_f1_drop` | 2.0 | points storage F1 or retrieval F1 may fall by on a suite (QUAL-05) |
+| `max_f1_drop` | 2.0 | points storage F1 or retrieval F1 may fall by on a suite (QUAL-05); for a suite with code, also file-touched recall and the share of stale memories withheld |
 | `max_stale_rise` | 1.0 | points the stale-fact rate may rise by |
 | `max_contamination_rise` | 1.0 | points the contamination rate (plans and guesses committed as facts) may rise by |
 
@@ -377,6 +377,7 @@ answer, and workers pick up whatever a crash or a failure left behind.
 | `marked_correction_threshold` | 0.6 | cosine at or above which a statement with a correction marker ("no longer", "actually", "correction:") supersedes the closest older record it corrects, and any further older version at or above the midpoint of the two thresholds (0.7). The marker must be in the text (a model's reading is not enough); the two must share a content word; and below `correction_threshold` they must be about the same one (no relative or animal word on one side only, and a name that either statement leads with must appear in the other). A fact extracted by enrichment keeps `correction_threshold` and supersedes the closest record only |
 | `confirm_threshold` | 0.9 | cosine at or above which a completed event confirms a held plan (they must also share a content word and the scope; speculation is never confirmed), and at which an inferred preference counts as the same signal again |
 | `preference_signals` | 2 | times an inferred preference (a write with `metadata.signal = true`) must be seen, in the same scope, before it is committed; 1 commits it at once |
+| `procedural_corrections` | 3 | times the same correction (a procedural write with `metadata.correction = true`, or one the gate reads as a correction) must be given, in the same scope, before an agent's proposal is committed without a reviewer ([procedural memory](memory-types.md#procedural-memory)). One occurrence never promotes: 1 is read as 2. 0 turns promotion by repetition off |
 
 ### Tiers: rules, small model, large model
 

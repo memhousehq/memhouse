@@ -5,6 +5,7 @@
 
 mod api_checks;
 pub mod baselines;
+mod code_checks;
 mod conformance_checks;
 pub mod datasets;
 mod embedded_checks;
@@ -375,6 +376,12 @@ pub async fn main(cmd: BenchCmd, cfg: Config) -> anyhow::Result<()> {
                 shape.questions,
                 &suite.hash()[..12]
             );
+            if shape.linked > 0 {
+                eprintln!(
+                    "  code: {} statements linked to a file; {} edits, {} renames, {} deletions, {} revalidations; {} file-touched questions, {} questions about a stale memory",
+                    shape.linked, shape.edits, shape.renames, shape.deletions, shape.revalidations, shape.touch_questions, shape.stale_questions
+                );
+            }
             Ok(())
         }
         BenchCmd::Guard(args) => guard::run(args, cfg).await,

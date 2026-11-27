@@ -23,7 +23,7 @@ That's the whole setup. There are no API keys to obtain and no cloud account. Em
 |---|---|
 | **Easy** | One binary. `memhouse up` starts a managed Postgres in Docker, writes `~/.memhouse/config.toml`, downloads a small local embedding model and migrates the schema (about 15 seconds on a laptop). `memhouse connect <agent>` writes the agent's MCP config and verifies a real recall through it. |
 | **Governed** | Every write passes a deterministic write gate: secrets, card numbers, SSNs and IBANs are redacted before storage. Prompt-injection attempts are quarantined, never recalled. Writes, updates and deletions go into a hash-chained, tamper-evident audit log. Deletion removes the record, its cached embedding and every recall path, and is recorded in a deletion ledger. |
-| **Measurable** | `memhouse bench` runs LongMemEval and LoCoMo through the same engine your agents use, plus 73 governance checks. It reports confidence intervals, latency percentiles and published reference results side by side. |
+| **Measurable** | `memhouse bench` runs LongMemEval and LoCoMo through the same engine your agents use, plus 79 governance checks. It reports confidence intervals, latency percentiles and published reference results side by side. |
 | **Multilingual** | The rules that read statements, questions and injection attempts are data: one [language pack](docs/languages.md) per language. Packs for the 24 official EU languages are built in (English is reviewed; the others are drafts with test sets), several can be enabled at once, and you can add your own. |
 | **Yours** | Plain Postgres (16+) with pgvector. Point it at your own database with `memhouse init --database-url ...`. Export everything as JSONL at any time. |
 | **Made for customer-facing teams** | Templates for `support`, `sales` and `success` (plus `coding` and `personal`) set how subjects are named, what gets remembered and how the agent is instructed. |
@@ -65,7 +65,14 @@ Tools exposed to the agent:
 | `revise` | Supersede a memory that changed; the old version is kept for audit and as-of recall, not recalled |
 | `forget` | Delete permanently: one memory, or everything about a subject, user, agent or source |
 | `ingest` | Save conversation turns as episodic memory |
+| `file_memories` | The memories linked to files the agent opens or edits, and those written about an earlier version of a file ([coding template](docs/coding.md)) |
+| `revalidate` | Confirm that a memory written about an earlier version of a file still holds |
 | `list_memories` | Most recent memories of a subject |
+
+For a coding agent, `memhouse connect claude-code --hooks` (or `gemini --hooks`) also installs
+file hooks: when the agent reads or edits a file, the memories linked to it are put in front of
+it, and a memory whose file changed is held back until it is checked
+([docs/coding.md](docs/coding.md)).
 
 The pre-v1 names (`memory_recall`, …) still work until 2027-11-02 ([deprecations](docs/api.md#deprecated-routes-and-tool-names)).
 
@@ -95,6 +102,7 @@ API v1 ([reference](docs/api.md), OpenAPI 3.1 at `/v1/openapi.json`, [stability 
 | GET | `/v1/subjects/{subject}/memories` | list, keyset-paged |
 | GET | `/v1/subjects`, `/v1/stats`, `/v1/audit` | browse and operate (preview) |
 | POST | `/v1/promote` | promote memories to another type (a working note to a fact), linked to its sources and audited |
+| POST | `/v1/code/touched`, `/v1/code/changed`, `/v1/code/revalidate` | memories linked to files: file-touched recall, staleness when a file changes, revalidation ([coding template](docs/coding.md)) |
 | GET | `/v1/subjects/{subject}/preferences` | the preferences that apply to the caller: user over team over org |
 | GET, POST, DELETE | `/v1/grants`, `/v1/grants/{id}` | let one agent read another agent's own memory ([memory types](docs/memory-types.md)) |
 | GET, POST | `/v1/policies`, `…/validate`, `…/diff`, `…/{version}/approve`, `…/rollback` | behaviour policy: propose, approve, roll back ([policies](docs/policy.md)) |
@@ -236,7 +244,7 @@ memhouse down                    # stop the container; data stays in the Docker 
 ## Documentation
 
 [API](docs/api.md) · [Configuration](docs/configuration.md) · [Operations](docs/operations.md) ·
-[Governance and compliance](docs/governance.md) · [Policies](docs/policy.md) · [Languages](docs/languages.md) · [The Lite profile](docs/lite.md) · [SDKs](docs/sdk.md) · [Conformance kits](docs/conformance.md) · [Development](docs/development.md) ·
+[Governance and compliance](docs/governance.md) · [Policies](docs/policy.md) · [Languages](docs/languages.md) · [The coding template](docs/coding.md) · [The Lite profile](docs/lite.md) · [SDKs](docs/sdk.md) · [Conformance kits](docs/conformance.md) · [Development](docs/development.md) ·
 [Architecture](docs/architecture.md) · [Benchmarks](docs/benchmarks.md)
 
 The plan of record is [`docs/roadmap.md`](docs/roadmap.md).

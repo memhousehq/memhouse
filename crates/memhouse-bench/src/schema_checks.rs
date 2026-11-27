@@ -157,7 +157,7 @@ async fn representations(engine: &Engine, subj: &str) -> Outcome {
     doc.kind = Some(MemoryKind::Document);
     doc.structured =
         Some(Structured { record_type: "order".into(), attrs: serde_json::json!({ "order_id": 1042, "status": "shipped", "items": [{ "sku": "MUG-BLUE", "qty": 3 }] }) });
-    doc.code_refs = vec![CodeRef { path: "src/orders.rs".into(), blob_hash: "aaa111".into() }];
+    doc.code_refs = vec![CodeRef::new("src/orders.rs", "aaa111")];
     let id = engine.remember(doc).await?.id;
     let exact = engine.store.structured_query(&t, subj, "order", &serde_json::json!({ "order_id": 1042 })).await?;
     let none = engine.store.structured_query(&t, subj, "order", &serde_json::json!({ "order_id": 9 })).await?;
@@ -244,7 +244,7 @@ async fn roundtrip_in(base: &Engine, url1: &str, url2: &str) -> Outcome {
     let mut d = remember(&subj, "Invoice 88 for Globex: 1,200 EUR, paid");
     d.kind = Some(MemoryKind::Document);
     d.structured = Some(Structured { record_type: "invoice".into(), attrs: serde_json::json!({ "invoice": 88, "amount": 1200, "currency": "EUR", "paid": true }) });
-    d.code_refs = vec![CodeRef { path: "billing/invoice.rs".into(), blob_hash: "c0ffee".into() }];
+    d.code_refs = vec![CodeRef::new("billing/invoice.rs", "c0ffee")];
     let doc = a.remember(d).await?.id;
     a.ingest(IngestRequest {
         subject: Some(subj.clone()),
@@ -393,6 +393,60 @@ async fn upgrade_in(base: &Engine, url1: &str, url2: &str) -> Outcome {
     .await;
     if let Err(e) = rolling {
         problems.push(format!("a v1-style insert fails on the v2 schema: {e}"));
+    }
+    // Version 10 (staleness of code references) on the upgraded database. A reference written
+    // the way a version 9 process writes one, without the new columns, is not stale; it goes
+    // stale when its file is seen changed, and its record is then left out of recall.
+    let v9_ref = sqlx::query(
+        "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) SELECT id, tenant, subject, 'src/v9.rs', 'h1' FROM mh_memory WHERE subject = 'gov:upgrade'",
+    )
+    .execute(&pool)
+    .await;
+    let written_by_v1 = || upgraded.recall(RecallRequest { subject: Some("gov:upgrade".into()), query: "written by a v1 process".into(), k: Some(3), ..Default::default() });
+    let before = written_by_v1().await?.hits.len();
+    let flagged =
+        upgraded.store.code_refs_observe("default", "gov:upgrade", &[FileState::present("src/v9.rs", "h2")], chrono::Utc::now(), &memhouse_core::traits::no_audit).await?;
+    let after = written_by_v1().await?.hits.len();
+    if v9_ref.is_err() || before != 1 || flagged.len() != 1 || after != 0 {
+        problems.push(format!(
+            "version 10 on the upgraded database: a version-9 reference insert {}; recalled {before} before its file changed (expected 1), {} flagged, recalled {after} after",
+            if v9_ref.is_ok() { "worked" } else { "failed" },
+            flagged.len()
+        ));
+    }
+    // References stored before version 10 keep the path as their writer spelled it. The
+    // upgrade puts them in the form observations are matched in, one row per file: the
+    // database is taken back to version 9 with two such rows for one file, and opened again.
+    // (Written as a version 9 database let them be: without the trigger of version 10.)
+    sqlx::query("ALTER TABLE mh_code_ref DISABLE TRIGGER mh_code_ref_canonical_path").execute(&pool).await?;
+    let legacy = sqlx::query(
+        "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) \
+         SELECT m.id, m.tenant, m.subject, p.path, 'h1' FROM mh_memory m, (VALUES ('./src//legacy.rs'), ('src/./legacy.rs')) AS p(path) WHERE m.subject = 'gov:upgrade'",
+    )
+    .execute(&pool)
+    .await;
+    sqlx::query("ALTER TABLE mh_code_ref ENABLE TRIGGER mh_code_ref_canonical_path").execute(&pool).await?;
+    sqlx::query("UPDATE mh_meta SET value = '9' WHERE key = 'schema_version'").execute(&pool).await?;
+    let reopened = stub_engine(base, url1, id, dim, "", true).await?;
+    let paths: Vec<String> = sqlx::query_scalar("SELECT path FROM mh_code_ref WHERE path LIKE '%legacy.rs' ORDER BY path").fetch_all(&pool).await?;
+    let followed =
+        reopened.store.code_refs_observe("default", "gov:upgrade", &[FileState::present("src/legacy.rs", "h2")], chrono::Utc::now(), &memhouse_core::traits::no_audit).await?;
+    // And a version 9 process still running after the upgrade writes the path as its caller
+    // spelled it: stored in the same form, by the database.
+    let late = sqlx::query(
+        "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) SELECT id, tenant, subject, './src//late.rs', 'h1' FROM mh_memory WHERE subject = 'gov:upgrade'",
+    )
+    .execute(&pool)
+    .await;
+    let late_paths: Vec<String> = sqlx::query_scalar("SELECT path FROM mh_code_ref WHERE path LIKE '%late.rs' ORDER BY path").fetch_all(&pool).await?;
+    if late.is_err() || late_paths != vec!["src/late.rs".to_string()] {
+        problems.push(format!("version 10: a reference a version 9 process writes as ./src//late.rs after the upgrade is stored as {late_paths:?} (expected src/late.rs)"));
+    }
+    if legacy.is_err() || paths != vec!["src/legacy.rs".to_string()] || followed.iter().filter(|c| c.path == "src/legacy.rs").count() != 1 {
+        problems.push(format!(
+            "version 10, references stored with another spelling of their path: after the upgrade the paths are {paths:?} (expected one, src/legacy.rs), and a change of the file reached {} reference(s)",
+            followed.len()
+        ));
     }
     let hits =
         upgraded.recall(RecallRequest { subject: Some("customer:acme".into()), query: "contact preference email".into(), k: Some(3), ..Default::default() }).await?.hits.len();

@@ -14,6 +14,7 @@
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use memhouse_core::eval::{Expect, Suite, SuiteConversation, SuiteQuestion, SuiteSession, SuiteTurn, SUITE_FORMAT};
+use memhouse_core::eval::{FileChangeKind, SuiteFileChange, SUITE_FORMAT_CODE};
 use memhouse_core::types::MemoryKind;
 
 /// SplitMix64: small, fast and fixed for good.
@@ -66,6 +67,10 @@ struct Profile {
     attributes: &'static [Attribute],
     /// Said in passing; nothing to remember.
     small_talk: &'static [&'static str],
+    /// For a profile with code: the file of the repository each attribute is about, by key.
+    /// A statement about the attribute is linked to the file; the file is then edited, renamed
+    /// or deleted between sessions, and opened at checkpoints (suite format 2).
+    files: &'static [(&'static str, &'static str)],
 }
 
 const PERSONAL: Profile = Profile {
@@ -146,6 +151,7 @@ const PERSONAL: Profile = Profile {
         "That makes sense.",
         "How long does it take to boil an egg?",
     ],
+    files: &[],
 };
 
 const SUPPORT: Profile = Profile {
@@ -208,10 +214,14 @@ const SUPPORT: Profile = Profile {
         },
     ],
     small_talk: &["Thanks for the quick reply.", "Is there a status page I can check?", "Let me get back to you on that.", "Have a good weekend.", "Could you resend the link?"],
+    files: &[],
 };
 
 const CODING: Profile = Profile {
     name: "coding",
+    // The template's memory categories (TPL-03): conventions (formatter, errors, branch,
+    // review), architecture decisions (storage, jobs), pitfalls (flaky, blocking) and build or
+    // test quirks (tests, packages, release). Corrections are the `change` lines of each.
     attributes: &[
         Attribute {
             key: "tests",
@@ -261,15 +271,97 @@ const CODING: Profile = Profile {
             key: "review",
             question: "How many approvals does a pull request need?",
             values: &["one approval", "two approvals", "three approvals", "an approval from a code owner"],
-            fact: &["A pull request needs {v} before it merges.", "Merging requires {v}.", "The rule is {v} for every pull request."],
-            change: &["A pull request no longer needs {old}; it needs {v} now.", "Correction: merging requires {v}, not {old}."],
+            fact: &["A pull request needs {v} before it merges.", "Merging a pull request requires {v}.", "The rule is {v} for every pull request."],
+            change: &["A pull request no longer needs {old}; it needs {v} now.", "Correction: merging a pull request requires {v}, not {old}."],
             plan: &["We plan to require {v} from next quarter.", "We are going to change the rule to {v}."],
             guess: &["We might require {v} later, maybe.", "Perhaps {v} would be enough."],
             outcome: &["The rule changed: a pull request needs {v} now.", "We now require {v} for every pull request."],
             kind: Some(MemoryKind::Procedural),
         },
+        Attribute {
+            key: "errors",
+            question: "How does this codebase report errors?",
+            values: &["typed error enums", "anyhow errors with context", "problem details responses", "result codes with a message table"],
+            fact: &["This codebase reports errors as {v}.", "Errors in this codebase are reported as {v}.", "The convention is to report errors as {v}."],
+            change: &["The codebase no longer reports errors as {old}; it reports them as {v} now.", "Correction: errors are reported as {v}, not as {old}."],
+            plan: &["We plan to report errors as {v} from the next release.", "We are going to move the error handling to {v}."],
+            guess: &["We might report errors as {v} someday, maybe.", "Perhaps {v} would make the errors clearer."],
+            outcome: &["The refactoring is merged: errors are reported as {v} now.", "We moved the error handling to {v} this week."],
+            kind: None,
+        },
+        Attribute {
+            key: "storage",
+            question: "Which database does the service store its data in?",
+            values: &["Postgres", "SQLite", "DynamoDB", "FoundationDB", "CockroachDB"],
+            fact: &["The service stores its data in {v}.", "We decided that the service stores its data in {v}.", "The database behind the service is {v}."],
+            change: &["The service no longer stores its data in {old}; it uses {v} now.", "Correction: the service stores its data in {v}, not in {old}."],
+            plan: &["We plan to move the service's data to {v} next year.", "We are going to migrate the database to {v}."],
+            guess: &["We might move the data to {v} one day, maybe.", "Perhaps {v} would scale better for the data."],
+            outcome: &["The migration is done: the service stores its data in {v} now.", "We moved the service's data to {v} last month."],
+            kind: None,
+        },
+        Attribute {
+            key: "jobs",
+            question: "What do the background jobs run on?",
+            values: &["a Postgres job table", "Redis streams", "an SQS queue", "NATS JetStream", "a cron container"],
+            fact: &["Background jobs run on {v}.", "We decided that background jobs run on {v}.", "The background jobs of the service run on {v}."],
+            change: &["Background jobs no longer run on {old}; they run on {v} now.", "Correction: background jobs run on {v}, not on {old}."],
+            plan: &["We plan to move the background jobs to {v} after the release.", "We are going to run the background jobs on {v}."],
+            guess: &["We might run the background jobs on {v}, maybe.", "Perhaps {v} would be simpler for the background jobs."],
+            outcome: &["The switch is merged: background jobs run on {v} now.", "We moved the background jobs to {v} this sprint."],
+            kind: None,
+        },
+        Attribute {
+            key: "flaky",
+            question: "Which integration test is known to be flaky?",
+            values: &["sync_roundtrip", "upload_resume", "cache_eviction", "token_refresh", "webhook_retry"],
+            fact: &["The integration test {v} is known to be flaky on CI.", "The flaky integration test is {v}.", "Of the integration tests, {v} is flaky and fails at random."],
+            change: &["The integration test {old} is no longer flaky; the flaky one is {v} now.", "Correction: the flaky integration test is {v}, not {old}."],
+            plan: &["We plan to quarantine the integration test {v} next week.", "We are going to mark the integration test {v} as flaky."],
+            guess: &["The integration test {v} might be flaky too, maybe.", "Perhaps the integration test {v} is the flaky one."],
+            outcome: &["We confirmed it: the flaky integration test is {v} now.", "The integration test {v} was marked as flaky today."],
+            kind: None,
+        },
+        Attribute {
+            key: "blocking",
+            question: "What must the request handlers not call?",
+            values: &["the PDF renderer", "the legacy billing client", "the full-text reindexer", "the image resizer", "the report exporter"],
+            fact: &[
+                "The request handlers must not call {v}: it blocks the event loop.",
+                "Calling {v} from the request handlers blocks the event loop, so it is forbidden.",
+                "A known pitfall: the request handlers must not call {v}.",
+            ],
+            change: &["The request handlers may call {old} again; what they must not call is {v} now.", "Correction: the request handlers must not call {v}, not {old}."],
+            plan: &["We plan to forbid the request handlers from calling {v}.", "We are going to move {v} out of the request handlers."],
+            guess: &["The request handlers might also be slowed down by {v}, maybe.", "Perhaps {v} is what blocks the request handlers."],
+            outcome: &["It is settled: the request handlers must not call {v} now.", "We forbade the request handlers from calling {v} this week."],
+            kind: None,
+        },
+        Attribute {
+            key: "release",
+            question: "Which flag does the release build need?",
+            values: &["--locked", "--frozen", "--offline", "--no-default-features", "--all-features"],
+            fact: &["The release build needs the flag {v}.", "The release build is run with the flag {v}.", "A build quirk: the release build needs the flag {v}."],
+            change: &["The release build no longer needs the flag {old}; it needs {v} now.", "Correction: the release build needs the flag {v}, not {old}."],
+            plan: &["We plan to build the release with the flag {v} from next month.", "We are going to add the flag {v} to the release build."],
+            guess: &["The release build might need the flag {v}, maybe.", "Perhaps the flag {v} would fix the release build."],
+            outcome: &["The build script changed: the release build needs the flag {v} now.", "We added the flag {v} to the release build today."],
+            kind: None,
+        },
     ],
     small_talk: &["Thanks, that fixed it.", "Why is the build so slow today?", "Give me a minute to pull the latest changes.", "Looks good to me.", "Can you show the diff again?"],
+    files: &[
+        ("tests", ".github/workflows/test.yml"),
+        ("formatter", "tools/format.toml"),
+        ("packages", "scripts/bootstrap.sh"),
+        ("review", ".github/CODEOWNERS"),
+        ("errors", "src/errors.rs"),
+        ("storage", "src/store/mod.rs"),
+        ("jobs", "src/jobs/worker.rs"),
+        ("flaky", "tests/integration.rs"),
+        ("blocking", "src/api/handlers.rs"),
+        ("release", "Makefile"),
+    ],
 };
 
 const SALES: Profile = Profile {
@@ -321,6 +413,7 @@ const SALES: Profile = Profile {
         },
     ],
     small_talk: &["Thanks for the update.", "Shall we find a slot next week?", "I'll send the notes after the call.", "Good talking to you.", "Can you share the deck again?"],
+    files: &[],
 };
 
 const SUCCESS: Profile = Profile {
@@ -372,6 +465,7 @@ const SUCCESS: Profile = Profile {
         },
     ],
     small_talk: &["Thanks, speak soon.", "Did the invite reach everyone?", "Let me check my calendar.", "Great, that works.", "Could you repeat the last point?"],
+    files: &[],
 };
 
 const PROFILES: &[&Profile] = &[&PERSONAL, &SUPPORT, &CODING, &SALES, &SUCCESS];
@@ -397,6 +491,15 @@ pub struct Shape {
     pub outcomes: usize,
     pub small_talk: usize,
     pub questions: usize,
+    /// For a profile with code: statements linked to a file, file changes by kind,
+    /// revalidations, and the questions that open a file or expect a stale memory withheld.
+    pub linked: usize,
+    pub edits: usize,
+    pub renames: usize,
+    pub deletions: usize,
+    pub revalidations: usize,
+    pub touch_questions: usize,
+    pub stale_questions: usize,
 }
 
 /// The state of one attribute in the world model.
@@ -409,6 +512,14 @@ struct Slot {
     planned: Option<(&'static str, String)>,
     /// Corrected at least once: its questions measure the stale-fact rate.
     corrected: bool,
+    /// The attribute's file in the conversation's repository, while it exists.
+    path: Option<String>,
+    /// The current statement was linked to the file when it was made.
+    linked: bool,
+    /// The file changed since the current statement was made: the memory must be withheld.
+    stale: bool,
+    /// How often the file was renamed.
+    renames: usize,
 }
 
 /// Generate `conversations` conversations of `profile` from `seed`.
@@ -421,7 +532,10 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
     for c in 0..conversations {
         // One stream per conversation: adding conversations never changes the earlier ones.
         let mut rng = Rng(seed ^ (c as u64 + 1).wrapping_mul(0xa076_1d64_78bd_642f));
-        let mut slots: Vec<Slot> = (0..p.attributes.len()).map(|attr| Slot { attr, value: None, planned: None, corrected: false }).collect();
+        let code = !p.files.is_empty();
+        let file_of = |attr: usize| p.files.iter().find(|(key, _)| *key == p.attributes[attr].key).map(|(_, path)| path.to_string());
+        let mut slots: Vec<Slot> =
+            (0..p.attributes.len()).map(|attr| Slot { attr, value: None, planned: None, corrected: false, path: file_of(attr), linked: false, stale: false, renames: 0 }).collect();
         // A fresh value for a slot: never the current one, nor the one planned.
         let fresh = |rng: &mut Rng, s: &Slot| loop {
             let v = rng.pick(p.attributes[s.attr].values);
@@ -435,6 +549,46 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
         for s in 0..n_sessions {
             let mut turns: Vec<SuiteTurn> = vec![];
             let mut touched: Vec<usize> = vec![];
+            // Between two sessions the repository moves on (a profile with code only, so the
+            // other profiles draw the same random numbers as ever). A statement that was
+            // linked to a file: the file is edited or deleted, and the memory is stale; or
+            // it is renamed, and the memory follows it. A memory that was stale before may
+            // be confirmed against the file as it is now.
+            let (mut changes, mut revalidate) = (vec![], vec![]);
+            if code && s > 0 {
+                for slot in slots.iter_mut().filter(|x| x.value.is_some() && x.linked && x.path.is_some()) {
+                    let key = p.attributes[slot.attr].key;
+                    let path = slot.path.clone().expect("filtered");
+                    if slot.stale && rng.chance(30) {
+                        slot.stale = false;
+                        revalidate.push(key.to_string());
+                        shape.revalidations += 1;
+                        continue;
+                    }
+                    match rng.below(100) {
+                        0..=21 => {
+                            slot.stale = true;
+                            shape.edits += 1;
+                            changes.push(SuiteFileChange { path, change: FileChangeKind::Edit, to: None });
+                        }
+                        22..=29 => {
+                            slot.renames += 1;
+                            let base = file_of(slot.attr).expect("has a file");
+                            let to = format!("moved{}/{base}", slot.renames);
+                            slot.path = Some(to.clone());
+                            shape.renames += 1;
+                            changes.push(SuiteFileChange { path, change: FileChangeKind::Rename, to: Some(to) });
+                        }
+                        30..=34 => {
+                            slot.stale = true;
+                            slot.path = None;
+                            shape.deletions += 1;
+                            changes.push(SuiteFileChange { path, change: FileChangeKind::Delete, to: None });
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let n_events = if s == 0 { 3 } else { 2 + rng.below(3) };
             for e in 0..n_events {
                 let i = rng.below(slots.len());
@@ -489,6 +643,14 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
                 if key {
                     touched.push(i);
                 }
+                // A statement about an attribute that has a file is about that file as it is
+                // now: linked to it, and no longer stale whatever the one before it was.
+                let files: Vec<String> = if code && key { slots[i].path.clone().into_iter().collect() } else { vec![] };
+                if code && key {
+                    slots[i].linked = !files.is_empty();
+                    slots[i].stale = false;
+                    shape.linked += files.len();
+                }
                 turns.push(SuiteTurn {
                     say,
                     expect,
@@ -496,6 +658,7 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
                     kind: a.kind.filter(|_| expect == Expect::Commit),
                     id: plan_id,
                     confirms,
+                    files,
                     ..Default::default()
                 });
             }
@@ -510,22 +673,46 @@ pub fn generate(profile: &str, seed: u64, conversations: usize, name: Option<&st
             ask.extend(slots.iter().enumerate().filter(|(_, x)| x.corrected && x.value.is_some()).map(|(i, _)| i));
             ask.extend(slots.iter().enumerate().filter(|(_, x)| x.value.is_some()).map(|(i, _)| i));
             let mut seen = std::collections::HashSet::new();
-            let ask: Vec<SuiteQuestion> = ask
+            let mut ask: Vec<SuiteQuestion> = ask
                 .into_iter()
                 .filter(|i| seen.insert(*i))
                 .take(3)
-                .map(|i| SuiteQuestion { q: p.attributes[slots[i].attr].question.to_string(), key: p.attributes[slots[i].attr].key.to_string(), ..Default::default() })
+                .map(|i| SuiteQuestion {
+                    q: p.attributes[slots[i].attr].question.to_string(),
+                    key: p.attributes[slots[i].attr].key.to_string(),
+                    // A memory about a file that changed since must not be recalled.
+                    stale: slots[i].stale,
+                    ..Default::default()
+                })
                 .collect();
+            if code {
+                // The agent opens files: up to three that a current statement is linked to,
+                // those whose memory is stale first (they must be listed for revalidation).
+                let mut open: Vec<&Slot> = slots.iter().filter(|x| x.value.is_some() && x.linked && x.path.is_some()).collect();
+                open.sort_by_key(|x| !x.stale);
+                for slot in open.into_iter().take(3) {
+                    let path = slot.path.clone().expect("filtered");
+                    ask.push(SuiteQuestion {
+                        q: format!("Opening {path}"),
+                        key: p.attributes[slot.attr].key.to_string(),
+                        touch: Some(path),
+                        stale: slot.stale,
+                        ..Default::default()
+                    });
+                    shape.touch_questions += 1;
+                }
+                shape.stale_questions += ask.iter().filter(|q| q.stale).count();
+            }
             shape.turns += turns.len();
             shape.questions += ask.len();
-            sessions.push(SuiteSession { at: Some(at), turns, ask });
+            sessions.push(SuiteSession { at: Some(at), changes, revalidate, turns, ask });
             at += Duration::days(3 + rng.below(40) as i64) + Duration::minutes(rng.below(600) as i64);
         }
         shape.sessions += sessions.len();
         out.push(SuiteConversation { id: format!("{}-{seed}-{c:05}", p.name), sessions });
     }
     let suite = Suite {
-        format: SUITE_FORMAT,
+        format: if p.files.is_empty() { SUITE_FORMAT } else { SUITE_FORMAT_CODE },
         name: name.map(String::from).unwrap_or_else(|| format!("synth-{}-{seed}-{conversations}", p.name)),
         description: format!(
             "Synthetic {} timelines: {conversations} conversations from seed {seed} (memhouse bench synth --profile {} --seed {seed} --conversations {conversations}).",
@@ -592,6 +779,45 @@ mod tests {
                 assert!(dates.windows(2).all(|w| w[0] < w[1]), "{p}: sessions out of order");
             }
         }
+        // The coding profile has code: statements linked to files, the files changed between
+        // sessions, and questions that open them. The other profiles have none of it, and
+        // stay format 1 suites.
+        let (coding, shape) = generate("coding", 7, 40, None).unwrap();
+        assert_eq!(coding.format, SUITE_FORMAT_CODE);
+        for (what, n) in [
+            ("linked", shape.linked),
+            ("edits", shape.edits),
+            ("renames", shape.renames),
+            ("deletions", shape.deletions),
+            ("revalidations", shape.revalidations),
+            ("touch questions", shape.touch_questions),
+            ("stale questions", shape.stale_questions),
+        ] {
+            assert!(n >= 5, "{what}: {n}");
+        }
+        let keys: std::collections::HashSet<&str> = coding.conversations.iter().flat_map(|c| &c.sessions).flat_map(|s| &s.turns).filter_map(|t| t.key.as_deref()).collect();
+        for category in ["formatter", "errors", "storage", "jobs", "flaky", "blocking", "tests", "release", "review"] {
+            assert!(keys.contains(category), "{category}");
+        }
+        for c in &coding.conversations {
+            // A file is opened only while it exists under that name, and a change names a file
+            // that exists: the repository of a conversation is consistent from start to end.
+            let mut files = std::collections::HashSet::new();
+            for s in &c.sessions {
+                for ch in &s.changes {
+                    assert!(files.remove(&ch.path), "{}: {} changed before any statement was linked to it", c.id, ch.path);
+                    match ch.change {
+                        FileChangeKind::Edit => files.insert(ch.path.clone()),
+                        FileChangeKind::Rename => files.insert(ch.to.clone().unwrap()),
+                        FileChangeKind::Delete => true,
+                    };
+                }
+                files.extend(s.turns.iter().flat_map(|t| t.files.iter().cloned()));
+                assert!(s.ask.iter().filter_map(|q| q.touch.as_ref()).all(|p| files.contains(p)), "{}: a file that is not there is opened", c.id);
+            }
+        }
+        let (personal, plain) = generate("personal", 7, 5, None).unwrap();
+        assert_eq!((personal.format, plain.linked + plain.edits + plain.touch_questions), (SUITE_FORMAT, 0));
         assert!(generate("nope", 1, 1, None).is_err());
         assert!(generate("personal", 1, 0, None).is_err());
     }

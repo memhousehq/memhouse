@@ -296,8 +296,26 @@ impl Store for SqliteStore {
                 }
                 return Ok(false);
             }
-            let lines = lines_of(&w.records);
-            self.write_rows(&tx, &write_rows_of(&lines, &w.records), false)?;
+            // A revision's references are judged against its predecessor's as they are now,
+            // not as they were when the revision was made (TPL-04): read in this transaction,
+            // which holds the write lock, so no observation falls in between.
+            let mut records = std::borrow::Cow::Borrowed(&w.records);
+            for i in 0..w.records.len() {
+                let n = &w.records[i];
+                let Some(old) = n.memory.supersedes.filter(|_| n.refs_inherited || !n.code_refs.is_empty()) else { continue };
+                let predecessor = rows(
+                    &tx,
+                    &format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path"),
+                    params![w.tenant, old.to_string()],
+                    code_ref_of,
+                )?;
+                let now = memhouse_core::staleness::successor_refs(&n.code_refs, n.refs_inherited, &predecessor, Utc::now().trunc_subsecs(6));
+                if now != n.code_refs {
+                    records.to_mut()[i].code_refs = now;
+                }
+            }
+            let lines = lines_of(&records);
+            self.write_rows(&tx, &write_rows_of(&lines, &records), false)?;
         }
         if !w.requires.is_empty() {
             // The sources of a promotion: one already gone stops the insert.
@@ -316,18 +334,24 @@ impl Store for SqliteStore {
             anyhow::ensure!(n == 1, "memory {old} stopped being current while {new} was being written");
         }
         // A held, unexpired candidate of this reason, as it is at commit time.
-        let held = |id: &Uuid, reason: &str| -> anyhow::Result<Option<serde_json::Value>> {
+        // A held record is changed only by a write that carries its labels, as the pipeline
+        // matched them (`Held::labels`): checked again here, where it is written. The
+        // pipeline stores the confirming or repeating record in the same write; for one that
+        // is not in it there are no labels to compare.
+        let held = |id: &Uuid, reason: &str, by: &Uuid| -> anyhow::Result<Option<serde_json::Value>> {
+            let labels = w.records.iter().find(|n| n.memory.id == *by).map(|n| &n.memory.labels);
             Ok(first(
                 &tx,
-                "SELECT metadata FROM mh_memory WHERE tenant = ?1 AND id = ?2 AND status = 'candidate' AND (expires_at IS NULL OR expires_at > ?3)",
+                "SELECT metadata, labels FROM mh_memory WHERE tenant = ?1 AND id = ?2 AND status = 'candidate' AND (expires_at IS NULL OR expires_at > ?3)",
                 params![w.tenant, id.to_string(), now],
-                |r| value(&r.get::<_, String>(0)?),
+                |r| Ok((value(&r.get::<_, String>(0)?)?, strings(&r.get::<_, String>(1)?)?)),
             )?
-            .filter(|m| m["held"].as_str() == Some(reason)))
+            .filter(|(m, l)| m["held"].as_str() == Some(reason) && labels.is_none_or(|by| memhouse_core::intake::same_labels(l, by)))
+            .map(|(m, _)| m))
         };
         for (plan, by) in &w.confirm {
             // Still a held, unexpired plan at commit time; otherwise retry, which then sees it.
-            let Some(mut metadata) = held(plan, "plan")? else { anyhow::bail!("plan {plan} stopped being a held candidate while {by} was being written") };
+            let Some(mut metadata) = held(plan, "plan", by)? else { anyhow::bail!("plan {plan} stopped being a held candidate while {by} was being written") };
             if let Some(o) = metadata.as_object_mut() {
                 o.remove("held");
                 o.insert("confirmed_by".into(), by.to_string().into());
@@ -340,7 +364,7 @@ impl Store for SqliteStore {
         }
         for (signal, by, commit) in &w.signals {
             // Still a held, unexpired signal at commit time; otherwise retry, which then sees it.
-            let Some(mut metadata) = held(signal, "signal")? else { anyhow::bail!("signal {signal} stopped being a held candidate while {by} was being written") };
+            let Some(mut metadata) = held(signal, "signal", by)? else { anyhow::bail!("signal {signal} stopped being a held candidate while {by} was being written") };
             let seen = metadata["signals"].as_i64().or_else(|| metadata["signals"].as_str().and_then(|s| s.parse().ok())).unwrap_or(1);
             if let Some(o) = metadata.as_object_mut() {
                 if *commit {
@@ -435,8 +459,25 @@ impl Store for SqliteStore {
              WHERE tenant = ?1 AND subject = ?2 AND status = 'candidate' AND embedding IS NOT NULL \
              AND json_extract(metadata, '$.held') = ?3 AND (expires_at IS NULL OR expires_at > ?4) \
              AND (?5 IS NULL OR kind = ?5) \
-             AND scope_org IS ?6 AND scope_team IS ?7 AND scope_agent IS ?8 AND scope_user IS ?9 AND scope_session IS ?10",
-            params![tenant, subject, which.reason, now(), which.kind.map(|k| k.as_str()), scope.org, scope.team, scope.agent, scope.user, scope.session],
+             AND scope_org IS ?6 AND scope_team IS ?7 AND scope_agent IS ?8 AND scope_user IS ?9 AND scope_session IS ?10 \
+             AND (NOT ?11 OR json_extract(metadata, '$.counted') IS ?12) \
+             AND NOT EXISTS (SELECT 1 FROM json_each(labels) l WHERE l.value NOT IN (SELECT value FROM json_each(?13))) \
+             AND NOT EXISTS (SELECT 1 FROM json_each(?13) l WHERE l.value NOT IN (SELECT value FROM json_each(labels)))",
+            params![
+                tenant,
+                subject,
+                which.reason,
+                now(),
+                which.kind.map(|k| k.as_str()),
+                scope.org,
+                scope.team,
+                scope.agent,
+                scope.user,
+                scope.session,
+                which.counted.is_some(),
+                which.counted.flatten(),
+                serde_json::to_string(which.labels)?
+            ],
             embedding,
             limit,
         )
@@ -495,6 +536,7 @@ impl Store for SqliteStore {
              AND (?16 IS NULL OR m.scope_session = ?16) \
              AND (?18 IS NULL OR EXISTS (SELECT 1 FROM json_each(m.tags) t WHERE t.value IN (SELECT value FROM json_each(?18)))) \
              AND (?19 IS NULL OR (m.valid_from <= ?19 AND (m.valid_to IS NULL OR m.valid_to > ?19) AND (m.expires_at IS NULL OR m.expires_at > ?19))) \
+             AND (NOT ?20 OR m.stale_since IS NULL) \
              ORDER BY m.created_at DESC, m.id DESC LIMIT ?5 OFFSET ?6"
         );
         rows(
@@ -519,7 +561,8 @@ impl Store for SqliteStore {
                 q.session,
                 memhouse_core::access::NOBODY,
                 q.tags.as_ref().map(json).transpose()?,
-                q.live_at.map(us)
+                q.live_at.map(us),
+                q.fresh_only
             ],
             memory_of,
         )
@@ -527,9 +570,14 @@ impl Store for SqliteStore {
 
     #[tracing::instrument(name = "db.find_by_hash", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn find_by_hash(&self, tenant: &str, subject: &str, hash: &str) -> anyhow::Result<Option<Uuid>> {
-        first(&self.read(), "SELECT id FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND content_hash = ?3 AND status <> 'superseded' LIMIT 1", [tenant, subject, hash], |r| {
-            uuid_of(&r.get::<_, String>(0)?)
-        })
+        // Ordered, as in the Postgres store: the live record, not whichever row comes first.
+        first(
+            &self.read(),
+            "SELECT id FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND content_hash = ?3 AND status <> 'superseded' \
+             ORDER BY CASE status WHEN 'committed' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END, created_at, id LIMIT 1",
+            [tenant, subject, hash],
+            |r| uuid_of(&r.get::<_, String>(0)?),
+        )
     }
 
     #[tracing::instrument(name = "db.existing_hashes", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
@@ -1079,9 +1127,7 @@ impl Store for SqliteStore {
             })
         })?;
         for line in &mut lines {
-            line.code_refs = rows(&c, "SELECT path, blob_hash FROM mh_code_ref WHERE memory_id = ?1 ORDER BY path", [line.id.to_string()], |r| {
-                Ok(CodeRef { path: r.get(0)?, blob_hash: r.get(1)? })
-            })?;
+            line.code_refs = rows(&c, &format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c WHERE c.memory_id = ?1 ORDER BY c.path"), [line.id.to_string()], code_ref_of)?;
         }
         Ok(lines)
     }
@@ -1261,9 +1307,9 @@ impl Store for SqliteStore {
         )?;
         let code_refs = rows(
             &c,
-            "SELECT c.path, c.blob_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path",
+            &format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path"),
             [tenant, ids.as_str()],
-            |r| Ok(CodeRef { path: r.get(0)?, blob_hash: r.get(1)? }),
+            code_ref_of,
         )?;
         Ok((structured, code_refs))
     }
@@ -1411,6 +1457,136 @@ impl Store for SqliteStore {
             [tenant, subject, path, blob_hash],
             |r| uuid_of(&r.get::<_, String>(0)?),
         )
+    }
+
+    #[tracing::instrument(name = "db.code_refs_observe", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE", files = files.len()))]
+    async fn code_refs_observe(
+        &self,
+        tenant: &str,
+        subject: &str,
+        files: &[FileState],
+        at: DateTime<Utc>,
+        audit: &memhouse_core::traits::ObservationAudit<'_>,
+    ) -> anyhow::Result<Vec<RefChange>> {
+        let paths = memhouse_core::staleness::paths_of(files);
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut c = self.conn();
+        // The write lock from the start: what is read is what the plan is written against,
+        // and no other observation runs between the read and the write.
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored = rows(
+            &tx,
+            &format!(
+                "SELECT c.memory_id, {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
+                 WHERE c.tenant = ?1 AND c.subject = ?2 AND c.path IN (SELECT value FROM json_each(?3)) AND m.tenant = ?1 AND m.status IN ('committed', 'candidate') \
+                 ORDER BY c.memory_id, c.path"
+            ),
+            params![tenant, subject, json(&paths)?],
+            |r| Ok(memhouse_core::staleness::RefRow { id: uuid_of(&r.get::<_, String>("memory_id")?)?, code: code_ref_of(r)? }),
+        )?;
+        let updates = memhouse_core::staleness::plan(&stored, files, at);
+        if updates.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut before = std::collections::HashMap::new();
+        for id in updates.iter().map(|u| u.id).collect::<HashSet<_>>() {
+            let was = first(&tx, "SELECT stale_since FROM mh_memory WHERE tenant = ?1 AND id = ?2", params![tenant, id.to_string()], |r| Ok(r.get::<_, Option<i64>>(0)?))?
+                .flatten()
+                .is_some();
+            before.insert(id, was);
+        }
+        // A row whose path changes is removed and written again, after every removal: moved
+        // in place, `a` to `b` would meet the row of `b` that the same batch moves to `c`.
+        for u in updates.iter().filter(|u| u.now.as_ref().is_none_or(|c| c.path != u.path)) {
+            exec(&tx, "DELETE FROM mh_code_ref WHERE memory_id = ?1 AND path = ?2", params![u.id.to_string(), u.path])?;
+        }
+        for u in &updates {
+            let Some(code) = &u.now else { continue };
+            if code.path == u.path {
+                exec(
+                    &tx,
+                    "UPDATE mh_code_ref SET stale_since = ?3, seen_hash = ?4 WHERE memory_id = ?1 AND path = ?2",
+                    params![u.id.to_string(), u.path, code.stale_since.map(us), code.seen_hash],
+                )?;
+            } else {
+                exec(
+                    &tx,
+                    "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash, stale_since, seen_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![u.id.to_string(), tenant, subject, code.path, code.blob_hash, code.stale_since.map(us), code.seen_hash],
+                )?;
+            }
+        }
+        let mut stale = std::collections::HashMap::new();
+        for id in before.keys() {
+            stale.insert(*id, restale(&tx, tenant, *id)?);
+        }
+        let changes: Vec<RefChange> = updates
+            .into_iter()
+            .filter_map(|u| u.change)
+            .map(|mut ch| {
+                ch.stale = stale.get(&ch.id).copied().unwrap_or(false);
+                ch.was_stale = before.get(&ch.id).copied().unwrap_or(false);
+                ch
+            })
+            .collect();
+        // With the changes, or not at all (see the trait).
+        for e in audit(&changes) {
+            audit_in(&tx, &e.actor, &e.action, tenant, e.subject.as_deref(), e.memory_id, &e.detail)?;
+        }
+        tx.commit()?;
+        Ok(changes)
+    }
+
+    async fn code_refs_at(&self, tenant: &str, subject: &str, paths: &[String]) -> anyhow::Result<Vec<(Uuid, CodeRef)>> {
+        rows(
+            &self.conn(),
+            &format!(
+                "SELECT c.memory_id, {CODE_REF_COLS} FROM mh_code_ref c \
+                 WHERE c.tenant = ?1 AND c.subject = ?2 AND c.path IN (SELECT value FROM json_each(?3)) ORDER BY c.memory_id, c.path"
+            ),
+            params![tenant, subject, json(paths)?],
+            |r| Ok((uuid_of(&r.get::<_, String>("memory_id")?)?, code_ref_of(r)?)),
+        )
+    }
+
+    #[tracing::instrument(name = "db.code_refs_revalidate", skip_all, fields(db.system = "sqlite", db.operation = "UPDATE"))]
+    async fn code_refs_revalidate(
+        &self,
+        tenant: &str,
+        id: Uuid,
+        refs: Option<&[CodeRef]>,
+        audit: &memhouse_core::traits::RevalidationAudit<'_>,
+    ) -> anyhow::Result<Option<Vec<CodeRef>>> {
+        let ids = id.to_string();
+        let sql = format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path");
+        let mut c = self.conn();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(status) = first(&tx, "SELECT status FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()], |r| Ok(r.get::<_, String>(0)?))? else {
+            return Ok(None);
+        };
+        // In the transaction: a record superseded since the caller read it is not revalidated.
+        memhouse_core::staleness::revalidated_status(id, &status)?;
+        let stored = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;
+        let written = memhouse_core::staleness::revalidated(&stored, refs)?;
+        for code in &written {
+            // Not stale, except where the file was seen with another hash than the one
+            // confirmed (`staleness::revalidated`).
+            exec(
+                &tx,
+                "UPDATE mh_code_ref SET blob_hash = ?3, stale_since = ?4, seen_hash = ?5 WHERE memory_id = ?1 AND path = ?2",
+                params![ids, code.path, code.blob_hash, code.stale_since.map(us), code.seen_hash],
+            )?;
+        }
+        restale(&tx, tenant, id)?;
+        let after = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;
+        // The event says what this transaction read and wrote, and is written with it.
+        for e in audit(&stored, &written, &after) {
+            audit_in(&tx, &e.actor, &e.action, tenant, e.subject.as_deref(), e.memory_id, &e.detail)?;
+        }
+        tx.commit()?;
+        Ok(Some(after))
     }
 
     async fn embedding_identity(&self) -> anyhow::Result<(Option<EmbeddingIdentity>, Option<EmbeddingIdentity>)> {
@@ -1572,4 +1748,12 @@ fn forget_condition(scope: ForgetScope) -> anyhow::Result<&'static str> {
         ForgetScope::Source => "source = ?2",
         s => anyhow::bail!("no row condition for forget by {}", s.as_str()),
     })
+}
+
+/// A record is stale from the earliest time one of its references became stale (TPL-04).
+/// Returns whether it is stale now.
+fn restale(c: &Connection, tenant: &str, id: Uuid) -> anyhow::Result<bool> {
+    let ids = id.to_string();
+    exec(c, "UPDATE mh_memory SET stale_since = (SELECT min(c.stale_since) FROM mh_code_ref c WHERE c.memory_id = ?2) WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
+    Ok(first(c, "SELECT stale_since FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()], |r| Ok(r.get::<_, Option<i64>>(0)?))?.flatten().is_some())
 }

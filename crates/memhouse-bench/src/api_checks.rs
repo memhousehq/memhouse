@@ -396,6 +396,70 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     expect(rv.status == 200 && rv.body["revoked"] == gr.body["id"], format!("revoke: {} {}", rv.status, rv.body));
     let rv = api.call("DELETE", "/v1/grants/{id}", &format!("/v1/grants/{grant_id}"), None, &[]).await?;
     expect(rv.status == 404, format!("revoke twice: {}", rv.status));
+    // The coding template (G19, API 1.9): file-touched recall, files changed, revalidation.
+    let code = "gov:api-code";
+    let linked = api
+        .post(
+            "/v1/remember",
+            json!({"subject": code, "content": "The retry budget is three attempts per request", "code_refs": [{"path": "./src//retry.rs", "blob_hash": "r1"}], "wait": true}),
+        )
+        .await?;
+    let linked_id = linked.body["id"].as_str().unwrap_or_default().to_string();
+    let kept = api
+        .post("/v1/remember", json!({"subject": code, "content": "Sessions are kept in the cookie store", "code_refs": [{"path": "src/keep.rs", "blob_hash": "k1"}], "wait": true}))
+        .await?;
+    let kept_id = kept.body["id"].as_str().unwrap_or_default().to_string();
+    let t = api.post("/v1/code/touched", json!({"subject": code, "event": "opened", "files": [{"path": "src/retry.rs", "blob_hash": "r1"}]})).await?;
+    expect(
+        t.status == 200
+            && t.body["memories"][0]["memory"]["id"] == linked_id.as_str()
+            && t.body["memories"][0]["code_refs"][0]["path"] == "src/retry.rs"
+            && t.body["needs_revalidation"] == json!([]),
+        format!("code/touched: {} {}", t.status, t.body),
+    );
+    let c = api
+        .post("/v1/code/changed", json!({"subject": code, "reason": "contract check", "files": [{"path": "src/retry.rs", "blob_hash": "r2"}, {"path": "src/keep.rs", "deleted": true}, {"path": "src/moved.rs", "renamed_from": "src/absent.rs", "blob_hash": "m1"}]}))
+        .await?;
+    expect(
+        c.status == 200 && c.body["flagged"] == 2 && c.body["changes"].as_array().is_some_and(|a| a.iter().all(|x| x["flagged"] == true && x["stale"] == true)),
+        format!("code/changed: {} {}", c.status, c.body),
+    );
+    let hits = |r: &Reply| -> Vec<String> { r.body["hits"].as_array().into_iter().flatten().filter_map(|h| h["memory"]["id"].as_str().map(String::from)).collect() };
+    let plain = api.post("/v1/recall", json!({"subject": code, "query": "retry budget attempts per request"})).await?;
+    let with_stale = api.post("/v1/recall", json!({"subject": code, "query": "retry budget attempts per request", "include_stale": true, "paths": ["src/retry.rs"]})).await?;
+    expect(
+        !hits(&plain).contains(&linked_id)
+            && with_stale.body["hits"].as_array().is_some_and(|h| h.iter().any(|x| x["memory"]["id"] == linked_id.as_str() && x["memory"]["stale_since"].is_string())),
+        format!("recall of a stale memory: {} / {}", plain.body["hits"], with_stale.body["hits"]),
+    );
+    // A file named by its path alone is looked up; nothing is recorded about it.
+    let t = api.post("/v1/code/touched", json!({"subject": code, "event": "edited", "files": [{"path": "src/retry.rs"}], "render": true})).await?;
+    expect(
+        t.status == 200
+            && t.body["memories"] == json!([])
+            && t.body["needs_revalidation"][0]["memory"]["id"] == linked_id.as_str()
+            && t.body["needs_revalidation"][0]["code_refs"][0]["seen_hash"] == "r2",
+        format!("code/touched of a changed file: {} {}", t.status, t.body),
+    );
+    let v = api.post("/v1/code/revalidate", json!({"id": linked_id})).await?;
+    expect(v.status == 200 && v.body["stale"] == false && v.body["code_refs"][0]["blob_hash"] == "r2", format!("code/revalidate: {} {}", v.status, v.body));
+    expect(
+        hits(&api.post("/v1/recall", json!({"subject": code, "query": "retry budget attempts per request"})).await?).contains(&linked_id),
+        "a revalidated memory is not recalled".into(),
+    );
+    for (path, bad, status, why) in [
+        ("/v1/code/touched", json!({"subject": code, "files": []}), 400, "with no file"),
+        ("/v1/code/touched", json!({"subject": code, "files": [{"path": "../outside.rs", "blob_hash": "x"}]}), 400, "with a path outside the repository"),
+        ("/v1/code/changed", json!({"subject": code, "files": [{"path": "a.rs", "blob_hash": "x", "deleted": true}]}), 400, "with a deleted file that has a hash"),
+        ("/v1/code/changed", json!({"subject": code, "files": [{"path": "b.rs", "renamed_from": "a.rs"}]}), 400, "with a rename that has no hash"),
+        ("/v1/code/revalidate", json!({"id": uuid::Uuid::now_v7()}), 404, "of an unknown memory"),
+        ("/v1/code/revalidate", json!({"id": kept_id}), 400, "of a memory whose file was deleted"),
+        ("/v1/code/revalidate", json!({"id": src_id}), 400, "of a memory with no code reference"),
+        ("/v1/code/revalidate", json!({"id": linked_id, "code_refs": [{"path": "src/other.rs", "blob_hash": "x"}]}), 400, "naming a file the memory has no reference to"),
+    ] {
+        let r = api.post(path, bad).await?;
+        expect(r.status == status, format!("{path} {why}: {} (expected {status})", r.status));
+    }
     // Leave nothing behind for the checks that count this database's records.
     let gone = api.post("/v1/forget", json!({"subject": types})).await?;
     expect(gone.status == 200 && gone.body["deleted"].as_u64().is_some_and(|n| n >= 4), format!("forget {types}: {} {}", gone.status, gone.body));
@@ -479,13 +543,15 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     let tools = api.mcp("tools/list", json!({})).await?;
     let list = tools["tools"].as_array().cloned().unwrap_or_default();
     let names: Vec<&str> = list.iter().filter_map(|t| t["name"].as_str()).collect();
-    expect(names == ["recall", "remember", "revise", "forget", "ingest", "list_memories"], format!("MCP tools: {names:?}"));
+    expect(names == ["recall", "remember", "revise", "forget", "ingest", "file_memories", "revalidate", "list_memories"], format!("MCP tools: {names:?}"));
     let rest_body = |tool: &str| match tool {
         "recall" => Some("RecallRequest"),
         "remember" => Some("RememberRequest"),
         "revise" => Some("ReviseRequest"),
         "forget" => Some("ForgetRequest"),
         "ingest" => Some("IngestRequest"),
+        "file_memories" => Some("FileTouchedRequest"),
+        "revalidate" => Some("RevalidateRequest"),
         _ => None,
     };
     for t in &list {
@@ -502,6 +568,9 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
         ("recall", json!({"query": "Acme renewal", "subject": subj, "as_of": "2099-01-01"}), "RecallResult"),
         ("remember", json!({"content": "Acme's CFO is Dana", "subject": subj, "kind": "semantic"}), "RememberResult"),
         ("list_memories", json!({"subject": subj, "limit": 2}), "MemoryPage"),
+        // The memory about the deleted file is listed as needing revalidation; the other is current.
+        ("file_memories", json!({"subject": code, "files": [{"path": "src/keep.rs"}, {"path": "src/retry.rs", "blob_hash": "r2"}]}), "FileTouchedResult"),
+        ("revalidate", json!({"id": kept_id, "code_refs": [{"path": "src/keep.rs", "blob_hash": "k2"}]}), "RevalidateResult"),
         ("ingest", json!({"subject": subj, "messages": [{"role": "user", "content": "Thanks for the update."}]}), "IngestResult"),
     ];
     let mut cfo = String::new();
@@ -534,6 +603,8 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     expect(r["isError"] == false && r["structuredContent"]["memories"].is_array(), "legacy MCP memory_recall".into());
     let r = api.mcp("tools/call", json!({"name": "recall", "arguments": {}})).await?;
     expect(r["isError"] == true && r["content"][0]["text"].as_str().unwrap_or("").contains("invalid_request"), "MCP recall without a query".into());
+    let gone = api.post("/v1/forget", json!({"subject": code})).await?;
+    expect(gone.status == 200 && gone.body["deleted"] == 2, format!("forget {code}: {} {}", gone.status, gone.body));
 
     let n = problems.len();
     Ok(verdict(problems, format!("{} calls, {n} failures", api.calls), "every call answered as documented"))

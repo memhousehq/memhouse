@@ -16,7 +16,7 @@ pub(crate) struct Step {
 
 /// In version order, without gaps. A file is upgraded by every step above its version; what a
 /// step adds is also in `schema::DDL`, which creates a new file at the current version.
-pub(crate) const STEPS: &[Step] = &[Step { to: 9, what: "the record's language", run: add_language }];
+pub(crate) const STEPS: &[Step] = &[Step { to: 9, what: "the record's language", run: add_language }, Step { to: 10, what: "staleness of code references", run: add_staleness }];
 
 /// The oldest version the steps start from.
 pub(crate) fn oldest() -> u32 {
@@ -31,6 +31,37 @@ fn has_column(c: &Connection, table: &str, column: &str) -> anyhow::Result<bool>
 fn add_language(c: &Connection) -> anyhow::Result<()> {
     if !has_column(c, "mh_memory", "language")? {
         exec(c, "ALTER TABLE mh_memory ADD COLUMN language TEXT", [])?;
+    }
+    Ok(())
+}
+
+/// Version 10: since when a code reference is stale and the hash last seen, and the earliest
+/// of them on the record. Absent (not stale) on everything written before.
+fn add_staleness(c: &Connection) -> anyhow::Result<()> {
+    for (table, column, ty) in [("mh_code_ref", "stale_since", "INTEGER"), ("mh_code_ref", "seen_hash", "TEXT"), ("mh_memory", "stale_since", "INTEGER")] {
+        if !has_column(c, table, column)? {
+            exec(c, &format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
+        }
+    }
+    // From this version a reference is matched by its path in one form (TPL-04): rows written
+    // before, with the path as the writer spelled it (`./src//a.rs`), are put in it. Where a
+    // memory then has two rows for one path, the one already in that form is kept.
+    let stored: Vec<(String, String)> =
+        c.prepare("SELECT memory_id, path FROM mh_code_ref ORDER BY memory_id, path")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+    let stored: Vec<(uuid::Uuid, String)> = stored.into_iter().map(|(id, path)| Ok((id.parse()?, path))).collect::<anyhow::Result<_>>()?;
+    for (id, from, to) in memhouse_core::staleness::canonical_paths(&stored) {
+        match to {
+            Some(to) => exec(c, "UPDATE mh_code_ref SET path = ?3 WHERE memory_id = ?1 AND path = ?2", rusqlite::params![id.to_string(), from, to])?,
+            None => exec(c, "DELETE FROM mh_code_ref WHERE memory_id = ?1 AND path = ?2", rusqlite::params![id.to_string(), from])?,
+        };
+    }
+    // The count only: a path may say more about a repository than a log should hold.
+    let skipped = memhouse_core::staleness::uncanonical_paths(&stored);
+    if skipped > 0 {
+        tracing::warn!(
+            rows = skipped,
+            "schema upgrade: code references whose path has no canonical form (it leaves the repository with `..`, or is too long) were left as stored; they match no file report (docs/schema.md)"
+        );
     }
     Ok(())
 }
@@ -121,6 +152,7 @@ mod tests {
             scope: Scope::default(),
             provenance: Provenance::default(),
             language: None,
+            stale_since: None,
         };
         let hash = memhouse_core::engine::content_hash(&m.content);
         let mut n = NewMemory::new(m, hash);
@@ -128,11 +160,17 @@ mod tests {
         n
     }
 
-    /// Take a file of this build back to logical schema version 8, which differs from 9 by the
-    /// `language` column alone (`docs/schema.md`): the file a version-8 Lite build would have left.
+    /// Take a file of this build back to logical schema version 8, which differs from the
+    /// current one by the `language` column (version 9) and the staleness columns (version 10,
+    /// `docs/schema.md`): the file a version-8 Lite build would have left.
     fn make_version_8(path: &Path) {
         let c = Connection::open(path).unwrap();
-        c.execute_batch("ALTER TABLE mh_memory DROP COLUMN language; UPDATE mh_meta SET value = '8' WHERE key = 'schema_version';").unwrap();
+        c.execute_batch(
+            "ALTER TABLE mh_memory DROP COLUMN language; ALTER TABLE mh_memory DROP COLUMN stale_since; \
+             ALTER TABLE mh_code_ref DROP COLUMN stale_since; ALTER TABLE mh_code_ref DROP COLUMN seen_hash; \
+             UPDATE mh_meta SET value = '8' WHERE key = 'schema_version';",
+        )
+        .unwrap();
     }
 
     fn snapshots(dir: &Path) -> Vec<PathBuf> {
@@ -160,9 +198,31 @@ mod tests {
         }
         make_version_8(&path);
         assert_eq!(version_of(&path), "8");
+        // References as a version 8 process stored them: the path as the writer spelled it.
+        {
+            let old = Connection::open(&path).unwrap();
+            for (id, p, h) in [(a.memory.id, "./src//a.rs", "h1"), (b.memory.id, "src\\b.rs", "h1"), (b.memory.id, "src/b.rs", "h2"), (b.memory.id, "../outside", "h1")] {
+                old.execute(
+                    "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) VALUES (?1, 'acme', 'user:ada', ?2, ?3)",
+                    rusqlite::params![id.to_string(), p, h],
+                )
+                .unwrap();
+            }
+        }
 
         let store = SqliteStore::open(&path, "").unwrap();
         store.migrate(4, EMBEDDER).await.unwrap();
+        // The upgrade put them in the form observations are matched in: one row per file, the
+        // one already in that form kept, a path that has none left alone.
+        let paths = |id: uuid::Uuid| -> Vec<(String, String)> {
+            let c = store.conn();
+            let mut q = c.prepare("SELECT path, blob_hash FROM mh_code_ref WHERE memory_id = ?1 ORDER BY path").unwrap();
+            q.query_map([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(paths(a.memory.id), vec![("src/a.rs".to_string(), "h1".to_string())]);
+        assert_eq!(paths(b.memory.id), vec![("../outside".to_string(), "h1".to_string()), ("src/b.rs".to_string(), "h2".to_string())]);
+        let seen = store.code_refs_observe("acme", "user:ada", &[FileState::present("src/a.rs", "h9")], Utc::now(), &memhouse_core::traits::no_audit).await.unwrap();
+        assert!(seen.len() == 1 && seen[0].flagged && seen[0].id == a.memory.id, "a reference stored as ./src//a.rs follows its file: {seen:?}");
 
         // The copy is the file as it was: version 8, no `language` column, both records.
         let copies = snapshots(dir.path());
@@ -177,7 +237,7 @@ mod tests {
         assert_eq!(version_of(&copies[0]), "8");
         let old = Connection::open(&copies[0]).unwrap();
         let columns: Vec<String> = old.prepare("SELECT name FROM pragma_table_info('mh_memory')").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
-        assert!(!columns.contains(&"language".to_string()));
+        assert!(!columns.contains(&"language".to_string()) && !columns.contains(&"stale_since".to_string()));
         assert_eq!(old.query_row("SELECT count(*) FROM mh_memory", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
 
         // The upgraded file: the current version, the data intact and readable, keywords and audit chain included.
@@ -194,6 +254,12 @@ mod tests {
         c.memory.language = Some("de".into());
         store.insert(std::slice::from_ref(&c)).await.unwrap();
         assert_eq!(store.get("acme", c.memory.id).await.unwrap().unwrap().language.as_deref(), Some("de"));
+        // And what version 10 added: a reference goes stale when its file is seen changed.
+        let mut d = record("The parser lives in src/parse.rs");
+        d.code_refs = vec![CodeRef::new("src/parse.rs", "h1")];
+        store.insert(std::slice::from_ref(&d)).await.unwrap();
+        let flagged = store.code_refs_observe("acme", "user:ada", &[FileState::present("src/parse.rs", "h2")], Utc::now(), &memhouse_core::traits::no_audit).await.unwrap();
+        assert!(flagged.len() == 1 && flagged[0].flagged && store.get("acme", d.memory.id).await.unwrap().unwrap().stale_since.is_some());
 
         // Opening it again upgrades nothing and copies nothing.
         drop(store);

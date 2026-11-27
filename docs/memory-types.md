@@ -14,6 +14,7 @@ response fields are in the [API reference](api.md), the settings in [policy.md](
 - [Working memory and sessions](#working-memory-and-sessions)
 - [Scopes and inheritance](#scopes-and-inheritance)
 - [Preferences](#preferences)
+- [Procedural memory](#procedural-memory): promotion by confirmation or repeated correction, task-matched retrieval
 - [Promotion](#promotion)
 - [Sharing across agents](#sharing-across-agents)
 - [Partitions](#partitions)
@@ -27,7 +28,7 @@ response fields are in the [API reference](api.md), the settings in [policy.md](
 | `episodic` | what was said and what happened, with its time | `source`: the writer and source are on the record | `retention_days` (governance's `episodic_retention_days`; 0 keeps it) | hybrid search with a probe for the time the question names | the subject |
 | `semantic` | facts about users, entities and the organisation | `full`: the statement gate | until superseded or deleted | hybrid search plus exact lookup of structured records | the subject |
 | `preference` | likes, dislikes and ways of working | `explicit`: a stated preference commits, an inferred signal waits for a repeat | until superseded or deleted | scope-ordered lookup | the subject |
-| `procedural` | how something is done | `confirmation`: an agent's proposal waits for a reviewer | until superseded or deleted | hybrid search (task matching comes with the coding template) | the subject |
+| `procedural` | how something is done | `confirmation`: an agent's proposal waits for a reviewer, or for the same correction to be given again | until superseded or deleted | [task-matched](#task-matched-retrieval): hybrid search, returned only for a task it matches | the subject |
 | `taxonomic` | the organisation's own terms and classifications | `approval`: only an administrator commits | until superseded or deleted | exact lookup of its structured form, and hybrid search | the subject; approved by an admin |
 | `commitment`, `document` | open items; reference text | `full` | until superseded or deleted | hybrid search | the subject |
 
@@ -42,7 +43,7 @@ every type (security baseline).
 | `source` | The writing principal and a source label are on the record; a record without them is `rejected`. What was said is not judged. |
 | `full` | The [statement gate](api.md#post-v1remember-propose-a-memory) (QUAL-02): plans and speculation are held as candidates, near-duplicates rejected, corrections supersede. |
 | `explicit` | The statement gate, and only explicit statements commit. A write marked as an inferred signal (`"metadata": {"signal": true}`) is held as a candidate until the same signal has been seen `[intake] preference_signals` times (2), in the same scope and, for a keyed preference, under the same key; the repeat commits the held record (which then replaces the value its key had in that scope) and is not stored twice. The stricter gates hold signals the same way; where the write also waits for a reviewer, repeats are counted on the one held record and only the reviewer commits it. |
-| `confirmation` | The statement gate, and a proposal from an agent without a commit grant waits for [`POST /v1/review`](api.md#post-v1review-commit-or-reject-a-candidate), also where `admission = "auto"`. A user's, an admin's or a trusted agent's own write is the confirmation. |
+| `confirmation` | The statement gate, and a proposal from an agent without a commit grant waits for [`POST /v1/review`](api.md#post-v1review-commit-or-reject-a-candidate), also where `admission = "auto"`. A user's, an admin's or a trusted agent's own write is the confirmation. For procedural memory there is a second way in: [the same correction given repeatedly](#procedural-memory). |
 | `approval` | The statement gate, and only the type's approver commits: everyone else's write is a candidate until the approver reviews it. |
 
 A [policy](policy.md#per-type-sections) may give a type a stricter gate, a shorter retention or
@@ -51,9 +52,90 @@ a write still queued when a policy raises its type to `confirmation` or `approva
 reviewer, whatever it was allowed when it was queued. `GET /v1/policies` shows the rules in force under
 `running.policy.types`.
 
-Procedural and taxonomic memory are stored and gated here; promoting a procedure after repeated
-confirmation and matching procedures to the task at hand come with later goals
+Taxonomic memory is stored and gated here; matching terms to questions comes with a later goal
 ([roadmap](roadmap.md)).
+
+## Procedural memory
+
+A procedure is how something is done: "use pnpm for every install in this repository". It is
+promoted, that is committed and recalled, only on **explicit confirmation or repeated
+correction** (MEM-02):
+
+| How it arrives | What happens |
+|---|---|
+| Written by a user, an admin or an agent with a commit grant | committed: the writer's own write is the confirmation |
+| Proposed by an agent | a candidate until a reviewer commits it ([`POST /v1/review`](api.md#post-v1review-commit-or-reject-a-candidate)); proposing it again changes nothing |
+| Proposed by an agent **as a correction** | a candidate that counts how often the correction is given. At `[intake] procedural_corrections` (3) it is committed without a reviewer |
+
+A correction is a procedural write with `"metadata": {"correction": true}`: the agent sets it
+when the user corrects how it works ("no, use pnpm here"). A write the statement gate itself
+reads as a correction (it carries a correction marker such as "correction:" or "no longer") is
+counted too. A repeat is the same correction in the same scope, at or above
+`[intake] confirm_threshold` similarity; it is counted on the one held record
+(`metadata.signals`) and is not stored twice. A different correction is a different procedure
+and counts for itself.
+
+```bash
+# The third time the user has had to say it:
+curl -s $MH/v1/remember -H "authorization: Bearer $AGENT_KEY" -H 'content-type: application/json' -d '{
+  "subject": "repo:shop", "kind": "procedural", "wait": true,
+  "content": "Use pnpm for every install in this repository, never npm.",
+  "metadata": {"correction": true}}'
+# {"id":"01a2…","status":"committed","deduplicated":true,"note":"the same signal as 01a2…, now seen 3 times"}
+# The id is the held record's: the first and second time it answered "status": "candidate".
+```
+
+What bounds it:
+
+- **One occurrence never promotes.** `procedural_corrections = 1` is read as 2. `0` turns
+  promotion by repetition off: then only a reviewer commits an agent's procedure.
+- **Only under the `confirmation` gate.** A tenant whose policy raises procedural memory to
+  `approval` gets no promotion by repetition: repeats are counted and only the approver commits.
+  A policy can't lower the gate, and the threshold is server configuration, not policy.
+- **The count is of proposals, and an agent makes them.** The server can't tell a correction a
+  person gave from one an agent says it was given: an agent that repeats a correction three
+  times promotes it. A deployment that does not accept that sets the key to `0`.
+- **A plan or a guess is not a correction.** A write the statement gate reads as a plan or as
+  speculation waits for its reviewer whatever mark it carries; repeating it commits nothing.
+- **A correction that is also marked as an inferred signal** (`"signal": true`) is counted as
+  a correction.
+- **A repeat counts only on a held record with its own labels and scope.** A held correction
+  (and a held preference signal, and a held plan an event would confirm) is matched by a
+  write that carries exactly its labels, in exactly its scope. A caller that is denied a
+  label writes none of it, so it can neither count on, commit, nor be told the id of a
+  record held under that label: its repeat starts a record of its own.
+- **Audited.** Each counted repeat writes `memory.signal`, and the promotion `memory.admit`,
+  with `reason` (`repeated_correction: …`), `corrections` (the count) and `threshold` in the
+  detail. The injection screen and redaction apply to every one of these writes.
+
+### Task-matched retrieval
+
+A procedure is returned by a recall only for a task it matches. Similarity alone never brings
+one in: the vector retriever always has a nearest record, however unrelated, and a procedure
+that turns up in every answer is noise. A committed procedural record that the hybrid search
+found is kept when one of these holds, and left out otherwise:
+
+1. **A file of the task**: the recall names `paths`, and the procedure has a code reference to
+   one of them.
+2. **A requested tag**: the recall filters by `tags` (the procedure then has one of them).
+3. **Two words in common**: the query and the procedure (its text and tags) share two content
+   words, or the query's only content word. A content word has four letters or more (or a
+   digit) and is not a stop word of an enabled language; two words count as the same when
+   they are equal or share their first five letters ("releases", "release").
+
+The rule is deterministic and asks no model. A procedure that was left out is listed in the
+recall's [explanation](api.md#get-v1recallsidexplanation-why-a-recall-returned-what-it-did)
+with the reason `task`. The places such procedures took are filled from what is ranked below
+them, a matching procedure included: one more search, four times the first one's limit and
+sixteen further (in every retriever, whatever `ranking.candidates` is), so a match ranked
+below that many others is still missed. `as_of` recalls
+are not filtered this way. A policy that sets another
+`retrieval` for procedural memory can't be written: the method is fixed per type.
+
+The limit: a procedure worded quite differently from the question about it ("how do I ship
+this?" against "tag the release after the changelog is updated") is not returned unless a path
+or a tag connects them. [File-touched recall](coding.md) passes the files of the task, which
+is how a coding agent gets the procedures of the code it is working on.
 
 ## Working memory and sessions
 

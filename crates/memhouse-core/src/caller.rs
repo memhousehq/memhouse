@@ -296,7 +296,7 @@ impl Caller {
         a.scope = session.map(|s| Scope { session: Some(s), ..Default::default() });
         let mut d = self.decide(&a).await?;
         self.with_grants(&mut d, subject).await?;
-        let reader = crate::preference::Reader { scope: &d.scope, denied_labels: &d.denied_labels, shared_agents: &d.shared_agents };
+        let reader = crate::preference::Reader { scope: &d.scope, denied_labels: &d.denied_labels, shared_agents: &d.shared_agents, include_stale: false };
         self.engine.effective_preferences(&d.tenant, subject, key, &reader).await
     }
 
@@ -385,6 +385,73 @@ impl Caller {
         self.engine.recall_with(req, ctx).await
     }
 
+    /// File-touched recall (TPL-05): the memories linked to files an agent opened or edited,
+    /// under the same access decision as a recall of the repository. The files' states are
+    /// recorded first (staleness, TPL-04) when the caller may also write; a caller that may
+    /// only read gets the comparison for its own answer, and nothing is recorded.
+    pub async fn file_touched(&self, mut req: FileTouchedRequest) -> anyhow::Result<FileTouchedResult> {
+        let subject = self.engine.subject(&req.subject);
+        let mut a = AccessRequest::new(Operation::Recall).subject(&subject).tenant(&req.tenant);
+        a.scope = req.scope.clone();
+        let mut d = self.decide(&a).await?;
+        self.with_grants(&mut d, &subject).await?;
+        // Not a refusal when it is missing, so nothing is audited as one: the read still answers.
+        let mark = self.engine.authorizer.authorize(&self.who, &AccessRequest::new(Operation::CodeObserve).subject(&subject).tenant(&req.tenant)).await.allowed;
+        req.tenant = Some(d.tenant.clone());
+        req.subject = Some(subject);
+        req.actor = Some(self.who.id().into());
+        let ctx = crate::engine::RecallContext {
+            principal: self.who.id().into(),
+            user: self.who.user.clone(),
+            denied_labels: d.denied_labels.clone(),
+            authorizer: self.engine.authorizer.name().into(),
+            shared_agents: d.shared_agents.clone(),
+        };
+        self.engine.file_touched_with(req, &d, ctx, mark).await
+    }
+
+    /// Files changed in batch (TPL-04): staleness is recorded for every file named. The answer
+    /// lists only what the caller may recall; a caller that may not read gets none of it.
+    pub async fn files_changed(&self, req: FilesChangedRequest) -> anyhow::Result<FilesChangedResult> {
+        let subject = self.engine.subject(&req.subject);
+        let d = self.decide(&AccessRequest::new(Operation::CodeObserve).subject(&subject).tenant(&req.tenant)).await?;
+        // It goes into the audit log as given: a commit id or a word, not a text.
+        if req.reason.as_ref().is_some_and(|r| r.chars().count() > 200) {
+            return Err(error::invalid("reason is at most 200 characters; the limit is 200"));
+        }
+        let why = json!({ "event": "files.changed", "reason": req.reason });
+        let changes = self.engine.files_observed(&d.tenant, &subject, &req.files, self.who.id(), why).await?;
+        let read = self.engine.authorizer.authorize(&self.who, &AccessRequest::new(Operation::Recall).subject(&subject)).await;
+        if !read.allowed || changes.is_empty() {
+            return Ok(FilesChangedResult::default());
+        }
+        let mut read = self.with_policy(&AccessRequest::new(Operation::Recall), read).await?;
+        self.with_grants(&mut read, &subject).await?;
+        let mut ids: Vec<Uuid> = changes.iter().map(|c| c.id).collect();
+        ids.sort();
+        ids.dedup();
+        // What a recall could give this caller now: a candidate, a quarantined record, or one
+        // outside its validity window or past its expiry is not named.
+        let now = chrono::Utc::now();
+        let seen: std::collections::HashSet<Uuid> =
+            self.engine.store.get_many(&d.tenant, &ids).await?.into_iter().filter(|m| crate::staleness::recallable_now(m, &read, now)).map(|m| m.id).collect();
+        let changes: Vec<RefChange> = changes.into_iter().filter(|c| seen.contains(&c.id)).collect();
+        // Counted per memory, by its state before and after the request: a memory that was
+        // stale already did not become stale because another of its files changed too.
+        let count = |pick: &dyn Fn(&RefChange) -> bool| changes.iter().filter(|c| pick(c)).map(|c| c.id).collect::<std::collections::HashSet<_>>().len() as u64;
+        Ok(FilesChangedResult { flagged: count(&|c| !c.was_stale && c.stale), cleared: count(&|c| c.was_stale && !c.stale), changes })
+    }
+
+    /// Confirm that a memory still holds for its files as they are now (TPL-04). The caller
+    /// must see the record and may write in its subject.
+    pub async fn revalidate(&self, req: RevalidateRequest) -> anyhow::Result<RevalidateResult> {
+        let (m, _) = self.visible(Operation::Revalidate, req.id).await?;
+        let mut a = AccessRequest::new(Operation::Revalidate).record(&m).tenant(&req.tenant);
+        a.own_partition = self.own(&m);
+        let d = self.decide(&a).await?;
+        self.engine.revalidate(&d.tenant, &m, req.code_refs.as_deref(), self.who.id()).await
+    }
+
     /// A recall's explanation (GOV-04), for the principal that recalled or an auditor. Others get
     /// `not_found`; exclusions for state, access and labels are listed by id only to auditors.
     pub async fn explain(&self, id: Uuid) -> anyhow::Result<RecallExplanation> {
@@ -436,6 +503,7 @@ impl Caller {
             session: None,
             tags: None,
             live_at: None,
+            fresh_only: false,
         };
         self.engine.store.list(&q).await
     }

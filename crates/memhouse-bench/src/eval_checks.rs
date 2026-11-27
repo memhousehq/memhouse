@@ -121,6 +121,7 @@ fn controlled(n: usize) -> Suite {
                             turn("Thanks, that is all for today.".into(), Expect::Ignore, None),
                         ],
                         ask: vec![ask(format!("In which city is the registered home address of {who}?"), "city")],
+                        ..Default::default()
                     },
                     SuiteSession {
                         at: Some(chrono::Utc::now() - chrono::Duration::days(30)),
@@ -134,6 +135,7 @@ fn controlled(n: usize) -> Suite {
                             ask(format!("In which city is the registered home address of {who}?"), "city"),
                             ask(format!("At which company does {who} hold an engineering position?"), "employer"),
                         ],
+                        ..Default::default()
                     },
                     // The plan is carried out: from here on it is no longer a held statement,
                     // whether or not the engine commits the plan's own record.
@@ -144,6 +146,7 @@ fn controlled(n: usize) -> Suite {
                             ..turn(format!("{who} relocated the head office to Rotterdam."), Expect::Commit, Some("office"))
                         }],
                         ask: vec![ask(format!("Where is the head office that {who} relocated?"), "office")],
+                        ..Default::default()
                     },
                 ],
             }

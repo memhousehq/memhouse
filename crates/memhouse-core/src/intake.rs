@@ -97,6 +97,9 @@ pub struct PendingRecord {
     pub structured: Option<Structured>,
     #[serde(default)]
     pub code_refs: Vec<CodeRef>,
+    /// See [`NewMemory::refs_inherited`].
+    #[serde(default)]
+    pub refs_inherited: bool,
 }
 
 impl Proposal {
@@ -111,6 +114,27 @@ pub struct IntakeJob {
     pub proposal: Proposal,
     /// Attempts so far, this one included.
     pub attempts: i32,
+}
+
+/// Whether two records carry the same set of labels: in any order, a label given twice
+/// counting once.
+pub fn same_labels(a: &[String], b: &[String]) -> bool {
+    a.iter().all(|l| b.contains(l)) && b.iter().all(|l| a.contains(l))
+}
+
+#[cfg(test)]
+mod same_labels_tests {
+    use super::same_labels;
+
+    #[test]
+    fn labels_are_compared_as_sets() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(same_labels(&l(&["code"]), &l(&["code", "code"])));
+        assert!(same_labels(&l(&["a", "b"]), &l(&["b", "a"])));
+        assert!(same_labels(&[], &[]));
+        assert!(!same_labels(&l(&["a"]), &l(&["a", "b"])));
+        assert!(!same_labels(&l(&["a"]), &[]));
+    }
 }
 
 /// One audit event written with an insert.
@@ -366,6 +390,12 @@ pub(crate) fn promoted_from_in(metadata: &serde_json::Value) -> Vec<Uuid> {
     metadata.get("promoted_from").and_then(|f| f.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok())).collect()).unwrap_or_default()
 }
 
+/// Times a correction must be given before it becomes a procedure (MEM-02): the configured
+/// number, and never fewer than two, so one occurrence never promotes.
+pub(crate) fn correction_threshold(cfg: &crate::config::IntakeConfig) -> u32 {
+    cfg.procedural_corrections.max(2)
+}
+
 /// The held signals a batch of records repeats (see [`IntakeWrite::signals`]).
 pub(crate) fn signals_of(items: &[Item]) -> Vec<(Uuid, Uuid, bool)> {
     items.iter().filter_map(|i| i.signal.map(|(held, _, commit)| (held, i.rec.memory.id, commit))).collect()
@@ -587,6 +617,7 @@ impl Engine {
             let mut rec = NewMemory::new(m, r.content_hash.clone());
             rec.structured = r.structured.clone();
             rec.code_refs = r.code_refs.clone();
+            rec.refs_inherited = r.refs_inherited;
             // The erasure guarantee of a promotion holds on this path too.
             self.without_erased_sources(&p.tenant, &mut rec).await?;
             records.push(rec);
@@ -633,6 +664,7 @@ impl Engine {
                 let mut rec = NewMemory::new(m, r.content_hash.clone());
                 rec.structured = r.structured.clone();
                 rec.code_refs = r.code_refs.clone();
+                rec.refs_inherited = r.refs_inherited;
                 Item::new(rec, r.focus.clone(), r.redactions.clone())
             })
             .collect();
@@ -783,6 +815,7 @@ impl Engine {
                 o.remove("held");
                 o.remove("signals");
                 o.remove("review");
+                o.remove("counted");
                 o.remove("pref_key");
             }
             if m.kind == MemoryKind::Preference {
@@ -817,6 +850,18 @@ impl Engine {
             // anything that was not let through under the policy in force now: a proposal queued
             // as "admit at once", or any write queued before the policy changed.
             let reviewed = (entry == Entry::Propose && type_gate.judges_statements()) || (type_gate.needs_review() && (entry != Entry::Commit || it.policy_changed));
+            // MEM-02: a procedure is promoted on explicit confirmation, or when the same
+            // correction has been given often enough. Only under the confirmation gate: where
+            // a tenant raised the type to approval, repeats never commit. The caller marks a
+            // correction (`metadata.correction`), or the gate reads the statement as one.
+            let correction = m.kind == MemoryKind::Procedural
+                && type_gate == TypeGate::Confirmation
+                && reviewed
+                && self.cfg.intake.procedural_corrections > 0
+                // A plan or a guess is not a correction, whatever mark it carries: repeating it
+                // must not get it past the statement gate (PR-7).
+                && !statement.is_some_and(|s| s.held())
+                && (m.metadata.get("correction").and_then(|v| v.as_bool()) == Some(true) || statement == Some(Statement::Correction));
             m.status = if !reasons.is_empty() {
                 m.metadata["quarantine_reasons"] = json!(reasons);
                 it.note = Some(format!("quarantined: looks like an instruction to the agent ({})", reasons.join(", ")));
@@ -824,6 +869,19 @@ impl Engine {
             } else if unsourced {
                 it.note = Some(format!("rejected: {} memory needs a verified source (the writing principal and a source label)", m.kind.as_str()));
                 MemoryStatus::Rejected
+            } else if correction {
+                // Before the signal branch: a proposal that is both is counted as a
+                // correction, or its repeats would only ever wait for a reviewer.
+                // Counted like a signal, on one record; no expiry, since a reviewer may still
+                // confirm it at any time.
+                m.metadata["held"] = json!("signal");
+                m.metadata["signals"] = json!(1);
+                m.metadata["counted"] = json!("correction");
+                it.note = Some(format!(
+                    "held as a candidate: a correction becomes a procedure once it has been given {} times, or when a reviewer confirms it",
+                    correction_threshold(&self.cfg.intake)
+                ));
+                MemoryStatus::Candidate
             } else if signal {
                 if m.expires_at.is_none() {
                     m.expires_at = Some(m.created_at + chrono::Duration::days(self.cfg.intake.plan_ttl_days.max(1) as i64));
@@ -954,6 +1012,10 @@ impl Engine {
                         Some(o) if o.status == MemoryStatus::Committed => {
                             supersede.push((old, m.id));
                             it.superseded = Some(old);
+                            // TPL-04: the successor's references are judged against what
+                            // was seen of the files since the revision was made by the
+                            // store, in the transaction that inserts it
+                            // (`staleness::successor_refs`).
                         }
                         _ => {
                             m.status = MemoryStatus::Rejected;
@@ -965,17 +1027,43 @@ impl Engine {
                 // The same signal again, in the same scope: the held one counts it; at the
                 // threshold it is committed. The repeat itself is not stored twice.
                 if let Some(emb) = it.rec.embedding.clone() {
-                    for (held, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "signal", kind: Some(m.kind), scope: &m.scope }).await? {
+                    // A correction repeats a correction, a signal a signal: asked of the
+                    // store, so that nearer records of the other sort do not use up the limit.
+                    let counted = m.metadata.get("counted").and_then(|c| c.as_str()).map(str::to_string);
+                    for (held, sim) in self
+                        .store
+                        .nearest_held(
+                            tenant,
+                            subject,
+                            &emb,
+                            3,
+                            &Held { reason: "signal", kind: Some(m.kind), scope: &m.scope, counted: Some(counted.as_deref()), labels: &m.labels },
+                        )
+                        .await?
+                    {
                         let Some(h) = self.store.get(tenant, held).await? else { continue };
                         // The same preference: same scope and kind, and the same key if keyed
                         // (two keys with similar wording are two preferences).
-                        let same = h.scope == m.scope && h.kind == m.kind && h.metadata.get("pref_key") == m.metadata.get("pref_key");
+                        // A correction repeats a correction, a signal a signal.
+                        // And the same labels: a write that could not carry the held record's
+                        // labels must not count on it, commit it or be told its id (GOV-02).
+                        let same = h.scope == m.scope
+                            && same_labels(&h.labels, &m.labels)
+                            && h.kind == m.kind
+                            && h.metadata.get("pref_key") == m.metadata.get("pref_key")
+                            && h.metadata.get("counted") == m.metadata.get("counted");
                         let open = h.expires_at.is_none_or(|t| t > Utc::now()) && same;
                         if open && sim >= icfg.confirm_threshold && !items_signalled.contains(&held) {
                             let seen = h.metadata.get("signals").and_then(|n| n.as_u64()).unwrap_or(1) as u32 + 1;
                             // A held signal that also waits for a reviewer is counted, never
                             // committed by its repeats.
-                            let commits = seen >= icfg.preference_signals && h.metadata.get("review").and_then(|r| r.as_bool()) != Some(true);
+                            let commits = if h.metadata.get("counted").and_then(|c| c.as_str()) == Some("correction") {
+                                // MEM-02: at the threshold, and only while the type's gate is
+                                // still confirmation (a stricter gate leaves it to its approver).
+                                seen >= correction_threshold(icfg) && policy.of(h.kind).gate == crate::policy::TypeGate::Confirmation
+                            } else {
+                                seen >= icfg.preference_signals && h.metadata.get("review").and_then(|r| r.as_bool()) != Some(true)
+                            };
                             // Committed by this repeat, a keyed preference replaces the value
                             // its scope held, as a stated one would.
                             if let Some(key) = h.metadata.get("pref_key").and_then(|k| k.as_str()).filter(|_| commits) {
@@ -1074,9 +1162,11 @@ impl Engine {
                     if class == Some(Statement::Event) && m.status == MemoryStatus::Committed {
                         // Held plans only (a guess is not "done" by a similar event), unexpired, in
                         // the event's own scope.
-                        for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope }).await? {
+                        for (plan, sim) in
+                            self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope, counted: None, labels: &m.labels }).await?
+                        {
                             let Some(pm) = self.store.get(tenant, plan).await? else { continue };
-                            let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope;
+                            let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope && same_labels(&pm.labels, &m.labels);
                             if open
                                 && sim >= icfg.confirm_threshold
                                 && self.languages.values().shares_content_word(&pm.content, &m.content)
@@ -1174,7 +1264,18 @@ impl Engine {
                     action: if commit { "memory.admit" } else { "memory.signal" }.into(),
                     subject: Some(subject.to_string()),
                     memory_id: Some(held),
-                    detail: json!({ "signals": seen, "seen_in": m.id, "reason": if commit { "a repeated signal confirms the preference" } else { "signal seen again" } }),
+                    detail: if m.metadata.get("counted").and_then(|c| c.as_str()) == Some("correction") {
+                        // MEM-02: the promotion names its reason and the count that reached the threshold.
+                        json!({
+                            "signals": seen,
+                            "corrections": seen,
+                            "threshold": correction_threshold(&self.cfg.intake),
+                            "seen_in": m.id,
+                            "reason": if commit { "repeated_correction: the same correction was given often enough to become a procedure" } else { "correction given again" },
+                        })
+                    } else {
+                        json!({ "signals": seen, "seen_in": m.id, "reason": if commit { "a repeated signal confirms the preference" } else { "signal seen again" } })
+                    },
                 });
             }
             for plan in &it.confirms {

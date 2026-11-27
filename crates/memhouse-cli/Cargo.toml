@@ -17,6 +17,8 @@ memhouse-models.workspace = true
 memhouse-server.workspace = true
 memhouse-bench.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -31,4 +33,5 @@ sqlx.workspace = true
 
 [dev-dependencies]
 memhouse-conformance.workspace = true
+axum.workspace = true
 tempfile = "3"

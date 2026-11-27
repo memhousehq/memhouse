@@ -21,6 +21,7 @@ macro_rules! println {
 mod backup;
 mod connect;
 mod eval;
+mod hook;
 mod lang;
 mod policy;
 mod principals;
@@ -118,6 +119,15 @@ enum Cmd {
         project: bool,
         #[arg(long)]
         no_verify: bool,
+        /// Also install the file hooks (claude-code, gemini): memories linked to a file are
+        /// shown to the agent when it reads or edits the file
+        #[arg(long)]
+        hooks: bool,
+    },
+    /// Harness and git hooks of the coding template: file-opened, file-edited, post-commit
+    Hook {
+        #[command(subcommand)]
+        cmd: hook::HookCmd,
     },
     /// List supported agents and templates
     Agents,
@@ -171,6 +181,10 @@ enum Cmd {
         /// The session the memory belongs to (working memory is visible only inside it)
         #[arg(long)]
         session: Option<String>,
+        /// A file of a git repository the memory is about (repeatable): the memory is linked to
+        /// it at its current content, and without --subject is stored for repo:<name>
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
     },
     /// Promote memories to another type (working to semantic, episodic to procedural, ...)
     Promote {
@@ -333,6 +347,33 @@ enum Cmd {
         #[command(subcommand)]
         cmd: memhouse_bench::BenchCmd,
     },
+}
+
+/// `memhouse connect <agent> --hooks`: the harness's hook configuration for file-opened and
+/// file-edited (TR-TPL-03), merged into its settings file, and the key file the hooks read.
+fn install_file_hooks(cfg_path: &Option<PathBuf>, agent: &str, key: &str, subject: Option<&str>, project: bool, print: bool) -> anyhow::Result<()> {
+    let home = memhouse_core::config::user_home().unwrap_or_else(|| PathBuf::from("."));
+    // A project file that is committed must not carry this machine's paths: Claude Code has a
+    // local one beside it; Gemini CLI has only the project's settings file.
+    let (file, format) = match agent {
+        "claude-code" => (if project { PathBuf::from(".claude/settings.local.json") } else { home.join(".claude/settings.json") }, "claude-code"),
+        "gemini" => (if project { PathBuf::from(".gemini/settings.json") } else { home.join(".gemini/settings.json") }, "gemini"),
+        other => {
+            println!(
+                "  {other}: no hook installer (file hooks are installed for claude-code and gemini; any harness can run `memhouse hook file-opened --path <file> --format text`)"
+            );
+            return Ok(());
+        }
+    };
+    let key_file = if print { hook::key_file_of(cfg_path, agent) } else { hook::write_key_file(cfg_path, agent, key)? };
+    let line = |which: &str| hook::command_line(cfg_path, which, Some(format), &key_file, subject);
+    let (opened, edited) = (line("file-opened")?, line("file-edited")?);
+    let entries = if agent == "gemini" { hook::gemini_entries(&opened, &edited) } else { hook::claude_code_entries(&opened, &edited) };
+    if hook::install_hooks(&file, &entries, print)? {
+        println!("✓ {agent}: file hooks written to {} (key file {})", file.display(), key_file.display());
+        println!("  for commits too: memhouse hook install-git --agent {agent}");
+    }
+    Ok(())
 }
 
 fn random_token(n: usize) -> String {
@@ -535,7 +576,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             drop(workers);
         }
-        Cmd::Connect { agent, subject, print, project, no_verify } => {
+        Cmd::Hook { cmd } => hook::run(&cfg_path, cmd).await?,
+        Cmd::Connect { agent, subject, print, project, no_verify, hooks } => {
             let cfg = Config::load(cfg_path.as_deref())?;
             if !path_or_default.exists() && !print {
                 anyhow::bail!("no config at {}; run `memhouse up` first", path_or_default.display());
@@ -560,8 +602,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     print_only: print,
                     project,
                     http_url: format!("http://{}", cfg.server.bind),
-                    api_key: Some(key),
+                    api_key: Some(key.clone()),
                 })?;
+                if hooks {
+                    install_file_hooks(&cfg_path, a, &key, subject.as_deref(), project, print)?;
+                }
                 println!("  {a} acts as agent:{a} (propose-only; `memhouse principal add agent:{a} --commit` grants direct commits)");
             }
             if let (false, false, Some(launch)) = (print, no_verify, verify_with) {
@@ -596,11 +641,25 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Eval { tenant, cmd } => eval::run(&engine(Config::load(cfg_path.as_deref())?).await?, tenant, cmd).await?,
         Cmd::Policy { tenant, cmd } => policy::run(&engine(Config::load(cfg_path.as_deref())?).await?, tenant, cmd).await?,
         Cmd::Grant { cmd } => principals::grant(&engine(Config::load(cfg_path.as_deref())?).await?, cmd).await?,
-        Cmd::Remember { content, subject, kind, tags, session } => {
-            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+        Cmd::Remember { content, subject, kind, tags, session, files } => {
             let kind = MemoryKind::parse(&kind).ok_or_else(|| anyhow::anyhow!("unknown kind '{kind}'"))?;
+            // The files as a file hook would report them: path in the repository and git blob hash.
+            let linked = if files.is_empty() {
+                None
+            } else {
+                let opts = memhouse_server::hook::HookOpts { subject: subject.clone(), paths: files.clone(), ..Default::default() };
+                let found = memhouse_server::hook::touched(memhouse_server::hook::HookEvent::FileOpened, None, &opts)
+                    .await?
+                    .filter(|t| t.paths.len() == files.len() && t.request.files.iter().all(|f| f.blob_hash.is_some()))
+                    .ok_or_else(|| anyhow::anyhow!("--file: every file must exist, be readable and be inside one git repository"))?;
+                Some(found)
+            };
+            let subject = subject.or_else(|| linked.as_ref().map(|t| t.subject.clone()));
+            let code_refs = linked.iter().flat_map(|t| &t.request.files).map(|f| CodeRef::new(f.path.clone(), f.blob_hash.clone().unwrap_or_default())).collect();
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let scope = session.map(|s| Scope { session: Some(s), ..Default::default() });
-            let r = eng.remember(RememberRequest { subject, content, kind: Some(kind), tags, scope, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
+            let r =
+                eng.remember(RememberRequest { subject, content, kind: Some(kind), tags, scope, code_refs, actor: Some("cli".into()), wait: true, ..Default::default() }).await?;
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Cmd::Promote { ids, kind, content, reason } => {

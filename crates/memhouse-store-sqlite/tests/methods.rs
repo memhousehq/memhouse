@@ -49,6 +49,7 @@ fn memory(subject: &str, content: &str) -> Memory {
         scope: Scope::default(),
         provenance: Provenance::default(),
         language: None,
+        stale_since: None,
     }
 }
 
@@ -81,6 +82,7 @@ fn query(subject: &str, text: &str, embedding: Option<Vec<f32>>) -> SearchQuery 
         include_candidates: false,
         shared_agents: vec![],
         with_vectors: false,
+        include_stale: false,
     }
 }
 
@@ -111,6 +113,7 @@ fn proposal(records: Vec<Memory>) -> Proposal {
                 focus: None,
                 structured: None,
                 code_refs: vec![],
+                refs_inherited: false,
             })
             .collect(),
         session_id: None,
@@ -157,7 +160,7 @@ async fn records_round_trip_and_filters() {
     let mut na = new(a.clone(), Some(axis(0, 0.0)));
     na.alt = Some(("alt-key".into(), axis(3, 0.0)));
     na.structured = Some(Structured { record_type: "vehicle".into(), attrs: json!({ "type": "Bicycle", "wheels": 2, "kept": { "in": "shed" } }) });
-    na.code_refs = vec![CodeRef { path: "src/shed.rs".into(), blob_hash: "h1".into() }];
+    na.code_refs = vec![CodeRef::new("src/shed.rs", "h1")];
     s.insert(&[na, new(b, Some(axis(1, 0.0))), new(w, Some(axis(2, 0.0)))]).await.unwrap();
 
     // Every field of the record comes back (timestamps at microsecond precision, as in Postgres).
@@ -435,7 +438,7 @@ async fn write_stage_and_queues() {
     s.insert(&[new(old, Some(axis(0, 0.0))), new(plan, Some(axis(1, 0.0))), new(signal, Some(axis(2, 0.0)))]).await.unwrap();
     let held = |reason: &'static str, kind: Option<MemoryKind>| {
         let s = s.clone();
-        async move { s.nearest_held(T, S, &axis(1, 0.2), 5, &Held { reason, kind, scope: &Scope::default() }).await.unwrap() }
+        async move { s.nearest_held(T, S, &axis(1, 0.2), 5, &Held { reason, kind, scope: &Scope::default(), counted: None, labels: &[] }).await.unwrap() }
     };
     assert_eq!(held("plan", None).await.iter().map(|h| h.0).collect::<Vec<_>>(), vec![idp]);
     assert_eq!(held("signal", Some(MemoryKind::Preference)).await.len(), 1);
@@ -780,7 +783,7 @@ async fn export_import_and_reembedding() {
     let mut na = new(a.clone(), Some(axis(0, 0.0)));
     na.alt = Some(("alt-a".into(), axis(1, 0.0)));
     na.structured = Some(Structured { record_type: "thing".into(), attrs: json!({ "k": "v" }) });
-    na.code_refs = vec![CodeRef { path: "b.rs".into(), blob_hash: "2".into() }, CodeRef { path: "a.rs".into(), blob_hash: "1".into() }];
+    na.code_refs = vec![CodeRef::new("b.rs", "2"), CodeRef::new("a.rs", "1")];
     let b = memory("user:bob", "Bob's record, without a vector.");
     s.insert(&[na, new(b.clone(), None)]).await.unwrap();
     let lines = s.export_records(T, None, None, 10).await.unwrap();

@@ -68,6 +68,7 @@ async fn load(store: &dyn Store, records: usize, per_subject: usize) -> anyhow::
                 scope: Scope::default(),
                 provenance: Provenance { agent: Some("bench".into()), policy_version: Some("p-bench".into()), ..Default::default() },
                 language: Some("en".into()),
+                stale_since: None,
             };
             w.audit.push(AuditEntry {
                 actor: "bench".into(),
