@@ -203,6 +203,11 @@ fn which(bin: &str) -> Option<PathBuf> {
 /// Tracked and untracked-but-not-ignored files, relative to `repo`.
 fn files(repo: &Path) -> Result<Vec<String>, String> {
     let out = Command::new("git").args(["ls-files", "-co", "--exclude-standard"]).current_dir(repo).output().map_err(|e| format!("git: {e}"))?;
+    // Outside a repository git answers with an error and no files: every check over "no files"
+    // would then pass, and the site would be written without a page.
+    if !out.status.success() {
+        return Err(format!("git ls-files in {}: {}", repo.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
     Ok(String::from_utf8_lossy(&out.stdout).lines().filter(|f| repo.join(f).is_file()).map(String::from).collect())
 }
 
@@ -259,7 +264,17 @@ fn version_task(root: &Path, args: &[String]) -> Result<(), String> {
         eprintln!("  {p}");
     }
     if !problems.is_empty() {
-        return Err(format!("{} place(s) out of step with the product version {current}; `cargo xtask version --set {current}` writes them", problems.len()));
+        // `--set` writes the version fields; the changelog's section is written by hand.
+        let (sections, fields): (Vec<&String>, Vec<&String>) = problems.iter().partition(|p| p.starts_with("CHANGELOG.md"));
+        let mut advice = vec![];
+        if !fields.is_empty() {
+            advice.push(format!("`cargo xtask version --set {current}` writes the version fields"));
+        }
+        if !sections.is_empty() {
+            advice.push(format!("add a `## {}` section to CHANGELOG.md by hand", current.split('-').next().unwrap_or(&current)));
+        }
+        let done = if set.is_some() { " (the version fields are written)" } else { "" };
+        return Err(format!("{} place(s) out of step with the product version {current}{done}: {}", problems.len(), advice.join("; ")));
     }
     if let Some(t) = &tag {
         version::check_tag(t, &current)?;

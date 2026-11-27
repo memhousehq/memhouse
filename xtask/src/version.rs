@@ -18,7 +18,16 @@ struct Place {
     python: bool,
 }
 
-const SOURCE: &str = r#"(?m)^\[workspace\.package\]\nversion = "([^"]+)""#;
+/// Where `text` (the root `Cargo.toml`) states `[workspace.package] version`: the span of the
+/// value, wherever in the table the key stands.
+fn source_span(text: &str) -> Option<std::ops::Range<usize>> {
+    let header = Regex::new(r"(?m)^\[workspace\.package\][ \t]*$").unwrap().find(text)?;
+    let rest = &text[header.end()..];
+    // The table ends where the next one begins.
+    let end = Regex::new(r"(?m)^\[").unwrap().find(rest).map(|m| m.start()).unwrap_or(rest.len());
+    let value = Regex::new(r#"(?m)^version[ \t]*=[ \t]*"([^"]+)""#).unwrap().captures(&rest[..end])?.get(1)?;
+    Some(header.end() + value.start()..header.end() + value.end())
+}
 
 const PLACES: &[Place] = &[
     Place { file: "Cargo.toml", pattern: r#"(?m)^memhouse-[a-z-]+ = \{ path = "[^"]+", version = "([^"]+)" \}"#, count: 7, python: false },
@@ -35,7 +44,8 @@ const PLACES: &[Place] = &[
 /// `MAJOR.MINOR.PATCH`, optionally with `-alpha.N`, `-beta.N` or `-rc.N`: the forms every
 /// registry the release publishes to can state.
 pub fn valid(version: &str) -> bool {
-    Regex::new(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-(alpha|beta|rc)\.(0|[1-9]\d*))?$").unwrap().is_match(version)
+    // `[0-9]`, not `\d`: that class also matches digits of other scripts, which no registry reads.
+    Regex::new(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$").unwrap().is_match(version)
 }
 
 /// The version as Python packaging writes it: `2.1.0-rc.1` is `2.1.0rc1`.
@@ -61,8 +71,8 @@ fn read(root: &Path, file: &str) -> Result<String, String> {
 /// The product version: `[workspace.package] version`.
 pub fn current(root: &Path) -> Result<String, String> {
     let text = read(root, "Cargo.toml")?;
-    let found = Regex::new(SOURCE).unwrap().captures(&text).ok_or("Cargo.toml: no [workspace.package] version")?;
-    Ok(found[1].to_string())
+    let span = source_span(&text).ok_or("Cargo.toml: no [workspace.package] version")?;
+    Ok(text[span].to_string())
 }
 
 /// Every place that does not state `version`, as a line for the report.
@@ -97,28 +107,45 @@ pub fn set(root: &Path, version: &str) -> Result<(), String> {
     if !valid(version) {
         return Err(format!("{version} is not MAJOR.MINOR.PATCH with an optional -alpha.N, -beta.N or -rc.N"));
     }
-    let replace = |file: &str, pattern: &str, want: &str| -> Result<(), String> {
+    // Every file is rewritten in memory first, and nothing is written unless every place was
+    // found: a declaration that no longer matches its pattern is an error with no edits, not
+    // a checkout left half at the new version.
+    let mut texts: Vec<(&str, String, String)> = vec![];
+    let text_of = |file: &'static str, texts: &mut Vec<(&str, String, String)>| -> Result<usize, String> {
+        if let Some(i) = texts.iter().position(|(f, _, _)| *f == file) {
+            return Ok(i);
+        }
         let text = read(root, file)?;
-        let re = Regex::new(pattern).unwrap();
-        let mut out = String::with_capacity(text.len());
-        let mut last = 0;
-        for c in re.captures_iter(&text) {
-            let m = c.get(1).expect("group 1");
-            out.push_str(&text[last..m.start()]);
-            out.push_str(want);
-            last = m.end();
-        }
-        out.push_str(&text[last..]);
-        if out != text {
-            std::fs::write(root.join(file), out).map_err(|e| format!("{file}: {e}"))?;
-            eprintln!("  {file}");
-        }
-        Ok(())
+        texts.push((file, text.clone(), text));
+        Ok(texts.len() - 1)
     };
-    replace("Cargo.toml", SOURCE, version)?;
+    let i = text_of("Cargo.toml", &mut texts)?;
+    let span = source_span(&texts[i].2).ok_or("Cargo.toml: no [workspace.package] version; nothing was changed")?;
+    texts[i].2.replace_range(span, version);
     for place in PLACES {
         let want = if place.python { pep440(version) } else { version.to_string() };
-        replace(place.file, place.pattern, &want)?;
+        let i = text_of(place.file, &mut texts)?;
+        let text = &texts[i].2;
+        let spans: Vec<std::ops::Range<usize>> = Regex::new(place.pattern).unwrap().captures_iter(text).map(|c| c.get(1).expect("group 1").range()).collect();
+        if spans.len() != place.count {
+            return Err(format!(
+                "{}: {} place(s) state a version where {} are expected (xtask/src/version.rs lists them); nothing was changed",
+                place.file,
+                spans.len(),
+                place.count
+            ));
+        }
+        let mut out = text.clone();
+        for span in spans.into_iter().rev() {
+            out.replace_range(span, &want);
+        }
+        texts[i].2 = out;
+    }
+    for (file, before, after) in &texts {
+        if before != after {
+            std::fs::write(root.join(file), after).map_err(|e| format!("{file}: {e}"))?;
+            eprintln!("  {file}");
+        }
     }
     Ok(())
 }
@@ -135,8 +162,11 @@ pub fn check_tag(tag: &str, version: &str) -> Result<(), String> {
 /// The changelog's section for `version` (a pre-release takes its release's section), without
 /// the heading: the release notes.
 pub fn notes(root: &Path, version: &str) -> Result<String, String> {
+    notes_of(&read(root, "CHANGELOG.md")?, version)
+}
+
+fn notes_of(text: &str, version: &str) -> Result<String, String> {
     let base = version.split('-').next().unwrap_or(version);
-    let text = read(root, "CHANGELOG.md")?;
     let mut out = vec![];
     let mut inside = false;
     for line in text.lines() {
@@ -166,7 +196,7 @@ mod tests {
         for good in ["2.0.0", "2.1.0-rc.1", "10.20.30-alpha.0", "3.0.0-beta.12"] {
             assert!(valid(good), "{good}");
         }
-        for bad in ["2.0", "v2.0.0", "2.0.0-rc1", "2.0.0+build", "02.0.0", "2.0.0-dev.1", ""] {
+        for bad in ["2.0", "v2.0.0", "2.0.0-rc1", "2.0.0+build", "02.0.0", "2.0.0-dev.1", "", "2.1.0-rc.1\u{0662}", "\u{0662}.0.0"] {
             assert!(!valid(bad), "{bad}");
         }
         assert_eq!(pep440("2.0.0"), "2.0.0");
@@ -200,16 +230,41 @@ mod tests {
             std::fs::copy(root.join(f), to).unwrap();
         }
         let base = version.split('-').next().unwrap();
-        let next = format!("{base}-rc.7");
+        // A version the checkout does not have, whatever it has.
+        let next = if version == format!("{base}-rc.7") { format!("{base}-rc.8") } else { format!("{base}-rc.7") };
         set(&copy, &next).unwrap();
         assert_eq!(current(&copy).unwrap(), next);
         assert_eq!(check(&copy, &next).unwrap(), Vec::<String>::new());
-        assert!(read(&copy, "sdk/python/pyproject.toml").unwrap().contains(&format!("version = \"{base}rc7\"")));
+        assert!(read(&copy, "sdk/python/pyproject.toml").unwrap().contains(&format!("version = \"{}\"", pep440(&next))));
         // A place left behind is reported by its file.
         std::fs::copy(root.join("sdk/typescript/package.json"), copy.join("sdk/typescript/package.json")).unwrap();
         let problems = check(&copy, &next).unwrap();
         assert!(problems.len() == 1 && problems[0].starts_with("sdk/typescript/package.json"), "{problems:?}");
-        assert!(notes(&copy, &next).unwrap().len() > 100);
+        // A declaration that no longer matches stops `set` before anything is written.
+        let manifest = read(&copy, "sdk/typescript/package.json").unwrap();
+        std::fs::write(copy.join("sdk/typescript/package.json"), manifest.replace("\n  \"version\"", "\n    \"version\"")).unwrap();
+        let before = read(&copy, "Cargo.toml").unwrap();
+        let refused = set(&copy, &format!("{base}-rc.9")).unwrap_err();
+        assert!(refused.starts_with("sdk/typescript/package.json") && refused.contains("nothing was changed"), "{refused}");
+        assert_eq!(read(&copy, "Cargo.toml").unwrap(), before);
         std::fs::remove_dir_all(&copy).unwrap();
+    }
+
+    /// The version is read from its table, wherever the key stands in it, and from no other table.
+    #[test]
+    fn the_version_is_found_by_its_table_not_its_line() {
+        let text = "[package]\nversion = \"0.0.1\"\n\n[workspace.package]\nedition = \"2021\"\nversion   =  \"3.4.5\"\n\n[workspace.dependencies]\nversion = \"9.9.9\"\n";
+        assert_eq!(&text[source_span(text).unwrap()], "3.4.5");
+        assert!(source_span("[workspace.package]\nedition = \"2021\"\n[other]\nversion = \"1.0.0\"\n").is_none());
+    }
+
+    /// The release notes are the section of the version, whatever its length.
+    #[test]
+    fn notes_are_the_versions_section() {
+        let log = "# Changelog\n\n## 2.1.0 (unreleased)\n\n- Fix.\n\n## 2.0.0\n\n- First.\n";
+        assert_eq!(notes_of(log, "2.1.0").unwrap(), "- Fix.\n");
+        assert_eq!(notes_of(log, "2.1.0-rc.1").unwrap(), "- Fix.\n");
+        assert_eq!(notes_of(log, "2.0.0").unwrap(), "- First.\n");
+        assert!(notes_of(log, "3.0.0").is_err());
     }
 }

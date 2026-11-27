@@ -349,6 +349,7 @@ impl Repo {
         }
         let dir = path.parent().ok_or_else(|| anyhow::anyhow!("no parent directory for {}", path.display()))?;
         std::fs::create_dir_all(dir)?;
+        reclaim_parts(path, ABANDONED_AFTER);
         let (part, mut file) = part_file(path)?;
         let copied = resp.copy_to(&mut file).map_err(anyhow::Error::from).and_then(|_| file.flush().map_err(anyhow::Error::from));
         drop(file);
@@ -374,9 +375,10 @@ impl Repo {
 /// then remove, each other's file. The name also carries the time, and the file is created
 /// exclusively, so two processes can never hold the same one.
 fn part_file(path: &Path) -> anyhow::Result<(PathBuf, std::fs::File)> {
+    let stem = part_stem(path);
     for attempt in 0..100u32 {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let part = path.with_extension(format!("part{}-{nanos:x}-{attempt}", std::process::id()));
+        let part = path.with_file_name(format!("{stem}{}-{nanos:x}-{attempt}", std::process::id()));
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&part) {
             Ok(file) => return Ok((part, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -386,10 +388,60 @@ fn part_file(path: &Path) -> anyhow::Result<(PathBuf, std::fs::File)> {
     anyhow::bail!("cannot create a download file beside {}", path.display())
 }
 
+/// What the names of `path`'s download files start with (`model.part` for `model.onnx`).
+fn part_stem(path: &Path) -> String {
+    format!("{}.part", path.file_stem().and_then(|s| s.to_str()).unwrap_or("download"))
+}
+
+/// A download file not written to for this long was left by a process that is gone.
+const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Remove the download files of `path` that no process is writing any more. Every download
+/// has a file of its own since [`part_file`], so one that was killed (a container restarted
+/// during a model fetch) leaves its file behind, and a cache on a volume would fill with
+/// them. A download in progress writes to its file all the time, so a file untouched for
+/// `older_than` is abandoned; one written more recently is another replica's and is left
+/// alone. Best effort: what cannot be read or removed stays.
+fn reclaim_parts(path: &Path, older_than: std::time::Duration) {
+    let (Some(dir), stem) = (path.parent(), part_stem(path)) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_str().is_some_and(|name| name.starts_with(&stem)) {
+            continue;
+        }
+        let idle = entry.metadata().and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok());
+        if idle.is_some_and(|idle| idle >= older_than) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::BufRead;
+
+    /// A download file left by a process that is gone is removed by the next download of that
+    /// file; one that is being written, and the files of other models, are not.
+    #[test]
+    fn abandoned_part_files_are_reclaimed_and_live_ones_are_not() {
+        let root = temp("reclaim");
+        let target = root.join("model.onnx");
+        let (old, old_file) = part_file(&target).unwrap();
+        old_file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60)).unwrap();
+        drop(old_file);
+        let (live, _live_file) = part_file(&target).unwrap();
+        let other = root.join("model_optimized.part1-0-0");
+        let unrelated = root.join("tokenizer.json");
+        for f in [&other, &unrelated] {
+            let file = std::fs::File::create(f).unwrap();
+            file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60)).unwrap();
+        }
+        reclaim_parts(&target, ABANDONED_AFTER);
+        assert!(!old.exists(), "the abandoned file is still there");
+        assert!(live.exists() && other.exists() && unrelated.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// Two downloads of the same file, by processes with the same id, never share a file.
     #[test]

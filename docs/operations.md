@@ -11,6 +11,7 @@ backups, upgrades, enrichment workers, monitoring and troubleshooting.
 - [Server (systemd)](#server-systemd)
 - [Container image](#container-image)
 - [Cloud with managed Postgres](#cloud-with-managed-postgres)
+- [TLS to the database](#tls-to-the-database)
 - [Reverse proxy and TLS](#reverse-proxy-and-tls)
 - [Sizing](#sizing)
 - [Enrichment workers](#enrichment-workers)
@@ -146,9 +147,10 @@ has the commands for the Lite profile and for your own Postgres, the image's tag
 start it without access to the model hub; [supply chain](security/supply-chain.md#the-container-image)
 says how to verify it.
 
-The image verifies TLS (Postgres, model downloads, LLM and OTLP endpoints) against the
-certificate store of its base image, not a list bundled in the binary: to trust a private CA,
-build an image on top that adds it. Mount a volume at `/data` (or set `[embedding] cache_dir`)
+MemHouse's HTTPS clients (model downloads, LLM and OTLP endpoints) verify certificates against
+the certificate store of the image's base, not a list bundled in the binary: to trust a private
+CA for them, build an image on top that adds it. The connection to Postgres is different: it is
+verified only when the database URL asks for it ([TLS to the database](#tls-to-the-database)). Mount a volume at `/data` (or set `[embedding] cache_dir`)
 so the model download survives restarts. Pass the database URL and API key as environment
 variables, as in [configuration.md](configuration.md#environment-variables).
 
@@ -192,12 +194,34 @@ Then:
 
 - Run `memhouse serve` on any container platform (ECS/Fargate, Cloud Run, AKS, Fly.io) behind the
   platform's HTTPS load balancer. Health check: `GET /health`.
-- Use TLS to the database (`?sslmode=require` in the URL).
+- Use verified TLS to the database: `?sslmode=verify-full` in the URL
+  ([TLS to the database](#tls-to-the-database)).
 - Keep `max_connections` × number of instances below the database's connection limit, or put
   PgBouncer in transaction mode in front of it.
 - **Data residency:** with the default local embedding model, conversation text never leaves your
   network. Only enrichment (if you turn it on) sends text to the LLM endpoint you configure. Point
   it at a regional or self-hosted endpoint to keep data in region.
+
+## TLS to the database
+
+The database URL decides how the connection to Postgres is protected, with the `sslmode`
+parameter (or the `PGSSLMODE` environment variable), as for any Postgres client:
+
+| `sslmode` | Encrypted | Server certificate checked | |
+|---|---|---|---|
+| not set, or `prefer` | if the server offers it | no | **the default**: falls back to plaintext, and accepts any certificate |
+| `require` | yes | no | protects against eavesdropping, not against a server that is not yours |
+| `verify-ca` | yes | issued by a trusted CA | |
+| `verify-full` | yes | issued by a trusted CA, for this host name | use this for any database reached over a network |
+
+With `verify-ca` and `verify-full` the certificate is checked against the operating system's
+certificate store, or against the file the URL names with `sslrootcert=/path/to/ca.pem` (or
+`PGSSLROOTCERT`): that is how to trust a provider's or a private CA, in the container too (mount
+the file; nothing has to be added to the image).
+
+```
+postgres://memhouse:<password>@db.internal:5432/memhouse?sslmode=verify-full&sslrootcert=/etc/memhouse/ca.pem
+```
 
 ## Reverse proxy and TLS
 

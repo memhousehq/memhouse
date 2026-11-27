@@ -46,8 +46,11 @@ Replace `2.0.0` and the target with yours. All files are assets of the GitHub re
 ```bash
 curl -fsSLO https://github.com/memhousehq/memhouse/releases/download/v2.0.0/SHA256SUMS
 curl -fsSLO https://github.com/memhousehq/memhouse/releases/download/v2.0.0/memhouse-2.0.0-x86_64-unknown-linux-gnu.tar.gz
-sha256sum --ignore-missing -c SHA256SUMS        # macOS: shasum -a 256 --ignore-missing -c SHA256SUMS
+grep -F '  memhouse-2.0.0-x86_64-unknown-linux-gnu.tar.gz' SHA256SUMS | sha256sum -c -     # macOS: … | shasum -a 256 -c -
 ```
+
+The `grep` picks the archive's own line, so the check fails when the list has no entry for it
+(`--ignore-missing` would pass without checking anything). It must print the file name and `OK`.
 
 **2. Signature** — the list was made by this repository's release workflow, for this tag.
 Needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 3 (the bundle
@@ -87,11 +90,16 @@ digest once, verify the digest, and deploy the digest.
 cosign verify ghcr.io/memhousehq/memhouse:2.0.0 \
   --certificate-identity "https://github.com/memhousehq/memhouse/.github/workflows/release.yml@refs/tags/v2.0.0" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
-gh attestation verify oci://ghcr.io/memhousehq/memhouse:2.0.0 --repo memhousehq/memhouse
+# cosign prints the digest it verified ("docker-manifest-digest": "sha256:…"): every later
+# step names the image by that digest, not by the tag, which could have moved in between.
+DIGEST=sha256:…
+gh attestation verify "oci://ghcr.io/memhousehq/memhouse@$DIGEST" --repo memhousehq/memhouse \
+  --signer-workflow memhousehq/memhouse/.github/workflows/release.yml --source-ref refs/tags/v2.0.0
 ```
 
-`cosign verify` prints the digest it verified; use it as `image.digest` in the
-[Helm chart](../install.md#kubernetes-helm) or as `ghcr.io/memhousehq/memhouse@sha256:…`.
+Deploy that digest: as `image.digest` in the [Helm chart](../install.md#kubernetes-helm), or as
+`ghcr.io/memhousehq/memhouse@sha256:…`. The release pipeline never moves a version tag to
+another digest; a digest cannot move at all.
 
 ## The Helm chart
 

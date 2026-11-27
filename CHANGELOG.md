@@ -194,3 +194,7 @@ path from 0.x data other than export and import.
   answer (the container image's health check).
 - Two servers that share one model cache no longer discard each other's model download: the
   file a download is written to was named after the process id, which is 1 in every container.
+- The minimum Rust version is 1.94 (the workspace said 1.85, which its own dependencies do not
+  accept). A checkout needs symbolic links to build.
+- The Helm chart writes whole numbers of a values file as integers, and documents
+  `sslmode=verify-full`: without an `sslmode` the connection to Postgres is not verified.

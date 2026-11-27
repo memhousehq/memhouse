@@ -12,7 +12,13 @@ set -eu
 cd "$1"
 : >SHA256SUMS.tmp
 for f in $(find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' ! -name '*.sigstore.json' ! -name '.*' | sed 's|^\./||' | LC_ALL=C sort); do
-  printf '%s  %s\n' "$(sha256_of "$f")" "$f" >>SHA256SUMS.tmp
+  # A file that cannot be hashed stops here, and the SHA256SUMS already there stays as it is.
+  sum=$(sha256_of "$f") || {
+    echo "checksums.sh: cannot hash $1/$f" >&2
+    rm -f SHA256SUMS.tmp
+    exit 1
+  }
+  printf '%s  %s\n' "$sum" "$f" >>SHA256SUMS.tmp
 done
 [ -s SHA256SUMS.tmp ] || { echo "checksums.sh: no artefacts in $1" >&2; rm -f SHA256SUMS.tmp; exit 1; }
 mv SHA256SUMS.tmp SHA256SUMS

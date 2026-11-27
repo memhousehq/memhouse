@@ -76,7 +76,15 @@ replace the defaults without touching the engine.
 
 ## Build
 
-Requirements: Rust 1.85+, and Docker for `memhouse up` and the tests that need Postgres.
+Requirements: Rust 1.94+, and Docker for `memhouse up` and the tests that need Postgres.
+
+The checkout needs symbolic links: `crates/memhouse-core/languages`,
+`crates/memhouse-bench/languages` and `crates/memhouse-bench/memory-format` are links to the
+repository's `languages/` and `memory-format/` (each crate embeds those files, and a crate
+published to crates.io must hold what it embeds). Linux and macOS check them out as links. A
+checkout without them (`core.symlinks=false`, the default of Git for Windows) does not build:
+the two crates' build scripts stop with a message that says so. Windows is not a supported
+build platform yet; with Developer Mode, `git clone -c core.symlinks=true` gives the links.
 
 ```bash
 cargo build --release -p memhouse-cli          # → target/release/memhouse
@@ -133,7 +141,6 @@ guard, in four jobs:
 | `checks` | the DCO sign-off of every commit, `cargo xtask ci --skip-e2e --skip-guard`, and the secret scan of the whole history |
 | `end-to-end and governance suite` | `scripts/e2e.sh`, which includes the governance suite; then the README's quickstart in a clean container, with a ten-minute limit (`scripts/quickstart-test.sh`) |
 | `SDKs, embedded bindings and adapters` | builds and tests the embedded bindings (`bindings/python/test.sh`; `pnpm install --frozen-lockfile && pnpm build && pnpm test` in `bindings/node`), then `scripts/sdk-conformance.sh --embedded` ([below](#the-sdks)) |
-
 | `packaging checks` | shellcheck and actionlint, the Helm chart (`scripts/helm-check.sh`), `install.sh` against a made-up release (`scripts/install-test.sh`), the release tag verification (`scripts/release/verify-tag-test.sh`), and the documentation site (`cargo xtask site`) |
 
 The packaging scripts are run apart from `cargo xtask ci`, like the SDK tests: they need Docker

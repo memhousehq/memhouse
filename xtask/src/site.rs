@@ -8,9 +8,7 @@
 //! at the ref the site was built from. Mermaid diagrams stay readable as text; a page that has
 //! one loads the renderer for them.
 
-use crate::links::slug;
-use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
-use std::collections::HashMap;
+use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Parser, Tag, TagEnd};
 use std::path::{Component, Path, PathBuf};
 
 /// The diagram renderer, loaded only by pages that hold a diagram. A fixed version from a
@@ -82,34 +80,12 @@ impl Site<'_> {
 
     /// One document as the body of its page, with its title and whether it holds a diagram.
     fn render(&self, doc: &str, text: &str) -> (String, String, bool) {
-        let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+        let options = crate::links::markdown_options();
         let events: Vec<Event> = Parser::new_ext(text, options).collect();
-        // The anchors GitHub gives the headings, in order (a repeated one gets -1, -2, …).
-        let mut ids = vec![];
-        let mut seen: HashMap<String, usize> = HashMap::new();
-        let mut title = String::new();
-        let mut heading: Option<String> = None;
-        for e in &events {
-            match e {
-                Event::Start(Tag::Heading { .. }) => heading = Some(String::new()),
-                Event::Text(t) | Event::Code(t) => {
-                    if let Some(h) = heading.as_mut() {
-                        h.push_str(t);
-                    }
-                }
-                Event::End(TagEnd::Heading(_)) => {
-                    let h = heading.take().unwrap_or_default();
-                    if title.is_empty() {
-                        title = h.clone();
-                    }
-                    let s = slug(&h);
-                    let n = seen.entry(s.clone()).or_default();
-                    ids.push(if *n == 0 { s.clone() } else { format!("{s}-{n}") });
-                    *n += 1;
-                }
-                _ => {}
-            }
-        }
+        // The anchors GitHub gives the headings: the ones `cargo xtask links` checks links against.
+        let headings = crate::links::headings(text);
+        let title = headings.first().map(|(title, _)| title.clone()).unwrap_or_default();
+        let ids: Vec<String> = headings.into_iter().map(|(_, id)| id).collect();
         let mut ids = ids.into_iter();
         let mut diagram: Option<String> = None;
         let mut has_diagram = false;
@@ -142,22 +118,74 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// The file that marks a directory as this command's output, and so as one it may clear.
+const MARKER: &str = ".memhouse-site";
+
+/// Whether `out` may be cleared and written: the build removes it first, so it must not be the
+/// repository, hold it, or touch `docs/`; and a directory that has content must be one an
+/// earlier build wrote (it holds the marker), not somebody's files.
+fn clearable(root: &Path, out: &Path) -> Result<(), String> {
+    // Symbolic links resolved as far as the path exists (a new directory under a linked one
+    // is still under what the link names); the rest as written.
+    let resolve = |p: &Path| -> Result<PathBuf, String> {
+        let absolute = std::path::absolute(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let absolute = normalize(&absolute).ok_or_else(|| format!("{}: not a usable path", p.display()))?;
+        let mut existing = absolute.as_path();
+        loop {
+            if let Ok(real) = std::fs::canonicalize(existing) {
+                return Ok(real.join(absolute.strip_prefix(existing).unwrap_or(Path::new(""))));
+            }
+            match existing.parent() {
+                Some(parent) => existing = parent,
+                None => return Ok(absolute.clone()),
+            }
+        }
+    };
+    let (root, out_real) = (resolve(root)?, resolve(out)?);
+    let docs = root.join("docs");
+    if root.starts_with(&out_real) {
+        return Err(format!("{} is or holds the repository: the site is not written there", out.display()));
+    }
+    if out_real.starts_with(&docs) || docs.starts_with(&out_real) {
+        return Err(format!("{} is or holds docs/, the site's source: choose another directory", out.display()));
+    }
+    if out.exists() {
+        if !out.is_dir() {
+            return Err(format!("{} is not a directory", out.display()));
+        }
+        let empty = std::fs::read_dir(out).map_err(|e| format!("{}: {e}", out.display()))?.next().is_none();
+        if !empty && !out.join(MARKER).is_file() {
+            return Err(format!(
+                "{} has content that `cargo xtask site` did not write (no {MARKER} in it) and would be deleted: choose an empty or new directory, or remove it yourself",
+                out.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Render the Markdown files of `docs/` (paths relative to the repository) into `out`.
 /// Returns the number of pages written.
 pub fn build(root: &Path, files: &[String], out: &Path, site: &Site) -> Result<usize, String> {
     let mut docs: Vec<&str> = files.iter().filter_map(|f| f.strip_prefix("docs/")).filter(|f| f.ends_with(".md")).collect();
     // The index first, then the guides, then the directories.
     docs.sort_by_key(|d| (*d != "README.md", d.contains('/'), d.to_string()));
+    if !docs.contains(&"README.md") {
+        return Err("no docs/README.md among the repository's files: nothing to build a site from".into());
+    }
     let mut pages = vec![];
     for doc in &docs {
         let text = std::fs::read_to_string(root.join("docs").join(doc)).map_err(|e| format!("docs/{doc}: {e}"))?;
         let (title, body, diagram) = site.render(doc, &text);
         pages.push((doc.to_string(), page_path(doc), if title.is_empty() { doc.to_string() } else { title }, body, diagram));
     }
+    // Only now, with every page rendered, is the old output cleared, and only if it is one.
+    clearable(root, out)?;
     if out.exists() {
         std::fs::remove_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     }
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    std::fs::write(out.join(MARKER), "Written by `cargo xtask site`, which clears this directory before each build.\n").map_err(|e| e.to_string())?;
     std::fs::write(out.join("site.css"), STYLE).map_err(|e| e.to_string())?;
     std::fs::write(out.join("diagrams.js"), format!("import mermaid from '{MERMAID}';\nmermaid.initialize({{ startOnLoad: true, securityLevel: 'strict' }});\n"))
         .map_err(|e| e.to_string())?;
@@ -234,6 +262,39 @@ mod tests {
         assert_eq!(SITE.rewrite("api.md", "#errors"), "#errors");
         assert_eq!(SITE.rewrite("api.md", "https://semver.org/"), "https://semver.org/");
         assert_eq!(page_path("adr/README.md"), "adr/index.html");
+    }
+
+    /// The output directory is cleared before a build: only a new, an empty or an earlier
+    /// output directory is accepted, and never one that is or holds the repository or docs/.
+    #[test]
+    fn only_its_own_output_is_cleared() {
+        let root = std::env::temp_dir().join(format!("memhouse-site-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("docs/adr")).unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("notes/mine.txt"), "keep").unwrap();
+        std::fs::write(root.join("docs/README.md"), "# Docs\n\n[x](adr/x.md)\n").unwrap();
+        std::fs::write(root.join("docs/adr/x.md"), "# X\n").unwrap();
+        std::fs::write(root.join("docs/LICENSE"), "licence").unwrap();
+        let files = vec!["docs/README.md".to_string(), "docs/adr/x.md".to_string()];
+        for refused in
+            [root.clone(), root.join("docs"), root.join("docs/adr"), root.join("docs/out"), root.join("notes"), root.join("notes/.."), root.parent().unwrap().to_path_buf()]
+        {
+            assert!(build(&root, &files, &refused, &SITE).is_err(), "{}", refused.display());
+        }
+        assert_eq!(std::fs::read_to_string(root.join("notes/mine.txt")).unwrap(), "keep");
+        assert!(root.join("docs/README.md").is_file() && root.join("docs/adr/x.md").is_file());
+        // A new directory, then the same one again (its own output), then an empty one.
+        let out = root.join("target/site");
+        assert_eq!(build(&root, &files, &out, &SITE).unwrap(), 2);
+        std::fs::write(out.join("stale.html"), "old").unwrap();
+        assert_eq!(build(&root, &files, &out, &SITE).unwrap(), 2);
+        assert!(!out.join("stale.html").exists() && out.join("index.html").is_file() && out.join("adr/x.html").is_file());
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        assert_eq!(build(&root, &files, &root.join("empty"), &SITE).unwrap(), 2);
+        // No documents (a tree whose file list is empty) is an error, not an empty site.
+        assert!(build(&root, &[], &root.join("none"), &SITE).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

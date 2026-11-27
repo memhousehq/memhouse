@@ -90,7 +90,8 @@ for tool in "$@"; do
     cp "$work/download" "$work/$tool"
   else
     tar -xzf "$work/download" -C "$work" "$member"
-    mv "$work/$member" "$work/$tool"
+    # actionlint and syft unpack to the tool's own name: GNU mv refuses to move a file onto itself.
+    if [ "$member" != "$tool" ]; then mv "$work/$member" "$work/$tool"; fi
   fi
   chmod 0755 "$work/$tool"
   rm -f "$DIR"/."$tool"-*

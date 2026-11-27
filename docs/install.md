@@ -184,10 +184,14 @@ so none can end up in a values file or in the release's stored manifest.
 ```bash
 kubectl create namespace memhouse
 kubectl -n memhouse create secret generic memhouse-db \
-  --from-literal=database-url='postgres://USER:PASSWORD@HOST:5432/memhouse?sslmode=require'
+  --from-literal=database-url='postgres://USER:PASSWORD@HOST:5432/memhouse?sslmode=verify-full'
 kubectl -n memhouse create secret generic memhouse-admin \
   --from-literal=api-key="mh_$(openssl rand -hex 32)"
 ```
+
+`sslmode=verify-full` makes MemHouse check the database's certificate and host name; without
+an `sslmode` the connection may be unencrypted and no certificate is checked
+([TLS to the database](operations.md#tls-to-the-database), also for a private CA).
 
 **3. Install.**
 
@@ -241,7 +245,7 @@ old and new pods share the database while they overlap ([upgrades](operations.md
 cargo install memhouse-cli --locked     # installs the `memhouse` binary
 ```
 
-Rust 1.85 or newer, on any platform the `ort` crate has a prebuilt ONNX Runtime for. The
+Rust 1.94 or newer, on any platform the `ort` crate has a prebuilt ONNX Runtime for. The
 crates are published in lockstep, all at the product version: `memhouse-core`,
 `memhouse-store-postgres`, `memhouse-store-sqlite`, `memhouse-models`, `memhouse-conformance`,
 `memhouse-server`, `memhouse-bench` and `memhouse-cli`.

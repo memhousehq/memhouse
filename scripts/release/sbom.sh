@@ -42,7 +42,8 @@ case "${1:-}" in
     exit 2
     ;;
 esac
-# An SBOM without components would pass every later step and say nothing.
-COMPONENTS=$(grep -o '"bom-ref"' "$OUT" | wc -l | tr -d ' ')
+# An SBOM without components would pass every later step and say nothing. The `components`
+# array is counted, not every `bom-ref`: the document's own metadata has one too.
+COMPONENTS=$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1])).get("components") or []))' "$OUT")
 [ "$COMPONENTS" -gt 0 ] || { echo "sbom.sh: $OUT lists no components" >&2; exit 1; }
 echo "$OUT ($COMPONENTS components)"

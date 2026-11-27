@@ -44,7 +44,12 @@ want "memhouse-docs-$V.tar.gz"
 want "memhouse-$V-source.cdx.json"
 want "memhouse-$V-image.cdx.json"
 # One wheel of the binding per target; their platform tags are the builder's to choose.
-WHEELS=$(find "$DIR" -maxdepth 1 -name "memhouse_lite-$PV-cp39-abi3-*.whl" | wc -l | tr -d ' ')
+WHEELS=0
+for wheel in "$DIR"/memhouse_lite-"$PV"-cp39-abi3-*.whl; do
+  [ -f "$wheel" ] || continue
+  WHEELS=$((WHEELS + 1))
+  want "$(basename "$wheel")"
+done
 if [ "$WHEELS" != 3 ]; then
   echo "complete.sh: $WHEELS wheel(s) of memhouse_lite $PV, expected 3 (two Linux, one macOS)" >&2
   MISSING=$((MISSING + 1))

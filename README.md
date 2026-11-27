@@ -61,7 +61,7 @@ exact commands run in a clean container on every change, with a ten-minute limit
 | Container | `docker run -p 127.0.0.1:7077:7077 -v memhouse:/data ghcr.io/memhousehq/memhouse` | non-root, multi-architecture |
 | Kubernetes | `helm install memhouse oci://ghcr.io/memhousehq/charts/memhouse --set database.existingSecret=…` | on your own Postgres |
 | Cargo | `cargo install memhouse-cli --locked` | any platform ONNX Runtime has a build for |
-| From source | `cargo install --path crates/memhouse-cli --locked` | Rust 1.85+ |
+| From source | `cargo install --path crates/memhouse-cli --locked` | Rust 1.94+ |
 
 Each of these, with its options and how to verify what you downloaded, is in the
 [install guide](docs/install.md). Packages are published from version 2.0.0 on; until that

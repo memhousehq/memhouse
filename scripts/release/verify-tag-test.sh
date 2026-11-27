@@ -60,7 +60,14 @@ accepted v1.2.3 "a tag signed by a listed key"
 git tag light-v1.2.3
 refused light-v1.2.3 "a lightweight tag" "not an annotated tag"
 git tag -a v1.2.3-unsigned -m unsigned
-refused v1.2.3-unsigned "an unsigned tag" "not signed by a key"
+refused v1.2.3-unsigned "an unsigned tag" "not signed with an SSH key"
+# A signature of another kind is refused before any verifier this machine has is asked.
+git tag -a v1.2.3-pgp -m "pgp
+-----BEGIN PGP SIGNATURE-----
+
+wsBcBAABCAAQBQJnxxxx
+-----END PGP SIGNATURE-----"
+refused v1.2.3-pgp "a tag signed with OpenPGP" "not signed with an SSH key"
 git tag -s v9.9.9 -m "9.9.9"
 refused v9.9.9 "a tag that names another version" "does not name the product version"
 

@@ -23,7 +23,7 @@ replicaCount: 2
 # never takes a password or a URL as a value, so none ends up in a values file, in the
 # release's stored manifest or in `helm get values`.
 #   kubectl create secret generic memhouse-db \
-#     --from-literal=database-url='postgres://USER:PASSWORD@HOST:5432/memhouse?sslmode=require'
+#     --from-literal=database-url='postgres://USER:PASSWORD@HOST:5432/memhouse?sslmode=verify-full'
 database:
   existingSecret: ""
   urlKey: database-url

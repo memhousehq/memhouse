@@ -41,9 +41,12 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
+# Every request has its own time limit: a server that accepts the connection and then says
+# nothing fails the check instead of holding the script.
 wait_health() { # <port> <container>
-  for _ in $(seq 1 300); do
-    curl -sf "http://127.0.0.1:$1/health" >/dev/null 2>&1 && return 0
+  local deadline=$(($(date +%s) + 300))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    curl -sf --max-time 5 "http://127.0.0.1:$1/health" >/dev/null 2>&1 && return 0
     [ "$(docker inspect -f '{{.State.Running}}' "$2" 2>/dev/null)" = true ] || {
       docker logs "$2" 2>&1 | tail -20 >&2
       fail "$2 stopped before it answered /health"
@@ -53,7 +56,7 @@ wait_health() { # <port> <container>
   fail "$2 did not answer /health within 300 s"
 }
 api() { # <port> <key> <path> <json>
-  curl -sf "http://127.0.0.1:$1$3" -H "authorization: Bearer $2" -H "content-type: application/json" -d "$4"
+  curl -sf --max-time 60 "http://127.0.0.1:$1$3" -H "authorization: Bearer $2" -H "content-type: application/json" -d "$4"
 }
 # The (id, content) pairs of a recall, one per line, in rank order.
 hits() { python3 -c 'import json,sys; [print(h["memory"]["id"], h["memory"]["content"]) for h in json.load(sys.stdin)["hits"]]'; }
@@ -86,7 +89,7 @@ docker exec "$P-lite" memhouse health | grep '"status":"ok"' >/dev/null || fail 
 KEY=$(docker run --rm "${HARDEN[@]}" -v "$P-lite-data:/data" "$IMAGE" key)
 api "$PORT_LITE" "$KEY" /v1/remember '{"subject":"customer:acme","content":"Acme renews on 2027-03-01 and prefers email","kind":"semantic","wait":true}' >/dev/null
 recall_until "$PORT_LITE" "$KEY" customer:acme "when does Acme renew" "2027-03-01"
-[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_LITE/v1/stats")" = 401 ] || fail "an unauthenticated call was not refused"
+[ "$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_LITE/v1/stats")" = 401 ] || fail "an unauthenticated call was not refused"
 # The root filesystem is read-only: a write outside /data and /tmp must fail.
 if docker exec -e MEMHOUSE_HOME=/home/nonroot/elsewhere "$P-lite" memhouse up --lite >/dev/null 2>&1; then fail "the root filesystem is writable"; fi
 T0=$(date +%s)

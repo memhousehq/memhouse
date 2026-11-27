@@ -2616,6 +2616,65 @@ only from the workflow's identity on GitHub, where the workflow has not run.
   GitHub should sign (they do: it is what rehearses the signing, and it leaves public log
   entries).
 
+**Review fixes (2026-11-27):** the findings on the first commit, and one failure of the
+hosted checks; what changed:
+
+- **Hosted CI.** `packaging checks` failed in its first step: `scripts/release/tools.sh` moved
+  an unpacked tool onto its own name for actionlint and syft, which GNU `mv` refuses (the
+  macOS one does not, so it passed here). The move is skipped when there is nothing to move.
+- **A published version is never replaced.** The image job reads the registry before it
+  writes: a version tag that exists with the same digest is left alone, one with another
+  digest stops the job (a run that rebuilt the release would otherwise have moved it); the
+  same for the chart, by its chart file. `latest` and the minor tag move only forwards, read
+  from the published image's version label, and the job runs for one release at a time. The
+  GitHub release is made as a draft, completed file by file (a file with another digest stops
+  the job, none is deleted: `--clobber` is gone) and then published, so a draft an interrupted
+  attempt left is published too. [release.md](release.md#when-a-release-fails-part-way) says
+  what a retry is: the failed jobs of the same run, with its artefacts.
+- **The commit that was verified is the commit that is built.** `verify` compares the tag's
+  commit with the one checked out and every later job checks out that commit by its id. A
+  release tag must carry an SSH signature (a signature of another kind would have been
+  checked against the machine's own keys, not the list).
+- **Rust 1.94.** The workspace said 1.85; the locked sqlx 0.9 asks for 1.94 (ort for 1.92).
+  `rust-version` and the docs say 1.94. `clippy.toml` keeps suggesting for 1.85: at 1.94 it
+  asks for rewrites in the write gate, the migration and the Lite vector scan, which are not
+  this goal's to make.
+- **Symbolic links are part of the checkout's contract.** The links to `languages/` and
+  `memory-format/` inside `memhouse-core` and `memhouse-bench` need a checkout with symbolic
+  links; without them the two crates' build scripts stop with a message that says so
+  ([development.md](development.md#build)).
+- **Model downloads.** A download file not written to for an hour is removed by the next
+  download of that file, so a container restarting during a fetch no longer fills the cache;
+  a file another replica is writing is recent and stays (unit test).
+- **Helm.** Whole numbers from a values file reached the configuration as floats
+  (`max_connections = 32.0`, which stops the server): the chart turns them back into
+  integers, and `helm-check.sh` renders a values file with numbers. Its hardening assertions
+  are made on the Deployment and on the test Pod separately.
+- **Scripts.** `quickstart-test.sh` stops the container at the deadline instead of waiting
+  for it; `container-test.sh` bounds every request; `checksums.sh` stops on a file it cannot
+  hash and leaves the old list; `complete.sh` holds each wheel to `SHA256SUMS`; `package.sh`
+  fixes the directory's mode and no longer hides a failed `tar` behind `gzip`; `sbom.sh`
+  counts the `components` array.
+- **xtask.** `version`: the source version is found by its table, not its line; `--set`
+  writes nothing unless every place was found; ASCII digits only; the message after a missing
+  changelog section says what to do. `site`: the output directory is cleared only when it is
+  empty, new or an earlier output (a marker file), and never when it is or holds the
+  repository or `docs/`; headings and their anchors are read once, as rendered, for the site
+  and for `cargo xtask links`, with GitHub's rule for repeated anchors. `spdx`: the Homebrew
+  template (`.rb.in`) is covered, and a header is added after a Dockerfile's parser
+  directives. A failed `git ls-files` is an error.
+- **Docs.** The connection to Postgres is verified only with `sslmode=verify-full` (the
+  default accepts any certificate and may fall back to plaintext):
+  [operations.md](operations.md#tls-to-the-database), and the examples use it. The checksum
+  command checks the archive's own line; image provenance is verified by the digest cosign
+  verified. The CI table in development.md is one table again.
+- **Checked:** the xtask unit tests (20), the model hub's (8), `helm-check.sh`,
+  `install-test.sh`, `verify-tag-test.sh`, `container-test.sh`, `quickstart-test.sh` (12 s,
+  and stopped at a 3 s limit), shellcheck, actionlint, then `cargo xtask ci --skip-e2e
+  --skip-guard`. The release workflow has still not run on GitHub: the new registry and
+  release steps are, like the rest of the publishing jobs, untested. Governance: 85 checks,
+  as before.
+
 ### Stage E — Governance, connectors and templates
 
 #### G22 — Governance II

@@ -70,11 +70,23 @@ echo "== in $IMAGE (limit ${LIMIT} s)"
 docker run -d --name "$NAME-web" -v "$WORK/site:/site:ro" "$SERVER_IMAGE" httpd -f -p 127.0.0.1:8080 -h /site >/dev/null
 START=$(date +%s)
 # The same network namespace as the web server: its loopback address is the mirror's.
-if ! docker run --name "$NAME" --network "container:$NAME-web" -v "$WORK/site/quickstart.sh:/quickstart.sh:ro" "$IMAGE" sh /quickstart.sh >"$WORK/out" 2>&1; then
+docker run -d --name "$NAME" --network "container:$NAME-web" -v "$WORK/site/quickstart.sh:/quickstart.sh:ro" "$IMAGE" sh /quickstart.sh >/dev/null
+# The limit holds while the container runs: a download that hangs ends the test at the
+# deadline, it does not hold it for ever.
+while [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = true ]; do
+  if [ $(($(date +%s) - START)) -gt "$LIMIT" ]; then
+    docker logs "$NAME" 2>&1 | tail -40 >&2
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    fail "no first recall within the limit of ${LIMIT} s: the container was stopped"
+  fi
+  sleep 1
+done
+SECONDS_TAKEN=$(($(date +%s) - START))
+docker logs "$NAME" >"$WORK/out" 2>&1
+if [ "$(docker inspect -f '{{.State.ExitCode}}' "$NAME")" != 0 ]; then
   tail -40 "$WORK/out" >&2
   fail "the quickstart did not run to its end"
 fi
-SECONDS_TAKEN=$(($(date +%s) - START))
 tail -6 "$WORK/out" | sed 's/^/   /'
 # The first recall returns the memory the quickstart stored.
 REMEMBERED=$(sed -n 's/^memhouse remember "\([^"]*\)".*/\1/p' "$WORK/readme-commands.sh" | head -1)

@@ -64,9 +64,12 @@ an sdist of `memhouse-lite` (it builds only inside this workspace).
 
 ## Cut a release
 
-1. **Prepare, in a pull request.** `cargo xtask version --set <version>`; give the changelog's
-   section its final heading (`## 2.1.0`, without "unreleased") and read it as release notes;
-   run `cargo xtask ci`. Merge.
+1. **Prepare, in a pull request.** Give the changelog's section its heading for the version
+   (`## 2.1.0`, without "unreleased"; a pre-release uses its release's section) and read it as
+   release notes; then `cargo xtask version --set <version>`, which writes every version field
+   or, if one of them is not where it expects, none. It ends with the check, so without the
+   changelog section it reports that one thing, with the fields already written. Run
+   `cargo xtask ci`. Merge.
 2. **Run the paid guard tiers** the roadmap asks for at a release, on your machine: T3, and T4
    with the approval it needs ([benchmarks.md](benchmarks.md#where-benchmarks-run)). Record the
    outcome with the goal or in the changelog.
@@ -120,12 +123,24 @@ final version.
 
 ## When a release fails part-way
 
-Publishing to a registry cannot be undone, so the publishing jobs are written to be run again:
-each leaves what is already published as it is (a crate version that exists is skipped, PyPI
-files that exist are skipped, an npm version that exists is skipped, the image and chart are
-pushed to the same digest, an existing GitHub release gets its missing files). Fix the cause,
-then re-run the failed jobs of the same run, or start the workflow by hand on the tag with
-"Dry run" unticked.
+Publishing to a registry cannot be undone, so the publishing jobs are written to be run again,
+and never to replace what is out: a crate version that exists is skipped, PyPI files that exist
+are skipped, an npm version that exists is skipped; an image or chart version that exists is
+left alone if it is the same content and **stops the job if it is not**; a GitHub release that
+exists (a draft an interrupted attempt left, too) gets its missing files, is published if it
+was a draft, and stops the job if one of its files differs from this run's. No published file is
+deleted or overwritten.
+
+Fix the cause, then **re-run the failed jobs of the same run** ("Re-run failed jobs"): they
+use the run's own artefacts, the ones that were signed and that the registries already hold in
+part. The run's artefacts are kept for 14 days (30 for the final set). Starting the workflow
+afresh on the tag builds everything again, and a rebuilt binary is not the same bytes: such a
+run completes a release only if nothing of it was published yet; otherwise it stops at the
+first version that exists with other content, and the fix is the next patch version.
+
+`latest` and the minor tag of the image (`2.1`) only move forwards: publishing or retrying an
+older release after a newer one leaves them alone. The image job runs for one release at a
+time; if GitHub cancels a waiting one because a third release queued behind it, re-run it.
 
 Never move a release tag. If the tagged commit itself is wrong and nothing was published,
 delete the tag and tag the fixed commit with the same version; if anything was published, the

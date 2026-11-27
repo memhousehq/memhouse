@@ -27,8 +27,10 @@ pub fn expected(path: &str) -> Option<&'static str> {
 }
 
 /// The extension of the file's name (none for `Dockerfile`, or for a dot in a directory's name).
+/// A template is the kind of file it is a template of: `memhouse.rb.in` is Ruby.
 fn ext_of(path: &str) -> &str {
     let name = path.rsplit('/').next().unwrap_or(path);
+    let name = name.strip_suffix(".in").unwrap_or(name);
     name.rsplit_once('.').map(|(_, e)| e).unwrap_or("")
 }
 
@@ -56,6 +58,28 @@ fn found(text: &str) -> Option<String> {
     text.lines().take(5).find_map(|l| l.split_once(TAG).map(|(_, rest)| rest.trim().trim_end_matches("-->").trim_end_matches("*/}}").trim_end_matches("*/").trim().to_string()))
 }
 
+/// `text` with the header line `h` added: first, or after what must stay first.
+fn insert(path: &str, text: &str, h: &str) -> String {
+    // A Dockerfile's parser directives (`# syntax=`, `# escape=`, `# check=`) count only
+    // before any other line, a comment included.
+    let keep = if is_dockerfile(path) {
+        text.lines()
+            .take_while(|l| {
+                let Some(l) = l.strip_prefix('#') else { return false };
+                let l = l.trim_start().to_ascii_lowercase();
+                ["syntax", "escape", "check"].iter().any(|d| l.strip_prefix(d).is_some_and(|rest| rest.trim_start().starts_with('=')))
+            })
+            .count()
+    } else {
+        // A shebang or doctype stays on the first line.
+        usize::from(text.lines().next().is_some_and(|first| first.starts_with("#!") || first.to_ascii_lowercase().starts_with("<!doctype")))
+    };
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let header = format!("{h}\n");
+    lines.insert(keep.min(lines.len()), &header);
+    lines.concat()
+}
+
 /// Check (or with `fix`, insert) headers. Returns the problems left.
 pub fn check(root: &Path, files: &[String], fix: bool) -> Result<Vec<String>, String> {
     let mut problems = vec![];
@@ -68,11 +92,7 @@ pub fn check(root: &Path, files: &[String], fix: bool) -> Result<Vec<String>, St
             Some(have) => problems.push(format!("{f}: licence is {have}, but files here must be {want}")),
             None if fix => {
                 let h = header(f, want);
-                // Keep a shebang or doctype on the first line.
-                let new = match text.split_once('\n') {
-                    Some((first, rest)) if first.starts_with("#!") || first.to_ascii_lowercase().starts_with("<!doctype") => format!("{first}\n{h}\n{rest}"),
-                    _ => format!("{h}\n{text}"),
-                };
+                let new = insert(f, &text, &h);
                 std::fs::write(&p, new).map_err(|e| format!("{f}: {e}"))?;
             }
             None => problems.push(format!("{f}: no {TAG} line (expected {want}); `cargo xtask spdx --fix` adds it")),
@@ -99,6 +119,7 @@ mod tests {
             "deploy/helm/memhouse/values.yaml",
             "deploy/helm/memhouse/templates/_helpers.tpl",
             "packaging/homebrew/memhouse.rb",
+            "packaging/homebrew/memhouse.rb.in",
             "install.sh",
             "xtask/src/site.css",
         ] {
@@ -114,6 +135,16 @@ mod tests {
             assert_eq!(expected(data), None, "{data}");
         }
         assert_eq!(header("Dockerfile", "Apache-2.0"), "# SPDX-License-Identifier: Apache-2.0");
+        assert_eq!(header("packaging/homebrew/memhouse.rb.in", "Apache-2.0"), "# SPDX-License-Identifier: Apache-2.0");
+        // The header goes first, except after what must stay first.
+        let h = "# SPDX-License-Identifier: Apache-2.0";
+        assert_eq!(insert("Dockerfile", "FROM scratch\n", h), format!("{h}\nFROM scratch\n"));
+        assert_eq!(
+            insert("Dockerfile", "# syntax=docker/dockerfile:1\n# escape = `\n# a comment\nFROM scratch\n", h),
+            format!("# syntax=docker/dockerfile:1\n# escape = `\n{h}\n# a comment\nFROM scratch\n")
+        );
+        assert_eq!(insert("install.sh", "#!/bin/sh\nset -eu\n", h), format!("#!/bin/sh\n{h}\nset -eu\n"));
+        assert_eq!(insert("a.sh", "set -eu\n", h), format!("{h}\nset -eu\n"));
         assert_eq!(header("deploy/helm/memhouse/templates/_helpers.tpl", "Apache-2.0"), "{{/* SPDX-License-Identifier: Apache-2.0 */}}");
         assert_eq!(found("{{/* SPDX-License-Identifier: Apache-2.0 */}}\n").as_deref(), Some("Apache-2.0"));
         assert_eq!(found("/* SPDX-License-Identifier: Apache-2.0 */\n").as_deref(), Some("Apache-2.0"));

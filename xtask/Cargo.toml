@@ -10,5 +10,6 @@ publish = false
 regex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-# The documentation site (`cargo xtask site`): Markdown to HTML, nothing else to install.
+# The documentation site (`cargo xtask site`) and the heading anchors `cargo xtask links`
+# checks links against: Markdown read once, the same way, by both.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

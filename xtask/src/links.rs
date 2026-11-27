@@ -22,30 +22,52 @@ pub fn slug(heading: &str) -> String {
         .collect()
 }
 
-/// The anchors of a Markdown file (duplicates get `-1`, `-2`, as GitHub does).
-fn anchors(text: &str) -> BTreeSet<String> {
-    let mut seen: HashMap<String, usize> = HashMap::new();
-    let mut out = BTreeSet::new();
-    let mut fence = false;
-    for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            fence = !fence;
-            continue;
-        }
-        if fence {
-            continue;
-        }
-        if let Some(h) = line.strip_prefix('#') {
-            let h = h.trim_start_matches('#');
-            if h.starts_with(' ') {
-                let s = slug(h);
-                let n = seen.entry(s.clone()).or_default();
-                out.insert(if *n == 0 { s.clone() } else { format!("{s}-{n}") });
-                *n += 1;
+/// The Markdown extensions the docs use; the link checker and the site renderer read a
+/// document the same way.
+pub fn markdown_options() -> pulldown_cmark::Options {
+    use pulldown_cmark::Options;
+    Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
+}
+
+/// Every heading of a Markdown document, in order: its text as rendered (markup such as
+/// emphasis and code spans removed, as GitHub does before it makes the anchor) and its anchor.
+/// A repeated anchor gets `-1`, `-2`, …, and a generated one is never given twice: after
+/// `A`, `A` and `A-1` the anchors are `a`, `a-1` and `a-1-1`.
+pub fn headings(text: &str) -> Vec<(String, String)> {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    let mut out: Vec<(String, String)> = vec![];
+    let mut taken: BTreeSet<String> = BTreeSet::new();
+    let mut count: HashMap<String, usize> = HashMap::new();
+    let mut heading: Option<String> = None;
+    for event in Parser::new_ext(text, markdown_options()) {
+        match event {
+            Event::Start(Tag::Heading { .. }) => heading = Some(String::new()),
+            Event::Text(t) | Event::Code(t) => {
+                if let Some(h) = heading.as_mut() {
+                    h.push_str(&t);
+                }
             }
+            Event::End(TagEnd::Heading(_)) => {
+                let title = heading.take().unwrap_or_default();
+                let base = slug(&title);
+                let mut id = base.clone();
+                while taken.contains(&id) {
+                    let n = count.entry(base.clone()).or_default();
+                    *n += 1;
+                    id = format!("{base}-{n}");
+                }
+                taken.insert(id.clone());
+                out.push((title, id));
+            }
+            _ => {}
         }
     }
     out
+}
+
+/// The anchors of a Markdown file.
+fn anchors(text: &str) -> BTreeSet<String> {
+    headings(text).into_iter().map(|(_, id)| id).collect()
 }
 
 fn normalize(p: &Path) -> PathBuf {
@@ -123,5 +145,8 @@ mod tests {
         assert_eq!(slug(" 3. The benchmark guard"), "3-the-benchmark-guard");
         let a = anchors("# A\n## A\n```\n# not\n```\n### B c");
         assert!(a.contains("a") && a.contains("a-1") && a.contains("b-c") && !a.contains("not"));
+        // Markup is not part of an anchor, and a generated anchor is never given twice.
+        let ids: Vec<String> = headings("## _Run_\n## Run\n## `x` and **y**\n# A\n# A\n# A-1").into_iter().map(|(_, id)| id).collect();
+        assert_eq!(ids, ["run", "run-1", "x-and-y", "a", "a-1", "a-1-1"]);
     }
 }

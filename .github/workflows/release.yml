@@ -60,6 +60,7 @@ jobs:
       python_version: ${{ steps.tag.outputs.python_version }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
       dry_run: ${{ steps.tag.outputs.dry_run }}
+      commit: ${{ steps.tag.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,6 +81,14 @@ jobs:
           # The checkout of a tag does not keep its annotation; fetch the tag object itself.
           git fetch --force --no-tags origin "refs/tags/$REF_NAME:refs/tags/$REF_NAME" "refs/heads/main:refs/remotes/origin/main"
           scripts/release/verify-tag.sh "$REF_NAME" origin/main
+          # What was just verified is the tag as it is now; what is checked out is the commit
+          # of the event. They must be one commit, and every later job builds that commit by
+          # its id, so a tag moved after this point changes nothing of this run.
+          commit=$(git rev-parse "refs/tags/$REF_NAME^{commit}")
+          if [ "$commit" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::tag $REF_NAME now names $commit, but this run was started for $(git rev-parse HEAD)"
+            exit 1
+          fi
           version=${REF_NAME#v}
           python_version=$(printf '%s' "$version" | sed -e 's/-alpha\./a/' -e 's/-beta\./b/' -e 's/-rc\./rc/')
           case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
@@ -91,6 +100,7 @@ jobs:
             echo "python_version=$python_version"
             echo "prerelease=$prerelease"
             echo "dry_run=$dry_run"
+            echo "commit=$commit"
           } >>"$GITHUB_OUTPUT"
           echo "MemHouse $version (tag $REF_NAME), dry run: $dry_run, pre-release: $prerelease" >>"$GITHUB_STEP_SUMMARY"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -127,6 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -174,6 +185,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -238,6 +250,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -309,6 +322,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -362,6 +376,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -435,6 +450,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -490,7 +506,8 @@ jobs:
 
   # ---------------------------------------------------------------------------------------
   # Publishing. Not in a dry run; each job waits for the `release` environment's reviewer.
-  # Each can be run again: what is already published is left as it is.
+  # Each can be run again: what is already published is left as it is, and never replaced by
+  # other bytes (a version that exists with another digest stops the job).
   # ---------------------------------------------------------------------------------------
 
   # The image and the chart to the container registry, with the workflow's own token; both
@@ -500,6 +517,10 @@ jobs:
     needs: [verify, sign]
     if: needs.verify.outputs.dry_run == 'false'
     environment: release
+    # One at a time across releases: the alias tags below are read and then written.
+    concurrency:
+      group: release-publish-oci
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -510,6 +531,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -536,10 +558,46 @@ jobs:
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
           auth="$HOME/.docker/config.json"
-          skopeo copy --all --preserve-digests --dest-authfile "$auth" "oci-archive:image/memhouse-$VERSION-image.oci.tar" "docker://$IMAGE:$VERSION"
-          digest=$(skopeo inspect --authfile "$auth" --format '{{.Digest}}' "docker://$IMAGE:$VERSION")
+          # The digest a reference names in the registry, or nothing when the registry says it
+          # does not exist; any other failure stops the job (a tag is never assumed to be free).
+          # The digest is of the manifest's bytes as the registry serves them.
+          digest_in_registry() {
+            if skopeo inspect --raw --authfile "$auth" "docker://$1" >"$RUNNER_TEMP/manifest" 2>"$RUNNER_TEMP/inspect.err"; then
+              printf 'sha256:%s' "$(sha256sum "$RUNNER_TEMP/manifest" | cut -d' ' -f1)"
+            elif grep -qiE 'manifest unknown|name unknown|not found' "$RUNNER_TEMP/inspect.err"; then
+              :
+            else
+              cat "$RUNNER_TEMP/inspect.err" >&2
+              return 1
+            fi
+          }
+          archive="oci-archive:image/memhouse-$VERSION-image.oci.tar"
+          skopeo inspect --raw "$archive" >"$RUNNER_TEMP/archive-manifest"
+          digest="sha256:$(sha256sum "$RUNNER_TEMP/archive-manifest" | cut -d' ' -f1)"
+          # A published version tag never moves: the same bytes are left alone, other bytes
+          # (a run that built the release again) are refused.
+          published=$(digest_in_registry "$IMAGE:$VERSION")
+          if [ -z "$published" ]; then
+            skopeo copy --all --preserve-digests --dest-authfile "$auth" "$archive" "docker://$IMAGE:$VERSION"
+            published=$(digest_in_registry "$IMAGE:$VERSION")
+          fi
+          if [ "$published" != "$digest" ]; then
+            echo "::error::$IMAGE:$VERSION is published with digest ${published:-none}, this run's image is $digest; a published version is not replaced. Re-run the failed jobs of the run that published it."
+            exit 1
+          fi
+          # `latest` and the minor line follow stable releases, and only forwards: an older
+          # release approved or retried after a newer one leaves them where they are.
           if [ "$PRERELEASE" = false ]; then
             for tag in "${VERSION%.*}" latest; do
+              current=$(skopeo inspect --authfile "$auth" --format '{{ index .Labels "org.opencontainers.image.version" }}' "docker://$IMAGE:$tag" 2>"$RUNNER_TEMP/inspect.err" || true)
+              if [ -z "$current" ] && ! grep -qiE 'manifest unknown|name unknown|not found' "$RUNNER_TEMP/inspect.err" && [ -s "$RUNNER_TEMP/inspect.err" ]; then
+                cat "$RUNNER_TEMP/inspect.err" >&2
+                exit 1
+              fi
+              if [ -n "$current" ] && [ "$current" != "$VERSION" ] && [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+                echo "$IMAGE:$tag stays at $current, which is newer than $VERSION"
+                continue
+              fi
               skopeo copy --all --preserve-digests --src-authfile "$auth" --dest-authfile "$auth" "docker://$IMAGE@$digest" "docker://$IMAGE:$tag"
             done
           fi
@@ -557,8 +615,24 @@ jobs:
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
-          helm push "dist/memhouse-chart-$VERSION.tgz" "oci://$CHARTS" 2>&1 | tee "$RUNNER_TEMP/helm-push.log"
-          digest=$(sed -n 's/^Digest: *//p' "$RUNNER_TEMP/helm-push.log")
+          auth="$HOME/.docker/config.json"
+          chart="dist/memhouse-chart-$VERSION.tgz"
+          # As for the image: a published chart version is not replaced. Its manifest is made
+          # at push time, so what is compared is the chart file it holds.
+          if skopeo inspect --raw --authfile "$auth" "docker://$CHARTS/memhouse:$VERSION" >"$RUNNER_TEMP/chart-manifest" 2>"$RUNNER_TEMP/inspect.err"; then
+            if [ "$(jq -r '.layers[0].digest' "$RUNNER_TEMP/chart-manifest")" != "sha256:$(sha256sum "$chart" | cut -d' ' -f1)" ]; then
+              echo "::error::$CHARTS/memhouse:$VERSION is already published with another chart file than this run's; a published version is not replaced."
+              exit 1
+            fi
+            digest="sha256:$(sha256sum "$RUNNER_TEMP/chart-manifest" | cut -d' ' -f1)"
+            echo "the chart is already published"
+          elif grep -qiE 'manifest unknown|name unknown|not found' "$RUNNER_TEMP/inspect.err"; then
+            helm push "$chart" "oci://$CHARTS" 2>&1 | tee "$RUNNER_TEMP/helm-push.log"
+            digest=$(sed -n 's/^Digest: *//p' "$RUNNER_TEMP/helm-push.log")
+          else
+            cat "$RUNNER_TEMP/inspect.err" >&2
+            exit 1
+          fi
           test -n "$digest"
           cosign sign --yes "$CHARTS/memhouse@$digest"
           echo "chart: $CHARTS/memhouse@$digest" >>"$GITHUB_STEP_SUMMARY"
@@ -578,6 +652,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.verify.outputs.commit }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -688,12 +763,29 @@ jobs:
           VERSION: ${{ needs.verify.outputs.version }}
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
-          else
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # As a draft first: the release becomes public only below, with every file in it.
             flags=()
             if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
-            gh release create "$TAG" dist/* --verify-tag --title "MemHouse $VERSION" --notes-file dist/RELEASE_NOTES.md "${flags[@]}"
+            gh release create "$TAG" --draft --verify-tag --title "MemHouse $VERSION" --notes-file dist/RELEASE_NOTES.md "${flags[@]}"
+          fi
+          # A release that exists (an earlier attempt, a draft it left) is completed, never
+          # rewritten: a file already there with the same digest is left alone, a missing one is
+          # uploaded, and one that differs stops the job. Nothing published is deleted.
+          gh release view "$TAG" --json assets --jq '.assets[] | [.name, (.digest // "")] | @tsv' >"$RUNNER_TEMP/assets.tsv"
+          for file in dist/*; do
+            name=$(basename "$file")
+            have=$(awk -F '\t' -v n="$name" '$1 == n { print ($2 == "" ? "unknown" : $2) }' "$RUNNER_TEMP/assets.tsv")
+            want="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            if [ -z "$have" ]; then
+              gh release upload "$TAG" "$file"
+            elif [ "$have" != "$want" ]; then
+              echo "::error::the release already has $name with digest $have, this run's is $want; a published file is not replaced"
+              exit 1
+            fi
+          done
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
+            gh release edit "$TAG" --draft=false
           fi
 
   # The documentation site on GitHub Pages, when the repository has turned that on

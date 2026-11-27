@@ -27,6 +27,8 @@ NAME="memhouse-$VERSION-$TARGET"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/$NAME" "$OUT"
+# Not the umask's choice: the directory's mode is part of the archive's bytes.
+chmod 0755 "$WORK/$NAME"
 cp "$BINARY" "$WORK/$NAME/memhouse"
 chmod 0755 "$WORK/$NAME/memhouse"
 for f in LICENSE NOTICE README.md CHANGELOG.md; do
@@ -38,9 +40,17 @@ EPOCH=$(release_epoch "$ROOT")
 STAMP=$(date -u -r "$EPOCH" +%Y%m%d%H%M.%S 2>/dev/null || date -u -d "@$EPOCH" +%Y%m%d%H%M.%S)
 find "$WORK/$NAME" -exec env TZ=UTC touch -t "$STAMP" {} +
 OUT=$(cd "$OUT" && pwd)
+# tar first, into a file, then gzip: in a pipeline a tar that failed part-way would be hidden
+# by a gzip that compressed what it got.
 if tar --version 2>/dev/null | grep -q GNU; then
-  (cd "$WORK" && tar --sort=name --owner=0 --group=0 --numeric-owner -cf - "$NAME") | gzip -n -9 >"$OUT/$NAME.tar.gz"
+  (cd "$WORK" && tar --sort=name --owner=0 --group=0 --numeric-owner -cf "$WORK/archive.tar" "$NAME")
 else
-  (cd "$WORK" && find "$NAME" -print | LC_ALL=C sort | tar --uid 0 --gid 0 --uname root --gname root -n -cf - -T -) | gzip -n -9 >"$OUT/$NAME.tar.gz"
+  (cd "$WORK" && find "$NAME" -print | LC_ALL=C sort >"$WORK/names" && tar --uid 0 --gid 0 --uname root --gname root -n -cf "$WORK/archive.tar" -T "$WORK/names")
 fi
+if ! gzip -n -9 <"$WORK/archive.tar" >"$OUT/$NAME.tar.gz.tmp"; then
+  rm -f "$OUT/$NAME.tar.gz.tmp"
+  echo "package.sh: could not compress $NAME" >&2
+  exit 1
+fi
+mv "$OUT/$NAME.tar.gz.tmp" "$OUT/$NAME.tar.gz"
 echo "$OUT/$NAME.tar.gz"

@@ -29,14 +29,25 @@ helm lint "$CHART" --strict -f "$CHART/ci/test-values.yaml"
 helm template mh "$CHART" --namespace memhouse --set database.existingSecret=memhouse-db >"$WORK/minimal.yaml"
 helm template mh "$CHART" --namespace memhouse -f "$CHART/ci/test-values.yaml" >"$WORK/full.yaml"
 
+# The hardening, on each workload by itself: the test Pod repeats the Deployment's settings,
+# so a search of the whole render would still pass if the Deployment lost them.
+for values in "--set database.existingSecret=memhouse-db" "-f $CHART/ci/test-values.yaml"; do
+  for workload in deployment tests/health; do
+    # shellcheck disable=SC2086  # the values arguments, split on purpose
+    helm template mh "$CHART" --namespace memhouse $values --show-only "templates/$workload.yaml" >"$WORK/workload.yaml"
+    has "$WORK/workload.yaml" "runAsNonRoot: true"
+    has "$WORK/workload.yaml" "runAsUser: 65532"
+    has "$WORK/workload.yaml" "readOnlyRootFilesystem: true"
+    has "$WORK/workload.yaml" "allowPrivilegeEscalation: false"
+    has "$WORK/workload.yaml" "- ALL"
+    has "$WORK/workload.yaml" "type: RuntimeDefault"
+    has "$WORK/workload.yaml" "automountServiceAccountToken: false"
+  done
+done
+
 for f in "$WORK/minimal.yaml" "$WORK/full.yaml"; do
-  has "$f" "runAsNonRoot: true"
-  has "$f" "runAsUser: 65532"
-  has "$f" "readOnlyRootFilesystem: true"
-  has "$f" "allowPrivilegeEscalation: false"
-  has "$f" "- ALL"
-  has "$f" "type: RuntimeDefault"
-  has "$f" "automountServiceAccountToken: false"
+  has "$f" "kind: Deployment"
+  has "$f" "kind: ServiceAccount"
   has "$f" "name: MEMHOUSE_DATABASE_URL"
   has "$f" 'name: "memhouse-db"'
   has "$f" 'key: "database-url"'
@@ -58,6 +69,28 @@ has "$WORK/full.yaml" 'template = "support"'
 has "$WORK/full.yaml" "name: MEMHOUSE_API_KEY"
 has "$WORK/full.yaml" 'name: "memhouse-admin"'
 has "$WORK/full.yaml" "secretName: memhouse-tls"
+
+# Numbers in a values file reach the configuration as what they are: Helm reads every number
+# of a values file as a float, and `max_connections = 32.0` would stop the server at start-up.
+cat >"$WORK/numbers.yaml" <<'VALUES'
+database:
+  existingSecret: memhouse-db
+config:
+  database:
+    max_connections: 32
+  memory:
+    relevance_weight: 0.5
+  intake:
+    workers: 4
+  language:
+    enabled: [en, de]
+VALUES
+helm template mh "$CHART" -f "$WORK/numbers.yaml" --show-only templates/configmap.yaml >"$WORK/numbers.out"
+has "$WORK/numbers.out" "max_connections = 32"
+has "$WORK/numbers.out" "workers = 4"
+has "$WORK/numbers.out" "relevance_weight = 0.5"
+has "$WORK/numbers.out" 'enabled = ["en", "de"]'
+lacks "$WORK/numbers.out" '= [0-9]+\.0$'
 
 # A digest pins the image over the tag.
 DIGEST=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

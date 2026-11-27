@@ -14,8 +14,17 @@ release_version() {
   sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' "$1/Cargo.toml" | head -1
 }
 
+# The SHA-256 of a file, or a failure when it cannot be read (a pipeline into `cut` would
+# hide the hash command's failure and print an empty digest).
 sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    _sha256_line=$(sha256sum "$1") || return 1
+  else
+    _sha256_line=$(shasum -a 256 "$1") || return 1
+  fi
+  _sha256_line=${_sha256_line%% *}
+  [ "${#_sha256_line}" -eq 64 ] || return 1
+  printf '%s\n' "$_sha256_line"
 }
 
 # Seconds since the epoch of the commit being released: the timestamp inside archives, so
