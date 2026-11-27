@@ -284,7 +284,12 @@ pub fn parse_raw_diff(raw: &[u8]) -> Vec<FileState> {
 /// binary, which a post-commit hook has by definition.
 pub fn commit_files(repo: &Repo, from: Option<&str>, to: &str) -> anyhow::Result<(String, Vec<FileState>)> {
     let git = |args: &[&str]| -> anyhow::Result<std::process::Output> {
-        Ok(std::process::Command::new("git").arg("-C").arg(&repo.root).args(args).stdin(std::process::Stdio::null()).output()?)
+        let mut git = std::process::Command::new("git");
+        // The repository is the one named, not one a calling git hook points at.
+        for name in GIT_REPOSITORY_ENV {
+            git.env_remove(name);
+        }
+        Ok(git.arg("-C").arg(&repo.root).args(args).stdin(std::process::Stdio::null()).output()?)
     };
     let sha = String::from_utf8_lossy(&git(&["rev-parse", "--verify", "-q", to])?.stdout).trim().to_string();
     anyhow::ensure!(!sha.is_empty(), "git knows no commit {to} in {}", repo.root.display());
@@ -365,6 +370,12 @@ pub fn fail_open(result: anyhow::Result<String>, format: Format) -> (String, Opt
         Err(e) => (format.nothing().to_string(), Some(format!("memhouse hook: {e:#} (nothing was added; the hook does not block)"))),
     }
 }
+
+/// The environment variables by which git is told which repository to act on. A git hook runs
+/// with them set, and a git started from it with `-C <dir>` would still act on the hook's
+/// repository, so they are removed from every git this module and the CLI start.
+pub const GIT_REPOSITORY_ENV: [&str; 8] =
+    ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX", "GIT_NAMESPACE"];
 
 #[cfg(test)]
 mod tests {

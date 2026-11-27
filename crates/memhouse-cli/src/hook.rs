@@ -348,7 +348,7 @@ fn install_git(cfg_path: &Option<PathBuf>, repo: Option<&Path>, subject: Option<
     let script = format!("#!/bin/sh\n{GIT_MARKER} (written by `memhouse hook install-git`).\n# Reports the commit's files to MemHouse; it never fails the commit.\n{line}\n");
     // Where git looks for hooks: `core.hooksPath` when set, else the repository's own directory
     // (a linked worktree shares its repository's). git knows; without it, the default.
-    let asked = std::process::Command::new("git").arg("-C").arg(&found.root).args(["rev-parse", "--git-path", "hooks"]).output().ok().filter(|o| o.status.success());
+    let asked = git_at(&found.root).args(["rev-parse", "--git-path", "hooks"]).output().ok().filter(|o| o.status.success());
     let hooks_dir = match asked {
         Some(o) => found.root.join(String::from_utf8_lossy(&o.stdout).trim()),
         None => found.root.join(".git/hooks"),
@@ -373,6 +373,17 @@ fn install_git(cfg_path: &Option<PathBuf>, repo: Option<&Path>, subject: Option<
     }
     println!("✓ git: wrote {} ({})", file.display(), subject.map(String::from).unwrap_or_else(|| found.subject()));
     Ok(())
+}
+
+/// git for the repository at `root`, whatever repository the environment names (as it does
+/// under a git hook).
+fn git_at(root: &std::path::Path) -> std::process::Command {
+    let mut git = std::process::Command::new("git");
+    for name in memhouse_server::hook::GIT_REPOSITORY_ENV {
+        git.env_remove(name);
+    }
+    git.arg("-C").arg(root);
+    git
 }
 
 #[cfg(test)]

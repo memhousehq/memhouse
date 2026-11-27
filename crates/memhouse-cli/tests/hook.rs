@@ -43,7 +43,13 @@ fn text(out: &Output) -> (String, String) {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(repo).args(["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"]).args(args).output().ok()?;
+    // Run under a git hook (the pre-push hook runs the tests), the environment names that hook's
+    // repository: without removing it, `git init` here would act on it.
+    let mut git = Command::new("git");
+    for name in memhouse_server::hook::GIT_REPOSITORY_ENV {
+        git.env_remove(name);
+    }
+    let out = git.arg("-C").arg(repo).args(["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"]).args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
