@@ -720,8 +720,9 @@ reviewer's, in the record's subject with its kind, tags, labels and scope, and p
 write gate like any write. The answer's `id` is the record that holds the new wording and
 `rephrased_from` the reviewed record, which is now `rejected` (audited as `memory.rephrase`).
 It needs `memory:write` as well. If the gate holds the new wording back, the call answers
-`409` and the record under review is unchanged; the refused wording stays in storage as a
-`rejected` record with its audit events, like any write the gate refuses. The same `409`
+`409` and the record under review is unchanged; the refused wording, when it is a new record
+(not the text of an existing one), stays in storage as a `rejected` record with its audit
+events, like any write the gate refuses. The same `409`
 answers a wording that is already the text of another record with other labels or scope. The
 new record keeps the reviewed record's `structured` form and `code_refs`.
 
@@ -998,7 +999,9 @@ curl -s -i -X POST localhost:7077/v1/session -H "authorization: Bearer $KEY"
 - The cookie is read only when the request carries no `Authorization` or `x-api-key`.
 - The session has the permissions of its key; it ends after `[server] session_ttl_secs`,
   after `session_idle_secs` without use, on logout, and with its next request once the key is
-  revoked or expired or the principal disabled. A request with an ended session gets `401`.
+  revoked or expired or the principal disabled. A request with an ended session gets `401`;
+  one whose session could not be checked because the store did not answer gets `503`, and the
+  session is kept.
 - A credential that carries no permission opens no session (`403`), and a browser opens one
   from the console's own origin only: a page of an origin on `cors_origins` calls the API
   with its key and gets no session.
@@ -1328,7 +1331,7 @@ Every error is JSON with a stable `code` and a message for people:
 | 404 | `not_found` | the memory doesn't exist, or the route doesn't |
 | 409 | `conflict` | an idempotency key reused for a different request; revising a version that is no longer current; a process still on the embedding model the database left (`memhouse reembed`) |
 | 500 | `internal` | database or model failure; the message says which |
-| 503 | `unavailable` | a write could not be queued (the database is down): nothing was stored; retry after `Retry-After` (1.4) |
+| 503 | `unavailable` | a write could not be queued (the database is down): nothing was stored; retry after `Retry-After` (1.4). Also any request whose credential could not be checked because the store did not answer (1.10): nothing was done, and the key, token or session is as valid as before |
 
 Branch on `code`, never on the message: messages may be reworded in any release, codes only
 change in a new major version. New codes may be added in a minor release, so treat an unknown code

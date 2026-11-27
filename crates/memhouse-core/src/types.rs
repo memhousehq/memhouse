@@ -708,11 +708,16 @@ pub struct NewMemory {
     /// replaces as they are when it is stored (`staleness::successor_refs`), not as they were
     /// when the revision was made.
     pub refs_inherited: bool,
+    /// A record that takes the place of another one without revising it (a reviewer's
+    /// rewording of a candidate, GOV-11): it is stored with that record's references exactly
+    /// as the store holds them when it is inserted, stale marks and hashes seen included, read
+    /// in the insert's own transaction. `code_refs` is then not used.
+    pub refs_from: Option<Uuid>,
 }
 
 impl NewMemory {
     pub fn new(memory: Memory, content_hash: String) -> NewMemory {
-        NewMemory { memory, embedding: None, content_hash, alt: None, structured: None, code_refs: vec![], refs_inherited: false }
+        NewMemory { memory, embedding: None, content_hash, alt: None, structured: None, code_refs: vec![], refs_inherited: false, refs_from: None }
     }
 }
 

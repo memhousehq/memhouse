@@ -585,9 +585,11 @@ impl Engine {
 
     /// A reviewer rewords a candidate or a quarantined record and approves the new wording
     /// (GOV-11). The new text is a write of the reviewer's and passes the whole write gate:
-    /// redaction, the injection screen, deduplication. If the gate holds it back, nothing
-    /// changes and the call is refused. Otherwise the reviewed record is rejected with a
-    /// pointer to its replacement, and both steps are audited.
+    /// redaction, the injection screen, deduplication. If the gate holds it back, the call is
+    /// refused and the reviewed record is as it was; the held wording, when it was stored as
+    /// a new record (not the text of an existing one), is kept as a rejected record.
+    /// Otherwise the reviewed record is rejected with a pointer to its replacement, and both
+    /// steps are audited.
     pub(crate) async fn rephrase(&self, tenant: &str, m: &Memory, content: &str, by: &str, user: Option<String>, reason: Option<&str>) -> anyhow::Result<ReviewResult> {
         if !matches!(m.status, MemoryStatus::Candidate | MemoryStatus::Quarantined) {
             return Err(error::conflict(format!("memory {} is {}; only a candidate or a quarantined record is rephrased", m.id, m.status.as_str())));
@@ -607,21 +609,14 @@ impl Engine {
             o.insert("rephrased_from".into(), json!(m.id));
         }
         // What the reviewed record carries beside its text goes to the new wording: its
-        // structured form, and the files it is about with the hashes it was written for, so
-        // the replacement goes stale with them like the original would (TPL-04). A file seen
-        // changed since is reported again by the next hook, which marks the replacement.
-        let (structured, code_refs) = self.store.representations(tenant, m.id).await?;
-        // What its files were last seen as while it waited: a writer cannot set a reference
-        // stale, so after the write those observations are made again (below).
-        let seen: Vec<FileState> = code_refs
-            .iter()
-            .filter(|c| c.stale_since.is_some())
-            .map(|c| match &c.seen_hash {
-                Some(h) => FileState::present(c.path.clone(), h.clone()),
-                None => FileState::deleted(c.path.clone()),
-            })
-            .collect();
-        let code_refs = code_refs.into_iter().map(|c| CodeRef::new(c.path, c.blob_hash)).collect();
+        // structured form, and the files it is about. The references are not read here: the
+        // store copies them from the reviewed record in the transaction that inserts the new
+        // one, as they are then, stale marks and hashes seen included (TPL-04). So a file
+        // reported changed while the record waited, or between this call and the insert,
+        // leaves the replacement as stale as the record it replaces, and no observation is
+        // made again on its behalf.
+        let (structured, linked) = self.store.representations(tenant, m.id).await?;
+        let refs = if linked.is_empty() { crate::engine::Refs::Own } else { crate::engine::Refs::Of(m.id) };
         let req = RememberRequest {
             tenant: Some(tenant.to_string()),
             subject: Some(m.subject.clone()),
@@ -639,11 +634,10 @@ impl Engine {
             user,
             expires_at: m.expires_at,
             structured,
-            code_refs,
             wait: true,
             ..Default::default()
         };
-        let written = self.remember_with(req, crate::intake::Entry::Commit).await?;
+        let written = self.remember_taking(req, crate::intake::Entry::Commit, refs).await?;
         if written.id == m.id {
             return Err(error::conflict("the rephrased text was taken as the record under review; use another wording"));
         }
@@ -673,13 +667,6 @@ impl Engine {
                 "the rephrased text was not committed ({}); the record under review is unchanged",
                 written.note.unwrap_or_else(|| status.as_str().to_string())
             )));
-        }
-        // A file reported changed while the reviewed record waited made its reference stale.
-        // The replacement was written with the same hash and is as stale: the file's state
-        // as last seen is observed again, which marks it (and changes nothing for a reference
-        // that already has that state).
-        if !seen.is_empty() && !written.deduplicated {
-            self.files_observed(tenant, &m.subject, &seen, by, json!({ "event": "review.rephrase", "reason": m.id })).await?;
         }
         self.settle_record(tenant, m.id).await?;
         if !self.store.set_status(tenant, m.id, MemoryStatus::Rejected).await? {

@@ -2414,6 +2414,27 @@ one failure of the hosted checks; what changed:
 - Governance: 85 checks, store kit 20; the new cases are scenarios of `console_session`,
   `quarantine_review` and `profile_advisor`.
 
+**Review fixes, third round (2026-11-27):** what changed:
+
+- **A store that does not answer is not an authentication failure.** A request whose key,
+  token or session could not be checked because a lookup failed is answered
+  `503 unavailable` with `Retry-After` (it was 401), for keys and tokens as for sessions;
+  nothing is audited as `auth.failed` and the outcome is not cached. The console logged out
+  on that 401 although the server kept the session: on 503 it stays logged in and says to
+  try again. Every authenticated operation documents 503 (API 1.10, no new version).
+- **A rephrased record's references are copied where it is stored.** The second round read
+  the files' last seen states and observed them again after the write: a newer report in
+  between was overwritten, for other records of the subject too. Nothing is observed again
+  now. The replacement names the reviewed record (`NewMemory::refs_from`), and each store
+  copies that record's references, stale marks and hashes seen included, in the transaction
+  that inserts it (under the subject's lock on Postgres, as for a revision). The store kit
+  applies a report between the reviewer's read and the insert: the replacement is stale with
+  the newer hash, and a sibling record's state is untouched (in `code_refs_observe…`, 20
+  checks as before).
+- **Docs and comments** say that a held rephrasing leaves a rejected record only when it was
+  stored as a new record, not when it is the text of an existing one.
+- Governance: 85 checks, store kit 20; `console_session` asserts the 503.
+
 #### G21 — Packaging and release v1 (developer launch)
 
 - [ ] **Done**

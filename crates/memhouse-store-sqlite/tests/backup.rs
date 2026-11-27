@@ -282,6 +282,7 @@ async fn a_restore_does_not_write_again_a_queued_record_that_retention_purged() 
         structured: None,
         code_refs: vec![],
         refs_inherited: false,
+        refs_from: None,
     };
     let proposal = Proposal {
         id: Uuid::now_v7(),
@@ -337,6 +338,7 @@ async fn a_restore_removes_a_record_deleted_while_queued_and_one_dated_after_its
         structured: None,
         code_refs: vec![],
         refs_inherited: false,
+        refs_from: None,
     };
     let proposal = Proposal {
         id: Uuid::now_v7(),

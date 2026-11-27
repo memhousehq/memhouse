@@ -99,6 +99,19 @@ fn request_hash(request: &impl serde::Serialize) -> String {
 pub(crate) use crate::intake::Entry;
 use crate::intake::{Op, PendingRecord, Proposal};
 
+/// Where a write's code references come from (TPL-04).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Refs {
+    /// The ones the write names.
+    Own,
+    /// A revision that names none: those of the version it replaces, judged by the store when
+    /// it inserts the revision ([`NewMemory::refs_inherited`]).
+    Inherited,
+    /// Those of this record, exactly as the store holds them when it inserts the write
+    /// ([`NewMemory::refs_from`]).
+    Of(Uuid),
+}
+
 /// What a list may return.
 pub(crate) struct Page {
     pub kinds: Option<Vec<MemoryKind>>,
@@ -439,19 +452,24 @@ impl Engine {
     }
 
     pub(crate) async fn remember_with(&self, req: RememberRequest, entry: Entry) -> anyhow::Result<RememberResult> {
-        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
-        let span = Self::write_span("memhouse.remember", &policy, &req.actor, &req.subject);
-        retryable(self.traced("remember", span, self.remember_untraced(req, entry, &policy)).await)
+        self.remember_taking(req, entry, Refs::Own).await
     }
 
-    async fn remember_untraced(&self, req: RememberRequest, entry: Entry, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
+    /// A write that says where its code references come from ([`Refs`]).
+    pub(crate) async fn remember_taking(&self, req: RememberRequest, entry: Entry, refs: Refs) -> anyhow::Result<RememberResult> {
+        let policy = retryable(self.policy_for(&self.tenant(&req.tenant)).await)?;
+        let span = Self::write_span("memhouse.remember", &policy, &req.actor, &req.subject);
+        retryable(self.traced("remember", span, self.remember_untraced(req, entry, refs, &policy)).await)
+    }
+
+    async fn remember_untraced(&self, req: RememberRequest, entry: Entry, refs: Refs, policy: &CompiledPolicy) -> anyhow::Result<RememberResult> {
         let tenant = self.tenant(&req.tenant);
         let subject = self.subject(&req.subject);
         let actor = req.actor.clone().unwrap_or_else(|| "api".into());
         if let Some(done) = self.replay::<RememberResult>(&tenant, &req.request_key, &req).await? {
             return Ok(done);
         }
-        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember, false), policy).await?;
+        let result = self.remember_once(&req, &tenant, &subject, &actor, (entry, Op::Remember, refs), policy).await?;
         self.accepted_key(&tenant, &subject, "remember", &req.request_key, &req, &result).await;
         Ok(result)
     }
@@ -465,11 +483,15 @@ impl Engine {
         tenant: &str,
         subject: &str,
         actor: &str,
-        how: (Entry, Op, bool),
+        how: (Entry, Op, Refs),
         policy: &CompiledPolicy,
     ) -> anyhow::Result<RememberResult> {
-        // The last: a revision that takes the references of the version it replaces.
-        let (entry, op, refs_inherited) = how;
+        let (entry, op, refs) = how;
+        let (refs_inherited, refs_from) = match refs {
+            Refs::Own => (false, None),
+            Refs::Inherited => (true, None),
+            Refs::Of(id) => (false, Some(id)),
+        };
         let (tenant, subject, actor) = (tenant.to_string(), subject.to_string(), actor.to_string());
         let kind = req.kind.unwrap_or(MemoryKind::Semantic);
         if !policy.allows(kind) {
@@ -609,7 +631,7 @@ impl Engine {
             source,
             op,
             entry,
-            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs, refs_inherited }],
+            records: vec![PendingRecord { memory: mem, content_hash: hash, redactions: redactions.clone(), focus: None, structured, code_refs, refs_inherited, refs_from }],
             session_id: None,
             enqueued_at: now,
         };
@@ -756,6 +778,7 @@ impl Engine {
                 structured: None,
                 code_refs: vec![],
                 refs_inherited: false,
+                refs_from: None,
             });
         }
         if records.is_empty() {
@@ -1421,7 +1444,7 @@ impl Engine {
             code_refs,
             wait: req.wait,
         };
-        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise, refs_inherited), policy).await?;
+        let result = self.remember_once(&write, &tenant, &old.subject, &actor, (entry, Op::Revise, if refs_inherited { Refs::Inherited } else { Refs::Own }), policy).await?;
         self.accepted_key(&tenant, &old.subject, "revise", &req.request_key, &req, &result).await;
         Ok(result)
     }

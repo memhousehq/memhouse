@@ -546,7 +546,35 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
                 )
                 .await?;
             let vanished_after = revision(vanished, vec![CodeRef::new("src/r1.rs", "q1"), CodeRef::new("src/r3.rs", "q3")], true).await?;
-            let kept_gone = vanished_after == (vec![("src/r1.rs".to_string(), "q1".to_string(), true, None), ("src/r3.rs".to_string(), "q3".to_string(), true, None)], true);
+            // A record that takes another's place without revising it (a reviewer's rewording)
+            // is stored with that record's references as they are when it is inserted: a
+            // report that arrives after the reviewer read them is not lost, and no other
+            // record's state is touched.
+            let reviewed = linked("The importer reads one batch at a time.", vec![CodeRef::new("src/i1.rs", "i1")]).await?;
+            let sibling = linked("The importer's batch size is set in its header.", vec![CodeRef::new("src/i1.rs", "i2")]).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/i1.rs", "i2")], at, &memhouse_core::traits::no_audit).await?;
+            // Read here by the reviewer (stale, seen `i2`). Then the file is seen again, changed.
+            store.code_refs_observe(t, repo, &[FileState::present("src/i1.rs", "i3")], at, &memhouse_core::traits::no_audit).await?;
+            let marks = |id: Uuid| {
+                let store = &store;
+                async move {
+                    Ok::<_, anyhow::Error>(store.representations(t, id).await?.1.into_iter().map(|c| (c.path, c.blob_hash, c.stale_since.is_some(), c.seen_hash)).collect::<Vec<_>>())
+                }
+            };
+            let sibling_before = marks(sibling).await?;
+            let mut m = store.get(t, reviewed).await?.ok_or_else(|| anyhow::anyhow!("the reviewed record is not stored"))?;
+            m.id = Uuid::now_v7();
+            m.content = "The importer takes its input batch by batch.".into();
+            let mut n = NewMemory::new(m.clone(), memhouse_core::engine::content_hash(&m.content));
+            n.refs_from = Some(reviewed);
+            anyhow::ensure!(store.apply_intake(&memhouse_core::intake::IntakeWrite { tenant: t.to_string(), records: vec![n], ..Default::default() }).await?, "the replacement was not written");
+            let seen_i3 = |hash: &str| vec![("src/i1.rs".to_string(), hash.to_string(), true, Some("i3".to_string()))];
+            let replaced = marks(m.id).await? == seen_i3("i1")
+                && stale_of(m.id).await?.is_some()
+                && marks(reviewed).await? == seen_i3("i1")
+                && sibling_before == seen_i3("i2")
+                && marks(sibling).await? == sibling_before;
+            let kept_gone = replaced && vanished_after == (vec![("src/r1.rs".to_string(), "q1".to_string(), true, None), ("src/r3.rs".to_string(), "q3".to_string(), true, None)], true);
             let judged = kept_gone && own_after == (vec![("src/s1.rs".to_string(), "s1".to_string(), true, Some("s2".to_string()))], true)
                 // Taken from the predecessor: the renamed file is followed; the one restored
                 // since the reviser read it leaves the revision stale (written about `u2`).

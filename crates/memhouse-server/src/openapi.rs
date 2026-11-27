@@ -1022,7 +1022,7 @@ fn error_response(code: u16) -> Value {
         404 => "Not found (`not_found`).",
         409 => "Conflict with the stored state (`conflict`).",
         503 => {
-            "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key."
+            "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key."
         }
         _ => "Internal failure (`internal`).",
     };
@@ -1071,6 +1071,8 @@ pub fn spec() -> Value {
         }
         if !op.open {
             responses.insert("403".into(), error_response(403));
+            // Authentication reads the store: when it does not answer, any of them says so.
+            responses.entry("503".to_string()).or_insert_with(|| error_response(503));
         }
         o["responses"] = Value::Object(responses);
         if op.open {

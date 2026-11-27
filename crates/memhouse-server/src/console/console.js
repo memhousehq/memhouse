@@ -75,6 +75,9 @@ async function api(method, path, body, extra) {
   if (resp.status === 401 && path !== '/v1/session') {
     showLogin('The session ended. Log in again.');
   }
+  // 503: the server could not check the session or do the work for now. The session is not
+  // over (only a 401 says that), so the page stays as it is and says to try again.
+  if (resp.status === 503) throw new ApiError(503, { error: 'The server is not answering for now. You are still logged in; try again.', code: 'unavailable' });
   if (!resp.ok) throw new ApiError(resp.status, data);
   return data;
 }
@@ -208,7 +211,7 @@ async function logout() {
   } catch (e) {
     if (e instanceof Stale) return;
     if (e.status !== 401) {
-      notice(`Not logged out: ${e.message || 'the server did not answer'}. The session is still open; try again.`, true);
+      notice(`Not logged out: ${e.status === 503 ? 'the server is not answering for now' : e.message || 'the server did not answer'}. The session is still open; try again.`, true);
       return;
     }
   }
@@ -218,8 +221,10 @@ async function logout() {
 async function start() {
   try {
     showApp(await api('GET', '/v1/session'));
-  } catch (_) {
-    showLogin('');
+  } catch (e) {
+    // No session (401, or 404 for a request without one) shows the login form. Anything
+    // else says nothing about the session: it may well be alive, so say what happened.
+    showLogin(e.status === 401 || e.status === 404 ? '' : 'The server is not answering for now. Reload the page to try again; a session you had is not lost.');
   }
 }
 

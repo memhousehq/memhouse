@@ -501,16 +501,22 @@ async fn session(c: &mut Console) -> anyhow::Result<Outcome> {
         use crate::scratch::Sql;
         db.batch(Sql::same("ALTER TABLE mh_principal RENAME TO mh_principal_away")).await?;
         let during = c.get(&root, "/v1/session").await;
+        // A key is answered the same way: its principal could not be read either.
+        let by_key = c.api.call("GET", "/v1/whoami", "/v1/whoami", None, &[("authorization", &format!("Bearer {key}"))]).await;
         let kept = c.e.store.session_get(&root.id()).await;
         // Back in place before anything is judged, whatever the two calls answered.
         let back = db.batch(Sql::same("ALTER TABLE mh_principal_away RENAME TO mh_principal")).await;
         c.db = Some(db);
         back?;
         let (during, kept) = (during?, kept?.is_some());
+        let by_key = by_key?;
+        expect(by_key.status == 503 && by_key.body["code"] == "unavailable", format!("a key whose principal could not be read: {} {}", by_key.status, by_key.body["code"]));
         let after = c.get(&root, "/v1/session").await?;
+        // Not an authentication failure (the page would log out on 401): retryable, like
+        // every request that fails for a dependency.
         expect(
-            during.status == 401 && kept && after.status == 200,
-            format!("a failed principal lookup: {} (session row kept: {kept}), then {} with the store back", during.status, after.status),
+            during.status == 503 && during.body["code"] == "unavailable" && !header(&during, "retry-after").is_empty() && kept && after.status == 200,
+            format!("a failed principal lookup: {} {} (session row kept: {kept}), then {} with the store back", during.status, during.body["code"], after.status),
         );
     }
     let own = c.page(&root, "POST", "/v1/principals/{id}/disable", &format!("/v1/principals/{me}/disable"), None).await?;
@@ -689,7 +695,8 @@ async fn review(c: &mut Console) -> anyhow::Result<Outcome> {
     queued.sort();
     expect(queued == unique, format!("the queue lists {} of the {N} quarantined records", queued.len()));
 
-    // Never committed as it stands; a rephrasing that is itself held changes nothing.
+    // Never committed as it stands; a rephrasing that is itself held leaves the reviewed record
+    // as it was (the new wording, when it is a new record, is kept rejected).
     let as_is = c.post(&reviewer, "/v1/review", json!({"id": ids[0], "action": "commit"})).await?;
     expect(as_is.status == 409, format!("approving a quarantined record as it stands: {}", as_is.status));
     let held = c

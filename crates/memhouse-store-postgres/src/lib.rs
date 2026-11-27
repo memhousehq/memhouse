@@ -1759,7 +1759,7 @@ impl Store for PgStore {
         // them in), so the two never wait on each other.
         // So does a revision with code references: no observation of the subject's files runs
         // between the read of its predecessor's references below and the commit (TPL-04).
-        let revises_code = |n: &NewMemory| n.memory.supersedes.is_some() && (n.refs_inherited || !n.code_refs.is_empty());
+        let revises_code = |n: &NewMemory| n.refs_from.is_some() || (n.memory.supersedes.is_some() && (n.refs_inherited || !n.code_refs.is_empty()));
         if let Some(first) = w.records.first().filter(|_| !w.requires.is_empty() || w.records.iter().any(revises_code)) {
             sqlx::query(SUBJECT_LOCK_SQL).bind(&w.tenant).bind(&first.memory.subject).execute(&mut *tx).await?;
         }
@@ -1793,6 +1793,23 @@ impl Store for PgStore {
             let mut records = std::borrow::Cow::Borrowed(&w.records);
             for i in 0..w.records.len() {
                 let n = &w.records[i];
+                // A record that takes another's place without revising it: that record's
+                // references, exactly as they are now (under the subject's lock, like a revision's).
+                if let Some(of) = n.refs_from {
+                    let copied: Vec<CodeRef> = sqlx::query(
+                        "SELECT c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
+                         WHERE m.tenant = $1 AND c.memory_id = $2 ORDER BY c.path",
+                    )
+                    .bind(&w.tenant)
+                    .bind(of)
+                    .fetch_all(&mut *tx)
+                    .await?
+                    .iter()
+                    .map(row_to_code_ref)
+                    .collect::<anyhow::Result<_>>()?;
+                    records.to_mut()[i].code_refs = copied;
+                    continue;
+                }
                 let Some(old) = n.memory.supersedes.filter(|_| revises_code(n)) else { continue };
                 let predecessor: Vec<CodeRef> = sqlx::query(
                     "SELECT c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \

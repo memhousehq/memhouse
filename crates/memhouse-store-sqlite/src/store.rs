@@ -315,6 +315,18 @@ impl Store for SqliteStore {
             let mut records = std::borrow::Cow::Borrowed(&w.records);
             for i in 0..w.records.len() {
                 let n = &w.records[i];
+                // A record that takes another's place without revising it: that record's
+                // references, exactly as they are now.
+                if let Some(of) = n.refs_from {
+                    let copied = rows(
+                        &tx,
+                        &format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path"),
+                        params![w.tenant, of.to_string()],
+                        code_ref_of,
+                    )?;
+                    records.to_mut()[i].code_refs = copied;
+                    continue;
+                }
                 let Some(old) = n.memory.supersedes.filter(|_| n.refs_inherited || !n.code_refs.is_empty()) else { continue };
                 let predecessor = rows(
                     &tx,

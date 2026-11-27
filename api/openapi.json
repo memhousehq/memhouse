@@ -5387,6 +5387,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Prometheus metrics",
@@ -5445,6 +5464,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The profile advisor",
@@ -5517,6 +5555,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Newest audit events",
@@ -5607,7 +5664,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -5727,7 +5784,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -5827,7 +5884,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -5895,6 +5952,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Background enrichment queue",
@@ -5986,6 +6062,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Stored evaluation replays",
@@ -6047,6 +6142,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The tenant's evaluation suites",
@@ -6124,6 +6238,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Quality metrics by policy version",
@@ -6228,6 +6361,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Delete memories by record, subject, user, agent, source or tenant",
@@ -6289,6 +6441,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Grants between agents",
@@ -6368,6 +6539,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Share one agent's memory with another",
@@ -6458,6 +6648,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Revoke a grant",
@@ -6561,7 +6770,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -6641,6 +6850,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "API keys of the tenant's principals",
@@ -6730,6 +6958,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Create an API key",
@@ -6830,6 +7077,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Revoke an API key",
@@ -6940,6 +7206,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Replace an API key",
@@ -7031,6 +7316,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Set a memory's sensitivity labels",
@@ -7151,6 +7455,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use GET /v1/subjects/{subject}/memories",
@@ -7255,7 +7578,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -7358,6 +7681,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use POST /v1/forget with `id`",
@@ -7445,6 +7787,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Read one memory and its state",
@@ -7574,7 +7935,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -7668,6 +8029,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The tenant's policy: running, versions and history",
@@ -7747,6 +8127,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Propose a policy spec",
@@ -7838,6 +8237,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Compare two policies",
@@ -7929,6 +8347,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Activate an earlier policy",
@@ -8010,6 +8447,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Compile a spec without storing it",
@@ -8110,6 +8566,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Approve a proposed version and activate it",
@@ -8171,6 +8646,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The tenant's principals",
@@ -8271,6 +8765,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Create or change a principal",
@@ -8361,6 +8874,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Disable a principal",
@@ -8451,6 +8983,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Enable a disabled principal",
@@ -8564,7 +9115,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -8655,6 +9206,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Retrieve memories for a context",
@@ -8742,6 +9312,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Why a recall returned what it did",
@@ -8845,7 +9434,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -8956,6 +9545,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Commit or reject a candidate",
@@ -9062,6 +9670,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Records waiting for a reviewer",
@@ -9175,7 +9802,7 @@
                 }
               }
             },
-            "description": "Nothing was written: a dependency (the intake queue, the database) is down for now (`unavailable`). Retry after `Retry-After` seconds with the same idempotency key.",
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -9259,6 +9886,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9330,6 +9976,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9394,6 +10059,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9460,6 +10144,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Counts for the configured tenant",
@@ -9521,6 +10224,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Subjects with committed memories (up to 500)",
@@ -9592,6 +10314,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Deprecated: use POST /v1/forget with `subject`",
@@ -9709,6 +10450,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "List a subject's memories, newest first",
@@ -9807,6 +10567,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The preferences that apply to the caller",
@@ -9898,6 +10677,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Issue a short-lived agent token",
@@ -9956,6 +10754,25 @@
               }
             },
             "description": "Internal failure (`internal`)."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Nothing was done: a dependency (the intake queue, the database) is down for now (`unavailable`), for a write that could not be queued or a credential that could not be checked. Retry after `Retry-After` seconds, a write with the same idempotency key.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "The verified identity of this credential",

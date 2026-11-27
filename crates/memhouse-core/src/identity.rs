@@ -210,9 +210,11 @@ pub fn session_touch_secs(idle_secs: u64) -> i64 {
     ((idle_secs / 20) as i64).clamp(1, SESSION_TOUCH_SECS)
 }
 
-/// Why a credential is refused when the store did not answer a lookup: nothing is known
-/// about the key or the principal, so nothing is concluded (a session is kept).
-pub const STORE_UNAVAILABLE: &str = "session store unavailable";
+/// The reason of an authentication that could not be decided because the store did not answer
+/// a lookup: nothing is known about the key, the principal or the session, so nothing is
+/// concluded (a session is kept) and nothing is cached. It is not a refusal of the credential:
+/// the transport answers `unavailable` (503, retryable), not `unauthorized`.
+pub const STORE_UNAVAILABLE: &str = "the store did not answer";
 
 /// The prefix of a session secret, as the cookie carries it.
 pub const SESSION_PREFIX: &str = "mhs_";
@@ -446,6 +448,10 @@ impl Authenticator {
             }
         }
         let r = self.verify(presented, asserted_user).await;
+        // An answer the store could not give is not remembered: the next request asks again.
+        if r.as_ref().is_err_and(|f| f.reason == STORE_UNAVAILABLE) {
+            return r;
+        }
         let mut cache = self.cache.lock().expect("cache lock");
         if cache.len() > 10_000 {
             cache.clear();
@@ -461,7 +467,8 @@ impl Authenticator {
             let (claims, body, sig) = token_parts(presented).ok_or_else(|| fail("malformed token", None, None))?;
             let secret = match self.store.signing_key(&claims.kid).await {
                 Ok(Some(s)) => s,
-                _ => return Err(fail("unknown signing key", Some(&claims.key), Some(&claims.sub))),
+                Ok(None) => return Err(fail("unknown signing key", Some(&claims.key), Some(&claims.sub))),
+                Err(_) => return Err(fail(STORE_UNAVAILABLE, Some(&claims.key), Some(&claims.sub))),
             };
             let expect = b64url(&hmac_sha256(&secret, body.as_bytes()));
             if !constant_time_eq(expect.as_bytes(), sig.as_bytes()) {
@@ -475,7 +482,7 @@ impl Authenticator {
             }
             // The issuing key must still be valid; bootstrap keys issue under their own name.
             if claims.key != BOOTSTRAP {
-                let key = self.store.api_key_get(&claims.key).await.ok().flatten();
+                let key = self.store.api_key_get(&claims.key).await.map_err(|_| fail(STORE_UNAVAILABLE, Some(&claims.key), Some(&claims.sub)))?;
                 if !key.is_some_and(|k| k.revoked_at.is_none() && k.expires_at.is_none_or(|e| e > Utc::now())) {
                     return Err(fail("the key that issued this token is revoked or expired", Some(&claims.key), Some(&claims.sub)));
                 }
@@ -501,7 +508,8 @@ impl Authenticator {
         let (key_id, secret) = parse_key(presented).ok_or_else(|| fail("unknown credential", None, None))?;
         let key = match self.store.api_key_get(key_id).await {
             Ok(Some(k)) => k,
-            _ => return Err(fail("unknown key", Some(key_id), None)),
+            Ok(None) => return Err(fail("unknown key", Some(key_id), None)),
+            Err(_) => return Err(fail(STORE_UNAVAILABLE, Some(key_id), None)),
         };
         if !constant_time_eq(key.hash.as_bytes(), sha256_hex(secret.as_bytes()).as_bytes()) {
             return Err(fail("wrong key secret", Some(key_id), Some(&key.principal_id)));

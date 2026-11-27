@@ -114,6 +114,7 @@ fn proposal(records: Vec<Memory>) -> Proposal {
                 structured: None,
                 code_refs: vec![],
                 refs_inherited: false,
+                refs_from: None,
             })
             .collect(),
         session_id: None,

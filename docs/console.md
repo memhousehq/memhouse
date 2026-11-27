@@ -111,15 +111,16 @@ injection screen held back, and writes the pipeline could not process).
 **Rephrase and approve** is how a quarantined record becomes a memory. The wording you write is
 stored as a write of yours and passes the whole write gate like any write: redaction, the
 injection screen, deduplication. If the gate holds your wording too, the record under review
-stays as it was and the page tells you; the refused wording is kept as a `rejected` record
-with its own audit events, like any write the gate refuses. If your wording is already the
+stays as it was and the page tells you; the refused wording, when it is a new record and not
+the text of an existing one, is kept as a `rejected` record with its own audit events, like
+any write the gate refuses. If your wording is already the
 text of another record with other labels or another scope, it is refused too: review that
 record instead. Otherwise the new record is committed with `metadata.rephrased_from` naming
 the reviewed record, which is rejected; the audit log has `memory.rephrase` (on the reviewed
 record, naming its replacement) and the write's own events. The new record keeps the reviewed
 record's subject, kind, tags, labels, scope, structured form, the files it is linked to
-(with the hashes it was written for; a file reported changed while the record waited leaves
-the new record stale too) and, for a revision, the version it replaces. Its
+(as the store holds them when the new record is written: a file reported changed while the
+record waited leaves the new record stale too) and, for a revision, the version it replaces. Its
 author (`provenance.agent`) is you, not the agent that proposed the original.
 
 A rejected or quarantined record is never recalled.
@@ -235,8 +236,9 @@ can read it, pages without a Content-Security-Policy, and an API open to every o
   for that interval: a session never ends before `session_idle_secs` have passed since its
   last accepted request, and at most a minute after.
 - **A store that does not answer ends no session.** When the database cannot be read, or
-  the session's last use cannot be written when that is due, the request is refused (`401`,
-  "session store unavailable") and the session is kept.
+  the session's last use cannot be written when that is due, the request is answered `503
+  unavailable` with `Retry-After`, as for a key, and the session is kept. Only `401` says a
+  session is over: on `503` the page stays logged in and says to try again.
 - **Restart.** Sessions are rows in the database, so they survive a restart of `memhouse
   serve` and are valid on every replica. Rows are deleted at logout, when a session past its
   end is presented, and by the hourly retention pass.

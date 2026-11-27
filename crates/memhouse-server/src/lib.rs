@@ -236,6 +236,13 @@ async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Respo
             Err(f) => f,
         },
     };
+    // The store did not answer a lookup: nothing was decided about the credential, so this is
+    // no authentication failure (nothing to audit, and no reason for a console to log out).
+    // Answered like every request that fails for a dependency: retryable.
+    if failure.reason == memhouse_core::identity::STORE_UNAVAILABLE {
+        memhouse_core::metrics::inc("memhouse_refused_total", &[("kind", "unavailable"), ("reason", "auth_store")], 1.0);
+        return ApiError(error::unavailable("the credential could not be checked: the store did not answer. Nothing was done; retry")).into_response();
+    }
     memhouse_core::metrics::inc("memhouse_refused_total", &[("kind", "auth"), ("reason", failure.reason)], 1.0);
     let detail = json!({ "reason": failure.reason, "key": failure.key_id, "route": route });
     let actor = failure.principal.clone().unwrap_or_else(|| "anonymous".into());
