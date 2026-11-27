@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "MemHouse: governed long-term memory for AI agents (Rust + Postgres)"
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories = ["command-line-utilities", "database"]
+rust-version.workspace = true
 
 [[bin]]
 name = "memhouse"

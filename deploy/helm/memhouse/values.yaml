@@ -1,0 +1,156 @@
+# SPDX-License-Identifier: Apache-2.0
+# Values of the MemHouse chart. The chart runs `memhouse serve` against a Postgres database you
+# provide (16 or newer, with the pgvector extension). MemHouse keeps no state of its own: every
+# replica can be stopped and replaced at any time.
+
+image:
+  repository: ghcr.io/memhousehq/memhouse
+  # The image tag; the chart's appVersion when empty.
+  tag: ""
+  # Pin the image by digest (sha256:...); takes precedence over the tag. The release notes
+  # give the digest that was signed.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Two replicas by default: the service is stateless, and one can restart while the other serves.
+replicaCount: 2
+
+# The database connection comes from a Secret that already exists in the namespace. The chart
+# never takes a password or a URL as a value, so none ends up in a values file, in the
+# release's stored manifest or in `helm get values`.
+#   kubectl create secret generic memhouse-db \
+#     --from-literal=database-url='postgres://USER:PASSWORD@HOST:5432/memhouse?sslmode=require'
+database:
+  existingSecret: ""
+  urlKey: database-url
+
+# Optional: a bootstrap administrator key from an existing Secret (MEMHOUSE_API_KEY). Without
+# it, create principals and keys with `memhouse principal` and `memhouse key` against the
+# database before the first request.
+#   kubectl create secret generic memhouse-admin --from-literal=api-key="mh_$(openssl rand -hex 32)"
+apiKey:
+  existingSecret: ""
+  key: api-key
+
+# The admin console at `/`. `publicUrl` is the address browsers reach it at; it must be https
+# for the session cookie to be issued on any host but a loopback one (docs/console.md).
+console:
+  publicUrl: ""
+
+# MemHouse's configuration file, as a map rendered to TOML (docs/configuration.md lists every
+# key). Not for secrets: name them through `extraEnv` with `valueFrom.secretKeyRef`.
+# `server.bind` and, when `console.publicUrl` is set, `server.public_url` are set by the chart.
+config: {}
+#  memory:
+#    template: support
+#  governance:
+#    redact: [secret, card, ssn, iban, email]
+
+# Extra environment variables for the container (for example an embedding or LLM key from a
+# Secret, HF_ENDPOINT for a model mirror, OTEL_EXPORTER_OTLP_ENDPOINT).
+extraEnv: []
+extraEnvFrom: []
+
+# Where the local embedding model is cached (/data/models). It is a cache: a pod that loses it
+# downloads the pinned model files again and verifies their checksums. `emptyDir` needs
+# outbound HTTPS to the model hub on each pod's first start; use an existing claim (or a
+# remote embedding provider) where pods have no such access.
+modelCache:
+  emptyDir:
+    sizeLimit: 2Gi
+  # The name of an existing PersistentVolumeClaim to use instead of the emptyDir.
+  existingClaim: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # MemHouse does not call the Kubernetes API: no token is mounted.
+  automount: false
+
+podAnnotations: {}
+podLabels: {}
+
+# The image runs as the unprivileged user 65532 and needs no capability; its root filesystem
+# is read-only (writable paths: the model cache at /data and an emptyDir at /tmp).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 7077
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: memhouse.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: memhouse-tls
+  #    hosts:
+  #      - memhouse.example.com
+
+# With the local embedding model a process peaks at about 850 MB of memory while it loads the
+# model (docs/lite.md); a remote embedding provider needs far less.
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    memory: 2Gi
+
+# The first start downloads the embedding model (about 130 MB) and migrates the schema, so the
+# start-up probe allows five minutes before the liveness probe takes over.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  failureThreshold: 60
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 2
+
+# On SIGTERM the server finishes the requests it holds and stops its workers.
+terminationGracePeriodSeconds: 30
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []

@@ -28,13 +28,44 @@ That's the whole setup. There are no API keys to obtain and no cloud account. Em
 | **Yours** | Plain Postgres (16+) with pgvector. Point it at your own database with `memhouse init --database-url ...`. Export everything as JSONL at any time. |
 | **Made for customer-facing teams** | Templates for `support`, `sales` and `success` (plus `coding` and `personal`) set how subjects are named, what gets remembered and how the agent is instructed. |
 
+## Quickstart
+
+From nothing to a first recall, on Linux (x86_64 or arm64, glibc 2.39 or newer: Ubuntu 24.04,
+Debian 13) or macOS on Apple silicon. Needs `curl`; no database, no Docker, no account.
+
+<!-- quickstart:begin -->
+```bash
+curl -fsSLO https://github.com/memhousehq/memhouse/releases/latest/download/install.sh
+sh install.sh
+export PATH="$HOME/.local/bin:$PATH"
+memhouse up --lite
+memhouse remember "Alice prefers email over phone" --subject user:alice
+memhouse recall "how should I contact Alice?" --subject user:alice
+```
+<!-- quickstart:end -->
+
+`install.sh` downloads the release archive for your machine, checks it against the release's
+signed checksums and puts the one binary in `~/.local/bin`
+([what it verifies and how to check a download yourself](docs/security/supply-chain.md)).
+`memhouse up --lite` keeps everything in one SQLite file under `~/.memhouse` and downloads a
+small embedding model; `memhouse up` (with Docker) starts Postgres + pgvector instead. These
+exact commands run in a clean container on every change, with a ten-minute limit
+(`scripts/quickstart-test.sh`).
+
 ## Install
 
-Build from source (Rust 1.85+):
+| How | Command | |
+|---|---|---|
+| Install script | `sh install.sh` (above), `--version 2.0.0`, `--dir`, `--dry-run` | Linux x86_64 and arm64, macOS arm64 |
+| Homebrew | `brew install memhousehq/tap/memhouse` | the same platforms |
+| Container | `docker run -p 127.0.0.1:7077:7077 -v memhouse:/data ghcr.io/memhousehq/memhouse` | non-root, multi-architecture |
+| Kubernetes | `helm install memhouse oci://ghcr.io/memhousehq/charts/memhouse --set database.existingSecret=…` | on your own Postgres |
+| Cargo | `cargo install memhouse-cli --locked` | any platform ONNX Runtime has a build for |
+| From source | `cargo install --path crates/memhouse-cli --locked` | Rust 1.85+ |
 
-```bash
-cargo install --path crates/memhouse-cli
-```
+Each of these, with its options and how to verify what you downloaded, is in the
+[install guide](docs/install.md). Packages are published from version 2.0.0 on; until that
+release is out, build from source.
 
 Docker is needed only for `memhouse up`. With your own Postgres, use `memhouse init --database-url postgres://...` instead; with no database at all, `memhouse up --lite` runs the same engine on one SQLite file ([the Lite profile](docs/lite.md)).
 

@@ -115,7 +115,7 @@ memhouse doctor
    # Only needed with [enrich] enabled = true:
    EnvironmentFile=-/etc/memhouse/secrets.env
    ExecStart=/usr/local/bin/memhouse serve
-   # MemHouse shuts down gracefully on Ctrl-C (SIGINT): it finishes requests and stops workers.
+   # MemHouse shuts down gracefully on SIGINT and SIGTERM: it finishes requests and stops workers.
    KillSignal=SIGINT
    TimeoutStopSec=30
    Restart=on-failure
@@ -138,30 +138,19 @@ memhouse doctor
 
 ## Container image
 
-There is no published image yet. This Dockerfile builds one:
+`ghcr.io/memhousehq/memhouse` (from release 2.0.0), for `linux/amd64` and `linux/arm64`, or
+`docker build -t memhouse .` from a checkout. It runs as the unprivileged user 65532, has no
+shell, writes only to `/data` and `/tmp`, answers `GET /health`, carries its own health check
+(`memhouse health`) and stops cleanly on SIGTERM. The [install guide](install.md#container-image)
+has the commands for the Lite profile and for your own Postgres, the image's tags, and how to
+start it without access to the model hub; [supply chain](security/supply-chain.md#the-container-image)
+says how to verify it.
 
-```dockerfile
-FROM rust:1.85-bookworm AS build
-WORKDIR /src
-COPY . .
-RUN cargo build --release -p memhouse-cli
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/target/release/memhouse /usr/local/bin/memhouse
-ENV MEMHOUSE_HOME=/data MEMHOUSE_BIND=0.0.0.0:7077
-VOLUME /data
-EXPOSE 7077
-STOPSIGNAL SIGINT
-ENTRYPOINT ["memhouse"]
-CMD ["serve"]
-```
-
-The image needs `ca-certificates`: MemHouse verifies TLS (Postgres, model downloads, LLM and OTLP
-endpoints) against the operating system's certificate store, not a bundled list, so a private CA
-added to that store is trusted too. Mount `/data` (or set `[embedding] cache_dir`) so the model download survives restarts. Pass the
-database URL and API key as environment variables, as in
-[configuration.md](configuration.md#environment-variables).
+The image verifies TLS (Postgres, model downloads, LLM and OTLP endpoints) against the
+certificate store of its base image, not a list bundled in the binary: to trust a private CA,
+build an image on top that adds it. Mount a volume at `/data` (or set `[embedding] cache_dir`)
+so the model download survives restarts. Pass the database URL and API key as environment
+variables, as in [configuration.md](configuration.md#environment-variables).
 
 A `docker compose` file for a self-contained server:
 
@@ -172,15 +161,21 @@ services:
     environment: { POSTGRES_USER: memhouse, POSTGRES_PASSWORD: change-me, POSTGRES_DB: memhouse }
     volumes: [pgdata:/var/lib/postgresql/data]
   memhouse:
-    build: .
+    image: ghcr.io/memhousehq/memhouse:2.0.0     # or `build: .` from a checkout
     depends_on: [db]
     ports: ["127.0.0.1:7077:7077"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]
     environment:
       MEMHOUSE_DATABASE_URL: postgres://memhouse:change-me@db:5432/memhouse
       MEMHOUSE_API_KEY: ${MEMHOUSE_API_KEY:?set it}
     volumes: [mhdata:/data]
 volumes: { pgdata: {}, mhdata: {} }
 ```
+
+On Kubernetes, use the [Helm chart](install.md#kubernetes-helm).
 
 ## Cloud with managed Postgres
 
@@ -705,6 +700,7 @@ Full reference: [languages.md](languages.md).
 |---|---|
 | Liveness | `GET /health` → `{"status":"ok"}` |
 | Full self-check | `memhouse doctor`: config, container, database, model, audit chain, MCP round-trip |
+| Liveness of a running server | `memhouse health` (or `--url http://host:7077`): asks `/health`, exits non-zero when there is no answer; the container image's health check |
 | Volumes | `GET /v1/stats`: memories, quarantined, superseded, subjects, audit events |
 | Write pipeline backlog | `memhouse_intake_proposals{state}` and `memhouse_intake_lag_seconds` on `/metrics`: alert if the lag stays above a few seconds or `dead` > 0 (see [Write pipeline](#write-pipeline)) |
 | Enrichment backlog | `GET /v1/enrich/status`: alert if `pending` keeps growing or `failed` > 0 |

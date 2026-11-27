@@ -10,7 +10,9 @@
 mod links;
 mod sdk;
 mod secrets;
+mod site;
 mod spdx;
+mod version;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -20,7 +22,7 @@ const USAGE: &str = "\
 usage: cargo xtask <task> [options]
 
 tasks:
-  ci              fmt, SPDX headers, links, secret scan, generated SDK clients, cargo-deny, clippy, tests, release build, e2e, benchmark guard
+  ci              fmt, SPDX headers, links, versions, secret scan, generated SDK clients, cargo-deny, clippy, tests, release build, e2e, benchmark guard
     --tier <n>      guard tier: 1 (default, free) or 2 (adds cached enrichment, ~$0.01)
     --fix           apply rustfmt, add missing SPDX headers and regenerate the SDK clients instead of checking them
     --skip-e2e      skip scripts/e2e.sh (no Docker needed)
@@ -32,6 +34,14 @@ tasks:
     --external      also list the external links (not fetched)
   sdk [--check]   write the generated SDK clients from api/openapi.json (sdk/python, sdk/typescript),
                   or check that the ones on disk are up to date
+  version         check that every place that states the product version agrees with [workspace.package]
+    --set <x.y.z>   write the version to all of them (crates, SDKs, bindings, Helm chart, lock files)
+    --tag <tag>     also check that a release tag is `v` and that version
+    --print         print the version and nothing else
+    --notes         print the changelog section of the version (the release notes)
+  site            render docs/ to a static site
+    --out <dir>     where to write it (default target/site)
+    --ref <ref>     the branch or tag that links out of docs/ point at (default main)
   secrets         scan for credentials: the working tree (default), --staged changes, or the whole --history
     --repo <path>   scan another repository (e.g. ../other-repo)
   install-hooks   pre-commit secret scan, commit-msg DCO check, pre-push `cargo xtask ci`
@@ -52,6 +62,8 @@ fn main() -> ExitCode {
         Some("spdx") => spdx_task(&root, args[1..].iter().any(|a| a == "--fix")),
         Some("links") => links_task(&root, args[1..].iter().any(|a| a == "--external")),
         Some("sdk") => sdk_task(&root, &args[1..]),
+        Some("version") => version_task(&root, &args[1..]),
+        Some("site") => site_task(&root, &args[1..]),
         Some("secrets") => secrets_task(&root, &args[1..]),
         Some("install-hooks") => install_hooks(&root, &args[1..]),
         _ => {
@@ -120,6 +132,11 @@ fn ci(root: &Path, args: &[String]) -> Result<(), String> {
         let t = Instant::now();
         let ok = links_task(root, false).map_err(|e| eprintln!("{e}")).is_ok();
         record("links", t, ok)?;
+        // One product version everywhere it is stated (RL-01): a drift stops here.
+        eprintln!("\n== versions");
+        let t = Instant::now();
+        let ok = version_task(root, &[]).map_err(|e| eprintln!("{e}")).is_ok();
+        record("versions", t, ok)?;
         eprintln!("\n== secret scan");
         let t = Instant::now();
         let ok = report(secrets::scan_tree(root)?, "working tree").is_ok();
@@ -218,6 +235,61 @@ fn spdx_task(root: &Path, fix: bool) -> Result<(), String> {
     } else {
         Err(format!("{} file(s) with a missing or wrong SPDX licence identifier", problems.len()))
     }
+}
+
+fn version_task(root: &Path, args: &[String]) -> Result<(), String> {
+    let (mut set, mut tag, mut print, mut notes) = (None, None, false, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--set" => set = Some(it.next().ok_or("--set needs a version")?.clone()),
+            "--tag" => tag = Some(it.next().ok_or("--tag needs a tag name")?.clone()),
+            "--print" => print = true,
+            "--notes" => notes = true,
+            other => return Err(format!("unknown option '{other}'\n{USAGE}")),
+        }
+    }
+    if let Some(v) = &set {
+        eprintln!("setting the product version to {v}:");
+        version::set(root, v)?;
+    }
+    let current = version::current(root)?;
+    let problems = version::check(root, &current)?;
+    for p in &problems {
+        eprintln!("  {p}");
+    }
+    if !problems.is_empty() {
+        return Err(format!("{} place(s) out of step with the product version {current}; `cargo xtask version --set {current}` writes them", problems.len()));
+    }
+    if let Some(t) = &tag {
+        version::check_tag(t, &current)?;
+    }
+    if notes {
+        print!("{}", version::notes(root, &current)?);
+    } else if print {
+        println!("{current}");
+    } else {
+        eprintln!("versions: ok ({current} in every place)");
+    }
+    Ok(())
+}
+
+fn site_task(root: &Path, args: &[String]) -> Result<(), String> {
+    let (mut out, mut git_ref) = (root.join("target/site"), "main".to_string());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--out" => out = PathBuf::from(it.next().ok_or("--out needs a directory")?),
+            "--ref" => git_ref = it.next().ok_or("--ref needs a branch or tag")?.clone(),
+            other => return Err(format!("unknown option '{other}'\n{USAGE}")),
+        }
+    }
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
+    let repository = manifest.lines().find_map(|l| l.strip_prefix("repository = \"")).and_then(|l| l.strip_suffix('"')).ok_or("Cargo.toml: no repository")?.to_string();
+    let version = version::current(root)?;
+    let pages = site::build(root, &files(root)?, &out, &site::Site { repository: &repository, git_ref: &git_ref, version: &version })?;
+    eprintln!("site: {pages} pages in {}", out.display());
+    Ok(())
 }
 
 fn sdk_task(root: &Path, args: &[String]) -> Result<(), String> {

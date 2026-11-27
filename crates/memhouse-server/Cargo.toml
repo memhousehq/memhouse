@@ -1,8 +1,15 @@
 [package]
 name = "memhouse-server"
+description = "The MemHouse server: REST API v1, MCP over stdio and HTTP, the admin console, and the in-process transport of the embedded bindings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 memhouse-core.workspace = true

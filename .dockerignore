@@ -1,0 +1,24 @@
+# Everything a build does not read stays out of the build context (and so out of its cache key).
+.git
+.github
+.claude
+.dev-home
+.env
+.DS_Store
+target
+bench-data
+bench-results
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/*.node
+**/*.so
+**/*.pyd
+sdk/typescript/dist
+sdk/python/dist
+# The prebuilt binaries of a release build are the one thing under dist/ a build may copy.
+dist/*
+!dist/linux-amd64
+!dist/linux-arm64

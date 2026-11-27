@@ -10,8 +10,15 @@ const TAG: &str = "SPDX-License-Identifier:";
 /// The licence a path must carry, or `None` for files the rule doesn't cover (data, config,
 /// generated reports, licence texts).
 pub fn expected(path: &str) -> Option<&'static str> {
-    let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
-    let covered = matches!(ext, "rs" | "sh" | "py" | "ts" | "js" | "mjs" | "html" | "md");
+    let ext = ext_of(path);
+    // Packaging (G21): the Dockerfile, the release workflows, the Helm chart (its YAML and its
+    // template helpers) and the Homebrew formula template. YAML elsewhere is data (suites,
+    // scenarios, lock files) and stays outside the rule.
+    let packaging = is_dockerfile(path)
+        || (matches!(ext, "yaml" | "yml") && (path.starts_with(".github/workflows/") || path.starts_with("deploy/")))
+        || (ext == "tpl" && path.starts_with("deploy/"))
+        || (ext == "rb" && path.starts_with("packaging/"));
+    let covered = packaging || matches!(ext, "rs" | "sh" | "py" | "ts" | "js" | "mjs" | "html" | "md" | "css");
     let generated = path.starts_with("bench-results/");
     if !covered || generated {
         return None;
@@ -19,17 +26,34 @@ pub fn expected(path: &str) -> Option<&'static str> {
     Some(if path.starts_with("docs/") { "CC-BY-4.0" } else { "Apache-2.0" })
 }
 
+/// The extension of the file's name (none for `Dockerfile`, or for a dot in a directory's name).
+fn ext_of(path: &str) -> &str {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.rsplit_once('.').map(|(_, e)| e).unwrap_or("")
+}
+
+fn is_dockerfile(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == "Dockerfile" || name.ends_with(".Dockerfile")
+}
+
 fn header(path: &str, licence: &str) -> String {
-    match path.rsplit_once('.').map(|(_, e)| e).unwrap_or("") {
+    if is_dockerfile(path) {
+        return format!("# {TAG} {licence}");
+    }
+    match ext_of(path) {
         "rs" | "ts" | "js" | "mjs" => format!("// {TAG} {licence}"),
-        "sh" | "py" => format!("# {TAG} {licence}"),
+        "sh" | "py" | "yaml" | "yml" | "rb" => format!("# {TAG} {licence}"),
+        "css" => format!("/* {TAG} {licence} */"),
+        // A Helm template comment: rendered to nothing.
+        "tpl" => format!("{{{{/* {TAG} {licence} */}}}}"),
         _ => format!("<!-- {TAG} {licence} -->"),
     }
 }
 
 /// The identifier found in the first five lines, if any.
 fn found(text: &str) -> Option<String> {
-    text.lines().take(5).find_map(|l| l.split_once(TAG).map(|(_, rest)| rest.trim().trim_end_matches("-->").trim().to_string()))
+    text.lines().take(5).find_map(|l| l.split_once(TAG).map(|(_, rest)| rest.trim().trim_end_matches("-->").trim_end_matches("*/}}").trim_end_matches("*/").trim().to_string()))
 }
 
 /// Check (or with `fix`, insert) headers. Returns the problems left.
@@ -68,6 +92,31 @@ mod tests {
         assert_eq!(expected("sdk/typescript/src/client.ts"), Some("Apache-2.0"));
         assert_eq!(header("sdk/typescript/conformance/driver.mjs", "Apache-2.0"), "// SPDX-License-Identifier: Apache-2.0");
         assert_eq!(expected("Cargo.toml"), None);
+        // Packaging files are covered; YAML that is data is not.
+        for covered in [
+            "Dockerfile",
+            ".github/workflows/release.yml",
+            "deploy/helm/memhouse/values.yaml",
+            "deploy/helm/memhouse/templates/_helpers.tpl",
+            "packaging/homebrew/memhouse.rb",
+            "install.sh",
+            "xtask/src/site.css",
+        ] {
+            assert_eq!(expected(covered), Some("Apache-2.0"), "{covered}");
+        }
+        for data in [
+            "bench/suites/coding/suite.yaml",
+            "sdk/typescript/pnpm-lock.yaml",
+            ".github/dependabot.yml",
+            "deploy/helm/memhouse/values.schema.json",
+            "deploy/helm/memhouse/templates/NOTES.txt",
+        ] {
+            assert_eq!(expected(data), None, "{data}");
+        }
+        assert_eq!(header("Dockerfile", "Apache-2.0"), "# SPDX-License-Identifier: Apache-2.0");
+        assert_eq!(header("deploy/helm/memhouse/templates/_helpers.tpl", "Apache-2.0"), "{{/* SPDX-License-Identifier: Apache-2.0 */}}");
+        assert_eq!(found("{{/* SPDX-License-Identifier: Apache-2.0 */}}\n").as_deref(), Some("Apache-2.0"));
+        assert_eq!(found("/* SPDX-License-Identifier: Apache-2.0 */\n").as_deref(), Some("Apache-2.0"));
         assert_eq!(expected("bench-results/run/report.md"), None);
     }
 

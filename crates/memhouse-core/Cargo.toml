@@ -1,8 +1,15 @@
 [package]
 name = "memhouse-core"
+description = "The MemHouse engine: types, configuration, the write gate, policy, ranking, templates and the adapter traits; depends on no store or model"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true

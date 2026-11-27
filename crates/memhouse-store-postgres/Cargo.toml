@@ -1,8 +1,15 @@
 [package]
 name = "memhouse-store-postgres"
+description = "Postgres + pgvector store adapter for MemHouse: schema, one-statement hybrid recall, the audit chain and the deletion ledger"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 memhouse-core.workspace = true

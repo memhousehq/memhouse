@@ -349,8 +349,7 @@ impl Repo {
         }
         let dir = path.parent().ok_or_else(|| anyhow::anyhow!("no parent directory for {}", path.display()))?;
         std::fs::create_dir_all(dir)?;
-        let part = path.with_extension(format!("part{}", std::process::id()));
-        let mut file = std::fs::File::create(&part)?;
+        let (part, mut file) = part_file(path)?;
         let copied = resp.copy_to(&mut file).map_err(anyhow::Error::from).and_then(|_| file.flush().map_err(anyhow::Error::from));
         drop(file);
         let checked = copied.and_then(|_| match self.expect.sha256.get(name) {
@@ -369,10 +368,40 @@ impl Repo {
     }
 }
 
+/// A new file beside `path` for a download in progress, which no other process has. The
+/// process id is not enough to tell two downloads apart: in a container every server is
+/// process 1, and two replicas that share a model cache (one volume) would write to, and
+/// then remove, each other's file. The name also carries the time, and the file is created
+/// exclusively, so two processes can never hold the same one.
+fn part_file(path: &Path) -> anyhow::Result<(PathBuf, std::fs::File)> {
+    for attempt in 0..100u32 {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let part = path.with_extension(format!("part{}-{nanos:x}-{attempt}", std::process::id()));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&part) {
+            Ok(file) => return Ok((part, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("creating {}", part.display())),
+        }
+    }
+    anyhow::bail!("cannot create a download file beside {}", path.display())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::BufRead;
+
+    /// Two downloads of the same file, by processes with the same id, never share a file.
+    #[test]
+    fn two_downloads_of_one_file_have_their_own_part_files() {
+        let root = temp("part");
+        let target = root.join("model.onnx");
+        let (a, _fa) = part_file(&target).unwrap();
+        let (b, _fb) = part_file(&target).unwrap();
+        assert_ne!(a, b);
+        assert!(a.exists() && b.exists() && !target.exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     fn sha(bytes: &[u8]) -> String {
         hex::encode(Sha256::digest(bytes))

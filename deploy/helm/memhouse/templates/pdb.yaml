@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+{{- if and .Values.podDisruptionBudget.enabled (gt (int .Values.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "memhouse.fullname" . }}
+  labels:
+    {{- include "memhouse.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "memhouse.selectorLabels" . | nindent 6 }}
+{{- end }}

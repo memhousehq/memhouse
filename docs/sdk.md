@@ -29,7 +29,8 @@ MemHouse has two SDKs, with the same shape in both languages:
 
 ## Install
 
-The packages are not on PyPI or npm yet (packaging is roadmap goal G21). Until then, install
+From release 2.0.0 the packages are `memhouse` on PyPI and `@memhouse/sdk` on npm
+([install guide](install.md#sdks-and-embedded-bindings)). Until that release is out, install
 them from a checkout of this repository:
 
 ```bash

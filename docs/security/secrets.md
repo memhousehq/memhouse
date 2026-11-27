@@ -30,8 +30,11 @@ How credentials are handled in development and in CI.
 | Local Postgres passwords | `memhouse up` | generated into the config file (mode 0600) | on demand (`memhouse down`, remove the volume, `memhouse up`) | exists |
 | MemHouse API keys | deployments | config file 0600 or `MEMHOUSE_API_KEY`; hashed per principal from G06; cloud: secret manager | per key; on staff or client change | exists, G06 |
 | Community release signing | release pipeline | keyless Sigstore through CI OIDC; nothing stored | n/a | G21 |
-| Package publishing (crates.io, PyPI, npm, container registry) | release pipeline | trusted publishing (OIDC); registry token scoped to the run | n/a | G21 |
-| Homebrew tap and website pushes | release pipeline | GitHub App or fine-grained token limited to that repository, in environment `release` | 90 days | G21 |
+| Release tag signing | maintainers | each maintainer's own SSH signing key (a hardware-backed one where possible); only the public keys are in `.github/release-signers` | when a key is lost or its holder leaves | G21 |
+| Package publishing (crates.io, PyPI, npm) | release pipeline | trusted publishing (OIDC): a token the registry issues for one job; nothing stored | n/a | G21 |
+| Container registry and GitHub release | release pipeline | the workflow's own token, scoped per job by `permissions:`; nothing stored | n/a | G21 |
+| Homebrew tap and website | their own repositories | nothing in this repository: the release pipeline does not push to them. The tap takes the formula from the release with its own token ([packaging/homebrew](../../packaging/homebrew/README.md)) | n/a | G21 |
+| First publication of a new crate or npm package | a maintainer, by hand, once per name | a short-lived registry token from the maintainer's account, revoked after ([release guide](../release.md#one-time-setup)); never in the repository or in CI | once | G21 |
 | Stored release signing keys (SC-02) | release pipeline | HSM or cloud KMS, two-person approval | yearly | G29 |
 | Customer-managed keys | deployments that require them | the customer's KMS | the customer's policy | G29 |
 

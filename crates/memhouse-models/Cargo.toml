@@ -1,8 +1,15 @@
 [package]
 name = "memhouse-models"
+description = "Model adapters for MemHouse: the local ONNX embedder and reranker with pinned model files, OpenAI-compatible embeddings and chat clients"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [features]
 default = ["local"]
