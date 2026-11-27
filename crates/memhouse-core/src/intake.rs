@@ -116,6 +116,11 @@ pub struct IntakeJob {
     pub attempts: i32,
 }
 
+/// Whether two records carry the same labels, in any order.
+pub fn same_labels(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().all(|l| b.contains(l)) && b.iter().all(|l| a.contains(l))
+}
+
 /// One audit event written with an insert.
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditEntry {
@@ -1011,14 +1016,23 @@ impl Engine {
                     let counted = m.metadata.get("counted").and_then(|c| c.as_str()).map(str::to_string);
                     for (held, sim) in self
                         .store
-                        .nearest_held(tenant, subject, &emb, 3, &Held { reason: "signal", kind: Some(m.kind), scope: &m.scope, counted: Some(counted.as_deref()) })
+                        .nearest_held(
+                            tenant,
+                            subject,
+                            &emb,
+                            3,
+                            &Held { reason: "signal", kind: Some(m.kind), scope: &m.scope, counted: Some(counted.as_deref()), labels: &m.labels },
+                        )
                         .await?
                     {
                         let Some(h) = self.store.get(tenant, held).await? else { continue };
                         // The same preference: same scope and kind, and the same key if keyed
                         // (two keys with similar wording are two preferences).
                         // A correction repeats a correction, a signal a signal.
+                        // And the same labels: a write that could not carry the held record's
+                        // labels must not count on it, commit it or be told its id (GOV-02).
                         let same = h.scope == m.scope
+                            && same_labels(&h.labels, &m.labels)
                             && h.kind == m.kind
                             && h.metadata.get("pref_key") == m.metadata.get("pref_key")
                             && h.metadata.get("counted") == m.metadata.get("counted");
@@ -1132,9 +1146,11 @@ impl Engine {
                     if class == Some(Statement::Event) && m.status == MemoryStatus::Committed {
                         // Held plans only (a guess is not "done" by a similar event), unexpired, in
                         // the event's own scope.
-                        for (plan, sim) in self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope, counted: None }).await? {
+                        for (plan, sim) in
+                            self.store.nearest_held(tenant, subject, &emb, 3, &Held { reason: "plan", kind: None, scope: &m.scope, counted: None, labels: &m.labels }).await?
+                        {
                             let Some(pm) = self.store.get(tenant, plan).await? else { continue };
-                            let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope;
+                            let open = pm.expires_at.is_none_or(|t| t > Utc::now()) && pm.scope == m.scope && same_labels(&pm.labels, &m.labels);
                             if open
                                 && sim >= icfg.confirm_threshold
                                 && self.languages.values().shares_content_word(&pm.content, &m.content)

@@ -123,6 +123,10 @@ pub struct Held<'a> {
     /// of the lookup, not a filter on its result: nearer records of the other sort must not
     /// use up the limit.
     pub counted: Option<Option<&'a str>>,
+    /// Only records with exactly these labels. A held record is counted, confirmed or
+    /// committed by a write with its own labels and no other: a caller writes no label it is
+    /// denied, so it can neither change nor learn of a held record that carries one.
+    pub labels: &'a [String],
 }
 
 #[async_trait]

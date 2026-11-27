@@ -869,14 +869,16 @@ not necessarily the file as it is now: a client that checked the file itself pas
 of what it checked. A given hash confirms that content only: where the file was since seen
 with another hash, the reference takes the given one and stays stale (`stale` true, the
 reference's `seen_hash` the hash seen), until the file is seen with the confirmed content or
-that hash is confirmed. Needs `memory:write` and sight of the memory (`404` otherwise);
+that hash is confirmed. For a reference that is not stale, a given hash other than the stored
+one is a `409`: the file was last known with the stored content. Needs `memory:write` and sight of the memory (`404` otherwise);
 `409` for a record that is not committed. Audited as `memory.revalidate` with the old and new
 hash of each reference.
 
 Revising a stale memory also ends its staleness: the new version supersedes it. References the
 revision inherits take the hash their file was last seen with, and a reference to a deleted
-file is not carried over; they are taken when the revision is stored, in the same
-transaction, so a file reported while the revision was on its way is not missed. A revision
+file is not carried over. They are compared with the replaced version's references when the
+revision is stored, in the same transaction: a file reported with other content while the
+revision was on its way leaves that reference stale, and a rename is followed. A revision
 that names `code_refs` itself is judged then too: a reference to a path whose reference on the
 replaced version is stale with another hash starts stale. A proposed revision is judged the
 same way and follows file reports while it waits for review ([limits](coding.md#limits)).

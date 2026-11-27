@@ -16,6 +16,9 @@ record's `language`. Version 10 added the staleness of code references (`stale_s
 `seen_hash` on a reference, `stale_since` on its record); the upgrade to it also puts the
 paths of stored references in the one form they are matched in (`./src//a.rs` becomes
 `src/a.rs`; of two references of a record to one file, the one already in that form is kept).
+On Postgres a trigger on `mh_code_ref` keeps new rows in that form too, so a version 9
+process still running during a rolling upgrade cannot store another spelling; a Lite file is
+opened by one build at a time, and an older build refuses a newer file.
 
 ## Entities
 

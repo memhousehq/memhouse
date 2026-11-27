@@ -342,8 +342,11 @@ fn our_command(command: &str) -> bool {
         [flag, _, rest @ ..] if flag == "--config" => rest,
         rest => rest,
     };
+    // Only the options `command_line` writes, each with its value: a line with any other
+    // (`--path`, `--timeout-ms`) was edited by hand and is the user's.
+    let generated = |options: &[String]| options.chunks(2).all(|o| matches!(o, [flag, _] if matches!(flag.as_str(), "--format" | "--key-file" | "--subject")));
     matches!(name, "memhouse" | "memhouse.exe")
-        && matches!(rest, [hook, which, options @ ..] if hook == "hook" && matches!(which.as_str(), "file-opened" | "file-edited") && options.first().is_none_or(|o| o.starts_with("--")))
+        && matches!(rest, [hook, which, options @ ..] if hook == "hook" && matches!(which.as_str(), "file-opened" | "file-edited") && generated(options))
 }
 
 /// Whether a hook group of a settings file is one this command wrote: every handler in it is
@@ -484,6 +487,9 @@ mod tests {
             "memhouse hook file-edited | tee /tmp/log",
             "memhouse hook file-edited $(./extra.sh)",
             "memhouse hook file-opened ./lint.sh",
+            "memhouse hook file-opened --path /repo/file",
+            "memhouse hook file-edited --format claude-code --key-file /k --timeout-ms 700",
+            "memhouse hook file-edited --key-file",
             "memhouse hook file-opened 'unterminated",
         ] {
             assert!(!our_command(theirs), "{theirs}");

@@ -2127,6 +2127,39 @@ round's commit, each checked against the code; what changed:
 - Governance: 79 checks, store kit 19; new cases are scenarios of the existing checks and of
   the store kit's observe and revalidate checks, and one in `schema_upgrade`.
 
+**Review fixes, third round (2026-11-27, pull request 39):** the findings on the second
+round's commit; what changed:
+
+- **A held record is matched by a write with its own labels** (GOV-02). The lookup of held
+  signals, corrections and plans (`Held.labels`, in both stores, before the limit), the
+  pipeline's comparison and the update that counts, confirms or commits the record all
+  require the same label set. A caller that is denied a label writes none of it, so its
+  repeat no longer counts on, commits or names (`duplicate_of`) a record held under that
+  label, and cannot make a keyed preference held under it supersede others. The gap was in
+  the preference signals of G11 (labels were never part of the match) and this goal's
+  corrections inherited it. Scope was already part of the match; a scenario covers both.
+- **Inherited references keep what the reviser read.** The second round let a revision
+  without `code_refs` take the hash its file had when it was stored, also when that changed
+  after the revision was made. Now the hash is the one read when the revision was made, and
+  a file reported with other content in between (changed, restored, deleted) leaves the
+  reference stale; a rename with the same content is followed.
+- **Revalidation.** A given hash other than the stored one is refused (`409`) for a
+  reference that is not stale: after a file changed and changed back, a late confirmation of
+  the content in between would have been written as fresh. The stores check under their lock
+  that the record is still the committed version (a record superseded after the caller read
+  it was revalidated and audited).
+- **Upgrade.** On a version-1 Postgres database the schema version is stamped once, after
+  every backfill (the v2 backfill stamped it before the path backfill ran). A trigger on
+  `mh_code_ref` puts a new row's path in canonical form, for a version 9 process that keeps
+  writing during a rolling upgrade. Lite needs none: an older build refuses a newer file.
+- **Task refill** looks as far in each retriever as it does in all (`per_retriever`), so it
+  works with `ranking.candidates = 1`.
+- **Hook groups:** ours only when the command has exactly the options the installer writes
+  (`--format`, `--key-file`, `--subject`); a line with another option is the user's.
+- **Not changed:** a revision that names its own hash or path its predecessor never saw is
+  still taken as stated ([coding.md](coding.md#limits)); the order of a late commit report.
+- Governance: 79 checks, store kit 19; new cases are scenarios of the existing checks.
+
 #### G20 — Memory browser v2 and admin console
 
 - [ ] **Done**

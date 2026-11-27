@@ -1160,6 +1160,9 @@ impl Engine {
             if hits.len() < fetched && !working_only {
                 let mut refill = q.clone();
                 refill.limit = fused_limit * TASK_REFILL_FACTOR + TASK_REFILL_MORE;
+                // Each retriever as far as the refill looks: with `ranking.candidates = 1` it
+                // would otherwise return the one record that was just dropped.
+                refill.per_retriever = refill.per_retriever.max(refill.limit);
                 let mut more = within(deadline, self.store.search(&refill).instrument(tracing::info_span!("recall.task_refill"))).await?;
                 statements += 1;
                 let have: std::collections::HashSet<Uuid> = hits.iter().chain(&reserve).map(|h| h.memory.id).chain(off_task.iter().map(|x| x.id)).collect();
@@ -1385,9 +1388,10 @@ impl Engine {
             // A revision ends the staleness of the version it replaces (TPL-04). References it
             // inherits take the content their file was last seen with, which is what the
             // reviser had before them; one to a file that was deleted is not carried over.
-            // Read here for the answer and the gate; the store reads them again when it
-            // inserts the revision, so a file seen in between is not missed.
-            let inherited = || crate::staleness::successor_refs(&[], true, &c);
+            // What the reviser had before them. The store compares it with the predecessor's
+            // references as they are when it inserts the revision: a file seen with other
+            // content in between leaves the revision stale.
+            let inherited = || crate::staleness::inherited_refs(&c);
             refs_inherited = req.code_refs.is_none() && !c.is_empty();
             (req.structured.clone().or(s), req.code_refs.clone().unwrap_or_else(inherited))
         };

@@ -417,17 +417,31 @@ async fn upgrade_in(base: &Engine, url1: &str, url2: &str) -> Outcome {
     // References stored before version 10 keep the path as their writer spelled it. The
     // upgrade puts them in the form observations are matched in, one row per file: the
     // database is taken back to version 9 with two such rows for one file, and opened again.
+    // (Written as a version 9 database let them be: without the trigger of version 10.)
+    sqlx::query("ALTER TABLE mh_code_ref DISABLE TRIGGER mh_code_ref_canonical_path").execute(&pool).await?;
     let legacy = sqlx::query(
         "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) \
          SELECT m.id, m.tenant, m.subject, p.path, 'h1' FROM mh_memory m, (VALUES ('./src//legacy.rs'), ('src/./legacy.rs')) AS p(path) WHERE m.subject = 'gov:upgrade'",
     )
     .execute(&pool)
     .await;
+    sqlx::query("ALTER TABLE mh_code_ref ENABLE TRIGGER mh_code_ref_canonical_path").execute(&pool).await?;
     sqlx::query("UPDATE mh_meta SET value = '9' WHERE key = 'schema_version'").execute(&pool).await?;
     let reopened = stub_engine(base, url1, id, dim, "", true).await?;
     let paths: Vec<String> = sqlx::query_scalar("SELECT path FROM mh_code_ref WHERE path LIKE '%legacy.rs' ORDER BY path").fetch_all(&pool).await?;
     let followed =
         reopened.store.code_refs_observe("default", "gov:upgrade", &[FileState::present("src/legacy.rs", "h2")], chrono::Utc::now(), &memhouse_core::traits::no_audit).await?;
+    // And a version 9 process still running after the upgrade writes the path as its caller
+    // spelled it: stored in the same form, by the database.
+    let late = sqlx::query(
+        "INSERT INTO mh_code_ref (memory_id, tenant, subject, path, blob_hash) SELECT id, tenant, subject, './src//late.rs', 'h1' FROM mh_memory WHERE subject = 'gov:upgrade'",
+    )
+    .execute(&pool)
+    .await;
+    let late_paths: Vec<String> = sqlx::query_scalar("SELECT path FROM mh_code_ref WHERE path LIKE '%late.rs' ORDER BY path").fetch_all(&pool).await?;
+    if late.is_err() || late_paths != vec!["src/late.rs".to_string()] {
+        problems.push(format!("version 10: a reference a version 9 process writes as ./src//late.rs after the upgrade is stored as {late_paths:?} (expected src/late.rs)"));
+    }
     if legacy.is_err() || paths != vec!["src/legacy.rs".to_string()] || followed.iter().filter(|c| c.path == "src/legacy.rs").count() != 1 {
         problems.push(format!(
             "version 10, references stored with another spelling of their path: after the upgrade the paths are {paths:?} (expected one, src/legacy.rs), and a change of the file reached {} reference(s)",

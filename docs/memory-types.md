@@ -99,6 +99,11 @@ What bounds it:
   speculation waits for its reviewer whatever mark it carries; repeating it commits nothing.
 - **A correction that is also marked as an inferred signal** (`"signal": true`) is counted as
   a correction.
+- **A repeat counts only on a held record with its own labels and scope.** A held correction
+  (and a held preference signal, and a held plan an event would confirm) is matched by a
+  write that carries exactly its labels, in exactly its scope. A caller that is denied a
+  label writes none of it, so it can neither count on, commit, nor be told the id of a
+  record held under that label: its repeat starts a record of its own.
 - **Audited.** Each counted repeat writes `memory.signal`, and the promotion `memory.admit`,
   with `reason` (`repeated_correction: …`), `corrections` (the count) and `threshold` in the
   detail. The injection screen and redaction apply to every one of these writes.
@@ -122,7 +127,8 @@ The rule is deterministic and asks no model. A procedure that was left out is li
 recall's [explanation](api.md#get-v1recallsidexplanation-why-a-recall-returned-what-it-did)
 with the reason `task`. The places such procedures took are filled from what is ranked below
 them, a matching procedure included: one more search, four times the first one's limit and
-sixteen further, so a match ranked below that many others is still missed. `as_of` recalls
+sixteen further (in every retriever, whatever `ranking.candidates` is), so a match ranked
+below that many others is still missed. `as_of` recalls
 are not filtered this way. A policy that sets another
 `retrieval` for procedural memory can't be written: the method is fixed per type.
 

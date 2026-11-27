@@ -582,6 +582,20 @@ async fn until_revalidated(e: &Engine) -> Outcome {
         || format!("with the older hash: {late:?} (left out of recall: {late_out}); with the one last seen: {exact:?}"),
     );
 
+    // A file seen changed and then back as the memory knows it leaves the memory current. A
+    // caller that checked the changed content and confirms it late is refused: nothing was
+    // seen since that says the file is like that.
+    let back = linked(&root, subj, &words("thereback", 1), &[("src/tb.rs", "a1")]).await?;
+    root.files_changed(changed(subj, vec![FileState::present("src/tb.rs", "b1")])).await?;
+    root.files_changed(changed(subj, vec![FileState::present("src/tb.rs", "a1")])).await?;
+    let ambiguous = root.revalidate(RevalidateRequest { id: back, code_refs: Some(vec![CodeRef::new("src/tb.rs", "b1")]), ..Default::default() }).await;
+    let back_refs = e.store.representations(TENANT, back).await?.1;
+    s.case(
+        "a hash confirmed for a file that was since seen back at its stored content is refused",
+        ambiguous.as_ref().is_err_and(|e| code_of(e) == ErrorCode::Conflict) && back_refs == vec![CodeRef::new("src/tb.rs", "a1")],
+        || format!("{:?}; references {back_refs:?}", ambiguous.as_ref().map(|r| r.stale).map_err(|e| format!("{e:#}"))),
+    );
+
     // A rename onto a file the memory already references drops the old reference; when that
     // was its only stale one, the memory is current again, and that is reported and audited.
     let merge = linked(&root, subj, &words("merged", 1), &[("src/m1.rs", "x1"), ("src/m2.rs", "y1")]).await?;
@@ -952,6 +966,49 @@ async fn promotion(e: &Engine) -> Outcome {
         reviewed_correction.status.as_str().to_string()
     });
 
+    // A held record is counted, committed and named only for a write that carries its labels.
+    // A caller that is denied a label writes none of it: its repeat of a correction held
+    // under that label starts a record of its own, and learns nothing of the other.
+    let cleared = who(e, "agent:proc-cleared", PrincipalKind::Agent, |p| p.subjects = vec!["repo:*".into()]).await?;
+    let outsider = who(e, "agent:proc-outsider", PrincipalKind::Agent, |p| {
+        p.subjects = vec!["repo:*".into()];
+        p.denied_labels = vec!["restricted".into()];
+    })
+    .await?;
+    let secret_rule = "Rotate the partner signing keys from the offline vault on the first Monday.";
+    let labelled = |labels: &[&str], scope: Scope| RememberRequest { labels: labels.iter().map(|l| l.to_string()).collect(), scope: Some(scope), ..correction(secret_rule) };
+    let held_x = cleared.remember(labelled(&["restricted"], Scope::default())).await?;
+    cleared.remember(labelled(&["restricted"], Scope::default())).await?;
+    let counted_x = state(held_x.id).await?;
+    let mut strangers = vec![];
+    for _ in 0..3 {
+        strangers.push(outsider.remember(labelled(&[], Scope::default())).await?);
+    }
+    let after_strangers = state(held_x.id).await?;
+    let told = strangers.iter().any(|r| serde_json::to_string(r).unwrap_or_default().contains(&held_x.id.to_string()));
+    let own = cleared.remember(labelled(&["restricted"], Scope::default())).await?;
+    let after_own = state(held_x.id).await?;
+    s.case(
+        "a caller denied a label neither counts, commits nor learns of a correction held under it",
+        counted_x == Some((MemoryStatus::Candidate, json!(2)))
+            && after_strangers == Some((MemoryStatus::Candidate, json!(2)))
+            && !told
+            && own.id == held_x.id
+            && after_own.as_ref().map(|x| x.0) == Some(MemoryStatus::Committed),
+        || format!("after two labelled: {counted_x:?}; after three unlabelled from a caller denied the label: {after_strangers:?} (told of it: {told}); after a third labelled: {after_own:?}"),
+    );
+    // The same for scope: a repeat in another session's scope is that session's correction.
+    let team = |t: &str| Scope { session: Some(format!("held-{t}")), ..Default::default() };
+    let team_rule = "Deploy the billing workers only from the release branch of the platform team.";
+    let scoped = |t: &str| RememberRequest { scope: Some(team(t)), ..correction(team_rule) };
+    let held_a = cleared.remember(scoped("alpha")).await?;
+    cleared.remember(scoped("alpha")).await?;
+    let from_b = cleared.remember(scoped("beta")).await?;
+    let after_b = state(held_a.id).await?;
+    s.case("a repeat in another scope does not count on a held correction", from_b.id != held_a.id && after_b == Some((MemoryStatus::Candidate, json!(2))), || {
+        format!("{after_b:?}; the other scope's write answered {}", if from_b.id == held_a.id { "with the held record" } else { "with its own" })
+    });
+
     // A correction the gate reads from the words themselves is counted without the mark.
     let worded = "Correction: releases are tagged from the stable branch, not from the trunk branch.";
     let w1 = agent.remember(plain(worded)).await?;
@@ -1127,9 +1184,9 @@ async fn promotion(e: &Engine) -> Outcome {
         }
         e.store.insert(&rows).await?;
         let lookup = |counted: Option<Option<&'static str>>| {
-            let scope = template.scope.clone();
+            let (scope, labels) = (template.scope.clone(), template.labels.clone());
             async move {
-                let held = memhouse_core::traits::Held { reason: "signal", kind: Some(MemoryKind::Procedural), scope: &scope, counted };
+                let held = memhouse_core::traits::Held { reason: "signal", kind: Some(MemoryKind::Procedural), scope: &scope, counted, labels: &labels };
                 Ok::<_, anyhow::Error>(e.store.nearest_held(TENANT, near_subj, &axis(0.0), 3, &held).await?.into_iter().map(|(id, _)| id).collect::<Vec<_>>())
             }
         };
@@ -1143,7 +1200,7 @@ async fn promotion(e: &Engine) -> Outcome {
     // A procedure that does not match the task never costs the caller the memory ranked
     // below it: with k = 1 and no reserve (duplicate removal off), the place is filled.
     let refill = "repo:refill";
-    let no_dedup = parse_spec(&format!("name = \"no-dedup\"\n[scope]\ntenant = \"{TENANT}\"\n[ranking]\ndedup = false\n"))?;
+    let no_dedup = parse_spec(&format!("name = \"no-dedup\"\n[scope]\ntenant = \"{TENANT}\"\n[ranking]\ndedup = false\ncandidates = 1\n"))?;
     let version = e.policy_propose(TENANT, &no_dedup, "admin:bench", None).await?.version;
     e.policy_approve(TENANT, version, "admin:bench").await?;
     let near = root

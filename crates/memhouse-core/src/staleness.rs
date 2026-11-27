@@ -144,35 +144,72 @@ pub fn plan(rows: &[RefRow], files: &[FileState], at: DateTime<Utc>) -> Vec<RefU
         .collect()
 }
 
-/// The references a revision is stored with (TPL-04), given those of the version it replaces
+/// The references a revision takes from the version it replaces when it names none of its
+/// own: each with the hash its file was last seen with, which is what the reviser had before
+/// them; a reference to a deleted file is not carried over. This is what the reviser read;
+/// what the revision is stored with is decided by [`successor_refs`].
+pub fn inherited_refs(predecessor: &[CodeRef]) -> Vec<CodeRef> {
+    predecessor
+        .iter()
+        .filter_map(|r| match (&r.stale_since, &r.seen_hash) {
+            (None, _) => Some(r.as_written()),
+            (Some(_), Some(h)) => Some(CodeRef::new(r.path.clone(), h.clone())),
+            (Some(_), None) => None,
+        })
+        .collect()
+}
+
+/// The references a revision is stored with (TPL-04): `own` is what the reviser read or
+/// named when the revision was made, `predecessor` the references of the version it replaces
 /// as they are when the revision is stored. A store calls this in the transaction that inserts
 /// the revision, so no observation of a file can fall between the judgement and the insert.
 ///
-/// - `inherited` (the revision named none of its own): the predecessor's references, each
-///   with the hash its file was last seen with, which is what the reviser had before them; a
-///   reference to a deleted file is not carried over. A rename or a restored file reported
-///   while the revision waited is therefore followed.
+/// - `inherited` (the revision named none of its own; `own` is [`inherited_refs`] as read
+///   then): one reference per reference the predecessor has now, at the path it has now, with
+///   the hash the reviser read. Where the file is known with another content now (changed,
+///   restored or deleted since the reviser read it), the reference starts stale: the revision
+///   was written about content the file no longer has. A file renamed since, with the content
+///   the reviser read, is followed. Where what the reviser read cannot be told (the path
+///   changed and the content with it), the reference keeps the predecessor's hash and starts
+///   stale. A reference to a file that was already deleted when the reviser read is dropped.
 /// - Otherwise the revision's own references. One whose file was seen, on the predecessor,
 ///   with another hash than the revision names (or deleted) starts stale. A hash the
 ///   predecessor never saw is the writer's statement and is taken as fresh.
-pub fn successor_refs(own: &[CodeRef], inherited: bool, predecessor: &[CodeRef]) -> Vec<CodeRef> {
-    if inherited {
-        return predecessor
+pub fn successor_refs(own: &[CodeRef], inherited: bool, predecessor: &[CodeRef], at: DateTime<Utc>) -> Vec<CodeRef> {
+    if !inherited {
+        return own
             .iter()
-            .filter_map(|r| match (&r.stale_since, &r.seen_hash) {
-                (None, _) => Some(r.as_written()),
-                (Some(_), Some(h)) => Some(CodeRef::new(r.path.clone(), h.clone())),
-                (Some(_), None) => None,
+            .map(|r| {
+                let mut r = r.as_written();
+                if let Some(was) = predecessor.iter().find(|o| o.path == r.path && o.stale_since.is_some() && o.seen_hash.as_deref() != Some(r.blob_hash.as_str())) {
+                    (r.stale_since, r.seen_hash) = (was.stale_since, was.seen_hash.clone());
+                }
+                r
             })
             .collect();
     }
-    own.iter()
-        .map(|r| {
-            let mut r = r.as_written();
-            if let Some(was) = predecessor.iter().find(|o| o.path == r.path && o.stale_since.is_some() && o.seen_hash.as_deref() != Some(r.blob_hash.as_str())) {
-                (r.stale_since, r.seen_hash) = (was.stale_since, was.seen_hash.clone());
+    // What is known of each file now: the hash last seen, or none for a deleted file.
+    let known = |p: &CodeRef| if p.stale_since.is_some() { p.seen_hash.clone() } else { Some(p.blob_hash.clone()) };
+    let stale = |path: &str, hash: &str, p: &CodeRef| {
+        let mut r = CodeRef::new(path, hash);
+        (r.stale_since, r.seen_hash) = (Some(p.stale_since.unwrap_or(at)), known(p));
+        r
+    };
+    // References the reviser read whose path the predecessor no longer has: renamed since.
+    let mut moved: Vec<&CodeRef> = own.iter().filter(|c| !predecessor.iter().any(|p| p.path == c.path)).collect();
+    predecessor
+        .iter()
+        .filter_map(|p| {
+            let now = known(p);
+            if let Some(read) = own.iter().find(|c| c.path == p.path) {
+                return Some(if now.as_deref() == Some(read.blob_hash.as_str()) { read.as_written() } else { stale(&p.path, &read.blob_hash, p) });
             }
-            r
+            // Not among what the reviser read. Deleted before that: dropped then, and now.
+            let now = now?;
+            Some(match moved.iter().position(|c| c.blob_hash == now) {
+                Some(i) => CodeRef::new(p.path.clone(), moved.remove(i).blob_hash.clone()),
+                None => stale(&p.path, &p.blob_hash, p),
+            })
         })
         .collect()
 }
@@ -216,7 +253,8 @@ pub fn canonical_paths(rows: &[(Uuid, String)]) -> Vec<(Uuid, String, Option<Str
 /// with another one (`stored` is read in the transaction that writes), the reference takes
 /// the given hash and stays stale, with the hash seen: the confirmation must not hide a
 /// change it did not look at. It stops being stale when the file is seen with the confirmed
-/// content, or is confirmed against what was seen.
+/// content, or is confirmed against what was seen. For the same reason a given hash other
+/// than the stored one is refused (a conflict) for a reference that is not stale.
 pub fn revalidated(stored: &[CodeRef], given: Option<&[CodeRef]>) -> anyhow::Result<Vec<CodeRef>> {
     match given {
         Some(given) => given
@@ -230,6 +268,17 @@ pub fn revalidated(stored: &[CodeRef], given: Option<&[CodeRef]>) -> anyhow::Res
                     stored.iter().any(|s| s.path == g.path),
                     crate::error::invalid(format!("the memory has no code reference to {:?}: expected one of its own paths (revise it to change them)", g.path))
                 );
+                // A reference that is not stale was last known with its stored hash: written
+                // with it, or seen with it since (a file changed and changed back). Another
+                // hash is content MemHouse has not seen for it, so nothing tells a file that
+                // was checked before it changed back from one that is like that now.
+                anyhow::ensure!(
+                    !stored.iter().any(|s| s.path == g.path && s.stale_since.is_none() && s.blob_hash != g.blob_hash),
+                    crate::error::conflict(format!(
+                        "the code reference to {:?} is not stale: its file was last known with the stored hash, not the one given. Report the file as it is now (file-touched recall, or files changed), then revalidate; or revise the memory to say what it is about",
+                        g.path
+                    ))
+                );
                 let mut now = g.as_written();
                 if let Some(s) = stored.iter().find(|s| s.path == g.path && s.stale_since.is_some() && s.seen_hash.as_ref().is_some_and(|h| *h != g.blob_hash)) {
                     (now.stale_since, now.seen_hash) = (s.stale_since, s.seen_hash.clone());
@@ -239,6 +288,13 @@ pub fn revalidated(stored: &[CodeRef], given: Option<&[CodeRef]>) -> anyhow::Res
             .collect(),
         None => Ok(stored.iter().filter(|s| s.stale_since.is_some()).filter_map(|s| s.seen_hash.as_ref().map(|h| CodeRef::new(s.path.clone(), h.clone()))).collect()),
     }
+}
+
+/// Only a committed record is revalidated. A store checks it again on the row it has locked:
+/// the record may have been superseded since the caller read it.
+pub fn revalidated_status(id: Uuid, status: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(status == MemoryStatus::Committed.as_str(), error::conflict(format!("memory {id} is {status}; only a committed memory is revalidated")));
+    Ok(())
 }
 
 /// The hash algorithm of a git repository's objects.
@@ -559,9 +615,7 @@ impl Engine {
     /// files were last seen with, and the memory returns to default recall once none is stale.
     /// Audited as `memory.revalidate`.
     pub async fn revalidate(&self, tenant: &str, m: &Memory, refs: Option<&[CodeRef]>, actor: &str) -> anyhow::Result<RevalidateResult> {
-        if m.status != MemoryStatus::Committed {
-            return Err(error::conflict(format!("memory {} is {}; only a committed memory is revalidated", m.id, m.status.as_str())));
-        }
+        revalidated_status(m.id, m.status.as_str())?;
         let given = refs.map(written_refs).transpose()?;
         let before = self.store.representations(tenant, m.id).await?.1;
         if before.is_empty() {
@@ -681,6 +735,11 @@ mod tests {
         assert_eq!(revalidated(&stored, None).unwrap(), vec![CodeRef::new("a.rs", "h2")]);
         assert_eq!(revalidated(&stored, Some(&[CodeRef::new("b.rs", "h5")])).unwrap(), vec![CodeRef::new("b.rs", "h5")]);
         assert!(revalidated(&stored, Some(&[CodeRef::new("zzz.rs", "h5")])).is_err());
+        // A reference that is not stale: its own hash changes nothing, another is refused (the
+        // file was seen at `h9` and back at `h1`, and a caller that checked `h9` confirms late).
+        assert_eq!(revalidated(&stored, Some(&[CodeRef::new("c.rs", "h1")])).unwrap(), vec![CodeRef::new("c.rs", "h1")]);
+        let late = revalidated(&stored, Some(&[CodeRef::new("c.rs", "h9")])).unwrap_err();
+        assert_eq!(crate::error::code_of(&late), crate::error::ErrorCode::Conflict, "{late:#}");
         // The hash last seen, given: fresh. Another one: the file was seen with `h2` since,
         // so the reference takes the hash and stays stale.
         assert_eq!(revalidated(&stored, Some(&[CodeRef::new("a.rs", "h2")])).unwrap(), vec![CodeRef::new("a.rs", "h2")]);
@@ -690,21 +749,38 @@ mod tests {
 
     #[test]
     fn a_revision_takes_its_references_from_the_state_it_is_stored_in() {
+        let later = at() + chrono::Duration::hours(1);
         let mut seen = CodeRef::new("a.rs", "h1");
         (seen.stale_since, seen.seen_hash) = (Some(at()), Some("h2".into()));
         let mut gone = CodeRef::new("b.rs", "h1");
         gone.stale_since = Some(at());
-        let predecessor = vec![seen.clone(), gone, CodeRef::new("moved/c.rs", "h1")];
-        // Inherited: as last seen, without the deleted file, at the path a rename left.
-        assert_eq!(
-            successor_refs(&[CodeRef::new("a.rs", "h1"), CodeRef::new("c.rs", "h1")], true, &predecessor),
-            vec![CodeRef::new("a.rs", "h2"), CodeRef::new("moved/c.rs", "h1")]
-        );
+        let predecessor = vec![seen.clone(), gone.clone(), CodeRef::new("c.rs", "h1")];
+        // What a reviser reads: as last seen, without the deleted file.
+        let read = inherited_refs(&predecessor);
+        assert_eq!(read, vec![CodeRef::new("a.rs", "h2"), CodeRef::new("c.rs", "h1")]);
+        // Stored with nothing seen in between: exactly that, fresh.
+        assert_eq!(successor_refs(&read, true, &predecessor, later), read);
+        // Seen in between: `a.rs` restored to `h1`, `c.rs` renamed with the same content, and a
+        // file `d.rs` the reviser read deleted. The revision was written about `a.rs` at
+        // `h2` and about `d.rs`: both start stale. The rename is followed.
+        let mut d_gone = CodeRef::new("d.rs", "h4");
+        d_gone.stale_since = Some(later);
+        let now = vec![CodeRef::new("a.rs", "h1"), gone, d_gone, CodeRef::new("moved/c.rs", "h1")];
+        let read = vec![CodeRef::new("a.rs", "h2"), CodeRef::new("c.rs", "h1"), CodeRef::new("d.rs", "h4")];
+        let stored = successor_refs(&read, true, &now, later);
+        let state: Vec<_> = stored.iter().map(|r| (r.path.as_str(), r.blob_hash.as_str(), r.stale_since, r.seen_hash.as_deref())).collect();
+        assert_eq!(state, vec![("a.rs", "h2", Some(later), Some("h1")), ("d.rs", "h4", Some(later), None), ("moved/c.rs", "h1", None, None)]);
+        // Renamed and changed in between: what the reviser read of it cannot be told, so the
+        // reference keeps the predecessor's hash and starts stale.
+        let mut moved = CodeRef::new("new/c.rs", "h1");
+        (moved.stale_since, moved.seen_hash) = (Some(later), Some("h9".into()));
+        let unknown = successor_refs(&[CodeRef::new("c.rs", "h1")], true, &[moved], later);
+        assert_eq!((unknown[0].path.as_str(), unknown[0].blob_hash.as_str(), unknown[0].stale_since, unknown[0].seen_hash.as_deref()), ("new/c.rs", "h1", Some(later), Some("h9")));
         // Its own: the hash last seen is fresh, another one is stale as the predecessor was,
         // and a path or a hash the predecessor never saw is the writer's statement.
-        let own = successor_refs(&[CodeRef::new("a.rs", "h2"), CodeRef::new("new.rs", "n1")], false, &predecessor);
+        let own = successor_refs(&[CodeRef::new("a.rs", "h2"), CodeRef::new("new.rs", "n1")], false, &predecessor, later);
         assert_eq!(own, vec![CodeRef::new("a.rs", "h2"), CodeRef::new("new.rs", "n1")]);
-        let old = successor_refs(&[CodeRef::new("a.rs", "h1"), CodeRef::new("b.rs", "h1")], false, &predecessor);
+        let old = successor_refs(&[CodeRef::new("a.rs", "h1"), CodeRef::new("b.rs", "h1")], false, &predecessor, later);
         assert_eq!((old[0].stale_since, old[0].seen_hash.as_deref(), old[1].stale_since, old[1].seen_hash.as_deref()), (Some(at()), Some("h2"), Some(at()), None));
     }
 

@@ -380,6 +380,21 @@ const SCHEMA_V10_DDL: &str = r#"
 ALTER TABLE mh_code_ref ADD COLUMN IF NOT EXISTS stale_since timestamptz;
 ALTER TABLE mh_code_ref ADD COLUMN IF NOT EXISTS seen_hash text;
 ALTER TABLE mh_memory ADD COLUMN IF NOT EXISTS stale_since timestamptz;
+-- A reference is matched by its path in one form (`staleness::normalize_path`: `/`
+-- separators, no `.` or empty segment). This build writes it so; the trigger does the same
+-- for a version 9 process that is still running after the upgrade and writes the path as its
+-- caller spelled it. A path that leaves the repository (`..`) is left as it is.
+CREATE OR REPLACE FUNCTION mh_code_ref_canonical_path() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE parts text[];
+BEGIN
+  parts := ARRAY(SELECT s FROM unnest(string_to_array(replace(NEW.path, chr(92), '/'), '/')) WITH ORDINALITY AS t(s, i) WHERE s <> '' AND s <> '.' ORDER BY i);
+  IF cardinality(parts) > 0 AND NOT ('..' = ANY(parts)) THEN
+    NEW.path := array_to_string(parts, '/');
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE TRIGGER mh_code_ref_canonical_path BEFORE INSERT OR UPDATE OF path ON mh_code_ref
+  FOR EACH ROW EXECUTE FUNCTION mh_code_ref_canonical_path();
 "#;
 
 /// Schema v9 (G36): the language of each record, and a keyword index in that language's
@@ -1163,11 +1178,8 @@ impl PgStore {
         )
         .execute(&self.pool)
         .await?;
-        sqlx::query("UPDATE mh_meta SET value = $1 WHERE key = 'schema_version' AND value::int < $2")
-            .bind(SCHEMA_VERSION.to_string())
-            .bind(SCHEMA_VERSION as i32)
-            .execute(&self.pool)
-            .await?;
+        // The version is stamped by `migrate`, after every backfill: one that was interrupted
+        // runs again at the next start.
         Ok(())
     }
 
@@ -1753,7 +1765,7 @@ impl Store for PgStore {
                 .iter()
                 .map(row_to_code_ref)
                 .collect::<anyhow::Result<_>>()?;
-                let now = memhouse_core::staleness::successor_refs(&n.code_refs, n.refs_inherited, &predecessor);
+                let now = memhouse_core::staleness::successor_refs(&n.code_refs, n.refs_inherited, &predecessor, Utc::now().trunc_subsecs(6));
                 if now != n.code_refs {
                     records.to_mut()[i].code_refs = now;
                 }
@@ -1782,16 +1794,22 @@ impl Store for PgStore {
             // proposal, which then sees the new state.
             anyhow::ensure!(n == 1, "memory {old} stopped being current while {new} was being written");
         }
+        // A held record is changed only by a write that carries its labels, as the pipeline
+        // matched them (`Held::labels`): checked again here, where it is written, since a
+        // relabel may have come in between. The pipeline stores the confirming or repeating
+        // record in the same write; for one that is not in it there are no labels to compare.
+        let labels_of = |by: &Uuid| w.records.iter().find(|n| n.memory.id == *by).map(|n| n.memory.labels.clone());
         for (plan, by) in &w.confirm {
             // Still a held, unexpired plan at commit time; otherwise retry, which then sees it.
             let n = sqlx::query(
                 "UPDATE mh_memory SET status = 'committed', expires_at = NULL, metadata = (metadata - 'held') || jsonb_build_object('confirmed_by', $3::text), \
                  updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2 AND status = 'candidate' AND metadata ->> 'held' = 'plan' \
-                 AND (expires_at IS NULL OR expires_at > now())",
+                 AND (expires_at IS NULL OR expires_at > now()) AND ($4::text[] IS NULL OR (labels @> $4::text[] AND labels <@ $4::text[]))",
             )
             .bind(&w.tenant)
             .bind(plan)
             .bind(by.to_string())
+            .bind(labels_of(by))
             .execute(&mut *tx)
             .await?
             .rows_affected();
@@ -1804,12 +1822,13 @@ impl Store for PgStore {
                  metadata = (CASE WHEN $4 THEN metadata - 'held' ELSE metadata END) \
                    || jsonb_build_object('signals', coalesce((metadata ->> 'signals')::int, 1) + 1, 'last_signal', $3::text), \
                  updated_at = greatest(now(), created_at) WHERE tenant = $1 AND id = $2 AND status = 'candidate' AND metadata ->> 'held' = 'signal' \
-                 AND (expires_at IS NULL OR expires_at > now())",
+                 AND (expires_at IS NULL OR expires_at > now()) AND ($5::text[] IS NULL OR (labels @> $5::text[] AND labels <@ $5::text[]))",
             )
             .bind(&w.tenant)
             .bind(held)
             .bind(by.to_string())
             .bind(commit)
+            .bind(labels_of(by))
             .execute(&mut *tx)
             .await?
             .rows_affected();
@@ -1873,6 +1892,7 @@ impl Store for PgStore {
              AND scope_org IS NOT DISTINCT FROM $7 AND scope_team IS NOT DISTINCT FROM $8 AND scope_agent IS NOT DISTINCT FROM $9 \
              AND scope_user IS NOT DISTINCT FROM $10 AND scope_session IS NOT DISTINCT FROM $11 \
              AND (NOT $12::bool OR metadata ->> 'counted' IS NOT DISTINCT FROM $13) \
+             AND labels @> $14::text[] AND labels <@ $14::text[] \
              ORDER BY embedding <=> $3::vector LIMIT $4",
         )
         .bind(tenant)
@@ -1888,6 +1908,7 @@ impl Store for PgStore {
         .bind(&scope.session)
         .bind(which.counted.is_some())
         .bind(which.counted.flatten())
+        .bind(which.labels)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(id, s)| (id, s as f32)).collect())
@@ -3386,9 +3407,13 @@ impl Store for PgStore {
         const REFS: &str = "SELECT c.path, c.blob_hash, c.stale_since, c.seen_hash FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id \
              WHERE m.tenant = $1 AND c.memory_id = $2 ORDER BY c.path";
         let mut tx = self.pool.begin().await?;
-        if sqlx::query("SELECT 1 FROM mh_memory WHERE tenant = $1 AND id = $2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(&mut *tx).await?.is_none() {
+        let Some(status) =
+            sqlx::query_scalar::<_, String>("SELECT status FROM mh_memory WHERE tenant = $1 AND id = $2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(&mut *tx).await?
+        else {
             return Ok(None);
-        }
+        };
+        // Under the lock: a record superseded since the caller read it is not revalidated.
+        memhouse_core::staleness::revalidated_status(id, &status)?;
         let stored: Vec<CodeRef> = sqlx::query(REFS).bind(tenant).bind(id).fetch_all(&mut *tx).await?.iter().map(row_to_code_ref).collect::<anyhow::Result<_>>()?;
         let written = memhouse_core::staleness::revalidated(&stored, refs)?;
         for c in &written {

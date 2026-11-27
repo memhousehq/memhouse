@@ -309,7 +309,7 @@ impl Store for SqliteStore {
                     params![w.tenant, old.to_string()],
                     code_ref_of,
                 )?;
-                let now = memhouse_core::staleness::successor_refs(&n.code_refs, n.refs_inherited, &predecessor);
+                let now = memhouse_core::staleness::successor_refs(&n.code_refs, n.refs_inherited, &predecessor, Utc::now().trunc_subsecs(6));
                 if now != n.code_refs {
                     records.to_mut()[i].code_refs = now;
                 }
@@ -334,18 +334,24 @@ impl Store for SqliteStore {
             anyhow::ensure!(n == 1, "memory {old} stopped being current while {new} was being written");
         }
         // A held, unexpired candidate of this reason, as it is at commit time.
-        let held = |id: &Uuid, reason: &str| -> anyhow::Result<Option<serde_json::Value>> {
+        // A held record is changed only by a write that carries its labels, as the pipeline
+        // matched them (`Held::labels`): checked again here, where it is written. The
+        // pipeline stores the confirming or repeating record in the same write; for one that
+        // is not in it there are no labels to compare.
+        let held = |id: &Uuid, reason: &str, by: &Uuid| -> anyhow::Result<Option<serde_json::Value>> {
+            let labels = w.records.iter().find(|n| n.memory.id == *by).map(|n| &n.memory.labels);
             Ok(first(
                 &tx,
-                "SELECT metadata FROM mh_memory WHERE tenant = ?1 AND id = ?2 AND status = 'candidate' AND (expires_at IS NULL OR expires_at > ?3)",
+                "SELECT metadata, labels FROM mh_memory WHERE tenant = ?1 AND id = ?2 AND status = 'candidate' AND (expires_at IS NULL OR expires_at > ?3)",
                 params![w.tenant, id.to_string(), now],
-                |r| value(&r.get::<_, String>(0)?),
+                |r| Ok((value(&r.get::<_, String>(0)?)?, strings(&r.get::<_, String>(1)?)?)),
             )?
-            .filter(|m| m["held"].as_str() == Some(reason)))
+            .filter(|(m, l)| m["held"].as_str() == Some(reason) && labels.is_none_or(|by| memhouse_core::intake::same_labels(l, by)))
+            .map(|(m, _)| m))
         };
         for (plan, by) in &w.confirm {
             // Still a held, unexpired plan at commit time; otherwise retry, which then sees it.
-            let Some(mut metadata) = held(plan, "plan")? else { anyhow::bail!("plan {plan} stopped being a held candidate while {by} was being written") };
+            let Some(mut metadata) = held(plan, "plan", by)? else { anyhow::bail!("plan {plan} stopped being a held candidate while {by} was being written") };
             if let Some(o) = metadata.as_object_mut() {
                 o.remove("held");
                 o.insert("confirmed_by".into(), by.to_string().into());
@@ -358,7 +364,7 @@ impl Store for SqliteStore {
         }
         for (signal, by, commit) in &w.signals {
             // Still a held, unexpired signal at commit time; otherwise retry, which then sees it.
-            let Some(mut metadata) = held(signal, "signal")? else { anyhow::bail!("signal {signal} stopped being a held candidate while {by} was being written") };
+            let Some(mut metadata) = held(signal, "signal", by)? else { anyhow::bail!("signal {signal} stopped being a held candidate while {by} was being written") };
             let seen = metadata["signals"].as_i64().or_else(|| metadata["signals"].as_str().and_then(|s| s.parse().ok())).unwrap_or(1);
             if let Some(o) = metadata.as_object_mut() {
                 if *commit {
@@ -454,7 +460,9 @@ impl Store for SqliteStore {
              AND json_extract(metadata, '$.held') = ?3 AND (expires_at IS NULL OR expires_at > ?4) \
              AND (?5 IS NULL OR kind = ?5) \
              AND scope_org IS ?6 AND scope_team IS ?7 AND scope_agent IS ?8 AND scope_user IS ?9 AND scope_session IS ?10 \
-             AND (NOT ?11 OR json_extract(metadata, '$.counted') IS ?12)",
+             AND (NOT ?11 OR json_extract(metadata, '$.counted') IS ?12) \
+             AND NOT EXISTS (SELECT 1 FROM json_each(labels) l WHERE l.value NOT IN (SELECT value FROM json_each(?13))) \
+             AND NOT EXISTS (SELECT 1 FROM json_each(?13) l WHERE l.value NOT IN (SELECT value FROM json_each(labels)))",
             params![
                 tenant,
                 subject,
@@ -467,7 +475,8 @@ impl Store for SqliteStore {
                 scope.user,
                 scope.session,
                 which.counted.is_some(),
-                which.counted.flatten()
+                which.counted.flatten(),
+                serde_json::to_string(which.labels)?
             ],
             embedding,
             limit,
@@ -1554,9 +1563,11 @@ impl Store for SqliteStore {
         let sql = format!("SELECT {CODE_REF_COLS} FROM mh_code_ref c JOIN mh_memory m ON m.id = c.memory_id WHERE m.tenant = ?1 AND c.memory_id = ?2 ORDER BY c.path");
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if first(&tx, "SELECT 1 FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()], |_| Ok(()))?.is_none() {
+        let Some(status) = first(&tx, "SELECT status FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()], |r| Ok(r.get::<_, String>(0)?))? else {
             return Ok(None);
-        }
+        };
+        // In the transaction: a record superseded since the caller read it is not revalidated.
+        memhouse_core::staleness::revalidated_status(id, &status)?;
         let stored = rows(&tx, &sql, [tenant, ids.as_str()], code_ref_of)?;
         let written = memhouse_core::staleness::revalidated(&stored, refs)?;
         for code in &written {

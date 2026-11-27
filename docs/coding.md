@@ -139,7 +139,10 @@ those references are revalidated, and the memory returns to recall once none is 
 confirmation does not hide a change it did not look at: if the file was seen with another hash
 than the one you pass, the reference takes your hash and **stays stale** (the answer says
 `stale`, and the reference shows the hash seen) until the file is seen with the confirmed
-content or you confirm what was seen. A memory
+content or you confirm what was seen. For a reference that is **not stale**, a hash other
+than the stored one is refused (`409`): the file was last known with the stored content, for
+instance after it changed and changed back, and nothing says it is as you checked it. Report
+the file first (a file hook, or `POST /v1/code/changed`), then revalidate. A memory
 about a **deleted** file has nothing to be checked against: revalidation answers `400`, and the
 memory is revised with the file it is about now, or forgotten. Revalidation needs
 `memory:write` and sight of the memory, and is audited as `memory.revalidate` with the old and
@@ -312,20 +315,25 @@ words are added.
   first, the late commit report (which carries the committed content) can clear the flag the
   edit set. The next time the file is opened or edited through a hook it is flagged again.
 - **A revision is judged when it is stored, against what its predecessor's files were seen
-  with.** A revision that names no `code_refs` takes its predecessor's as they are at that
-  moment (the hash last seen, the path after a rename). One that names its own starts stale
-  where the predecessor's reference to the same path is stale with another hash than the
-  revision names. What MemHouse cannot know is not judged: a hash or a path the revision
-  names that its predecessor never saw is taken as the writer's statement, also when the
-  file was reported back at its old content, or renamed, after the writer read it. The next
-  report of the file settles it. A proposed revision is judged the same way when it is
-  stored, and follows the reports of its files while it waits for its reviewer.
+  with.** A revision that names no `code_refs` keeps the references of the version it
+  replaces, with the hashes the reviser had before them. If a file is reported with other
+  content between the revision being made and being stored (changed, restored or deleted),
+  that reference starts stale: the revision was written about content the file no longer
+  has. A file renamed in between with the same content is followed. A revision that names
+  its own `code_refs` starts stale where the predecessor's reference to the same path is
+  stale with another hash than the revision names. What MemHouse cannot know is not judged:
+  a hash or a path a revision names itself that its predecessor never saw is taken as the
+  writer's statement, also when the file was reported back at its old content, or renamed,
+  after the writer read it. The next report of the file settles it. A proposed revision is
+  judged the same way when it is stored, and follows the reports of its files while it waits
+  for its reviewer.
 - **Hook groups are recognised as a whole.** `connect --hooks` replaces a group only when
-  every command in it is one plain MemHouse file hook: a binary called `memhouse` running
-  `hook file-opened` or `hook file-edited` with options, and nothing else. A group of another
-  program with the same words, or one where the hook is chained with a command of yours
-  (`... && ./lint.sh`), is left as it is, and the new group is added beside it: remove the
-  old one yourself.
+  every command in it is exactly a line it writes: a binary called `memhouse`, `--config
+  <file>` or not, `hook file-opened` or `hook file-edited`, and the options `--format`,
+  `--key-file` and `--subject` with their values. A group of another program with the same
+  words, one where the hook is chained with a command of yours (`... && ./lint.sh`), or one
+  you gave another option (`--timeout-ms 700`), is left as it is, and the new group is added
+  beside it: remove the old one yourself.
 - **The post-commit summary is per commit.** A memory flagged by one part of a large commit
   and cleared by another is counted as neither.
 - **Any writer can report a hash.** A key with `memory:write` in the repository's subject can

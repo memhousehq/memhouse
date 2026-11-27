@@ -438,7 +438,7 @@ async fn write_stage_and_queues() {
     s.insert(&[new(old, Some(axis(0, 0.0))), new(plan, Some(axis(1, 0.0))), new(signal, Some(axis(2, 0.0)))]).await.unwrap();
     let held = |reason: &'static str, kind: Option<MemoryKind>| {
         let s = s.clone();
-        async move { s.nearest_held(T, S, &axis(1, 0.2), 5, &Held { reason, kind, scope: &Scope::default(), counted: None }).await.unwrap() }
+        async move { s.nearest_held(T, S, &axis(1, 0.2), 5, &Held { reason, kind, scope: &Scope::default(), counted: None, labels: &[] }).await.unwrap() }
     };
     assert_eq!(held("plan", None).await.iter().map(|h| h.0).collect::<Vec<_>>(), vec![idp]);
     assert_eq!(held("signal", Some(MemoryKind::Preference)).await.len(), 1);

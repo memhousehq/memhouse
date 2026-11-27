@@ -528,7 +528,9 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             store.code_refs_observe(t, repo, &[FileState::present("src/u1.rs", "u1"), FileState::renamed("src/u2.rs", "src/u3.rs", "v1")], at, &memhouse_core::traits::no_audit).await?;
             let taken_after = revision(taken, vec![CodeRef::new("src/u1.rs", "u2"), CodeRef::new("src/u2.rs", "v1")], true).await?;
             let judged = own_after == (vec![("src/s1.rs".to_string(), "s1".to_string(), true, Some("s2".to_string()))], true)
-                && taken_after == (vec![("src/u1.rs".to_string(), "u1".to_string(), false, None), ("src/u3.rs".to_string(), "v1".to_string(), false, None)], false);
+                // Taken from the predecessor: the renamed file is followed; the one restored
+                // since the reviser read it leaves the revision stale (written about `u2`).
+                && taken_after == (vec![("src/u1.rs".to_string(), "u2".to_string(), true, Some("u1".to_string())), ("src/u3.rs".to_string(), "v1".to_string(), false, None)], true);
             Ok(unless(
                 one && since == (Some(at), None, None)
                     && elsewhere == 0
@@ -664,11 +666,26 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             let hashes = |refs: &[CodeRef]| refs.iter().map(|c| (c.path.clone(), c.blob_hash.clone(), c.stale_since.is_some())).collect::<Vec<_>>();
             let expected_part = vec![("src/route.rs".to_string(), "r2".to_string(), false), ("src/tree.rs".to_string(), "n1".to_string(), true)];
             let expected_all = vec![("src/route.rs".to_string(), "r3".to_string(), false), ("src/tree.rs".to_string(), "n2".to_string(), false)];
+            // Seen changed and back again, the reference is not stale: a hash confirmed late
+            // for the content in between is a conflict, and writes nothing.
+            store.code_refs_observe(t, repo, &[FileState::present("src/tree.rs", "n9")], at, &memhouse_core::traits::no_audit).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/tree.rs", "n2")], at, &memhouse_core::traits::no_audit).await?;
+            let ambiguous = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/tree.rs", "n9")]), &memhouse_core::traits::no_revalidation_audit).await;
+            let refused = ambiguous.as_ref().is_err_and(|e| memhouse_core::error::code_of(e) == memhouse_core::error::ErrorCode::Conflict)
+                && hashes(&store.representations(t, id).await?.1) == expected_all;
+            // A record that is no longer the committed version is not revalidated: checked by
+            // the store on the row it writes, whatever the caller read before.
+            let old = linked("The mailer retries a failed delivery three times.", vec![CodeRef::new("src/mail.rs", "m1")]).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/mail.rs", "m2")], at, &memhouse_core::traits::no_audit).await?;
+            e.revise(ReviseRequest { tenant: Some(tenant.clone()), id: old, content: "The mailer retries a failed delivery five times.".into(), wait: true, ..Default::default() }).await?;
+            let superseded = store.code_refs_revalidate(t, old, None, &memhouse_core::traits::no_revalidation_audit).await;
+            let not_current = superseded.as_ref().is_err_and(|e| memhouse_core::error::code_of(e) == memhouse_core::error::ErrorCode::Conflict)
+                && store.representations(t, old).await?.1.iter().all(|c| c.blob_hash == "m1" && c.stale_since.is_some());
             let unknown = store.code_refs_revalidate(t, Uuid::now_v7(), None, &memhouse_core::traits::no_revalidation_audit).await?.is_none() && store.code_refs_revalidate("kit-someone-else", id, None, &memhouse_core::traits::no_revalidation_audit).await?.is_none();
             let foreign = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/absent.rs", "x")]), &memhouse_core::traits::no_revalidation_audit).await.is_err();
-            Ok(unless(read && exported && imported && hashes(&part) == expected_part && still && kept && hashes(&all) == expected_all && done && unknown && foreign, || {
+            Ok(unless(read && exported && imported && hashes(&part) == expected_part && still && kept && refused && not_current && hashes(&all) == expected_all && done && unknown && foreign, || {
                 format!(
-                    "read by path: {read}; exported with marks: {exported}; imported with marks: {imported}; after one reference {:?} (still stale: {still}); a hash seen after the confirmed one kept the reference stale: {kept} ({late:?}); after the rest {:?} (fresh: {done}); unknown record answered none: {unknown}; a path that is no reference refused: {foreign}",
+                    "read by path: {read}; exported with marks: {exported}; imported with marks: {imported}; after one reference {:?} (still stale: {still}); a hash seen after the confirmed one kept the reference stale: {kept} ({late:?}); a hash for content seen before the file went back refused: {refused}; a superseded record refused: {not_current}; after the rest {:?} (fresh: {done}); unknown record answered none: {unknown}; a path that is no reference refused: {foreign}",
                     hashes(&part),
                     hashes(&all)
                 )
