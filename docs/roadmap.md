@@ -2014,6 +2014,20 @@ actions of uv and pnpm. The job now installs both at fixed versions with `pipx` 
     ([coding.md](coding.md#limits)). `GET /v1/subjects/{subject}/preferences` is not filtered by
     staleness.
 
+**Fix (2026-11-27, flaky `procedural_promotion` on Postgres):** in one guard run the scenario
+"a correction recognised by its wording" ended with the held record still a candidate after
+the third repeat. Cause, in the product: `Store::find_by_hash` took the first row with the
+content hash (`LIMIT 1`, no order). A counted repeat is stored as a rejected record with the
+same hash, and counting it rewrites the held record's row, which Postgres may then place behind
+the repeat. The next identical write (one without the `correction` mark, which goes through
+the lookup) then found the rejected repeat, was answered as a duplicate of it and never reached
+the gate, so it was not counted. Both stores now order the lookup: a committed record, else a
+candidate, else any other, the oldest first. The store kit checks it
+(`find_by_hash_prefers_the_live_record`, 19 checks), and the scenario's failure message now
+gives the state after the third write and what that write answered. The same lookup also made
+an ordinary identical write answer with a rejected duplicate's id and state instead of the
+live record's, when both existed.
+
 #### G20 — Memory browser v2 and admin console
 
 - [ ] **Done**

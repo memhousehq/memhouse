@@ -100,6 +100,7 @@ path from 0.x data other than export and import.
   categories and writes suite format 2 (file links, file changes, file-touched questions), so
   `bench/suites/coding` is a new suite; it is now a tier 1 run of the benchmark guard. Format
   1 suites and the other profiles are unchanged.
+- Fixed: a write identical to a stored one is matched with the live record of that content (committed, else candidate), not with whichever row the store returned first; a rejected repeat could be picked on Postgres, and a repeated correction was then not counted.
 - Changed: on Postgres the recall statement is planned for the values of each call instead of
   being kept as a prepared statement. A kept statement could be given a generic plan that
   knows no subject and joins by nested loops, several times slower on a large subject.

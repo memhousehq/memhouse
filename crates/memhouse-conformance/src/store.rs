@@ -114,6 +114,48 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
         .await,
     );
     r.outcome(
+        "find_by_hash_prefers_the_live_record",
+        "of several records with one content hash, the lookup by hash gives the committed one, else the candidate, whatever order they were written and updated in",
+        async {
+            let hash = memhouse_core::engine::content_hash(&format!("kit-{}", Uuid::new_v4().simple()));
+            let base = store.get(t, first.id).await?.ok_or_else(|| anyhow::anyhow!("the first record is gone"))?;
+            let copy = |status: MemoryStatus, n: i64| {
+                let mut m = base.clone();
+                (m.id, m.status, m.subject) = (Uuid::now_v7(), status, "kit:same-hash".to_string());
+                m.content = format!("The same statement, written again ({n}).");
+                m.created_at += chrono::Duration::milliseconds(n);
+                NewMemory::new(m, hash.clone())
+            };
+            // A rejected repeat written first, then the candidate it repeats, then a later repeat.
+            let (early, held, late) = (copy(MemoryStatus::Rejected, 0), copy(MemoryStatus::Candidate, 1), copy(MemoryStatus::Rejected, 2));
+            store.insert(std::slice::from_ref(&early)).await?;
+            store.insert(std::slice::from_ref(&held)).await?;
+            store.insert(std::slice::from_ref(&late)).await?;
+            let mut picks = vec![store.find_by_hash(t, "kit:same-hash", &hash).await?];
+            // The candidate's row is rewritten several times (labels), which moves it in a
+            // store that appends new row versions; the answer must stay the same.
+            for i in 0..5 {
+                store.set_labels(t, held.memory.id, &[format!("kit-{i}")]).await?;
+                picks.push(store.find_by_hash(t, "kit:same-hash", &hash).await?);
+            }
+            let committed = copy(MemoryStatus::Committed, 3);
+            store.insert(std::slice::from_ref(&committed)).await?;
+            let now = store.find_by_hash(t, "kit:same-hash", &hash).await?;
+            for id in [early.memory.id, held.memory.id, late.memory.id, committed.memory.id] {
+                store.delete(t, id, "conformance").await?;
+            }
+            Ok(unless(picks.iter().all(|p| *p == Some(held.memory.id)) && now == Some(committed.memory.id), || {
+                format!(
+                    "with a candidate between two rejected repeats the lookup gave the candidate in {} of {} tries; with a committed record added it gave the committed one: {}",
+                    picks.iter().filter(|p| **p == Some(held.memory.id)).count(),
+                    picks.len(),
+                    now == Some(committed.memory.id)
+                )
+            }))
+        }
+        .await,
+    );
+    r.outcome(
         "keyword_search_finds_by_word",
         "a keyword recall finds the record by a word it contains, and nothing for a word it does not",
         async {

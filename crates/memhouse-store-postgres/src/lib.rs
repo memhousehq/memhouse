@@ -1942,12 +1942,17 @@ impl Store for PgStore {
 
     #[tracing::instrument(name = "db.find_by_hash", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]
     async fn find_by_hash(&self, tenant: &str, subject: &str, hash: &str) -> anyhow::Result<Option<Uuid>> {
-        Ok(sqlx::query_scalar("SELECT id FROM mh_memory WHERE tenant = $1 AND subject = $2 AND content_hash = $3 AND status <> 'superseded' LIMIT 1")
-            .bind(tenant)
-            .bind(subject)
-            .bind(hash)
-            .fetch_optional(&self.pool)
-            .await?)
+        // Ordered: without it the row returned is whichever the scan meets first, and an
+        // update of the held record (a counted repeat) moves it behind its rejected repeats.
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM mh_memory WHERE tenant = $1 AND subject = $2 AND content_hash = $3 AND status <> 'superseded' \
+             ORDER BY CASE status WHEN 'committed' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END, created_at, id LIMIT 1",
+        )
+        .bind(tenant)
+        .bind(subject)
+        .bind(hash)
+        .fetch_optional(&self.pool)
+        .await?)
     }
 
     #[tracing::instrument(name = "db.existing_hashes", skip_all, fields(db.system = "postgresql", db.operation = "SELECT"))]

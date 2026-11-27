@@ -527,9 +527,14 @@ impl Store for SqliteStore {
 
     #[tracing::instrument(name = "db.find_by_hash", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]
     async fn find_by_hash(&self, tenant: &str, subject: &str, hash: &str) -> anyhow::Result<Option<Uuid>> {
-        first(&self.read(), "SELECT id FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND content_hash = ?3 AND status <> 'superseded' LIMIT 1", [tenant, subject, hash], |r| {
-            uuid_of(&r.get::<_, String>(0)?)
-        })
+        // Ordered, as in the Postgres store: the live record, not whichever row comes first.
+        first(
+            &self.read(),
+            "SELECT id FROM mh_memory WHERE tenant = ?1 AND subject = ?2 AND content_hash = ?3 AND status <> 'superseded' \
+             ORDER BY CASE status WHEN 'committed' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END, created_at, id LIMIT 1",
+            [tenant, subject, hash],
+            |r| uuid_of(&r.get::<_, String>(0)?),
+        )
     }
 
     #[tracing::instrument(name = "db.existing_hashes", skip_all, fields(db.system = "sqlite", db.operation = "SELECT"))]

@@ -662,11 +662,21 @@ async fn promotion(e: &Engine) -> Outcome {
     let w1 = agent.remember(plain(worded)).await?;
     agent.remember(plain(worded)).await?;
     let before_third = state(w1.id).await?;
-    agent.remember(plain(worded)).await?;
+    let third = agent.remember(plain(worded)).await?;
+    let after_third = state(w1.id).await?;
     s.case(
         "a correction recognised by its wording is counted and promoted the same way",
-        before_third == Some((MemoryStatus::Candidate, json!(2))) && state(w1.id).await?.map(|x| x.0) == Some(MemoryStatus::Committed),
-        || format!("after two: {before_third:?}"),
+        before_third == Some((MemoryStatus::Candidate, json!(2))) && after_third == Some((MemoryStatus::Committed, json!(3))) && third.id == w1.id,
+        || {
+            format!(
+                "after two: {before_third:?}; after three: {after_third:?}; the third write answered {} ({}, deduplicated {}, note {:?}), the held record is {}",
+                third.id,
+                third.status.as_str(),
+                third.deduplicated,
+                third.note,
+                w1.id
+            )
+        },
     );
 
     // The threshold is configuration; one occurrence never promotes, whatever it says.

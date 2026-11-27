@@ -171,7 +171,11 @@ pub trait Store: Send + Sync {
     }
     async fn get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<Memory>>;
     async fn list(&self, q: &ListQuery) -> anyhow::Result<Vec<Memory>>;
-    /// Records of the subject whose content hash matches (exact dedup).
+    /// The record of the subject whose content hash matches (exact dedup), superseded ones
+    /// aside. Several records can share a hash: a held candidate and the rejected repeats that
+    /// were counted on it. The answer must not depend on how the store happens to lay rows
+    /// out: a committed record first, then a candidate, then any other; the oldest of those
+    /// (`created_at`, then id).
     async fn find_by_hash(&self, tenant: &str, subject: &str, hash: &str) -> anyhow::Result<Option<Uuid>>;
     /// Which of these content hashes the subject already has (batch dedup for ingest).
     async fn existing_hashes(&self, tenant: &str, subject: &str, hashes: &[String]) -> anyhow::Result<std::collections::HashSet<String>>;
