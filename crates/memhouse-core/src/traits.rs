@@ -571,6 +571,133 @@ pub trait Store: Send + Sync {
     async fn migration_loaded(&self) -> anyhow::Result<()> {
         Ok(())
     }
+    // Governance II (G22): retention rules, legal hold, the deletion workflow, durable job
+    // runs, the audit head, small durable state and the deletion ledger.
+    /// Carry out one retention rule (GOV-06) with the cascade of `purge_older_than`, skipping
+    /// what a legal hold keeps (GOV-09). Each batch is one transaction that also adds its count
+    /// to `spec.run`, so a purge that is killed and run again removes and counts every record
+    /// once (TR-WF-02). A store with monthly partitions drops a partition whole when every row
+    /// in it is due (TR-DB-04).
+    async fn purge(&self, tenant: &str, spec: &crate::governance::PurgeSpec) -> anyhow::Result<crate::governance::PurgeOutcome> {
+        match spec.is_plain() {
+            Some(days) => Ok(crate::governance::PurgeOutcome { records: self.purge_older_than(tenant, spec.kind, days).await?, complete: true, ..Default::default() }),
+            None => anyhow::bail!("this store purges by type and age only"),
+        }
+    }
+    /// Store a legal hold with its audit event, in one transaction.
+    async fn legal_hold_put(&self, _h: &crate::governance::LegalHold, _audit: &crate::intake::AuditEntry) -> anyhow::Result<()> {
+        anyhow::bail!("this store has no legal holds")
+    }
+    /// Release an active hold now, with its audit event. False, writing nothing, if it does
+    /// not exist or was released already.
+    async fn legal_hold_release(&self, _tenant: &str, _id: Uuid, _by: &str, _audit: &crate::intake::AuditEntry) -> anyhow::Result<bool> {
+        anyhow::bail!("this store has no legal holds")
+    }
+    /// A tenant's holds, newest first; only those not released with `active_only`.
+    async fn legal_holds(&self, _tenant: &str, _active_only: bool) -> anyhow::Result<Vec<crate::governance::LegalHold>> {
+        Ok(vec![])
+    }
+    /// Records a `forget` of this scope matches that an active legal hold keeps. For a record:
+    /// the record itself and what was derived or promoted from it.
+    async fn held_count(&self, _tenant: &str, _scope: ForgetScope, _value: &str) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    /// Store a deletion request, replacing the row of the same id (never a completed one).
+    async fn deletion_put(&self, _d: &crate::governance::DeletionRequest) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Store a request as completed, with its certificate and the `deletion.certificate` event,
+    /// in one transaction; nothing is written if it was completed already.
+    async fn deletion_complete(&self, _d: &crate::governance::DeletionRequest, audit: &crate::intake::AuditEntry) -> anyhow::Result<()> {
+        self.audit(&audit.actor, &audit.action, &_d.tenant, audit.subject.as_deref(), audit.memory_id, audit.detail.clone()).await
+    }
+    async fn deletion_get(&self, _tenant: &str, _id: Uuid) -> anyhow::Result<Option<crate::governance::DeletionRequest>> {
+        Ok(None)
+    }
+    /// A tenant's deletion requests, newest first, in one state or in any.
+    async fn deletions(&self, _tenant: &str, _status: Option<crate::governance::DeletionStatus>, _limit: usize) -> anyhow::Result<Vec<crate::governance::DeletionRequest>> {
+        Ok(vec![])
+    }
+    /// Up to `limit` records a `forget` of this scope matches, as canaries: their ids and the
+    /// keys of their cached vectors, read before the deletion (TR-WF-01).
+    async fn canaries(&self, _tenant: &str, _scope: ForgetScope, _value: &str, _limit: usize) -> anyhow::Result<Vec<crate::governance::Canary>> {
+        Ok(vec![])
+    }
+    /// Where these canaries are still found, in every representation the store keeps.
+    async fn canary_probe(&self, _tenant: &str, _canaries: &[crate::governance::Canary]) -> anyhow::Result<crate::governance::CanaryReport> {
+        Ok(Default::default())
+    }
+    /// The unfinished run of a tenant's job, or a new one.
+    async fn job_begin(&self, tenant: &str, job: &str) -> anyhow::Result<crate::governance::JobRun> {
+        Ok(crate::governance::JobRun { id: Uuid::new_v4(), tenant: tenant.into(), job: job.into(), state: serde_json::json!({}), started_at: chrono::Utc::now(), resumed: false })
+    }
+    /// Records a run has counted in a step, over every attempt.
+    async fn job_count(&self, _run: Uuid, _step: &str) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    /// Mark a step of a run done and write its audit event (if any), in one transaction; a
+    /// step already done writes nothing. Returns whether this call marked it.
+    async fn job_step_done(&self, _run: Uuid, _step: &str, _audit: Option<&crate::intake::AuditEntry>) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+    async fn job_finish(&self, _run: Uuid) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// The newest audit event (GOV-12), if there is one.
+    async fn audit_head(&self) -> anyhow::Result<Option<crate::governance::AuditHead>> {
+        Ok(None)
+    }
+    /// The hash of the audit event with this id.
+    async fn audit_hash_at(&self, _id: i64) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+    /// Audit events of every tenant after the event `after`, oldest first: what the SIEM
+    /// export reads (GOV-15). Events are committed in id order, so none appears behind `after`.
+    async fn audit_after(&self, _after: i64, _limit: usize) -> anyhow::Result<Vec<AuditEvent>> {
+        Ok(vec![])
+    }
+    /// Whether the tenant has an event of `action` whose detail holds `value` under `key`.
+    async fn audit_find(&self, _tenant: &str, _action: &str, _key: &str, _value: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+    /// A value of the store's own small durable state (cursors, leases, the instance id).
+    async fn state_get(&self, _key: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+    async fn state_put(&self, _key: &str, _value: &str) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no state")
+    }
+    /// Set a value only if it is still `expect` (`None`: not set). False if it was not.
+    async fn state_cas(&self, _key: &str, _expect: Option<&str>, _value: &str) -> anyhow::Result<bool> {
+        anyhow::bail!("this store keeps no state")
+    }
+    /// Every row of the deletion ledger, oldest first (TR-WF-03).
+    async fn ledger_export(&self) -> anyhow::Result<Vec<crate::governance::LedgerEntry>> {
+        anyhow::bail!("this store cannot export its deletion ledger")
+    }
+    /// Apply the deletions of `entries` the store's ledger does not have yet, each with the
+    /// cascade of the deletion it records, add them to the ledger as they were made, and close
+    /// with a `backup.restore` event of `tenant` carrying `detail`. One transaction: a restored
+    /// database is never seen with half its deletions.
+    async fn ledger_apply(
+        &self,
+        _entries: &[crate::governance::LedgerEntry],
+        _actor: &str,
+        _tenant: &str,
+        _detail: serde_json::Value,
+    ) -> anyhow::Result<crate::governance::Reapplied> {
+        anyhow::bail!("this store cannot re-apply a deletion ledger")
+    }
+    /// Row-level security as the store has it (TR-DB-03); none for a store without it.
+    async fn rls_status(&self) -> anyhow::Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
+    /// The monthly partitions of episodic memory (TR-DB-04), oldest first; none for a store
+    /// or a database without them.
+    async fn episodic_partitions(&self) -> anyhow::Result<Option<Vec<String>>> {
+        Ok(None)
+    }
+
     /// The marker a migration left in this store ([`crate::migrate::Marker`]), if one did.
     async fn migration_marker(&self) -> anyhow::Result<Option<serde_json::Value>> {
         Ok(None)

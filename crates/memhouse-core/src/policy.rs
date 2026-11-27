@@ -121,6 +121,10 @@ pub struct SpecWriteGate {
     /// keep every statement as it was made. The regression gate measures what that costs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corrections: Option<bool>,
+    /// Source patterns added to those governance does not trust (GOV-10): a write from a
+    /// matching source waits for a reviewer. A policy may add patterns, never remove them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untrusted_sources: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -134,6 +138,28 @@ pub struct SpecRetention {
     /// Lifetime of working memory written without `expires_at` (1 second to 30 days).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_ttl_secs: Option<u64>,
+    /// Retention of one memory type within one scope (GOV-06): `[[retention.scopes]]` with
+    /// `level`, `value`, `kind` and `days`. Where two rules match a record, the more specific
+    /// level wins (session, user, agent, team, org, subject), and any of them wins over the
+    /// type's own `retention_days`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<RetentionScope>,
+}
+
+/// Retention of one memory type within one scope (GOV-06).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "PolicyRetentionScope")]
+pub struct RetentionScope {
+    /// `subject`, `org`, `team`, `agent`, `user` or `session`.
+    pub level: crate::governance::ScopeLevel,
+    /// The subject, org, team, agent, user or session the rule is for.
+    pub value: String,
+    /// The memory type; not `working`, which expires by its TTL.
+    pub kind: MemoryKind,
+    /// Days after which the scope's records of the type are purged; 0 keeps them whatever the
+    /// type's own rule says. For `episodic`, within governance's limit.
+    pub days: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -143,6 +169,11 @@ pub struct SpecRedaction {
     /// Categories redacted before anything is stored; must include every governance category.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub categories: Option<Vec<String>>,
+    /// What happens to a match, by category (GOV-05): `mask`, `redact` or `reject`. A policy
+    /// may make a category's action stricter than governance's (mask < redact < reject), never
+    /// looser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actions: Option<std::collections::BTreeMap<String, crate::config::RedactAction>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -503,6 +534,9 @@ pub struct WriteGate {
     /// Corrections and changed values supersede what they update (QUAL-01).
     #[serde(default = "yes")]
     pub corrections: bool,
+    /// Source patterns whose writes wait for a reviewer (GOV-10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub untrusted_sources: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -514,12 +548,32 @@ fn yes() -> bool {
 pub struct Retention {
     pub episodic_days: u32,
     pub working_ttl_secs: u64,
+    /// Rules for one type within one scope (GOV-06), which win over the type's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<RetentionScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "PolicyRedaction")]
 pub struct Redaction {
     pub categories: Vec<String>,
+    /// The action of each category that is not simply redacted (GOV-05).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub actions: std::collections::BTreeMap<String, crate::config::RedactAction>,
+}
+
+impl Redaction {
+    /// The categories as the detector takes them: a category whose matches are masked or
+    /// refused carries its action (`card:mask`, `ssn:reject`).
+    pub fn rules(&self) -> Vec<String> {
+        self.categories
+            .iter()
+            .map(|c| match self.actions.get(c) {
+                Some(a) if *a != crate::config::RedactAction::Redact => format!("{c}:{}", a.as_str()),
+                _ => c.clone(),
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -719,9 +773,14 @@ fn governance(cfg: &Config, tenant: &str) -> CompiledBody {
             max_content_chars: g.max_content_chars,
             quarantine_injection: true,
             corrections: true,
+            untrusted_sources: sorted(&g.untrusted_sources),
         },
-        retention: Retention { episodic_days: g.episodic_retention_days, working_ttl_secs: cfg.memory.working_ttl_secs },
-        redaction: Redaction { categories: ordered_categories(&redact) },
+        retention: Retention { episodic_days: g.episodic_retention_days, working_ttl_secs: cfg.memory.working_ttl_secs, scopes: vec![] },
+        redaction: Redaction {
+            categories: ordered_categories(&redact),
+            // Only what differs from plain redaction, and only for categories that are on.
+            actions: g.actions.iter().filter(|(c, a)| redact.contains(c) && **a != crate::config::RedactAction::Redact).map(|(c, a)| (c.clone(), *a)).collect(),
+        },
         recall: RecallRules { denied_labels: sorted(&g.denied_labels), audit_reads: g.audit_reads },
         ranking: Ranking::from_config(&cfg.memory),
         decisions: json!({}),
@@ -820,6 +879,21 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
         if w.quarantine_injection == Some(false) {
             err("write_gate.quarantine_injection", "baseline", "the injection screen is part of the security baseline and can't be turned off (TR-CORE-05)".into());
         }
+        if let Some(u) = &w.untrusted_sources {
+            if u.iter().any(|p| p.trim().is_empty()) {
+                err("write_gate.untrusted_sources", "range", "a source pattern is never empty".into());
+            }
+            for g in gov.write_gate.untrusted_sources.iter().filter(|g| !u.contains(g)) {
+                err(
+                    "write_gate.untrusted_sources",
+                    LOOSEN,
+                    format!("drops {g:?}, which governance does not trust ([governance] untrusted_sources); a behaviour policy may add sources, never remove them (PR-1)"),
+                );
+            }
+            let mut all = u.clone();
+            all.extend(gov.write_gate.untrusted_sources.iter().cloned());
+            b.write_gate.untrusted_sources = sorted(&all);
+        }
     }
 
     // Episodic retention and the working TTL can be given in `[retention]` (G08) or in the
@@ -910,6 +984,70 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
         }
     }
 
+    // Retention within a scope (GOV-06). Episodic rules stay inside governance's limit, like the
+    // type's own rule; the other types have none.
+    if let Some(r) = &spec.retention {
+        let mut seen = std::collections::HashSet::new();
+        for (i, rule) in r.scopes.iter().enumerate() {
+            let path = format!("retention.scopes[{i}]");
+            if rule.value.trim().is_empty() {
+                err(&format!("{path}.value"), "range", format!("names no {}", rule.level.as_str()));
+            }
+            if rule.kind == MemoryKind::Working {
+                err(&format!("{path}.kind"), "range", "working memory expires by ttl_secs, not by days".into());
+            }
+            if rule.days > 36_500 {
+                err(&format!("{path}.days"), "range", format!("{} is outside 0 to 36500", rule.days));
+            }
+            let g = gov.retention.episodic_days;
+            if rule.kind == MemoryKind::Episodic && g > 0 {
+                if rule.days == 0 {
+                    err(
+                        &format!("{path}.days"),
+                        LOOSEN,
+                        format!("0 keeps the scope's episodic memory forever, but governance purges it after {g} days ([governance] episodic_retention_days); {pr1}"),
+                    );
+                } else if rule.days > g {
+                    err(&format!("{path}.days"), LOOSEN, format!("{} days is longer than the {g} days governance allows ([governance] episodic_retention_days); {pr1}", rule.days));
+                }
+            }
+            if !seen.insert((rule.level, rule.value.clone(), rule.kind)) {
+                err(&path, "range", format!("a second rule for {} memory of {} {:?}", rule.kind.as_str(), rule.level.as_str(), rule.value));
+            }
+        }
+        let mut scopes = r.scopes.clone();
+        // In one order, so equal policies compile to equal bodies.
+        scopes.sort_by(|a, b| (a.kind.as_str(), a.level, &a.value).cmp(&(b.kind.as_str(), b.level, &b.value)));
+        b.retention.scopes = scopes;
+    }
+
+    if let Some(actions) = spec.redaction.as_ref().and_then(|r| r.actions.as_ref()) {
+        use crate::config::RedactAction;
+        for (c, a) in actions {
+            if !crate::gate::CATEGORIES.contains(&c.as_str()) {
+                err("redaction.actions", "unknown", format!("{c:?} is not a redaction category (known: {})", crate::gate::CATEGORIES.join(", ")));
+                continue;
+            }
+            if *a == RedactAction::Mask && !crate::config::MASKABLE.contains(&c.as_str()) {
+                err("redaction.actions", "baseline", format!("{c:?} can't be masked (only {})", crate::config::MASKABLE.join(", ")));
+            }
+            // What governance does with the category: nothing if it is off (any action is then
+            // stricter), else its action.
+            let own = gov.redaction.categories.contains(c).then(|| gov.redaction.actions.get(c).copied().unwrap_or(RedactAction::Redact));
+            if own.is_some_and(|own| *a < own) {
+                err(
+                    "redaction.actions",
+                    LOOSEN,
+                    format!(
+                        "{c:?} = \"{}\" is looser than governance's \"{}\" ([governance] actions); a policy may make an action stricter, never looser (PR-1)",
+                        a.as_str(),
+                        own.expect("some").as_str()
+                    ),
+                );
+            }
+        }
+    }
+
     if let Some(c) = spec.redaction.as_ref().and_then(|r| r.categories.as_ref()) {
         for x in c.iter().filter(|x| !crate::gate::CATEGORIES.contains(&x.as_str())) {
             err("redaction.categories", "unknown", format!("{x:?} is not a redaction category (known: {})", crate::gate::CATEGORIES.join(", ")));
@@ -927,6 +1065,21 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
         let mut all = c.clone();
         all.extend(gov.redaction.categories.iter().cloned());
         b.redaction.categories = ordered_categories(&all);
+    }
+    if let Some(actions) = spec.redaction.as_ref().and_then(|r| r.actions.as_ref()) {
+        for (c, a) in actions {
+            // A category the policy gives an action is on, whether or not it is listed.
+            if !b.redaction.categories.contains(c) {
+                let mut all = b.redaction.categories.clone();
+                all.push(c.clone());
+                b.redaction.categories = ordered_categories(&all);
+            }
+            if *a == crate::config::RedactAction::Redact {
+                b.redaction.actions.remove(c);
+            } else {
+                b.redaction.actions.insert(c.clone(), *a);
+            }
+        }
     }
 
     if let Some(r) = &spec.recall {
@@ -1675,5 +1828,52 @@ mod tests {
         assert_eq!(PolicyTarget::parse("v3").unwrap(), PolicyTarget::Version(3));
         assert_eq!(PolicyTarget::parse("default").unwrap(), PolicyTarget::Default);
         assert!(PolicyTarget::parse("v0").is_err());
+    }
+    /// GOV-06, GOV-05, GOV-10 (G22): scope retention, redaction actions and untrusted sources
+    /// compile under governance, and only tighten it.
+    #[test]
+    fn governance_two_fields_compile_and_only_tighten() {
+        use crate::config::RedactAction;
+        let mut cfg = Config::default();
+        cfg.governance.episodic_retention_days = 90;
+        cfg.governance.actions.insert("card".into(), RedactAction::Mask);
+        cfg.governance.untrusted_sources = vec!["web:*".into()];
+        // The default policy carries governance's own settings, and nothing more when they are unset.
+        let gov = default_policy(&cfg, "acme");
+        assert_eq!(gov.policy.redaction.rules(), vec!["secret", "card:mask", "ssn", "iban"]);
+        assert_eq!(gov.policy.write_gate.untrusted_sources, vec!["web:*"]);
+        let plain = serde_json::to_value(default_policy(&Config::default(), "acme").policy).unwrap();
+        assert!(
+            plain["redaction"].get("actions").is_none() && plain["retention"].get("scopes").is_none() && plain["write_gate"].get("untrusted_sources").is_none(),
+            "unset fields leave a policy's hash as it was"
+        );
+
+        let ok = "[[retention.scopes]]\nlevel = \"team\"\nvalue = \"legal\"\nkind = \"episodic\"\ndays = 7\n\
+                  [[retention.scopes]]\nlevel = \"user\"\nvalue = \"user:vip\"\nkind = \"semantic\"\ndays = 0\n\
+                  [redaction.actions]\ncard = \"reject\"\nemail = \"mask\"\n[write_gate]\nuntrusted_sources = [\"web:*\", \"import:forum\"]";
+        let bad_mask = compile(&spec(ok), &cfg, "acme", None).unwrap_err();
+        assert!(bad_mask.iter().any(|v| v.path == "redaction.actions" && v.rule == "baseline"), "email cannot be masked: {bad_mask:?}");
+        let p = compile(&spec(&ok.replace("email = \"mask\"", "email = \"redact\"")), &cfg, "acme", Some(1)).unwrap();
+        assert_eq!(p.policy.retention.scopes.len(), 2);
+        assert_eq!(p.policy.redaction.rules(), vec!["secret", "card:reject", "ssn", "iban", "email"]);
+        assert_eq!(p.policy.write_gate.untrusted_sources, vec!["import:forum", "web:*"]);
+
+        for (text, path, rule) in [
+            ("[[retention.scopes]]\nlevel = \"team\"\nvalue = \"legal\"\nkind = \"episodic\"\ndays = 0", "retention.scopes[0].days", "PR-1"),
+            ("[[retention.scopes]]\nlevel = \"team\"\nvalue = \"legal\"\nkind = \"episodic\"\ndays = 120", "retention.scopes[0].days", "PR-1"),
+            ("[[retention.scopes]]\nlevel = \"team\"\nvalue = \"legal\"\nkind = \"working\"\ndays = 1", "retention.scopes[0].kind", "range"),
+            ("[[retention.scopes]]\nlevel = \"team\"\nvalue = \" \"\nkind = \"semantic\"\ndays = 1", "retention.scopes[0].value", "range"),
+            (
+                "[[retention.scopes]]\nlevel = \"team\"\nvalue = \"legal\"\nkind = \"semantic\"\ndays = 1\n[[retention.scopes]]\nlevel = \"team\"\nvalue = \"legal\"\nkind = \"semantic\"\ndays = 2",
+                "retention.scopes[1]",
+                "range",
+            ),
+            ("[redaction.actions]\ncard = \"mask\"\nssn = \"mask\"", "redaction.actions", "PR-1"),
+            ("[redaction.actions]\npassport = \"reject\"", "redaction.actions", "unknown"),
+            ("[write_gate]\nuntrusted_sources = [\"import:forum\"]", "write_gate.untrusted_sources", "PR-1"),
+        ] {
+            let v = compile(&spec(text), &cfg, "acme", None).unwrap_err();
+            assert!(v.iter().any(|x| x.path == path && x.rule == rule), "{text:?} gave {v:?}");
+        }
     }
 }

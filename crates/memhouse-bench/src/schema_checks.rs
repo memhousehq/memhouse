@@ -119,10 +119,12 @@ async fn lifecycle(engine: &Engine, subj: &str) -> Outcome {
     if !hits_live || hits_gone {
         problems.push(format!("recall: live working memory found {hits_live}, expired one found {hits_gone}"));
     }
-    engine.apply_retention().await?;
+    // Past its expiry a record is `expired` (CORE-02), and the retention pass then purges
+    // expired working memory (GOV-06, since G22): both are looked at.
+    engine.store.expire_due(&engine.cfg.memory.tenant).await?;
     let status = engine.store.get(&engine.cfg.memory.tenant, gone).await?.map(|m| m.status);
     if status != Some(MemoryStatus::Expired) {
-        problems.push(format!("expired working memory has status {status:?} after retention"));
+        problems.push(format!("expired working memory has status {status:?} once its expiry is applied"));
     }
     // Supersede a fact, then try transitions the state machine forbids.
     let old = engine.remember(remember(subj, "Acme's account manager is Tom")).await?.id;

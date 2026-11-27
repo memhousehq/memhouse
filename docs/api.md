@@ -20,13 +20,13 @@ flowchart LR
     E --> R[Hybrid recall] --> P
 ```
 
-This is **API v1**, version `1.10.0` (1.1 added principals, agent tokens, review and labels; 1.2
+This is **API v1**, version `1.11.0` (1.1 added principals, agent tokens, review and labels; 1.2
 added recall explanations and `/metrics`; 1.3 added policies; 1.4 the write pipeline: `wait`,
 `include_candidates`, exact recall, `degraded` and the `unavailable` code; 1.5 memory types:
 session working memory, scope inheritance and preferences, promotion and grants; 1.6 ranking and
 packing: `render_format`, the `duplicate` exclusion reason, score features in explanations, and
 the token budget as a hard cap; 1.7 the evaluation gate: `write_gate.corrections` in a policy
-spec, and an approval refused with `409` when the tenant's suites degrade; 1.8 languages: `language` on a record and `language.enabled` in a policy spec; 1.9 the coding template: `POST /v1/code/touched`, `/v1/code/changed` and `/v1/code/revalidate`, `stale_since` on a record, `include_stale` and `paths` on a recall, and the `stale` and `task` exclusion reasons; 1.10 the admin console: `/v1/session`, `GET /v1/review/queue`, `content` on a review, `/v1/principals`, `/v1/keys`, `/v1/eval/*`, `/v1/advisor` and the `principal:manage` permission). The machine-readable contract is the OpenAPI 3.1 document at
+spec, and an approval refused with `409` when the tenant's suites degrade; 1.8 languages: `language` on a record and `language.enabled` in a policy spec; 1.9 the coding template: `POST /v1/code/touched`, `/v1/code/changed` and `/v1/code/revalidate`, `stale_since` on a record, `include_stale` and `paths` on a recall, and the `stale` and `task` exclusion reasons; 1.10 the admin console: `/v1/session`, `GET /v1/review/queue`, `content` on a review, `/v1/principals`, `/v1/keys`, `/v1/eval/*`, `/v1/advisor` and the `principal:manage` permission; 1.11 Governance II: `untrusted` on a forget, `held` and `deletion_id` on its answer, and `retention.scopes`, `redaction.actions` and `write_gate.untrusted_sources` in a policy spec). The machine-readable contract is the OpenAPI 3.1 document at
 `GET /v1/openapi.json`, also kept in the repository as [`api/openapi.json`](../api/openapi.json)
 and printed by `memhouse openapi`. It is generated from the request and response types, so it
 can't drift from the code. What may change, and how changes are announced, is in the
@@ -584,22 +584,35 @@ Permanent deletion (CORE-05) by exactly one of:
 | `subject` | everything held about the subject: records in every state, cached vectors, links, request keys, enrichment jobs and cached extractions (right to erasure) | `subject.erase` |
 | `user` | in every subject, records the user wrote through an agent (`provenance.user`) or that are scoped to the user (`scope.user`) | `memory.forget` |
 | `agent` | in every subject, records the agent wrote (`provenance.agent`) or that are scoped to it (`scope.agent`) | `memory.forget` |
-| `source` | in every subject, records with this `source` label (an import, a connector) | `memory.forget` |
+| `source` | in every subject, records with this `source` label (an import, a connector), with what was derived and promoted from them | `memory.forget` |
+| `untrusted` (1.11) | candidates held because their source is not trusted ([governance.md](governance.md#prompt-injection-quarantine)): those of this source label, or of every untrusted source with `"*"` | `memory.forget` |
 | `all: true` + `confirm: "<tenant>"` | the whole tenant | `tenant.erase` |
 
 Each record is deleted with its full cascade and gets a deletion-ledger row. Each call writes one
-audit event. Options: `dry_run: true` counts what would go and deletes nothing; `request_key` (or
+audit event.
+
+Since 1.11 every forget is a deletion request with a completion certificate, and the answer
+carries two more fields:
+
+| Field | Meaning |
+|---|---|
+| `deletion_id` | the request (absent for a dry run). When it is complete, `memhouse deletion certificate <id>` prints its [certificate](governance.md#deletion-and-the-right-to-erasure): what was deleted, and that a sample of it was looked for afterwards in every representation |
+| `held` | records the request matches that a [legal hold](governance.md#legal-hold) keeps. They are not deleted now: the request stays open and is carried out when the hold is released. `0` otherwise |
+
+A forget by `id` of a record under a hold answers `200` with `deleted: 0` and `held: 1`.
+Legal holds, certificates and the list of requests are operator commands (`memhouse hold`,
+`memhouse deletion`); they have no REST route yet. Options: `dry_run: true` counts what would go and deletes nothing; `request_key` (or
 `Idempotency-Key`) makes a repeat return the first result instead of `404`; `tenant`, `actor`.
 
 ```bash
 curl -s localhost:7077/v1/forget -H "authorization: Bearer $KEY" -H "content-type: application/json" \
   -d '{"user":"user:ana","dry_run":true}'
-# {"scope":"user","value":"user:ana","deleted":1,"dry_run":true}
+# {"scope":"user","value":"user:ana","deleted":1,"dry_run":true,"held":0}
 curl -s localhost:7077/v1/forget -H "authorization: Bearer $KEY" -H "content-type: application/json" \
   -d '{"subject":"customer:acme"}'
-# {"scope":"subject","value":"customer:acme","deleted":3,"dry_run":false}
+# {"scope":"subject","value":"customer:acme","deleted":3,"dry_run":false,"held":0,"deletion_id":"0193a6f2-…"}
 curl -s localhost:7077/v1/forget ... -d '{"id":"01a19ad2-9a38-70b6-a1d9-3703432b8a32"}'
-# {"scope":"record","value":"01a19ad2-…","deleted":1,"dry_run":false}
+# {"scope":"record","value":"01a19ad2-…","deleted":1,"dry_run":false,"held":0,"deletion_id":"0193a6f3-…"}
 ```
 
 `deleted` counts the records that matched. Facts derived from them go too, and are counted only
@@ -1320,7 +1333,7 @@ console.log(r.rendered);
 Every error is JSON with a stable `code` and a message for people:
 
 ```json
-{"error":"forget needs exactly one of id, subject, user, agent, source or all","code":"invalid_request"}
+{"error":"forget needs exactly one of id, subject, user, agent, source, untrusted or all","code":"invalid_request"}
 ```
 
 | Status | `code` | When |

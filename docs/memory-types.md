@@ -160,7 +160,9 @@ curl -s $MH/v1/recall -H "authorization: Bearer $KEY" -H 'content-type: applicat
 - **Lifetime.** A note lives until the session's last working-memory write plus the type's
   `ttl_secs`: every write in the session moves the session's notes to the new expiry. A note
   written with its own `expires_at` keeps it, and a revised note keeps following its session.
-  Past its expiry a note is never recalled or promoted, and retention marks it `expired`.
+  Past its expiry a note is never recalled or promoted; the retention pass marks it
+  `expired` and purges it, with its cached vectors (since G22; a record promoted from it
+  stays, under its own type's retention).
 - **Recall in the session.** The session's notes come first, newest first, marked
   `"working": true`; they are not ranked against the query. A recall of mixed types keeps at
   least half of its `k` places for ranked memories. A recall of `"kinds": ["working"]` is

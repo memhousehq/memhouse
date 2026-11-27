@@ -6,7 +6,7 @@ that describes them. It is requirement QUAL-09. In short: within a major version
 correct client relies on is removed or changed. A breaking change needs a new major version, and
 the previous major version keeps working for at least 12 months.
 
-The current version is **v1**, `1.10.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
+The current version is **v1**, `1.11.0`. v1 was frozen on 2026-11-02 (`1.0.0`); 1.1 added
 principals, agent tokens, `/v1/whoami`, `/v1/tokens`, `/v1/review`, `/v1/labels` and the
 `forbidden` error code; 1.2 added `recall_id`, `/v1/recalls/{id}/explanation` and `/metrics`
 (preview); 1.3 added the policy operations under `/v1/policies`; 1.4 made admission asynchronous
@@ -25,7 +25,10 @@ exclusion reasons; 1.10 added the admin console's routes (`/v1/session`,
 `GET /v1/review/queue`, `/v1/principals`, `/v1/keys`, and as preview `/v1/eval/suites`,
 `/v1/eval/runs`, `/v1/eval/trend` and `/v1/advisor`), `content` on a review and
 `rephrased_from` on its answer, the `principal:manage` permission, the session cookie as a
-third security scheme, and `session` as a value of `via` in `/v1/whoami`. Its contract is [`api/openapi.json`](../api/openapi.json), served at
+third security scheme, and `session` as a value of `via` in `/v1/whoami`; 1.11 added, for
+Governance II, `untrusted` on a forget and as a forget scope, `held` and `deletion_id` on its
+answer, and `retention.scopes`, `redaction.actions` and `write_gate.untrusted_sources` in a
+policy spec and its compiled form. Its contract is [`api/openapi.json`](../api/openapi.json), served at
 `/v1/openapi.json`.
 
 ## Versions
@@ -103,6 +106,10 @@ names a recorded exception, and they are written here so clients are ready for t
 | G20 (1.10) | `/` serves the admin console, which logs in with a session; the Memory Browser page that kept a key in the browser's storage is gone. | Log in to the console with a key ([console.md](console.md)). |
 | G20 (1.10) | Committing a quarantined record with `POST /v1/review` still answers `409`, now with the way out: reject it, or approve another wording with `content`. | Nothing. |
 | G20 (1.10) | The `principal:manage` permission is new, and keys list their permissions: an admin key created before 1.10 cannot manage principals over the API. Bootstrap keys can. | Create a new key for the admin. |
+| G22 (1.11) | A `forget` that meets a [legal hold](governance.md#legal-hold) deletes what no hold keeps and answers `200` with `held` (the records kept back); before 1.11 there were no holds. A forget by `id` of a held record answers `200` with `deleted: 0, held: 1`, not `404`. | Read `held`: when it is not 0 the deletion completes when the hold is released. |
+| G22 (1.11) | A write whose `source` an operator listed in `[governance] untrusted_sources` answers `candidate` and waits for a reviewer. Nothing is listed by default. | Nothing, unless your source is listed: then the write is admitted by a reviewer (`POST /v1/review`). |
+| G22 (1.11) | A write that holds a category the operator set to `reject` (`[governance] actions`) is refused with `400 invalid_request`. No category is rejected by default. | Remove the value and write again. |
+| G22 (1.11) | Working memory past its TTL is purged by the retention pass; before, it stayed readable by id with status `expired`. | Nothing: it was never recalled. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ### Recorded exception: session working memory (1.5)

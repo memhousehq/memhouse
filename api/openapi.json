@@ -998,7 +998,7 @@
         "type": "object"
       },
       "ForgetRequest": {
-        "description": "Delete memories (`forget`, CORE-05). Name exactly one of `id`, `subject`, `user`, `agent`,\n`source` or `all`. Deletion is permanent and includes every derived representation.",
+        "description": "Delete memories (`forget`, CORE-05). Name exactly one of `id`, `subject`, `user`, `agent`,\n`source`, `untrusted` or `all`. Deletion is permanent and includes every derived representation.",
         "properties": {
           "actor": {
             "default": null,
@@ -1073,6 +1073,13 @@
               "null"
             ]
           },
+          "untrusted": {
+            "description": "Candidates held because their source is not trusted (GOV-10): those of this source\nlabel, or of every untrusted source with `*`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "user": {
             "default": null,
             "description": "Records the user wrote through an agent or that are scoped to the user, in any subject.",
@@ -1092,9 +1099,24 @@
             "minimum": 0,
             "type": "integer"
           },
+          "deletion_id": {
+            "description": "The deletion request (absent for a dry run): `memhouse deletion certificate <id>` prints\nits completion certificate.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "dry_run": {
             "default": false,
             "type": "boolean"
+          },
+          "held": {
+            "default": 0,
+            "description": "Records the request matches that a legal hold keeps (GOV-09): they are deleted when the\nhold is released.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
           },
           "scope": {
             "$ref": "#/components/schemas/ForgetScope"
@@ -1119,7 +1141,8 @@
           "user",
           "agent",
           "source",
-          "tenant"
+          "tenant",
+          "untrusted"
         ],
         "type": "string"
       },
@@ -2185,6 +2208,13 @@
       },
       "PolicyRedaction": {
         "properties": {
+          "actions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RedactAction"
+            },
+            "description": "The action of each category that is not simply redacted (GOV-05).",
+            "type": "object"
+          },
           "categories": {
             "items": {
               "type": "string"
@@ -2204,6 +2234,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "scopes": {
+            "description": "Rules for one type within one scope (GOV-06), which win over the type's own.",
+            "items": {
+              "$ref": "#/components/schemas/PolicyRetentionScope"
+            },
+            "type": "array"
+          },
           "working_ttl_secs": {
             "format": "uint64",
             "minimum": 0,
@@ -2213,6 +2250,37 @@
         "required": [
           "episodic_days",
           "working_ttl_secs"
+        ],
+        "type": "object"
+      },
+      "PolicyRetentionScope": {
+        "additionalProperties": false,
+        "description": "Retention of one memory type within one scope (GOV-06).",
+        "properties": {
+          "days": {
+            "description": "Days after which the scope's records of the type are purged; 0 keeps them whatever the\ntype's own rule says. For `episodic`, within governance's limit.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind",
+            "description": "The memory type; not `working`, which expires by its TTL."
+          },
+          "level": {
+            "$ref": "#/components/schemas/ScopeLevel2",
+            "description": "`subject`, `org`, `team`, `agent`, `user` or `session`."
+          },
+          "value": {
+            "description": "The subject, org, team, agent, user or session the rule is for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "value",
+          "kind",
+          "days"
         ],
         "type": "object"
       },
@@ -2580,6 +2648,16 @@
       "PolicySpecRedaction": {
         "additionalProperties": false,
         "properties": {
+          "actions": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RedactAction"
+            },
+            "description": "What happens to a match, by category (GOV-05): `mask`, `redact` or `reject`. A policy\nmay make a category's action stricter than governance's (mask < redact < reject), never\nlooser.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "categories": {
             "description": "Categories redacted before anything is stored; must include every governance category.",
             "items": {
@@ -2649,6 +2727,13 @@
               "integer",
               "null"
             ]
+          },
+          "scopes": {
+            "description": "Retention of one memory type within one scope (GOV-06): `[[retention.scopes]]` with\n`level`, `value`, `kind` and `days`. Where two rules match a record, the more specific\nlevel wins (session, user, agent, team, org, subject), and any of them wins over the\ntype's own `retention_days`.",
+            "items": {
+              "$ref": "#/components/schemas/PolicyRetentionScope"
+            },
+            "type": "array"
           },
           "working_ttl_secs": {
             "description": "Lifetime of working memory written without `expires_at` (1 second to 30 days).",
@@ -2899,6 +2984,16 @@
               "boolean",
               "null"
             ]
+          },
+          "untrusted_sources": {
+            "description": "Source patterns added to those governance does not trust (GOV-10): a write from a\nmatching source waits for a reviewer. A policy may add patterns, never remove them.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -3119,6 +3214,13 @@
           },
           "quarantine_injection": {
             "type": "boolean"
+          },
+          "untrusted_sources": {
+            "description": "Source patterns whose writes wait for a reviewer (GOV-10).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -4011,6 +4113,15 @@
         ],
         "type": "object"
       },
+      "RedactAction": {
+        "description": "What the write gate does with a match of a redaction category (GOV-05). In order of\nstrictness: a policy may raise a category's action, never lower it.",
+        "enum": [
+          "mask",
+          "redact",
+          "reject"
+        ],
+        "type": "string"
+      },
       "RefChange": {
         "description": "What an observation did to one code reference (see `Store::code_refs_observe`).",
         "properties": {
@@ -4827,6 +4938,18 @@
         ],
         "type": "string"
       },
+      "ScopeLevel2": {
+        "description": "A scope level a retention rule can name (GOV-06): the subject, or a level of the record's scope.",
+        "enum": [
+          "session",
+          "user",
+          "agent",
+          "team",
+          "org",
+          "subject"
+        ],
+        "type": "string"
+      },
       "SessionClosed": {
         "description": "The answer to `DELETE /v1/session`.",
         "properties": {
@@ -5309,7 +5432,7 @@
     },
     "summary": "Governed long-term memory for AI agents.",
     "title": "MemHouse API",
-    "version": "1.10.0"
+    "version": "1.11.0"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "openapi": "3.1.0",

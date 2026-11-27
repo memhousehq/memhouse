@@ -158,6 +158,45 @@ pub const TABLES: &[Table] = &[
         key: &["id"],
         serial: true,
     },
+    // Legal holds and deletion requests (G22): a hold keeps holding on the target, and a
+    // deletion it holds back is carried out there when it is released; certificates stay
+    // readable. Durable job runs are not moved: an unfinished run is simply run again.
+    Table {
+        name: "legal_hold",
+        cols: &[
+            ("id", Uuid),
+            ("tenant", Text),
+            ("target_kind", Text),
+            ("target", Text),
+            ("reason", Text),
+            ("placed_by", Text),
+            ("placed_at", Time),
+            ("released_by", Text),
+            ("released_at", Time),
+        ],
+        key: &["id"],
+        serial: false,
+    },
+    Table {
+        name: "deletion_request",
+        cols: &[
+            ("id", Uuid),
+            ("tenant", Text),
+            ("scope", Text),
+            ("value", Text),
+            ("actor", Text),
+            ("requested_at", Time),
+            ("status", Text),
+            ("completed_at", Time),
+            ("deleted", Int),
+            ("held", Int),
+            ("executions", Int),
+            ("canaries", Json),
+            ("certificate", Json),
+        ],
+        key: &["id"],
+        serial: false,
+    },
     // Queued work moves as it is: a proposal not yet through the pipeline runs on the target.
     Table {
         name: "intake",

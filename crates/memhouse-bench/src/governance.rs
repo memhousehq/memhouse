@@ -1134,6 +1134,11 @@ pub async fn run(engine: &Engine, run_id: &str) -> anyhow::Result<GovernanceRepo
     // evaluation and the profile advisor (G20).
     checks.extend(crate::console_checks::run(engine).await);
 
+    // Governance II: legal hold, source purge, the deletion certificate, retention by scope and
+    // its resumption, restore replay, row-level security, partitions, anchors, the SIEM export,
+    // the evidence bundle and the detection set (G22).
+    checks.extend(crate::gov2_checks::run(engine).await);
+
     // Clean up every subject used by the suite.
     for name in ["injection", "benign", "pii", "delete", "update", "validity", "dedup"] {
         engine.forget_subject(None, &s(name), Some("bench".into())).await?;

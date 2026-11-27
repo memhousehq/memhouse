@@ -519,13 +519,14 @@ impl Caller {
             req.user.clone().map(|u| (ForgetScope::User, Some(u))),
             req.agent.clone().map(|a| (ForgetScope::Agent, Some(a))),
             req.source.clone().map(|s| (ForgetScope::Source, Some(s))),
+            req.untrusted.clone().map(|s| (ForgetScope::Untrusted, Some(s))),
             req.all.then_some((ForgetScope::Tenant, None)),
         ]
         .into_iter()
         .flatten()
         .collect();
         let [(scope, target)] = named.as_slice() else {
-            return Err(error::invalid("forget needs exactly one of id, subject, user, agent, source or all"));
+            return Err(error::invalid("forget needs exactly one of id, subject, user, agent, source, untrusted or all"));
         };
         let mut a = AccessRequest::new(Operation::Forget(*scope)).tenant(&req.tenant);
         a.target = target.clone();

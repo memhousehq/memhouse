@@ -21,6 +21,7 @@ macro_rules! println {
 mod backup;
 mod connect;
 mod eval;
+mod governance;
 mod hook;
 mod lang;
 mod policy;
@@ -253,6 +254,9 @@ enum Cmd {
         /// Records with this source label
         #[arg(long)]
         source: Option<String>,
+        /// Candidates held because their source is not trusted: of this source, or of every untrusted source with '*'
+        #[arg(long)]
+        untrusted: Option<String>,
         /// Count what would be deleted, delete nothing
         #[arg(long)]
         dry_run: bool,
@@ -287,7 +291,8 @@ enum Cmd {
     },
     /// Import a Memory Format v1 or v2 file (ids, states, timestamps and provenance are kept; vectors are made with this config's model)
     Import { file: PathBuf },
-    /// Back up a Lite installation: a consistent snapshot of the database, the canonical export and the deletion ledger
+    /// Back up a Lite installation: a consistent snapshot of the database, the canonical export and the deletion ledger.
+    /// On Postgres (backed up with its own tools), `--ledger-only` writes the deletion ledger to keep beside the backups
     Backup {
         /// Directory to write the backup into (new or empty; created for this user alone)
         dir: PathBuf,
@@ -295,10 +300,15 @@ enum Cmd {
         #[arg(long)]
         ledger_only: bool,
     },
-    /// Restore a Lite backup, re-applying every deletion made since it was taken
+    /// Restore a Lite backup, re-applying every deletion made since it was taken. On Postgres: re-apply
+    /// a deletion ledger to a database restored with pg_restore, before it serves
     Restore {
-        /// Directory written by `memhouse backup`
-        dir: PathBuf,
+        /// Directory written by `memhouse backup` (Lite)
+        dir: Option<PathBuf>,
+        /// State that nothing was deleted since the backup was taken: no ledger is re-applied, and the
+        /// database is recorded as fit to serve (audited)
+        #[arg(long)]
+        no_ledger: bool,
         /// Replace the existing database (its deletion ledger is carried over)
         #[arg(long)]
         force: bool,
@@ -337,17 +347,38 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Audit log: show recent events or verify the hash chain
+    /// Audit log: show recent events, verify the hash chain, or anchor its head (`memhouse audit anchor`)
     Audit {
+        #[command(subcommand)]
+        cmd: Option<governance::AuditCmd>,
         #[arg(long)]
         verify: bool,
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Legal holds: exempt a subject, user, source or scope from retention and deletion
+    Hold {
+        #[command(subcommand)]
+        cmd: governance::HoldCmd,
+    },
+    /// Deletion requests and their completion certificates
+    Deletion {
+        #[command(subcommand)]
+        cmd: governance::DeletionCmd,
+    },
+    /// Compliance evidence, mapped to SOC 2 and ISO 27001 controls
+    Evidence {
+        #[command(subcommand)]
+        cmd: governance::EvidenceCmd,
+    },
     /// Show counts
     Stats,
-    /// Apply retention rules now
-    Retention,
+    /// Apply retention rules now, and carry out deletions whose legal hold was released
+    Retention {
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Benchmark and validate memory quality, safety and latency
     Bench {
         #[command(subcommand)]
@@ -734,12 +765,15 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 None => println!("stored {} ({}); {id} was not superseded{}", r.id, r.status.as_str(), r.note.map(|n| format!(": {n}")).unwrap_or_default()),
             }
         }
-        Cmd::Forget { id, subject, user, agent, source, dry_run, yes, json } => {
+        Cmd::Forget { id, subject, user, agent, source, untrusted, dry_run, yes, json } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             let id = id.map(|i| uuid::Uuid::parse_str(&i)).transpose()?;
-            let req = ForgetRequest { id, subject, user, agent, source, dry_run, actor: Some("cli".into()), ..Default::default() };
+            let req = ForgetRequest { id, subject, user, agent, source, untrusted, dry_run, actor: Some("cli".into()), ..Default::default() };
             if id.is_none() && !dry_run && !yes {
                 let preview = eng.forget_by(ForgetRequest { dry_run: true, ..req.clone() }).await?;
+                if preview.held > 0 {
+                    eprintln!("{} of them are under a legal hold: they stay until the hold is released.", preview.held);
+                }
                 eprint!("Permanently delete {} memories ({} {})? [y/N] ", preview.deleted, preview.scope.as_str(), preview.value);
                 std::io::stderr().flush()?;
                 let mut a = String::new();
@@ -750,8 +784,23 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
             match eng.forget_by(req).await {
                 Ok(r) if json => println!("{}", serde_json::to_string_pretty(&r)?),
-                Ok(r) if r.dry_run => println!("would delete {} memories ({} {})", r.deleted, r.scope.as_str(), r.value),
-                Ok(r) => println!("deleted {} memories ({} {})", r.deleted, r.scope.as_str(), r.value),
+                Ok(r) if r.dry_run => {
+                    println!(
+                        "would delete {} memories ({} {}){}",
+                        r.deleted,
+                        r.scope.as_str(),
+                        r.value,
+                        if r.held > 0 { format!("; {} of them are under a legal hold and would stay", r.held) } else { String::new() }
+                    )
+                }
+                Ok(r) => {
+                    println!("deleted {} memories ({} {})", r.deleted, r.scope.as_str(), r.value);
+                    match (r.held, r.deletion_id) {
+                        (0, Some(d)) => println!("  certificate: memhouse deletion certificate {d}"),
+                        (held, Some(d)) => println!("  {held} records are under a legal hold: deletion {d} completes when the hold is released"),
+                        _ => {}
+                    }
+                }
                 // With --json a missing record is an error (a non-zero exit), not a line of text.
                 Err(e) if !json && memhouse_core::error::code_of(&e) == memhouse_core::error::ErrorCode::NotFound => println!("not found"),
                 Err(e) => return Err(e),
@@ -788,8 +837,39 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 println!("  {} rounds kept only their main vector (their user-only text could not be recovered exactly)", r.second_vectors_dropped);
             }
         }
-        Cmd::Backup { dir, ledger_only } => backup::backup(Config::load(cfg_path.as_deref())?, &dir, ledger_only).await?,
-        Cmd::Restore { dir, force, ledger } => backup::restore(Config::load(cfg_path.as_deref())?, &dir, force, ledger.as_deref()).await?,
+        Cmd::Backup { dir, ledger_only } => {
+            let cfg = Config::load(cfg_path.as_deref())?;
+            // Postgres is backed up with its own tools; its deletion ledger is written here, to
+            // be re-applied after a restore (TR-WF-03).
+            if ledger_only && memhouse_server::sqlite_path(&cfg.database.url).is_none() {
+                governance::ledger_only(&cfg, &dir).await?
+            } else {
+                backup::backup(cfg, &dir, ledger_only).await?
+            }
+        }
+        Cmd::Restore { dir, no_ledger, force, ledger } => {
+            let cfg = Config::load(cfg_path.as_deref())?;
+            if memhouse_server::sqlite_path(&cfg.database.url).is_none() {
+                anyhow::ensure!(dir.is_none() && !force, "on Postgres, restore the database with pg_restore first; then `memhouse restore --ledger <file>` (or `--no-ledger`) re-applies the deletions made since the backup");
+                governance::restore_postgres(&cfg, ledger.as_deref(), no_ledger).await?
+            } else {
+                match dir {
+                    Some(dir) => {
+                        anyhow::ensure!(
+                            !no_ledger,
+                            "`--no-ledger` is for a database put in place without `memhouse restore <backup>`; give either the backup's directory or `--no-ledger`"
+                        );
+                        backup::restore(cfg.clone(), &dir, force, ledger.as_deref()).await?;
+                    }
+                    None => anyhow::ensure!(
+                        no_ledger,
+                        "name the directory written by `memhouse backup`; or `--no-ledger` to record a database file put in place by hand as fit to serve"
+                    ),
+                }
+                // What `memhouse serve` compares the database with at its next start.
+                governance::record_lite(&cfg, no_ledger).await?;
+            }
+        }
         Cmd::Migrate { from, to, dry_run, yes } => {
             use memhouse_server::migrate;
             let cfg = Config::load(cfg_path.as_deref())?;
@@ -876,7 +956,23 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             }
         }
-        Cmd::Audit { verify, limit } => {
+        Cmd::Audit { cmd: Some(cmd), .. } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            governance::audit(&eng, cmd).await?;
+        }
+        Cmd::Hold { cmd } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            governance::hold(&eng, cmd).await?;
+        }
+        Cmd::Deletion { cmd } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            governance::deletion(&eng, cmd).await?;
+        }
+        Cmd::Evidence { cmd } => {
+            let eng = engine(Config::load(cfg_path.as_deref())?).await?;
+            governance::evidence(&eng, cmd).await?;
+        }
+        Cmd::Audit { cmd: None, verify, limit } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             if verify {
                 let (n, broken) = eng.store.audit_verify().await?;
@@ -894,9 +990,26 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
             println!("{}", serde_json::to_string_pretty(&eng.store.stats(&eng.cfg.memory.tenant).await?)?);
         }
-        Cmd::Retention => {
+        Cmd::Retention { json } => {
             let eng = engine(Config::load(cfg_path.as_deref())?).await?;
-            println!("purged {} records", eng.apply_retention().await?);
+            let r = eng.retention_run(Default::default()).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+            } else {
+                println!("purged {} records", if r.purged > 0 { r.purged } else { r.expired });
+                if r.resumed {
+                    println!("  continued a pass that an earlier run left unfinished");
+                }
+                if r.partitions_dropped > 0 {
+                    println!("  {} monthly partitions dropped whole", r.partitions_dropped);
+                }
+                if r.held > 0 {
+                    println!("  {} records are past their retention and kept by a legal hold", r.held);
+                }
+                if r.deletions_completed > 0 {
+                    println!("  {} deletions completed after their hold was released", r.deletions_completed);
+                }
+            }
         }
         Cmd::Bench { cmd } => {
             let cfg = Config::load(cfg_path.as_deref())?;

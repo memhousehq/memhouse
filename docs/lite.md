@@ -205,6 +205,12 @@ commands.
 
 Things to know:
 
+- **The restore guard.** `memhouse serve` remembers the newest audit event of the database it
+  serves (under `MEMHOUSE_HOME/state/`) and refuses to start on a file that is older: one put
+  in place by hand from a copy, without its deletions re-applied. `memhouse restore <dir>`
+  records the restored database itself; for a file you put in place another way,
+  `memhouse restore --no-ledger` records it as it is (audited). `[governance] restore_guard =
+  false` turns the check off.
 - Stop `memhouse serve` before a restore; the command cannot detect a running server.
 - A restore ends every console session: one that was logged out after the backup must not
   come back with it.

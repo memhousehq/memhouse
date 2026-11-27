@@ -341,6 +341,80 @@ pub async fn seed(store: &dyn Store) -> anyhow::Result<Seeded> {
     anyhow::ensure!(store.delete(TENANT, deleted, "ada").await?, "the seeded record was not deleted");
     anyhow::ensure!(store.delete_subject(TENANT, &erased_subject, "dpo", true).await? == 2, "the seeded subject was not erased");
 
+    // Legal holds and deletion requests (G22): a hold that still holds, one released; a deletion
+    // completed with its certificate, and one a hold keeps back.
+    {
+        use memhouse_core::governance::*;
+        let hold = |target: &str| LegalHold {
+            id: Uuid::new_v4(),
+            tenant: TENANT.into(),
+            target_kind: "source".into(),
+            target: target.into(),
+            reason: "matter 2026-17 ☂".into(),
+            placed_by: "counsel".into(),
+            placed_at: t(30),
+            released_by: None,
+            released_at: None,
+        };
+        for (h, released) in [(hold("court-import"), false), (hold("closed-matter"), true)] {
+            let entry = |action: &str| AuditEntry { actor: "counsel".into(), action: action.into(), subject: None, memory_id: None, detail: json!({ "hold": h.id }) };
+            store.legal_hold_put(&h, &entry("hold.place")).await?;
+            if released {
+                anyhow::ensure!(store.legal_hold_release(TENANT, h.id, "counsel", &entry("hold.release")).await?, "the seeded hold was not released");
+            }
+        }
+        let request = |value: &str, status: DeletionStatus| DeletionRequest {
+            id: Uuid::new_v4(),
+            tenant: TENANT.into(),
+            scope: ForgetScope::Source,
+            value: value.into(),
+            actor: "dpo".into(),
+            requested_at: t(20),
+            status,
+            completed_at: None,
+            deleted: 3,
+            held: if status == DeletionStatus::Held { 2 } else { 0 },
+            executions: 1,
+            canaries: vec![Canary { id: deleted, subject: "user:ada".into(), vector_hashes: vec!["ab".repeat(32)] }],
+            certificate: None,
+        };
+        store.deletion_put(&request("court-import", DeletionStatus::Held)).await?;
+        let mut done = request("old-import", DeletionStatus::Running);
+        store.deletion_put(&done).await?;
+        let mut cert = DeletionCertificate {
+            format: CERTIFICATE_FORMAT.into(),
+            version: 1,
+            request_id: done.id,
+            tenant: TENANT.into(),
+            scope: done.scope,
+            value: done.value.clone(),
+            requested_by: done.actor.clone(),
+            requested_at: done.requested_at,
+            completed_at: t(19),
+            records_deleted: 3,
+            executions: 1,
+            canaries_checked: 1,
+            canaries_found: Default::default(),
+            verified: true,
+            store: "seed".into(),
+            producer: "conformance".into(),
+            audit_head: None,
+            hash: String::new(),
+        };
+        cert.hash = cert.computed_hash();
+        done.status = DeletionStatus::Completed;
+        done.completed_at = Some(cert.completed_at);
+        let event = AuditEntry {
+            actor: "dpo".into(),
+            action: "deletion.certificate".into(),
+            subject: None,
+            memory_id: None,
+            detail: json!({ "request": done.id, "certificate": cert.hash }),
+        };
+        done.certificate = Some(cert);
+        store.deletion_complete(&done, &event).await?;
+    }
+
     // Audit events of several shapes (the grants above wrote three more).
     store.audit("agent-1", "memory.admit", TENANT, Some("user:ada"), Some(successor), json!({ "kind": "preference", "note": "tea ☕" })).await?;
     store.audit("ada", "memory.forget", TENANT, Some("user:ada"), Some(deleted), json!({ "scope": "record" })).await?;

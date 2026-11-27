@@ -34,6 +34,22 @@ const SUPERSEDE_SQL: &str = "UPDATE mh_memory SET status = 'superseded', superse
 const SPEC_COLS: &str = "tenant, version, name, spec, spec_hash, status, note, proposed_by, proposed_at, approved_by, approved_at";
 
 /// A row count or page size as SQLite's integer.
+fn audit_event_of(r: &Row) -> anyhow::Result<AuditEvent> {
+    let detail: String = r.get("detail")?;
+    Ok(AuditEvent {
+        id: r.get("id")?,
+        at: at(r.get("at")?),
+        actor: r.get("actor")?,
+        action: r.get("action")?,
+        tenant: r.get("tenant")?,
+        subject: r.get("subject")?,
+        memory_id: opt_uuid(r, "memory_id")?,
+        detail: serde_json::from_str(&detail).unwrap_or(serde_json::Value::String(detail)),
+        prev_hash: r.get("prev_hash")?,
+        hash: r.get("hash")?,
+    })
+}
+
 fn lim(n: usize) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
@@ -668,7 +684,7 @@ impl Store for SqliteStore {
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some((subject, _)) = self.delete_in(&tx, tenant, id, true)? else { return Ok(false) };
+        let Some((subject, _)) = self.delete_in(&tx, tenant, id, true, true)? else { return Ok(false) };
         exec(
             &tx,
             "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'memory', ?5)",
@@ -688,52 +704,121 @@ impl Store for SqliteStore {
     }
 
     async fn purge_older_than(&self, tenant: &str, kind: MemoryKind, days: u32) -> anyhow::Result<u64> {
-        // Same cascade as `delete`, in batches so a large purge never holds the writer for long:
-        // the rounds, their cached vectors, facts derived from them (and their vectors), the jobs
-        // that read them (and their cached extractions), and a ledger row per round.
-        let before = now().saturating_sub(micros(days as i64 * 86_400));
-        let mut total = 0u64;
-        loop {
-            let mut c = self.conn();
-            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let batch = rows(
-                &tx,
-                "SELECT id, subject, content, alt_hash FROM mh_memory WHERE tenant = ?1 AND kind = ?2 AND created_at < ?3 LIMIT 1000",
-                params![tenant, kind.as_str(), before],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?)),
-            )?;
-            if batch.is_empty() {
-                break;
-            }
-            let ids: Vec<Uuid> = batch.iter().map(|b| uuid_of(&b.0)).collect::<anyhow::Result<_>>()?;
-            let id_list = ids_json(&ids);
-            exec(&tx, "DELETE FROM mh_memory WHERE tenant = ?1 AND id IN (SELECT value FROM json_each(?2))", [tenant, id_list.as_str()])?;
-            self.purge_vectors(&tx, batch.iter().map(|b| b.2.as_str()), batch.iter().filter_map(|b| b.3.as_deref()))?;
-            // Records promoted from them stay.
-            let facts = self.delete_dependents(&tx, tenant, &ids, true, false)?.len();
-            let subjects: HashSet<&str> = batch.iter().map(|b| b.1.as_str()).collect();
-            for subject in subjects {
-                let jobs = rows(
-                    &tx,
-                    "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 \
-                     AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value IN (SELECT value FROM json_each(?3)))",
-                    [tenant, subject, id_list.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )?;
-                drop_jobs(&tx, &jobs, true)?;
-            }
-            let at = now();
-            for (id, subject, _, _) in &batch {
-                exec(
-                    &tx,
-                    "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'retention', 'system')",
-                    params![at, tenant, subject, id],
-                )?;
-            }
-            tx.commit()?;
-            total += (batch.len() + facts) as u64;
-        }
-        Ok(total)
+        Ok(self.purge_by(tenant, &memhouse_core::governance::PurgeSpec::older_than(kind, days))?.records)
+    }
+
+    async fn purge(&self, tenant: &str, spec: &memhouse_core::governance::PurgeSpec) -> anyhow::Result<memhouse_core::governance::PurgeOutcome> {
+        self.purge_by(tenant, spec)
+    }
+
+    async fn legal_hold_put(&self, h: &memhouse_core::governance::LegalHold, audit: &AuditEntry) -> anyhow::Result<()> {
+        self.hold_put(h, audit)
+    }
+
+    async fn legal_hold_release(&self, tenant: &str, id: Uuid, by: &str, audit: &AuditEntry) -> anyhow::Result<bool> {
+        self.hold_release(tenant, id, by, audit)
+    }
+
+    async fn legal_holds(&self, tenant: &str, active_only: bool) -> anyhow::Result<Vec<memhouse_core::governance::LegalHold>> {
+        self.holds(tenant, active_only)
+    }
+
+    async fn held_count(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
+        self.held(tenant, scope, value)
+    }
+
+    async fn deletion_put(&self, d: &memhouse_core::governance::DeletionRequest) -> anyhow::Result<()> {
+        self.deletion_store(d, None)
+    }
+
+    async fn deletion_complete(&self, d: &memhouse_core::governance::DeletionRequest, audit: &AuditEntry) -> anyhow::Result<()> {
+        self.deletion_store(d, Some(audit))
+    }
+
+    async fn deletion_get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<memhouse_core::governance::DeletionRequest>> {
+        self.deletion_one(tenant, id)
+    }
+
+    async fn deletions(
+        &self,
+        tenant: &str,
+        status: Option<memhouse_core::governance::DeletionStatus>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<memhouse_core::governance::DeletionRequest>> {
+        self.deletion_list(tenant, status, limit)
+    }
+
+    async fn canaries(&self, tenant: &str, scope: ForgetScope, value: &str, limit: usize) -> anyhow::Result<Vec<memhouse_core::governance::Canary>> {
+        self.canaries_of(tenant, scope, value, limit)
+    }
+
+    async fn canary_probe(&self, tenant: &str, canaries: &[memhouse_core::governance::Canary]) -> anyhow::Result<memhouse_core::governance::CanaryReport> {
+        self.probe(tenant, canaries)
+    }
+
+    async fn job_begin(&self, tenant: &str, job: &str) -> anyhow::Result<memhouse_core::governance::JobRun> {
+        self.job_open(tenant, job)
+    }
+
+    async fn job_count(&self, run: Uuid, step: &str) -> anyhow::Result<u64> {
+        self.job_counted(run, step)
+    }
+
+    async fn job_step_done(&self, run: Uuid, step: &str, audit: Option<&AuditEntry>) -> anyhow::Result<bool> {
+        self.job_step(run, step, audit)
+    }
+
+    async fn job_finish(&self, run: Uuid) -> anyhow::Result<()> {
+        self.job_close(run)
+    }
+
+    async fn audit_head(&self) -> anyhow::Result<Option<memhouse_core::governance::AuditHead>> {
+        self.head()
+    }
+
+    async fn audit_hash_at(&self, id: i64) -> anyhow::Result<Option<String>> {
+        first(&self.conn(), "SELECT hash FROM mh_audit WHERE id = ?1", [id], |r| Ok(r.get(0)?))
+    }
+
+    async fn audit_after(&self, after: i64, limit: usize) -> anyhow::Result<Vec<AuditEvent>> {
+        rows(&self.conn(), "SELECT * FROM mh_audit WHERE id > ?1 ORDER BY id LIMIT ?2", params![after, lim(limit)], audit_event_of)
+    }
+
+    async fn audit_find(&self, tenant: &str, action: &str, key: &str, value: &str) -> anyhow::Result<bool> {
+        // `detail` is JSON text written by this service: compared as JSON, not as a substring.
+        Ok(first(
+            &self.conn(),
+            "SELECT 1 FROM mh_audit WHERE tenant = ?1 AND action = ?2 AND json_valid(detail) AND json_extract(detail, '$.' || ?3) = ?4 LIMIT 1",
+            [tenant, action, key, value],
+            |_| Ok(()),
+        )?
+        .is_some())
+    }
+
+    async fn state_get(&self, key: &str) -> anyhow::Result<Option<String>> {
+        self.state(key)
+    }
+
+    async fn state_put(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.set_state(key, None, value).map(|_| ())
+    }
+
+    async fn state_cas(&self, key: &str, expect: Option<&str>, value: &str) -> anyhow::Result<bool> {
+        self.set_state(key, Some(expect), value)
+    }
+
+    async fn ledger_export(&self) -> anyhow::Result<Vec<memhouse_core::governance::LedgerEntry>> {
+        self.ledger()
+    }
+
+    async fn ledger_apply(
+        &self,
+        entries: &[memhouse_core::governance::LedgerEntry],
+        actor: &str,
+        tenant: &str,
+        detail: serde_json::Value,
+    ) -> anyhow::Result<memhouse_core::governance::Reapplied> {
+        self.apply_ledger_as_restore(entries, actor, tenant, detail)
     }
 
     async fn session_extend(&self, tenant: &str, subject: &str, session: &str, until: DateTime<Utc>) -> anyhow::Result<u64> {
@@ -922,21 +1007,7 @@ impl Store for SqliteStore {
     }
 
     async fn audit_log(&self, tenant: &str, limit: usize) -> anyhow::Result<Vec<AuditEvent>> {
-        rows(&self.conn(), "SELECT * FROM mh_audit WHERE tenant = ?1 ORDER BY id DESC LIMIT ?2", params![tenant, lim(limit)], |r| {
-            let detail: String = r.get("detail")?;
-            Ok(AuditEvent {
-                id: r.get("id")?,
-                at: at(r.get("at")?),
-                actor: r.get("actor")?,
-                action: r.get("action")?,
-                tenant: r.get("tenant")?,
-                subject: r.get("subject")?,
-                memory_id: opt_uuid(r, "memory_id")?,
-                detail: serde_json::from_str(&detail).unwrap_or(serde_json::Value::String(detail)),
-                prev_hash: r.get("prev_hash")?,
-                hash: r.get("hash")?,
-            })
-        })
+        rows(&self.conn(), "SELECT * FROM mh_audit WHERE tenant = ?1 ORDER BY id DESC LIMIT ?2", params![tenant, lim(limit)], audit_event_of)
     }
 
     async fn audit_verify(&self) -> anyhow::Result<(u64, Option<i64>)> {
@@ -1341,7 +1412,9 @@ impl Store for SqliteStore {
 
     async fn forget_matches(&self, tenant: &str, scope: ForgetScope, value: &str, limit: usize) -> anyhow::Result<Vec<Uuid>> {
         let cond = forget_condition(scope)?;
-        rows(&self.conn(), &format!("SELECT id FROM mh_memory WHERE tenant = ?1 AND {cond} ORDER BY id LIMIT ?3"), params![tenant, value, lim(limit)], |r| {
+        // What a legal hold keeps is not offered for deletion (GOV-09).
+        let held = memhouse_core::governance::HELD_SQL;
+        rows(&self.conn(), &format!("SELECT m.id FROM mh_memory m WHERE m.tenant = ?1 AND {cond} AND NOT {held} ORDER BY m.id LIMIT ?3"), params![tenant, value, lim(limit)], |r| {
             uuid_of(&r.get::<_, String>(0)?)
         })
     }
@@ -1349,19 +1422,22 @@ impl Store for SqliteStore {
     async fn forget_count(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
         let cond = match scope {
             ForgetScope::Tenant => "1",
-            ForgetScope::Subject => "subject = ?2",
+            ForgetScope::Subject => "m.subject = ?2",
             s => forget_condition(s)?,
         };
         let n: i64 =
-            first(&self.conn(), &format!("SELECT count(*) FROM mh_memory WHERE tenant = ?1 AND (?2 IS NOT NULL) AND {cond}"), [tenant, value], |r| Ok(r.get(0)?))?.unwrap_or(0);
+            first(&self.conn(), &format!("SELECT count(*) FROM mh_memory m WHERE m.tenant = ?1 AND (?2 IS NOT NULL) AND {cond}"), [tenant, value], |r| Ok(r.get(0)?))?.unwrap_or(0);
         Ok(n as u64)
     }
 
     async fn delete_tenant(&self, tenant: &str, actor: &str) -> anyhow::Result<u64> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let total = self.erase_tenant(&tx, tenant, Some(actor))?;
-        exec(&tx, "INSERT INTO mh_deletion_ledger (at, tenant, scope, actor) VALUES (?1, ?2, 'tenant', ?3)", params![now(), tenant, actor])?;
+        let (total, complete) = self.erase_tenant(&tx, tenant, Some(actor))?;
+        // Under a legal hold the tenant's own ledger row waits for the erasure to complete (GOV-09).
+        if complete {
+            exec(&tx, "INSERT INTO mh_deletion_ledger (at, tenant, scope, actor) VALUES (?1, ?2, 'tenant', ?3)", params![now(), tenant, actor])?;
+        }
         tx.commit()?;
         Ok(total)
     }
@@ -1829,15 +1905,7 @@ impl Store for SqliteStore {
     }
 }
 
-/// The rows a `forget` by user, agent or source matches (`?2` is the value).
-fn forget_condition(scope: ForgetScope) -> anyhow::Result<&'static str> {
-    Ok(match scope {
-        ForgetScope::User => "(prov_user = ?2 OR scope_user = ?2)",
-        ForgetScope::Agent => "(prov_agent = ?2 OR scope_agent = ?2)",
-        ForgetScope::Source => "source = ?2",
-        s => anyhow::bail!("no row condition for forget by {}", s.as_str()),
-    })
-}
+use crate::governance::forget_condition;
 
 /// A record is stale from the earliest time one of its references became stale (TPL-04).
 /// Returns whether it is stale now.

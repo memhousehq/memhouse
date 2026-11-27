@@ -13,6 +13,7 @@ pub mod eval;
 pub mod explain;
 pub mod format;
 pub mod gate;
+pub mod governance;
 pub mod identity;
 pub mod intake;
 pub mod lang;

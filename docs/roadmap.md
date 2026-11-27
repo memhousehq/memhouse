@@ -5,7 +5,7 @@
 |---|---|
 | Version | 2.2 (the public edition of development plan v2) |
 | Date | 13 November 2026 |
-| Progress | 19 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
+| Progress | 20 of 36 goals done; G12 built and waiting for its latency check; G14 partly built, waiting for its paid runs ([goal tracker](#goal-tracker)) |
 | Product version | 2.0.0 (the Rust + Postgres implementation; the Elixir 0.x line is archived as `memhousehq/archive-memhouse`) |
 
 This plan is a **sequence of goals**. Each goal is sized for one or a few Claude Code sessions and
@@ -39,7 +39,7 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
 - hash-chained audit, a deletion ledger, deletion and retention that cascade to derived data;
 - REST, MCP (stdio and HTTP), `memhouse up / init / connect / doctor / export / import`;
 - five templates (personal, coding, support, sales, success);
-- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 85 governance checks;
+- `memhouse bench`: LongMemEval S/M/oracle, LoCoMo, LLM-judged QA with cost tally, and 97 governance checks;
 - the Lite profile (G16): the same engine on one SQLite file, `memhouse up --lite`, backup and restore with the deletion ledger re-applied;
 - conformance kits for every adapter type and a profile suite over REST, MCP and the command line (G15);
 - Python and TypeScript SDKs with lifecycle hooks, embedded Lite bindings for Python and Node, and adapters for the OpenAI Agents SDK and LangGraph (G18);
@@ -61,6 +61,15 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
   signatures, provenance, SBOMs and OIDC publishing, a documentation site rendered from `docs/`
   (`cargo xtask site`), and the README's quickstart run in a clean container against a
   ten-minute limit;
+- Governance II (G22, API 1.11, schema v12): legal holds; a deletion workflow that ends every
+  forget in a completion certificate with canary verification; retention per memory type and
+  scope as a run that resumes after a restart, with expired working memory purged;
+  `memhouse restore` re-applying the deletion ledger on both profiles, and a guard that keeps
+  a restored database from serving before it has; purge by source with every descendant and
+  of candidates from untrusted sources; redact, mask or reject per category; anchors of the
+  audit head; SIEM export as CEF over syslog and OTLP logs; a compliance evidence bundle
+  mapped to SOC 2 and ISO 27001; and, on Postgres and off by default, row-level security as a
+  second line and monthly partitions for episodic memory;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -162,7 +171,7 @@ including the governance suite.
 
 | Run | Metric | Baseline | Fails the guard if |
 |---|---|---|---|
-| Governance suite | checks passed | 85 / 85 | any check fails, or fewer checks than the baseline |
+| Governance suite | checks passed | 97 / 97 (27 November 2026, G22) | any check fails, or fewer checks than the baseline |
 | LongMemEval_S, stride 10 (46 scored) | session recall_all@5 | 91.3 | drops by more than 2.2 (one question) |
 | | session nDCG@10 | 94.2 | drops by more than 2.0 |
 | | round recall_all@10 | 84.8 | drops by more than 2.2 |
@@ -382,7 +391,7 @@ One box per goal, ticked when the goal is done ([section 5](#5-how-to-run-a-goal
 
 **E. Governance, connectors, templates**
 
-- [ ] [G22 — Governance II](#g22--governance-ii)
+- [x] [G22 — Governance II](#g22--governance-ii) (27 November 2026)
 - [ ] [G23 — Context-provider plugin system, connectors and importers](#g23--context-provider-plugin-system-connectors-and-importers)
 - [ ] [G24 — Templates as packages; policies II](#g24--templates-as-packages-policies-ii)
 - [ ] [G25 — Economics, consolidation and re-embedding](#g25--economics-consolidation-and-re-embedding) (re-embedding done early)
@@ -2681,7 +2690,8 @@ hosted checks; what changed:
 
 #### G22 — Governance II
 
-- [ ] **Done**
+- [x] **Done** (27 November 2026; built and verified, to be reviewed. Row-level security and
+  monthly partitions are off by default: see the result)
 
 > `/goal Complete governance: retention per memory type and scope from policy with monthly episodic partitions, legal hold exempting data from retention, a deletion workflow that issues a completion certificate with canary verification, memhouse restore that re-applies the deletion ledger before serving, bulk purge by source and untrusted-source candidates, row-level security as a second line, audit-head anchoring, SIEM export within 60 seconds, and a compliance evidence export mapped to SOC 2 and ISO 27001. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -2690,14 +2700,144 @@ hosted checks; what changed:
   **GOV-16**, **TR-WF-01**, **TR-WF-02** (retention and legal-hold jobs resume without duplicates),
   **TR-WF-03**, **TR-DB-03**, **TR-DB-04**.
 - **Deliverables:**
-  - [ ] partitioned episodic table with partition-drop retention
-  - [ ] purge of expired working memory, and retention per scope (moved from G11, which expires working memory out of recall and purges by type: `types.<kind>.retention_days`)
-  - [ ] decide the default episodic retention: the type table's 12 months, or keep (G11 left the built-in default at keep, so an upgrade deletes nothing; a tenant sets it in `[governance]` or a policy)
-  - [ ] `memhouse restore`, `memhouse deletion certificate <id>`, `memhouse audit anchor`
-  - [ ] RLS policies with session settings set by the service; a direct-connection bypass test
-  - [ ] SIEM exporter (syslog/CEF and OTLP logs); evidence bundle command
+  - [x] partitioned episodic table with partition-drop retention (Postgres; opt-in with `[database] episodic_partitions`, converted in place)
+  - [x] purge of expired working memory, and retention per scope (moved from G11, which expires working memory out of recall and purges by type: `types.<kind>.retention_days`)
+  - [x] decide the default episodic retention: the type table's 12 months, or keep (G11 left the built-in default at keep, so an upgrade deletes nothing; a tenant sets it in `[governance]` or a policy). **Decided: keep.**
+  - [x] `memhouse restore`, `memhouse deletion certificate <id>`, `memhouse audit anchor`
+  - [x] RLS policies with session settings set by the service; a direct-connection bypass test (Postgres; opt-in with `[database] row_level_security`)
+  - [x] SIEM exporter (syslog/CEF and OTLP logs); evidence bundle command
+  - [x] legal hold: `memhouse hold add / list / release`; held data exempt from retention and every forget; deletions carried out on release (in the goal line, not listed here before)
+  - [x] the deletion workflow: a request per forget, canaries, the certificate bound into the audit chain (in the goal line, not listed here before)
+  - [x] bulk purge by source with every descendant, and of untrusted-source candidates: `[governance] untrusted_sources`, `forget --untrusted` (in the goal line, not listed here before)
+  - [x] redact, mask or reject per category: `[governance] actions`, `redaction.actions` in a policy (GOV-05 of the scope, not listed here before)
+  - [x] retention and deletions as durable runs that resume without duplicate effects (TR-WF-02 of the scope, not listed here before)
 - **Done when:** governance adds checks for legal hold, source purge, RLS bypass and restore replay; all pass.
 - **Guard:** T1. **Depends on:** G21.
+- **Result (2026-11-27):** built in one session; schema version 12, API 1.11.0.
+  - **Legal hold (GOV-09).** `mh_legal_hold`; `memhouse hold add <kind> <target> --reason`,
+    `list`, `release`, on a subject, user, agent, source, org, team, session or the tenant. Both
+    stores leave what an active hold matches in `delete`, `delete_subject`, `delete_tenant`,
+    forget by user, agent and source, and every retention rule; the same condition
+    (`governance::HELD_SQL`) in both. A forget answers with `held`, its request stays `held`,
+    and a release carries it out at once (`hold.place`, `hold.release`, `deletion.held`).
+    [governance.md](governance.md#legal-hold).
+  - **Deletion workflow and certificate (GOV-07, TR-WF-01).** Every `forget` through the API,
+    MCP or the CLI is a row of `mh_deletion_request`: up to 50 canaries (ids and cached-vector
+    keys) are sampled before the deletion and looked for afterwards in the records, structured
+    forms, code references, links, cached vectors, derived and promoted records, the queue and
+    the extraction jobs. The certificate carries the counts, where any canary was found and
+    the audit head; its hash covers it, and the `deletion.certificate` event carries the hash.
+    `memhouse deletion certificate <id> [--verify] [-o file]`, `memhouse deletion list`; the
+    forget answer has `deletion_id`.
+  - **Retention (GOV-06, TR-WF-02).** `[[retention.scopes]]` in a policy: a rule for one type
+    within one subject, org, team, agent, user or session; the more specific level wins, and
+    any scope rule wins over `types.<kind>.retention_days`. `Store::purge(PurgeSpec)` replaces
+    `purge_older_than` as the store's entry (kept as a wrapper). Expired working memory is
+    purged, not only hidden. A pass is a durable run (`mh_job_run`): each batch counts itself
+    on the run in its own transaction and each rule's `retention.purge` event is written once
+    with the total. `memhouse retention [--json]`. [policy.md](policy.md#retention-per-type-and-scope).
+  - **Decided: the built-in default keeps episodic memory.** The type table's twelve months
+    stay a recommendation: a default that purges would make an upgrade delete stored
+    conversations nobody asked it to delete. Nothing is purged until a deployment sets
+    `[governance] episodic_retention_days` or a policy. Checked by `retention_scopes`.
+  - **Monthly partitions (TR-DB-04, Postgres, opt-in).** `[database] episodic_partitions =
+    true` converts `mh_memory` at the next start into a table partitioned by list on a new
+    nullable column `epart`: the table as it is becomes the partition of rows without a month
+    (`mh_memory_rest`), so the conversion moves no row; episodic records written afterwards go
+    to `mh_memory_e<YYYYMM>`. Retention drops a partition whole, with the cascade of its rows
+    and their ledger rows in the same transaction, when every row in it is due, the tenant's,
+    outside the scope rules and under no hold; otherwise by row.
+    [operations.md](operations.md#monthly-partitions-for-episodic-memory).
+  - **Row-level security (TR-DB-03, Postgres, opt-in).** `[database] row_level_security =
+    true` enables and forces the policy `mh_isolation` on `mh_memory` and its partitions,
+    `mh_structured`, `mh_code_ref`, `mh_link`, `mh_recall`, `mh_intake`, `mh_request_key`,
+    `mh_enrich_job` (tenant and subject from `memhouse.tenant` and `memhouse.subject`) and on
+    the two caches (service scope only). The pool sets the service scope on every connection
+    and resets it on release; recall, get, list and get-many run narrowed to the request's
+    tenant and subject, writes narrowed to the tenant. The service scope is the table owner's.
+    [operations.md](operations.md#row-level-security).
+  - **Restore (TR-WF-03).** `memhouse backup <dir> --ledger-only` and `memhouse restore
+    --ledger <file>` (or `--no-ledger`) now work on Postgres: the ledger is re-applied row by
+    row with the cascade of each deletion (`Store::ledger_apply`), idempotently. **Before
+    serving:** `memhouse serve` keeps the newest audit event of the database it serves under
+    `MEMHOUSE_HOME/state/` and refuses a database that is older, on both profiles, until
+    `memhouse restore` has run (`[governance] restore_guard`).
+  - **Source purge and untrusted sources (GOV-10).** A forget by source already took the
+    cascade of each record; it is now verified to leave no descendant. `[governance]
+    untrusted_sources` (patterns; a policy may add some) holds a matching write as a
+    candidate for a reviewer; `forget` has the scope `untrusted`
+    (`memhouse forget --untrusted <source|*>`).
+  - **Redact, mask or reject (GOV-05).** `[governance] actions` and `redaction.actions` in a
+    policy: `mask` keeps the last four characters (`[MASKED:card:1111]`), `reject` refuses the
+    write; a secret is never masked; a policy can only make an action stricter.
+  - **Anchoring (GOV-12).** `memhouse audit anchor [--out file] [--verify file]`;
+    `[governance] audit_anchor_path` makes `serve` append one an hour; each anchoring writes an
+    `audit.anchor` event, so the SIEM export carries the heads too.
+  - **SIEM export (GOV-15).** `[siem]`: CEF in RFC 5424 syslog over TCP or UDP, and OTLP logs
+    over HTTP as JSON; a cursor per receiver kept in the store and moved only after a receiver
+    took a batch; one replica exports at a time (a lease). [operations.md](operations.md#siem-export).
+  - **Evidence (GOV-16).** `memhouse evidence export <dir> [--suite-report summary.json]`:
+    twelve controls mapped to SOC 2 criteria and ISO/IEC 27001:2022 Annex A, eleven evidence
+    files read from the installation, a manifest with checksums.
+    [governance.md](governance.md#evidence-for-soc-2-and-iso-27001).
+  - **Done when:** the suite has twelve new checks, 97 in all, and all pass on Postgres;
+    on Lite 92 pass and 5 are not applicable (the three before, `rls_bypass` and
+    `episodic_partitions`). The four the goal names: `legal_hold` (3 holds, 5 held deletions
+    and 2 held rounds past retention: 0 deleted while held; all 5 carried out 0.1 s after
+    release, 5 certificates verified); `source_purge` (8 records of the source and 4
+    descendants: 0 and 0 left; 5 untrusted candidates held, 0 left after the bulk purge);
+    `rls_bypass` (a direct connection as a role that does not own the tables: 0 rows of 10
+    tables without session settings, 3 of 4 with the tenant's, 2 with the subject's, a foreign
+    row refused, the service scope refused; and the service itself run as a role the policies
+    bind: writes, recall, reads, a hold, deletions with certificates and a retention pass all
+    work); `restore_replay` (5 ledger rows, 1 known to the backup: 4 re-applied, 6 records
+    removed, 0 on a second replay; the guard refuses the restored database before and accepts
+    it after). The other eight: `deletion_certificate`, `retention_scopes` (13 records under
+    5 rules: 6 purged, 7 kept), `retention_resume` (2,300 rounds: 1,010 records purged before
+    the stop, 1,300 after the restart, 2,300 ledger rows, one purge event; two interrupted
+    deletions, one certificate each), `episodic_partitions` (three months: 1 + 1 partitions
+    dropped whole, the month with a held row kept until release), `audit_anchor`,
+    `siem_export` (120 events to both receivers, the worst 880 ms after it was written; none
+    lost or repeated across an outage), `evidence_export` (12 controls, 0 without evidence),
+    `pii_actions` (2,000 of 2,000 labelled items detected, 0 of 200 stored as written).
+  - **Guard:** T1 with `--skip-latency` (section 3: a machine known to be busy), no paid
+    call, inside `cargo xtask ci`, which passed as a whole (fmt, SPDX, links, versions, secret
+    scan, generated SDKs, dependency policy, clippy, the unit tests, the Docker end-to-end and
+    the guard): governance 97/97; LongMemEval_S stride 10 at 91.3 / 94.2 / 84.8 and LoCoMo at
+    78.8 / 78.7 / 59.2, the baselines; the personal and coding starter suites at their
+    baselines (storage F1 97.6 and 97.2, retrieval F1 97.5 and 97.6). The governance minimum
+    in `bench/baselines.json` is now 97 checks, with 5 allowed not applicable on Lite; no
+    quality baseline was changed. **Latency was reported, not gated:** search p50 read 14.1 ms
+    (LongMemEval_S) and 17.8 ms (LoCoMo) in the final run, 16.2 and 18.4 ms in the one
+    before, against limits of 14.7 and 14.0 ms, on a machine that was also running other
+    work; with both options off the recall statement is the one of G21, but that has not been
+    confirmed on a quiet machine.
+  - **Differs from the plan:**
+    - **Row-level security and monthly partitions are off by default.** Both change what an
+      existing deployment sees (a direct `psql` session of the service's role reads nothing
+      until it sets the session; the memory table loses its single unique index on `id` and
+      its foreign keys, and an older release's `memhouse import` cannot write to it), so an
+      upgrade turns neither on. Whether new installations should get either by default is for
+      the maintainer to decide.
+    - Row-level security does not bind a superuser or a role with `BYPASSRLS`, which is what
+      `memhouse up`'s container and the benchmark database run as: the check therefore also
+      runs the service as an ordinary role.
+    - Legal holds, certificates, anchors and the evidence export are CLI commands; there is no
+      REST route or console page for them yet (the forget answer does carry `deletion_id` and
+      `held`).
+    - The restore guard needs a `MEMHOUSE_HOME` that outlives the restore; where the home is
+      rebuilt with every start the runbook must run `memhouse restore`.
+    - A certificate is bound into the audit chain, not signed with a key of its own.
+    - Syslog export is plain TCP or UDP (a forwarder gives TLS); OTLP may be `https`.
+    - The store conformance kit (G15) was not extended: the new store obligations are checked
+      by the governance suite on both profiles, and listed in
+      [development.md](development.md#add-a-store-adapter).
+    - TR-WF-01 names the search index and replicas, and TR-WF-02 re-embedding and resharding:
+      the Standard profile has no separate index or replica to purge, and those two workflows
+      are G25's (re-embedding, done early) and G32's.
+  - **Changes for API 1.10 clients** (listed in [api-stability.md](api-stability.md)): a
+    forget that meets a legal hold answers `200` with `held`; working memory past its TTL is
+    purged instead of staying readable by id as `expired`.
 
 #### G23 — Context-provider plugin system, connectors and importers
 
@@ -2956,7 +3096,7 @@ current code already meets it and the named goal re-verifies it; it isn't reopen
 | Hybrid retrieval | HYB-01 G10 · HYB-02 G10 · HYB-03 G10 · HYB-04 G04 · HYB-05 G12 · HYB-06 G10 · HYB-07 G35 · HYB-08 G35 |
 | Quality | QUAL-01 G10 (done, verified) · QUAL-02 G10 · QUAL-03 G13 · QUAL-04 G13 · QUAL-05 G01/G13 · QUAL-06 G25 · QUAL-07 G07 · QUAL-08 G04 · QUAL-09 G05 · QUAL-10 G13 · QUAL-11 G13 (console page G20) |
 | Policy | POL-01 G08 · POL-02 G24 · POL-03 G08 · POL-04 G08 · POL-05 G24 · POL-06 G24 · POL-07 G35 · POL-08 G08 |
-| Governance | GOV-01 G06 · GOV-02 G06/G27 · GOV-03 G08 · GOV-04 G07 · GOV-05 G22 (done, verified) · GOV-06 G22 · GOV-07 G22 · GOV-08 G06 · GOV-09 G22 · GOV-10 G22 · GOV-11 G20 · GOV-12 G22 · GOV-13 G06/G29 · GOV-14 G27 · GOV-15 G22 · GOV-16 G22 |
+| Governance | GOV-01 G06 · GOV-02 G06/G27 · GOV-03 G08 · GOV-04 G07 · GOV-05 G22 (done, verified) · GOV-06 G22 (done) · GOV-07 G22 (done) · GOV-08 G06 · GOV-09 G22 (done) · GOV-10 G22 (done) · GOV-11 G20 · GOV-12 G22 (done) · GOV-13 G06/G29 · GOV-14 G27 · GOV-15 G22 (done) · GOV-16 G22 (done) |
 | Access | ACC-01 G27 · ACC-02 G27 · ACC-03 G27 · ACC-04 G27 · ACC-05 G28 · ACC-06 G27 · ACC-07 G27 · ACC-08 G28 · ACC-09 G27 · ACC-10 G11 |
 | Decision register | CFG-01…CFG-12 G28 · D-01…D-07 G28 |
 | Languages | new scope, no requirement ID yet: language packs and the 24 official EU languages G36 (done; 23 packs are drafts awaiting review by speakers) |
@@ -2970,10 +3110,10 @@ current code already meets it and the named goal re-verifies it; it isn't reopen
 | Gateway | TR-GW-01 G30 · TR-GW-02 G32 · TR-GW-03 G30 · TR-GW-04 G27 · TR-GW-05 G30 · TR-GW-06 G30 · TR-GW-07 G30 · TR-GW-08 G31 |
 | Intake | TR-IN-01 G31 · TR-IN-02 G31 · TR-IN-03 G10 · TR-IN-04 G10 · TR-IN-05 G14 · TR-IN-06 G30 · TR-IN-07 G10 |
 | Model services | TR-MS-01 G10 · TR-MS-02 G04 · TR-MS-03 G29 · TR-MS-04 G25 · TR-MS-05 G14 · TR-MS-06 G32 |
-| Database | TR-DB-01 G04 · TR-DB-02 G03 · TR-DB-03 G22 · TR-DB-04 G22 · TR-DB-05 G32 · TR-DB-06 G32 · TR-DB-07 G30 |
+| Database | TR-DB-01 G04 · TR-DB-02 G03 · TR-DB-03 G22 (done; opt-in) · TR-DB-04 G22 (done; opt-in) · TR-DB-05 G32 · TR-DB-06 G32 · TR-DB-07 G30 |
 | Recall query | TR-RQ-01 G01 · TR-RQ-02 G01 · TR-RQ-03 G06 · TR-RQ-04 G27 |
 | Authorization | TR-AZ-01 G27 · TR-AZ-02 G27 · TR-AZ-03 G27 · TR-AZ-04 G27 · TR-AZ-05 G28 |
-| Workflows | TR-WF-01 G22 · TR-WF-02 G22/G31 · TR-WF-03 G22 |
+| Workflows | TR-WF-01 G22 (done) · TR-WF-02 G22 (retention and legal hold, done) / G31 · TR-WF-03 G22 (done) |
 | Operations | TR-OPS-01 G29 · TR-OPS-02 G29 · TR-OPS-03 G21 · TR-OPS-04 G30 · TR-OPS-05 G30 · TR-OPS-06 G07 |
 | Core library | TR-CORE-01 G15 (done, verified) · TR-CORE-02 G15 · TR-CORE-03 G04 · TR-CORE-04 G04 · TR-CORE-05 G06 |
 | Lite | TR-LT-01 G16/G18 · TR-LT-02 G03 · TR-LT-03 G16 · TR-LT-04 G16 · TR-LT-05 G10 · TR-LT-06 G16 · TR-LT-07 G06 · TR-LT-08 G29 · TR-LT-09 G16 · TR-LT-10 G16 |

@@ -938,7 +938,7 @@ pub struct ReviseRequest {
 }
 
 /// Delete memories (`forget`, CORE-05). Name exactly one of `id`, `subject`, `user`, `agent`,
-/// `source` or `all`. Deletion is permanent and includes every derived representation.
+/// `source`, `untrusted` or `all`. Deletion is permanent and includes every derived representation.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct ForgetRequest {
     #[serde(default)]
@@ -958,6 +958,10 @@ pub struct ForgetRequest {
     /// Records with this source label, in any subject.
     #[serde(default)]
     pub source: Option<String>,
+    /// Candidates held because their source is not trusted (GOV-10): those of this source
+    /// label, or of every untrusted source with `*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untrusted: Option<String>,
     /// The whole tenant. Needs `confirm` set to the tenant's name.
     #[serde(default)]
     pub all: bool,
@@ -984,6 +988,9 @@ pub enum ForgetScope {
     Agent,
     Source,
     Tenant,
+    // Candidates held because their source is not trusted (GOV-10). No doc comment: the enum
+    // stays a plain list of strings in the API schema, as it was published.
+    Untrusted,
 }
 
 impl ForgetScope {
@@ -995,6 +1002,7 @@ impl ForgetScope {
             ForgetScope::Agent => "agent",
             ForgetScope::Source => "source",
             ForgetScope::Tenant => "tenant",
+            ForgetScope::Untrusted => "untrusted",
         }
     }
 }
@@ -1009,6 +1017,14 @@ pub struct ForgetResult {
     pub deleted: u64,
     #[serde(default)]
     pub dry_run: bool,
+    /// Records the request matches that a legal hold keeps (GOV-09): they are deleted when the
+    /// hold is released.
+    #[serde(default)]
+    pub held: u64,
+    /// The deletion request (absent for a dry run): `memhouse deletion certificate <id>` prints
+    /// its completion certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_id: Option<Uuid>,
 }
 
 /// One page of a list. Pass `next_cursor` back as `cursor` for the next page; it is absent on the

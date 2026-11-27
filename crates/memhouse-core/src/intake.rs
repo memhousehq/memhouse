@@ -125,6 +125,19 @@ pub fn same_labels(a: &[String], b: &[String]) -> bool {
     a.iter().all(|l| b.contains(l)) && b.iter().all(|l| a.contains(l))
 }
 
+/// The write gate's verdict on what the detector found: a category under the `reject` action
+/// refuses the write (GOV-05). The error names the categories, never the values.
+pub(crate) fn refuse_rejected(found: (String, Vec<String>)) -> anyhow::Result<(String, Vec<String>)> {
+    let refused = crate::gate::rejected(&found.1);
+    if !refused.is_empty() {
+        return Err(error::invalid(format!(
+            "the content holds {} data, which this deployment refuses to store (redaction action \"reject\"); remove it and write again",
+            refused.join(", ")
+        )));
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod same_labels_tests {
     use super::same_labels;
@@ -432,14 +445,14 @@ impl Engine {
             )));
         }
         // The compiler keeps "secret" in every policy (security baseline).
-        self.pii.redact(content, &policy.policy.redaction.categories).await
+        refuse_rejected(self.pii.redact(content, &policy.policy.redaction.rules()).await?)
     }
 
     /// Stage 2 for a structured form: every string attribute is redacted like text.
     pub(crate) async fn redact_attrs(&self, policy: &CompiledPolicy, v: &serde_json::Value, found: &mut Vec<String>) -> anyhow::Result<serde_json::Value> {
         Ok(match v {
             serde_json::Value::String(s) => {
-                let (t, r) = self.pii.redact(s, &policy.policy.redaction.categories).await?;
+                let (t, r) = refuse_rejected(self.pii.redact(s, &policy.policy.redaction.rules()).await?)?;
                 for c in r {
                     if !found.contains(&c) {
                         found.push(c);
@@ -777,14 +790,22 @@ impl Engine {
     /// Stage 2 again, under the policy in force now: content, focus text, metadata and
     /// structured attributes. Redaction is idempotent, so text already redacted is unchanged.
     async fn reredact(&self, policy: &CompiledPolicy, it: &mut Item) -> anyhow::Result<()> {
-        let cats = &policy.policy.redaction.categories;
+        let cats = &policy.policy.redaction.rules();
         let mut found = it.redactions.clone();
         let m = &mut it.rec.memory;
+        // A queued write the policy in force now refuses (a category set to `reject` since it
+        // was queued) is stored redacted and rejected, never as written (GOV-05).
         let (content, more) = self.pii.redact(&m.content, cats).await?;
+        if !crate::gate::rejected(&more).is_empty() {
+            m.status = MemoryStatus::Rejected;
+            it.note = Some(format!("rejected: holds {} data, which the policy refuses to store (GOV-05)", crate::gate::rejected(&more).join(", ")));
+        }
+        let more: Vec<String> = more.into_iter().map(|c| c.strip_suffix(crate::gate::REJECT_MARK).map(String::from).unwrap_or(c)).collect();
         m.content = content;
         found.extend(more);
         if let Some(f) = &it.focus {
             let (f, more) = self.pii.redact(f, cats).await?;
+            let more: Vec<String> = more.into_iter().map(|c| c.strip_suffix(crate::gate::REJECT_MARK).map(String::from).unwrap_or(c)).collect();
             it.focus = Some(f);
             found.extend(more);
         }
@@ -867,6 +888,9 @@ impl Engine {
                 // must not get it past the statement gate (PR-7).
                 && !statement.is_some_and(|s| s.held())
                 && (m.metadata.get("correction").and_then(|v| v.as_bool()) == Some(true) || statement == Some(Statement::Correction));
+            // GOV-10: a write from a source the tenant does not trust is held for a reviewer,
+            // whatever its type's gate would do with it. (Injection still quarantines first.)
+            let untrusted = policy.policy.write_gate.untrusted_sources.iter().any(|p| crate::config::source_matches(p, &m.source));
             m.status = if !reasons.is_empty() {
                 m.metadata["quarantine_reasons"] = json!(reasons);
                 it.note = Some(format!("quarantined: looks like an instruction to the agent ({})", reasons.join(", ")));
@@ -874,6 +898,11 @@ impl Engine {
             } else if unsourced {
                 it.note = Some(format!("rejected: {} memory needs a verified source (the writing principal and a source label)", m.kind.as_str()));
                 MemoryStatus::Rejected
+            } else if untrusted {
+                m.metadata["held"] = json!("untrusted_source");
+                m.metadata["review"] = json!(true);
+                it.note = Some(format!("held as a candidate: the source {:?} is not trusted; a reviewer decides (GOV-10)", m.source));
+                MemoryStatus::Candidate
             } else if correction {
                 // Before the signal branch: a proposal that is both is counted as a
                 // correction, or its repeats would only ever wait for a reviewer.

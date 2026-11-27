@@ -5,6 +5,7 @@
 //! same file. The logical schema and the behaviour are those of the Postgres store (TR-CORE-04).
 
 pub mod backup;
+mod governance;
 mod intake;
 mod migrate;
 mod records;

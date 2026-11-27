@@ -201,5 +201,6 @@ controls (`embedded_same_controls`, on a throwaway store of the profile under te
 The suite itself is store-neutral: `memhouse bench run --suite governance --database-url
 sqlite:/path/to/a/new/file.db` runs it on the [Lite profile](lite.md). A check that cannot
 apply to a profile says so, with its reason, and is counted apart from the passed and failed
-ones. On Lite three do not apply: the Postgres query-plan check, the in-place upgrade of a
-version-1 Postgres database, and the per-language text-search check.
+ones. On Lite five do not apply: the Postgres query-plan check, the in-place upgrade of a
+version-1 Postgres database, the per-language text-search check, and the two checks of what
+only a Postgres database has: row-level security and monthly partitions (G22).

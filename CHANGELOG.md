@@ -196,5 +196,38 @@ path from 0.x data other than export and import.
   file a download is written to was named after the process id, which is 1 in every container.
 - The minimum Rust version is 1.94 (the workspace said 1.85, which its own dependencies do not
   accept). A checkout needs symbolic links to build.
+- Governance II (API 1.11.0, schema version 12; `docs/governance.md`):
+  - **Legal hold** on a subject, user, agent, source, scope level or tenant
+    (`memhouse hold add / list / release`): held records are exempt from retention and from
+    every `forget`, which answers with `held`; the deletion is carried out when the hold is
+    released.
+  - **Deletion workflow**: every `forget` is a request with canaries sampled before the
+    deletion and looked for afterwards in every representation, and ends in a completion
+    certificate whose hash the audit chain carries (`deletion_id` in the answer;
+    `memhouse deletion certificate <id> [--verify]`, `memhouse deletion list`).
+  - **Retention per type and scope** from the policy (`[[retention.scopes]]`), as a durable run
+    that resumes after a restart without removing or counting anything twice; expired working
+    memory is now purged, not only hidden. The built-in default still keeps episodic memory:
+    an upgrade deletes nothing.
+  - **`memhouse restore` on Postgres** re-applies a deletion ledger
+    (`memhouse backup <dir> --ledger-only`) to a restored database, and `memhouse serve`
+    refuses a database older than the one it last served until that is done
+    (`[governance] restore_guard`).
+  - **Bulk purge**: `forget` by source removes what was derived and promoted from the source's
+    records; `[governance] untrusted_sources` holds writes from listed sources as candidates,
+    and `memhouse forget --untrusted` purges them.
+  - **Redact, mask or reject** per category (`[governance] actions`, `redaction.actions` in a
+    policy).
+  - **`memhouse audit anchor`** records the audit head outside the database and verifies
+    recorded anchors against the chain; `[governance] audit_anchor_path` schedules it.
+  - **SIEM export** of audit events as CEF over syslog and as OTLP logs, within seconds
+    (`[siem]`).
+  - **`memhouse evidence export`**: a bundle of evidence read from the installation, mapped to
+    SOC 2 criteria and ISO/IEC 27001:2022 Annex A controls.
+  - Postgres, both off by default: **row-level security** on every memory table as a second
+    line, with session settings set by the service (`[database] row_level_security`), and
+    **monthly partitions** for episodic memory that retention drops whole
+    (`[database] episodic_partitions`, converted in place).
+  - The governance suite has 97 checks (92 apply on Lite).
 - The Helm chart writes whole numbers of a values file as integers, and documents
   `sslmode=verify-full`: without an `sslmode` the connection to Postgres is not verified.

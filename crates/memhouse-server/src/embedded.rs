@@ -39,13 +39,37 @@ impl Background {
         // The write pipeline's workers resume proposals left by a restart (TR-LT-05).
         workers.extend(engine.spawn_intake(engine.cfg.intake.workers, stop.clone()));
         let e = engine.clone();
+        // One task for everything that runs on a clock, so one handle stops it all: the hourly
+        // retention pass (which also carries out deletions whose legal hold was released), the
+        // anchors of the audit head (GOV-12) and the SIEM export (GOV-15).
         let retention = tokio::spawn(async move {
-            loop {
-                if let Err(err) = e.apply_retention().await {
-                    tracing::warn!("retention: {err:#}");
+            let passes = async {
+                loop {
+                    if let Err(err) = e.apply_retention().await {
+                        tracing::warn!("retention: {err:#}");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            }
+            };
+            let anchors = async {
+                let path = e.cfg.governance.audit_anchor_path.clone();
+                if path.is_empty() {
+                    return std::future::pending::<()>().await;
+                }
+                loop {
+                    if let Err(err) = crate::governance::anchor_to(&e, std::path::Path::new(&path), "system").await {
+                        tracing::warn!("audit anchor: {err:#}");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(e.cfg.governance.audit_anchor_secs.max(60))).await;
+                }
+            };
+            let siem = async {
+                if !e.cfg.siem.enabled() {
+                    return std::future::pending::<()>().await;
+                }
+                crate::siem::Exporter::new(&e).run().await
+            };
+            tokio::join!(passes, anchors, siem);
         });
         Background { stop, workers, retention: Some(retention), grace: GRACE }
     }

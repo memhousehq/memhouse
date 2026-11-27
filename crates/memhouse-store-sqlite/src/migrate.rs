@@ -20,6 +20,7 @@ pub(crate) const STEPS: &[Step] = &[
     Step { to: 9, what: "the record's language", run: add_language },
     Step { to: 10, what: "staleness of code references", run: add_staleness },
     Step { to: 11, what: "console sessions", run: add_sessions },
+    Step { to: 12, what: "legal holds, deletion requests and job runs", run: add_governance },
 ];
 
 /// The oldest version the steps start from.
@@ -73,6 +74,12 @@ fn add_staleness(c: &Connection) -> anyhow::Result<()> {
 /// Version 11: the table of console sessions (`mh_session`). It is a new table and starts
 /// empty, so the step has nothing to move: `schema::DDL`, run after the steps, creates it.
 fn add_sessions(_c: &Connection) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// Version 12 (G22): legal holds, deletion requests and durable job runs. New tables that
+/// start empty: `schema::DDL`, run after the steps, creates them.
+fn add_governance(_c: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 

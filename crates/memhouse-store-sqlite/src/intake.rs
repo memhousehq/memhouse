@@ -281,6 +281,8 @@ impl memhouse_core::IntakeQueue for SqliteStore {
             ForgetScope::User => "(acting_user = ?2 OR scope_user = ?2)",
             ForgetScope::Agent => "(agent = ?2 OR scope_agent = ?2)",
             ForgetScope::Source => "source = ?2",
+            // A queued write has not met the gate yet: none is held as untrusted.
+            ForgetScope::Untrusted => return Ok(0),
             ForgetScope::Record => unreachable!("handled above"),
         };
         exec(&c, &format!("DELETE FROM mh_intake WHERE tenant = ?1 AND {filter} AND (payload IS NOT NULL OR status IN ('pending', 'running'))"), [tenant, value])

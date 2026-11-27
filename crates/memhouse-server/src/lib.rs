@@ -3,10 +3,12 @@
 
 pub mod console;
 pub mod embedded;
+pub mod governance;
 pub mod hook;
 pub mod mcp;
 pub mod migrate;
 pub mod openapi;
+pub mod siem;
 pub mod telemetry;
 
 use axum::extract::{FromRequest, FromRequestParts, MatchedPath, Path, Query, Request, State};
@@ -41,7 +43,10 @@ pub async fn open_store(cfg: &Config, connections: u32) -> anyhow::Result<Arc<dy
     let prefix = cfg.embedding.passage_prefix.as_deref().unwrap_or("");
     Ok(match sqlite_path(&cfg.database.url) {
         Some(path) => Arc::new(memhouse_store_sqlite::SqliteStore::open(&path, prefix)?),
-        None => Arc::new(PgStore::connect(&cfg.database.url, connections, prefix).await?),
+        None => {
+            let options = memhouse_store_postgres::PgOptions { row_level_security: cfg.database.row_level_security, episodic_partitions: cfg.database.episodic_partitions };
+            Arc::new(PgStore::connect_with(&cfg.database.url, connections, prefix, options).await?)
+        }
     })
 }
 
@@ -363,10 +368,40 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     if embedded::enrichment_runs(&engine) {
         eprintln!("Enrichment: {} workers, model {}", engine.cfg.enrich.workers, engine.cfg.enrich.llm.model);
     }
+    // A database restored from a backup has its deletion ledger re-applied before it serves
+    // (TR-WF-03). Only `memhouse serve` keeps the guard's state: the embedded library and the
+    // command line write nothing under MEMHOUSE_HOME for it.
+    governance::check_before_serving(&engine).await?;
+    let guard = engine.cfg.governance.restore_guard.then(|| {
+        let store = engine.store.clone();
+        tokio::spawn(async move {
+            let home = memhouse_core::config::home_dir();
+            let mut warned = false;
+            loop {
+                if let Err(e) = governance::record_watermark(store.as_ref(), &home).await {
+                    if !warned {
+                        tracing::warn!("the restore guard's state could not be written ({e:#}); a later restore would not be noticed here");
+                        warned = true;
+                    }
+                }
+                // The state is at most this old: a restore to a point after it is not noticed.
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        })
+    });
+    if engine.cfg.siem.enabled() {
+        eprintln!("SIEM export: audit events every {} s", engine.cfg.siem.interval_secs);
+    }
     let mut background = embedded::Background::start(&engine);
+    let store_at_exit = engine.store.clone();
     let served = axum::serve(listener, router(engine)).with_graceful_shutdown(shutdown_signal()).await;
     // Also when serving failed: the workers end their jobs before the process does.
     background.stop().await;
+    if let Some(guard) = guard {
+        guard.abort();
+        // The last state served, for the next start to compare with.
+        let _ = governance::record_watermark(store_at_exit.as_ref(), &memhouse_core::config::home_dir()).await;
+    }
     served?;
     Ok(())
 }

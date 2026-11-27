@@ -235,13 +235,17 @@ impl SqliteStore {
     /// Delete the records that name any of `sources` in their metadata, with their cached
     /// vectors: derived facts (`source_ids`) when `facts`, and promotions (`promoted_from`)
     /// when `promotions`. Returns the ids deleted.
-    pub(crate) fn delete_dependents(&self, c: &Connection, tenant: &str, sources: &[Uuid], facts: bool, promotions: bool) -> anyhow::Result<Vec<Uuid>> {
+    pub(crate) fn delete_dependents(&self, c: &Connection, tenant: &str, sources: &[Uuid], facts: bool, promotions: bool, respect_holds: bool) -> anyhow::Result<Vec<Uuid>> {
+        // With `respect_holds`, a dependent an active legal hold matches stays (GOV-09).
         let found = rows(
             c,
-            "SELECT DISTINCT m.id, m.content, m.alt_hash FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id \
-             WHERE r.tenant = ?1 AND m.tenant = ?1 AND r.source_id IN (SELECT value FROM json_each(?2)) \
-               AND ((?3 AND r.via = 'source') OR (?4 AND r.via = 'promoted'))",
-            params![tenant, ids_json(sources), facts, promotions],
+            &format!(
+                "SELECT DISTINCT m.id, m.content, m.alt_hash FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id \
+                 WHERE r.tenant = ?1 AND m.tenant = ?1 AND r.source_id IN (SELECT value FROM json_each(?2)) \
+                   AND ((?3 AND r.via = 'source') OR (?4 AND r.via = 'promoted')) AND (NOT ?5 OR NOT {})",
+                memhouse_core::governance::HELD_SQL
+            ),
+            params![tenant, ids_json(sources), facts, promotions, respect_holds],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
         )?;
         let mut ids = Vec::with_capacity(found.len());
@@ -256,30 +260,56 @@ impl SqliteStore {
 
     /// Delete one record with everything derived from it (see `Store::delete`), inside the
     /// caller's transaction and without the ledger row. `promotions` also removes what was
-    /// promoted from it (a deletion does, retention does not). Returns the record's subject
-    /// and how many records went.
-    pub(crate) fn delete_in(&self, c: &Connection, tenant: &str, id: Uuid, promotions: bool) -> anyhow::Result<Option<(String, u64)>> {
+    /// promoted from it (a deletion does, retention does not). With `respect_holds` a record
+    /// under a legal hold stays, and so does a held dependent (GOV-09); a record that is gone
+    /// already still has its remaining dependents removed (a deletion a hold interrupted is
+    /// finished this way). Returns the record's subject and how many records went.
+    pub(crate) fn delete_in(&self, c: &Connection, tenant: &str, id: Uuid, promotions: bool, respect_holds: bool) -> anyhow::Result<Option<(String, u64)>> {
         let ids = id.to_string();
-        let row = first(c, "SELECT subject, content, alt_hash FROM mh_memory WHERE tenant = ?1 AND id = ?2", params![tenant, ids], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
-        })?;
-        let Some((subject, content, alt_hash)) = row else { return Ok(None) };
-        exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
-        // Also drop the cached embeddings of this content (every representation goes, TR-WF-01).
-        self.purge_vectors(c, [content.as_str()], alt_hash.as_deref())?;
+        let row = first(
+            c,
+            &format!("SELECT m.subject, m.content, m.alt_hash, {} FROM mh_memory m WHERE m.tenant = ?1 AND m.id = ?2", memhouse_core::governance::HELD_SQL),
+            params![tenant, ids],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, bool>(3)?)),
+        )?;
+        let mut gone = vec![];
+        let mut subject = None;
+        match row {
+            Some((_, _, _, true)) if respect_holds => return Ok(None),
+            Some((s, content, alt_hash, _)) => {
+                exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
+                // Also drop the cached embeddings of this content (every representation goes, TR-WF-01).
+                self.purge_vectors(c, [content.as_str()], alt_hash.as_deref())?;
+                gone.push(id);
+                subject = Some(s);
+            }
+            None => {}
+        }
         // Facts derived from this record and records promoted from it (MEM-05) go with it, and
         // so does everything promoted from those in turn (a note promoted to a fact, the fact to
         // a procedure), with their cached vectors.
-        let mut gone = vec![id];
-        let mut level = self.delete_dependents(c, tenant, &[id], true, promotions)?;
+        if subject.is_none() {
+            subject = first(
+                c,
+                "SELECT m.subject FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id WHERE r.tenant = ?1 AND m.tenant = ?1 AND r.source_id = ?2 \
+                 AND (r.via = 'source' OR (?3 AND r.via = 'promoted')) LIMIT 1",
+                params![tenant, ids, promotions],
+                |r| Ok(r.get::<_, String>(0)?),
+            )?;
+        }
+        let Some(subject) = subject else { return Ok(None) };
+        let mut level = self.delete_dependents(c, tenant, &[id], true, promotions, respect_holds)?;
         while !level.is_empty() {
             gone.extend(level.iter().copied());
-            level = if promotions { self.delete_dependents(c, tenant, &level, false, true)? } else { vec![] };
+            level = if promotions { self.delete_dependents(c, tenant, &level, false, true, respect_holds)? } else { vec![] };
+        }
+        if gone.is_empty() {
+            return Ok(None);
         }
         if promotions {
             // Promotions of this record, or of anything that went with it, that are still queued
             // (or set aside with their payload): gone with it on every erasure path.
-            crate::intake::drop_promotions_of(c, tenant, &gone.iter().copied().collect())?;
+            crate::intake::drop_promotions_of(c, tenant, &std::iter::once(id).chain(gone.iter().copied()).collect())?;
         }
         // The session jobs that read it, and the cached extraction of each.
         let jobs = rows(
@@ -292,8 +322,44 @@ impl SqliteStore {
         Ok(Some((subject, gone.len() as u64)))
     }
 
-    /// Erase a subject (see `Store::delete_subject`), inside the caller's transaction.
+    /// Erase a subject (see `Store::delete_subject`), inside the caller's transaction. Records
+    /// an active legal hold matches stay (GOV-09), and with them the subject's links,
+    /// remembered responses, recall explanations and queued writes; the ledger then names what
+    /// went record by record, and the subject's own row is written when the erasure completes.
     pub(crate) fn delete_subject_in(&self, c: &Connection, tenant: &str, subject: &str, actor: &str, purge_cache: bool) -> anyhow::Result<u64> {
+        let held_sql = memhouse_core::governance::HELD_SQL;
+        let held: i64 =
+            first(c, &format!("SELECT count(*) FROM mh_memory m WHERE m.tenant = ?1 AND m.subject = ?2 AND {held_sql}"), params![tenant, subject], |r| Ok(r.get(0)?))?.unwrap_or(0);
+        if held > 0 {
+            let free = rows(
+                c,
+                &format!("SELECT m.id, m.content, m.alt_hash FROM mh_memory m WHERE m.tenant = ?1 AND m.subject = ?2 AND NOT {held_sql}"),
+                params![tenant, subject],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+            )?;
+            if purge_cache {
+                self.purge_vectors(c, free.iter().map(|f| f.1.as_str()), free.iter().filter_map(|f| f.2.as_deref()))?;
+            }
+            let at = now();
+            for (id, _, _) in &free {
+                exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, id.as_str()])?;
+                exec(
+                    c,
+                    "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'memory', ?5)",
+                    params![at, tenant, subject, id, actor],
+                )?;
+            }
+            let id_list = serde_json::Value::from(free.iter().map(|f| f.0.clone()).collect::<Vec<_>>()).to_string();
+            let jobs = rows(
+                c,
+                "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 \
+                 AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value IN (SELECT value FROM json_each(?3)))",
+                [tenant, subject, id_list.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            drop_jobs(c, &jobs, purge_cache)?;
+            return Ok(free.len() as u64);
+        }
         let n = self.erase_subject(c, tenant, subject, purge_cache)?;
         exec(
             c,
@@ -326,9 +392,15 @@ impl SqliteStore {
     }
 
     /// Everything of a tenant (see `Store::delete_tenant`), without the tenant's ledger row.
-    /// With `ledger_actor` each subject gets its own ledger row, as an erasure writes them.
-    pub(crate) fn erase_tenant(&self, c: &Connection, tenant: &str, ledger_actor: Option<&str>) -> anyhow::Result<u64> {
-        exec(c, "DELETE FROM mh_intake WHERE tenant = ?1", params![tenant])?;
+    /// With `ledger_actor` each subject gets its own ledger row, as an erasure writes them,
+    /// and what a legal hold keeps stays (GOV-09): the tenant's queue, links and the rest then
+    /// stay with it. Returns the records removed and whether the tenant is erased completely.
+    pub(crate) fn erase_tenant(&self, c: &Connection, tenant: &str, ledger_actor: Option<&str>) -> anyhow::Result<(u64, bool)> {
+        let held = ledger_actor.is_some()
+            && first(c, "SELECT count(*) FROM mh_legal_hold WHERE tenant = ?1 AND released_at IS NULL", [tenant], |r| Ok(r.get::<_, i64>(0)?))?.unwrap_or(0) > 0;
+        if !held {
+            exec(c, "DELETE FROM mh_intake WHERE tenant = ?1", params![tenant])?;
+        }
         // Every subject, in any state (`subjects` lists only those with committed records).
         let subjects = rows(c, "SELECT DISTINCT subject FROM mh_memory WHERE tenant = ?1", [tenant], |r| Ok(r.get::<_, String>(0)?))?;
         let mut total = 0;
@@ -338,12 +410,15 @@ impl SqliteStore {
                 None => self.erase_subject(c, tenant, &s, true)?,
             };
         }
+        if held && first(c, "SELECT count(*) FROM mh_memory WHERE tenant = ?1", [tenant], |r| Ok(r.get::<_, i64>(0)?))?.unwrap_or(0) > 0 {
+            return Ok((total, false));
+        }
         // What is left without a record: links, remembered responses, queued jobs and writes.
-        for table in ["mh_link", "mh_grant", "mh_eval_suite", "mh_eval_run", "mh_request_key", "mh_recall", "mh_session"] {
+        for table in ["mh_intake", "mh_link", "mh_grant", "mh_eval_suite", "mh_eval_run", "mh_request_key", "mh_recall", "mh_session"] {
             exec(c, &format!("DELETE FROM {table} WHERE tenant = ?1"), [tenant])?;
         }
         let jobs = rows(c, "SELECT id, cache_key FROM mh_enrich_job WHERE tenant = ?1", params![tenant], |r| Ok((r.get(0)?, r.get(1)?)))?;
         drop_jobs(c, &jobs, true)?;
-        Ok(total)
+        Ok((total, true))
     }
 }

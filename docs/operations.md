@@ -17,6 +17,9 @@ backups, upgrades, enrichment workers, monitoring and troubleshooting.
 - [Enrichment workers](#enrichment-workers)
 - [Write pipeline](#write-pipeline)
 - [Backup and restore](#backup-and-restore)
+- [Row-level security](#row-level-security)
+- [Monthly partitions for episodic memory](#monthly-partitions-for-episodic-memory)
+- [SIEM export](#siem-export)
 - [Moving between profiles](#moving-between-profiles)
 - [Upgrades](#upgrades)
 - [Changing the embedding model](#changing-the-embedding-model)
@@ -457,7 +460,9 @@ the backup ends where the backup was taken, so a restore needs the later one:
 and re-applies it; on a machine without the current database, export the ledger first with
 `memhouse backup <dir> --ledger-only` and pass it with `memhouse restore <dir> --ledger <file>`.
 A plain `memhouse restore <dir>` there brings back what was deleted after the backup, and says
-so. The two commands refuse a Postgres installation: use `pg_dump` and the procedure below.
+so. On Postgres the database itself is backed up and restored with Postgres' tools, and the two
+commands handle the deletion ledger: see
+[Re-applying deletions after a restore](#re-applying-deletions-after-a-restore).
 
 ### Console sessions after a restore
 
@@ -474,48 +479,172 @@ DELETE FROM mh_session;
 
 ### Re-applying deletions after a restore
 
-A backup taken before an erasure request still holds the erased data. The deletion ledger records
-every deletion so you can apply them again after restoring. Keep a copy of the ledger from the
-live database before you restore over it.
+A backup taken before an erasure request still holds the erased data. The deletion ledger
+records every deletion, so that a restore can make them again before the restored database
+serves anyone (TR-WF-03). The ledger that matters is the one kept *outside* the backup: the
+backup's own ledger ends where the backup was taken.
 
 ```mermaid
 flowchart LR
-    B[backup<br/>Mon 02:00] --> R[restore]
-    L["mh_deletion_ledger<br/>from the live DB<br/>(deletions since Mon 02:00)"] --> X[re-apply deletions]
-    R --> X --> OK[restored DB without<br/>the erased data]
+    B[backup<br/>Mon 02:00] --> R[pg_restore]
+    L["memhouse backup --ledger-only<br/>(every deletion up to now)"] --> X["memhouse restore --ledger"]
+    R --> X --> OK[restored database without<br/>the erased data] --> S[memhouse serve]
 ```
 
 ```bash
-# 1. Before restoring: save the live ledger
-psql "$LIVE_URL" -c "\copy (SELECT tenant, subject, memory_id, scope, at FROM mh_deletion_ledger) TO 'ledger.csv' CSV"
+# Routinely, beside your backups (the file is small: identifiers, never content):
+memhouse backup /var/backups/memhouse-ledger --ledger-only     # a new or empty directory each time
+
+# After a restore, before the service starts:
+pg_restore -d "$DATABASE_URL" --no-owner memhouse-2026-11-01.dump
+memhouse restore --ledger /var/backups/memhouse-ledger/deletion-ledger.jsonl
+# ✓ deletion ledger: 214 entries, 187 already in the database, 27 re-applied, removing 41 records
+#   audit chain intact (9120 events)
+#   `memhouse serve` now starts on this database
 ```
+
+`memhouse restore` applies each row the database's ledger does not have yet, with the cascade
+of the deletion it records (a record with what was derived and promoted from it; a subject; a
+tenant; for a retention purge the record and its derived facts), adds the row to the ledger as
+it was made, so the next backup carries it, ends every [console session](#console-sessions-after-a-restore),
+and writes `deletion.reapply` and `backup.restore` audit events. Running it twice changes
+nothing the second time; one that is interrupted is continued by running it again. If nothing
+was deleted since the backup, say so with `memhouse restore --no-ledger` (audited).
+
+Legal holds do not stop a replay: the ledger says what was deleted, and a hold that the backup
+brought back is no reason to bring the data back with it. A hold *placed* after the backup is
+not in the restored database: place it again.
+
+**The restore guard.** `memhouse serve` remembers, under `MEMHOUSE_HOME/state/`, the newest
+audit event of the database it serves (written at start, every minute, and at shutdown). When
+it starts on a database whose audit log ends before that event, the database was restored
+from a backup, and the service refuses to start until `memhouse restore` has run:
+
+```text
+this database is older than the one this installation last served: its audit log ends at event
+9093, and event 9120 was seen on 2026-11-27 14:02:11 UTC. It was restored from a backup, so
+records deleted since may be back. Run `memhouse restore --ledger <file>` …
+```
+
+The guard is a safety net, not the procedure: run `memhouse restore` after every
+`pg_restore`. It notices a database older than the state it last recorded, which may be up to
+a minute behind a service that was killed; a restore to a point inside that minute is not
+noticed. It works where `MEMHOUSE_HOME` outlives the restore: a server, or a container with a
+volume for it. Where the home is rebuilt with every start (a pod without a volume), nothing is
+remembered and the guard cannot notice: there the runbook must run `memhouse restore` after
+every `pg_restore`. A failover to a replica that lost the last events also trips the guard,
+which is the point: those events may include deletions. `[governance] restore_guard = false`
+turns it off.
+
+Embedding-cache rows of text deleted after the backup are removed with their records. Cached
+vectors and extractions whose record is not in the restored database at all (written and
+deleted after the backup) do not exist there either.
+
+## Row-level security
+
+`[database] row_level_security = true` adds a second line behind the service's own tenant and
+subject filters (TR-DB-03). At the next start the service enables and forces a policy on every
+table that holds memory content or what is derived from it (`mh_memory` and its partitions,
+`mh_structured`, `mh_code_ref`, `mh_link`, `mh_recall`, `mh_intake`, `mh_request_key`,
+`mh_enrich_job`; the two content-addressed caches are readable by the service alone):
+
+- a row is visible to a session whose settings name its tenant (`memhouse.tenant`) and, if the
+  session names one, its subject (`memhouse.subject`);
+- the service sets those settings itself. Recall, the reads of a record and of a list run on a
+  connection narrowed to the request's tenant and subject, and writes and deletions in a
+  transaction narrowed to the tenant, so a statement that lost its own filter still reads and
+  writes nothing else. The service's maintenance work (queues, retention across subjects,
+  migrations) runs in a *service scope* that only the role owning the tables can take;
+- a connection that did not come through the service has neither: it reads nothing.
 
 ```sql
--- 2. After restoring: load it and re-apply
-CREATE TEMP TABLE ledger (tenant text, subject text, memory_id uuid, scope text, at timestamptz);
-\copy ledger FROM 'ledger.csv' CSV
-
--- Single-memory deletions and retention purges, and the facts derived from them
-DELETE FROM mh_memory m USING ledger l
- WHERE l.scope IN ('memory', 'retention') AND m.tenant = l.tenant
-   AND (m.id = l.memory_id OR m.metadata->'source_ids' ? l.memory_id::text);
-
--- Subject erasures
-DELETE FROM mh_memory m USING ledger l
- WHERE l.scope = 'subject' AND m.tenant = l.tenant AND m.subject = l.subject;
-DELETE FROM mh_enrich_job j USING ledger l
- WHERE l.scope = 'subject' AND j.tenant = l.tenant AND j.subject = l.subject;
-
--- Carry the ledger forward so the next restore re-applies these too
-INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor)
-SELECT at, tenant, subject, memory_id, scope, 'restore' FROM ledger
-EXCEPT SELECT at, tenant, subject, memory_id, scope, 'restore' FROM mh_deletion_ledger;
+-- psql as the service's role: nothing until the session says what it is for
+SELECT count(*) FROM mh_memory;                                   -- 0
+SELECT set_config('memhouse.tenant', 'default', false);
+SELECT count(*) FROM mh_memory;                                   -- the tenant's records
+SELECT set_config('memhouse.scope', 'service', false);            -- the owner's role only
 ```
 
-Embedding-cache rows for the deleted text can't be matched once the text is gone. If an erasure
-fell inside the restored window, also clear `mh_embed_cache` and `mh_llm_cache`. Both are caches
-and rebuild on demand, at the cost of re-embedding. A built-in `memhouse restore --reapply-deletions`
-is planned (TR-WF-03).
+What to know before turning it on:
+
+- **A superuser, and a role with `BYPASSRLS`, are not bound by any policy.** The container
+  `memhouse up` starts uses the image's superuser, so there the policies bind other roles only.
+  For the second line to bind the service too, run it as an ordinary role that owns the tables
+  (`CREATE ROLE memhouse LOGIN PASSWORD …; CREATE DATABASE memhouse OWNER memhouse;`).
+  `memhouse evidence export` reports which it is (`isolation.json`).
+- **Your own SQL sessions change.** The queries in this guide and in
+  [governance.md](governance.md) return nothing until the session sets `memhouse.scope` (the
+  owner) or `memhouse.tenant`.
+- **It is a second line, not a boundary between roles.** A role that can connect can set the
+  tenant it asks for. To hold a reporting role to one tenant, give it a policy of its own.
+- Each narrowed statement costs one more round trip to set the session, and one when the
+  connection is released.
+- Turning the option off again leaves the policies in place; remove them with
+  `ALTER TABLE … DISABLE ROW LEVEL SECURITY` on the tables above.
+
+The governance check `rls_bypass` connects directly, as a role that does not own the tables,
+and finds no row without the settings, only the tenant's and the subject's with them, a
+refused write of another tenant's row, and no way into the service scope.
+
+## Monthly partitions for episodic memory
+
+`[database] episodic_partitions = true` converts the memory table, at the next start, into one
+partitioned by month for episodic memory (TR-DB-04). Retention then drops a month's partition
+instead of deleting its rows one by one: no dead rows, no vacuum of the largest part of the
+table.
+
+- **The conversion moves nothing.** The table as it is becomes the partition of rows without a
+  month (`mh_memory_rest`): every record written so far, and every record that is not episodic.
+  It takes an exclusive lock for one scan of the table; do it in a maintenance window on a
+  large database, with the service's other replicas stopped. It is not converted back.
+- Episodic records written from then on go to `mh_memory_e<YYYYMM>`, created when the first
+  record of a month arrives. Rounds from before the conversion stay in `mh_memory_rest` and are
+  purged row by row, as before.
+- **A partition is dropped whole** when every row in it is the tenant's, past the tenant's
+  retention, outside its scope rules and under no legal hold; the cascade of its rows (cached
+  vectors, derived facts, extraction jobs, structured forms, ledger rows) and the drop are one
+  transaction. A partition that holds anything else loses its due rows one by one.
+- **What changes.** A partitioned table has no single unique index on `id` and cannot be
+  referenced by a foreign key: uniqueness is per partition (ids are random UUIDs), and a
+  trigger removes a record's structured form, code references and links with it, as the
+  foreign keys did. `memhouse import` from a MemHouse older than this release cannot write to a
+  partitioned table (its `ON CONFLICT (id)` has no index to name): import with this release.
+- A recall reads every partition of the subject. While a month's partition holds only a few
+  hundred rows the planner may read it whole instead of by index; the statement's own filters
+  (and row-level security, if on) still apply.
+
+## SIEM export
+
+With `[siem]` set, `memhouse serve` sends every audit event to your SIEM, in order, within
+seconds of its being written (GOV-15: 99.9% within 60 seconds).
+
+```toml
+[siem]
+syslog = "tcp://siem.internal:6514"            # CEF in RFC 5424 syslog, one message per line
+otlp_endpoint = "http://otel-collector:4318"    # OTLP logs, posted to /v1/logs as JSON
+otlp_headers_env = { authorization = "SIEM_TOKEN" }
+```
+
+```text
+<110>1 2026-11-27T14:02:11.482913Z mh-1 memhouse 71 subject.erase - CEF:0|MemHouse|memhouse|2.0.0|subject.erase|subject.erase|5|rt=1795788131482 externalId=9120 suser=admin:dpo cs1Label=tenant cs1=default cs5Label=hash cs5=2ce28a… cs6Label=prevHash cs6=91f0c4… cs2Label=subject cs2=customer:acme cs4Label=detail cs4={"records":214}
+```
+
+- An event carries what the audit log holds: the action, the actor, the tenant, the subject and
+  record identifiers, the detail and the two hashes of the chain. Never memory content.
+- The exporter keeps a cursor per receiver in the database and moves it only once the receiver
+  has taken a batch: an event is delivered at least once, and a receiver that is down delays
+  its events without losing them (they are sent when it is back; the service logs the outage
+  once).
+- The export starts with the events written after it is first turned on.
+- With several replicas one holds a lease and exports; another takes over within a minute if
+  it stops.
+- Syslog over TCP and UDP is sent in the clear: send to a forwarder on the host or inside the
+  network (rsyslog, a collector) and let it speak TLS to the SIEM. The OTLP endpoint may be
+  `https://`.
+- The `audit.anchor` events ([audit anchors](governance.md#audit-log)) travel the same way, so
+  the SIEM holds the head hashes a later verification must reproduce.
+
+`memhouse evidence export` reports the cursors and the last pass (`siem-export.json`).
 
 ## Moving between profiles
 
@@ -832,9 +961,12 @@ like the memories themselves.
 
 | Task | How often | Command |
 |---|---|---|
-| Retention purge | hourly, done by `serve` automatically | `memhouse retention` to run it now |
-| Audit chain check | daily | `memhouse audit --verify` |
+| Retention purge, and deletions whose legal hold was released | hourly, done by `serve` automatically | `memhouse retention` to run it now |
+| Audit chain check | daily | `memhouse audit --verify`; against anchors kept elsewhere: `memhouse audit anchor --verify <file>` |
+| Anchor the audit head | hourly, by `serve`, with `[governance] audit_anchor_path` | `memhouse audit anchor --out <file>` |
 | Backups | daily, plus WAL | `pg_dump` / PITR |
+| Deletion ledger, beside the backups | daily, and before any restore | `memhouse backup <dir> --ledger-only` |
+| Evidence for an audit | when asked | `memhouse evidence export <dir> --suite-report <summary.json>` |
 | Vacuum | autovacuum is enough; after bulk erasures run `VACUUM (ANALYZE) mh_memory;` | |
 | Rotate API keys | when staff or clients change, and on a schedule | `memhouse key rotate <id> --grace 24h` prints the replacement; move the client; the old key stops at the end of the grace period. `memhouse key revoke <id>` ends a key at once (and its tokens within 5 s) |
 | Review principals | monthly | `memhouse principal list`, `memhouse key list`; `memhouse principal disable <id>` for leavers |

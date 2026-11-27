@@ -1543,7 +1543,13 @@ impl Engine {
         if let Some(id) = req.id {
             named.push((ForgetScope::Record, id.to_string()));
         }
-        for (scope, v) in [(ForgetScope::Subject, &req.subject), (ForgetScope::User, &req.user), (ForgetScope::Agent, &req.agent), (ForgetScope::Source, &req.source)] {
+        for (scope, v) in [
+            (ForgetScope::Subject, &req.subject),
+            (ForgetScope::User, &req.user),
+            (ForgetScope::Agent, &req.agent),
+            (ForgetScope::Source, &req.source),
+            (ForgetScope::Untrusted, &req.untrusted),
+        ] {
             if let Some(v) = v {
                 if v.trim().is_empty() {
                     return Err(error::invalid(format!("{} is empty", scope.as_str())));
@@ -1555,7 +1561,7 @@ impl Engine {
             named.push((ForgetScope::Tenant, tenant.clone()));
         }
         let [(scope, value)] = named.as_slice() else {
-            return Err(error::invalid("forget needs exactly one of id, subject, user, agent, source or all"));
+            return Err(error::invalid("forget needs exactly one of id, subject, user, agent, source, untrusted or all"));
         };
         let (scope, value) = (*scope, value.clone());
         if scope == ForgetScope::Tenant && req.confirm.as_deref() != Some(tenant.as_str()) {
@@ -1569,64 +1575,113 @@ impl Engine {
             ForgetScope::Subject => value.clone(),
             _ => String::new(),
         };
-        let deleted = match scope {
-            ForgetScope::Record => {
-                let id = req.id.expect("named");
-                let mem = self.get_record(&tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
-                key_subject = mem.subject;
-                if !req.dry_run && !self.forget(Some(tenant.clone()), id, Some(actor.clone())).await? {
-                    return Err(error::not_found(format!("memory {id} not found")));
-                }
-                1
+        if scope == ForgetScope::Record {
+            let id = req.id.expect("named");
+            self.settle_record(&tenant, id).await?;
+            let mem = self.get_record(&tenant, id).await?.ok_or_else(|| error::not_found(format!("memory {id} not found")))?;
+            key_subject = mem.subject;
+        }
+        let result = if req.dry_run {
+            let deleted = if scope == ForgetScope::Record { 1 } else { self.store.forget_count(&tenant, scope, &value).await? };
+            let held = self.store.held_count(&tenant, scope, &value).await?;
+            ForgetResult { scope, value, deleted, dry_run: true, held, deletion_id: None }
+        } else {
+            // The deletion workflow (TR-WF-01): the request is recorded with a sample of what it
+            // matches before anything is deleted, carried out, and closed with a certificate
+            // once nothing is left; what a legal hold keeps is deleted when the hold is released.
+            let mut d = crate::governance::DeletionRequest {
+                id: Uuid::new_v4(),
+                tenant: tenant.clone(),
+                scope,
+                value: value.clone(),
+                actor: actor.clone(),
+                requested_at: Utc::now(),
+                status: crate::governance::DeletionStatus::Running,
+                completed_at: None,
+                deleted: 0,
+                held: 0,
+                executions: 0,
+                canaries: self.store.canaries(&tenant, scope, &value, crate::governance::CANARIES).await?,
+                certificate: None,
+            };
+            self.store.deletion_put(&d).await?;
+            self.run_deletion(&mut d).await?;
+            if scope == ForgetScope::Record && d.deleted == 0 && d.held == 0 {
+                // Gone between the lookup and the deletion: nothing was asked of the workflow.
+                return Err(error::not_found(format!("memory {value} not found")));
             }
-            _ if req.dry_run => self.store.forget_count(&tenant, scope, &value).await?,
-            ForgetScope::Subject => self.forget_subject(Some(tenant.clone()), &value, Some(actor.clone())).await?,
+            ForgetResult { scope, value, deleted: d.deleted, dry_run: false, held: d.held, deletion_id: Some(d.id) }
+        };
+        let span = tracing::Span::current();
+        if scope == ForgetScope::Record {
+            span.record("memhouse.record_ids", result.value.as_str());
+        }
+        span.record(
+            "memhouse.status",
+            format!(
+                "{} {}: {} deleted{}",
+                scope.as_str(),
+                if req.dry_run { "dry run" } else { "forgotten" },
+                result.deleted,
+                if result.held > 0 { format!(", {} held", result.held) } else { String::new() }
+            )
+            .as_str(),
+        );
+        if !req.dry_run {
+            self.remember_key(&tenant, &key_subject, "forget", &req.request_key, &req, &result).await?;
+        }
+        Ok(result)
+    }
+
+    /// Carry out a `forget` once: delete everything the scope matches that no legal hold keeps
+    /// (GOV-09), with one audit event for the call. Idempotent: a second execution deletes what
+    /// the first could not. Returns the records deleted.
+    pub(crate) async fn execute_forget(&self, tenant: &str, scope: ForgetScope, value: &str, actor: &str) -> anyhow::Result<u64> {
+        Ok(match scope {
+            ForgetScope::Record => {
+                let id: Uuid = value.parse().map_err(|_| error::invalid(format!("{value:?} is not a record id")))?;
+                self.forget(Some(tenant.to_string()), id, Some(actor.to_string())).await? as u64
+            }
+            ForgetScope::Subject => self.forget_subject(Some(tenant.to_string()), value, Some(actor.to_string())).await?,
             ForgetScope::Tenant => {
-                let n = self.store.delete_tenant(&tenant, &actor).await?;
+                let n = self.store.delete_tenant(tenant, actor).await?;
                 self.working.clear();
                 self.grants.clear();
-                self.store.audit(&actor, "tenant.erase", &tenant, None, None, serde_json::json!({ "records": n })).await?;
+                self.store.audit(actor, "tenant.erase", tenant, None, None, serde_json::json!({ "records": n })).await?;
                 n
             }
-            ForgetScope::User | ForgetScope::Agent | ForgetScope::Source => {
+            ForgetScope::User | ForgetScope::Agent | ForgetScope::Source | ForgetScope::Untrusted => {
                 // Queued writes that match go first, so none lands after the erasure.
-                let queued = self.intake.discard(&tenant, scope, &value).await?;
+                let queued = self.intake.discard(tenant, scope, value).await?;
                 if queued > 0 {
-                    self.store.audit(&actor, "intake.discard", &tenant, None, None, serde_json::json!({ "by": scope.as_str(), "value": value, "proposals": queued })).await?;
+                    self.store.audit(actor, "intake.discard", tenant, None, None, serde_json::json!({ "by": scope.as_str(), "value": value, "proposals": queued })).await?;
                 }
-                let before = self.store.forget_count(&tenant, scope, &value).await?;
+                let before = self.store.forget_count(tenant, scope, value).await?;
                 // Each record goes with its full cascade (derived facts, cached vectors, jobs,
                 // ledger row). Facts derived from a match may match too and are then gone already.
                 for _ in 0..=before / 500 + 10 {
-                    let ids = self.store.forget_matches(&tenant, scope, &value, 500).await?;
+                    let ids = self.store.forget_matches(tenant, scope, value, 500).await?;
                     if ids.is_empty() {
                         break;
                     }
                     for id in ids {
-                        self.store.delete(&tenant, id, &actor).await?;
+                        self.store.delete(tenant, id, actor).await?;
                     }
                 }
                 self.working.clear();
                 if scope == ForgetScope::User {
                     // Explanations hold the user's queries.
-                    self.store.recalls_delete(&tenant, Some(&value), None).await?;
+                    self.store.recalls_delete(tenant, Some(value), None).await?;
                 }
-                let left = self.store.forget_count(&tenant, scope, &value).await?;
-                anyhow::ensure!(left == 0, "forget by {}: {left} records still match", scope.as_str());
-                self.store.audit(&actor, "memory.forget", &tenant, None, None, serde_json::json!({ "by": scope.as_str(), "value": value, "records": before })).await?;
-                before
+                // What still matches is what a legal hold keeps (GOV-09); anything else is a failure.
+                let left = self.store.forget_count(tenant, scope, value).await?;
+                let held = self.store.held_count(tenant, scope, value).await?;
+                anyhow::ensure!(left <= held, "forget by {}: {left} records still match ({held} of them under a legal hold)", scope.as_str());
+                let deleted = before.saturating_sub(left);
+                self.store.audit(actor, "memory.forget", tenant, None, None, serde_json::json!({ "by": scope.as_str(), "value": value, "records": deleted })).await?;
+                deleted
             }
-        };
-        let result = ForgetResult { scope, value, deleted, dry_run: req.dry_run };
-        let span = tracing::Span::current();
-        if scope == ForgetScope::Record {
-            span.record("memhouse.record_ids", result.value.as_str());
-        }
-        span.record("memhouse.status", format!("{} {}: {} deleted", scope.as_str(), if req.dry_run { "dry run" } else { "forgotten" }, deleted).as_str());
-        if !req.dry_run {
-            self.remember_key(&tenant, &key_subject, "forget", &req.request_key, &req, &result).await?;
-        }
-        Ok(result)
+        })
     }
 
     pub async fn forget_subject(&self, tenant: Option<String>, subject: &str, actor: Option<String>) -> anyhow::Result<u64> {
@@ -1821,42 +1876,11 @@ impl Engine {
         }
     }
 
-    /// Apply each type's retention (MEM-01): expire what is past its `expires_at` (working
-    /// memory, held candidates), then purge the types that have `retention_days`. Returns
+    /// Apply each type's retention (MEM-01, GOV-06): see [`Engine::retention_run`]. Returns
     /// records purged, or expired when nothing was purged.
     pub async fn apply_retention(&self) -> anyhow::Result<u64> {
-        let days = self.cfg.telemetry.explanation_retention_days;
-        if days > 0 {
-            self.store.recalls_delete(&self.cfg.memory.tenant, None, Some(days)).await?;
-        }
-        let expired = self.store.expire_due(&self.cfg.memory.tenant).await?;
-        if expired > 0 {
-            self.store.audit("system", "retention.expire", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": expired })).await?;
-        }
-        // Console sessions past their end or their idle limit (T3): no row outlives its use.
-        let idle = self.cfg.server.session_idle_secs;
-        let now = Utc::now();
-        let slack = crate::identity::session_touch_secs(idle);
-        self.store.sessions_purge(now, (idle > 0).then(|| now - chrono::Duration::seconds(idle as i64 + slack))).await?;
-        let policy = self.policy_for(&self.cfg.memory.tenant).await?;
-        let mut purged = 0;
-        for kind in MemoryKind::ALL {
-            let days = policy.of(kind).retention_days;
-            if days == 0 {
-                continue;
-            }
-            let n = self.store.purge_older_than(&self.cfg.memory.tenant, kind, days).await?;
-            if n > 0 {
-                self.store
-                    .audit("system", "retention.purge", &self.cfg.memory.tenant, None, None, serde_json::json!({ "records": n, "days": days, "kind": kind.as_str() }))
-                    .await?;
-            }
-            purged += n;
-        }
-        if expired + purged > 0 {
-            self.working.clear();
-        }
-        Ok(if purged > 0 { purged } else { expired })
+        let r = self.retention_run(Default::default()).await?;
+        Ok(if r.purged > 0 { r.purged } else { r.expired })
     }
 }
 

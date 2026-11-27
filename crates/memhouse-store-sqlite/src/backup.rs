@@ -20,7 +20,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 
 pub const MANIFEST_FORMAT: &str = "memhouse.backup";
 pub const MANIFEST_VERSION: u32 = 1;
@@ -28,27 +27,13 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const SNAPSHOT_FILE: &str = "memhouse.db";
 pub const LEDGER_FILE: &str = "deletion-ledger.jsonl";
 
-/// One row of the deletion ledger, as it is exported and re-applied.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LedgerEntry {
-    pub at: DateTime<Utc>,
-    pub tenant: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_id: Option<Uuid>,
-    /// `memory`, `retention`, `subject`, `subject-reset` or `tenant`.
-    pub scope: String,
-    pub actor: String,
-}
+pub use memhouse_core::governance::{LedgerEntry, Reapplied};
 
 /// What identifies a ledger row: the same deletion is applied once, whoever carries it.
 type LedgerKey = (i64, String, Option<String>, Option<String>, String);
 
-impl LedgerEntry {
-    fn key(&self) -> LedgerKey {
-        (us(self.at), self.tenant.clone(), self.subject.clone(), self.memory_id.map(|u| u.to_string()), self.scope.clone())
-    }
+fn key_of(e: &LedgerEntry) -> LedgerKey {
+    (us(e.at), e.tenant.clone(), e.subject.clone(), e.memory_id.map(|u| u.to_string()), e.scope.clone())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,19 +175,6 @@ pub fn read_ledger(path: &Path) -> anyhow::Result<Vec<LedgerEntry>> {
     Ok(entries)
 }
 
-/// What re-applying a ledger did.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Reapplied {
-    /// Rows given.
-    pub given: u64,
-    /// Rows the database already had: deletions made before its snapshot was taken.
-    pub known: u64,
-    /// Rows applied and added to the database's ledger.
-    pub applied: u64,
-    /// Records those rows removed, with what was derived from them.
-    pub records_removed: u64,
-}
-
 impl SqliteStore {
     /// Open a database file without changing it: for reading a snapshot whose checksum is recorded.
     pub fn open_read_only(path: &Path, passage_prefix: &str) -> anyhow::Result<SqliteStore> {
@@ -258,6 +230,12 @@ impl SqliteStore {
         self.reapply(entries, actor, None)
     }
 
+    /// `apply_ledger` on a database that was put in place by other means than `restore` (the
+    /// store's `ledger_apply`): the same transaction, closed with the `backup.restore` event.
+    pub(crate) fn apply_ledger_as_restore(&self, entries: &[LedgerEntry], actor: &str, tenant: &str, detail: serde_json::Value) -> anyhow::Result<Reapplied> {
+        self.reapply(entries, actor, Some((tenant, detail)))
+    }
+
     /// `apply_ledger`, closing with a `backup.restore` event for `restore` (tenant, detail) in the same transaction.
     fn reapply(&self, entries: &[LedgerEntry], actor: &str, restore: Option<(&str, serde_json::Value)>) -> anyhow::Result<Reapplied> {
         let mut c = self.conn();
@@ -273,7 +251,7 @@ impl SqliteStore {
         // Retention writes a row per record: one event per tenant says how many, not one each.
         let mut retention: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
         for e in ordered {
-            let key = e.key();
+            let key = key_of(e);
             if known.contains(&key) {
                 rep.known += 1;
                 continue;
@@ -286,7 +264,9 @@ impl SqliteStore {
                 "memory" | "retention" => {
                     let id = e.memory_id.ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a memory id", e.scope, e.at.to_rfc3339()))?;
                     // Retention keeps what was promoted from a purged record; a deletion does not.
-                    let removed = self.delete_in(&tx, &e.tenant, id, e.scope == "memory")?.map_or(0, |(_, n)| n);
+                    // Legal holds do not stop a replay: the ledger says what was deleted, and a
+                    // hold the snapshot brought back is no reason to bring the data back with it.
+                    let removed = self.delete_in(&tx, &e.tenant, id, e.scope == "memory", false)?.map_or(0, |(_, n)| n);
                     // The snapshot may hold the record still queued (the worker wrote it only
                     // after the backup, and it was deleted or purged after that): it leaves its
                     // proposal, or the restored queue would write it again.
@@ -298,7 +278,7 @@ impl SqliteStore {
                 }
                 "subject" => self.erase_subject(&tx, &e.tenant, &need(e.subject.as_deref(), "subject")?, true)?,
                 "subject-reset" => self.erase_subject(&tx, &e.tenant, &need(e.subject.as_deref(), "subject")?, false)?,
-                "tenant" => self.erase_tenant(&tx, &e.tenant, None)?,
+                "tenant" => self.erase_tenant(&tx, &e.tenant, None)?.0,
                 // Refused, not skipped: an unknown kind of deletion left out would be an erasure undone.
                 other => anyhow::bail!("unknown deletion-ledger scope {other:?} (row of {}); nothing was applied", e.at.to_rfc3339()),
             };
