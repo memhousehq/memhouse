@@ -31,8 +31,11 @@ trap 'rm -f "$SIGNERS"' EXIT
 git show "$MAIN:.github/release-signers" >"$SIGNERS" 2>/dev/null || fail "$MAIN has no .github/release-signers"
 grep -v '^[[:space:]]*#' "$SIGNERS" | grep -q '[^[:space:]]' || fail ".github/release-signers on $MAIN lists no key: add the maintainers' public signing keys (docs/release.md)"
 # Git picks the verifier from the signature itself: a tag signed another way (OpenPGP, X.509)
-# would be checked against whatever keys this machine trusts, not against the list.
-git cat-file tag "$TAG" | grep -x -e '-----BEGIN SSH SIGNATURE-----' >/dev/null || fail "$TAG is not signed with an SSH key (git config gpg.format ssh; docs/release.md)"
+# would be checked against whatever keys this machine trusts, not against the list. Git takes
+# the last line of the tag that starts a signature of any kind, so that line must be SSH's:
+# a marker written into the tag's message does not count.
+LAST=$(git cat-file tag "$TAG" | grep -E '^-----BEGIN (PGP SIGNATURE|PGP MESSAGE|SIGNED MESSAGE|SSH SIGNATURE)-----' | tail -n 1 || true)
+[ "$LAST" = '-----BEGIN SSH SIGNATURE-----' ] || fail "$TAG is not signed with an SSH key (git config gpg.format ssh; docs/release.md)"
 git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$SIGNERS" verify-tag "$TAG" || fail "$TAG is not signed by a key in .github/release-signers of $MAIN"
 
 COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")

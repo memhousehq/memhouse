@@ -68,6 +68,16 @@ git tag -a v1.2.3-pgp -m "pgp
 wsBcBAABCAAQBQJnxxxx
 -----END PGP SIGNATURE-----"
 refused v1.2.3-pgp "a tag signed with OpenPGP" "not signed with an SSH key"
+# An SSH marker in the message does not make an OpenPGP signature an SSH one.
+git tag -a v1.2.3-mixed -m "mixed
+-----BEGIN SSH SIGNATURE-----
+AAAA
+-----END SSH SIGNATURE-----
+-----BEGIN PGP SIGNATURE-----
+
+wsBcBAABCAAQBQJnxxxx
+-----END PGP SIGNATURE-----"
+refused v1.2.3-mixed "an OpenPGP signature behind an SSH marker in the message" "not signed with an SSH key"
 git tag -s v9.9.9 -m "9.9.9"
 refused v9.9.9 "a tag that names another version" "does not name the product version"
 

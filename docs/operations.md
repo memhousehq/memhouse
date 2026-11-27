@@ -177,6 +177,10 @@ services:
 volumes: { pgdata: {}, mhdata: {} }
 ```
 
+In this example the database is a container on the Compose project's own network and the
+connection to it is not encrypted. For a database on another host, use a URL with
+`sslmode=verify-full` ([TLS to the database](#tls-to-the-database)).
+
 On Kubernetes, use the [Helm chart](install.md#kubernetes-helm).
 
 ## Cloud with managed Postgres
