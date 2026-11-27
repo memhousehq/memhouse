@@ -527,7 +527,13 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             // restored and the second renamed.
             store.code_refs_observe(t, repo, &[FileState::present("src/u1.rs", "u1"), FileState::renamed("src/u2.rs", "src/u3.rs", "v1")], at, &memhouse_core::traits::no_audit).await?;
             let taken_after = revision(taken, vec![CodeRef::new("src/u1.rs", "u2"), CodeRef::new("src/u2.rs", "v1")], true).await?;
-            let judged = own_after == (vec![("src/s1.rs".to_string(), "s1".to_string(), true, Some("s2".to_string()))], true)
+            // Read by the reviser as `r1.rs`; then renamed and deleted before the revision is
+            // stored. The revision keeps the reference, stale: it is about a file that is gone.
+            let vanished = linked("The report generator caches its templates.", vec![CodeRef::new("src/r1.rs", "q1")]).await?;
+            store.code_refs_observe(t, repo, &[FileState::renamed("src/r1.rs", "src/r2.rs", "q1"), FileState::deleted("src/r2.rs")], at, &memhouse_core::traits::no_audit).await?;
+            let vanished_after = revision(vanished, vec![CodeRef::new("src/r1.rs", "q1")], true).await?;
+            let kept_gone = vanished_after == (vec![("src/r2.rs".to_string(), "q1".to_string(), true, None)], true);
+            let judged = kept_gone && own_after == (vec![("src/s1.rs".to_string(), "s1".to_string(), true, Some("s2".to_string()))], true)
                 // Taken from the predecessor: the renamed file is followed; the one restored
                 // since the reviser read it leaves the revision stale (written about `u2`).
                 && taken_after == (vec![("src/u1.rs".to_string(), "u2".to_string(), true, Some("u1".to_string())), ("src/u3.rs".to_string(), "v1".to_string(), false, None)], true);
@@ -552,7 +558,7 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
                     && judged,
                 || {
                     format!(
-                        "first observation {flagged:?}; stale since {since:?}; {elsewhere} change(s) for another tenant or subject; seen again {again:?} → {seen:?}; cleared {cleared:?}; after the rename {lexer_refs:?}; after the deletion {other_refs:?}; a second file of a stale record reported with its state before: {transitions} ({other_file:?}); renames b→c then a→b in one batch: {} → {chain_refs:?}; the observation's audit event written: {audited}; a stale reference merged away by a rename clears its record: {merged} ({dropped:?} → {merge_refs:?}); revisions judged when stored: own {own_after:?}, inherited {taken_after:?}",
+                        "first observation {flagged:?}; stale since {since:?}; {elsewhere} change(s) for another tenant or subject; seen again {again:?} → {seen:?}; cleared {cleared:?}; after the rename {lexer_refs:?}; after the deletion {other_refs:?}; a second file of a stale record reported with its state before: {transitions} ({other_file:?}); renames b→c then a→b in one batch: {} → {chain_refs:?}; the observation's audit event written: {audited}; a stale reference merged away by a rename clears its record: {merged} ({dropped:?} → {merge_refs:?}); revisions judged when stored: own {own_after:?}, inherited {taken_after:?}, renamed then deleted {vanished_after:?}",
                         renamed_chain.as_ref().map(|c| c.len().to_string()).unwrap_or_else(|e| format!("{e:#}"))
                     )
                 },
@@ -681,11 +687,21 @@ pub async fn run_store_kit(store: Arc<dyn Store>) -> Report {
             let superseded = store.code_refs_revalidate(t, old, None, &memhouse_core::traits::no_revalidation_audit).await;
             let not_current = superseded.as_ref().is_err_and(|e| memhouse_core::error::code_of(e) == memhouse_core::error::ErrorCode::Conflict)
                 && store.representations(t, old).await?.1.iter().all(|c| c.blob_hash == "m1" && c.stale_since.is_some());
+            // Checked by a caller, then reported deleted, then confirmed with the hash checked:
+            // the reference takes the hash and stays stale, until the file is seen with it.
+            let removed = linked("The exporter writes one file per tenant.", vec![CodeRef::new("src/export.rs", "e1")]).await?;
+            store.code_refs_observe(t, repo, &[FileState::present("src/export.rs", "e2")], at, &memhouse_core::traits::no_audit).await?;
+            store.code_refs_observe(t, repo, &[FileState::deleted("src/export.rs")], at, &memhouse_core::traits::no_audit).await?;
+            let after_deletion = store.code_refs_revalidate(t, removed, Some(&[CodeRef::new("src/export.rs", "e2")]), &memhouse_core::traits::no_revalidation_audit).await?.unwrap_or_default();
+            let still_gone = after_deletion.iter().all(|c| c.blob_hash == "e2" && c.stale_since.is_some() && c.seen_hash.is_none()) && stale_of(removed).await?.is_some();
+            store.code_refs_observe(t, repo, &[FileState::present("src/export.rs", "e2")], at, &memhouse_core::traits::no_audit).await?;
+            let back_again = stale_of(removed).await?.is_none();
+            let deleted_kept = still_gone && back_again;
             let unknown = store.code_refs_revalidate(t, Uuid::now_v7(), None, &memhouse_core::traits::no_revalidation_audit).await?.is_none() && store.code_refs_revalidate("kit-someone-else", id, None, &memhouse_core::traits::no_revalidation_audit).await?.is_none();
             let foreign = store.code_refs_revalidate(t, id, Some(&[CodeRef::new("src/absent.rs", "x")]), &memhouse_core::traits::no_revalidation_audit).await.is_err();
-            Ok(unless(read && exported && imported && hashes(&part) == expected_part && still && kept && refused && not_current && hashes(&all) == expected_all && done && unknown && foreign, || {
+            Ok(unless(read && exported && imported && hashes(&part) == expected_part && still && kept && refused && not_current && deleted_kept && hashes(&all) == expected_all && done && unknown && foreign, || {
                 format!(
-                    "read by path: {read}; exported with marks: {exported}; imported with marks: {imported}; after one reference {:?} (still stale: {still}); a hash seen after the confirmed one kept the reference stale: {kept} ({late:?}); a hash for content seen before the file went back refused: {refused}; a superseded record refused: {not_current}; after the rest {:?} (fresh: {done}); unknown record answered none: {unknown}; a path that is no reference refused: {foreign}",
+                    "read by path: {read}; exported with marks: {exported}; imported with marks: {imported}; after one reference {:?} (still stale: {still}); a hash seen after the confirmed one kept the reference stale: {kept} ({late:?}); a hash for content seen before the file went back refused: {refused}; a superseded record refused: {not_current}; a hash confirmed after a deletion stays stale until the file is seen again: {deleted_kept} ({after_deletion:?}); after the rest {:?} (fresh: {done}); unknown record answered none: {unknown}; a path that is no reference refused: {foreign}",
                     hashes(&part),
                     hashes(&all)
                 )

@@ -2130,11 +2130,6 @@ round's commit, each checked against the code; what changed:
 **Review fixes, third round (2026-11-27, pull request 39):** the findings on the second
 round's commit; what changed:
 
-**Review fixes, fourth round (2026-11-27):** labels are compared as sets, so a repeat that
-names a label twice still counts on its held record. Declined: keeping a `matcher` or
-`timeout` the user changed on a hook group the installer owns; a reinstall writes its own
-values, which the guide now says.
-
 - **A held record is matched by a write with its own labels** (GOV-02). The lookup of held
   signals, corrections and plans (`Held.labels`, in both stores, before the limit), the
   pipeline's comparison and the update that counts, confirms or commits the record all
@@ -2164,6 +2159,19 @@ values, which the guide now says.
 - **Not changed:** a revision that names its own hash or path its predecessor never saw is
   still taken as stated ([coding.md](coding.md#limits)); the order of a late commit report.
 - Governance: 79 checks, store kit 19; new cases are scenarios of the existing checks.
+
+**Review fixes, fourth round (2026-11-27):** labels are compared as sets, so a repeat that
+names a label twice still counts on its held record. Declined: keeping a `matcher` or
+`timeout` the user changed on a hook group the installer owns; a reinstall writes its own
+values, which the guide now says. Two more cases of a file reported between a read and a
+write: a revision without `code_refs` whose file was renamed and then deleted before the
+revision was stored keeps the reference, stale (it was dropped, so the revision started
+fresh and nothing could flag it); and a hash given to revalidate a file last reported
+deleted is taken but leaves the reference stale until the file is reported with that
+content (it was cleared). Unit tests and store-kit cases for both; 19 kit checks, 79
+governance checks. The schema-10 path backfill now logs, as a warning, how many stored
+paths it could not put in canonical form (a path with `..`); [schema.md](schema.md) says
+what that means and how to fix them.
 
 #### G20 — Memory browser v2 and admin console
 

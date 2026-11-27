@@ -143,8 +143,10 @@ content or you confirm what was seen. For a reference that is **not stale**, a h
 than the stored one is refused (`409`): the file was last known with the stored content, for
 instance after it changed and changed back, and nothing says it is as you checked it. Report
 the file first (a file hook, or `POST /v1/code/changed`), then revalidate. A memory
-about a **deleted** file has nothing to be checked against: revalidation answers `400`, and the
-memory is revised with the file it is about now, or forgotten. Revalidation needs
+about a **deleted** file has nothing to be checked against: revalidation without `code_refs`
+answers `400`, and the memory is revised with the file it is about now, or forgotten. A hash
+passed for a file last reported deleted is taken, but the reference stays stale until the
+file is reported again with that content: the hash may be of the file before it was deleted. Revalidation needs
 `memory:write` and sight of the memory, and is audited as `memory.revalidate` with the old and
 new hash.
 

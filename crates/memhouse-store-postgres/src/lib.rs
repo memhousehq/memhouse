@@ -1144,6 +1144,14 @@ impl PgStore {
         if !moves.is_empty() {
             tracing::info!(rows = moves.len(), "schema upgrade: code reference paths put in canonical form");
         }
+        // The count only: a path may say more about a repository than a log should hold.
+        let skipped = memhouse_core::staleness::uncanonical_paths(&rows);
+        if skipped > 0 {
+            tracing::warn!(
+                rows = skipped,
+                "schema upgrade: code references whose path has no canonical form (it leaves the repository with `..`, or is too long) were left as stored; they match no file report (docs/schema.md)"
+            );
+        }
         Ok(())
     }
 

@@ -55,6 +55,14 @@ fn add_staleness(c: &Connection) -> anyhow::Result<()> {
             None => exec(c, "DELETE FROM mh_code_ref WHERE memory_id = ?1 AND path = ?2", rusqlite::params![id.to_string(), from])?,
         };
     }
+    // The count only: a path may say more about a repository than a log should hold.
+    let skipped = memhouse_core::staleness::uncanonical_paths(&stored);
+    if skipped > 0 {
+        tracing::warn!(
+            rows = skipped,
+            "schema upgrade: code references whose path has no canonical form (it leaves the repository with `..`, or is too long) were left as stored; they match no file report (docs/schema.md)"
+        );
+    }
     Ok(())
 }
 

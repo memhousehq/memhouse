@@ -171,7 +171,8 @@ pub fn inherited_refs(predecessor: &[CodeRef]) -> Vec<CodeRef> {
 ///   was written about content the file no longer has. A file renamed since, with the content
 ///   the reviser read, is followed. Where what the reviser read cannot be told (the path
 ///   changed and the content with it), the reference keeps the predecessor's hash and starts
-///   stale. A reference to a file that was already deleted when the reviser read is dropped.
+///   stale. A file renamed and then deleted since is kept, stale. A reference to a file that
+///   was already deleted when the reviser read is dropped.
 /// - Otherwise the revision's own references. One whose file was seen, on the predecessor,
 ///   with another hash than the revision names (or deleted) starts stale. A hash the
 ///   predecessor never saw is the writer's statement and is taken as fresh.
@@ -197,21 +198,32 @@ pub fn successor_refs(own: &[CodeRef], inherited: bool, predecessor: &[CodeRef],
     };
     // References the reviser read whose path the predecessor no longer has: renamed since.
     let mut moved: Vec<&CodeRef> = own.iter().filter(|c| !predecessor.iter().any(|p| p.path == c.path)).collect();
-    predecessor
+    let mut out: Vec<Option<CodeRef>> = predecessor
         .iter()
-        .filter_map(|p| {
+        .map(|p| {
             let now = known(p);
             if let Some(read) = own.iter().find(|c| c.path == p.path) {
                 return Some(if now.as_deref() == Some(read.blob_hash.as_str()) { read.as_written() } else { stale(&p.path, &read.blob_hash, p) });
             }
-            // Not among what the reviser read. Deleted before that: dropped then, and now.
+            // Not among what the reviser read; a deleted one is settled below.
             let now = now?;
             Some(match moved.iter().position(|c| c.blob_hash == now) {
                 Some(i) => CodeRef::new(p.path.clone(), moved.remove(i).blob_hash.clone()),
                 None => stale(&p.path, &p.blob_hash, p),
             })
         })
-        .collect()
+        .collect();
+    // A deleted file at a path the reviser did not read. Deleted before the reviser read:
+    // not carried over then, and dropped now. Renamed and then deleted since: the reviser
+    // read it under its old path, which is then still unaccounted for, and the revision
+    // keeps the reference, stale, so that it is not recalled as if nothing had happened.
+    // Where both happened, the files deleted last are the ones the reviser still read.
+    let mut gone: Vec<usize> = (0..predecessor.len()).filter(|i| out[*i].is_none() && !own.iter().any(|c| c.path == predecessor[*i].path)).collect();
+    gone.sort_by_key(|i| std::cmp::Reverse(predecessor[*i].stale_since));
+    for i in gone.into_iter().take(moved.len()) {
+        out[i] = Some(stale(&predecessor[i].path, &moved.remove(0).blob_hash, &predecessor[i]));
+    }
+    out.into_iter().flatten().collect()
 }
 
 /// References as they are after file states are applied to them, in order, for an answer
@@ -244,13 +256,20 @@ pub fn canonical_paths(rows: &[(Uuid, String)]) -> Vec<(Uuid, String, Option<Str
         .collect()
 }
 
+/// How many stored paths have no canonical form ([`canonical_paths`] leaves them as they
+/// are): one that leaves the repository (`..`), an empty one, or one that is too long. Such a
+/// reference never matches a report of a file, so an upgrade says how many there are.
+pub fn uncanonical_paths(rows: &[(Uuid, String)]) -> usize {
+    rows.iter().filter(|(_, p)| normalize_path(p).is_none_or(|n| n.len() > MAX_PATH_LEN)).count()
+}
+
 /// What a revalidation writes (see `Store::code_refs_revalidate`): with `given`, each named
 /// reference takes the given hash; without, every stale reference takes the hash its file was
 /// last seen with (one to a deleted file has none and stays stale). Returns the references
 /// that change, as they are afterwards.
 ///
 /// A given hash confirms the memory against that content only. Where the file was since seen
-/// with another one (`stored` is read in the transaction that writes), the reference takes
+/// with another one, or deleted (`stored` is read in the transaction that writes), the reference takes
 /// the given hash and stays stale, with the hash seen: the confirmation must not hide a
 /// change it did not look at. It stops being stale when the file is seen with the confirmed
 /// content, or is confirmed against what was seen. For the same reason a given hash other
@@ -280,7 +299,9 @@ pub fn revalidated(stored: &[CodeRef], given: Option<&[CodeRef]>) -> anyhow::Res
                     ))
                 );
                 let mut now = g.as_written();
-                if let Some(s) = stored.iter().find(|s| s.path == g.path && s.stale_since.is_some() && s.seen_hash.as_ref().is_some_and(|h| *h != g.blob_hash)) {
+                // Also after a deletion (no hash seen): the last report says the file is gone,
+                // and the confirmation may be of the file before that.
+                if let Some(s) = stored.iter().find(|s| s.path == g.path && s.stale_since.is_some() && s.seen_hash.as_deref() != Some(g.blob_hash.as_str())) {
                     (now.stale_since, now.seen_hash) = (s.stale_since, s.seen_hash.clone());
                 }
                 Ok(now)
@@ -733,7 +754,9 @@ mod tests {
         gone.stale_since = Some(at());
         let stored = vec![stale, gone, CodeRef::new("c.rs", "h1")];
         assert_eq!(revalidated(&stored, None).unwrap(), vec![CodeRef::new("a.rs", "h2")]);
-        assert_eq!(revalidated(&stored, Some(&[CodeRef::new("b.rs", "h5")])).unwrap(), vec![CodeRef::new("b.rs", "h5")]);
+        // A hash for a file last reported deleted: taken, and stale until the file is seen again.
+        let deleted = revalidated(&stored, Some(&[CodeRef::new("b.rs", "h5")])).unwrap();
+        assert_eq!((deleted[0].blob_hash.as_str(), deleted[0].stale_since, deleted[0].seen_hash.as_deref()), ("h5", Some(at()), None));
         assert!(revalidated(&stored, Some(&[CodeRef::new("zzz.rs", "h5")])).is_err());
         // A reference that is not stale: its own hash changes nothing, another is refused (the
         // file was seen at `h9` and back at `h1`, and a caller that checked `h9` confirms late).
@@ -776,6 +799,17 @@ mod tests {
         (moved.stale_since, moved.seen_hash) = (Some(later), Some("h9".into()));
         let unknown = successor_refs(&[CodeRef::new("c.rs", "h1")], true, &[moved], later);
         assert_eq!((unknown[0].path.as_str(), unknown[0].blob_hash.as_str(), unknown[0].stale_since, unknown[0].seen_hash.as_deref()), ("new/c.rs", "h1", Some(later), Some("h9")));
+        // Renamed and then deleted in between: the reviser read it as `c.rs`, so the reference
+        // is kept, stale, at the path it was deleted under. One that was deleted before the
+        // reviser read (`b.rs`, not among what was read) is still dropped.
+        let mut renamed_gone = CodeRef::new("moved/c.rs", "h1");
+        renamed_gone.stale_since = Some(later);
+        let mut b_gone = CodeRef::new("b.rs", "h1");
+        b_gone.stale_since = Some(at());
+        let kept = successor_refs(&[CodeRef::new("c.rs", "h1")], true, &[b_gone.clone(), renamed_gone], later);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!((kept[0].path.as_str(), kept[0].blob_hash.as_str(), kept[0].stale_since, kept[0].seen_hash.as_deref()), ("moved/c.rs", "h1", Some(later), None));
+        assert!(successor_refs(&[], true, &[b_gone], later).is_empty());
         // Its own: the hash last seen is fresh, another one is stale as the predecessor was,
         // and a path or a hash the predecessor never saw is the writer's statement.
         let own = successor_refs(&[CodeRef::new("a.rs", "h2"), CodeRef::new("new.rs", "n1")], false, &predecessor, later);
@@ -810,6 +844,9 @@ mod tests {
                 (n, "./src/a.rs".to_string(), Some("src/a.rs".to_string())),
             ]
         );
+        // Counted, since nothing can be done with them: the path that leaves the repository.
+        assert_eq!(uncanonical_paths(&rows), 1);
+        assert_eq!(uncanonical_paths(&rows[..2]), 0);
     }
 
     #[test]

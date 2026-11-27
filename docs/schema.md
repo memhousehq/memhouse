@@ -20,6 +20,14 @@ On Postgres a trigger on `mh_code_ref` keeps new rows in that form too, so a ver
 process still running during a rolling upgrade cannot store another spelling; a Lite file is
 opened by one build at a time, and an older build refuses a newer file.
 
+A stored path that has no such form is left as it is: one that leaves the repository
+(`../x`, `src/../a.rs`), or one over the length limit. Such a reference **matches no file
+report**, so its memory never goes stale. The upgrade logs a warning with their number (not
+the paths). To find them: `SELECT memory_id, path FROM mh_code_ref WHERE path = '..' OR path
+LIKE '../%' OR path LIKE '%/../%' OR path LIKE '%/..' OR length(path) > 1024` (with `\` for
+`/` as well, on rows a Windows client wrote). To fix one, revise the memory with `code_refs`
+that name the file by its path from the repository root.
+
 ## Entities
 
 ```mermaid

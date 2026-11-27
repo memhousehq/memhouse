@@ -862,7 +862,8 @@ Without `code_refs`, every stale reference takes the hash its file was last seen
 (`seen_hash`) and is no longer stale. With `code_refs`, those references take the given hashes
 (each `path` must be one the memory already references; to change the paths, revise it). A
 reference to a deleted file has no hash to take: `400`, and the memory is revised with new
-`code_refs`, or forgotten. Answers `{id, code_refs, stale}`. Explicit `code_refs` revalidate
+`code_refs`, or forgotten. A hash given for a file last reported deleted is taken, and the
+reference stays stale until the file is reported with that content. Answers `{id, code_refs, stale}`. Explicit `code_refs` revalidate
 only the references they name: `stale` is true while another reference is still stale, and
 the memory returns to default recall only when none is. The hash a file was last seen with is
 not necessarily the file as it is now: a client that checked the file itself passes the hash
