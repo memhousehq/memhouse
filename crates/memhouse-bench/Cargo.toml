@@ -1,8 +1,15 @@
 [package]
 name = "memhouse-bench"
+description = "Benchmark and validation for MemHouse: LongMemEval and LoCoMo runners, metrics, the governance suite and the benchmark guard"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 memhouse-core.workspace = true

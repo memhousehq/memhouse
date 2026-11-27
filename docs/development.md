@@ -69,12 +69,22 @@ replace the defaults without touching the engine.
 | `server/src/hook.rs`, `cli/src/hook.rs` | the harness hook adapters (`memhouse hook file-opened`, `file-edited`, `post-commit`) and their installers ([coding.md](coding.md)) |
 | `store-sqlite/src/*.rs` | the Lite profile's store: schema, FTS5 and the exact half-precision vector scan, the queues, migrations with a pre-upgrade copy, backup and restore ([lite.md](lite.md)) |
 | `conformance/src/*.rs` | the conformance kits, one per adapter type, and the profile suite with its ways in: REST, MCP, the command line, and a child process for the SDKs ([conformance.md](conformance.md)) |
+| `xtask/src/version.rs`, `site.rs` | the product version in lockstep (`cargo xtask version`), and the documentation site rendered from `docs/` (`cargo xtask site`) |
+| `Dockerfile`, `deploy/helm/memhouse`, `install.sh`, `packaging/`, `scripts/release/` | packaging and the release pipeline's scripts ([install.md](install.md), [release.md](release.md)) |
 | `xtask/src/sdk.rs`, `sdk/` | the SDK generator, and the Python and TypeScript SDKs it writes the low-level clients of ([sdk.md](sdk.md)); not Rust crates, so outside the workspace |
 | `core/src/lang.rs`, `langcheck.rs` | language packs: the format, validation, compilation to patterns, detection; a pack's labelled test set. The packs are in `languages/`, their test sets in `languages/tests/` |
 
 ## Build
 
-Requirements: Rust 1.85+, and Docker for `memhouse up` and the tests that need Postgres.
+Requirements: Rust 1.94+, and Docker for `memhouse up` and the tests that need Postgres.
+
+The checkout needs symbolic links: `crates/memhouse-core/languages`,
+`crates/memhouse-bench/languages` and `crates/memhouse-bench/memory-format` are links to the
+repository's `languages/` and `memory-format/` (each crate embeds those files, and a crate
+published to crates.io must hold what it embeds). Linux and macOS check them out as links. A
+checkout without them (`core.symlinks=false`, the default of Git for Windows) does not build:
+the two crates' build scripts stop with a message that says so. Windows is not a supported
+build platform yet; with Developer Mode, `git clone -c core.symlinks=true` gives the links.
 
 ```bash
 cargo build --release -p memhouse-cli          # → target/release/memhouse
@@ -107,6 +117,7 @@ cargo xtask ci
 |---|---|---|
 | fmt | `cargo fmt --all -- --check` (settings in `rustfmt.toml`) | — |
 | spdx headers | `cargo xtask spdx`: every source and doc file carries the licence its path requires | — |
+| versions | `cargo xtask version`: every place that states the product version agrees with `[workspace.package]` ([release guide](release.md#versioning)) | — |
 | secret scan | `cargo xtask secrets`: no credentials or credential files in the tree ([secrets.md](security/secrets.md)) | — |
 | generated SDKs | `cargo xtask sdk --check`: the generated clients in `sdk/` are what `api/openapi.json` gives ([the SDKs](#the-sdks)) | — |
 | dependency policy | `cargo deny check -D unmatched-wrapper`: permissive licences only, no known vulnerabilities, crates.io only, no bundled CA lists (`deny.toml`) | `cargo install cargo-deny --locked` |
@@ -123,15 +134,23 @@ known to be busy; `MEMHOUSE_CI_SKIP_LATENCY=1` does the same for the pre-push ho
 options). `scripts/ci.sh` is the same command.
 
 Hosted CI (`.github/workflows/ci.yml`) runs every step on each pull request except the benchmark
-guard, in three jobs:
+guard, in four jobs:
 
 | Job | Runs |
 |---|---|
 | `checks` | the DCO sign-off of every commit, `cargo xtask ci --skip-e2e --skip-guard`, and the secret scan of the whole history |
-| `end-to-end and governance suite` | `scripts/e2e.sh`, which includes the governance suite |
+| `end-to-end and governance suite` | `scripts/e2e.sh`, which includes the governance suite; then the README's quickstart in a clean container, with a ten-minute limit (`scripts/quickstart-test.sh`) |
 | `SDKs, embedded bindings and adapters` | builds and tests the embedded bindings (`bindings/python/test.sh`; `pnpm install --frozen-lockfile && pnpm build && pnpm test` in `bindings/node`), then `scripts/sdk-conformance.sh --embedded` ([below](#the-sdks)) |
+| `packaging checks` | shellcheck and actionlint, the Helm chart (`scripts/helm-check.sh`), `install.sh` against a made-up release (`scripts/install-test.sh`), the release tag verification (`scripts/release/verify-tag-test.sh`), and the documentation site (`cargo xtask site`) |
 
-The second and third start when `checks` has passed. None holds a secret or makes a paid call.
+The packaging scripts are run apart from `cargo xtask ci`, like the SDK tests: they need Docker
+or tools `cargo xtask ci` does not ask for. `scripts/release/tools.sh <dir> helm shellcheck
+actionlint syft cosign` installs those tools at the versions the pipeline pins, with checked
+downloads; `scripts/container-test.sh <image>` checks a built image, and
+`scripts/release-dry-run.sh` makes every release artefact this machine can
+([release guide](release.md#dry-run)).
+
+All but the first start when `checks` has passed. None holds a secret or makes a paid call.
 Benchmarks need the public datasets
 (LoCoMo is licensed for non-commercial use only) and, for paid tiers, an LLM key, so they run on a
 maintainer's machine, on demand, and their results are published with the commands that produced

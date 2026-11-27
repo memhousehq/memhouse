@@ -37,6 +37,7 @@ cargo xtask ci --skip-e2e      # without Docker
 cargo build --release -p memhouse-cli && ./target/release/memhouse bench guard   # the guard alone (tier 1, free)
 cargo xtask secrets --staged   # the secret scan the pre-commit hook runs
 cargo xtask links              # relative links and anchors in the docs
+cargo xtask version            # one product version everywhere (--set <x.y.z> writes it); docs/release.md
 ```
 
 - **Export `MEMHOUSE_HOME`** as above before any `memhouse` command, `cargo xtask ci` or

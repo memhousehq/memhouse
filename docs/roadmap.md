@@ -54,6 +54,13 @@ The code is a working **Standard-shaped** service: one Rust binary on Postgres +
   by policy version and the profile advisor; session login with a cookie script cannot read,
   a CSRF token, a Content-Security-Policy without inline script or style, and a CORS origin
   allow-list that is empty by default;
+- packaging and a release pipeline (G21, built, not yet run on GitHub and nothing published):
+  a non-root distroless container image, a Helm chart for a customer's own Postgres,
+  `install.sh`, a Homebrew formula template, crates.io metadata, one product version in
+  lockstep (`cargo xtask version`), a release workflow from a signed tag with Sigstore
+  signatures, provenance, SBOMs and OIDC publishing, a documentation site rendered from `docs/`
+  (`cargo xtask site`), and the README's quickstart run in a clean container against a
+  ten-minute limit;
 - local CI (`cargo xtask ci`) with a pre-push hook and the benchmark guard (`memhouse bench guard`, G01);
 - repository hygiene (G02): Apache-2.0 `LICENSE` and SPDX headers, DCO sign-off hook, `cargo-deny` policy, and a built-in secret scanner (pre-commit and CI);
 - API v1 over REST and MCP with an OpenAPI 3.1 document and a stability policy (G05); logical
@@ -212,7 +219,7 @@ no repository, public or private, ever holds a secret value.
 |---|---|---|---|
 | [`memhousehq/memhouse`](https://github.com/memhousehq/memhouse) (this repository) | Apache-2.0 code; docs CC BY 4.0 | all product code: crates, xtask, scripts and, as they arrive, SDKs, console, templates, evaluation harness and deploy charts; docs; benchmark baselines and result summaries; this roadmap | G09, as MemHouse 2.0.0. It replaces the Elixir implementation (0.x), archived with its history as [`memhousehq/archive-memhouse`](https://github.com/memhousehq/archive-memhouse) |
 | [`memhousehq/memory-format`](https://github.com/memhousehq/memory-format) | spec CC BY 4.0; schemas and vectors Apache-2.0 | the Memory Format specification and conformance vectors (RP-06) | G09, split from `memory-format/` with its history |
-| `homebrew-tap` | Apache-2.0 | formulae, updated by the release pipeline | G21 |
+| `homebrew-tap` | Apache-2.0 | formulae, taken from the formula each release generates ([packaging/homebrew](../packaging/homebrew/README.md)) | G21 |
 
 The project is run by its author as an individual ([GOVERNANCE.md](../GOVERNANCE.md)). Package
 registry names (crates.io, PyPI, npm) are reserved when there is something to publish there (G21).
@@ -2437,7 +2444,7 @@ one failure of the hosted checks; what changed:
 
 #### G21 — Packaging and release v1 (developer launch)
 
-- [ ] **Done**
+- [ ] **Done** (built 27 November 2026; waiting for the maintainer's one-time setup and a release dry run on GitHub from a signed tag)
 
 > `/goal Make MemHouse releasable: multi-arch non-root container images, a Helm chart, install script, Homebrew tap and crates.io, lockstep versioning with a changelog, a release pipeline from a signed tag that signs artefacts keylessly with checksums, SBOM and provenance and publishes through OIDC trusted publishing (no stored registry tokens), the homebrew-tap and website repositories, a docs site, and a scripted quickstart test that reaches first recall in under 10 minutes on a clean container. Log progress and results in docs/roadmap.md as its section 5 describes.`
 
@@ -2445,12 +2452,230 @@ one failure of the hosted checks; what changed:
   **SC-01**, **TR-OPS-03**, **PROF-05**, **DEP-08** (stateless service verified). Repository hygiene
   (licence, SPDX, DCO, secret scanning) is G02; hosted CI is G09.
 - **Deliverables:**
-  - [ ] release workflow with a `release` environment (required reviewer), OIDC publishing to crates.io, PyPI, npm and the container registry; Sigstore signing
-  - [ ] `Dockerfile`, `deploy/helm/memhouse`, `install.sh`, Homebrew formula
-  - [ ] docs site built from `docs/`
-  - [ ] package names reserved on the registries the release publishes to (crates.io `memhouse*`, PyPI, npm); trademark question revisited before the announcement (moved from G09)
+  - [ ] release workflow with a `release` environment (required reviewer), OIDC publishing to crates.io, PyPI, npm and the container registry; Sigstore signing — the workflow is written (`.github/workflows/release.yml`) and linted, and its scripts are tested locally; it has not run on GitHub. What remains is the maintainer's: a tag signing key in `.github/release-signers`, the `release` environment with its reviewer, the trusted publishers on crates.io, PyPI and npm, then a dry run ([release.md § One-time setup](release.md#one-time-setup))
+  - [ ] `Dockerfile`, `deploy/helm/memhouse`, `install.sh`, Homebrew formula — split into the four boxes below; open until the last two are closed
+    - [x] `Dockerfile`: built for `linux/arm64` and checked with `scripts/container-test.sh` (non-root, no shell, read-only root filesystem, Lite, two replicas on one Postgres)
+    - [x] `install.sh`: checksum and signature verified before anything is installed; tested against a made-up release (`scripts/install-test.sh`)
+    - [ ] `deploy/helm/memhouse`: written, linted, rendered and held to its schema (`scripts/helm-check.sh`); **not yet installed on a cluster**, which is DEP-05's test. Remains: an install on a clean cluster from [install.md](install.md#kubernetes-helm) alone, by the maintainer or a session with a cluster
+    - [ ] Homebrew formula: the template and its generator (`packaging/homebrew`, `scripts/release/homebrew.sh`); the tap repository, `brew audit` and `brew test` on the first real formula are the maintainer's
+  - [x] docs site built from `docs/` (`cargo xtask site`, built in hosted CI's `packaging checks` job and by the release; publishing it, on GitHub Pages or on the website, is in the one-time setup)
+  - [ ] package names reserved on the registries the release publishes to (crates.io `memhouse*`, PyPI, npm); trademark question revisited before the announcement (moved from G09) — the maintainer's, with the exact steps per registry in [release.md](release.md#one-time-setup). Nothing was reserved, registered or published by this session
+  - [x] added: one product version in lockstep, `cargo xtask version` (check, `--set`, `--tag`, `--notes`), a step of `cargo xtask ci`
+  - [x] added: crates.io packaging of the eight crates (metadata, the files a crate embeds reachable from inside it); `cargo package` builds each from its packed form
+  - [x] added: the quickstart test (`scripts/quickstart-test.sh`, PROF-05) and the README's quickstart it runs
+  - [x] added: the stateless-service check (DEP-08) in `scripts/container-test.sh`
+  - [x] added: `memhouse health`; `memhouse serve` stops on SIGTERM; two servers on one model cache no longer discard each other's download
+  - [x] added: SBOMs (CycloneDX, syft), checksums, the completeness check and the local dry run (`scripts/release/`, `scripts/release-dry-run.sh`)
+  - [x] added: the guides [install.md](install.md), [release.md](release.md) and [security/supply-chain.md](security/supply-chain.md)
 - **Done when:** a release dry run from a signed tag produces every artefact with SBOM and signatures; the quickstart test passes.
 - **Guard:** T3, plus T4 with the user's approval. **Depends on:** G20. **Milestone:** developer launch.
+
+**Progress (2026-11-27):** the in-repository part is built. The goal is **not done**: its
+"Done when" asks for a release dry run from a signed tag with signatures, and signatures come
+only from the workflow's identity on GitHub, where the workflow has not run.
+
+- **Container image (PK-02).** [`Dockerfile`](../Dockerfile): the binary on a distroless
+  Debian 13 base, user 65532, no shell, no package manager; writes only to `/data` and `/tmp`;
+  health check `memhouse health` (new command: asks the server's `/health`); OCI labels; base
+  images pinned by digest. One `Dockerfile` serves two builds: from source
+  (`docker build .`), and from prebuilt binaries (`BINARY_STAGE=prebuilt`), which is how the
+  release puts the archives' own binaries into a two-architecture image without compiling
+  again or emulating. The local embedding model is not in the image: it is fetched on the
+  first start into `/data/models`, at the revision and with the checksums pinned in the
+  binary (the image stays 158 MB and holds only this project's code and its linked
+  libraries; [install.md](install.md#without-access-to-the-model-hub) says how to start
+  without access to the hub). Built here for `linux/arm64` only.
+- **Stateless service (DEP-08).** `scripts/container-test.sh`, on the image with a read-only
+  root filesystem, all capabilities dropped and no new privileges: the image's user and the
+  running process are 65532 and there is no shell; Lite: `up --lite`, `serve`, `/health`, a
+  write and its recall, a clean exit on SIGTERM, the data there for the next container;
+  Standard: two replicas started at once on an empty Postgres, a memory written through one
+  recalled through the other, recall unchanged while one replica is gone, then every replica
+  **and** the model cache destroyed and recreated: both new replicas answer the recall with
+  the same ids and contents as before. Passed (32 s on the image built from source and again on the one built from the prebuilt binary; first start 7 to 8 s with the model download; SIGTERM exit in under a second).
+- **Two defects the image found.** `memhouse serve` handled only Ctrl-C; as the first
+  process of a container it ignored SIGTERM, so a pod would have been killed at the end of
+  its grace period. It now stops on SIGTERM too. And two replicas sharing a model cache
+  discarded each other's download: the partial file was named after the process id, which is
+  1 in every container. The file now also carries the time and is created exclusively
+  (unit test in `hub.rs`).
+- **Helm chart (DEP-05).** [`deploy/helm/memhouse`](../deploy/helm/memhouse): a Deployment
+  (two replicas, rolling, `maxUnavailable: 0`), Service, ServiceAccount without a token,
+  ConfigMap (MemHouse's configuration as a map rendered to TOML), optional Ingress,
+  PodDisruptionBudget and a `helm test` pod. The database URL comes only from an existing
+  Secret; `values.schema.json` refuses unknown values, a URL as a value, and a database URL or
+  API keys inside `config`. Pod and container security contexts: non-root 65532, `RuntimeDefault`
+  seccomp, read-only root filesystem, no privilege escalation, all capabilities dropped.
+  `scripts/helm-check.sh` (helm 4.3.2): lint `--strict`, two renders held to those properties,
+  six kinds of values the schema must refuse. **Not installed on a cluster**: DEP-05's own
+  test is still to do.
+- **Install script (PK-03).** [`install.sh`](../install.sh), POSIX sh: picks the archive for
+  the machine, verifies the Sigstore signature of `SHA256SUMS` when cosign is installed
+  (`--require-signature` makes that mandatory), verifies the archive's SHA-256, and only then
+  unpacks and installs to `~/.local/bin`; `--version`, `--dir`, `--dry-run`; refuses musl and
+  a glibc older than 2.39; never runs `sudo` and executes nothing it downloaded.
+  `scripts/install-test.sh` runs it against a made-up release on a loopback web server under
+  sh, dash and bash: latest and named releases install; a changed archive, an unlisted one, a
+  path that climbs out, a failed signature check and a missing cosign with
+  `--require-signature` each install nothing. shellcheck 0.11.0 is clean on it and on every
+  new script.
+- **Platforms.** Release binaries: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+  `aarch64-apple-darwin`. Linux binaries need glibc 2.39 and the C++ runtime of GCC 13
+  (measured on the binary built here: `GLIBC_2.39`, `CXXABI_1.3.15`): the prebuilt ONNX
+  Runtime does not link on Debian 12, so the image is on Debian 13 and the release builds on
+  Ubuntu 24.04 runners and fails a binary that asks for more. No Intel Mac binary (ONNX
+  Runtime has no prebuilt for it), no Windows, no musl: the container image covers older
+  Linux.
+- **Homebrew.** [`packaging/homebrew`](../packaging/homebrew/README.md): a formula template
+  filled from the release's `SHA256SUMS`, attached to the release as `memhouse.rb`. A formula,
+  not a cask: the macOS binary is not notarised and a formula's download is not quarantined.
+  The release workflow does not push to the tap (that would need a stored token for another
+  repository): the tap takes the formula from the release. `ruby -c` accepts a generated
+  formula; nothing was installed through Homebrew.
+- **crates.io (PK-05).** All eight crates are published, because `cargo install
+  memhouse-cli` needs each: `memhouse-core`, then `memhouse-store-postgres`,
+  `memhouse-store-sqlite`, `memhouse-models` and `memhouse-conformance`, then
+  `memhouse-server`, `memhouse-bench`, `memhouse-cli`. Manifests carry description,
+  repository, readme, keywords and categories. The language packs and the Memory Format
+  vectors that `memhouse-core` and `memhouse-bench` embed lived outside their crates, which a
+  packed crate cannot reach: each crate now has a symbolic link to them (and to `LICENSE`),
+  which `cargo package` follows. `cargo package --workspace` packs the eight and builds each from its packed form against the others' packages: passed (the largest, `memhouse-bench`, is 454 KiB compressed).
+- **One version (RL-01).** `[workspace.package] version` is the product version;
+  `cargo xtask version` checks the workspace's internal dependency versions, `Cargo.lock`, both
+  SDK manifests, the Python SDK's `__version__` and lock file, the Node binding's manifest and
+  the chart's `version` and `appVersion`, and that the changelog has a section; `--set` writes
+  them (pre-releases in Python's spelling where Python reads them), `--tag` holds a tag to
+  it, `--notes` prints the release notes. A new step of `cargo xtask ci` and so of hosted CI.
+  The OpenAPI document's `info.version` is the API's own version (1.10.0) and is left alone:
+  there is no product version in it to keep in step.
+- **Release workflow (RL-02, RL-03, SC-01, TR-OPS-03).**
+  [`release.yml`](../.github/workflows/release.yml), thirteen jobs ([release.md](release.md#the-pipeline-job-by-job)):
+  `verify` (the tag is annotated, signed by an SSH key listed in `.github/release-signers`
+  *on main*, its commit is on main, it names the version; `cargo deny check`), `binaries`
+  and `bindings` on each target, `packages`, `image`, `assemble` (SBOMs, formula,
+  `SHA256SUMS`, and `scripts/release/complete.sh`: nothing missing), `sign` (cosign keyless
+  on `SHA256SUMS` and the archives, `actions/attest` for provenance over every artefact and
+  for the SBOM, then it verifies its own signatures), and the publishing jobs, each in the
+  `release` environment and none in a dry run: `publish-oci` (image and chart to the registry
+  with the workflow's token, signed by digest), `publish-crates` (the OIDC token exchanged at
+  crates.io for a token of the job, revoked at its end), `publish-pypi` (`uv publish`),
+  `publish-npm`, `publish-github` (last, so `releases/latest` never points at half a
+  release), `publish-site`. Workflow permissions are none by default and stated per job; no
+  secret is read except the workflow's own token; only GitHub's actions and the two allowed
+  ones are used, pinned by SHA; cosign, syft, helm, shellcheck and actionlint come from
+  `scripts/release/tools.sh` at fixed versions with recorded SHA-256 checksums. actionlint
+  1.7.12 (with shellcheck on every `run`) is clean on both workflows. **It has not run on
+  GitHub**: the publishing jobs in particular are untested, and the first run needs the
+  one-time setup.
+- **Tag verification** is tested on a throwaway repository with keys made for the run
+  (`scripts/release/verify-tag-test.sh`): a listed key is accepted; a lightweight tag, an
+  unsigned one, an unlisted key, a tagged commit that adds its own key, a commit not on main,
+  another version, and an empty list are each refused.
+- **SBOM.** CycloneDX JSON by syft 1.57.2: one of the tagged commit's lock files
+  (`Cargo.lock`, the SDKs' `uv.lock` and `pnpm-lock.yaml`), one of the image.
+  The source SBOM of this tree lists 615 components (381 crates, 114 npm packages, 87 PyPI packages, 16 GitHub Actions; CycloneDX 1.7); the image's lists its 14 Debian packages and its files (the crates inside the binary are in the source SBOM).
+- **Documentation site.** `cargo xtask site` renders `docs/` to static HTML with a Markdown
+  crate pinned in `Cargo.lock` (pulldown-cmark, MIT; no generator to install): GitHub's
+  heading anchors, links between documents rewritten, links out of `docs/` pointed at the
+  repository at the release's tag, Mermaid diagrams left readable as text and rendered by a
+  script loaded only on pages that have one. It checks that every internal link of the output
+  leads to a page. Link checking of the sources stays with `cargo xtask links`. 40 pages.
+- **Quickstart (PROF-05).** The README has a quickstart between markers;
+  `scripts/quickstart-test.sh` takes those commands as written and runs them in a clean
+  container, with the release served by a web server on the container's loopback address
+  (the one substitution: the download host). From an empty Debian 13 container to the first
+  recall: **16 s**; Ubuntu 24.04: **13 s** (limit 600 s; a laptop on a fast connection, the
+  model download included). Hosted CI's end-to-end job runs it on every pull request.
+- **Hosted CI.** A fourth job, `packaging checks`: shellcheck, actionlint, the chart, the
+  install script, tag verification, the site.
+- **Governance.** No new check: the suite drives the engine through its API, and what this
+  goal adds is outside it (how the binary is packed, started and signed). Those properties
+  have scripted tests instead: `container-test.sh` (non-root, read-only, stateless),
+  `install-test.sh` (nothing unverified is installed), `verify-tag-test.sh` (no release
+  without a listed signature), `helm-check.sh` (no secret in values, the security context).
+  85 checks, as before.
+- **Guard.** T1 only: `MEMHOUSE_CI_SKIP_LATENCY=1 cargo xtask ci` passed in 587 s: every step, the end-to-end script with the governance suite on SQLite (82 of 82 applicable checks), and the guard with 85 of 85 governance checks and every quality metric at its baseline. Timings were reported and not gated, on a machine under load: LoCoMo search p50 was 14.8 ms against a limit of 14.0 and would have tripped; LongMemEval search p50 12.4 ms (limit 14.7), recall p95 49 and 51 ms. **T3 and T4 were not run**: both are paid, T4 needs the
+  user's approval each time, and they belong with the release itself
+  ([release.md](release.md#cut-a-release), step 2).
+- **Local dry run.** `scripts/release-dry-run.sh --linux-binary …` on macOS (Apple silicon) made 21 artefacts with a verified `SHA256SUMS`: the binary archives for `aarch64-apple-darwin` (23.8 MB) and `aarch64-unknown-linux-gnu` (27.7 MB, the binary built in the image's build stage), `install.sh`, the eight crates, the Python SDK's sdist and wheel, the binding's wheel (`macosx_11_0_arm64`, 18.5 MB), the two npm tarballs (the binding's with this platform's addon only), the chart, the site, the `linux/arm64` image as an OCI archive (39.9 MB) and the two SBOMs. Not made here: the `x86_64` Linux archive, the other platforms' wheels and addons, the Homebrew formula (it needs all three archives), and every signature and attestation.
+- **What differs from the plan.** The Homebrew tap and the website are not pushed to by the
+  pipeline (no stored token; `docs/security/secrets.md` is updated). The docs site is built,
+  and deployed only where GitHub Pages is turned on. PyPI's own attestations (PEP 740) are
+  not uploaded: the generator is a third-party action the repository does not allow; the
+  wheels are covered by the provenance attestation. No sdist of `memhouse-lite`. The npm
+  package of the Node binding holds the addons of all three platforms in one package rather
+  than one package per platform, which would be four names to set up on npm instead of one.
+- **To finish the goal** (all of it outside the repository, so the maintainer's):
+  the [one-time setup](release.md#one-time-setup); a dry run of the workflow from a signed
+  tag, which must end with `complete.sh --signed` passing; the chart installed on a cluster;
+  the first formula audited; T3, and T4 with approval. Then tick the open boxes, the goal and
+  the tracker.
+- **To decide:** whether third-party licence texts should be bundled in the archives and the
+  image (today: `LICENSE`, `NOTICE` and the SBOM's licence names); whether the macOS binary
+  should be notarised (needs an Apple Developer ID, a stored credential); whether dry runs on
+  GitHub should sign (they do: it is what rehearses the signing, and it leaves public log
+  entries).
+
+**Review fixes (2026-11-27):** the findings on the first commit, and one failure of the
+hosted checks; what changed:
+
+- **Hosted CI.** `packaging checks` failed in its first step: `scripts/release/tools.sh` moved
+  an unpacked tool onto its own name for actionlint and syft, which GNU `mv` refuses (the
+  macOS one does not, so it passed here). The move is skipped when there is nothing to move.
+- **A published version is never replaced.** The image job reads the registry before it
+  writes: a version tag that exists with the same digest is left alone, one with another
+  digest stops the job (a run that rebuilt the release would otherwise have moved it); the
+  same for the chart, by its chart file. `latest` and the minor tag move only forwards, read
+  from the published image's version label, and the job runs for one release at a time. The
+  GitHub release is made as a draft, completed file by file (a file with another digest stops
+  the job, none is deleted: `--clobber` is gone) and then published, so a draft an interrupted
+  attempt left is published too. [release.md](release.md#when-a-release-fails-part-way) says
+  what a retry is: the failed jobs of the same run, with its artefacts.
+- **The commit that was verified is the commit that is built.** `verify` compares the tag's
+  commit with the one checked out and every later job checks out that commit by its id. A
+  release tag must carry an SSH signature (a signature of another kind would have been
+  checked against the machine's own keys, not the list).
+- **Rust 1.94.** The workspace said 1.85; the locked sqlx 0.9 asks for 1.94 (ort for 1.92).
+  `rust-version` and the docs say 1.94. `clippy.toml` keeps suggesting for 1.85: at 1.94 it
+  asks for rewrites in the write gate, the migration and the Lite vector scan, which are not
+  this goal's to make.
+- **Symbolic links are part of the checkout's contract.** The links to `languages/` and
+  `memory-format/` inside `memhouse-core` and `memhouse-bench` need a checkout with symbolic
+  links; without them the two crates' build scripts stop with a message that says so
+  ([development.md](development.md#build)).
+- **Model downloads.** A download file not written to for an hour is removed by the next
+  download of that file, so a container restarting during a fetch no longer fills the cache;
+  a file another replica is writing is recent and stays (unit test). A download also holds
+  a lock on its file until it is checked and renamed, and only a file whose lock can be
+  taken is removed: one that stalled for longer than an hour but is alive is left (tested).
+- **Helm.** Whole numbers from a values file reached the configuration as floats
+  (`max_connections = 32.0`, which stops the server): the chart turns them back into
+  integers, and `helm-check.sh` renders a values file with numbers. Its hardening assertions
+  are made on the Deployment and on the test Pod separately.
+- **Scripts.** `quickstart-test.sh` stops the container at the deadline instead of waiting
+  for it; `container-test.sh` bounds every request; `checksums.sh` stops on a file it cannot
+  hash and leaves the old list; `complete.sh` holds each wheel to `SHA256SUMS`; `package.sh`
+  fixes the directory's mode and no longer hides a failed `tar` behind `gzip`; `sbom.sh`
+  counts the `components` array.
+- **xtask.** `version`: the source version is found by its table, not its line; `--set`
+  writes nothing unless every place was found; ASCII digits only; the message after a missing
+  changelog section says what to do. `site`: the output directory is cleared only when it is
+  empty, new or an earlier output (a marker file), and never when it is or holds the
+  repository or `docs/`; headings and their anchors are read once, as rendered, for the site
+  and for `cargo xtask links`, with GitHub's rule for repeated anchors. `spdx`: the Homebrew
+  template (`.rb.in`) is covered, and a header is added after a Dockerfile's parser
+  directives. A failed `git ls-files` is an error.
+- **Docs.** The connection to Postgres is verified only with `sslmode=verify-full` (the
+  default accepts any certificate and may fall back to plaintext):
+  [operations.md](operations.md#tls-to-the-database), and the examples use it. The checksum
+  command checks the archive's own line; image provenance is verified by the digest cosign
+  verified. The CI table in development.md is one table again.
+- **Checked:** the xtask unit tests (20), the model hub's (8), `helm-check.sh`,
+  `install-test.sh`, `verify-tag-test.sh`, `container-test.sh`, `quickstart-test.sh` (12 s,
+  and stopped at a 3 s limit), shellcheck, actionlint, then `cargo xtask ci --skip-e2e
+  --skip-guard`. The release workflow has still not run on GitHub: the new registry and
+  release steps are, like the rest of the publishing jobs, untested. Governance: 85 checks,
+  as before.
 
 ### Stage E — Governance, connectors and templates
 

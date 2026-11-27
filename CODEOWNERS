@@ -15,3 +15,8 @@
 /LICENSE                                 @aleksei-s-popov
 /api/baseline/                           @aleksei-s-popov
 
+/install.sh                              @aleksei-s-popov
+/Dockerfile                              @aleksei-s-popov
+/scripts/release/                        @aleksei-s-popov
+/deploy/                                 @aleksei-s-popov
+/packaging/                              @aleksei-s-popov

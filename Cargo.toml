@@ -7,7 +7,12 @@ version = "2.0.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/memhousehq/memhouse"
-rust-version = "1.85"
+homepage = "https://github.com/memhousehq/memhouse"
+readme = "README.md"
+keywords = ["memory", "agents", "llm", "governance", "mcp"]
+categories = ["database", "web-programming::http-server"]
+# The lowest any locked dependency accepts: sqlx 0.9 asks for 1.94 (ort 2.0.0-rc.15 for 1.92).
+rust-version = "1.94"
 
 [workspace.dependencies]
 memhouse-core = { path = "crates/memhouse-core", version = "2.0.0" }

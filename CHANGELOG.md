@@ -173,3 +173,28 @@ path from 0.x data other than export and import.
 - `memhouse bench`: LongMemEval, LoCoMo, LLM-judged QA with cost caps, and the governance suite.
 - The CLI stops quietly, with status 141, when the program reading its output exits early
   (`memhouse recall ... | head`).
+- Packaging and release (not yet published; the first release will be made by this pipeline):
+  a container image that runs as an unprivileged user on a distroless base with no shell, a
+  read-only root filesystem and its own health check; a Helm chart (`deploy/helm/memhouse`) for
+  your own Postgres, which takes the database URL only from an existing Secret; `install.sh`,
+  which installs a release binary only after its checksum, and with cosign its signature, has
+  been verified; a Homebrew formula generated from the release's checksums; crates.io metadata
+  for the eight crates; one product version in lockstep across crates, SDKs, bindings and
+  chart (`cargo xtask version`); a release workflow that starts from a signed tag, signs
+  keylessly with Sigstore, attests build provenance and a CycloneDX SBOM, and publishes
+  through OIDC trusted publishing with no stored token; a documentation site built from
+  `docs/` (`cargo xtask site`). See [docs/install.md](docs/install.md),
+  [docs/release.md](docs/release.md) and
+  [docs/security/supply-chain.md](docs/security/supply-chain.md).
+- Release binaries for Linux need glibc 2.39 and the C++ runtime of GCC 13 (Ubuntu 24.04,
+  Debian 13): the prebuilt ONNX Runtime sets that floor. Older systems use the container image.
+- `memhouse serve` shuts down gracefully on SIGTERM as well as on Ctrl-C: as the first process
+  of a container it used to ignore SIGTERM and was killed at the end of the grace period.
+- `memhouse health` asks a running server's `/health` and exits non-zero when there is no
+  answer (the container image's health check).
+- Two servers that share one model cache no longer discard each other's model download: the
+  file a download is written to was named after the process id, which is 1 in every container.
+- The minimum Rust version is 1.94 (the workspace said 1.85, which its own dependencies do not
+  accept). A checkout needs symbolic links to build.
+- The Helm chart writes whole numbers of a values file as integers, and documents
+  `sslmode=verify-full`: without an `sslmode` the connection to Postgres is not verified.

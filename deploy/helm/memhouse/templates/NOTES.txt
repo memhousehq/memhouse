@@ -1,0 +1,20 @@
+MemHouse {{ .Chart.AppVersion }} is starting ({{ .Values.replicaCount }} replica(s)). The first start of each pod
+downloads the embedding model and migrates the schema; give it a minute.
+
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "memhouse.fullname" . }}
+  helm --namespace {{ .Release.Namespace }} test {{ .Release.Name }}
+
+Reach the API from your machine:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "memhouse.fullname" . }} 7077:{{ .Values.service.port }}
+  curl -s http://127.0.0.1:7077/health
+{{- if not .Values.apiKey.existingSecret }}
+
+No bootstrap key is configured (apiKey.existingSecret): until a principal has a key, every
+call is refused. See the install guide for both ways to create the first key.
+{{- end }}
+{{- if and .Values.ingress.enabled (not .Values.console.publicUrl) }}
+
+The Ingress is on but console.publicUrl is empty: set it to the https address browsers use,
+or the admin console will not issue its session cookie.
+{{- end }}

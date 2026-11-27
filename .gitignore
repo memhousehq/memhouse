@@ -29,3 +29,6 @@ scripts/publish/publish.env
 /sdk/**/__pycache__/
 /sdk/typescript/node_modules/
 /sdk/typescript/dist/
+
+# Release artefacts (G21): scripts/release-dry-run.sh and the release tools it downloads
+/dist/

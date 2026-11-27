@@ -105,6 +105,55 @@ jobs:
           BIN: ./target/release/memhouse
           MEMHOUSE_MODEL_CACHE: ${{ runner.temp }}/models
         run: MEMHOUSE_HOME="$RUNNER_TEMP/e2e-home" bash scripts/e2e.sh
+      # PROF-05: the README's quickstart, as written, in a clean container: from nothing to the
+      # first recall within ten minutes. The binary just built is packed as a release archive
+      # and installed by install.sh from a mirror beside the container; the model download is real.
+      - name: quickstart in a clean container
+        run: |
+          scripts/release/package.sh target/release/memhouse x86_64-unknown-linux-gnu "$RUNNER_TEMP/quickstart"
+          QUICKSTART_IMAGE=ubuntu:24.04 scripts/quickstart-test.sh "$RUNNER_TEMP"/quickstart/memhouse-*-x86_64-unknown-linux-gnu.tar.gz
+
+  # Packaging (roadmap G21): the scripts, the workflows, the Helm chart, the install script and
+  # the documentation site. The tools come at fixed versions with checked downloads
+  # (scripts/release/tools.sh): the repository allows no third-party setup actions.
+  packaging:
+    name: packaging checks
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: pinned tools
+        run: |
+          scripts/release/tools.sh "$RUNNER_TEMP/tools" shellcheck actionlint helm
+          echo "$RUNNER_TEMP/tools" >>"$GITHUB_PATH"
+      - name: shellcheck
+        run: |
+          shellcheck -x install.sh scripts/release/*.sh scripts/container-test.sh scripts/helm-check.sh scripts/install-test.sh scripts/quickstart-test.sh scripts/release-dry-run.sh
+          shellcheck --severity=warning scripts/e2e.sh scripts/sdk-conformance.sh scripts/ci.sh scripts/publish/*.sh bindings/python/test.sh
+      - name: actionlint
+        run: actionlint
+      - name: Helm chart (lint, render, schema)
+        run: scripts/helm-check.sh
+      - name: install script against a made-up release
+        run: |
+          scripts/install-test.sh sh
+          scripts/install-test.sh bash
+      - name: release tag verification, on a throwaway repository
+        run: scripts/release/verify-tag-test.sh
+      - name: documentation site
+        run: cargo xtask site --out "$RUNNER_TEMP/site"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-site
+          path: ${{ runner.temp }}/site
+          if-no-files-found: error
+          retention-days: 7
 
   # The Python and TypeScript SDKs, the embedded bindings they can run on, and the two framework
   # adapters (roadmap G18). Needs uv, pnpm and Node, which the two jobs above do not. No model is

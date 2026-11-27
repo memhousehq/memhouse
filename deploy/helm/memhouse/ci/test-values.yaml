@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# Values the chart is linted and rendered with in CI (scripts/helm-check.sh): every optional
+# part switched on. The Secrets are only named; none is created from here.
+database:
+  existingSecret: memhouse-db
+apiKey:
+  existingSecret: memhouse-admin
+console:
+  publicUrl: https://memhouse.example.com
+config:
+  memory:
+    template: support
+  governance:
+    redact: [secret, card, ssn, iban, email]
+ingress:
+  enabled: true
+  className: nginx
+  tls:
+    - secretName: memhouse-tls
+      hosts: [memhouse.example.com]
+extraEnv:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://otel-collector:4318

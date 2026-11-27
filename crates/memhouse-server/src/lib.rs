@@ -354,7 +354,7 @@ pub async fn serve_listener(listener: tokio::net::TcpListener, engine: Engine) -
 }
 
 /// Serve the API on `[server] bind` with the background workers ([`embedded::Background`]:
-/// enrichment, the write pipeline, retention) until Ctrl-C.
+/// enrichment, the write pipeline, retention) until Ctrl-C or, on Unix, SIGTERM.
 pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     let bind = engine.cfg.server.bind.clone();
     let listener = tokio::net::TcpListener::bind(&bind).await.map_err(|e| anyhow::anyhow!("cannot listen on {bind}: {e}"))?;
@@ -364,15 +364,37 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
         eprintln!("Enrichment: {} workers, model {}", engine.cfg.enrich.workers, engine.cfg.enrich.llm.model);
     }
     let mut background = embedded::Background::start(&engine);
-    let served = axum::serve(listener, router(engine))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await;
+    let served = axum::serve(listener, router(engine)).with_graceful_shutdown(shutdown_signal()).await;
     // Also when serving failed: the workers end their jobs before the process does.
     background.stop().await;
     served?;
     Ok(())
+}
+
+/// Resolves when the process is asked to stop: Ctrl-C (SIGINT) or, on Unix, SIGTERM, which is
+/// what a container runtime and Kubernetes send. Without a handler the first process of a
+/// container ignores SIGTERM, so a pod would be killed at the end of its grace period with
+/// requests and jobs cut off (DEP-08: a replica can be stopped at any time and nothing is lost).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Count and time every request by route template and status.

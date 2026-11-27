@@ -133,9 +133,11 @@ main()
   still being processed then is answered as `candidate` and finished the same way, so an
   answer of `candidate` after a wait that long is not yet the outcome.
 
-**Building.** Nothing is published yet: wheels and npm packages for each platform are release
-work, planned with the packaging goal. Until then the libraries are built from a checkout, and
-have been built and tested on macOS (Apple silicon) only:
+**Building.** From release 2.0.0 the libraries are `memhouse-lite` on PyPI and
+`@memhouse/lite` on npm, built by the release pipeline for Linux (x86_64 and arm64) and macOS
+on Apple silicon ([install guide](install.md#sdks-and-embedded-bindings)). Until that release
+is out they are built from a checkout; so far they have been built and tested on macOS (Apple
+silicon) and in hosted CI on Linux x86_64:
 
 ```bash
 (cd bindings/python && ./test.sh && uvx maturin build)         # a wheel in target/wheels/ (CPython 3.9+, stable ABI)

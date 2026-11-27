@@ -1,1 +1,4 @@
+# The API level clippy suggests for, not the minimum toolchain (that is `rust-version` in
+# Cargo.toml, 1.94, set by the dependencies). Kept at 1.85 so that raising the minimum did not
+# also ask for rewrites in the engine and the stores; raise it with those rewrites, on purpose.
 msrv = "1.85"

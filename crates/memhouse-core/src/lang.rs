@@ -29,30 +29,30 @@ pub const PACK_FORMAT: u32 = 1;
 
 /// The built-in packs: language code and TOML source. English first; it is the default.
 pub const BUILTIN: &[(&str, &str)] = &[
-    ("en", include_str!("../../../languages/en.toml")),
-    ("bg", include_str!("../../../languages/bg.toml")),
-    ("cs", include_str!("../../../languages/cs.toml")),
-    ("da", include_str!("../../../languages/da.toml")),
-    ("de", include_str!("../../../languages/de.toml")),
-    ("el", include_str!("../../../languages/el.toml")),
-    ("es", include_str!("../../../languages/es.toml")),
-    ("et", include_str!("../../../languages/et.toml")),
-    ("fi", include_str!("../../../languages/fi.toml")),
-    ("fr", include_str!("../../../languages/fr.toml")),
-    ("ga", include_str!("../../../languages/ga.toml")),
-    ("hr", include_str!("../../../languages/hr.toml")),
-    ("hu", include_str!("../../../languages/hu.toml")),
-    ("it", include_str!("../../../languages/it.toml")),
-    ("lt", include_str!("../../../languages/lt.toml")),
-    ("lv", include_str!("../../../languages/lv.toml")),
-    ("mt", include_str!("../../../languages/mt.toml")),
-    ("nl", include_str!("../../../languages/nl.toml")),
-    ("pl", include_str!("../../../languages/pl.toml")),
-    ("pt", include_str!("../../../languages/pt.toml")),
-    ("ro", include_str!("../../../languages/ro.toml")),
-    ("sk", include_str!("../../../languages/sk.toml")),
-    ("sl", include_str!("../../../languages/sl.toml")),
-    ("sv", include_str!("../../../languages/sv.toml")),
+    ("en", include_str!("../languages/en.toml")),
+    ("bg", include_str!("../languages/bg.toml")),
+    ("cs", include_str!("../languages/cs.toml")),
+    ("da", include_str!("../languages/da.toml")),
+    ("de", include_str!("../languages/de.toml")),
+    ("el", include_str!("../languages/el.toml")),
+    ("es", include_str!("../languages/es.toml")),
+    ("et", include_str!("../languages/et.toml")),
+    ("fi", include_str!("../languages/fi.toml")),
+    ("fr", include_str!("../languages/fr.toml")),
+    ("ga", include_str!("../languages/ga.toml")),
+    ("hr", include_str!("../languages/hr.toml")),
+    ("hu", include_str!("../languages/hu.toml")),
+    ("it", include_str!("../languages/it.toml")),
+    ("lt", include_str!("../languages/lt.toml")),
+    ("lv", include_str!("../languages/lv.toml")),
+    ("mt", include_str!("../languages/mt.toml")),
+    ("nl", include_str!("../languages/nl.toml")),
+    ("pl", include_str!("../languages/pl.toml")),
+    ("pt", include_str!("../languages/pt.toml")),
+    ("ro", include_str!("../languages/ro.toml")),
+    ("sk", include_str!("../languages/sk.toml")),
+    ("sl", include_str!("../languages/sl.toml")),
+    ("sv", include_str!("../languages/sv.toml")),
 ];
 
 /// How far a pack has been checked.
@@ -1187,7 +1187,7 @@ mod tests {
 
     #[test]
     fn the_schema_file_is_current() {
-        let on_disk: serde_json::Value = serde_json::from_str(include_str!("../../../languages/pack.schema.json")).unwrap();
+        let on_disk: serde_json::Value = serde_json::from_str(include_str!("../languages/pack.schema.json")).unwrap();
         assert_eq!(on_disk, schema(), "languages/pack.schema.json is stale: write it again with `memhouse lang schema`");
     }
 

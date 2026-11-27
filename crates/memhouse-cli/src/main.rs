@@ -133,6 +133,12 @@ enum Cmd {
     Agents,
     /// Check configuration, database, model and MCP round-trip
     Doctor,
+    /// Ask a running server for /health; exits 0 when it answers (the container image's health check: it has no shell and no curl)
+    Health {
+        /// The server's base URL (default: `[server] bind` on this host)
+        #[arg(long)]
+        url: Option<String>,
+    },
     /// Print the bootstrap API key, or manage principals' keys (create, list, revoke, rotate)
     Key {
         #[command(subcommand)]
@@ -409,6 +415,18 @@ async fn engine(cfg: Config) -> anyhow::Result<memhouse_core::Engine> {
     })
 }
 
+/// Where a server bound to `bind` is reached from its own host: a wildcard address is not one
+/// to connect to, so it is read as the loopback address of its family.
+fn health_url(bind: &str) -> String {
+    let (host, port) = bind.rsplit_once(':').unwrap_or((bind, "7077"));
+    let host = match host {
+        "0.0.0.0" | "" => "127.0.0.1",
+        "[::]" => "[::1]",
+        h => h,
+    };
+    format!("http://{host}:{port}")
+}
+
 fn print_next_steps(path: &std::path::Path) {
     println!("\nMemHouse is ready. Config: {}\n", path.display());
     println!("Connect an agent (writes its MCP config and checks a recall):");
@@ -627,6 +645,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Cmd::Doctor => doctor(&cfg_path).await?,
+        Cmd::Health { url } => {
+            let base = match url {
+                Some(u) => u,
+                None => health_url(&Config::load(cfg_path.as_deref())?.server.bind),
+            };
+            let url = format!("{}/health", base.trim_end_matches('/'));
+            let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build()?;
+            let resp = http.get(&url).send().await.with_context(|| format!("no answer from {url}"))?;
+            anyhow::ensure!(resp.status().is_success(), "{url} answered {}", resp.status());
+            println!("{}", resp.text().await?);
+        }
         Cmd::Key { cmd: None } => {
             let cfg = Config::load(cfg_path.as_deref())?;
             match cfg.server.api_keys.first() {
@@ -977,4 +1006,18 @@ async fn doctor(cfg_path: &Option<PathBuf>) -> anyhow::Result<()> {
         ok("API key configured (`memhouse key`)");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_url;
+
+    /// The container sets `MEMHOUSE_BIND=0.0.0.0:7077`; its health check must reach the server.
+    #[test]
+    fn a_wildcard_bind_is_checked_on_loopback() {
+        assert_eq!(health_url("0.0.0.0:7077"), "http://127.0.0.1:7077");
+        assert_eq!(health_url("[::]:8080"), "http://[::1]:8080");
+        assert_eq!(health_url("127.0.0.1:7077"), "http://127.0.0.1:7077");
+        assert_eq!(health_url("memhouse.internal:9000"), "http://memhouse.internal:9000");
+    }
 }

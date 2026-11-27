@@ -1,0 +1,9 @@
+# The public SSH keys a release tag may be signed with, in git's "allowed signers" format
+# (one per line):
+#
+#   <e-mail> namespaces="git" <key type> <public key>
+#
+# scripts/release/verify-tag.sh reads this file from the default branch and refuses a tag
+# signed by any other key, so the release workflow does nothing for an unsigned or foreign tag.
+# Public keys only. A change to this file needs an owner's review (CODEOWNERS).
+# docs/release.md says how to make a signing key and add it here.

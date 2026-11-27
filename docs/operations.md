@@ -11,6 +11,7 @@ backups, upgrades, enrichment workers, monitoring and troubleshooting.
 - [Server (systemd)](#server-systemd)
 - [Container image](#container-image)
 - [Cloud with managed Postgres](#cloud-with-managed-postgres)
+- [TLS to the database](#tls-to-the-database)
 - [Reverse proxy and TLS](#reverse-proxy-and-tls)
 - [Sizing](#sizing)
 - [Enrichment workers](#enrichment-workers)
@@ -115,7 +116,7 @@ memhouse doctor
    # Only needed with [enrich] enabled = true:
    EnvironmentFile=-/etc/memhouse/secrets.env
    ExecStart=/usr/local/bin/memhouse serve
-   # MemHouse shuts down gracefully on Ctrl-C (SIGINT): it finishes requests and stops workers.
+   # MemHouse shuts down gracefully on SIGINT and SIGTERM: it finishes requests and stops workers.
    KillSignal=SIGINT
    TimeoutStopSec=30
    Restart=on-failure
@@ -138,30 +139,20 @@ memhouse doctor
 
 ## Container image
 
-There is no published image yet. This Dockerfile builds one:
+`ghcr.io/memhousehq/memhouse` (from release 2.0.0), for `linux/amd64` and `linux/arm64`, or
+`docker build -t memhouse .` from a checkout. It runs as the unprivileged user 65532, has no
+shell, writes only to `/data` and `/tmp`, answers `GET /health`, carries its own health check
+(`memhouse health`) and stops cleanly on SIGTERM. The [install guide](install.md#container-image)
+has the commands for the Lite profile and for your own Postgres, the image's tags, and how to
+start it without access to the model hub; [supply chain](security/supply-chain.md#the-container-image)
+says how to verify it.
 
-```dockerfile
-FROM rust:1.85-bookworm AS build
-WORKDIR /src
-COPY . .
-RUN cargo build --release -p memhouse-cli
-
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/target/release/memhouse /usr/local/bin/memhouse
-ENV MEMHOUSE_HOME=/data MEMHOUSE_BIND=0.0.0.0:7077
-VOLUME /data
-EXPOSE 7077
-STOPSIGNAL SIGINT
-ENTRYPOINT ["memhouse"]
-CMD ["serve"]
-```
-
-The image needs `ca-certificates`: MemHouse verifies TLS (Postgres, model downloads, LLM and OTLP
-endpoints) against the operating system's certificate store, not a bundled list, so a private CA
-added to that store is trusted too. Mount `/data` (or set `[embedding] cache_dir`) so the model download survives restarts. Pass the
-database URL and API key as environment variables, as in
-[configuration.md](configuration.md#environment-variables).
+MemHouse's HTTPS clients (model downloads, LLM and OTLP endpoints) verify certificates against
+the certificate store of the image's base, not a list bundled in the binary: to trust a private
+CA for them, build an image on top that adds it. The connection to Postgres is different: it is
+verified only when the database URL asks for it ([TLS to the database](#tls-to-the-database)). Mount a volume at `/data` (or set `[embedding] cache_dir`)
+so the model download survives restarts. Pass the database URL and API key as environment
+variables, as in [configuration.md](configuration.md#environment-variables).
 
 A `docker compose` file for a self-contained server:
 
@@ -172,15 +163,25 @@ services:
     environment: { POSTGRES_USER: memhouse, POSTGRES_PASSWORD: change-me, POSTGRES_DB: memhouse }
     volumes: [pgdata:/var/lib/postgresql/data]
   memhouse:
-    build: .
+    image: ghcr.io/memhousehq/memhouse:2.0.0     # or `build: .` from a checkout
     depends_on: [db]
     ports: ["127.0.0.1:7077:7077"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]
     environment:
       MEMHOUSE_DATABASE_URL: postgres://memhouse:change-me@db:5432/memhouse
       MEMHOUSE_API_KEY: ${MEMHOUSE_API_KEY:?set it}
     volumes: [mhdata:/data]
 volumes: { pgdata: {}, mhdata: {} }
 ```
+
+In this example the database is a container on the Compose project's own network and the
+connection to it is not encrypted. For a database on another host, use a URL with
+`sslmode=verify-full` ([TLS to the database](#tls-to-the-database)).
+
+On Kubernetes, use the [Helm chart](install.md#kubernetes-helm).
 
 ## Cloud with managed Postgres
 
@@ -197,12 +198,34 @@ Then:
 
 - Run `memhouse serve` on any container platform (ECS/Fargate, Cloud Run, AKS, Fly.io) behind the
   platform's HTTPS load balancer. Health check: `GET /health`.
-- Use TLS to the database (`?sslmode=require` in the URL).
+- Use verified TLS to the database: `?sslmode=verify-full` in the URL
+  ([TLS to the database](#tls-to-the-database)).
 - Keep `max_connections` × number of instances below the database's connection limit, or put
   PgBouncer in transaction mode in front of it.
 - **Data residency:** with the default local embedding model, conversation text never leaves your
   network. Only enrichment (if you turn it on) sends text to the LLM endpoint you configure. Point
   it at a regional or self-hosted endpoint to keep data in region.
+
+## TLS to the database
+
+The database URL decides how the connection to Postgres is protected, with the `sslmode`
+parameter (or the `PGSSLMODE` environment variable), as for any Postgres client:
+
+| `sslmode` | Encrypted | Server certificate checked | |
+|---|---|---|---|
+| not set, or `prefer` | if the server offers it | no | **the default**: falls back to plaintext, and accepts any certificate |
+| `require` | yes | no | protects against eavesdropping, not against a server that is not yours |
+| `verify-ca` | yes | issued by a trusted CA | |
+| `verify-full` | yes | issued by a trusted CA, for this host name | use this for any database reached over a network |
+
+With `verify-ca` and `verify-full` the certificate is checked against the operating system's
+certificate store, or against the file the URL names with `sslrootcert=/path/to/ca.pem` (or
+`PGSSLROOTCERT`): that is how to trust a provider's or a private CA, in the container too (mount
+the file; nothing has to be added to the image).
+
+```
+postgres://memhouse:<password>@db.internal:5432/memhouse?sslmode=verify-full&sslrootcert=/etc/memhouse/ca.pem
+```
 
 ## Reverse proxy and TLS
 
@@ -705,6 +728,7 @@ Full reference: [languages.md](languages.md).
 |---|---|
 | Liveness | `GET /health` → `{"status":"ok"}` |
 | Full self-check | `memhouse doctor`: config, container, database, model, audit chain, MCP round-trip |
+| Liveness of a running server | `memhouse health` (or `--url http://host:7077`): asks `/health`, exits non-zero when there is no answer; the container image's health check |
 | Volumes | `GET /v1/stats`: memories, quarantined, superseded, subjects, audit events |
 | Write pipeline backlog | `memhouse_intake_proposals{state}` and `memhouse_intake_lag_seconds` on `/metrics`: alert if the lag stays above a few seconds or `dead` > 0 (see [Write pipeline](#write-pipeline)) |
 | Enrichment backlog | `GET /v1/enrich/status`: alert if `pending` keeps growing or `failed` > 0 |

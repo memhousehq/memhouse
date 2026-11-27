@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "memhouse.fullname" . }}
+  labels:
+    {{- include "memhouse.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "memhouse.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      annotations:
+        # A changed configuration restarts the pods.
+        checksum/config: {{ include "memhouse.config" . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "memhouse.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "memhouse.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: memhouse
+          image: {{ include "memhouse.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: MEMHOUSE_HOME
+              value: /data
+            - name: MEMHOUSE_CONFIG
+              value: /etc/memhouse/config.toml
+            - name: MEMHOUSE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "database.existingSecret is required: the name of a Secret that holds the Postgres URL" .Values.database.existingSecret | quote }}
+                  key: {{ .Values.database.urlKey | quote }}
+            {{- if .Values.apiKey.existingSecret }}
+            - name: MEMHOUSE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiKey.existingSecret | quote }}
+                  key: {{ .Values.apiKey.key | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 7077
+              protocol: TCP
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/memhouse
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "memhouse.fullname" . }}
+        - name: data
+          {{- if .Values.modelCache.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.modelCache.existingClaim | quote }}
+          {{- else }}
+          emptyDir:
+            {{- toYaml .Values.modelCache.emptyDir | nindent 12 }}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -10,8 +10,8 @@ use memhouse_core::types::*;
 use memhouse_core::{EmbedKind, Engine};
 use uuid::Uuid;
 
-const V2_FULL: &str = include_str!("../../../memory-format/vectors/v2-full.jsonl");
-const V1_EXPORT: &str = include_str!("../../../memory-format/vectors/v1-export.jsonl");
+const V2_FULL: &str = include_str!("../memory-format/vectors/v2-full.jsonl");
+const V1_EXPORT: &str = include_str!("../memory-format/vectors/v1-export.jsonl");
 
 pub(crate) async fn run(engine: &Engine, run_id: &str) -> Vec<Check> {
     let s = |name: &str| format!("bench:{run_id}:gov:{name}");

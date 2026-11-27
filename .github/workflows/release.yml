@@ -1,0 +1,826 @@
+# SPDX-License-Identifier: Apache-2.0
+# The release pipeline (roadmap G21; docs/release.md is the guide).
+#
+# Starts from a signed tag `v<version>`, and only from one: the first job refuses a tag that is
+# not signed by a key in .github/release-signers (as that file stands on main), that is not on
+# main, or that does not name the product version. Pushing such a tag is a release. Running the
+# workflow by hand on a tag ("Run workflow", choosing the tag as the ref) is a dry run unless
+# its box is unticked: it builds, checks, signs and attests every artefact and leaves them as
+# workflow artefacts, and publishes nothing.
+#
+# No registry token is stored anywhere. Publishing uses the job's OIDC identity (trusted
+# publishing on crates.io, PyPI and npm) and the workflow's own short-lived token for the
+# GitHub release and the container registry; signatures are keyless (Sigstore). Every job that
+# publishes runs in the `release` environment, which holds no secret and exists for its
+# required reviewer and for the registries to match on.
+#
+# Only GitHub's own actions and dtolnay/rust-toolchain and taiki-e/install-action may run in
+# this repository, so everything else is a pinned, checksum-verified tool
+# (scripts/release/tools.sh) or a plain command. Actions are pinned to commit SHAs.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: build, sign and attest everything, publish nothing"
+        type: boolean
+        default: true
+
+# Nothing by default: each job states what it needs.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  UV_VERSION: "0.13.8"
+  PNPM_VERSION: "12.18.0"
+  MATURIN_VERSION: "1.16.0"
+  IMAGE: ghcr.io/memhousehq/memhouse
+  CHARTS: ghcr.io/memhousehq/charts
+
+jobs:
+  # The gate: a signed tag on main that names the version, and no known vulnerability.
+  verify:
+    name: verify the tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      python_version: ${{ steps.tag.outputs.python_version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      dry_run: ${{ steps.tag.outputs.dry_run }}
+      commit: ${{ steps.tag.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: the tag, its signature, its place on main, its version
+        id: tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+        run: |
+          if [ "$REF_TYPE" != tag ]; then
+            echo "::error::a release runs on a tag: choose the tag v<version> as the ref of the run"
+            exit 1
+          fi
+          # The checkout of a tag does not keep its annotation; fetch the tag object itself.
+          git fetch --force --no-tags origin "refs/tags/$REF_NAME:refs/tags/$REF_NAME" "refs/heads/main:refs/remotes/origin/main"
+          scripts/release/verify-tag.sh "$REF_NAME" origin/main
+          # What was just verified is the tag as it is now; what is checked out is the commit
+          # of the event. They must be one commit, and every later job builds that commit by
+          # its id, so a tag moved after this point changes nothing of this run.
+          commit=$(git rev-parse "refs/tags/$REF_NAME^{commit}")
+          if [ "$commit" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::tag $REF_NAME now names $commit, but this run was started for $(git rev-parse HEAD)"
+            exit 1
+          fi
+          version=${REF_NAME#v}
+          python_version=$(printf '%s' "$version" | sed -e 's/-alpha\./a/' -e 's/-beta\./b/' -e 's/-rc\./rc/')
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          # A pushed tag is a release; a manual run is a dry run unless its box was unticked.
+          if [ "$EVENT" = workflow_dispatch ] && [ "$DRY_RUN_INPUT" != false ]; then dry_run=true; else dry_run=false; fi
+          {
+            echo "tag=$REF_NAME"
+            echo "version=$version"
+            echo "python_version=$python_version"
+            echo "prerelease=$prerelease"
+            echo "dry_run=$dry_run"
+            echo "commit=$commit"
+          } >>"$GITHUB_OUTPUT"
+          echo "MemHouse $version (tag $REF_NAME), dry run: $dry_run, pre-release: $prerelease" >>"$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-deny
+      - name: one version in every place, and it is the tag's
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: cargo xtask version --tag "$TAG"
+      # TR-OPS-03: every build is scanned for known vulnerabilities, and held to the licence policy.
+      - name: dependency policy and advisories
+        run: cargo deny --all-features check -D unmatched-wrapper
+
+  # The `memhouse` binary for each supported target, built on that target, packed with
+  # scripts/release/package.sh. Linux binaries need glibc 2.39 and the C++ runtime of GCC 13
+  # (the prebuilt ONNX Runtime sets that floor); the step after the build holds them to it.
+  binaries:
+    name: binary (${{ matrix.target }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: the host is the target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p')" = "$TARGET"
+      - name: build
+        run: cargo build --release --locked -p memhouse-cli
+      - name: no newer glibc than 2.39 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          newest=$(objdump -T target/release/memhouse | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -1)
+          echo "newest glibc symbol version: $newest"
+          test "$(printf '%s\n' GLIBC_2.39 "$newest" | sort -V | tail -1)" = GLIBC_2.39
+      - name: archive
+        env:
+          TARGET: ${{ matrix.target }}
+        run: scripts/release/package.sh target/release/memhouse "$TARGET" dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # The embedded Lite bindings for each target: an abi3 wheel (one per platform, any CPython
+  # from 3.9) and the Node.js addon.
+  bindings:
+    name: bindings (${{ matrix.target }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { runner: macos-15, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: uv and pnpm
+        run: |
+          pipx install "uv==$UV_VERSION"
+          npm install --global "pnpm@$PNPM_VERSION"
+          uv --version && pnpm --version
+      - name: Python wheel
+        working-directory: bindings/python
+        env:
+          PYTHON_VERSION: ${{ needs.verify.outputs.python_version }}
+        run: |
+          uvx --from "maturin==$MATURIN_VERSION" maturin build --profile bindings --locked --out ../../dist
+          ls -l ../../dist
+          # A wheel tagged plain `linux` is one PyPI refuses: the platform tag must be a real one.
+          for wheel in ../../dist/memhouse_lite-"$PYTHON_VERSION"-cp39-abi3-*.whl; do
+            case "$wheel" in
+              *manylinux_*_x86_64.whl | *manylinux_*_aarch64.whl | *macosx_*_arm64.whl) ;;
+              *) echo "::error::$wheel: not a wheel of this version with a platform tag PyPI accepts"; exit 1 ;;
+            esac
+          done
+      - name: the wheel installs and loads
+        run: |
+          uv venv "$RUNNER_TEMP/wheel-venv"
+          uv pip install --python "$RUNNER_TEMP/wheel-venv" dist/memhouse_lite-*.whl
+          "$RUNNER_TEMP/wheel-venv/bin/python" -c 'import memhouse_lite; print("memhouse_lite", memhouse_lite.__version__)'
+      - name: Node.js addon
+        working-directory: bindings/node
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          node -e 'const lite = require("./index.js"); if (typeof lite.Lite?.open !== "function") { throw new Error("the addon did not load") }'
+          ls -l memhouse-lite.*.node
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: addon-${{ matrix.target }}
+          path: bindings/node/memhouse-lite.*.node
+          if-no-files-found: error
+          retention-days: 14
+
+  # What does not depend on the platform: the crates, the SDK packages, the Helm chart, the
+  # documentation site, the install script and the release notes.
+  packages:
+    name: crates, SDKs, chart, site
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: uv, pnpm and helm
+        run: |
+          pipx install "uv==$UV_VERSION"
+          npm install --global "pnpm@$PNPM_VERSION"
+          scripts/release/tools.sh "$RUNNER_TEMP/tools" helm shellcheck
+          echo "$RUNNER_TEMP/tools" >>"$GITHUB_PATH"
+      # Packs the eight crates and builds each from its packed form, the later ones against
+      # the earlier ones' packages: what `cargo publish` uploads, in its order.
+      - name: crates
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cargo package --workspace --exclude xtask --exclude memhouse-lite-python --exclude memhouse-lite-node --locked
+          mkdir -p dist
+          cp target/package/memhouse-*-"$VERSION".crate dist/
+      - name: Python SDK
+        run: uv build --out-dir dist sdk/python
+      - name: TypeScript SDK
+        working-directory: sdk/typescript
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          npm pack --pack-destination ../../dist
+      - name: Helm chart
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          scripts/helm-check.sh
+          helm package deploy/helm/memhouse --destination "$RUNNER_TEMP/chart"
+          cp "$RUNNER_TEMP/chart/memhouse-$VERSION.tgz" "dist/memhouse-chart-$VERSION.tgz"
+      - name: documentation site
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cargo xtask site --out "$RUNNER_TEMP/site" --ref "$TAG"
+          tar -czf "dist/memhouse-docs-$VERSION.tar.gz" -C "$RUNNER_TEMP" site
+      - name: install script and release notes
+        run: |
+          shellcheck install.sh
+          scripts/install-test.sh
+          cp install.sh dist/install.sh
+          cargo xtask version --notes >dist/RELEASE_NOTES.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  # The container image, for both Linux architectures, from the binaries of the archives:
+  # nothing is compiled again and nothing runs under emulation (the runtime stage of the
+  # Dockerfile only copies). The image is an OCI archive here; a release pushes those bytes.
+  image:
+    name: container image
+    needs: [verify, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: binary-*-linux-gnu
+          path: archives
+          merge-multiple: true
+      - name: the binaries of the archives
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          for pair in amd64:x86_64 arm64:aarch64; do
+            name="memhouse-$VERSION-${pair#*:}-unknown-linux-gnu"
+            mkdir -p "dist/linux-${pair%%:*}"
+            tar -xzf "archives/$name.tar.gz" -C "$RUNNER_TEMP"
+            cp "$RUNNER_TEMP/$name/memhouse" "dist/linux-${pair%%:*}/memhouse"
+          done
+      - name: build (linux/amd64, linux/arm64)
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          REVISION: ${{ github.sha }}
+        run: |
+          created=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ)
+          docker buildx create --name release --driver docker-container --use
+          mkdir image
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg BINARY_STAGE=prebuilt --build-arg VERSION="$VERSION" --build-arg REVISION="$REVISION" --build-arg CREATED="$created" \
+            --provenance=false --output "type=oci,dest=image/memhouse-$VERSION-image.oci.tar" .
+          # The same build, for this runner's architecture, into the local image store.
+          docker buildx build --platform linux/amd64 \
+            --build-arg BINARY_STAGE=prebuilt --build-arg VERSION="$VERSION" --build-arg REVISION="$REVISION" --build-arg CREATED="$created" \
+            --provenance=false --load -t memhouse:release .
+      # Non-root, no shell, read-only root filesystem, Lite and two replicas on one Postgres.
+      - name: container checks
+        run: scripts/container-test.sh memhouse:release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: image/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Everything in one directory: the npm package of the bindings put together from the three
+  # addons, the SBOMs, the Homebrew formula, SHA256SUMS; then a check that nothing is missing.
+  assemble:
+    name: assemble, SBOM, checksums
+    needs: [verify, binaries, bindings, packages, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: addon-*
+          path: bindings/node
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: image
+      - name: npm package of the Node.js binding (three addons)
+        working-directory: bindings/node
+        run: |
+          for addon in linux-x64-gnu linux-arm64-gnu darwin-arm64; do
+            test -f "memhouse-lite.$addon.node" || { echo "::error::the addon for $addon is missing"; exit 1; }
+          done
+          npm pack --pack-destination ../../dist
+      - name: SBOMs
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          scripts/release/tools.sh "$RUNNER_TEMP/tools" syft
+          export PATH="$RUNNER_TEMP/tools:$PATH"
+          scripts/release/sbom.sh source dist
+          scripts/release/sbom.sh image "image/memhouse-$VERSION-image.oci.tar" dist
+      - name: Homebrew formula, checksums, completeness
+        run: |
+          scripts/release/homebrew.sh dist "$RUNNER_TEMP/memhouse.rb"
+          ruby -c "$RUNNER_TEMP/memhouse.rb"
+          cp "$RUNNER_TEMP/memhouse.rb" dist/memhouse.rb
+          scripts/release/checksums.sh dist
+          scripts/release/complete.sh dist
+          cat dist/SHA256SUMS >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-unsigned
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Keyless signatures and attestations, from this job's OIDC identity: no key exists before
+  # or after. A dry run signs too (that is what it rehearses), which leaves entries for the
+  # dry run's files in the public transparency log and in the repository's attestations.
+  sign:
+    name: sign and attest
+    needs: [verify, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-unsigned
+          path: dist
+      - name: what was assembled is what is signed
+        working-directory: dist
+        run: sha256sum -c --quiet SHA256SUMS
+      - name: sign SHA256SUMS and the binary archives (Sigstore, keyless)
+        run: |
+          scripts/release/tools.sh "$RUNNER_TEMP/tools" cosign
+          export PATH="$RUNNER_TEMP/tools:$PATH"
+          scripts/release/sign.sh dist
+      # SLSA build provenance for every artefact SHA256SUMS lists, in one attestation.
+      - name: build provenance
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+          create-storage-record: false
+      # The source SBOM, bound to the binary archives it describes.
+      - name: SBOM attestation
+        id: sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/memhouse-*-*-*.tar.gz
+          sbom-path: dist/memhouse-${{ needs.verify.outputs.version }}-source.cdx.json
+          create-storage-record: false
+      - name: the signatures verify the way the documentation says
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+          PROVENANCE: ${{ steps.provenance.outputs.bundle-path }}
+          SBOM: ${{ steps.sbom.outputs.bundle-path }}
+        run: |
+          export PATH="$RUNNER_TEMP/tools:$PATH"
+          identity="https://github.com/$REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG"
+          for f in dist/SHA256SUMS dist/memhouse-*-*-*.tar.gz; do
+            cosign verify-blob "$f" --bundle "$f.sigstore.json" \
+              --certificate-identity "$identity" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          done
+          # The attestation bundles travel with the release, for verification without the API.
+          cp "$PROVENANCE" "dist/memhouse-$VERSION.provenance.sigstore.json"
+          cp "$SBOM" "dist/memhouse-$VERSION.sbom.sigstore.json"
+          scripts/release/complete.sh dist --signed
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------------------
+  # Publishing. Not in a dry run; each job waits for the `release` environment's reviewer.
+  # Each can be run again: what is already published is left as it is, and never replaced by
+  # other bytes (a version that exists with another digest stops the job).
+  # ---------------------------------------------------------------------------------------
+
+  # The image and the chart to the container registry, with the workflow's own token; both
+  # are signed by digest, and the image gets its provenance attestation in the registry.
+  publish-oci:
+    name: publish the image and the chart
+    needs: [verify, sign]
+    if: needs.verify.outputs.dry_run == 'false'
+    environment: release
+    # One at a time across releases: the alias tags below are read and then written.
+    concurrency:
+      group: release-publish-oci
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+          path: image
+      - name: tools and registry login
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          command -v skopeo >/dev/null || { echo "::error::skopeo is not on this runner"; exit 1; }
+          scripts/release/tools.sh "$RUNNER_TEMP/tools" cosign helm
+          echo "$RUNNER_TEMP/tools" >>"$GITHUB_PATH"
+          printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          printf '%s' "$GITHUB_TOKEN" | "$RUNNER_TEMP/tools/helm" registry login ghcr.io --username "$ACTOR" --password-stdin
+      - name: push the image (the bytes of the archive, both architectures)
+        id: image
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          auth="$HOME/.docker/config.json"
+          # The digest a reference names in the registry, or nothing when the registry says it
+          # does not exist; any other failure stops the job (a tag is never assumed to be free).
+          # The digest is of the manifest's bytes as the registry serves them.
+          digest_in_registry() {
+            if skopeo inspect --raw --authfile "$auth" "docker://$1" >"$RUNNER_TEMP/manifest" 2>"$RUNNER_TEMP/inspect.err"; then
+              printf 'sha256:%s' "$(sha256sum "$RUNNER_TEMP/manifest" | cut -d' ' -f1)"
+            elif grep -qiE 'manifest unknown|name unknown|not found' "$RUNNER_TEMP/inspect.err"; then
+              :
+            else
+              cat "$RUNNER_TEMP/inspect.err" >&2
+              return 1
+            fi
+          }
+          archive="oci-archive:image/memhouse-$VERSION-image.oci.tar"
+          skopeo inspect --raw "$archive" >"$RUNNER_TEMP/archive-manifest"
+          digest="sha256:$(sha256sum "$RUNNER_TEMP/archive-manifest" | cut -d' ' -f1)"
+          # A published version tag never moves: the same bytes are left alone, other bytes
+          # (a run that built the release again) are refused.
+          published=$(digest_in_registry "$IMAGE:$VERSION")
+          if [ -z "$published" ]; then
+            skopeo copy --all --preserve-digests --dest-authfile "$auth" "$archive" "docker://$IMAGE:$VERSION"
+            published=$(digest_in_registry "$IMAGE:$VERSION")
+          fi
+          if [ "$published" != "$digest" ]; then
+            echo "::error::$IMAGE:$VERSION is published with digest ${published:-none}, this run's image is $digest; a published version is not replaced. Re-run the failed jobs of the run that published it."
+            exit 1
+          fi
+          # `latest` and the minor line follow stable releases, and only forwards: an older
+          # release approved or retried after a newer one leaves them where they are.
+          if [ "$PRERELEASE" = false ]; then
+            for tag in "${VERSION%.*}" latest; do
+              current=$(skopeo inspect --authfile "$auth" --format '{{ index .Labels "org.opencontainers.image.version" }}' "docker://$IMAGE:$tag" 2>"$RUNNER_TEMP/inspect.err" || true)
+              if [ -z "$current" ] && ! grep -qiE 'manifest unknown|name unknown|not found' "$RUNNER_TEMP/inspect.err" && [ -s "$RUNNER_TEMP/inspect.err" ]; then
+                cat "$RUNNER_TEMP/inspect.err" >&2
+                exit 1
+              fi
+              if [ -n "$current" ] && [ "$current" != "$VERSION" ] && [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+                echo "$IMAGE:$tag stays at $current, which is newer than $VERSION"
+                continue
+              fi
+              skopeo copy --all --preserve-digests --src-authfile "$auth" --dest-authfile "$auth" "docker://$IMAGE@$digest" "docker://$IMAGE:$tag"
+            done
+          fi
+          cosign sign --yes "$IMAGE@$digest"
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+          echo "image: $IMAGE@$digest" >>"$GITHUB_STEP_SUMMARY"
+      - name: image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: push and sign the chart
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          auth="$HOME/.docker/config.json"
+          chart="dist/memhouse-chart-$VERSION.tgz"
+          # As for the image: a published chart version is not replaced. Its manifest is made
+          # at push time, so what is compared is the chart file it holds.
+          if skopeo inspect --raw --authfile "$auth" "docker://$CHARTS/memhouse:$VERSION" >"$RUNNER_TEMP/chart-manifest" 2>"$RUNNER_TEMP/inspect.err"; then
+            if [ "$(jq -r '.layers[0].digest' "$RUNNER_TEMP/chart-manifest")" != "sha256:$(sha256sum "$chart" | cut -d' ' -f1)" ]; then
+              echo "::error::$CHARTS/memhouse:$VERSION is already published with another chart file than this run's; a published version is not replaced."
+              exit 1
+            fi
+            digest="sha256:$(sha256sum "$RUNNER_TEMP/chart-manifest" | cut -d' ' -f1)"
+            echo "the chart is already published"
+          elif grep -qiE 'manifest unknown|name unknown|not found' "$RUNNER_TEMP/inspect.err"; then
+            helm push "$chart" "oci://$CHARTS" 2>&1 | tee "$RUNNER_TEMP/helm-push.log"
+            digest=$(sed -n 's/^Digest: *//p' "$RUNNER_TEMP/helm-push.log")
+          else
+            cat "$RUNNER_TEMP/inspect.err" >&2
+            exit 1
+          fi
+          test -n "$digest"
+          cosign sign --yes "$CHARTS/memhouse@$digest"
+          echo "chart: $CHARTS/memhouse@$digest" >>"$GITHUB_STEP_SUMMARY"
+
+  # crates.io, through trusted publishing: the job's OIDC token is exchanged for a token that
+  # lives for this job, and is revoked at its end. Dependencies first.
+  publish-crates:
+    name: publish to crates.io
+    needs: [verify, sign]
+    if: needs.verify.outputs.dry_run == 'false'
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: publish
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          agent="memhouse-release (https://github.com/memhousehq/memhouse)"
+          jwt=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=crates.io" | jq -r .value)
+          token=$(jq -n --arg jwt "$jwt" '{jwt: $jwt}' | curl -sSf -X POST https://crates.io/api/v1/trusted_publishing/tokens \
+            -H "Content-Type: application/json" -H "User-Agent: $agent" --data-binary @- | jq -r .token)
+          test -n "$token" && test "$token" != null
+          echo "::add-mask::$token"
+          revoke() { curl -sS -X DELETE https://crates.io/api/v1/trusted_publishing/tokens -H "Authorization: Bearer $token" -H "User-Agent: $agent" >/dev/null || true; }
+          trap revoke EXIT
+          for crate in memhouse-core memhouse-store-postgres memhouse-store-sqlite memhouse-models memhouse-conformance memhouse-server memhouse-bench memhouse-cli; do
+            if curl -sf -H "User-Agent: $agent" "https://crates.io/api/v1/crates/$crate/$VERSION" >/dev/null; then
+              echo "$crate $VERSION is already published"
+              continue
+            fi
+            CARGO_REGISTRY_TOKEN="$token" cargo publish --locked -p "$crate"
+          done
+
+  # PyPI, through trusted publishing: uv exchanges the job's OIDC token itself.
+  publish-pypi:
+    name: publish to PyPI
+    needs: [verify, sign]
+    if: needs.verify.outputs.dry_run == 'false'
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+      - name: publish the SDK and the three wheels of the binding
+        env:
+          PYTHON_VERSION: ${{ needs.verify.outputs.python_version }}
+        run: |
+          pipx install "uv==$UV_VERSION"
+          uv publish --trusted-publishing always --check-url https://pypi.org/simple/ \
+            "dist/memhouse-$PYTHON_VERSION.tar.gz" "dist/memhouse-$PYTHON_VERSION-py3-none-any.whl" dist/memhouse_lite-"$PYTHON_VERSION"-*.whl
+
+  # npm, through trusted publishing (npm 11.5.1 or newer on Node 22.14 or newer); provenance
+  # is attached by the registry for a public package from a public repository.
+  publish-npm:
+    name: publish to npm
+    needs: [verify, sign]
+    if: needs.verify.outputs.dry_run == 'false'
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+      - name: publish @memhouse/sdk and @memhouse/lite
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          npm --version
+          if [ "$PRERELEASE" = true ]; then dist_tag=next; else dist_tag=latest; fi
+          for pair in "@memhouse/sdk:memhouse-sdk" "@memhouse/lite:memhouse-lite"; do
+            name=${pair%%:*}
+            if [ "$(npm view "$name@$VERSION" version 2>/dev/null)" = "$VERSION" ]; then
+              echo "$name $VERSION is already published"
+              continue
+            fi
+            npm publish "dist/${pair#*:}-$VERSION.tgz" --access public --tag "$dist_tag"
+          done
+
+  # The GitHub release, last: `releases/latest` (what install.sh and the Homebrew tap read)
+  # moves only when every registry has the version.
+  publish-github:
+    name: publish the GitHub release
+    needs: [verify, sign, publish-oci, publish-crates, publish-pypi, publish-npm]
+    if: needs.verify.outputs.dry_run == 'false'
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+      - name: create the release, or complete one that exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # As a draft first: the release becomes public only below, with every file in it.
+            flags=()
+            if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+            gh release create "$TAG" --draft --verify-tag --title "MemHouse $VERSION" --notes-file dist/RELEASE_NOTES.md "${flags[@]}"
+          fi
+          # A release that exists (an earlier attempt, a draft it left) is completed, never
+          # rewritten: a file already there with the same digest is left alone, a missing one is
+          # uploaded, and one that differs stops the job. Nothing published is deleted.
+          # An upload that failed can leave an empty asset in state "starter": that one, and
+          # only that one, is removed and uploaded again.
+          gh release view "$TAG" --json assets --jq '.assets[] | [.name, (.digest // ""), (.state // ""), .apiUrl] | @tsv' >"$RUNNER_TEMP/assets.tsv"
+          for file in dist/*; do
+            name=$(basename "$file")
+            have=$(awk -F '\t' -v n="$name" '$1 == n { print ($2 == "" ? "unknown" : $2) }' "$RUNNER_TEMP/assets.tsv")
+            state=$(awk -F '\t' -v n="$name" '$1 == n { print tolower($3) }' "$RUNNER_TEMP/assets.tsv")
+            want="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            if [ "$state" = starter ]; then
+              gh api --method DELETE "$(awk -F '\t' -v n="$name" '$1 == n { print $4 }' "$RUNNER_TEMP/assets.tsv")"
+              have=""
+            fi
+            if [ -z "$have" ]; then
+              gh release upload "$TAG" "$file"
+            elif [ "$have" != "$want" ]; then
+              echo "::error::the release already has $name with digest $have, this run's is $want; a published file is not replaced"
+              exit 1
+            fi
+          done
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
+            gh release edit "$TAG" --draft=false
+          fi
+
+  # The documentation site on GitHub Pages, when the repository has turned that on
+  # (repository variable DOCS_PAGES = true; docs/release.md). Not for a pre-release.
+  publish-site:
+    name: publish the documentation site
+    needs: [verify, sign, publish-github]
+    if: needs.verify.outputs.dry_run == 'false' && needs.verify.outputs.prerelease == 'false' && vars.DOCS_PAGES == 'true'
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist
+      - name: unpack the site
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: tar -xzf "dist/memhouse-docs-$VERSION.tar.gz" -C "$RUNNER_TEMP"
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/site
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
