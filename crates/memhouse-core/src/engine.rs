@@ -1813,7 +1813,8 @@ impl Engine {
         // Console sessions past their end or their idle limit (T3): no row outlives its use.
         let idle = self.cfg.server.session_idle_secs;
         let now = Utc::now();
-        self.store.sessions_purge(now, (idle > 0).then(|| now - chrono::Duration::seconds(idle as i64))).await?;
+        let slack = crate::identity::session_touch_secs(idle);
+        self.store.sessions_purge(now, (idle > 0).then(|| now - chrono::Duration::seconds(idle as i64 + slack))).await?;
         let policy = self.policy_for(&self.cfg.memory.tenant).await?;
         let mut purged = 0;
         for kind in MemoryKind::ALL {

@@ -74,7 +74,8 @@ curl -s localhost:7077/v1/whoami -H "authorization: Bearer $KEY"
 There is no unauthenticated mode. `/health`, `/v1/openapi.json` and the three files of the
 [admin console](console.md) (`/`, `/console.css`, `/console.js`: a page that asks for a key)
 are the only open routes. The console itself authenticates with a
-[session](#the-console-session) opened with one of the credentials above. A refused credential gets `401` with the reason
+[session](#the-console-session) opened with a principal's API key or a bootstrap key; an
+agent token opens none. A refused credential gets `401` with the reason
 (`unknown key`, `revoked key`, `expired token`, …), and the attempt is audited as `auth.failed`.
 
 **Authorization (GOV-02).** Every operation is decided before it runs: the credential must carry
@@ -719,7 +720,10 @@ reviewer's, in the record's subject with its kind, tags, labels and scope, and p
 write gate like any write. The answer's `id` is the record that holds the new wording and
 `rephrased_from` the reviewed record, which is now `rejected` (audited as `memory.rephrase`).
 It needs `memory:write` as well. If the gate holds the new wording back, the call answers
-`409` and nothing changes.
+`409` and the record under review is unchanged; the refused wording stays in storage as a
+`rejected` record with its audit events, like any write the gate refuses. The same `409`
+answers a wording that is already the text of another record with other labels or scope. The
+new record keeps the reviewed record's `structured` form and `code_refs`.
 
 **A quarantined record** can be rejected, or rephrased and approved. It is never committed as
 it stands: `commit` without `content` answers `409`.
@@ -986,9 +990,11 @@ curl -s -i -X POST localhost:7077/v1/session -H "authorization: Bearer $KEY"
   `__Host-memhouse_session`; for a request to a loopback host it is `memhouse_session`
   without `Secure` (`[server] session_cookie_secure`). The session secret is in the cookie
   only, never in a body.
-- A request made with the cookie must come from the server's own origin, and one that is not
-  a `GET` must send the session's `csrf_token` as `x-memhouse-csrf`. Otherwise: `403`, audited
-  as `access.denied` with rule `csrf`.
+- A request made with the cookie must come from the server's own origin (scheme, host and
+  port: `[server] public_url`, or the request's `Host`; `Sec-Fetch-Site: same-origin` where
+  the browser sends that header), and one that is not a `GET` must send the session's
+  `csrf_token` as `x-memhouse-csrf`. Otherwise: `403`, audited as `access.denied` with rule
+  `csrf`; such a request does not count as use of the session.
 - The cookie is read only when the request carries no `Authorization` or `x-api-key`.
 - The session has the permissions of its key; it ends after `[server] session_ttl_secs`,
   after `session_idle_secs` without use, on logout, and with its next request once the key is
@@ -1007,13 +1013,16 @@ before 1.10 does not). All of the caller's tenant; every change is audited.
 | `POST /v1/principals/{id}/disable`, `…/enable` | a disabled principal's keys, tokens and sessions are refused. Not oneself. `principal.disable`, `principal.enable` |
 | `GET /v1/keys?principal=` | ids, permissions and state (`active`, `expired`, `revoked`); never a secret |
 | `POST /v1/keys` | `{"principal", "scopes"?, "expires_in_secs"?}`: the answer's `key` is the only time the key is shown. `key.create` |
-| `POST /v1/keys/{id}/rotate` | `{"grace_secs"?}` (default a day): a new key with the same permissions; the old one works until the grace period ends. `key.rotate` |
+| `POST /v1/keys/{id}/rotate` | `{"grace_secs"?}` (default a day; the body may be left out): a new key with the same permissions; the old one works until the grace period ends. `key.rotate` |
 | `POST /v1/keys/{id}/revoke` | ends the key, its tokens and its sessions. `409` if already revoked. `key.revoke` |
 
 A caller cannot hand out more than it holds. A key carries at most the caller's own
 permissions (`403` otherwise) within what the principal's kind allows (`400`), and rotating a
 key needs every permission that key carries. A principal gets subjects within the caller's
-own, at least the caller's denied labels, and kinds within the caller's own.
+own, at least the caller's denied labels, and kinds within the caller's own; and a key is
+created or rotated only for a principal within those same bounds (`403` otherwise), since a
+key acts with its principal's subjects and labels. In `PUT`, `name` is the one field that is
+kept when left out or `null`.
 
 ```bash
 curl -s -X PUT localhost:7077/v1/principals/agent:billing-bot -H "authorization: Bearer $KEY" -H "content-type: application/json" \
@@ -1021,8 +1030,8 @@ curl -s -X PUT localhost:7077/v1/principals/agent:billing-bot -H "authorization:
 # {"id":"agent:billing-bot","tenant":"default","kind":"agent","subjects":["customer:*"],"kinds":[],"denied_labels":["hr"],
 #  "can_commit":false,"act_as":false,"created_at":"2026-11-27T10:44:51.319465Z","created_by":"admin:bootstrap"}
 curl -s localhost:7077/v1/keys -H "authorization: Bearer $KEY" -H "content-type: application/json" \
-  -d '{"principal":"agent:support-bot","scopes":["memory:read"],"expires_in_secs":7776000}'
-# {"key":"mh_<id>_<secret>","info":{"id":"sw6ZN4oA9mUD","principal":"agent:support-bot","scopes":["memory:read"],
+  -d '{"principal":"agent:billing-bot","scopes":["memory:read"],"expires_in_secs":7776000}'
+# {"key":"mh_<id>_<secret>","info":{"id":"sw6ZN4oA9mUD","principal":"agent:billing-bot","scopes":["memory:read"],
 #  "expires_at":"2027-02-25T10:44:51.307671Z","created_at":"2026-11-27T10:44:51.307675Z","created_by":"admin:bootstrap","state":"active"}}
 ```
 
@@ -1047,8 +1056,9 @@ equivalents are in [policy.md](policy.md).
 
 ## Operations
 
-These routes are **preview**: they work, but may change in a minor release (paging and
-filters are not there yet). See the [stability policy](api-stability.md).
+These routes are **preview**: they work, but may change in a minor release. The read-outs
+from before 1.10 (`/v1/subjects`, `/v1/stats`, `/v1/audit`, `/v1/enrich/status`) have no
+paging or filters yet; the evaluation routes take `suite`. See the [stability policy](api-stability.md).
 
 ### `GET /v1/subjects`
 

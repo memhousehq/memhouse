@@ -12,6 +12,15 @@
           "type": "string"
         }
       },
+      "Csrf": {
+        "description": "The session's CSRF token (`csrf_token` of `GET /v1/session`). Every request made with the session cookie that is not a `GET` must carry it; a request made with a key or token does not.",
+        "in": "header",
+        "name": "x-memhouse-csrf",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
       "IdempotencyKey": {
         "description": "1 to 255 characters. A repeat with the same key and request returns the first response; the same key with another request is a 409. Same as the body's `request_key`.",
         "in": "header",
@@ -3230,7 +3239,7 @@
         ]
       },
       "PrincipalRequest": {
-        "description": "Create a principal or replace its attributes (`PUT /v1/principals/{id}`). The kind is the\nprefix of the id. Every field is the whole new value: one left out takes its default.",
+        "description": "Create a principal or replace its attributes (`PUT /v1/principals/{id}`). The kind is the\nprefix of the id. Every field is the whole new value: one left out takes its default,\nexcept `name`, which is then kept.",
         "properties": {
           "act_as": {
             "default": false,
@@ -3260,6 +3269,7 @@
           },
           "name": {
             "default": null,
+            "description": "A display name. The one field that is kept when left out: absent, `null` or empty\nleaves the principal's current name as it is (a name is replaced, never cleared).",
             "type": [
               "string",
               "null"
@@ -5284,7 +5294,7 @@
         "type": "http"
       },
       "session": {
-        "description": "The console's session cookie, set by `POST /v1/session` (`memhouse_session` on a loopback host). Read only when the request carries no key or token. A request made with it must come from the server's own origin and, to change anything, send the session's `x-memhouse-csrf` token.",
+        "description": "The console's session cookie, set by `POST /v1/session` (`memhouse_session` on a loopback host). Read only when the request carries no key or token. A request made with it must come from the server's own origin and, unless it is a `GET`, send the session's CSRF token in the `x-memhouse-csrf` header (the `Csrf` parameter); this applies to every operation called with the cookie, not only to those that list the parameter.",
         "in": "cookie",
         "name": "__Host-memhouse_session",
         "type": "apiKey"
@@ -6858,7 +6868,7 @@
               }
             }
           },
-          "required": true
+          "required": false
         },
         "responses": {
           "200": {
@@ -9194,6 +9204,9 @@
           },
           {
             "$ref": "#/components/parameters/Actor"
+          },
+          {
+            "$ref": "#/components/parameters/Csrf"
           }
         ],
         "responses": {
@@ -9248,6 +9261,11 @@
             "description": "Internal failure (`internal`)."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Log out",
         "tags": [
           "console"
@@ -9314,6 +9332,11 @@
             "description": "Internal failure (`internal`)."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "The console session of this request",
         "tags": [
           "console"
@@ -9373,6 +9396,14 @@
             "description": "Internal failure (`internal`)."
           }
         },
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
         "summary": "Log in to the console",
         "tags": [
           "console"

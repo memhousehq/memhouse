@@ -49,7 +49,9 @@ script cannot read, and the page works with that until you log out or the sessio
 - The session has the permissions of the key that opened it, and no more.
 - It lasts `[server] session_ttl_secs` (8 hours) at most, and ends when it is not used for
   `session_idle_secs` (30 minutes).
-- **Log out** ends it on the server, not only in the browser.
+- **Log out** ends it on the server, not only in the browser, and clears the page: nothing
+  of a session stays on screen for the next one. If the server cannot be reached the page
+  says that you are not logged out and stays, so you can try again.
 - Revoking the key, letting it expire, or disabling its principal ends the session with its
   next request. A session opened with a bootstrap key ends when that key is removed from the
   configuration (and the server restarted).
@@ -108,11 +110,15 @@ injection screen held back, and writes the pipeline could not process).
 
 **Rephrase and approve** is how a quarantined record becomes a memory. The wording you write is
 stored as a write of yours and passes the whole write gate like any write: redaction, the
-injection screen, deduplication. If the gate holds your wording too, nothing changes and the
-page tells you. Otherwise the new record is committed with `metadata.rephrased_from` naming
+injection screen, deduplication. If the gate holds your wording too, the record under review
+stays as it was and the page tells you; the refused wording is kept as a `rejected` record
+with its own audit events, like any write the gate refuses. If your wording is already the
+text of another record with other labels or another scope, it is refused too: review that
+record instead. Otherwise the new record is committed with `metadata.rephrased_from` naming
 the reviewed record, which is rejected; the audit log has `memory.rephrase` (on the reviewed
 record, naming its replacement) and the write's own events. The new record keeps the reviewed
-record's subject, kind, tags, labels, scope and, for a revision, the version it replaces. Its
+record's subject, kind, tags, labels, scope, structured form, the files it is linked to
+(with the hashes it was written for) and, for a revision, the version it replaces. Its
 author (`provenance.agent`) is you, not the agent that proposed the original.
 
 A rejected or quarantined record is never recalled.
@@ -131,6 +137,9 @@ Whoever manages principals cannot hand out more than they hold:
 
 - a key carries at most the permissions of the credential that creates it (and at most what
   its principal's kind allows); rotating a key needs every permission that key carries;
+- a key is created or rotated only for a principal that has no more access than the manager
+  (the same three rules as below): a key acts with its principal's subjects and labels,
+  whatever permissions it carries;
 - a principal gets subjects within the manager's own, at least the manager's denied labels,
   and kinds within the manager's own;
 - a principal does not disable itself, and `admin:bootstrap` is not a stored principal.
@@ -201,15 +210,29 @@ can read it, pages without a Content-Security-Policy, and an API open to every o
   where there is no TLS: the cookie is then `memhouse_session` without `Secure`. That is the
   rule of `[server] session_cookie_secure = "auto"`. On any other host over plain HTTP the
   browser drops the cookie and login does not work: put TLS in front, which you need anyway.
-  `"never"` exists for a network you trust; the cookie can then be read on the wire.
+  `"never"` exists for a network you trust; the cookie can then be read on the wire. With an
+  `https` `[server] public_url` the cookie is always the `Secure` one, whatever `Host` a
+  proxy sends upstream; the plain cookie is then never set and never read.
 - **CSRF.** A request made with the cookie that changes anything must carry the session's
   token in `x-memhouse-csrf`. The page reads the token from `GET /v1/session` and keeps it in
   memory only. The token is derived from the session secret, so it is not stored either.
 - **Own origin only.** A request made with the cookie whose `Origin` is not the server's own
-  is refused, reads included, also from an origin on the CORS allow-list. Refusals are
-  audited (`access.denied`, rule `csrf`).
+  (scheme, host and port) is refused, reads included, also from an origin on the CORS
+  allow-list. So is one whose `Sec-Fetch-Site` is anything but `same-origin`: a page on a
+  sibling host of the same site, another site, or a navigation.
+- **What a refusal leaves.** A request the session's own rules refuse (the CSRF token, a
+  listed foreign origin, `Sec-Fetch-Site`) is audited as `access.denied` with rule `csrf`,
+  and does not count as use of the session. A request from an origin that is not on the
+  allow-list never gets that far: it is refused by the CORS rule before authentication,
+  counted in the metric `memhouse_refused_total{kind="cors"}`, and not audited.
 - **A key in the header wins.** The cookie is read only when the request carries no
   `Authorization` or `x-api-key`. API clients are not affected by any of this.
+- **The idle limit** counts from the last request the server accepted. The time is stored at
+  most once per interval (a twentieth of the limit, at most a minute), and the limit allows
+  for that interval: a session never ends before `session_idle_secs` have passed since its
+  last accepted request, and at most a minute after.
+- **A store that does not answer ends no session.** When the database cannot be read, the
+  request is refused (`401`, "session store unavailable") and the session is kept.
 - **Restart.** Sessions are rows in the database, so they survive a restart of `memhouse
   serve` and are valid on every replica. Rows are deleted at logout, when a session past its
   end is presented, and by the hourly retention pass.
@@ -243,10 +266,18 @@ browser's and are not affected.
 
 ### Behind a proxy
 
-The server compares a request's `Origin` with its `Host`. A reverse proxy must pass the
-public host on, either as `Host` (`proxy_set_header Host $host;` in nginx; Caddy does it by
-default) or as `X-Forwarded-Host`. If it sends neither, the console's own requests look
-foreign and are refused. See [operations.md](operations.md#reverse-proxy-and-tls).
+The server must know its own origin to tell the console's requests from another page's. One
+of two:
+
+- the proxy passes the public host on as `Host` (`proxy_set_header Host $host;` in nginx;
+  Caddy does it by default). The origin is then `https://<Host>`;
+- or `[server] public_url = "https://memhouse.example.com"` states it. Use this when the
+  proxy sends another `Host` upstream. It also makes the session cookie the `Secure` one
+  whatever the upstream `Host` is.
+
+Forwarding headers (`X-Forwarded-Host`, `Forwarded`) are not read: nothing tells the server
+that a proxy set them. With neither of the two, the console's own requests look foreign and
+are refused. See [operations.md](operations.md#reverse-proxy-and-tls).
 
 ## What is checked
 

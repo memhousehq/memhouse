@@ -747,8 +747,15 @@ async fn promotion(e: &Engine, db: &Db) -> Outcome {
         // instead of reading a record that is not written yet (a miss that depended on load).
         if r.status == MemoryStatus::Candidate && r.note.as_deref() == Some("still in the intake queue") {
             e.settle_subject(Some(TENANT.into()), subj, std::time::Duration::from_secs(60)).await?;
+            // Read as the answer of a write is built: a record that turned out to be a
+            // duplicate names the record it duplicates, and that one is the outcome.
             if let Some(m) = e.store.get(TENANT, r.id).await? {
                 r.status = m.status;
+                if let Some(dup) = m.metadata.get("duplicate_of").and_then(|d| serde_json::from_value::<Uuid>(d.clone()).ok()) {
+                    r.id = dup;
+                    r.deduplicated = true;
+                    r.status = e.store.get(TENANT, dup).await?.map(|d| d.status).unwrap_or(MemoryStatus::Committed);
+                }
             }
         }
         if r.status != MemoryStatus::Committed || r.deduplicated || sources.contains(&r.id) {
@@ -796,8 +803,12 @@ async fn promotion(e: &Engine, db: &Db) -> Outcome {
     // The gate of the target type still decides: an agent's promoted procedure waits.
     let own = q.remember(write(subj, &words("habit", 1), MemoryKind::Semantic)).await?.id;
     let waits = q.promote(PromoteRequest { sources: vec![own], kind: MemoryKind::Procedural, wait: true, ..Default::default() }).await?;
-    if waits.status != MemoryStatus::Candidate {
-        problems.push(format!("an agent's promotion to procedural memory is {}", waits.status.as_str()));
+    // `candidate` is also what a write answers before its gate ran: the gate's decision is
+    // the stored record's state once nothing of the subject is queued any more.
+    let settled = e.settle_subject(Some(TENANT.into()), subj, std::time::Duration::from_secs(60)).await?;
+    let stored = e.store.get(TENANT, waits.id).await?.map(|m| m.status);
+    if waits.status != MemoryStatus::Candidate || !settled || stored != Some(MemoryStatus::Candidate) {
+        problems.push(format!("an agent's promotion to procedural memory answered {} and is stored as {stored:?} (intake settled: {settled})", waits.status.as_str()));
     }
     // The whole chain goes with its first source: a note promoted to a fact, the fact to a procedure.
     let mut link = write(subj, &words("chain", 1), MemoryKind::Working);

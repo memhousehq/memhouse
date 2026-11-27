@@ -403,11 +403,12 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     let csrf = login.body["csrf_token"].as_str().unwrap_or_default().to_string();
     expect(
         login.status == 200 && cookie.starts_with("memhouse_session=mhs_") && login.body["principal"] == "admin:bootstrap",
-        format!("open session: {} {}", login.status, login.body),
+        // Neither the body nor the cookie: they hold the CSRF token and the session secret.
+        format!("open session: status {}, session cookie set: {}, principal {}", login.status, cookie.starts_with("memhouse_session=mhs_"), login.body["principal"]),
     );
     let by_cookie = [("authorization", ""), ("cookie", cookie.as_str())];
     let me = api.call("GET", "/v1/session", "/v1/session", None, &by_cookie).await?;
-    expect(me.status == 200 && me.body["csrf_token"] == csrf.as_str(), format!("session: {} {}", me.status, me.body));
+    expect(me.status == 200 && me.body["csrf_token"] == csrf.as_str(), format!("session: status {}, the same CSRF token: {}", me.status, me.body["csrf_token"] == csrf.as_str()));
     let none = api.call("GET", "/v1/session", "/v1/session", None, &[]).await?;
     expect(none.status == 404, format!("session of a request made with a key: {}", none.status));
     let q = api.call("GET", "/v1/review/queue", "/v1/review/queue?status=candidate,quarantined&limit=5", None, &by_cookie).await?;
@@ -434,6 +435,10 @@ async fn contract(api: &mut Api) -> anyhow::Result<Outcome> {
     );
     let keys = api.call("GET", "/v1/keys", "/v1/keys?principal=agent:gov-api-console", None, &[]).await?;
     expect(keys.status == 200 && keys.body.as_array().is_some_and(|a| a.len() == 1 && a[0]["id"] == key_id.as_str()), format!("keys: {} {}", keys.status, keys.body));
+    // The body is optional: without one the old key works for the default grace period.
+    let bare = api.call("POST", "/v1/keys/{id}/rotate", &format!("/v1/keys/{key_id}/rotate"), None, &[]).await?;
+    let key_id = bare.body["info"]["id"].as_str().unwrap_or_default().to_string();
+    expect(bare.status == 200 && bare.body["old_expires_at"].is_string() && !key_id.is_empty(), format!("rotate key without a body: {} {}", bare.status, bare.body["info"]));
     let rotated = api.call("POST", "/v1/keys/{id}/rotate", &format!("/v1/keys/{key_id}/rotate"), Some(json!({"grace_secs": 0})), &[]).await?;
     let new_id = rotated.body["info"]["id"].as_str().unwrap_or_default().to_string();
     expect(rotated.status == 200 && rotated.body["replaces"] == key_id.as_str() && new_id != key_id, format!("rotate key: {} {}", rotated.status, rotated.body["info"]));

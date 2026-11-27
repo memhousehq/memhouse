@@ -70,6 +70,9 @@ enum Stability {
     Deprecated,
 }
 
+/// Operations whose request body may be left out.
+const OPTIONAL_BODY: &[&str] = &["rotateKey"];
+
 struct Op {
     method: &'static str,
     path: &'static str,
@@ -1057,7 +1060,8 @@ pub fn spec() -> Value {
             o["parameters"] = json!(params);
         }
         if let Some(b) = &op.body {
-            o["requestBody"] = json!({"required": true, "content": {"application/json": {"schema": b}}});
+            // A body is required unless the operation is listed as taking none by default.
+            o["requestBody"] = json!({"required": !OPTIONAL_BODY.contains(&op.id), "content": {"application/json": {"schema": b}}});
         }
         let mut responses = Map::new();
         let media = if op.path == "/metrics" { "text/plain" } else { "application/json" };
@@ -1071,6 +1075,16 @@ pub fn spec() -> Value {
         o["responses"] = Value::Object(responses);
         if op.open {
             o["security"] = json!([]);
+        }
+        // The session operations do not take every credential: a session is opened with a key
+        // and read or closed with its own cookie.
+        match op.id {
+            "openSession" => o["security"] = json!([{"bearer": []}, {"apiKey": []}]),
+            "session" | "closeSession" => o["security"] = json!([{"session": []}]),
+            _ => {}
+        }
+        if op.id == "closeSession" {
+            o["parameters"].as_array_mut().expect("parameters").push(json!({"$ref": "#/components/parameters/Csrf"}));
         }
         if op.stability == Stability::Deprecated {
             o["deprecated"] = json!(true);
@@ -1104,6 +1118,7 @@ pub fn spec() -> Value {
         "components": {
             "schemas": g.take_definitions(true),
             "parameters": {
+                "Csrf": {"name": "x-memhouse-csrf", "in": "header", "required": true, "description": "The session's CSRF token (`csrf_token` of `GET /v1/session`). Every request made with the session cookie that is not a `GET` must carry it; a request made with a key or token does not.", "schema": {"type": "string"}},
                 "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": false, "description": "1 to 255 characters. A repeat with the same key and request returns the first response; the same key with another request is a 409. Same as the body's `request_key`.", "schema": {"type": "string", "minLength": 1, "maxLength": 255}},
                 "Actor": {"name": "x-memhouse-actor", "in": "header", "required": false, "deprecated": true, "description": "Ignored since 1.1: the audit actor and `provenance.agent` are the authenticated principal.", "schema": {"type": "string", "maxLength": 80}},
                 "User": {"name": "x-memhouse-user", "in": "header", "required": false, "description": "The user the call acts for. Accepted only from admins and from agents trusted to act for users (`act_as`); a user's key always acts for that user, a token for its own user.", "schema": {"type": "string"}}
@@ -1111,7 +1126,7 @@ pub fn spec() -> Value {
             "securitySchemes": {
                 "bearer": {"type": "http", "scheme": "bearer", "description": "`Authorization: Bearer <key or token>`: a principal's API key (`mh_…`, from `memhouse key create`), a short-lived agent token (`mht.…`, from `POST /v1/tokens`), or a bootstrap key from `[server] api_keys`."},
                 "apiKey": {"type": "apiKey", "in": "header", "name": "x-api-key"},
-                "session": {"type": "apiKey", "in": "cookie", "name": "__Host-memhouse_session", "description": "The console's session cookie, set by `POST /v1/session` (`memhouse_session` on a loopback host). Read only when the request carries no key or token. A request made with it must come from the server's own origin and, to change anything, send the session's `x-memhouse-csrf` token."}
+                "session": {"type": "apiKey", "in": "cookie", "name": "__Host-memhouse_session", "description": "The console's session cookie, set by `POST /v1/session` (`memhouse_session` on a loopback host). Read only when the request carries no key or token. A request made with it must come from the server's own origin and, unless it is a `GET`, send the session's CSRF token in the `x-memhouse-csrf` header (the `Csrf` parameter); this applies to every operation called with the cookie, not only to those that list the parameter."}
             }
         }
     })

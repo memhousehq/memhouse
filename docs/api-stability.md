@@ -99,7 +99,7 @@ names a recorded exception, and they are written here so clients are ready for t
 | G19 (1.9) | A `procedural` memory is returned by a recall only when it matches the task: two content words in common with the query, a requested tag, or a file named in `paths` ([task-matched retrieval](memory-types.md#task-matched-retrieval)). Before, any procedure the search found was returned. | Word the query after the procedure, filter by `tags`, or pass `paths`. |
 | G19 (1.9) | An agent's procedural proposal marked as a correction (`metadata.correction`, or worded as one) is committed without a reviewer once the same correction has been given `[intake] procedural_corrections` times (3). Before, only a reviewer committed it. | Set `procedural_corrections = 0` to keep it to the reviewer. |
 | G19 (1.9) | `code_refs` paths are normalized on write (`./src//a.rs` becomes `src/a.rs`), a path that leaves the repository is refused with `400`, and at most 200 references are accepted. | Send repository-relative paths. |
-| G20 (1.10) | A browser request from another origin is refused with `403` unless the origin is in `[server] cors_origins`; before, every origin was allowed. Requests without an `Origin` header (curl, SDKs, agents) are not affected. | List the origins of your own browser applications in `cors_origins`. |
+| G20 (1.10) | A browser request from another origin is refused with `403` unless the origin is in `[server] cors_origins`; before, every origin was allowed ([recorded exception](#recorded-exception-browser-requests-from-other-origins-110)). Requests without an `Origin` header (curl, SDKs, agents) are not affected. | List the origins of your own browser applications in `cors_origins`. |
 | G20 (1.10) | `/` serves the admin console, which logs in with a session; the Memory Browser page that kept a key in the browser's storage is gone. | Log in to the console with a key ([console.md](console.md)). |
 | G20 (1.10) | Committing a quarantined record with `POST /v1/review` still answers `409`, now with the way out: reject it, or approve another wording with `content`. | Nothing. |
 | G20 (1.10) | The `principal:manage` permission is new, and keys list their permissions: an admin key created before 1.10 cannot manage principals over the API. Bootstrap keys can. | Create a new key for the admin. |
@@ -161,6 +161,23 @@ behaviour change needs a new major version. It was approved by the maintainer on
   gate that blocks a policy, model or engine change that degrades them", 13 November 2026).
 - **What a client does.** Treat `409` from an approval as "not approved", read the report in the
   message, and allow for a slower answer when the tenant has suites.
+
+### Recorded exception: browser requests from other origins (1.10)
+
+- **What changed.** Up to 1.9 the server answered every origin with permissive CORS headers.
+  From 1.10 a request that carries an `Origin` other than the server's own is refused with
+  `403 forbidden` before anything runs, unless the origin is listed in
+  `[server] cors_origins` ([configuration.md](configuration.md#server)).
+- **Who is affected.** A browser application served from another origin that calls the API
+  with a key or token. A client that sends no `Origin` header (curl, the SDKs, agents,
+  servers) is not affected, and neither is the console, which is served by the server itself.
+- **Why it was allowed inside v1.** It closes threat T3 of the
+  [threat model](threat-model.md): with every origin allowed, any page a user visited could
+  call the API from that user's browser. The roadmap named the origin allow-list as a
+  deliverable of G20.
+- **What a client does.** The operator lists the application's origin in `cors_origins`. The
+  application goes on sending its own key or token; the console's session cookie is not
+  accepted from another origin.
 
 No other exception has been made. The compatibility check below compares shapes, not this kind
 of behaviour, so behaviour changes are reviewed against this section by hand.

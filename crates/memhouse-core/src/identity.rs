@@ -192,13 +192,23 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     /// The end of the session whatever its use (`[server] session_ttl_secs`).
     pub expires_at: DateTime<Utc>,
-    /// The last request made with it, to within [`SESSION_TOUCH_SECS`].
+    /// The last accepted request made with it, to within [`session_touch_secs`].
     pub last_seen_at: DateTime<Utc>,
 }
 
-/// How stale `Session::last_seen_at` may be: a request writes it only when it is older than
-/// this, so reading pages does not write a row per request.
+/// How stale `Session::last_seen_at` may be at most: a request writes it only when it is older
+/// than [`session_touch_secs`], so reading pages does not write a row per request.
 pub const SESSION_TOUCH_SECS: i64 = 60;
+
+/// The touch interval for an idle limit: a twentieth of it, between a second and a minute. The
+/// idle check allows the same interval on top of the limit, so a session never ends before
+/// `session_idle_secs` have passed since its last accepted request, and at most this much after.
+pub fn session_touch_secs(idle_secs: u64) -> i64 {
+    if idle_secs == 0 {
+        return SESSION_TOUCH_SECS;
+    }
+    ((idle_secs / 20) as i64).clamp(1, SESSION_TOUCH_SECS)
+}
 
 /// The prefix of a session secret, as the cookie carries it.
 pub const SESSION_PREFIX: &str = "mhs_";
@@ -586,22 +596,30 @@ impl Authenticator {
             Err(_) => return Err(fail("session store unavailable", None)),
         };
         let now = Utc::now();
+        // Never early: the stored last use may be older than the real one by the touch
+        // interval, so that much is added to the idle limit (at most a minute late).
         let idle = self.cfg.server.session_idle_secs;
-        if s.expires_at <= now || (idle > 0 && s.last_seen_at + chrono::Duration::seconds(idle as i64) <= now) {
+        let idle_end = s.last_seen_at + chrono::Duration::seconds(idle as i64 + session_touch_secs(idle));
+        if s.expires_at <= now || (idle > 0 && idle_end <= now) {
             // The row has no further use; a failure to delete leaves it to the retention pass.
             let _ = self.store.session_delete(&id).await;
             return Err(fail("expired session", Some(&s)));
         }
+        // A lookup that fails says nothing about the session: it is kept, and the request
+        // refused for now. Only an answer that the key or principal is gone ends it.
+        let unavailable = || fail("session store unavailable", Some(&s));
         let mut who = if s.key_id == BOOTSTRAP {
-            let live = match s.key_check.as_deref().and_then(|c| c.split_once('.')) {
-                Some((kid, _)) => match self.store.signing_key(kid).await {
-                    Ok(Some(secret)) => {
-                        let stored = s.key_check.as_deref().unwrap_or_default();
-                        self.cfg.server.api_keys.iter().any(|k| constant_time_eq(Self::bootstrap_check(kid, &secret, k).as_bytes(), stored.as_bytes()))
-                    }
-                    _ => false,
-                },
-                None => false,
+            let Some((kid, _)) = s.key_check.as_deref().and_then(|c| c.split_once('.')) else {
+                let _ = self.store.session_delete(&id).await;
+                return Err(fail("the key that opened this session is no longer configured", Some(&s)));
+            };
+            let live = match self.store.signing_key(kid).await {
+                Ok(Some(secret)) => {
+                    let stored = s.key_check.as_deref().unwrap_or_default();
+                    self.cfg.server.api_keys.iter().any(|k| constant_time_eq(Self::bootstrap_check(kid, &secret, k).as_bytes(), stored.as_bytes()))
+                }
+                Ok(None) => false,
+                Err(_) => return Err(unavailable()),
             };
             if !live {
                 let _ = self.store.session_delete(&id).await;
@@ -611,13 +629,20 @@ impl Authenticator {
         } else {
             let key = match self.store.api_key_get(&s.key_id).await {
                 Ok(Some(k)) if k.principal_id == s.principal_id => k,
-                _ => {
+                Ok(_) => {
                     let _ = self.store.session_delete(&id).await;
                     return Err(fail("the key that opened this session is gone", Some(&s)));
                 }
+                Err(_) => return Err(unavailable()),
             };
+            // Read here as well, to tell a principal that is gone from a store that did not answer.
+            if self.store.principal_get(&key.principal_id).await.is_err() {
+                return Err(unavailable());
+            }
             match self.key_identity(&key, asserted_user).await {
                 Ok(who) => who,
+                // The user the request asserts is the request's fault, not the session's.
+                Err(f) if !matches!(f.reason, "revoked key" | "expired key" | "disabled principal" | "unknown principal") => return Err(f),
                 Err(f) => {
                     let _ = self.store.session_delete(&id).await;
                     return Err(AuthFailure { reason: session_reason(f.reason), ..f });
@@ -626,12 +651,19 @@ impl Authenticator {
         };
         who.via = Via::Session;
         who.expires_at = Some(s.expires_at);
-        if (now - s.last_seen_at).num_seconds() >= SESSION_TOUCH_SECS {
-            if let Err(e) = self.store.session_touch(&id, now).await {
+        Ok((who, s))
+    }
+
+    /// Record that a session was used by a request the server accepted. Called after the
+    /// request passed the console's origin and CSRF rules: a refused request does not keep a
+    /// session alive. Written at most once per touch interval.
+    pub async fn session_used(&self, s: &Session) {
+        let now = Utc::now();
+        if (now - s.last_seen_at).num_seconds() >= session_touch_secs(self.cfg.server.session_idle_secs) {
+            if let Err(e) = self.store.session_touch(&s.id, now).await {
                 tracing::warn!("session last-seen time not written: {e:#}");
             }
         }
-        Ok((who, s))
     }
 
     /// End a session (log out). False when there was none.

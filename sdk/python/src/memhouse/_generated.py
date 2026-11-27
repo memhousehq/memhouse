@@ -1183,7 +1183,8 @@ PrincipalKind = Literal["agent", "user", "admin"]
 
 class PrincipalRequest(TypedDict, total=False):
     """Create a principal or replace its attributes (`PUT /v1/principals/{id}`). The kind is the
-    prefix of the id. Every field is the whole new value: one left out takes its default.
+    prefix of the id. Every field is the whole new value: one left out takes its default,
+    except `name`, which is then kept.
     """
 
     # May state which user it acts for (a backend that authenticates its users).
@@ -1197,6 +1198,9 @@ class PrincipalRequest(TypedDict, total=False):
 
     # Memory kinds it may use. Default: all.
     kinds: List[MemoryKind]
+
+    # A display name. The one field that is kept when left out: absent, `null` or empty
+    # leaves the principal's current name as it is (a name is replaced, never cleared).
     name: Optional[str]
     org: Optional[str]
 
@@ -2184,7 +2188,7 @@ class GeneratedClient:
         """
         return self._call("POST", "/v1/keys/" + _segment(id) + "/revoke", headers={"x-memhouse-user": user, "x-memhouse-actor": actor})
 
-    def rotate_key(self, id: str, body: KeyRotateRequest, *, user: Optional[str] = None, actor: Optional[str] = None) -> KeyCreated:
+    def rotate_key(self, id: str, body: Optional[KeyRotateRequest] = None, *, user: Optional[str] = None, actor: Optional[str] = None) -> KeyCreated:
         """Replace an API key.
 
         A new key with the same permissions for the same principal; the old one works until the grace period ends. The caller must carry every permission of the key, since it receives the new one. The body is optional. Audited as `key.create` and `key.rotate`. Needs `principal:manage`.
@@ -2522,7 +2526,7 @@ class GeneratedClient:
         """
         return self._call("POST", "/v1/session", headers={"x-memhouse-user": user, "x-memhouse-actor": actor})
 
-    def close_session(self, *, user: Optional[str] = None, actor: Optional[str] = None) -> SessionClosed:
+    def close_session(self, csrf: str, *, user: Optional[str] = None, actor: Optional[str] = None) -> SessionClosed:
         """Log out.
 
         Ends the session on the server and clears the cookie. Audited as `session.logout`.
@@ -2531,8 +2535,9 @@ class GeneratedClient:
 
         - `user`: The user the call acts for. Accepted only from admins and from agents trusted to act for users (`act_as`); a user's key always acts for that user, a token for its own user.
         - `actor`: (deprecated) Ignored since 1.1: the audit actor and `provenance.agent` are the authenticated principal.
+        - `csrf`: The session's CSRF token (`csrf_token` of `GET /v1/session`). Every request made with the session cookie that is not a `GET` must carry it; a request made with a key or token does not.
         """
-        return self._call("DELETE", "/v1/session", headers={"x-memhouse-user": user, "x-memhouse-actor": actor})
+        return self._call("DELETE", "/v1/session", headers={"x-memhouse-user": user, "x-memhouse-actor": actor, "x-memhouse-csrf": csrf})
 
     def stats(self, *, user: Optional[str] = None) -> Stats:
         """Counts for the configured tenant.

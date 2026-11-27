@@ -1379,7 +1379,8 @@ export type PrincipalKind = "agent" | "user" | "admin";
 
 /**
  * Create a principal or replace its attributes (`PUT /v1/principals/{id}`). The kind is the
- * prefix of the id. Every field is the whole new value: one left out takes its default.
+ * prefix of the id. Every field is the whole new value: one left out takes its default,
+ * except `name`, which is then kept.
  */
 export interface PrincipalRequest {
   /**
@@ -1398,6 +1399,10 @@ export interface PrincipalRequest {
    * Memory kinds it may use. Default: all.
    */
   kinds?: MemoryKind[];
+  /**
+   * A display name. The one field that is kept when left out: absent, `null` or empty
+   * leaves the principal's current name as it is (a name is replaced, never cleared).
+   */
   name?: string | null;
   org?: string | null;
   /**
@@ -2567,7 +2572,7 @@ export abstract class GeneratedClient {
    * - `options.user`: The user the call acts for. Accepted only from admins and from agents trusted to act for users (`act_as`); a user's key always acts for that user, a token for its own user.
    * - `options.actor`: (deprecated) Ignored since 1.1: the audit actor and `provenance.agent` are the authenticated principal.
    */
-  rotateKey(id: string, body: KeyRotateRequest, options: { user?: string; actor?: string } = {}): Promise<KeyCreated> {
+  rotateKey(id: string, body: KeyRotateRequest | undefined, options: { user?: string; actor?: string } = {}): Promise<KeyCreated> {
     return this.call("POST", `/v1/keys/${encodeURIComponent(String(id))}/rotate`, { body, headers: { "x-memhouse-user": options.user, "x-memhouse-actor": options.actor } });
   }
 
@@ -2961,9 +2966,10 @@ export abstract class GeneratedClient {
    *
    * - `options.user`: The user the call acts for. Accepted only from admins and from agents trusted to act for users (`act_as`); a user's key always acts for that user, a token for its own user.
    * - `options.actor`: (deprecated) Ignored since 1.1: the audit actor and `provenance.agent` are the authenticated principal.
+   * - `csrf`: The session's CSRF token (`csrf_token` of `GET /v1/session`). Every request made with the session cookie that is not a `GET` must carry it; a request made with a key or token does not.
    */
-  closeSession(options: { user?: string; actor?: string } = {}): Promise<SessionClosed> {
-    return this.call("DELETE", "/v1/session", { headers: { "x-memhouse-user": options.user, "x-memhouse-actor": options.actor } });
+  closeSession(csrf: string, options: { user?: string; actor?: string } = {}): Promise<SessionClosed> {
+    return this.call("DELETE", "/v1/session", { headers: { "x-memhouse-user": options.user, "x-memhouse-actor": options.actor, "x-memhouse-csrf": csrf } });
   }
 
   /**

@@ -235,10 +235,12 @@ server {
 }
 ```
 
-**Pass the public host on.** The server refuses a browser request whose `Origin` is not its
-own, and takes its own from the `Host` header or from `X-Forwarded-Host`. `proxy_set_header
-Host $host;` above does it; Caddy does it by default. Without either, the console's own
-requests are refused with `403`.
+**Tell the server its origin.** The server refuses a browser request whose `Origin` is not
+its own. It takes its own from the `Host` header: `proxy_set_header Host $host;` above
+passes it on, and Caddy does by default. If your proxy sends another `Host` upstream, set
+`[server] public_url = "https://memory.example.com"` instead
+([configuration.md](configuration.md#server)). `X-Forwarded-Host` is not read. With neither,
+the console's own requests are refused with `403`.
 
 **Other origins.** Pages of another origin cannot call the API from a browser unless the
 origin is in `[server] cors_origins` ([configuration.md](configuration.md#server)); there is

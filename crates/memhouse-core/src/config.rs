@@ -470,14 +470,22 @@ pub struct ServerConfig {
     /// default): same origin only. Such a page sends a key or token itself; the console's
     /// session cookie is never accepted from another origin. `*` is refused.
     pub cors_origins: Vec<String>,
+    /// The origin browsers reach this server at when it is behind a reverse proxy, such as
+    /// `https://memhouse.example.com` (scheme, host and port; no path). The console's own
+    /// requests are recognized by it, and with an `https` value the session cookie is always
+    /// the `Secure` one. Unset: the origin is taken from the request's `Host`, which a proxy
+    /// must then pass on. Forwarding headers (`X-Forwarded-Host`) are never trusted.
+    pub public_url: Option<String>,
     /// How long a console session lasts from login, whatever its use.
     pub session_ttl_secs: u64,
-    /// A console session ends when it was not used for this long; 0 turns the idle limit off.
+    /// A console session ends when it was not used for this long (to within a minute after);
+    /// 0 turns the idle limit off, and a limit is at least 60.
     pub session_idle_secs: u64,
     /// Whether the session cookie is marked `Secure` (and named with the `__Host-` prefix):
     /// `auto` does so unless the request came for a loopback host (`localhost`, `127.0.0.1`,
-    /// `[::1]`), where browsers have no TLS to send it over; `always`; `never` (plain HTTP on
-    /// a network you trust: the cookie can then be read on the wire).
+    /// `[::1]`) and no `https` `public_url` is set: there browsers have no TLS to send it
+    /// over; `always`; `never` (plain HTTP on a network you trust: the cookie can then be
+    /// read on the wire).
     pub session_cookie_secure: CookieSecure,
 }
 
@@ -499,6 +507,7 @@ impl Default for ServerConfig {
             mcp_legacy_tools: false,
             console: true,
             cors_origins: vec![],
+            public_url: None,
             session_ttl_secs: 8 * 3600,
             session_idle_secs: 30 * 60,
             session_cookie_secure: CookieSecure::Auto,
@@ -748,6 +757,18 @@ impl Config {
             anyhow::ensure!(
                 rest.is_some_and(|r| !r.is_empty() && !r.contains(['/', '*', ' ', ','])),
                 "server.cors_origins takes exact origins such as https://admin.example.com (scheme, host and port; no path, no wildcard), not {o:?}"
+            );
+        }
+        anyhow::ensure!(
+            self.server.session_idle_secs == 0 || self.server.session_idle_secs >= 60,
+            "server.session_idle_secs must be 0 (no idle limit) or at least 60, not {}",
+            self.server.session_idle_secs
+        );
+        if let Some(u) = &self.server.public_url {
+            let rest = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://"));
+            anyhow::ensure!(
+                rest.is_some_and(|r| !r.is_empty() && !r.contains(['/', '*', ' ', ',', '?', '#', '@'])),
+                "server.public_url is the origin the console is reached at, such as https://memhouse.example.com (scheme, host and port; no path), not {u:?}"
             );
         }
         anyhow::ensure!(self.server.session_ttl_secs >= 60 && self.server.session_ttl_secs <= 30 * 86_400, "server.session_ttl_secs must be between 60 and 2592000 (30 days)");

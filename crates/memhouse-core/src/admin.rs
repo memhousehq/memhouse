@@ -71,9 +71,12 @@ impl From<Principal> for PrincipalInfo {
 }
 
 /// Create a principal or replace its attributes (`PUT /v1/principals/{id}`). The kind is the
-/// prefix of the id. Every field is the whole new value: one left out takes its default.
+/// prefix of the id. Every field is the whole new value: one left out takes its default,
+/// except `name`, which is then kept.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PrincipalRequest {
+    /// A display name. The one field that is kept when left out: absent, `null` or empty
+    /// leaves the principal's current name as it is (a name is replaced, never cleared).
     #[serde(default)]
     pub name: Option<String>,
     /// Subjects it may use: exact names or prefixes ending in `*`. Default: `["*"]`, all.
@@ -603,6 +606,12 @@ impl Engine {
             }
             o.insert("rephrased_from".into(), json!(m.id));
         }
+        // What the reviewed record carries beside its text goes to the new wording: its
+        // structured form, and the files it is about with the hashes it was written for, so
+        // the replacement goes stale with them like the original would (TPL-04). A file seen
+        // changed since is reported again by the next hook, which marks the replacement.
+        let (structured, code_refs) = self.store.representations(tenant, m.id).await?;
+        let code_refs = code_refs.into_iter().map(|c| CodeRef::new(c.path, c.blob_hash)).collect();
         let req = RememberRequest {
             tenant: Some(tenant.to_string()),
             subject: Some(m.subject.clone()),
@@ -619,12 +628,25 @@ impl Engine {
             scope: Some(m.scope.clone()).filter(|s| !s.is_empty()),
             user,
             expires_at: m.expires_at,
+            structured,
+            code_refs,
             wait: true,
             ..Default::default()
         };
         let written = self.remember_with(req, crate::intake::Entry::Commit).await?;
         if written.id == m.id {
             return Err(error::conflict("the rephrased text was taken as the record under review; use another wording"));
+        }
+        if written.deduplicated {
+            // The wording exists already as another record. The reviewer was authorized for
+            // the reviewed record's labels and scope; the lookup that found the other record
+            // does not compare labels. Unless it carries exactly those, this review neither
+            // commits it nor points at it: it may be a record the reviewer cannot see.
+            let same = |a: &[String], b: &[String]| a.iter().collect::<std::collections::BTreeSet<_>>() == b.iter().collect::<std::collections::BTreeSet<_>>();
+            let other = self.store.get(tenant, written.id).await?;
+            if !other.as_ref().is_some_and(|o| same(&o.labels, &m.labels) && o.scope == m.scope && o.subject == m.subject) {
+                return Err(error::conflict("the rephrased text is the text of another record; the record under review is unchanged (use another wording, or review that record)"));
+            }
         }
         let status = match written.status {
             MemoryStatus::Committed => MemoryStatus::Committed,

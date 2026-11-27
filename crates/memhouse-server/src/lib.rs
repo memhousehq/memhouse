@@ -213,7 +213,7 @@ async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Respo
             Ok((id, session)) => {
                 // The cookie is sent by the browser, not by the page: a request made with it
                 // must come from the console itself and, to change anything, prove it (CSRF).
-                if let Some(why) = console::guard(req.headers(), req.method(), &secret) {
+                if let Some(why) = console::guard(&st.engine.cfg, req.headers(), req.method(), &secret) {
                     memhouse_core::metrics::inc("memhouse_refused_total", &[("kind", "session"), ("reason", "csrf")], 1.0);
                     let detail = json!({ "rule": "csrf", "reasons": [why], "key": id.key_id, "route": route, "method": req.method().as_str() });
                     if let Err(e) = st.engine.store.audit(id.id(), "access.denied", &id.principal.tenant, None, None, detail).await {
@@ -221,6 +221,9 @@ async fn auth(State(st): State<AppState>, mut req: Request, next: Next) -> Respo
                     }
                     return (StatusCode::FORBIDDEN, Json(ErrorBody { error: why.into(), code: ErrorCode::Forbidden })).into_response();
                 }
+                // Only a request that got this far counts as use: a refused one above does
+                // not push the idle limit out.
+                st.engine.auth.session_used(&session).await;
                 req.extensions_mut().insert(id);
                 req.extensions_mut().insert(console::SessionCtx { secret, expires_at: session.expires_at });
                 return next.run(req).await;

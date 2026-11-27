@@ -10,7 +10,14 @@
 // - Data is put on the page as text nodes and attributes through the DOM, never as markup.
 'use strict';
 
-const state = { csrf: '', session: null, subject: null, cursor: null, queueCursor: null, kinds: [] };
+// `epoch` counts sessions: it moves at every login and logout, and an answer that belongs to
+// an earlier one is dropped, so nothing of one principal's session reaches the next one's page.
+// `listing` counts requests for the memory list, so a late answer for another subject or
+// filter does not replace the list on screen.
+const state = { csrf: '', session: null, subject: null, cursor: null, queueCursor: null, epoch: 0, listing: 0 };
+
+// Thrown for an answer that arrived after its session ended; nothing is shown for it.
+class Stale extends Error {}
 const KINDS = ['semantic', 'preference', 'procedural', 'commitment', 'episodic', 'document', 'working', 'taxonomic'];
 
 const $ = (id) => document.getElementById(id);
@@ -53,6 +60,7 @@ class ApiError extends Error {
 // Every call goes to this server with the session cookie; one that changes something carries
 // the session's CSRF token. A 401 means the session ended: back to the login form.
 async function api(method, path, body, extra) {
+  const epoch = state.epoch;
   const headers = { ...(extra || {}) };
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (method !== 'GET' && state.csrf) headers['x-memhouse-csrf'] = state.csrf;
@@ -63,6 +71,7 @@ async function api(method, path, body, extra) {
   } catch (_) {
     data = null;
   }
+  if (epoch !== state.epoch) throw new Stale();
   if (resp.status === 401 && path !== '/v1/session') {
     showLogin('The session ended. Log in again.');
   }
@@ -77,6 +86,7 @@ async function act(label, fn, after) {
     notice(typeof label === 'function' ? label(r) : label);
     if (after) await after(r);
   } catch (e) {
+    if (e instanceof Stale) return;
     notice(e.status === 403 ? `Refused by the server: ${e.message}` : e.message, true);
   }
 }
@@ -120,9 +130,33 @@ function table(head, rows) {
 
 // ---- session ----
 
-function showLogin(message) {
+// Everything a session put on the page, and everything the page remembers of it: memories,
+// tables, an issued key, form values, the selected subject, cursors. Cleared at every login
+// and logout, so the next principal starts with an empty page and sees only what the server
+// answers to it.
+const VIEWS = ['subjects', 'memories', 'explanation', 'queue', 'principals', 'keys', 'policy-specs', 'policy-history', 'eval-trend', 'eval-suites', 'eval-runs', 'advisor', 'stats', 'session', 'audit'];
+const TEXTS = ['memories-summary', 'queue-summary', 'policy-running', 'policy-warning', 'policy-output', 'new-key-value', 'notice'];
+
+function clearSessionData() {
+  state.epoch += 1;
+  state.listing += 1;
   state.csrf = '';
   state.session = null;
+  state.subject = null;
+  state.cursor = null;
+  state.queueCursor = null;
+  for (const id of VIEWS) fill(id);
+  for (const id of TEXTS) $(id).textContent = '';
+  $('new-key').hidden = true;
+  $('memories-more').hidden = true;
+  $('queue-more').hidden = true;
+  for (const form of document.querySelectorAll('main form')) form.reset();
+  if ($('dialog').open) $('dialog').close();
+  $('dialog-input').value = '';
+}
+
+function showLogin(message) {
+  clearSessionData();
   $('app').hidden = true;
   $('logout').hidden = true;
   $('login').hidden = false;
@@ -132,6 +166,7 @@ function showLogin(message) {
 }
 
 function showApp(session) {
+  clearSessionData();
   state.session = session;
   state.csrf = session.csrf_token;
   $('login').hidden = true;
@@ -157,11 +192,18 @@ async function login(ev) {
   }
 }
 
+// Logged out only when the server says the session is over: it answered the request, or it
+// no longer knows the session (401). Anything else (no connection, a server error) leaves the
+// session alive on the server and in the cookie, so the page says so and stays, to try again.
 async function logout() {
   try {
     await api('DELETE', '/v1/session');
-  } catch (_) {
-    // The session may have ended already; either way the page forgets it.
+  } catch (e) {
+    if (e instanceof Stale) return;
+    if (e.status !== 401) {
+      notice(`Not logged out: ${e.message || 'the server did not answer'}. The session is still open; try again.`, true);
+      return;
+    }
   }
   showLogin('Logged out.');
 }
@@ -255,7 +297,12 @@ async function loadMemories(reset) {
   if (kind) params.set('kinds', kind);
   if ($('show-inactive').checked) params.set('include_inactive', 'true');
   if (state.cursor) params.set('cursor', state.cursor);
-  const page = await api('GET', `/v1/subjects/${encodeURIComponent(state.subject)}/memories?${params}`);
+  const subject = state.subject;
+  const request = ++state.listing;
+  const page = await api('GET', `/v1/subjects/${encodeURIComponent(subject)}/memories?${params}`);
+  // Another list was asked for meanwhile (another subject, filter or page): this answer is
+  // not the one on screen and must not replace it or its cursor.
+  if (request !== state.listing || subject !== state.subject) return;
   const cards = page.items.map((m) => memoryCard(m, null, memoryActions(m)));
   if (reset) fill('memories', cards);
   else $('memories').append(...cards);
@@ -271,7 +318,11 @@ async function search(ev) {
   if (!query) return act('', () => loadMemories(true));
   const kind = $('search-kind').value;
   await act('', async () => {
-    const r = await api('POST', '/v1/recall', { subject: state.subject, query, k: 20, kinds: kind ? [kind] : null });
+    const subject = state.subject;
+    const request = ++state.listing;
+    const r = await api('POST', '/v1/recall', { subject, query, k: 20, kinds: kind ? [kind] : null });
+    if (request !== state.listing || subject !== state.subject) return;
+    state.cursor = null;
     $('memories-more').hidden = true;
     $('memories-summary').textContent = `${r.hits.length} results in ${r.took_ms.toFixed(1)} ms${r.reranked ? ' (reranked)' : ''}${r.degraded ? ` · degraded: ${r.degraded}` : ''}`;
     fill(
@@ -509,6 +560,7 @@ async function policyCall(path, body, done) {
     $('policy-output').textContent = JSON.stringify(r, null, 2);
     if (done) await done(r);
   } catch (e) {
+    if (e instanceof Stale) return;
     $('policy-output').textContent = e.status === 403 ? `Refused by the server: ${e.message}` : e.message;
   }
 }

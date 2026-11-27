@@ -660,6 +660,20 @@ impl Caller {
         Ok(self.engine.principal_list(self.tenant()).await?.into_iter().map(PrincipalInfo::from).collect())
     }
 
+    /// A key of a principal acts with that principal's subjects, labels and kinds, whatever
+    /// permissions it carries: a caller gets (or hands out) one only for a principal that has
+    /// no more access than the caller itself, by the rule of [`Self::within_own`]. Otherwise a
+    /// restricted administrator would mint itself a key of an unrestricted one.
+    async fn target_within_own(&self, principal: &str) -> anyhow::Result<()> {
+        match self.engine.store.principal_get(principal).await? {
+            Some(p) if p.tenant == self.tenant() => {
+                self.within_own(&PrincipalRequest { subjects: p.subjects, kinds: p.kinds, denied_labels: p.denied_labels, ..Default::default() })
+            }
+            // Not this tenant's, or none: the engine answers `not_found` for both.
+            _ => Ok(()),
+        }
+    }
+
     /// A caller gives a principal no more than it has itself: subjects within its own, at
     /// least its own denied labels, kinds within its own.
     fn within_own(&self, req: &PrincipalRequest) -> anyhow::Result<()> {
@@ -707,6 +721,7 @@ impl Caller {
     /// Create a key; it carries at most the caller's own permissions.
     pub async fn key_create(&self, req: &KeyRequest) -> anyhow::Result<KeyCreated> {
         self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        self.target_within_own(&req.principal).await?;
         let expires = req.expires_in_secs.map(|s| chrono::Duration::seconds(s.min(10 * 365 * 86_400) as i64));
         let (k, key) = self.engine.key_create(self.tenant(), &req.principal, req.scopes.clone(), expires, self.who.id(), Some(&self.who.scopes)).await?;
         Ok(KeyCreated { key, info: KeyInfo::of(&k, chrono::Utc::now()), replaces: None, old_expires_at: None })
@@ -721,6 +736,9 @@ impl Caller {
     /// Replace a key; the caller must carry every permission of it, since it gets the new one.
     pub async fn key_rotate(&self, id: &str, req: &KeyRotateRequest) -> anyhow::Result<KeyCreated> {
         self.decide(&AccessRequest::new(Operation::PrincipalManage)).await?;
+        if let Some(k) = self.engine.store.api_key_get(id).await? {
+            self.target_within_own(&k.principal_id).await?;
+        }
         let grace = chrono::Duration::seconds(req.grace_secs.unwrap_or(86_400).min(30 * 86_400) as i64);
         let (k, key, until) = self.engine.key_rotate(self.tenant(), id, grace, self.who.id(), Some(&self.who.scopes)).await?;
         Ok(KeyCreated { key, info: KeyInfo::of(&k, chrono::Utc::now()), replaces: Some(id.to_string()), old_expires_at: Some(until) })

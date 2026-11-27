@@ -164,8 +164,9 @@ path from 0.x data other than export and import.
   `principal:manage` permission (an admin key created before does not carry it: create a new
   one). Schema version 11 (`mh_session`; a Lite file is copied before the upgrade, as for
   every schema version). `memhouse restore` ends every console session. New settings:
-  `[server] console`, `cors_origins`, `session_ttl_secs`, `session_idle_secs`,
-  `session_cookie_secure`, and `[advisor]`. See [docs/console.md](docs/console.md).
+  `[server] console`, `cors_origins`, `public_url` (the server's origin behind a proxy that
+  rewrites `Host`), `session_ttl_secs`, `session_idle_secs`, `session_cookie_secure`, and
+  `[advisor]`. See [docs/console.md](docs/console.md).
 - A proposal that fails and will be retried always keeps its content in the intake queue (found
   by the queue's kit).
 - Identifiers and words are matched with Unicode letter classes ("Č-1001" is an identifier).

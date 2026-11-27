@@ -2202,7 +2202,7 @@ bytes, as the upgrade does.
   - [x] added: API 1.10 (`POST`, `GET` and `DELETE /v1/session`; `GET /v1/review/queue`; `content` on `POST /v1/review` and `rephrased_from` on its answer; `GET` and `PUT /v1/principals`, `POST /v1/principals/{id}/disable` and `/enable`; `GET` and `POST /v1/keys`, `POST /v1/keys/{id}/rotate` and `/revoke`; `GET /v1/eval/suites`, `/runs`, `/trend` and `GET /v1/advisor` as preview), the `principal:manage` permission, regenerated SDK clients
   - [x] added: schema v11 (`mh_session`: console sessions by the hash of their secret) in both stores, expand-only, with the `schema_upgrade` check and the Lite upgrade test extended, a store kit check (19 to 20), sessions deleted with a tenant, by the retention pass and by `memhouse restore`
   - [x] added: the profile advisor (PROF-11): `GET /v1/advisor`, a console panel and a line of `memhouse doctor`; `[advisor]` settings
-  - [x] added: `[server] console`, `cors_origins`, `session_ttl_secs`, `session_idle_secs`, `session_cookie_secure`
+  - [x] added: `[server] console`, `cors_origins`, `public_url`, `session_ttl_secs`, `session_idle_secs`, `session_cookie_secure`
   - [x] added: six governance checks (`console_actions`, `console_session`, `console_csp_cors`, `quarantine_review`, `console_evaluation`, `profile_advisor`), 79 to 85
   - [x] added: the guide [console.md](console.md)
   - [x] added: the governance checks run their recalls without `memory.recall_timeout_ms` (a recall past its budget answers empty, which a check on a loaded machine read as "not recalled"); see the result
@@ -2223,7 +2223,7 @@ bytes, as the upgrade does.
   where it is `memhouse_session` without `Secure`: `[server] session_cookie_secure`). The
   store keeps the SHA-256 of the session secret (`mh_session`, schema v11), so sessions
   survive a restart and are valid on every replica. A request made with the cookie must come
-  from the server's own origin (`Host` or `X-Forwarded-Host`) and, to change anything, carry
+  from the server's own origin (see the review fixes below) and, to change anything, carry
   the session's CSRF token (derived from the secret, stored nowhere) in `x-memhouse-csrf`;
   a refusal is audited (`access.denied`, rule `csrf`). The session is checked against its
   key and principal on every request, uncached: revoking the key or disabling the principal
@@ -2318,8 +2318,56 @@ bytes, as the upgrade does.
   - No limit on login attempts (failed ones are audited), and no single sign-on.
   - The advisor's counts read the whole memory table; on a large Standard database that is
     slow. On Standard nothing is judged: there is no next profile to recommend yet.
-  - Behind a reverse proxy that passes neither `Host` nor `X-Forwarded-Host` on, the
-    console's own requests look foreign and are refused; the operations guide says so.
+  - Behind a reverse proxy that does not pass the public `Host` on, the console's own
+    requests look foreign and are refused until `[server] public_url` states the origin;
+    the operations guide says so.
+
+**Review fixes (2026-11-27, pull request 40):** the first review round, each finding checked
+against the code; what changed:
+
+- **A key is not issued for a principal with more access than its maker.** A key acts with
+  its principal's subjects, labels and kinds whatever permissions it carries, so a restricted
+  administrator could create or rotate a key of an unrestricted one and use it. `POST
+  /v1/keys` and `/rotate` now hold the target principal to the bounds a principal update is
+  held to (subjects within the caller's, at least its denied labels, kinds within its own).
+- **Rephrase and approve.** A wording that is already the text of another record is taken
+  only when that record has the reviewed record's labels, scope and subject; otherwise the
+  call answers 409 and nothing is committed (the duplicate lookup does not compare labels,
+  and the approval committed a candidate the reviewer could not see). The new record keeps
+  the reviewed record's `code_refs` and structured form, so it goes stale with its files.
+- **The server's own origin** is scheme, host and port: `[server] public_url` when set, else
+  the request's `Host` (either scheme on a loopback host, `https` on any other).
+  `X-Forwarded-Host` is no longer read. With an `https` `public_url` the session cookie is
+  always the `Secure` one, so a proxy that sends a loopback `Host` upstream no longer gets
+  the plain cookie issued and accepted for a public console. A request with the cookie whose
+  `Sec-Fetch-Site` is anything but `same-origin` is refused (a sibling host's read passed).
+- **The idle limit** counts from the last accepted request: the stored time is written after
+  the origin and CSRF rules passed (a refused request extended it), at most once per interval
+  (a twentieth of the limit, at most a minute), and the limit allows for that interval, so a
+  session is never ended early; `session_idle_secs` is 0 or at least 60. A lookup that fails
+  no longer deletes the session: only an answer that the key or the principal is gone does.
+- **The page.** Logging in and out clears everything a session put on the page (lists,
+  tables, an issued key, forms, the selected subject, cursors) and drops answers that arrive
+  for an earlier session; a late answer for another subject or filter no longer replaces the
+  memory list; a logout the server did not confirm is reported as not done.
+- **The API document.** The rotation body is optional; the session operations state the
+  credential each takes; `DELETE /v1/session` lists the `x-memhouse-csrf` header (the SDK
+  clients were regenerated); `name` is documented as kept when left out of a principal update.
+- **Checks and tests.** One page scan (`console::scan_page`) for the server's test and the
+  governance check, which finds a `style` or handler attribute however it is spaced; the
+  console checks set the console's settings themselves, require the session cookie itself to
+  be expired on logout, the idle session's row to be gone, an approved wording to be
+  recalled, and seed a suite of another tenant; failure messages no longer print a login
+  body, a cookie or a created key; `promotion` reads the outcome of a retried write as the
+  API does and settles its negative control before judging it. New scenarios in
+  `console_actions` and `console_session`; 85 checks, store kit 20, as before.
+- **Docs.** The CORS change is a recorded exception of the stability policy; the console
+  guide says what a refusal leaves (audit event or metric) and that a refused rephrasing
+  stays as a rejected record.
+- **Declined or partly done:** no test injects a store failure into a session lookup (the
+  store trait has no fault seam; the change is two match arms). The CSRF header is modelled
+  on `DELETE /v1/session` only: every operation takes the session cookie, and listing the
+  header on each would put it in every SDK method, for clients that authenticate with keys.
 
 #### G21 — Packaging and release v1 (developer launch)
 

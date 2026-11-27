@@ -8,8 +8,9 @@
 //!
 //! - the key is presented once (`POST /v1/session`); the browser keeps only a session secret
 //!   in an `HttpOnly`, `SameSite=Strict` cookie that script cannot read;
-//! - a request made with the cookie must come from the server's own origin, and one that
-//!   changes something must carry the session's CSRF token;
+//! - a request made with the cookie must come from the server's own origin (scheme, host and
+//!   port; `Sec-Fetch-Site: same-origin` where the browser says), and one that changes
+//!   something must carry the session's CSRF token;
 //! - the pages are served with a Content-Security-Policy that allows no inline script and no
 //!   inline style, and no source but the server itself;
 //! - pages of other origins may call the API only when the origin is on
@@ -60,30 +61,20 @@ fn authority(v: &str) -> String {
     v.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
-/// The authorities this server is reached at for a request: its `Host`, and the host a
-/// reverse proxy says it forwarded (`X-Forwarded-Host`). A page cannot set either header on
-/// a request from a visitor's browser, so they are safe to compare an `Origin` against.
-fn own_authorities(headers: &HeaderMap) -> Vec<String> {
-    let mut out = vec![];
-    for name in [header::HOST.as_str(), "x-forwarded-host"] {
-        for v in headers.get_all(name).iter().filter_map(|v| v.to_str().ok()) {
-            out.extend(v.split(',').map(authority).filter(|a| !a.is_empty()));
-        }
+/// An origin as `(scheme, authority)`, the scheme's default port left out, or `None` for
+/// `null` and anything that is not an `http` or `https` origin.
+fn origin_parts(origin: &str) -> Option<(&'static str, String)> {
+    let (scheme, rest, default) = match origin.trim() {
+        o if o.len() >= 8 && o[..8].eq_ignore_ascii_case("https://") => ("https", &o[8..], ":443"),
+        o if o.len() >= 7 && o[..7].eq_ignore_ascii_case("http://") => ("http", &o[7..], ":80"),
+        _ => return None,
+    };
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    if rest.is_empty() || rest.contains(['/', '?', '#', '@', ' ']) {
+        return None;
     }
-    out
-}
-
-/// The authority of an `Origin` value (`https://host:port`), or `None` for `null` and
-/// anything that is not an origin.
-fn origin_authority(origin: &str) -> Option<String> {
-    let rest = origin.strip_prefix("https://").or_else(|| origin.strip_prefix("http://"))?;
-    (!rest.is_empty() && !rest.contains('/')).then(|| authority(rest))
-}
-
-/// Whether a request's `Origin` is this server itself. Default ports are compared as written:
-/// a browser leaves `:443` out of both `Origin` and `Host`.
-pub fn same_origin(headers: &HeaderMap, origin: &str) -> bool {
-    origin_authority(origin).is_some_and(|a| own_authorities(headers).contains(&a))
+    let a = authority(rest);
+    Some((scheme, a.strip_suffix(default).map(String::from).unwrap_or(a)))
 }
 
 fn loopback(host: &str) -> bool {
@@ -92,15 +83,43 @@ fn loopback(host: &str) -> bool {
     name == "localhost" || name.ends_with(".localhost") || name == "::1" || name.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// Whether a request's `Origin` is this server itself: scheme, host and port (RFC 6454).
+///
+/// - `[server] public_url`, when set, is the server's origin behind a proxy.
+/// - Otherwise, and for direct access beside a proxy, it is the `Host` the request came for:
+///   with either scheme on a loopback host, and with `https` on any other (plain `http` there
+///   only when `session_cookie_secure = "never"` says the deployment runs without TLS).
+///
+/// Forwarding headers (`X-Forwarded-Host`, `Forwarded`) are not read: nothing says a proxy
+/// set them, and a deployment behind a proxy that rewrites `Host` states its origin in
+/// `public_url`.
+pub fn same_origin(cfg: &Config, headers: &HeaderMap, origin: &str) -> bool {
+    let Some((scheme, auth)) = origin_parts(origin) else { return false };
+    if cfg.server.public_url.as_deref().and_then(origin_parts).is_some_and(|own| own == (scheme, auth.clone())) {
+        return true;
+    }
+    let Some(host) = headers.get(header::HOST).and_then(|v| v.to_str().ok()) else { return false };
+    let default = if scheme == "https" { ":443" } else { ":80" };
+    let host_auth = authority(host);
+    if host_auth.strip_suffix(default).unwrap_or(&host_auth) != auth {
+        return false;
+    }
+    loopback(host) || scheme == "https" || cfg.server.session_cookie_secure == CookieSecure::Never
+}
+
 /// Whether the session cookie of this request is the `Secure` one (`[server]
-/// session_cookie_secure`). `auto`: always, except for a request to a loopback host, where
-/// browsers other than Chrome and Firefox do not send a `Secure` cookie over plain HTTP. A
-/// request without a `Host` is treated as not loopback.
+/// session_cookie_secure`). `auto`: always when `public_url` is an `https` origin (whatever
+/// `Host` a proxy sends upstream); otherwise always except for a request to a loopback host,
+/// where browsers other than Chrome and Firefox do not send a `Secure` cookie over plain
+/// HTTP. A request without a `Host` is treated as not loopback.
 pub fn cookie_secure(cfg: &Config, headers: &HeaderMap) -> bool {
     match cfg.server.session_cookie_secure {
         CookieSecure::Always => true,
         CookieSecure::Never => false,
-        CookieSecure::Auto => !headers.get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(loopback),
+        CookieSecure::Auto => {
+            cfg.server.public_url.as_deref().and_then(origin_parts).is_some_and(|(scheme, _)| scheme == "https")
+                || !headers.get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(loopback)
+        }
     }
 }
 
@@ -138,16 +157,22 @@ fn refusal(status: StatusCode, code: ErrorCode, message: &str) -> Response {
     (status, Json(ErrorBody { error: message.into(), code })).into_response()
 }
 
-/// Why a request made with the session cookie is refused before it runs, if it is: it names
-/// another origin, or it changes something without the session's CSRF token. `None`: go on.
-pub fn guard(headers: &HeaderMap, method: &Method, secret: &str) -> Option<&'static str> {
+/// Why a request made with the session cookie is refused before it runs, if it is: it does
+/// not come from the server's own origin, or it changes something without the session's CSRF
+/// token. `None`: go on.
+///
+/// The origin is judged by `Origin` when the browser sends it, and by `Sec-Fetch-Site` when
+/// the browser sends that: anything but `same-origin` is refused, so a page of a sibling host
+/// (`same-site`) cannot make even a read with the cookie, and neither can a navigation.
+pub fn guard(cfg: &Config, headers: &HeaderMap, method: &Method, secret: &str) -> Option<&'static str> {
+    const FOREIGN: &str = "a session is used from the console's own origin only";
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        if !same_origin(headers, origin) {
-            return Some("a session is used from the console's own origin only");
+        if !same_origin(cfg, headers, origin) {
+            return Some(FOREIGN);
         }
     }
-    if headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()).is_some_and(|v| v == "cross-site") {
-        return Some("a session is used from the console's own origin only");
+    if headers.get("sec-fetch-site").is_some_and(|v| v.as_bytes() != b"same-origin") {
+        return Some(FOREIGN);
     }
     if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return None;
@@ -161,6 +186,90 @@ pub fn guard(headers: &HeaderMap, method: &Method, secret: &str) -> Option<&'sta
     }
 }
 
+/// What a scan of a console page found: what breaks the Content-Security-Policy's promise,
+/// and the files the page loads.
+#[derive(Debug, Default, PartialEq)]
+pub struct PageScan {
+    /// Inline script or style, in any form: a `<style>` element, a `style` or `on…` attribute
+    /// (however it is spaced), a `javascript:` URL, a `<script>` without `src` or with a body.
+    pub inline: Vec<String>,
+    /// The `src` of each script and the `href` of each `<link>`.
+    pub files: Vec<String>,
+}
+
+/// The attributes of a start tag as `(name, value)`, lower-case names, whatever the spacing
+/// around `=` and the quoting.
+fn attributes(tag: &str) -> Vec<(String, String)> {
+    let inner = tag.trim_start_matches('<').trim_end_matches('>').trim_end_matches('/');
+    let mut rest = inner.trim_start().split_once(char::is_whitespace).map_or("", |(_, r)| r);
+    let mut out = vec![];
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return out;
+        }
+        let end = rest.find(|c: char| c == '=' || c.is_whitespace()).unwrap_or(rest.len());
+        let name = rest[..end].to_ascii_lowercase();
+        rest = rest[end..].trim_start();
+        let mut value = String::new();
+        if let Some(after) = rest.strip_prefix('=') {
+            let after = after.trim_start();
+            let (v, tail) = match after.chars().next() {
+                Some(q @ ('"' | '\'')) => after[1..].split_once(q).unwrap_or((&after[1..], "")),
+                _ => after.split_once(char::is_whitespace).unwrap_or((after, "")),
+            };
+            value = v.to_string();
+            rest = tail;
+        }
+        if !name.is_empty() {
+            out.push((name, value));
+        }
+    }
+}
+
+/// Scan a page for inline script and style, and list the files it loads. The same scan
+/// checks the console's page in this crate's tests and, as served, in the governance suite.
+pub fn scan_page(html: &str) -> PageScan {
+    let mut scan = PageScan::default();
+    let mut rest = html;
+    while let Some(at) = rest.find('<') {
+        let end = rest[at..].find('>').map_or(rest.len(), |e| at + e + 1);
+        let tag = &rest[at..end];
+        let lower = tag.to_ascii_lowercase();
+        let after = &rest[end..];
+        rest = after;
+        if lower.starts_with("</") || lower.starts_with("<!") {
+            continue;
+        }
+        let attrs = attributes(tag);
+        let attr = |name: &str| attrs.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+        if lower.starts_with("<style") {
+            scan.inline.push(format!("a style element: {tag}"));
+        }
+        for (name, value) in &attrs {
+            if name == "style" || (name.len() > 2 && name.starts_with("on") && name.bytes().all(|b| b.is_ascii_lowercase())) {
+                scan.inline.push(format!("an inline {name} attribute: {tag}"));
+            }
+            if value.trim_start().to_ascii_lowercase().starts_with("javascript:") {
+                scan.inline.push(format!("a javascript: URL: {tag}"));
+            }
+        }
+        if lower.starts_with("<script") {
+            match attr("src") {
+                Some(src) if after.trim_start().to_ascii_lowercase().starts_with("</script>") => scan.files.push(src),
+                Some(_) => scan.inline.push(format!("a script with a body: {tag}")),
+                None => scan.inline.push(format!("a script without src: {tag}")),
+            }
+        }
+        if lower.starts_with("<link") {
+            if let Some(href) = attr("href") {
+                scan.files.push(href);
+            }
+        }
+    }
+    scan
+}
+
 /// Cross-origin requests (T3). A request without `Origin`, or from this server's own origin,
 /// passes untouched. One from an origin on `[server] cors_origins` is answered with that
 /// origin allowed, never `*` and never with credentials. Any other origin is refused before
@@ -169,7 +278,7 @@ pub(crate) async fn cors(State(st): State<AppState>, req: Request, next: Next) -
     let Some(origin) = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(String::from) else {
         return next.run(req).await;
     };
-    if same_origin(req.headers(), &origin) {
+    if same_origin(&st.engine.cfg, req.headers(), &origin) {
         return next.run(req).await;
     }
     let listed = st.engine.cfg.server.cors_origins.iter().any(|o| o != "*" && o.trim_end_matches('/').eq_ignore_ascii_case(&origin));
@@ -285,32 +394,14 @@ mod tests {
     }
 
     /// The pages run under a policy without inline script or style, so they must contain
-    /// none: no `<script>` with a body, no `<style>`, no `style=` or `on…=` attribute, no
-    /// `javascript:` URL; and everything they load is a file this server serves.
+    /// none, and everything they load is a file this server serves.
     #[test]
     fn pages_have_no_inline_script_or_style_and_load_only_served_files() {
-        let lower = HTML.to_ascii_lowercase();
-        assert!(!lower.contains("<style"), "inline <style>");
-        assert!(!lower.contains("javascript:"), "javascript: URL");
-        let mut rest = lower.as_str();
-        while let Some(at) = rest.find('<') {
-            let tag = &rest[at..rest[at..].find('>').map_or(rest.len(), |e| at + e + 1)];
-            assert!(!tag.contains(" style="), "inline style attribute: {tag}");
-            let handler = tag
-                .split_whitespace()
-                .any(|w| w.starts_with("on") && w.contains('=') && w.split('=').next().is_some_and(|n| n.len() > 2 && n.chars().all(|c| c.is_ascii_lowercase())));
-            assert!(!handler, "inline event handler: {tag}");
-            if tag.starts_with("<script") {
-                let src = tag.split("src=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or_else(|| panic!("a script without src: {tag}"));
-                assert!(ASSETS.iter().any(|(p, t, _)| *p == src && t.starts_with("text/javascript")), "script {src} is not served");
-                let after = &rest[at + tag.len()..];
-                assert!(after.trim_start().starts_with("</script>"), "a script with a body");
-            }
-            if tag.starts_with("<link") {
-                let href = tag.split("href=\"").nth(1).and_then(|s| s.split('"').next()).unwrap_or_default();
-                assert!(ASSETS.iter().any(|(p, _, _)| *p == href), "link {href} is not served");
-            }
-            rest = &rest[at + tag.len()..];
+        let scan = scan_page(HTML);
+        assert_eq!(scan.inline, Vec::<String>::new());
+        assert_eq!(scan.files, ["/console.css", "/console.js"]);
+        for f in &scan.files {
+            assert!(ASSETS.iter().any(|(p, _, _)| p == f), "{f} is not served");
         }
         // The script builds the page from data with DOM calls: no HTML from strings, no eval,
         // and nothing kept in the browser's storage (T3: no key or session id there).
@@ -330,6 +421,29 @@ mod tests {
             assert!(!JS.contains(banned), "console.js uses {banned}");
         }
         assert!(!CSP.contains("unsafe-inline") && !CSP.contains("unsafe-eval") && CSP.contains("script-src 'self'") && CSP.contains("style-src 'self'"));
+    }
+
+    /// The scan finds inline script and style however they are written.
+    #[test]
+    fn the_page_scan_finds_every_form_of_inline_script_and_style() {
+        for (html, what) in [
+            ("<p style=\"color: red\">x</p>", "style attribute"),
+            ("<p style = \"color: red\">x</p>", "style attribute with spaces around the equals sign"),
+            ("<p\n  STYLE='color: red'>x</p>", "style attribute in capitals on another line"),
+            ("<p style=color:red>x</p>", "unquoted style attribute"),
+            ("<style>p { color: red }</style>", "style element"),
+            ("<button onclick=\"go()\">x</button>", "event handler"),
+            ("<button onClick = go()>x</button>", "event handler with spaces"),
+            ("<a href=\" JavaScript:go()\">x</a>", "javascript: URL"),
+            ("<script>go()</script>", "script without src"),
+            ("<script src=\"/console.js\">go()</script>", "script with a body"),
+        ] {
+            assert!(!scan_page(html).inline.is_empty(), "not found: {what}");
+        }
+        // And nothing where there is none: attribute values and names that only look alike.
+        let clean =
+            scan_page("<p class=\"style on\" data-style=\"x\" title=\"onclick=go()\">a style = b</p><script src=\"/a.js\"></script><link rel=\"stylesheet\" href=\"/a.css\">");
+        assert_eq!((clean.inline, clean.files), (vec![], vec!["/a.js".to_string(), "/a.css".to_string()]));
     }
 
     #[test]
@@ -373,28 +487,73 @@ mod tests {
 
     #[test]
     fn a_session_request_needs_its_own_origin_and_the_csrf_token() {
+        let cfg = Config::default();
         let secret = "mhs_secret";
         let token = memhouse_core::identity::csrf_token(secret);
         let own = [("host", "memhouse.example.com"), ("origin", "https://memhouse.example.com")];
-        assert_eq!(guard(&headers(&own), &Method::GET, secret), None);
-        assert!(guard(&headers(&own), &Method::POST, secret).unwrap().contains("csrf"));
+        assert_eq!(guard(&cfg, &headers(&own), &Method::GET, secret), None);
+        assert!(guard(&cfg, &headers(&own), &Method::POST, secret).unwrap().contains("csrf"));
         let mut with = own.to_vec();
         with.push((CSRF_HEADER, &token));
-        assert_eq!(guard(&headers(&with), &Method::POST, secret), None);
-        assert_eq!(guard(&headers(&with), &Method::DELETE, secret), None);
+        assert_eq!(guard(&cfg, &headers(&with), &Method::POST, secret), None);
+        assert_eq!(guard(&cfg, &headers(&with), &Method::DELETE, secret), None);
         // The token of another session is not this one's.
         let other = memhouse_core::identity::csrf_token("mhs_other");
-        assert!(guard(&headers(&[("host", "h"), (CSRF_HEADER, &other)]), &Method::POST, secret).is_some());
+        assert!(guard(&cfg, &headers(&[("host", "h"), (CSRF_HEADER, &other)]), &Method::POST, secret).is_some());
         // Another origin is refused even for a read and even with the token.
         let foreign = [("host", "memhouse.example.com"), ("origin", "https://evil.example"), (CSRF_HEADER, token.as_str())];
-        assert!(guard(&headers(&foreign), &Method::GET, secret).unwrap().contains("own origin"));
-        assert!(guard(&headers(&foreign), &Method::POST, secret).is_some());
-        assert!(guard(&headers(&[("host", "h"), ("origin", "null")]), &Method::GET, secret).is_some());
-        assert!(guard(&headers(&[("host", "h"), ("sec-fetch-site", "cross-site")]), &Method::GET, secret).is_some());
-        // Behind a proxy that names the public host.
-        let proxied = [("host", "127.0.0.1:7077"), ("x-forwarded-host", "memhouse.example.com"), ("origin", "https://memhouse.example.com")];
-        assert_eq!(guard(&headers(&proxied), &Method::GET, secret), None);
-        assert!(same_origin(&headers(&[("host", "LocalHost:7077")]), "http://localhost:7077"));
-        assert!(!same_origin(&headers(&[("host", "localhost:7077")]), "http://localhost:7078"));
+        assert!(guard(&cfg, &headers(&foreign), &Method::GET, secret).unwrap().contains("own origin"));
+        assert!(guard(&cfg, &headers(&foreign), &Method::POST, secret).is_some());
+        assert!(guard(&cfg, &headers(&[("host", "h"), ("origin", "null")]), &Method::GET, secret).is_some());
+        // Fetch metadata: only the console's own fetches pass; a sibling host's page
+        // (`same-site`), another site's and a navigation do not, also without `Origin`.
+        for (site, passes) in [("same-origin", true), ("same-site", false), ("cross-site", false), ("none", false)] {
+            assert_eq!(guard(&cfg, &headers(&[("host", "memhouse.example.com"), ("sec-fetch-site", site)]), &Method::GET, secret).is_none(), passes, "{site}");
+        }
+    }
+
+    #[test]
+    fn the_own_origin_is_scheme_host_and_port_and_forwarding_headers_are_not_trusted() {
+        let cfg = Config::default();
+        let h = |host: &str| headers(&[("host", host)]);
+        // Scheme and port are part of an origin.
+        assert!(same_origin(&cfg, &h("memhouse.example.com"), "https://memhouse.example.com"));
+        assert!(same_origin(&cfg, &h("memhouse.example.com"), "https://MemHouse.example.com:443"));
+        assert!(!same_origin(&cfg, &h("memhouse.example.com"), "http://memhouse.example.com"), "plain HTTP is another origin");
+        assert!(!same_origin(&cfg, &h("memhouse.example.com"), "https://memhouse.example.com:8443"));
+        assert!(!same_origin(&cfg, &h("memhouse.example.com"), "https://memhouse.example.com.evil.example"));
+        // A loopback host has no TLS: either scheme, the port as written.
+        assert!(same_origin(&cfg, &h("LocalHost:7077"), "http://localhost:7077"));
+        assert!(!same_origin(&cfg, &h("localhost:7077"), "http://localhost:7078"));
+        assert!(same_origin(&cfg, &h("localhost"), "http://localhost:80"));
+        // Plain HTTP on another host only where the deployment says it runs without TLS.
+        let mut plain = Config::default();
+        plain.server.session_cookie_secure = CookieSecure::Never;
+        assert!(same_origin(&plain, &h("10.0.0.5:7077"), "http://10.0.0.5:7077"));
+        assert!(!same_origin(&cfg, &h("10.0.0.5:7077"), "http://10.0.0.5:7077"));
+        // X-Forwarded-Host says nothing: a proxy that rewrites Host needs `public_url`.
+        let proxied = headers(&[("host", "127.0.0.1:7077"), ("x-forwarded-host", "memhouse.example.com")]);
+        assert!(!same_origin(&cfg, &proxied, "https://memhouse.example.com"));
+        let mut public = Config::default();
+        public.server.public_url = Some("https://memhouse.example.com".into());
+        assert!(same_origin(&public, &proxied, "https://memhouse.example.com"));
+        assert!(!same_origin(&public, &proxied, "http://memhouse.example.com"));
+        assert!(!same_origin(&public, &proxied, "https://other.example.com"));
+        // With an https public origin the cookie is the Secure one whatever Host the proxy sends,
+        // and the plain cookie a page could have planted is not read.
+        assert!(cookie_secure(&public, &proxied));
+        assert!(!cookie_secure(&cfg, &h("localhost:7077")), "direct loopback HTTP keeps the plain cookie");
+        let planted = headers(&[("host", "127.0.0.1:7077"), ("cookie", "memhouse_session=mhs_planted")]);
+        assert_eq!(session_cookie(&public, &planted), None);
+        // The setting is checked when the configuration is read.
+        for bad in ["memhouse.example.com", "https://memhouse.example.com/console", "ftp://x", "https://*"] {
+            let mut c = Config::default();
+            c.server.public_url = Some(bad.into());
+            assert!(c.check_ranges().is_err(), "{bad}");
+        }
+        assert!(public.check_ranges().is_ok());
+        let mut short = Config::default();
+        short.server.session_idle_secs = 30;
+        assert!(short.check_ranges().unwrap_err().to_string().contains("session_idle_secs"));
     }
 }
