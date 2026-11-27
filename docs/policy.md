@@ -107,7 +107,7 @@ partition = "author"          # a user's own preferences are stored with the use
 | `retention.working_ttl_secs` | 1 second to 30 days | |
 | `retention.scopes` | rules for one type within one scope, [below](#retention-per-type-and-scope) | `episodic`: within governance's limit; not for `working` |
 | `write_gate.untrusted_sources` | source patterns (`*` matches any run of characters) whose writes wait for a reviewer | must include every `[governance] untrusted_sources` pattern |
-| `redaction.actions` | per category: `mask`, `redact`, `reject` | at least as strict as governance's action for the category (`mask` < `redact` < `reject`); `mask` only for `card`, `ssn`, `iban`, `phone`. A category given an action is redacted even if `redaction.categories` does not list it |
+| `redaction.actions` | per category: `mask`, `redact`, `reject` | at least as strict as governance's action for the category (`mask` < `redact` < `reject`); `mask` only for `card`, `ssn`, `iban`, `phone`. A category given an action is on, with that action (masked, redacted or rejected), even if `redaction.categories` does not list it |
 | `types.<kind>.*` | per-type rules, [below](#per-type-sections) | a type's rules may be tightened, never loosened |
 | `redaction.categories` | `secret`, `card`, `ssn`, `iban`, `email`, `phone`, `ip` | must include `secret` and every governance category |
 | `recall.denied_labels` | labels never read, and refused on writes through the API | must include every `[governance] denied_labels` label |

@@ -233,6 +233,9 @@ impl SqliteStore {
     /// `apply_ledger` on a database that was put in place by other means than `restore` (the
     /// store's `ledger_apply`): the same transaction, closed with the `backup.restore` event.
     pub(crate) fn apply_ledger_as_restore(&self, entries: &[LedgerEntry], actor: &str, tenant: &str, detail: serde_json::Value) -> anyhow::Result<Reapplied> {
+        // The replay's summary is added to it: anything but an object (or nothing) is refused
+        // before any work, not found out at the end.
+        anyhow::ensure!(detail.is_object() || detail.is_null(), "the detail of a restore is a JSON object");
         self.reapply(entries, actor, Some((tenant, detail)))
     }
 
@@ -261,6 +264,12 @@ impl SqliteStore {
             // whatever a record's `created_at` says (an import keeps the file's times).
             let need = |v: Option<&str>, what: &str| v.map(String::from).ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a {what}", e.scope, e.at.to_rfc3339()));
             let removed = match e.scope.as_str() {
+                "record" | "record-reset" => {
+                    let id = e.memory_id.ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a memory id", e.scope, e.at.to_rfc3339()))?;
+                    let removed = self.delete_exact_in(&tx, &e.tenant, id, e.scope == "record")?;
+                    crate::intake::drop_queued_record(&tx, &e.tenant, id)?;
+                    removed
+                }
                 "memory" | "retention" => {
                     let id = e.memory_id.ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a memory id", e.scope, e.at.to_rfc3339()))?;
                     // Retention keeps what was promoted from a purged record; a deletion does not.
@@ -290,7 +299,7 @@ impl SqliteStore {
             known.insert(key);
             rep.applied += 1;
             rep.records_removed += removed;
-            if e.scope == "retention" {
+            if e.scope == "retention" || e.scope.starts_with("record") {
                 let t = retention.entry(e.tenant.as_str()).or_default();
                 *t = (t.0 + 1, t.1 + removed);
             } else {

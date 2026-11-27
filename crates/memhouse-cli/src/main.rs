@@ -861,6 +861,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                         );
                         backup::restore(cfg.clone(), &dir, force, ledger.as_deref()).await?;
                     }
+                    None if ledger.is_some() => anyhow::bail!(
+                        "`--ledger` re-applies a ledger to a backup being restored: give the backup's directory with it. `--no-ledger` alone records a database file put in place by hand; the two do not go together"
+                    ),
                     None => anyhow::ensure!(
                         no_ledger,
                         "name the directory written by `memhouse backup`; or `--no-ledger` to record a database file put in place by hand as fit to serve"

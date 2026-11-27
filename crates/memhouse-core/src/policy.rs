@@ -1055,7 +1055,9 @@ pub fn compile(spec: &PolicySpec, cfg: &Config, tenant: &str, version: Option<u3
         if !c.iter().any(|x| x == "secret") {
             err("redaction.categories", "baseline", "drops \"secret\": credentials are always redacted (security baseline)".into());
         }
-        for g in gov.redaction.categories.iter().filter(|g| *g != "secret" && !c.contains(g)) {
+        // A category the spec gives an action is on, whether or not the list names it.
+        let acted = spec.redaction.as_ref().and_then(|r| r.actions.as_ref());
+        for g in gov.redaction.categories.iter().filter(|g| *g != "secret" && !c.contains(g) && !acted.is_some_and(|a| a.contains_key(*g))) {
             err(
                 "redaction.categories",
                 LOOSEN,
@@ -1857,6 +1859,11 @@ mod tests {
         assert_eq!(p.policy.retention.scopes.len(), 2);
         assert_eq!(p.policy.redaction.rules(), vec!["secret", "card:reject", "ssn", "iban", "email"]);
         assert_eq!(p.policy.write_gate.untrusted_sources, vec!["import:forum", "web:*"]);
+        // A category left out of the list but given an action is on; left out without one, dropped.
+        let listed = "[redaction]\ncategories = [\"secret\", \"ssn\", \"iban\"]\n";
+        let on = compile(&spec(&format!("{listed}[redaction.actions]\ncard = \"reject\"")), &cfg, "acme", None).unwrap();
+        assert!(on.policy.redaction.rules().contains(&"card:reject".to_string()));
+        assert!(compile(&spec(listed), &cfg, "acme", None).unwrap_err().iter().any(|v| v.path == "redaction.categories" && v.rule == "PR-1"));
 
         for (text, path, rule) in [
             ("[[retention.scopes]]\nlevel = \"team\"\nvalue = \"legal\"\nkind = \"episodic\"\ndays = 0", "retention.scopes[0].days", "PR-1"),

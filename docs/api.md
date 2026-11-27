@@ -599,9 +599,13 @@ carries two more fields:
 | `deletion_id` | the request (absent for a dry run). When it is complete, `memhouse deletion certificate <id>` prints its [certificate](governance.md#deletion-and-the-right-to-erasure): what was deleted, and that a sample of it was looked for afterwards in every representation |
 | `held` | records the request matches that a [legal hold](governance.md#legal-hold) keeps. They are not deleted now: the request stays open and is carried out when the hold is released. `0` otherwise |
 
-A forget by `id` of a record under a hold answers `200` with `deleted: 0` and `held: 1`.
+A forget by `id` of a record under a hold answers `200` with `deleted: 0` and `held: 1`. Where
+more than one hold applies to a record (its subject and its source, say), releasing one does not
+free it: the request stays open, and `held`, while any applicable hold is active.
 Legal holds, certificates and the list of requests are operator commands (`memhouse hold`,
-`memhouse deletion`); they have no REST route yet. Options: `dry_run: true` counts what would go and deletes nothing; `request_key` (or
+`memhouse deletion`); they have no REST route yet. Options: `dry_run: true` deletes nothing and counts: `deleted` is what would go, `held` what a
+legal hold would keep (a held match is counted once, under `held`:
+`{"scope":"subject","value":"customer:acme","deleted":0,"dry_run":true,"held":3}`); `request_key` (or
 `Idempotency-Key`) makes a repeat return the first result instead of `404`; `tenant`, `actor`.
 
 ```bash
@@ -1237,7 +1241,7 @@ v1 (QUAL-09).
 | `POST /v1/memories` | `POST /v1/remember` | none |
 | `GET /v1/memories?subject=&kind=&limit=&offset=&all=` | `GET /v1/subjects/{subject}/memories?kinds=&include_inactive=&limit=&cursor=` | a page object with a cursor instead of a bare array with offsets |
 | `PATCH /v1/memories/{id}` `{content}` | `POST /v1/revise` `{id, content, …}` | revise can also change kind, tags, labels, scope and validity |
-| `DELETE /v1/memories/{id}` | `POST /v1/forget` `{id}` | returns a `ForgetResult` instead of `{deleted: <id>}` |
+| `DELETE /v1/memories/{id}` | `POST /v1/forget` `{id}` | returns a `ForgetResult` instead of `{deleted: <id>}`. A record under a legal hold is not deleted: the deprecated route answers `409 conflict`, the successor `200` with `held: 1` (1.11) |
 | `DELETE /v1/subjects/{subject}` | `POST /v1/forget` `{subject}` | returns a `ForgetResult` instead of `{subject, deleted}` |
 | MCP `memory_recall` | `recall` | full `RecallResult` as `structuredContent` |
 | MCP `memory_remember` | `remember` | |

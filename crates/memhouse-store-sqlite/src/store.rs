@@ -684,12 +684,25 @@ impl Store for SqliteStore {
     async fn delete(&self, tenant: &str, id: Uuid, actor: &str) -> anyhow::Result<bool> {
         let mut c = self.conn();
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some((subject, _)) = self.delete_in(&tx, tenant, id, true, true)? else { return Ok(false) };
-        exec(
-            &tx,
-            "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'memory', ?5)",
-            params![now(), tenant, subject, id.to_string(), actor],
-        )?;
+        let Some((subject, gone, kept_held)) = self.delete_with(&tx, tenant, id, true, true)? else { return Ok(false) };
+        // One `memory` row, which a replay re-applies with the cascade; or, when a legal hold
+        // kept a dependent, a `record` row for each id that went, re-applied exactly.
+        let at = now();
+        if kept_held {
+            for g in &gone {
+                exec(
+                    &tx,
+                    "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'record', ?5)",
+                    params![at, tenant, subject, g.to_string(), actor],
+                )?;
+            }
+        } else {
+            exec(
+                &tx,
+                "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'memory', ?5)",
+                params![at, tenant, subject, id.to_string(), actor],
+            )?;
+        }
         tx.commit()?;
         Ok(true)
     }
@@ -721,6 +734,18 @@ impl Store for SqliteStore {
 
     async fn legal_holds(&self, tenant: &str, active_only: bool) -> anyhow::Result<Vec<memhouse_core::governance::LegalHold>> {
         self.holds(tenant, active_only)
+    }
+
+    async fn legal_hold_get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<memhouse_core::governance::LegalHold>> {
+        self.hold_one(tenant, id)
+    }
+
+    async fn deletion_progress(&self, tenant: &str, id: Uuid, deleted: u64) -> anyhow::Result<Option<memhouse_core::governance::DeletionRequest>> {
+        self.deletion_add(tenant, id, deleted)
+    }
+
+    async fn deletions_open(&self, tenant: &str, after: Option<(DateTime<Utc>, Uuid)>, limit: usize) -> anyhow::Result<Vec<memhouse_core::governance::DeletionRequest>> {
+        self.deletion_open(tenant, after, limit)
     }
 
     async fn held_count(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
@@ -785,14 +810,11 @@ impl Store for SqliteStore {
     }
 
     async fn audit_find(&self, tenant: &str, action: &str, key: &str, value: &str) -> anyhow::Result<bool> {
-        // `detail` is JSON text written by this service: compared as JSON, not as a substring.
-        Ok(first(
-            &self.conn(),
-            "SELECT 1 FROM mh_audit WHERE tenant = ?1 AND action = ?2 AND json_valid(detail) AND json_extract(detail, '$.' || ?3) = ?4 LIMIT 1",
-            [tenant, action, key, value],
-            |_| Ok(()),
-        )?
-        .is_some())
+        // `detail` is JSON kept as text, read as `audit_log` reads it: the key is a field's
+        // literal name (not a path), as on Postgres.
+        let details =
+            rows(&self.conn(), "SELECT detail FROM mh_audit WHERE tenant = ?1 AND action = ?2 AND instr(detail, ?3) > 0", [tenant, action, value], |r| Ok(r.get::<_, String>(0)?))?;
+        Ok(details.iter().any(|d| serde_json::from_str::<serde_json::Value>(d).is_ok_and(|v| v.get(key).and_then(|x| x.as_str()) == Some(value))))
     }
 
     async fn state_get(&self, key: &str) -> anyhow::Result<Option<String>> {

@@ -945,6 +945,11 @@ impl Config {
             if !o.is_empty() && !(o.starts_with("http://") || o.starts_with("https://")) {
                 anyhow::bail!("siem.otlp_endpoint must be an http:// or https:// URL");
             }
+            // The targets are named in logs, in the export's status and in the evidence
+            // bundle: a credential has no place in them (headers come from the environment).
+            if o.contains('@') || o.contains('?') || o.contains('#') || s.contains('@') {
+                anyhow::bail!("siem.otlp_endpoint and siem.syslog take a scheme, a host, a port and (for OTLP) a path: no user, password, query or fragment. Give credentials as headers in siem.otlp_headers_env");
+            }
         }
         Ok(())
     }
@@ -1061,6 +1066,11 @@ mod tests {
         assert!(siem.check_floor().is_err(), "a syslog target names its transport");
         siem.siem.syslog = "tcp://siem.internal:514".into();
         siem.check_floor().unwrap();
+        for bad in ["https://user:pw@collector:4318", "https://collector:4318/?token=x"] {
+            let mut c = siem.clone();
+            c.siem.otlp_endpoint = bad.into(); // secret-scan: allow (fake fixture)
+            assert!(c.check_floor().is_err(), "{bad}");
+        }
         siem.siem.interval_secs = 120;
         assert!(siem.check_floor().is_err(), "an interval past the 60-second target");
         // The defaults: nothing purged, nothing exported, nothing untrusted.

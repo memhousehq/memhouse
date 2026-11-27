@@ -1094,7 +1094,7 @@
       "ForgetResult": {
         "properties": {
           "deleted": {
-            "description": "Records deleted (or, with `dry_run`, that would be). Facts derived from them are deleted\ntoo and are not counted unless they match themselves.",
+            "description": "Records deleted (or, with `dry_run`, that would be: a match a legal hold keeps is counted\nunder `held`, not here). Facts derived from them are deleted too and are not counted\nunless they match themselves.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
@@ -1113,7 +1113,7 @@
           },
           "held": {
             "default": 0,
-            "description": "Records the request matches that a legal hold keeps (GOV-09): they are deleted when the\nhold is released.",
+            "description": "Records the request matches that a legal hold keeps (GOV-09). The request stays open\nwhile any hold that applies to them is active, and they are deleted when the last one\nis released.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"

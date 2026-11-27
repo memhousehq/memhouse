@@ -18,8 +18,9 @@ use sqlx::{PgConnection, Row};
 use std::collections::{BTreeMap, HashSet};
 use uuid::Uuid;
 
-/// Schema v12 (G22). Expand-only: three new tables that a version 11 process never reads, and
-/// one nullable column on `mh_memory` that it leaves empty. `epart` is the month of an episodic
+/// Schema v12 (G22). Expand-only: three new tables and one nullable column on `mh_memory`;
+/// nothing a version 11 build reads is changed (it still refuses to open the upgraded
+/// database, by its stored version). `epart` is the month of an episodic
 /// record, set by this build only on a database whose memory table is partitioned by it.
 pub(crate) const SCHEMA_V12_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS mh_legal_hold (
@@ -142,6 +143,21 @@ const RLS_SERVICE_USING: &str = "((SELECT current_setting('memhouse.scope', true
 /// Changed whenever the policies or `mh_rls_service` change: a database whose marker differs
 /// has them installed again at the next start.
 const RLS_VERSION: &str = "1";
+
+/// Taken shared by every transaction that deletes with regard to legal holds, and exclusive
+/// by the placement of a hold (`$1` is the tenant): a hold is either committed before a
+/// deletion reads the holds, or placed after the deletion has committed, never in between.
+pub(crate) const HOLD_GUARD_SHARED: &str = "SELECT pg_advisory_xact_lock_shared(7270005, hashtext($1))";
+const HOLD_GUARD_EXCLUSIVE: &str = "SELECT pg_advisory_xact_lock(7270005, hashtext($1))";
+
+/// What `delete_in` removed.
+pub(crate) struct Deleted {
+    pub subject: String,
+    /// The ids that went: the record, if it was still there, and its dependents.
+    pub ids: Vec<Uuid>,
+    /// A dependent stayed because a legal hold matches it.
+    pub kept_held: bool,
+}
 
 fn month_of(t: DateTime<Utc>) -> NaiveDate {
     NaiveDate::from_ymd_opt(t.year(), t.month(), 1).expect("the first of a month")
@@ -412,8 +428,11 @@ impl PgStore {
     /// dependent. A record that is gone already still has its remaining dependents removed (a
     /// deletion a hold interrupted is finished this way). Returns the subject and how many
     /// records went, or none when nothing did.
-    pub(crate) async fn delete_in(&self, tx: &mut PgConnection, tenant: &str, id: Uuid, promotions: bool, respect_holds: bool) -> anyhow::Result<Option<(String, u64)>> {
+    pub(crate) async fn delete_in(&self, tx: &mut PgConnection, tenant: &str, id: Uuid, promotions: bool, respect_holds: bool) -> anyhow::Result<Option<Deleted>> {
         let ids = id.to_string();
+        if respect_holds {
+            sqlx::query(HOLD_GUARD_SHARED).bind(tenant).execute(&mut *tx).await?;
+        }
         let found: Option<(String, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT m.subject, {HELD_SQL} FROM mh_memory m WHERE m.tenant = $1 AND m.id = $2")))
             .bind(tenant)
             .bind(id)
@@ -441,11 +460,11 @@ impl PgStore {
         };
         // No promotion in this subject is in flight while its links are followed below.
         sqlx::query(SUBJECT_LOCK_SQL).bind(tenant).bind(&subject).execute(&mut *tx).await?;
-        let mut removed = 0u64;
+        let mut removed: Vec<Uuid> = vec![];
         if found.is_some() {
             let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING content, alt_hash").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
             if let Some(row) = row {
-                removed += 1;
+                removed.push(id);
                 let content: String = row.try_get("content")?;
                 let alt_hash: Option<String> = row.try_get("alt_hash")?;
                 // Also drop the cached embeddings of this content (every representation goes, TR-WF-01).
@@ -466,6 +485,15 @@ impl PgStore {
             ""
         };
         let keep_held = if respect_holds { format!("AND NOT {HELD_SQL}") } else { String::new() };
+        let kept_held = respect_holds
+            && sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(format!(
+                "WITH RECURSIVE dep(id) AS (SELECT m.id FROM mh_memory m WHERE m.tenant = $1 AND {dependents_of} {recurse}) \
+                 SELECT EXISTS (SELECT 1 FROM mh_memory m WHERE m.tenant = $1 AND m.id IN (SELECT id FROM dep) AND {HELD_SQL})"
+            )))
+            .bind(tenant)
+            .bind(&ids)
+            .fetch_one(&mut *tx)
+            .await?;
         let dependents: Vec<(Uuid, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "WITH RECURSIVE dep(id) AS (SELECT m.id FROM mh_memory m WHERE m.tenant = $1 AND {dependents_of} {recurse}) \
              DELETE FROM mh_memory m WHERE m.tenant = $1 AND m.id IN (SELECT id FROM dep) {keep_held} RETURNING m.id, m.content"
@@ -474,8 +502,8 @@ impl PgStore {
         .bind(&ids)
         .fetch_all(&mut *tx)
         .await?;
-        removed += dependents.len() as u64;
-        if removed == 0 {
+        removed.extend(dependents.iter().map(|(d, _)| *d));
+        if removed.is_empty() {
             return Ok(None);
         }
         let contents: Vec<&str> = dependents.iter().map(|(_, c)| c.as_str()).collect();
@@ -501,15 +529,71 @@ impl PgStore {
             .execute(&mut *tx)
             .await?;
         }
+        // The extraction jobs that read the record or anything that went with it (a promotion
+        // may itself be a round a job read), with their cached answers.
+        let mut read: Vec<Uuid> = removed.clone();
+        if !read.contains(&id) {
+            read.push(id);
+        }
         sqlx::query(
-            "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND round_ids @> ARRAY[$2]::uuid[] RETURNING cache_key) \
+            "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND round_ids && $2::uuid[] RETURNING cache_key) \
              DELETE FROM mh_llm_cache c USING j WHERE c.key = ANY(string_to_array(j.cache_key, ','))",
         )
         .bind(tenant)
-        .bind(id)
+        .bind(&read)
         .execute(&mut *tx)
         .await?;
-        Ok(Some((subject, removed)))
+        Ok(Some(Deleted { subject, ids: removed, kept_held }))
+    }
+
+    /// Delete exactly one record and nothing it led to: how a ledger row of scope `record`
+    /// (or `record-reset`, which leaves the caches) is re-applied. Such rows are written where
+    /// the deletion's own cascade was cut short by a legal hold, so a replay must not run the
+    /// cascade again and take what the hold kept.
+    pub(crate) async fn delete_exact_in(&self, tx: &mut PgConnection, tenant: &str, id: Uuid, purge_cache: bool) -> anyhow::Result<u64> {
+        let row = sqlx::query("DELETE FROM mh_memory WHERE tenant = $1 AND id = $2 RETURNING content, alt_hash").bind(tenant).bind(id).fetch_optional(&mut *tx).await?;
+        let Some(row) = row else { return Ok(0) };
+        if purge_cache {
+            sqlx::query("DELETE FROM mh_embed_cache WHERE hash = encode(sha256(convert_to($1 || $2, 'UTF8')), 'hex') OR hash = $3")
+                .bind(&self.passage_prefix)
+                .bind(row.try_get::<String, _>("content")?)
+                .bind(row.try_get::<Option<String>, _>("alt_hash")?)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(
+                "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND round_ids @> ARRAY[$2]::uuid[] RETURNING cache_key) \
+                 DELETE FROM mh_llm_cache c USING j WHERE c.key = ANY(string_to_array(j.cache_key, ','))",
+            )
+            .bind(tenant)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        Ok(1)
+    }
+
+    /// The ledger rows of a deletion that `delete_in` carried out: one `memory` row, which a
+    /// replay re-applies with the cascade, or, when a legal hold kept a dependent, a `record`
+    /// row for each id that went, which a replay re-applies exactly.
+    pub(crate) async fn ledger_deleted(&self, tx: &mut PgConnection, tenant: &str, id: Uuid, d: &Deleted, actor: &str) -> anyhow::Result<()> {
+        if d.kept_held {
+            sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) SELECT $1, $2, i, 'record', $3 FROM unnest($4::uuid[]) AS t(i)")
+                .bind(tenant)
+                .bind(&d.subject)
+                .bind(actor)
+                .bind(&d.ids)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) VALUES ($1, $2, $3, 'memory', $4)")
+                .bind(tenant)
+                .bind(&d.subject)
+                .bind(id)
+                .bind(actor)
+                .execute(&mut *tx)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Erase a subject inside the caller's transaction, without the ledger row. With
@@ -525,6 +609,9 @@ impl PgStore {
         purge_cache: bool,
         respect_holds: bool,
     ) -> anyhow::Result<(u64, bool, Vec<Uuid>)> {
+        if respect_holds {
+            sqlx::query(HOLD_GUARD_SHARED).bind(tenant).execute(&mut *tx).await?;
+        }
         let held: i64 = if respect_holds {
             sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM mh_memory m WHERE m.tenant = $1 AND m.subject = $2 AND {HELD_SQL}")))
                 .bind(tenant)
@@ -631,16 +718,27 @@ impl PgStore {
         .bind(alt_hashes)
         .execute(&mut *tx)
         .await?;
-        let facts: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "WITH d AS (DELETE FROM mh_memory m WHERE m.tenant = $1 AND m.metadata -> 'source_ids' ?| $2::text[] AND NOT {HELD_SQL} RETURNING m.content), \
+        // A derived fact under a legal hold stays. The ledger must then say exactly what went
+        // (`record` rows): a `retention` row is re-applied with the cascade, which would take
+        // the kept fact on a restore.
+        let kept: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT EXISTS (SELECT 1 FROM mh_memory m WHERE m.tenant = $1 AND m.metadata -> 'source_ids' ?| $2::text[] AND {HELD_SQL})"
+        )))
+        .bind(tenant)
+        .bind(&id_strs)
+        .fetch_one(&mut *tx)
+        .await?;
+        let fact_rows: Vec<(Uuid, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "WITH d AS (DELETE FROM mh_memory m WHERE m.tenant = $1 AND m.metadata -> 'source_ids' ?| $2::text[] AND NOT {HELD_SQL} RETURNING m.id, m.subject, m.content), \
              c AS (DELETE FROM mh_embed_cache c USING d WHERE c.hash = encode(sha256(convert_to($3 || d.content, 'UTF8')), 'hex')) \
-             SELECT count(*) FROM d"
+             SELECT id, subject FROM d"
         )))
         .bind(tenant)
         .bind(&id_strs)
         .bind(&self.passage_prefix)
-        .fetch_one(&mut *tx)
+        .fetch_all(&mut *tx)
         .await?;
+        let facts = fact_rows.len() as i64;
         sqlx::query(
             "WITH j AS (DELETE FROM mh_enrich_job WHERE tenant = $1 AND round_ids && $2::uuid[] RETURNING cache_key) \
              DELETE FROM mh_llm_cache c USING j WHERE c.key = ANY(string_to_array(j.cache_key, ','))",
@@ -649,13 +747,19 @@ impl PgStore {
         .bind(ids)
         .execute(&mut *tx)
         .await?;
+        let (mut ledger_subjects, mut ledger_ids) = (subjects.to_vec(), ids.to_vec());
+        if kept {
+            ledger_ids.extend(fact_rows.iter().map(|(i, _)| *i));
+            ledger_subjects.extend(fact_rows.iter().map(|(_, s)| s.clone()));
+        }
         sqlx::query(
             "INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) \
-             SELECT $1, s, i, 'retention', 'system' FROM unnest($2::text[], $3::uuid[]) AS t(s, i)",
+             SELECT $1, s, i, $4, 'system' FROM unnest($2::text[], $3::uuid[]) AS t(s, i)",
         )
         .bind(tenant)
-        .bind(subjects)
-        .bind(ids)
+        .bind(&ledger_subjects)
+        .bind(&ledger_ids)
+        .bind(if kept { "record" } else { "retention" })
         .execute(&mut *tx)
         .await?;
         Ok(facts.max(0) as u64)
@@ -683,7 +787,9 @@ impl PgStore {
     /// (partitions dropped, records and derived facts removed).
     async fn drop_due_partitions(&self, tenant: &str, spec: &PurgeSpec) -> anyhow::Result<(u64, u64)> {
         let PurgeAge::OlderThanDays(days) = spec.age else { return Ok((0, 0)) };
-        if spec.kind != MemoryKind::Episodic || spec.scope.is_some() {
+        // A bounded pass keeps to its bound: a partition is one unbounded step, so a pass with
+        // a batch limit purges by row.
+        if spec.kind != MemoryKind::Episodic || spec.scope.is_some() || spec.max_batches.is_some() {
             return Ok((0, 0));
         }
         let cutoff = Utc::now() - chrono::Duration::days(days as i64);
@@ -695,6 +801,7 @@ impl PgStore {
                 continue;
             }
             let mut tx = self.pool.begin().await?;
+            sqlx::query(HOLD_GUARD_SHARED).bind(tenant).execute(&mut *tx).await?;
             // No write lands in the partition between the check and the drop.
             sqlx::raw_sql(sqlx::AssertSqlSafe(format!("LOCK TABLE {name} IN ACCESS EXCLUSIVE MODE"))).execute(&mut *tx).await?;
             let mut except = String::new();
@@ -716,15 +823,17 @@ impl PgStore {
                 // Something in it is not due: its due rows are deleted one by one instead.
                 continue;
             }
-            let mut after = Uuid::nil();
+            // No lower bound on the first page: the smallest id there is belongs to it too.
+            let mut after: Option<Uuid> = None;
             let mut n = 0u64;
             loop {
-                let batch = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT id, subject, content, alt_hash FROM {name} WHERE id > $1 ORDER BY id LIMIT 1000")))
-                    .bind(after)
-                    .fetch_all(&mut *tx)
-                    .await?;
+                let batch =
+                    sqlx::query(sqlx::AssertSqlSafe(format!("SELECT id, subject, content, alt_hash FROM {name} WHERE ($1::uuid IS NULL OR id > $1) ORDER BY id LIMIT 1000")))
+                        .bind(after)
+                        .fetch_all(&mut *tx)
+                        .await?;
                 let Some(last) = batch.last() else { break };
-                after = last.try_get("id")?;
+                after = Some(last.try_get("id")?);
                 let mut ids = Vec::with_capacity(batch.len());
                 let mut subjects = Vec::with_capacity(batch.len());
                 let mut contents = Vec::with_capacity(batch.len());
@@ -777,6 +886,7 @@ impl PgStore {
             // In the service scope: the cascade also removes rows of the content-addressed
             // caches, which no tenant's session can see.
             let mut tx = self.pool.begin().await?;
+            sqlx::query(HOLD_GUARD_SHARED).bind(tenant).execute(&mut *tx).await?;
             let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.clone())).bind(tenant).bind(spec.kind.as_str()).bind(days);
             for v in &values {
                 q = q.bind(v);
@@ -819,6 +929,8 @@ impl PgStore {
 
     pub(crate) async fn hold_put(&self, h: &LegalHold, audit: &AuditEntry) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
+        // Waits for deletions of the tenant that are under way; later ones see the hold.
+        sqlx::query(HOLD_GUARD_EXCLUSIVE).bind(&h.tenant).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mh_legal_hold (id, tenant, target_kind, target, reason, placed_by, placed_at) VALUES ($1, $2, $3, $4, $5, $6, $7)")
             .bind(h.id)
             .bind(&h.tenant)
@@ -860,6 +972,10 @@ impl PgStore {
         rows.iter().map(hold_of).collect()
     }
 
+    pub(crate) async fn hold_one(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<LegalHold>> {
+        sqlx::query("SELECT * FROM mh_legal_hold WHERE tenant = $1 AND id = $2").bind(tenant).bind(id).fetch_optional(&self.pool).await?.as_ref().map(hold_of).transpose()
+    }
+
     pub(crate) async fn held(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
         // Without an active hold in the tenant nothing is held: no scan.
         if self.active_holds(tenant).await? == 0 {
@@ -878,8 +994,8 @@ impl PgStore {
         Ok(sqlx::query(
             "INSERT INTO mh_deletion_request (id, tenant, scope, value, actor, requested_at, status, completed_at, deleted, held, executions, canaries, certificate) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
-             ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, completed_at = EXCLUDED.completed_at, deleted = EXCLUDED.deleted, held = EXCLUDED.held, \
-               executions = EXCLUDED.executions, certificate = EXCLUDED.certificate \
+             ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, completed_at = EXCLUDED.completed_at, held = EXCLUDED.held, certificate = EXCLUDED.certificate, \
+               deleted = greatest(mh_deletion_request.deleted, EXCLUDED.deleted), executions = greatest(mh_deletion_request.executions, EXCLUDED.executions) \
              WHERE mh_deletion_request.status <> 'completed'",
         )
         .bind(d.id)
@@ -913,6 +1029,36 @@ impl PgStore {
 
     pub(crate) async fn deletion_one(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<DeletionRequest>> {
         sqlx::query("SELECT * FROM mh_deletion_request WHERE tenant = $1 AND id = $2").bind(tenant).bind(id).fetch_optional(&self.pool).await?.as_ref().map(deletion_of).transpose()
+    }
+
+    pub(crate) async fn deletion_add(&self, tenant: &str, id: Uuid, deleted: u64) -> anyhow::Result<Option<DeletionRequest>> {
+        // A sum in the database: two executions each add their own count, neither overwrites.
+        let row =
+            sqlx::query("UPDATE mh_deletion_request SET deleted = deleted + $3, executions = executions + 1 WHERE tenant = $1 AND id = $2 AND status <> 'completed' RETURNING *")
+                .bind(tenant)
+                .bind(id)
+                .bind(deleted as i64)
+                .fetch_optional(&self.pool)
+                .await?;
+        match row {
+            Some(r) => Ok(Some(deletion_of(&r)?)),
+            // Completed meanwhile (or unknown): as it is.
+            None => self.deletion_one(tenant, id).await,
+        }
+    }
+
+    pub(crate) async fn deletion_open(&self, tenant: &str, after: Option<(DateTime<Utc>, Uuid)>, limit: usize) -> anyhow::Result<Vec<DeletionRequest>> {
+        let rows = sqlx::query(
+            "SELECT * FROM mh_deletion_request WHERE tenant = $1 AND status <> 'completed' AND ($2::timestamptz IS NULL OR (requested_at, id) > ($2, $3)) \
+             ORDER BY requested_at, id LIMIT $4",
+        )
+        .bind(tenant)
+        .bind(after.map(|a| a.0))
+        .bind(after.map(|a| a.1))
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(deletion_of).collect()
     }
 
     pub(crate) async fn deletion_list(&self, tenant: &str, status: Option<DeletionStatus>, limit: usize) -> anyhow::Result<Vec<DeletionRequest>> {
@@ -1039,12 +1185,12 @@ impl PgStore {
             .collect()
     }
 
-    /// Re-apply a ledger to a restored database (TR-WF-03). Each row is one transaction with
-    /// its ledger row, so a replay that is interrupted is continued by running it again: a row
-    /// already in the ledger is not applied twice. Legal holds do not stop it: the ledger says
+    /// Re-apply a ledger to a restored database (TR-WF-03), in one transaction; a row already
+    /// in the ledger is not applied twice. Legal holds do not stop it: the ledger says
     /// what was deleted, and a hold that the restore brought back is no reason to bring the
     /// data back with it.
     pub(crate) async fn ledger_replay(&self, entries: &[LedgerEntry], actor: &str, tenant: &str, mut detail: serde_json::Value) -> anyhow::Result<Reapplied> {
+        anyhow::ensure!(detail.is_object() || detail.is_null(), "the detail of a restore is a JSON object");
         type Key = (i64, String, Option<String>, Option<Uuid>, String);
         let key = |e: &LedgerEntry| -> Key { (e.at.timestamp_micros(), e.tenant.clone(), e.subject.clone(), e.memory_id, e.scope.clone()) };
         let mut known: HashSet<Key> = self.ledger().await?.iter().map(key).collect();
@@ -1052,9 +1198,13 @@ impl PgStore {
         let mut ordered: Vec<&LedgerEntry> = entries.iter().collect();
         ordered.sort_by_key(|e| e.at);
         // Refused before anything is applied: an unknown kind of deletion left out would be an erasure undone.
-        if let Some(e) = ordered.iter().find(|e| !["memory", "retention", "subject", "subject-reset", "tenant"].contains(&e.scope.as_str())) {
+        if let Some(e) = ordered.iter().find(|e| !["memory", "retention", "record", "record-reset", "subject", "subject-reset", "tenant"].contains(&e.scope.as_str())) {
             anyhow::bail!("unknown deletion-ledger scope {:?} (row of {}); nothing was applied", e.scope, e.at.to_rfc3339());
         }
+        // One transaction for the whole replay, its ledger rows, its audit events and the end
+        // of the sessions: a restored database is never left with half its deletions, and a
+        // row that cannot be applied leaves nothing applied.
+        let mut tx = self.pool.begin().await?;
         // Retention writes a row per record: one event per tenant says how many, not one each.
         let mut retention: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         for e in ordered {
@@ -1063,12 +1213,15 @@ impl PgStore {
                 rep.known += 1;
                 continue;
             }
-            let mut tx = self.pool.begin().await?;
             let removed = match e.scope.as_str() {
+                "record" | "record-reset" => {
+                    let id = e.memory_id.ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a memory id", e.scope, e.at.to_rfc3339()))?;
+                    self.delete_exact_in(&mut tx, &e.tenant, id, e.scope == "record").await?
+                }
                 "memory" | "retention" => {
                     let id = e.memory_id.ok_or_else(|| anyhow::anyhow!("a `{}` ledger row of {} without a memory id", e.scope, e.at.to_rfc3339()))?;
                     // Retention keeps what was promoted from a purged record; a deletion does not.
-                    let removed = self.delete_in(&mut tx, &e.tenant, id, e.scope == "memory", false).await?.map_or(0, |(_, n)| n);
+                    let removed = self.delete_in(&mut tx, &e.tenant, id, e.scope == "memory", false).await?.map_or(0, |d| d.ids.len() as u64);
                     // The backup may hold the record still queued: it leaves its proposal, or the
                     // restored queue would write it again.
                     sqlx::query(
@@ -1110,7 +1263,7 @@ impl PgStore {
                 .bind(&e.actor)
                 .execute(&mut *tx)
                 .await?;
-            if e.scope == "retention" {
+            if e.scope == "retention" || e.scope.starts_with("record") {
                 let t = retention.entry(e.tenant.clone()).or_default();
                 *t = (t.0 + 1, t.1 + removed);
             } else {
@@ -1123,12 +1276,10 @@ impl PgStore {
                 };
                 self.audit_in(&mut tx, &e.tenant, &a).await?;
             }
-            tx.commit().await?;
             known.insert(k);
             rep.applied += 1;
             rep.records_removed += removed;
         }
-        let mut tx = self.pool.begin().await?;
         for (t, (entries, records)) in retention {
             let a = AuditEntry {
                 actor: actor.into(),

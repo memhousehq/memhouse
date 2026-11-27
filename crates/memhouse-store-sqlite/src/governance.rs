@@ -130,8 +130,12 @@ impl SqliteStore {
             let id_list = ids_json(&ids);
             exec(&tx, "DELETE FROM mh_memory WHERE tenant = ?1 AND id IN (SELECT value FROM json_each(?2))", [tenant, id_list.as_str()])?;
             self.purge_vectors(&tx, batch.iter().map(|b| b.2.as_str()), batch.iter().filter_map(|b| b.3.as_deref()))?;
-            // Records promoted from them stay; a derived fact under a legal hold stays too.
-            let facts = self.delete_dependents(&tx, tenant, &ids, true, false, true)?.len();
+            // Records promoted from them stay; a derived fact under a legal hold stays too, and
+            // the ledger then says exactly what went (`record` rows): a `retention` row is
+            // re-applied with the cascade, which would take the kept fact on a restore.
+            let kept = self.held_facts(&tx, tenant, &ids)?;
+            let fact_ids = self.delete_dependents(&tx, tenant, &ids, true, false, true)?;
+            let facts = fact_ids.len();
             let subjects: HashSet<&str> = batch.iter().map(|b| b.1.as_str()).collect();
             for subject in subjects {
                 let jobs = rows(
@@ -144,12 +148,18 @@ impl SqliteStore {
                 drop_jobs(&tx, &jobs, true)?;
             }
             let at = now();
+            let scope = if kept { "record" } else { "retention" };
             for (id, subject, _, _) in &batch {
                 exec(
                     &tx,
-                    "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'retention', 'system')",
-                    params![at, tenant, subject, id],
+                    "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, ?5, 'system')",
+                    params![at, tenant, subject, id, scope],
                 )?;
+            }
+            if kept {
+                for f in &fact_ids {
+                    exec(&tx, "INSERT INTO mh_deletion_ledger (at, tenant, memory_id, scope, actor) VALUES (?1, ?2, ?3, 'record', 'system')", params![at, tenant, f.to_string()])?;
+                }
             }
             let n = (batch.len() + facts) as u64;
             if let Some((run, step)) = &spec.run {
@@ -215,6 +225,43 @@ impl SqliteStore {
         )
     }
 
+    /// Whether a fact derived from any of these records is under a legal hold.
+    fn held_facts(&self, c: &Connection, tenant: &str, sources: &[Uuid]) -> anyhow::Result<bool> {
+        Ok(first(
+            c,
+            &format!(
+                "SELECT 1 FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id WHERE r.tenant = ?1 AND m.tenant = ?1 AND r.via = 'source' \
+                 AND r.source_id IN (SELECT value FROM json_each(?2)) AND {HELD_SQL} LIMIT 1"
+            ),
+            params![tenant, ids_json(sources)],
+            |_| Ok(()),
+        )?
+        .is_some())
+    }
+
+    pub(crate) fn hold_one(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<LegalHold>> {
+        first(&self.read(), "SELECT * FROM mh_legal_hold WHERE tenant = ?1 AND id = ?2", [tenant, id.to_string().as_str()], hold_of)
+    }
+
+    pub(crate) fn deletion_add(&self, tenant: &str, id: Uuid, deleted: u64) -> anyhow::Result<Option<DeletionRequest>> {
+        // A sum in the database: two executions each add their own count, neither overwrites.
+        exec(
+            &self.conn(),
+            "UPDATE mh_deletion_request SET deleted = deleted + ?3, executions = executions + 1 WHERE tenant = ?1 AND id = ?2 AND status <> 'completed'",
+            params![tenant, id.to_string(), deleted as i64],
+        )?;
+        self.deletion_one(tenant, id)
+    }
+
+    pub(crate) fn deletion_open(&self, tenant: &str, after: Option<(chrono::DateTime<Utc>, Uuid)>, limit: usize) -> anyhow::Result<Vec<DeletionRequest>> {
+        rows(
+            &self.conn(),
+            "SELECT * FROM mh_deletion_request WHERE tenant = ?1 AND status <> 'completed' AND (?2 IS NULL OR (requested_at, id) > (?2, ?3)) ORDER BY requested_at, id LIMIT ?4",
+            params![tenant, after.map(|a| us(a.0)), after.map(|a| a.1.to_string()), limit.min(i64::MAX as usize) as i64],
+            deletion_of,
+        )
+    }
+
     pub(crate) fn held(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
         let c = self.conn();
         if active_holds(&c, tenant)? == 0 {
@@ -232,8 +279,8 @@ impl SqliteStore {
             &tx,
             "INSERT INTO mh_deletion_request (id, tenant, scope, value, actor, requested_at, status, completed_at, deleted, held, executions, canaries, certificate) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
-             ON CONFLICT (id) DO UPDATE SET status = excluded.status, completed_at = excluded.completed_at, deleted = excluded.deleted, held = excluded.held, \
-               executions = excluded.executions, certificate = excluded.certificate \
+             ON CONFLICT (id) DO UPDATE SET status = excluded.status, completed_at = excluded.completed_at, held = excluded.held, certificate = excluded.certificate, \
+               deleted = max(mh_deletion_request.deleted, excluded.deleted), executions = max(mh_deletion_request.executions, excluded.executions) \
              WHERE mh_deletion_request.status <> 'completed'",
             params![
                 d.id.to_string(),
@@ -369,7 +416,8 @@ impl SqliteStore {
         let c = self.conn();
         exec(&c, "UPDATE mh_job_run SET finished_at = ?2, updated_at = ?2 WHERE id = ?1 AND finished_at IS NULL", params![run.to_string(), now()])?;
         // Finished runs are a short history, not a log: the audit events are the record.
-        exec(&c, "DELETE FROM mh_job_run WHERE finished_at < ?1", [now() - 30 * 86_400 * 1_000_000])?;
+        // Housekeeping: a failure here must not make a finished pass look failed.
+        let _ = exec(&c, "DELETE FROM mh_job_run WHERE finished_at < ?1", [now() - 30 * 86_400 * 1_000_000]);
         Ok(())
     }
 

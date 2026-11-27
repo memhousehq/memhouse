@@ -173,6 +173,9 @@ async fn a_restore_reapplies_deletions_made_after_the_snapshot() {
     assert_eq!(store.ledger().unwrap(), ledger);
     // Applying it again changes nothing.
     assert_eq!(store.apply_ledger(&ledger, "cli").unwrap(), backup::Reapplied { given: 3, known: 3, applied: 0, records_removed: 0 });
+    // The detail of a restore is an object: another shape is an error, not a panic, and writes nothing.
+    assert!(store.ledger_apply(&ledger, "cli", T, serde_json::json!("not an object")).await.is_err());
+    assert_eq!(store.audit_verify().await.unwrap().0, 4);
     // Nothing of the work is left beside the database.
     let left: Vec<String> = std::fs::read_dir(home.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.contains("restoring")).collect();
     assert!(left.is_empty(), "{left:?}");

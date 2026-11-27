@@ -46,6 +46,25 @@ impl LegalHold {
     pub fn active(&self) -> bool {
         self.released_at.is_none()
     }
+
+    /// Whether the hold, if active, keeps this record: the rule of [`HELD_SQL`], on a record
+    /// already read.
+    pub fn holds(&self, m: &Memory) -> bool {
+        let is = |v: &Option<String>| v.as_deref() == Some(self.target.as_str());
+        self.active()
+            && self.tenant == m.tenant
+            && match self.target_kind.as_str() {
+                "tenant" => true,
+                "subject" => self.target == m.subject,
+                "user" => is(&m.provenance.user) || is(&m.scope.user),
+                "agent" => is(&m.provenance.agent) || is(&m.scope.agent),
+                "source" => self.target == m.source,
+                "org" => is(&m.scope.org),
+                "team" => is(&m.scope.team),
+                "session" => is(&m.scope.session),
+                _ => false,
+            }
+    }
 }
 
 /// The SQL condition, over the memory table under the alias `m`, of "an active legal hold
@@ -140,10 +159,11 @@ impl PurgeSpec {
         PurgeSpec { kind, age: PurgeAge::Expired, scope: None, except: vec![], run: None, max_batches: None }
     }
 
-    /// A rule the pre-G22 `purge_older_than` can carry out.
+    /// A rule the pre-G22 `purge_older_than` can carry out: a type's own rule, with no scope
+    /// and no exception. (Its run and its batch bound are a durable store's concern.)
     pub fn is_plain(&self) -> Option<u32> {
         match self.age {
-            PurgeAge::OlderThanDays(d) if self.scope.is_none() && self.except.is_empty() && self.run.is_none() && self.max_batches.is_none() => Some(d),
+            PurgeAge::OlderThanDays(d) if self.scope.is_none() && self.except.is_empty() => Some(d),
             _ => None,
         }
     }
@@ -503,8 +523,9 @@ impl Engine {
     /// Release a hold (audited as `hold.release`), then carry out the deletions it was holding
     /// back (GOV-09: within 24 hours of release; here at once, and again by every retention
     /// pass until none is left).
-    pub async fn hold_release(&self, tenant: &str, id: Uuid, by: &str) -> anyhow::Result<(LegalHold, Vec<DeletionRequest>)> {
-        let hold = self.store.legal_holds(tenant, false).await?.into_iter().find(|h| h.id == id).ok_or_else(|| error::not_found(format!("legal hold {id} not found")))?;
+    pub async fn hold_release(&self, tenant: &str, id: Uuid, by: &str) -> anyhow::Result<(LegalHold, Vec<DeletionRequest>, Option<String>)> {
+        // By id, not from the list: a hold is found however many newer ones there are.
+        let hold = self.store.legal_hold_get(tenant, id).await?.ok_or_else(|| error::not_found(format!("legal hold {id} not found")))?;
         if !hold.active() {
             return Err(error::conflict(format!("legal hold {id} was released already")));
         }
@@ -518,9 +539,13 @@ impl Engine {
         if !self.store.legal_hold_release(tenant, id, by, &audit).await? {
             return Err(error::conflict(format!("legal hold {id} was released already")));
         }
-        let released = self.store.legal_holds(tenant, false).await?.into_iter().find(|h| h.id == id).unwrap_or(hold);
-        let resumed = self.resume_deletions(tenant).await?;
-        Ok((released, resumed))
+        let released = self.store.legal_hold_get(tenant, id).await?.unwrap_or(hold);
+        // The release is committed whatever happens next: a failure to carry the kept deletions
+        // out is reported beside it, not instead of it (the next retention pass tries again).
+        match self.resume_deletions(tenant).await {
+            Ok(resumed) => Ok((released, resumed, None)),
+            Err(e) => Ok((released, vec![], Some(format!("{e:#}")))),
+        }
     }
 
     pub async fn holds(&self, tenant: &str, active_only: bool) -> anyhow::Result<Vec<LegalHold>> {
@@ -531,11 +556,35 @@ impl Engine {
     /// or one a restart interrupted. A deletion is idempotent, and its certificate and audit
     /// event are written once, with its completion (TR-WF-02). Returns those that changed.
     pub async fn resume_deletions(&self, tenant: &str) -> anyhow::Result<Vec<DeletionRequest>> {
+        // One recovery pass per tenant at a time (a retention pass and a hold release may
+        // coincide, also in two processes): two passes over one request could each see the
+        // other's deletion as "nothing left to delete".
+        let lock = format!("deletions.resume.{tenant}");
+        let me = Uuid::new_v4().to_string();
+        let now = Utc::now().timestamp();
+        let current = self.store.state_get(&lock).await.unwrap_or(None);
+        let free = current.as_deref().and_then(|c| c.split_once('|')).is_none_or(|(_, until)| until.parse::<i64>().map_or(true, |u| u < now));
+        // A store without durable state has one process and no lock to take.
+        if !free || !self.store.state_cas(&lock, current.as_deref(), &format!("{me}|{}", now + 600)).await.unwrap_or(true) {
+            return Ok(vec![]);
+        }
+        let result = self.resume_deletions_locked(tenant).await;
+        let _ = self.store.state_put(&lock, &format!("{me}|0")).await;
+        result
+    }
+
+    async fn resume_deletions_locked(&self, tenant: &str) -> anyhow::Result<Vec<DeletionRequest>> {
         let mut out = vec![];
-        for status in [DeletionStatus::Running, DeletionStatus::Held] {
-            for mut d in self.store.deletions(tenant, Some(status), 1000).await? {
-                // A request accepted a moment ago is still being carried out by its own call.
-                if status == DeletionStatus::Running && Utc::now() - d.requested_at < chrono::Duration::minutes(10) {
+        // Every open request, oldest first, page by page: none is out of reach behind others.
+        let mut after = None;
+        loop {
+            let page = self.store.deletions_open(tenant, after, 200).await?;
+            let Some(last) = page.last() else { break };
+            after = Some((last.requested_at, last.id));
+            for mut d in page {
+                // A request accepted a moment ago is still being carried out by its own call
+                // (one that is only waiting for a clean probe is not).
+                if d.status == DeletionStatus::Running && d.certificate.is_none() && Utc::now() - d.requested_at < chrono::Duration::minutes(10) {
                     continue;
                 }
                 let before = (d.status, d.deleted);
@@ -549,18 +598,34 @@ impl Engine {
     }
 
     /// One execution of a deletion request: delete what no hold keeps, then either complete it
-    /// (verify the canaries, issue the certificate) or leave it `held`.
+    /// (verify the canaries, issue the certificate), leave it `held`, or, when a canary is
+    /// still found, leave it open with the residue recorded: it is completed, and certified,
+    /// only once a probe is clean.
     pub(crate) async fn run_deletion(&self, d: &mut DeletionRequest) -> anyhow::Result<()> {
         if d.status == DeletionStatus::Completed {
             return Ok(());
         }
-        let n = self.execute_forget(&d.tenant, d.scope, &d.value, &d.actor).await?;
-        d.deleted += n;
-        d.executions += 1;
+        // A request that was carried out and is only waiting for a clean probe is not carried
+        // out again: it is probed again.
+        if d.certificate.is_none() {
+            let n = self.execute_forget(&d.tenant, d.scope, &d.value, &d.actor).await?;
+            self.deleted.notify_waiters();
+            // The count is added to the stored request at once and atomically: what a later
+            // step fails on, or another pass does, cannot lose it.
+            match self.store.deletion_progress(&d.tenant, d.id, n).await? {
+                Some(fresh) if fresh.status == DeletionStatus::Completed => {
+                    *d = fresh;
+                    return Ok(());
+                }
+                Some(fresh) => (d.deleted, d.executions) = (fresh.deleted, fresh.executions),
+                None => (d.deleted, d.executions) = (d.deleted + n, d.executions + 1),
+            }
+        }
         d.held = self.store.held_count(&d.tenant, d.scope, &d.value).await?;
         if d.held > 0 {
             let first = d.status != DeletionStatus::Held;
             d.status = DeletionStatus::Held;
+            d.certificate = None;
             self.store.deletion_put(d).await?;
             if first {
                 self.store
@@ -598,9 +663,25 @@ impl Engine {
             hash: String::new(),
         };
         cert.hash = cert.computed_hash();
+        d.held = 0;
+        if !cert.verified {
+            // Not complete: something of a sampled record is still there. The request stays
+            // open with what was found, said once in the audit log, and is probed again by
+            // every retention pass.
+            let first = d.certificate.is_none();
+            let found = serde_json::to_value(&cert.canaries_found)?;
+            d.status = DeletionStatus::Running;
+            d.certificate = Some(cert);
+            self.store.deletion_put(d).await?;
+            if first {
+                self.store
+                    .audit(&d.actor, "deletion.unverified", &d.tenant, None, None, json!({ "request": d.id, "scope": d.scope.as_str(), "records": d.deleted, "found": found }))
+                    .await?;
+            }
+            return Ok(());
+        }
         d.status = DeletionStatus::Completed;
         d.completed_at = Some(cert.completed_at);
-        d.held = 0;
         let audit = AuditEntry {
             actor: d.actor.clone(),
             action: "deletion.certificate".into(),
@@ -608,7 +689,7 @@ impl Engine {
             memory_id: None,
             detail: json!({
                 "request": d.id, "scope": d.scope.as_str(), "records": d.deleted, "canaries": cert.canaries_checked,
-                "found": cert.canaries_found.total(), "verified": cert.verified, "certificate": cert.hash,
+                "found": 0, "verified": true, "certificate": cert.hash,
             }),
         };
         d.certificate = Some(cert);
@@ -711,6 +792,8 @@ impl Engine {
         report.resumed = run.resumed;
         for (step, mut spec, mut detail) in steps {
             if run.step_done(&step) {
+                // Done by an earlier pass of this run: counted, not run again.
+                report.purged += run.count(&step);
                 continue;
             }
             spec.run = Some((run.id, step.clone()));
@@ -725,7 +808,8 @@ impl Engine {
                 return Ok(report);
             }
             // The step's total is what the run has counted, over this attempt and earlier ones.
-            let total = self.store.job_count(run.id, &step).await?;
+            // (A store without durable runs counts nothing: there the step's own count stands.)
+            let total = self.store.job_count(run.id, &step).await?.max(out.records);
             report.purged += total;
             detail["records"] = json!(total);
             if out.partitions_dropped > 0 {

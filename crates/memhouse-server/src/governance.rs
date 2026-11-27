@@ -23,10 +23,15 @@ pub struct Watermark {
     pub seen_at: DateTime<Utc>,
 }
 
+/// Write a private file so that it is either the old content or the new: the new content goes
+/// to a file beside it, which is flushed and then renamed over it. A write that is interrupted
+/// leaves what was there.
 fn private(path: &Path, content: &[u8]) -> anyhow::Result<()> {
-    if let Some(dir) = path.parent() {
-        memhouse_store_sqlite::private_dir(dir)?;
-    }
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    memhouse_store_sqlite::private_dir(dir)?;
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp-{}", std::process::id()));
+    let tmp = path.with_file_name(name);
     let mut open = std::fs::OpenOptions::new();
     open.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -34,10 +39,21 @@ fn private(path: &Path, content: &[u8]) -> anyhow::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         open.mode(0o600);
     }
-    let mut f = open.open(path).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", path.display()))?;
-    f.write_all(content)?;
-    f.sync_all()?;
-    Ok(())
+    let written = (|| -> anyhow::Result<()> {
+        let mut f = open.open(&tmp).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", tmp.display()))?;
+        f.write_all(content)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", path.display()))?;
+        // The rename itself is durable once the directory is.
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Where the watermark of an installation is kept: under `MEMHOUSE_HOME`, outside the database.
@@ -76,14 +92,21 @@ pub enum Guard {
 pub async fn guard(store: &dyn Store, home: &Path) -> anyhow::Result<Guard> {
     let instance = instance_id(store).await?;
     let path = watermark_path(home, &instance);
-    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(Guard::Ok) };
-    let seen: Watermark = match serde_json::from_str(&text) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::warn!("the restore guard's state {} cannot be read ({e}); starting without it", path.display());
-            return Ok(Guard::Ok);
-        }
+    // Only a file that is not there means "nothing recorded yet". One that is there and cannot
+    // be read is not a reason to skip the comparison: the database might be a restored one.
+    let unreadable = |e: &dyn std::fmt::Display| {
+        anyhow::anyhow!(
+            "the restore guard's state {} cannot be read ({e}), so this database cannot be compared with the one last served. If it was not restored from a backup, \
+             `memhouse restore --no-ledger` records it as it is; if it was, `memhouse restore --ledger <file>` re-applies the deletions first",
+            path.display()
+        )
     };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Guard::Ok),
+        Err(e) => return Err(unreadable(&e)),
+    };
+    let seen: Watermark = serde_json::from_str(&text).map_err(|e| unreadable(&e))?;
     let now = store.audit_head().await?.map_or(0, |h| h.id);
     if now < seen.audit_event {
         return Ok(Guard::Restored { seen: seen.audit_event, now, seen_at: seen.seen_at });
@@ -166,14 +189,31 @@ pub struct EvidenceManifest {
 pub async fn evidence_export(engine: &Engine, dir: &Path, suite_report: Option<&Path>, by: &str) -> anyhow::Result<EvidenceManifest> {
     memhouse_store_sqlite::private_dir(dir)?;
     anyhow::ensure!(std::fs::read_dir(dir)?.next().is_none(), "{} is not empty: choose a new directory for the evidence bundle", dir.display());
+    // A bundle is there whole, with its audit event written, or not at all: whatever this
+    // attempt wrote is removed if it fails (the directory was empty, so all of it is ours).
+    let done = evidence_write(engine, dir, suite_report, by).await;
+    if done.is_err() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    done
+}
+
+async fn evidence_write(engine: &Engine, dir: &Path, suite_report: Option<&Path>, by: &str) -> anyhow::Result<EvidenceManifest> {
     let tenant = engine.cfg.memory.tenant.clone();
     let cfg = &engine.cfg;
     let now = Utc::now();
     let policy = engine.policy_for(&tenant).await?;
     let mut files: Vec<(&str, serde_json::Value)> = vec![];
 
-    let (events, broken_at) = engine.store.audit_verify().await?;
+    // The head is read first and the chain verified after it: the verification covers at least
+    // every event up to that head (events appended meanwhile are verified too, and are not
+    // named here).
     let head = engine.store.audit_head().await?;
+    let (events, broken_at) = engine.store.audit_verify().await?;
     let recent = engine.store.audit_log(&tenant, 10_000).await?;
     let mut by_action: std::collections::BTreeMap<String, u64> = Default::default();
     for e in &recent {
@@ -195,13 +235,16 @@ pub async fn evidence_export(engine: &Engine, dir: &Path, suite_report: Option<&
         "audit-chain.json",
         json!({
             "verified": { "events": events, "intact": broken_at.is_none(), "broken_at": broken_at },
-            "head": head, "anchors": anchors, "audit_reads": policy.policy.recall.audit_reads,
+            "head": head, "head_note": "the newest event when the export began; the verification ran after it was read and covers it",
+            "anchors": anchors, "audit_reads": policy.policy.recall.audit_reads,
             "events_by_action": by_action, "events_counted": recent.len(), "holds_content": false,
         }),
     ));
 
-    let principals = engine.store.principals(Some(&tenant)).await.unwrap_or_default();
-    let keys = engine.store.api_keys(None).await.unwrap_or_default();
+    // A lookup that fails is an export that fails: an empty inventory would read as "no
+    // principals, no keys".
+    let principals = engine.store.principals(Some(&tenant)).await?;
+    let keys = engine.store.api_keys(None).await?;
     let ids: std::collections::HashSet<&str> = principals.iter().map(|p| p.id.as_str()).collect();
     files.push((
         "access.json",
@@ -305,7 +348,22 @@ pub async fn evidence_export(engine: &Engine, dir: &Path, suite_report: Option<&
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| anyhow::anyhow!("cannot read the governance suite report {}: {e}", p.display()))?;
             let report: serde_json::Value = serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{} is not a governance suite summary: {e}", p.display()))?;
-            json!({ "included": true, "sha256": hex::encode(Sha256::digest(text.as_bytes())), "report": report })
+            // Only what a suite summary is known to hold is copied: the counts and, per check,
+            // its id, requirement and outcome. Whatever else the file holds stays out of the
+            // bundle (the checksum still names the file it was taken from).
+            let g = report.get("governance").unwrap_or(&report);
+            let checks =
+                g.get("checks").and_then(|c| c.as_array()).ok_or_else(|| anyhow::anyhow!("{} is not a governance suite summary: it has no list of checks", p.display()))?;
+            let text_of = |c: &serde_json::Value, k: &str| c.get(k).and_then(|v| v.as_str()).map(|v| v.chars().take(200).collect::<String>());
+            let checks: Vec<serde_json::Value> = checks
+                .iter()
+                .map(|c| json!({ "id": text_of(c, "id"), "requirement": text_of(c, "requirement"), "passed": c.get("passed").and_then(|v| v.as_bool()), "not_applicable": c.get("not_applicable").is_some_and(|v| !v.is_null()) }))
+                .collect();
+            let n = |k: &str| g.get(k).and_then(|v| v.as_u64());
+            json!({
+                "included": true, "sha256": hex::encode(Sha256::digest(text.as_bytes())),
+                "report": { "profile": text_of(g, "profile"), "passed": n("passed"), "failed": n("failed"), "not_applicable": n("not_applicable"), "checks": checks },
+            })
         }
         None => json!({ "included": false, "how": "run `memhouse bench run --suite governance` and pass its summary.json with --suite-report" }),
     };
@@ -348,10 +406,12 @@ pub async fn evidence_export(engine: &Engine, dir: &Path, suite_report: Option<&
         }),
         &mut manifest,
     )?;
-    private(&dir.join("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    // The audit event first, the manifest last: a directory with a manifest is a bundle whose
+    // export is on record.
     engine
         .store
         .audit(by, "evidence.export", &tenant, None, None, json!({ "files": manifest.files.len(), "controls": evidence::CONTROLS.len(), "suite_report": suite_report.is_some() }))
         .await?;
+    private(&dir.join("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
     Ok(manifest)
 }

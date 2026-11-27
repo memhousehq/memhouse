@@ -133,8 +133,8 @@ A `secret` cannot be masked (a masked credential still shows part of it). A poli
 category's action stricter (mask < redact < reject), never looser. The governance check
 `pii_actions` runs a labelled set of 2,000 generated items in the Must categories (credentials,
 card and account numbers, national ids) through the gate and the write path: at least 98% must
-be detected (all are), and none may be found as written in the records, the audit log or the
-queue.
+be detected (all are), and of a sample of 200 of them written through the write path, none
+may be found as written in the records, the audit log or the queue.
 
 The response lists the redacted categories, never the values, and the audit event records the
 same categories. Redaction is pattern-based, so it is a safety net rather than a guarantee. Names,
@@ -321,6 +321,13 @@ memhouse deletion certificate 0193a6f2-… --verify -o acme-erasure.json
 memhouse deletion list --status held
 ```
 
+A request is completed, and certified, only when the probe is clean. If a canary is still
+found, the request stays open with what was found (`deletion.unverified`, once), is not carried
+out a second time, and is probed again by every retention pass until nothing is left;
+`memhouse deletion certificate <id>` says so meanwhile. The count a certificate states is kept
+with the request and added to by every execution, so a deletion that was interrupted and
+finished later certifies what it deleted in all.
+
 The certificate is not signed with a key of its own: its integrity rests on the audit chain
 (and on [anchors](#audit-log) of that chain kept elsewhere). A deletion interrupted by a
 restart is continued by the next retention pass, and gets one certificate.
@@ -391,6 +398,12 @@ memhouse hold release 0193a702-…
 - A hold matches a record the way the corresponding `forget` does: a `user` hold matches what
   the user wrote through an agent or what is scoped to the user, and so on. A record derived
   or promoted from a held record is held only if a hold matches it too.
+- **A hold on a derived or promoted record keeps that record, not the request that passed
+  it.** A forget by record tracks what it derived and stays `held`. A forget by user, agent or
+  source matches records by their own fields: a promoted or derived record under a hold that
+  does not itself match the request is kept and is not counted as held, so it is not deleted
+  when its hold is released. Forget it by id, or place holds on the source rather than on what
+  was derived from it.
 - Every placement and release is audited (`hold.place`, `hold.release`), as is the first time
   a deletion meets a hold (`deletion.held`).
 
@@ -407,7 +420,9 @@ episodic_retention_days = 365
 **The default is to keep (decided in G22).** The type table suggests twelve months for
 episodic memory; the built-in default stays "keep", because a default that purges would make
 an upgrade delete stored conversations nobody asked it to delete. A deployment sets its
-retention in `[governance]` or in a policy; nothing is purged until it does.
+retention in `[governance]` or in a policy; until it does, nothing but expired working memory
+is purged (a session's notes go once their time to live has passed, whatever the retention
+settings).
 
 Retention is per memory type (MEM-01): working memory expires after its session's last write
 plus `[memory] working_ttl_secs` and is never recalled past that; episodic memory is purged after
@@ -457,6 +472,7 @@ appended to `mh_audit`. Recalls are added when `audit_reads = true`.
 | `retention.expire` | retention | records moved to `expired` |
 | `hold.place`, `hold.release` | `memhouse hold` | the hold's id, `target_kind`, `target`, and for a placement its `reason` |
 | `deletion.held` | forget, the first time a legal hold keeps records of a request back | `request`, `scope`, `value`, `deleted`, `held` |
+| `deletion.unverified` | the deletion workflow, the first time a canary of a request is still found after its deletion | `request`, `scope`, `records`, `found` (where, by representation) |
 | `deletion.certificate` | the deletion workflow, once per request, with its completion | `request`, `scope`, `records`, `canaries`, `found`, `verified`, `certificate` (the certificate's hash) |
 | `deletion.reapply`, `backup.restore` | `memhouse restore` | per re-applied ledger row: `scope`, `deleted_at`, `deleted_by`, `records` (retention rows as one event per tenant); the restore's summary |
 | `audit.anchor` | `memhouse audit anchor`, and `serve` with `audit_anchor_path` | `event` and `hash`: the head that was anchored |
@@ -809,7 +825,7 @@ are reported as not applicable ([conformance.md](conformance.md#where-they-run))
 | `rls_bypass` | Postgres, with row-level security on: a direct connection as a role that does not own the tables reads 0 rows of every memory table without the session settings, only its tenant's and its subject's with them, cannot write another tenant's row, and cannot take the service scope; the service keeps working within its tenant (TR-DB-03) |
 | `episodic_partitions` | Postgres: the memory table is converted in place with every record still there and recalled; rounds of three months land in three partitions; retention drops a due month whole with its derived fact, structured form and ledger rows, keeps the month that holds a row under legal hold until the hold is released, and purges rounds from before the conversion by row (TR-DB-04) |
 | `audit_anchor` | two anchors match an untouched log; after the end of the log is removed and the chain continued, the chain verifies and the later anchor does not; an anchor of another installation is not compared (GOV-12) |
-| `siem_export` | the events of 120 writes reach a syslog receiver as CEF and an OTLP collector as logs, each once, all within 60 seconds, without memory content; a second replica stands by; with the syslog receiver down its events wait and arrive when it is back (GOV-15) |
+| `siem_export` | the events of 120 writes reach a syslog receiver as CEF and an OTLP collector as logs, each once, all within 60 seconds, without memory content; a second replica stands by; with the syslog receiver down its events wait and arrive when it is back; an event the collector refuses for good is skipped and named, and the events around it arrive (GOV-15) |
 | `evidence_export` | every one of the twelve controls has its evidence files in the bundle with matching checksums and both mappings; the bundle shows the installation's state and holds no memory content, key or key hash; the export is audited (GOV-16) |
 | `pii_actions` | 2,000 labelled items in the Must categories: at least 98% detected, none of a sample of 200 stored as written in records, audit log or queue; a masked card keeps its last four digits, a rejected category refuses the write without repeating the value, a secret cannot be masked, a policy can only make an action stricter (GOV-05) |
 
@@ -893,10 +909,10 @@ Short answers for vendor security reviews:
 | Encryption at rest? | Through your Postgres or disk encryption. |
 | Encryption in transit? | TLS at your reverse proxy and to the database. |
 | Authentication? | Bearer API keys, compared in constant time; there is no anonymous access. |
-| Audit logging? | An append-only, hash-chained log of all writes and deletions, optionally reads; independently verifiable; its head anchored outside the database; exported to your SIEM within 60 seconds. |
+| Audit logging? | An append-only, hash-chained log of all writes and deletions, optionally reads; independently verifiable. Optional, off until configured: anchors of its head kept outside the database (on demand, or on a schedule you set), and export to your SIEM (within 60 seconds once `[siem]` is set). |
 | Data deletion? | Hard delete of the record and all derived data (vectors, extracted facts, caches), recorded in a deletion ledger that is re-applied after a restore, with a completion certificate per request. |
 | Legal hold? | Yes: on a subject, user, agent, source or scope; held data is exempt from retention and deletion until released. |
-| Retention? | Per memory type and per scope, from an approved policy; nothing is purged by default. |
+| Retention? | Per memory type and per scope, from an approved policy; by default only expired working memory (session notes past their time to live) is purged. |
 | PII handling? | Secrets, card numbers, SSNs and IBANs (and optionally email, phone, IP) are redacted, masked or rejected before storage, per category. |
 | Evidence for SOC 2 / ISO 27001? | `memhouse evidence export` writes a bundle mapped to both, read from the running installation. |
 | AI-specific risks? | Instruction-like content is quarantined on every write path, including LLM-extracted facts. |

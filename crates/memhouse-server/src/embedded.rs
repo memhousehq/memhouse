@@ -22,8 +22,9 @@ pub struct Background {
     stop: Arc<AtomicBool>,
     /// The workers not yet known to have ended.
     workers: Vec<JoinHandle<()>>,
-    /// `None` once it has ended.
-    retention: Option<JoinHandle<()>>,
+    /// The loops that run on a clock (retention, anchors, the SIEM export), each on its own
+    /// task; empty once they have ended.
+    timers: Vec<JoinHandle<()>>,
     /// How long [`Background::stop`] lets a worker finish its job before cancelling it.
     grace: std::time::Duration,
 }
@@ -38,40 +39,37 @@ impl Background {
         let mut workers = if enrichment_runs(engine) { engine.spawn_enrichment(engine.cfg.enrich.workers, stop.clone(), Default::default()) } else { vec![] };
         // The write pipeline's workers resume proposals left by a restart (TR-LT-05).
         workers.extend(engine.spawn_intake(engine.cfg.intake.workers, stop.clone()));
+        // What runs on a clock, each on a task of its own: a long retention pass does not hold
+        // the SIEM export back on a multi-thread runtime, and one loop that ends leaves the
+        // others running. The hourly retention pass (which also carries out deletions whose
+        // legal hold was released), the anchors of the audit head (GOV-12) and the SIEM export
+        // (GOV-15).
+        let mut timers = vec![];
         let e = engine.clone();
-        // One task for everything that runs on a clock, so one handle stops it all: the hourly
-        // retention pass (which also carries out deletions whose legal hold was released), the
-        // anchors of the audit head (GOV-12) and the SIEM export (GOV-15).
-        let retention = tokio::spawn(async move {
-            let passes = async {
-                loop {
-                    if let Err(err) = e.apply_retention().await {
-                        tracing::warn!("retention: {err:#}");
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        timers.push(tokio::spawn(async move {
+            loop {
+                if let Err(err) = e.apply_retention().await {
+                    tracing::warn!("retention: {err:#}");
                 }
-            };
-            let anchors = async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        }));
+        if !engine.cfg.governance.audit_anchor_path.is_empty() {
+            let e = engine.clone();
+            timers.push(tokio::spawn(async move {
                 let path = e.cfg.governance.audit_anchor_path.clone();
-                if path.is_empty() {
-                    return std::future::pending::<()>().await;
-                }
                 loop {
                     if let Err(err) = crate::governance::anchor_to(&e, std::path::Path::new(&path), "system").await {
                         tracing::warn!("audit anchor: {err:#}");
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(e.cfg.governance.audit_anchor_secs.max(60))).await;
                 }
-            };
-            let siem = async {
-                if !e.cfg.siem.enabled() {
-                    return std::future::pending::<()>().await;
-                }
-                crate::siem::Exporter::new(&e).run().await
-            };
-            tokio::join!(passes, anchors, siem);
-        });
-        Background { stop, workers, retention: Some(retention), grace: GRACE }
+            }));
+        }
+        if engine.cfg.siem.enabled() {
+            timers.push(tokio::spawn(crate::siem::Exporter::new(engine).run()));
+        }
+        Background { stop, workers, timers, grace: GRACE }
     }
 
     /// Stop the workers, and return when none of them runs any more.
@@ -97,10 +95,17 @@ impl Background {
         self.stop.store(true, Ordering::Relaxed);
         // It checks no flag: it sleeps an hour between passes. Cancelled first, so that the
         // grace period is the workers' alone.
-        if let Some(retention) = self.retention.as_mut() {
-            retention.abort();
-            let _ = retention.await;
-            self.retention = None;
+        for timer in &self.timers {
+            timer.abort();
+        }
+        while let Some(timer) = self.timers.last_mut() {
+            // Cancelled is the expected end; a loop that panicked is said, not swallowed.
+            if let Err(e) = timer.await {
+                if e.is_panic() {
+                    tracing::error!("a background loop (retention, anchoring or the SIEM export) had panicked: {e}");
+                }
+            }
+            self.timers.pop();
         }
         // A handle leaves the list only once its task has ended (a handle must not be awaited
         // again after that), so dropping this future loses none.
@@ -129,8 +134,8 @@ impl Background {
 impl Drop for Background {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(retention) = &self.retention {
-            retention.abort();
+        for timer in &self.timers {
+            timer.abort();
         }
     }
 }
@@ -309,7 +314,7 @@ mod tests {
     fn background<F: std::future::Future<Output = ()> + Send + 'static>(grace: Duration, worker: impl FnOnce(Arc<AtomicBool>) -> F) -> Background {
         let stop = Arc::new(AtomicBool::new(false));
         let retention = tokio::spawn(std::future::pending::<()>());
-        Background { workers: vec![tokio::spawn(worker(stop.clone()))], stop, retention: Some(retention), grace }
+        Background { workers: vec![tokio::spawn(worker(stop.clone()))], stop, timers: vec![retention], grace }
     }
 
     /// A worker that, once told to stop, needs `rest` to finish its job, then sets `done`.
@@ -335,7 +340,7 @@ mod tests {
         let mut b = background(Duration::from_secs(10), finishing(Duration::from_millis(150), done.clone()));
         b.stop().await;
         assert!(done.load(Ordering::SeqCst), "stop returned before the worker had finished");
-        assert!(b.workers.is_empty() && b.retention.is_none());
+        assert!(b.workers.is_empty() && b.timers.is_empty());
         // Nothing is left to wait for.
         b.stop().await;
     }

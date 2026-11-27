@@ -258,9 +258,12 @@ move with `memhouse migrate`; job runs do not (an unfinished run is simply run a
 Version 12 changes no column of a record. On Postgres it adds one nullable column to the
 memory table, `epart`: the month of an episodic record on a database whose memory table is
 partitioned by it ([monthly partitions](operations.md#monthly-partitions-for-episodic-memory)),
-empty everywhere else. It is the store's own and is not part of the logical record. A version
-11 process keeps working against a version 12 database: it reads none of the new tables and
-leaves `epart` empty.
+empty everywhere else. It is the store's own and is not part of the logical record. The change
+is expand-only, but a version 11 build does not run on a version 12 database: like every
+build, it refuses a database whose stored schema version is newer than its own ("newer than
+this build") when it opens it. Upgrade in this order: stop or drain every process of the older
+build, start the new build (it brings the schema to version 12 when it opens the database),
+then start the rest on the new build. To go back, restore the backup taken before the upgrade.
 
 ## Postgres mapping
 
@@ -291,9 +294,11 @@ leaves `epart` empty.
 
 Every change is **expand, backfill, switch, contract** (TR-DB-01), never a rewrite in place:
 
-1. **Expand**: add nullable columns and new tables (`ADD COLUMN IF NOT EXISTS`). A process on the
-   previous version keeps working against the new schema (the `schema_upgrade` check inserts a row
-   the way a v1 process would).
+1. **Expand**: add nullable columns and new tables (`ADD COLUMN IF NOT EXISTS`). The statements
+   of the previous version still fit the new schema (the `schema_upgrade` check inserts a row
+   the way a v1 process would), so a process that is already running is not broken in the
+   middle of an upgrade. It cannot be started again on the upgraded database: a build refuses
+   one whose stored `schema_version` is newer than its own.
 2. **Backfill** in batches of 5,000 rows, idempotent, so it can be interrupted.
 3. **Switch** readers and writers to the new fields; bump `schema_version`.
 4. **Contract** (drop what is no longer used) only in a later version, after every process has

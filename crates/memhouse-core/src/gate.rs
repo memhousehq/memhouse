@@ -56,6 +56,11 @@ static RULES: Lazy<Vec<Rule>> = Lazy::new(|| {
     ]
 });
 
+/// The marker a masked match leaves, per rule of [`RULES`] (same order): what a stricter
+/// action later replaces, so the last characters a mask kept do not outlive the mask.
+static MASK_MARKERS: Lazy<Vec<Regex>> =
+    Lazy::new(|| RULES.iter().map(|r| Regex::new(&format!(r"\[MASKED:{}:[\p{{L}}\p{{N}}]{{0,4}}\]", r.category)).expect("valid regex")).collect());
+
 fn luhn_ok(s: &str) -> bool {
     let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
     if digits.len() < 13 || digits.len() > 19 {
@@ -136,7 +141,8 @@ fn masked(category: &str, m: &str) -> String {
 pub fn redact_text(content: &str, redact: &[String]) -> (String, Vec<String>) {
     let mut text = content.to_string();
     let mut redactions = Vec::new();
-    for rule in RULES.iter() {
+    let marked = content.contains("[MASKED:");
+    for (i, rule) in RULES.iter().enumerate() {
         let Some(action) = redact.iter().find_map(|c| match c.split_once(':') {
             Some((cat, action)) if cat == rule.category => Some(action),
             None if c == rule.category => Some("redact"),
@@ -147,6 +153,13 @@ pub fn redact_text(content: &str, redact: &[String]) -> (String, Vec<String>) {
         // A secret is never shown in part, whatever the configuration says (security baseline).
         let mask = action == "mask" && rule.category != "secret";
         let mut hit = false;
+        // Text masked under an earlier, looser action (a queued write, a revision): under
+        // `redact` or `reject` the marker's last characters go too, and count as a match.
+        if marked && !mask && MASK_MARKERS[i].is_match(&text) {
+            text = MASK_MARKERS[i].replace_all(&text, rule.replacement).into_owned();
+            hit = true;
+        }
+        let was_marked = hit;
         let replaced = rule.re.replace_all(&text, |caps: &regex::Captures| {
             let m = caps.get(0).unwrap().as_str();
             if rule.check.map(|f| f(m)).unwrap_or(true) {
@@ -161,7 +174,9 @@ pub fn redact_text(content: &str, redact: &[String]) -> (String, Vec<String>) {
             }
         });
         if hit {
-            text = replaced.into_owned();
+            if !was_marked || replaced != text {
+                text = replaced.into_owned();
+            }
             redactions.push(if action == "reject" { format!("{}{REJECT_MARK}", rule.category) } else { rule.category.to_string() });
         }
     }
@@ -211,12 +226,19 @@ mod tests {
         assert!(out.contains("[REDACTED:secret]") && !out.contains("sk-proj") && !out.contains("MASKED:secret"), "{out}");
         assert_eq!(found, vec!["secret", "card", "ssn:reject"]);
         assert_eq!(rejected(&found), vec!["ssn"]);
-        // Masked text is left alone by a second pass, under any action.
-        assert_eq!(redact_text(&out, &rules(&["secret", "card", "ssn", "iban", "phone", "email", "ip"])).0, out);
+        // Masked text is left alone by a second pass under the same actions (a stricter action
+        // tightens the marker: below).
+        assert_eq!(redact_text(&out, &rules(&["secret:mask", "card:mask", "ssn:reject", "iban", "phone", "email", "ip"])).0, out);
         let (plain, found) = redact_text(text, &rules(&["card:redact"]));
         assert!(plain.contains("[REDACTED:card]") && plain.contains("123-45-6789"), "{plain}");
         assert_eq!(found, vec!["card"]);
         assert_eq!(masked("iban", "DE89 3704 0044 0532 0130 00"), "[MASKED:iban:3000]");
+        // A marker left by `mask` is tightened when the action becomes stricter, kept otherwise.
+        let marker = "card on file [MASKED:card:1111], id [MASKED:ssn:6789]";
+        assert_eq!(redact_text(marker, &rules(&["card:mask", "ssn:mask"])), (marker.to_string(), vec![]));
+        let (tight, found) = redact_text(marker, &rules(&["card", "ssn:reject"]));
+        assert_eq!(tight, "card on file [REDACTED:card], id [REDACTED:ssn]");
+        assert_eq!(found, vec!["card", "ssn:reject"]);
     }
 
     #[test]

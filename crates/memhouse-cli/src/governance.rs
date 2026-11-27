@@ -62,7 +62,7 @@ pub enum AuditCmd {
         #[arg(long, short)]
         out: Option<PathBuf>,
         /// Check every anchor of this file against the chain instead of taking a new one
-        #[arg(long)]
+        #[arg(long, conflicts_with = "out")]
         verify: Option<PathBuf>,
     },
 }
@@ -105,8 +105,13 @@ pub async fn hold(eng: &Engine, cmd: HoldCmd) -> anyhow::Result<()> {
             }
         }
         HoldCmd::Release { id } => {
-            let (h, resumed) = eng.hold_release(&tenant, uuid::Uuid::parse_str(&id)?, "cli").await?;
+            let (h, resumed, failed) = eng.hold_release(&tenant, uuid::Uuid::parse_str(&id)?, "cli").await?;
             println!("✓ legal hold {} on {} {} released", h.id, h.target_kind, h.target);
+            if let Some(why) = failed {
+                println!(
+                    "  ! the deletions it kept back could not all be carried out now ({why}). The hold is released; `memhouse retention` carries them out (do not release again)"
+                );
+            }
             for d in resumed {
                 match d.status {
                     DeletionStatus::Completed => {
@@ -125,16 +130,28 @@ pub async fn deletion(eng: &Engine, cmd: DeletionCmd) -> anyhow::Result<()> {
     match cmd {
         DeletionCmd::Certificate { id, verify, out } => {
             let d = eng.deletion(&tenant, uuid::Uuid::parse_str(&id)?).await?;
-            let Some(cert) = &d.certificate else {
-                match d.status {
-                    DeletionStatus::Held => anyhow::bail!(
-                        "deletion {id} is not complete: {} records are kept by a legal hold ({} deleted so far). It completes, and gets its certificate, when the hold is released",
-                        d.held,
-                        d.deleted
-                    ),
-                    _ => anyhow::bail!("deletion {id} is not complete yet ({}); the next retention pass (`memhouse retention`) continues it", d.status.as_str()),
-                }
+            let cert = match (&d.certificate, d.status) {
+                (Some(cert), DeletionStatus::Completed) => cert,
+                (Some(cert), _) => anyhow::bail!(
+                    "deletion {id} is not complete: of the records sampled before it, something is still found ({}). It has no certificate until a probe is clean; \
+                     the next retention pass (`memhouse retention`) probes again",
+                    serde_json::to_string(&cert.canaries_found)?
+                ),
+                (None, DeletionStatus::Held) => anyhow::bail!(
+                    "deletion {id} is not complete: {} records are kept by a legal hold ({} deleted so far). It completes, and gets its certificate, when the hold is released",
+                    d.held,
+                    d.deleted
+                ),
+                (None, _) => anyhow::bail!("deletion {id} is not complete yet ({}); the next retention pass (`memhouse retention`) continues it", d.status.as_str()),
             };
+            // Checked before anything is written or printed: a certificate that does not
+            // verify is not handed out as one that was asked to be verified.
+            if verify {
+                let (hash_ok, recorded) = eng.certificate_check(&tenant, cert).await?;
+                anyhow::ensure!(hash_ok, "the certificate's hash does not cover its fields: it was changed after it was issued");
+                anyhow::ensure!(recorded, "the audit log has no `deletion.certificate` event with this certificate's hash");
+                anyhow::ensure!(cert.verified, "the certificate records canaries that were still found ({:?}): the deletion is not verified", cert.canaries_found);
+            }
             let text = serde_json::to_string_pretty(cert)?;
             match &out {
                 Some(p) => {
@@ -144,10 +161,6 @@ pub async fn deletion(eng: &Engine, cmd: DeletionCmd) -> anyhow::Result<()> {
                 None => println!("{text}"),
             }
             if verify {
-                let (hash_ok, recorded) = eng.certificate_check(&tenant, cert).await?;
-                anyhow::ensure!(hash_ok, "the certificate's hash does not cover its fields: it was changed after it was issued");
-                anyhow::ensure!(recorded, "the audit log has no `deletion.certificate` event with this certificate's hash");
-                anyhow::ensure!(cert.verified, "the certificate records canaries that were still found ({:?}): the deletion is not verified", cert.canaries_found);
                 eprintln!("✓ hash covers the certificate; the audit chain holds its event; {} canaries, none found", cert.canaries_checked);
             }
         }
@@ -269,10 +282,14 @@ pub async fn restore_postgres(cfg: &Config, ledger: Option<&Path>, no_ledger: bo
         None => println!("✓ recorded: no deletion was made since the backup this database was restored from"),
     }
     let (n, broken) = store.audit_verify().await?;
-    match broken {
-        None => println!("  audit chain intact ({n} events)"),
-        Some(id) => println!("  ✗ audit chain broken at event {id}: the backup's audit log was changed before or after it was taken"),
+    // A database whose audit chain does not verify is not recorded as fit to serve.
+    if let Some(id) = broken {
+        anyhow::bail!(
+            "the audit chain is broken at event {id} (of {n}): the backup's audit log was changed before or after it was taken. The deletion ledger has been re-applied \
+             (running this again applies nothing twice), but the database was not recorded as fit to serve: `memhouse serve` still refuses it. Restore a backup whose chain verifies"
+        );
     }
+    println!("  audit chain intact ({n} events)");
     memhouse_server::governance::record_watermark(store.as_ref(), &memhouse_core::config::home_dir()).await?;
     println!("  `memhouse serve` now starts on this database");
     Ok(())
@@ -282,6 +299,10 @@ pub async fn restore_postgres(cfg: &Config, ledger: Option<&Path>, no_ledger: bo
 /// next start; with `acknowledge`, for a file put in place by hand, with an audit event.
 pub async fn record_lite(cfg: &Config, acknowledge: bool) -> anyhow::Result<()> {
     let store = store_of(cfg).await?;
+    let (n, broken) = store.audit_verify().await?;
+    if let Some(id) = broken {
+        anyhow::bail!("the audit chain is broken at event {id} (of {n}): the database was not recorded as fit to serve, and `memhouse serve` still refuses it. Restore a backup whose chain verifies");
+    }
     if acknowledge {
         store.audit("cli", "backup.restore", &cfg.memory.tenant, None, None, serde_json::json!({ "ledger_given": false, "acknowledged": true })).await?;
         println!("✓ recorded: no deletion was made since the backup this database was restored from");

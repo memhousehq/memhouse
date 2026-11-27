@@ -141,17 +141,44 @@ async fn send_syslog(target: &str, events: &[AuditEvent], host: &str) -> anyhow:
     Ok(())
 }
 
-async fn send_otlp(http: &reqwest::Client, cfg: &SiemConfig, events: &[AuditEvent], service: &str) -> anyhow::Result<()> {
+/// A target as it is named in errors, logs and the export's status: scheme, host and port.
+/// Whatever else a URL holds (a user, a password, a path, a query) is not repeated.
+pub fn target_name(url: &str) -> String {
+    let (scheme, rest) = url.trim().split_once("://").unwrap_or(("", url.trim()));
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    format!("{scheme}://{host}")
+}
+
+/// A send that failed: `permanent` when the receiver refused the payload itself, so that
+/// sending the same payload again cannot succeed.
+struct SendError {
+    message: String,
+    permanent: bool,
+}
+
+async fn send_otlp(http: &reqwest::Client, cfg: &SiemConfig, events: &[AuditEvent], service: &str) -> Result<(), SendError> {
     let url = format!("{}/v1/logs", cfg.otlp_endpoint.trim().trim_end_matches('/'));
+    let to = target_name(&url);
     let mut req = http.post(&url).timeout(Duration::from_secs(15)).json(&otlp_body(events, service));
     for (name, var) in &cfg.otlp_headers_env {
         // The value is read from the environment for this request and goes nowhere else.
-        let value = std::env::var(var).map_err(|_| anyhow::anyhow!("siem.otlp_headers_env: the environment variable {var} (header {name}) is not set"))?;
+        let value =
+            std::env::var(var).map_err(|_| SendError { message: format!("siem.otlp_headers_env: the environment variable {var} (header {name}) is not set"), permanent: false })?;
         req = req.header(name, value);
     }
-    let resp = req.send().await.map_err(|e| anyhow::anyhow!("OTLP export to {url}: {}", e.without_url()))?;
-    anyhow::ensure!(resp.status().is_success(), "OTLP export to {url}: HTTP {}", resp.status());
-    Ok(())
+    let resp = req.send().await.map_err(|e| SendError { message: format!("OTLP export to {to}: {}", e.without_url()), permanent: false })?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    // A redirect is not followed (it would resend the headers elsewhere, or turn the POST into
+    // a GET): it is a failure to be fixed in the configuration, as a refused credential or a
+    // wrong path is (401, 403, 404): those are retried, and lose nothing. Only an answer about
+    // the payload itself (malformed, too large, unprocessable) counts as the receiver refusing
+    // these events.
+    let permanent = matches!(status.as_u16(), 400 | 413 | 422);
+    Err(SendError { message: format!("OTLP export to {to}: HTTP {status}"), permanent })
 }
 
 /// What one pass of the exporter did.
@@ -165,6 +192,9 @@ pub struct Pass {
     pub leader: bool,
     /// The sinks that failed, with why; their events are sent again by the next pass.
     pub errors: Vec<String>,
+    /// Events a receiver refused even alone (by audit id, in `errors`): skipped, so that one
+    /// event the receiver will never take does not hold back every later one.
+    pub skipped: u64,
 }
 
 /// The exporter of one process.
@@ -185,7 +215,10 @@ impl Exporter {
 
     pub fn with(store: Arc<dyn Store>, cfg: SiemConfig, service: &str) -> Exporter {
         let host = std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty() && !h.contains(' ')).unwrap_or_else(|| "memhouse".into());
-        Exporter { store, cfg, service: service.to_string(), http: reqwest::Client::new(), holder: uuid::Uuid::new_v4().to_string(), host }
+        // No redirects: one would carry the configured headers to another host, or replay the
+        // POST as a GET without its events and report them delivered.
+        let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap_or_default();
+        Exporter { store, cfg, service: service.to_string(), http, holder: uuid::Uuid::new_v4().to_string(), host }
     }
 
     /// Take or renew the lease. One replica exports; a lease not renewed for a minute is free.
@@ -216,35 +249,79 @@ impl Exporter {
             let mut cursor: i64 = match self.store.state_get(&key).await? {
                 Some(c) => c.parse()?,
                 None => {
-                    // The export starts with the events written from now on.
+                    // The export starts with the events written from now on. Set only if still
+                    // unset: a replica that set it first is not overwritten.
                     let head = self.store.audit_head().await?.map_or(0, |h| h.id);
-                    self.store.state_put(&key, &head.to_string()).await?;
+                    if !self.store.state_cas(&key, None, &head.to_string()).await? {
+                        pass.errors.push(format!("{sink}: the cursor was set by another replica; this pass left it"));
+                        continue;
+                    }
                     head
                 }
             };
-            loop {
-                let events = self.store.audit_after(cursor, self.cfg.batch.max(1)).await?;
+            let full = self.cfg.batch.max(1);
+            let mut size = full;
+            'batches: loop {
+                // The lease is renewed before every batch: a pass that outlives it stops here,
+                // and leaves the cursor to the replica that took over.
+                if !self.lead().await? {
+                    pass.errors.push(format!("{sink}: another replica took over the export during this pass"));
+                    break;
+                }
+                let events = self.store.audit_after(cursor, size).await?;
                 let Some(last) = events.last() else { break };
                 let sent = match sink {
-                    "syslog" => send_syslog(self.cfg.syslog.trim(), &events, &self.host).await,
+                    "syslog" => send_syslog(self.cfg.syslog.trim(), &events, &self.host).await.map_err(|e| SendError { message: format!("{e:#}"), permanent: false }),
                     _ => send_otlp(&self.http, &self.cfg, &events, &self.service).await,
                 };
-                if let Err(e) = sent {
-                    pass.errors.push(format!("{sink}: {e:#}"));
-                    break;
+                let mut delivered = events.len() as u64;
+                match sent {
+                    Ok(()) => {}
+                    // The receiver refuses this payload: tried in halves, down to one event.
+                    Err(e) if e.permanent && events.len() > 1 => {
+                        size = (events.len() / 2).max(1);
+                        continue 'batches;
+                    }
+                    // One event the receiver will not take: on record here and in the log
+                    // with its audit id, and passed over, or nothing after it would ever go.
+                    Err(e) if e.permanent => {
+                        tracing::error!(audit_id = last.id, "SIEM export: {sink} refused audit event {} ({}); it is skipped", last.id, e.message);
+                        pass.errors.push(format!("{sink}: audit event {} refused and skipped ({})", last.id, e.message));
+                        pass.skipped += 1;
+                        delivered = 0;
+                    }
+                    Err(e) => {
+                        pass.errors.push(format!("{sink}: {}", e.message));
+                        break;
+                    }
                 }
                 let now = Utc::now();
-                pass.max_delay_ms = pass.max_delay_ms.max(events.iter().map(|e| (now - e.at).num_milliseconds()).max().unwrap_or(0));
-                cursor = last.id;
-                self.store.state_put(&key, &cursor.to_string()).await?;
-                *pass.sent.entry(sink.to_string()).or_default() += events.len() as u64;
-                if events.len() < self.cfg.batch.max(1) {
+                if delivered > 0 {
+                    pass.max_delay_ms = pass.max_delay_ms.max(events.iter().map(|e| (now - e.at).num_milliseconds()).max().unwrap_or(0));
+                }
+                // Moved only from where this pass left it: if another replica moved it
+                // meanwhile, this pass ends without writing an older position over a newer one.
+                let next = last.id.to_string();
+                if !self.store.state_cas(&key, Some(&cursor.to_string()), &next).await? {
+                    pass.errors.push(format!("{sink}: the cursor was moved by another replica; this pass stopped"));
                     break;
                 }
+                cursor = last.id;
+                *pass.sent.entry(sink.to_string()).or_default() += delivered;
+                if events.len() < size {
+                    break;
+                }
+                // Back to whole batches after one that had to be split.
+                size = full;
             }
         }
         // What the evidence export reports: when the export last ran, how far it is, what failed.
-        self.store.state_put("siem.status", &json!({ "at": Utc::now(), "sent": pass.sent, "max_delay_ms": pass.max_delay_ms, "errors": pass.errors }).to_string()).await?;
+        self.store
+            .state_put(
+                "siem.status",
+                &json!({ "at": Utc::now(), "sent": pass.sent, "max_delay_ms": pass.max_delay_ms, "errors": pass.errors, "skipped": pass.skipped }).to_string(),
+            )
+            .await?;
         Ok(pass)
     }
 
@@ -332,6 +409,12 @@ mod tests {
         let attrs = r["attributes"].as_array().unwrap();
         assert!(attrs.iter().any(|a| a["key"] == "memhouse.audit.id" && a["value"]["intValue"] == "42"));
         assert!(attrs.iter().any(|a| a["key"] == "memhouse.audit.hash" && a["value"]["stringValue"] == "bb"));
+    }
+
+    #[test]
+    fn a_target_is_named_without_what_a_url_may_carry() {
+        assert_eq!(target_name("https://user:pw@collector.internal:4318/v1/logs?token=abc"), "https://collector.internal:4318"); // secret-scan: allow (fake fixture)
+        assert_eq!(target_name("http://127.0.0.1:4318/v1/logs"), "http://127.0.0.1:4318");
     }
 
     #[test]

@@ -51,7 +51,7 @@ pub(crate) async fn run(engine: &Engine) -> Vec<Check> {
         (
             "legal_hold",
             "GOV-09 (G22)",
-            "Data under a legal hold survives retention and every forget scope; the deletions it kept back are carried out, each with its certificate, when the hold is released",
+            "Data under a legal hold survives retention and a forget by record, subject, user and source; the deletions it kept back are carried out, each with its certificate, when the hold is released",
             scratched(engine, "hold", legal_hold).await,
         ),
         (
@@ -247,7 +247,8 @@ async fn legal_hold(base: &Engine, url: String) -> Outcome {
         problems.push("a hold on an unknown kind of target, or one without a reason, was accepted".into());
     }
 
-    // Every forget scope meets a hold: nothing held is deleted, and the answer says so.
+    // Forget by record, subject, user and source each meet a hold: nothing held is deleted,
+    // and the answer says so. A dry run counts a held match under `held`, not `deleted`.
     let dry = e.forget_by(forget(|r| (r.subject, r.dry_run) = (Some(a.into()), true))).await?;
     let by_subject = e.forget_by(forget(|r| r.subject = Some(a.into()))).await?;
     let by_source = e.forget_by(forget(|r| r.source = Some("court-import".into()))).await?;
@@ -262,7 +263,15 @@ async fn legal_hold(base: &Engine, url: String) -> Outcome {
         (by_user.deleted, by_user.held),
         (by_id.deleted, by_id.held),
     ];
-    let want = [(5, 5), (0, 5), (0, 2), (1, 2), (0, 2), (0, 1)];
+    let want = [(0, 5), (0, 5), (0, 2), (1, 2), (0, 2), (0, 1)];
+    let dry_mixed = e.forget_by(forget(|r| (r.subject, r.dry_run) = (Some(d.into()), true))).await?;
+    let dry_id = e.forget_by(forget(|r| (r.id, r.dry_run) = (Some(one_of_a), true))).await?;
+    if (dry_mixed.deleted, dry_mixed.held, dry_id.deleted, dry_id.held) != (3, 0, 0, 1) {
+        problems.push(format!(
+            "dry runs: a subject without a hold ({}, {}) ((3, 0) expected), a held record ({}, {}) ((0, 1) expected)",
+            dry_mixed.deleted, dry_mixed.held, dry_id.deleted, dry_id.held
+        ));
+    }
     if got != want {
         problems.push(format!("forget under hold (deleted, held) for dry run, subject, source, a subject partly held, user, record: {got:?}, expected {want:?}"));
     }
@@ -271,6 +280,10 @@ async fn legal_hold(base: &Engine, url: String) -> Outcome {
         problems.push(format!("records left in the held subjects: {left:?}, expected [5, 2, 2]"));
     }
     let requests = [by_subject.deletion_id, by_source.deletion_id, mixed.deletion_id, by_user.deletion_id, by_id.deletion_id];
+    // Every held forget names its request: one that did not could not be followed to its certificate.
+    if requests.iter().any(|r| r.is_none()) {
+        problems.push(format!("{} of 5 held forgets answered without a deletion id", requests.iter().filter(|r| r.is_none()).count()));
+    }
     for id in requests.iter().flatten() {
         let d = e.deletion(T, *id).await?;
         if d.status != DeletionStatus::Held || d.certificate.is_some() {
@@ -290,9 +303,12 @@ async fn legal_hold(base: &Engine, url: String) -> Outcome {
 
     // Release: the deletions are carried out at once, each with its certificate.
     let started = std::time::Instant::now();
-    let (_, resumed_a) = e.hold_release(T, h_subject.id, "counsel").await?;
-    let (_, resumed_c) = e.hold_release(T, h_source.id, "counsel").await?;
-    let (_, resumed_u) = e.hold_release(T, h_user.id, "counsel").await?;
+    let (_, resumed_a, failed_a) = e.hold_release(T, h_subject.id, "counsel").await?;
+    let (_, resumed_c, failed_c) = e.hold_release(T, h_source.id, "counsel").await?;
+    let (_, resumed_u, failed_u) = e.hold_release(T, h_user.id, "counsel").await?;
+    if let Some(why) = failed_a.or(failed_c).or(failed_u) {
+        problems.push(format!("a release could not carry its deletions out: {why}"));
+    }
     let secs = started.elapsed().as_secs_f64();
     let completed = resumed_a.len() + resumed_c.len() + resumed_u.len();
     let left = [ids_of(&e, a).await?.len(), ids_of(&e, c).await?.len(), ids_of(&e, u).await?.len()];
@@ -532,8 +548,9 @@ async fn deletion_certificate(base: &Engine, url: String) -> Outcome {
     }
     let mut forged = cert.clone();
     forged.records_deleted += 1;
-    let mut unrecorded = cert.clone();
-    unrecorded.completed_at = Utc::now();
+    // A certificate that is consistent in itself but was never issued: the changed one, with
+    // its hash made to fit.
+    let mut unrecorded = forged.clone();
     unrecorded.hash = unrecorded.computed_hash();
     if forged.hash_ok() || e.certificate_check(T, &unrecorded).await?.1 {
         problems.push("a changed certificate kept its hash, or one the audit chain does not carry was accepted".into());
@@ -635,9 +652,15 @@ async fn retention_scopes(base: &Engine, url: String) -> Outcome {
     let expected = rows.iter().filter(|(_, _, p)| *p).count() as u64;
     let ledger = e.store.ledger_export().await?;
     let purged_ids: HashSet<Uuid> = rows.iter().filter(|(_, r, p)| *p && r.memory.source != "enrich:stub").map(|(_, r, _)| r.memory.id).collect();
-    let ledgered = ledger.iter().filter(|l| l.scope == "retention" && l.memory_id.is_some_and(|id| purged_ids.contains(&id))).count();
-    let by_rule: BTreeMap<String, u64> = events(&e, "retention.purge")
-        .await?
+    // One ledger row for each purged record, and no other: a row twice would hide one missing.
+    let mut ledger_ids: Vec<Uuid> = ledger.iter().filter(|l| l.scope == "retention").filter_map(|l| l.memory_id).collect();
+    ledger_ids.sort();
+    let mut expected_ids: Vec<Uuid> = purged_ids.iter().copied().collect();
+    expected_ids.sort();
+    let ledgered =
+        if ledger_ids == expected_ids { expected_ids.len() } else { ledger_ids.iter().filter(|i| purged_ids.contains(i)).count().min(expected_ids.len().saturating_sub(1)) };
+    let purge_events = events(&e, "retention.purge").await?;
+    let by_rule: BTreeMap<String, u64> = purge_events
         .iter()
         .map(|a| {
             (
@@ -648,11 +671,14 @@ async fn retention_scopes(base: &Engine, url: String) -> Outcome {
         .collect();
     let want: BTreeMap<String, u64> =
         [("episodic/team", 1u64), ("episodic", 2), ("semantic/subject", 1), ("semantic", 1), ("working", 1)].into_iter().map(|(k, n)| (k.to_string(), n)).collect();
-    if pass.purged != expected || ledgered != purged_ids.len() || by_rule != want {
+    // The events are counted as well as mapped: a second event of one rule would vanish in the map.
+    if pass.purged != expected || ledgered != purged_ids.len() || by_rule != want || purge_events.len() != want.len() {
         problems.push(format!(
-            "{} purged ({expected} expected), {ledgered} of {} in the ledger, audit events by rule {by_rule:?} (expected {want:?})",
+            "{} purged ({expected} expected), ledger rows for {ledgered} of {} purged records ({} retention rows in all), {} audit events by rule {by_rule:?} (expected one each of {want:?})",
             pass.purged,
-            purged_ids.len()
+            purged_ids.len(),
+            ledger_ids.len(),
+            purge_events.len()
         ));
     }
     // A second pass finds nothing more.
@@ -662,7 +688,7 @@ async fn retention_scopes(base: &Engine, url: String) -> Outcome {
     }
     verdict(
         problems,
-        format!("{} records under 5 rules → {} purged, {} kept", rows.len(), pass.purged, rows.len() as u64 - pass.purged),
+        format!("{} records under 5 rules → {} purged, {} kept", rows.len(), pass.purged, left.len()),
         "each record is kept or purged by the most specific rule that matches it, with its derived fact; expired working memory is purged; one audit event per rule",
     )
 }
@@ -741,23 +767,80 @@ async fn retention_resume(base: &Engine, url: String) -> Outcome {
             requested_at: Utc::now() - chrono::Duration::minutes(30),
             status: DeletionStatus::Running,
             completed_at: None,
-            deleted: 0,
+            // The second one's records went, and were counted, before the interruption.
+            deleted: if subject == half { 3 } else { 0 },
             held: 0,
-            executions: 0,
+            executions: if subject == half { 1 } else { 0 },
             canaries: e.store.canaries(T, ForgetScope::Subject, subject, CANARIES).await?,
             certificate: None,
         };
         e.store.deletion_put(&d).await?;
         open.push(d.id);
     }
-    // The second one's records went before the interruption.
     e.forget_subject(None, half, Some("dpo".into())).await?;
+    // A third: something of a sampled record is still found after the deletion (here a cached
+    // vector under a key the request sampled). It must stay open, uncertified, until a probe
+    // is clean, and must not be carried out again meanwhile.
+    let residue = "resume:residue";
+    e.store.insert(&[record(&t, residue, MemoryKind::Semantic, words("residue", 0), 0, |_| {}), record(&t, residue, MemoryKind::Semantic, words("residue", 1), 0, |_| {})]).await?;
+    let leftover = "f".repeat(64);
+    let mut sampled = e.store.canaries(T, ForgetScope::Subject, residue, CANARIES).await?;
+    if let Some(first) = sampled.first_mut() {
+        first.vector_hashes.push(leftover.clone());
+    }
+    e.store.embed_cache_put(e.embedder.id(), &[(leftover.clone(), vec![0.5; DIM])]).await?;
+    let stuck = DeletionRequest {
+        id: Uuid::new_v4(),
+        tenant: T.into(),
+        scope: ForgetScope::Subject,
+        value: residue.into(),
+        actor: "dpo".into(),
+        requested_at: Utc::now() - chrono::Duration::minutes(30),
+        status: DeletionStatus::Running,
+        completed_at: None,
+        deleted: 0,
+        held: 0,
+        executions: 0,
+        canaries: sampled,
+        certificate: None,
+    };
+    e.store.deletion_put(&stuck).await?;
     let pass = e.retention_run(Default::default()).await?;
     let again = e.resume_deletions(T).await?;
+    let open_still = e.deletion(T, stuck.id).await?;
+    let unverified = events(&e, "deletion.unverified").await?.len();
+    if open_still.status == DeletionStatus::Completed
+        || !open_still.certificate.as_ref().is_some_and(|c| !c.verified && c.canaries_found.cached_vectors == 1)
+        || open_still.executions != 1
+        || open_still.deleted != 2
+        || unverified != 1
+        || !ids_of(&e, residue).await?.is_empty()
+    {
+        problems.push(format!(
+            "a deletion with a canary still found: {:?} after two passes, {} executions (1 expected), {} deleted (2), found {:?}, {unverified} deletion.unverified events (1)",
+            open_still.status,
+            open_still.executions,
+            open_still.deleted,
+            open_still.certificate.as_ref().map(|c| c.canaries_found.clone())
+        ));
+    }
+    let db = raw(&url).await?;
+    db.execute(same("DELETE FROM mh_embed_cache WHERE hash = $1"), &[leftover.as_str().into()]).await?;
+    db.close().await;
+    let cleaned = e.resume_deletions(T).await?;
+    let closed = e.deletion(T, stuck.id).await?;
+    if cleaned.len() != 1 || closed.status != DeletionStatus::Completed || !closed.certificate.as_ref().is_some_and(|c| c.verified && c.records_deleted == 2 && c.executions == 1) {
+        problems.push(format!(
+            "once the leftover was gone the deletion is {:?} with certificate {:?}",
+            closed.status,
+            closed.certificate.as_ref().map(|c| (c.verified, c.records_deleted, c.executions))
+        ));
+    }
     let mut certs = 0;
     for id in &open {
         let d = e.deletion(T, *id).await?;
-        if d.status == DeletionStatus::Completed && d.certificate.as_ref().is_some_and(|c| c.verified) {
+        // Each certifies the three records its request deleted, whenever they went.
+        if d.status == DeletionStatus::Completed && d.certificate.as_ref().is_some_and(|c| c.verified && c.records_deleted == 3) {
             certs += 1;
         }
     }
@@ -766,7 +849,7 @@ async fn retention_resume(base: &Engine, url: String) -> Outcome {
     let gone = ids_of(&e, pending).await?.len() + ids_of(&e, half).await?.len();
     if pass.deletions_completed != 2 || !again.is_empty() || certs != 2 || per_request != [1, 1] || gone != 0 {
         problems.push(format!(
-            "interrupted deletions: {} completed by the pass (2 expected), {} changed by a second resume (0), {certs} verified certificates (2), certificate events per request {per_request:?} ([1, 1]), {gone} records left",
+            "interrupted deletions: {} completed by the pass (2 expected), {} changed by a second resume (0), {certs} verified certificates of 3 records each (2), certificate events per request {per_request:?} ([1, 1]), {gone} records left",
             pass.deletions_completed,
             again.len()
         ));

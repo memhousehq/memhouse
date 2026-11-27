@@ -507,9 +507,34 @@ memhouse restore --ledger /var/backups/memhouse-ledger/deletion-ledger.jsonl
 of the deletion it records (a record with what was derived and promoted from it; a subject; a
 tenant; for a retention purge the record and its derived facts), adds the row to the ledger as
 it was made, so the next backup carries it, ends every [console session](#console-sessions-after-a-restore),
-and writes `deletion.reapply` and `backup.restore` audit events. Running it twice changes
-nothing the second time; one that is interrupted is continued by running it again. If nothing
-was deleted since the backup, say so with `memhouse restore --no-ledger` (audited).
+and writes `deletion.reapply` and `backup.restore` audit events. The whole replay is one transaction: a ledger row that cannot be applied leaves nothing applied,
+and running it twice changes nothing the second time. If the restored database's audit chain
+does not verify, the command says so and does **not** record the database as fit to serve. If
+nothing was deleted since the backup, say so with `memhouse restore --no-ledger` (audited).
+
+**What the exported ledger cannot hold.** The ledger lives in the database; the file is a copy
+of it at the time of the export. A deletion made after the last export, on a database that is
+then lost, is in neither the backup nor the file: the restore brings its data back and nothing
+re-applies it. To keep that window small and known:
+
+- export the ledger more often than you back up, and right after every erasure request
+  (`memhouse backup <dir> --ledger-only` takes seconds; the file holds identifiers only), to
+  storage that does not fail with the database;
+- keep the audit events elsewhere as they are written ([SIEM export](#siem-export)): every
+  deletion is an event (`memory.forget`, `subject.erase`, `retention.purge`,
+  `deletion.certificate` and the others) with its subject or record identifiers;
+- after a restore from a ledger older than the lost database, **reconcile before serving**:
+  compare the deletion events your SIEM or your request records hold after the ledger's last
+  entry with the restored database, and repeat those deletions (`memhouse forget`, the
+  deletion API) before `memhouse serve` takes traffic. The restore guard cannot see this
+  gap: it compares the database with what this host last served, not with what was deleted.
+
+A ledger row says how it is re-applied: `memory` (a record with what was derived and promoted
+from it), `retention` (a record with its derived facts), `subject`, `tenant`, and `record`: one
+record exactly, nothing it led to. `record` rows are what a deletion writes when a legal hold
+cut its cascade short (part of a subject erased, a derived fact kept), so that a replay takes
+what went then and not what the hold kept; `record-reset` is the same for a reset that leaves
+the caches.
 
 Legal holds do not stop a replay: the ledger says what was deleted, and a hold that the backup
 brought back is no reason to bring the data back with it. A hold *placed* after the backup is
@@ -527,9 +552,12 @@ records deleted since may be back. Run `memhouse restore --ledger <file>` …
 ```
 
 The guard is a safety net, not the procedure: run `memhouse restore` after every
-`pg_restore`. It notices a database older than the state it last recorded, which may be up to
-a minute behind a service that was killed; a restore to a point inside that minute is not
-noticed. It works where `MEMHOUSE_HOME` outlives the restore: a server, or a container with a
+`pg_restore`. It notices a database older than the state it last recorded. The state is
+written every minute and at once after every deletion the serving process carries out
+(replaced atomically, so an interrupted write leaves the last good one); deletions made by
+another process (the CLI, a second replica) are covered by the minute, and a restore to a
+point inside it is not noticed. A state file that is there but cannot be read stops the start,
+with the command to run: it is not taken for "nothing recorded". It works where `MEMHOUSE_HOME` outlives the restore: a server, or a container with a
 volume for it. Where the home is rebuilt with every start (a pod without a volume), nothing is
 remembered and the guard cannot notice: there the runbook must run `memhouse restore` after
 every `pg_restore`. A failover to a replica that lost the last events also trips the guard,
@@ -632,9 +660,18 @@ otlp_headers_env = { authorization = "SIEM_TOKEN" }
 - An event carries what the audit log holds: the action, the actor, the tenant, the subject and
   record identifiers, the detail and the two hashes of the chain. Never memory content.
 - The exporter keeps a cursor per receiver in the database and moves it only once the receiver
-  has taken a batch: an event is delivered at least once, and a receiver that is down delays
-  its events without losing them (they are sent when it is back; the service logs the outage
-  once).
+  has taken a batch. Over `tcp://` syslog and OTLP an event is delivered at least once, and a
+  receiver that is down delays its events without losing them (they are sent when it is back;
+  the service logs the outage once). **`udp://` syslog is best effort:** a datagram that left
+  the host counts as sent, so events sent while a UDP receiver is down or the network drops
+  them are lost and not sent again. Use `tcp://` or OTLP where the SIEM must hold every event.
+- An OTLP collector that refuses a batch as such (HTTP 400, 413 or 422) gets it again in
+  halves; an event it refuses even alone is skipped, so that it does not hold back every later
+  one, and is named by its audit id in the service log and in the export's status (`skipped`,
+  `errors`). Any other failure (the receiver down, a refused credential, a redirect, which is
+  not followed) is retried and loses nothing.
+- A receiver's address is a scheme, a host, a port and, for OTLP, a path: a user, a password,
+  a query or a fragment in it is refused at start. Credentials go in `otlp_headers_env`.
 - The export starts with the events written after it is first turned on.
 - With several replicas one holds a lease and exports; another takes over within a minute if
   it stops.

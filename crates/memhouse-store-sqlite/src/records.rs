@@ -265,6 +265,51 @@ impl SqliteStore {
     /// already still has its remaining dependents removed (a deletion a hold interrupted is
     /// finished this way). Returns the record's subject and how many records went.
     pub(crate) fn delete_in(&self, c: &Connection, tenant: &str, id: Uuid, promotions: bool, respect_holds: bool) -> anyhow::Result<Option<(String, u64)>> {
+        Ok(self.delete_with(c, tenant, id, promotions, respect_holds)?.map(|(subject, ids, _)| (subject, ids.len() as u64)))
+    }
+
+    /// Whether a record that names any of `sources` is under a legal hold (and so stays when
+    /// they are deleted with regard to holds).
+    fn held_dependents(&self, c: &Connection, tenant: &str, sources: &[Uuid], facts: bool, promotions: bool) -> anyhow::Result<bool> {
+        Ok(first(
+            c,
+            &format!(
+                "SELECT 1 FROM mh_source_ref r JOIN mh_memory m ON m.id = r.memory_id WHERE r.tenant = ?1 AND m.tenant = ?1 \
+                 AND r.source_id IN (SELECT value FROM json_each(?2)) AND ((?3 AND r.via = 'source') OR (?4 AND r.via = 'promoted')) AND {} LIMIT 1",
+                memhouse_core::governance::HELD_SQL
+            ),
+            params![tenant, ids_json(sources), facts, promotions],
+            |_| Ok(()),
+        )?
+        .is_some())
+    }
+
+    /// Delete exactly one record and nothing it led to: how a ledger row of scope `record`
+    /// (or `record-reset`, which leaves the caches) is re-applied. Such rows are written where
+    /// a deletion's cascade was cut short by a legal hold, so a replay must not run the cascade
+    /// again and take what the hold kept.
+    pub(crate) fn delete_exact_in(&self, c: &Connection, tenant: &str, id: Uuid, purge_cache: bool) -> anyhow::Result<u64> {
+        let ids = id.to_string();
+        let row = first(c, "SELECT subject, content, alt_hash FROM mh_memory WHERE tenant = ?1 AND id = ?2", params![tenant, ids], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))
+        })?;
+        let Some((subject, content, alt_hash)) = row else { return Ok(0) };
+        exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, ids.as_str()])?;
+        if purge_cache {
+            self.purge_vectors(c, [content.as_str()], alt_hash.as_deref())?;
+            let jobs = rows(
+                c,
+                "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value = ?3)",
+                [tenant, subject.as_str(), ids.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            drop_jobs(c, &jobs, true)?;
+        }
+        Ok(1)
+    }
+
+    /// `delete_in`, saying which ids went and whether a held dependent stayed.
+    pub(crate) fn delete_with(&self, c: &Connection, tenant: &str, id: Uuid, promotions: bool, respect_holds: bool) -> anyhow::Result<Option<(String, Vec<Uuid>, bool)>> {
         let ids = id.to_string();
         let row = first(
             c,
@@ -298,9 +343,11 @@ impl SqliteStore {
             )?;
         }
         let Some(subject) = subject else { return Ok(None) };
+        let mut kept_held = respect_holds && self.held_dependents(c, tenant, &[id], true, promotions)?;
         let mut level = self.delete_dependents(c, tenant, &[id], true, promotions, respect_holds)?;
         while !level.is_empty() {
             gone.extend(level.iter().copied());
+            kept_held |= respect_holds && promotions && self.held_dependents(c, tenant, &level, false, true)?;
             level = if promotions { self.delete_dependents(c, tenant, &level, false, true, respect_holds)? } else { vec![] };
         }
         if gone.is_empty() {
@@ -311,15 +358,17 @@ impl SqliteStore {
             // (or set aside with their payload): gone with it on every erasure path.
             crate::intake::drop_promotions_of(c, tenant, &std::iter::once(id).chain(gone.iter().copied()).collect())?;
         }
-        // The session jobs that read it, and the cached extraction of each.
+        // The session jobs that read it or anything that went with it (a promotion may itself
+        // be a round a job read), and the cached extraction of each.
+        let read: Vec<Uuid> = std::iter::once(id).chain(gone.iter().copied().filter(|g| *g != id)).collect();
         let jobs = rows(
             c,
-            "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND j.subject = ?2 AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value = ?3)",
-            [tenant, subject.as_str(), ids.as_str()],
+            "SELECT j.id, j.cache_key FROM mh_enrich_job j WHERE j.tenant = ?1 AND EXISTS (SELECT 1 FROM json_each(j.round_ids) WHERE value IN (SELECT value FROM json_each(?2)))",
+            [tenant, ids_json(&read).as_str()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         drop_jobs(c, &jobs, true)?;
-        Ok(Some((subject, gone.len() as u64)))
+        Ok(Some((subject, gone, kept_held)))
     }
 
     /// Erase a subject (see `Store::delete_subject`), inside the caller's transaction. Records
@@ -345,8 +394,10 @@ impl SqliteStore {
                 exec(c, "DELETE FROM mh_memory WHERE tenant = ?1 AND id = ?2", [tenant, id.as_str()])?;
                 exec(
                     c,
-                    "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, 'memory', ?5)",
-                    params![at, tenant, subject, id, actor],
+                    // `record` rows are re-applied exactly, without the cascade of a single
+                    // forget; `record-reset` ones leave the caches, as the reset itself did.
+                    "INSERT INTO mh_deletion_ledger (at, tenant, subject, memory_id, scope, actor) VALUES (?1, ?2, ?3, ?4, ?6, ?5)",
+                    params![at, tenant, subject, id, actor, if purge_cache { "record" } else { "record-reset" }],
                 )?;
             }
             let id_list = serde_json::Value::from(free.iter().map(|f| f.0.clone()).collect::<Vec<_>>()).to_string();

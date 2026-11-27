@@ -191,7 +191,15 @@ async fn rls_scenario(base: &Engine, url: &str) -> Outcome {
     let role = format!("mh_probe_{}", &Uuid::new_v4().simple().to_string()[..12]);
     let other_role = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE ROLE {role} NOLOGIN"))).execute(&mut c).await.is_ok();
     if other_role {
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO {role}; SET ROLE {role}"))).execute(&mut c).await?;
+        // Creating a role does not always allow switching to it (Postgres 16: a role that is
+        // not a superuser needs a membership with SET): asked for, and needless for a superuser.
+        let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("GRANT {role} TO CURRENT_USER"))).execute(&mut c).await;
+        let set = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO {role}; SET ROLE {role}"))).execute(&mut c).await;
+        if let Err(e) = set {
+            // The role must not outlive a setup that failed.
+            let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("RESET ROLE; DROP OWNED BY {role}; DROP ROLE {role}"))).execute(&mut c).await;
+            anyhow::bail!("the probe role could be created but not used: {e}");
+        }
     } else if bypass {
         anyhow::bail!("the check needs either the right to create a role or a service role that row-level security binds; this role bypasses it and can create none");
     }
@@ -249,12 +257,22 @@ async fn rls_scenario(base: &Engine, url: &str) -> Outcome {
     if other_role {
         let svc = format!("mh_svc_{}", &Uuid::new_v4().simple().to_string()[..12]);
         let mut admin = sqlx::PgConnection::connect(url).await?;
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE ROLE {svc} NOLOGIN; DO $$ BEGIN EXECUTE format('GRANT %I TO {svc}', current_user); END $$;")))
-            .execute(&mut admin)
-            .await?;
+        // The role, and its membership in the owner (through which it owns the tables). The
+        // reverse membership would be a circle, so none is granted: a role that may not switch
+        // to the new one fails at the connection below, which is reported, and the role is
+        // dropped either way.
+        let setup = async {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE ROLE {svc} NOLOGIN"))).execute(&mut admin).await?;
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DO $$ BEGIN EXECUTE format('GRANT %I TO {svc}', current_user); END $$;"))).execute(&mut admin).await?;
+            anyhow::Ok(())
+        }
+        .await;
         // The session takes the role as it starts: every statement of the pool runs as it.
         let svc_url = format!("{url}{}options=-c%20role%3D{svc}", if url.contains('?') { '&' } else { '?' });
-        let outcome = service_as_bound_role(base, &svc_url, options).await;
+        let outcome = match setup {
+            Ok(()) => service_as_bound_role(base, &svc_url, options).await,
+            Err(e) => Err(e.context("the service role could not be set up")),
+        };
         let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DO $$ BEGIN EXECUTE format('REVOKE %I FROM {svc}', current_user); END $$; DROP OWNED BY {svc}; DROP ROLE {svc}")))
             .execute(&mut admin)
             .await;
@@ -333,8 +351,24 @@ async fn service_as_bound_role(base: &Engine, url: &str, options: PgOptions) -> 
     }
     let hold = s.hold_place(T, "subject", subject, "matter 2026-22", "counsel").await?;
     let held = s.forget_by(ForgetRequest { id: Some(ids[1]), actor: Some("dpo".into()), ..Default::default() }).await?;
-    let (_, resumed) = s.hold_release(T, hold.id, "counsel").await?;
+    let (_, resumed, _) = s.hold_release(T, hold.id, "counsel").await?;
+    // Retention under the policies: a round past its 30 days goes, a fresh one stays. (A
+    // policy filters a deletion without an error, so "complete" alone would say nothing.)
+    let t = template(&s).await?;
+    let (aged, fresh) =
+        (record(&t, "rls:rounds", MemoryKind::Episodic, words("rls-aged", 0), 90, |_| {}), record(&t, "rls:rounds", MemoryKind::Episodic, words("rls-fresh", 0), 0, |_| {}));
+    let (aged_id, fresh_id) = (aged.memory.id, fresh.memory.id);
+    s.store.insert(&[aged, fresh]).await?;
     let pass = s.retention_run(Default::default()).await?;
+    let after_retention = ids_of(&s, "rls:rounds").await?;
+    if after_retention.contains(&aged_id) || !after_retention.contains(&fresh_id) || pass.purged != 1 {
+        problems.push(format!(
+            "bound by the policies, retention purged {} records (1 expected): the round past its retention is {}, the fresh one {}",
+            pass.purged,
+            if after_retention.contains(&aged_id) { "still there" } else { "gone" },
+            if after_retention.contains(&fresh_id) { "kept" } else { "gone" }
+        ));
+    }
     let erased = s.forget_by(ForgetRequest { subject: Some(subject.into()), actor: Some("dpo".into()), ..Default::default() }).await?;
     let cert = match erased.deletion_id {
         Some(id) => s.deletion(T, id).await?.certificate,
@@ -530,10 +564,13 @@ pub(crate) async fn audit_anchor(base: &Engine, url: String) -> Outcome {
     if removed == 0 || results.first() != Some(&"match") || results.get(1) == Some(&"match") || results.len() != 2 {
         problems.push(format!("after the rewrite ({removed} events removed) the anchors read {results:?}; the first should match and the second should not"));
     }
-    let mut foreign = anchors[0].clone();
-    foreign.instance = Uuid::new_v4().to_string();
-    if e.anchors_check(&[foreign]).await?[0].result != "other_instance" {
-        problems.push("an anchor of another installation was compared with this one's log".into());
+    if let Some(first) = anchors.first() {
+        let mut foreign = first.clone();
+        foreign.instance = Uuid::new_v4().to_string();
+        let probe = e.anchors_check(&[foreign]).await?;
+        if probe.len() != 1 || probe[0].result != "other_instance" {
+            problems.push("an anchor of another installation was compared with this one's log".into());
+        }
     }
     verdict(
         problems,
@@ -559,11 +596,16 @@ async fn syslog_sink(listener: tokio::net::TcpListener, into: Received) {
     }
 }
 
-/// An OTLP/HTTP collector: takes the body of each request and answers 200.
-async fn otlp_sink(listener: tokio::net::TcpListener, into: Received) {
+/// What a collector refuses: a request whose body holds this text is answered 400 and not kept.
+type Refused = Arc<Mutex<Option<String>>>;
+
+/// An OTLP/HTTP collector: takes the body of each request and answers 200, or 400 for a body
+/// it was told to refuse.
+async fn otlp_sink(listener: tokio::net::TcpListener, into: Received, refused: Refused) {
     loop {
         let Ok((mut stream, _)) = listener.accept().await else { return };
         let into = into.clone();
+        let refused = refused.lock().unwrap().clone();
         tokio::spawn(async move {
             let mut buf = vec![];
             let mut chunk = [0u8; 8192];
@@ -588,11 +630,53 @@ async fn otlp_sink(listener: tokio::net::TcpListener, into: Received) {
             }
             if let Some(end) = head_end {
                 let body = String::from_utf8_lossy(&buf[end..(end + length).min(buf.len())]).to_string();
+                if refused.is_some_and(|r| body.contains(&r)) {
+                    let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").await;
+                    let _ = stream.shutdown().await;
+                    return;
+                }
                 into.lock().unwrap().push((Utc::now(), body));
             }
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").await;
             let _ = stream.shutdown().await;
         });
+    }
+}
+
+/// A receiver's task, stopped when the check leaves, whichever way it leaves.
+struct Stop(tokio::task::JoinHandle<()>);
+
+impl Drop for Stop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The audit ids in the log records a collector took, in the order it took them.
+fn otlp_ids(bodies: &[(chrono::DateTime<Utc>, String)]) -> anyhow::Result<Vec<i64>> {
+    let mut ids = vec![];
+    for (_, body) in bodies {
+        let v: serde_json::Value = serde_json::from_str(body)?;
+        for r in v["resourceLogs"][0]["scopeLogs"][0]["logRecords"].as_array().into_iter().flatten() {
+            let id = r["attributes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|a| a["key"] == "memhouse.audit.id")
+                .and_then(|a| a["value"]["intValue"].as_str())
+                .and_then(|s| s.parse::<i64>().ok());
+            ids.extend(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Wait until a receiver has taken at least `n` events, or five seconds: the exporter returns
+/// once it has sent, which may be before a receiver's task has read to the end.
+async fn received(count: impl Fn() -> usize, n: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while count() < n && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 
@@ -609,8 +693,9 @@ pub(crate) async fn siem_export(base: &Engine, url: String) -> Outcome {
     let otlp = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let (syslog_addr, otlp_addr) = (syslog.local_addr()?, otlp.local_addr()?);
     let (lines, bodies): (Received, Received) = Default::default();
-    let syslog_task = tokio::spawn(syslog_sink(syslog, lines.clone()));
-    let otlp_task = tokio::spawn(otlp_sink(otlp, bodies.clone()));
+    let mut syslog_task = Stop(tokio::spawn(syslog_sink(syslog, lines.clone())));
+    let refused: Refused = Default::default();
+    let _otlp_task = Stop(tokio::spawn(otlp_sink(otlp, bodies.clone(), refused.clone())));
     let cfg = memhouse_core::config::SiemConfig {
         syslog: format!("tcp://{syslog_addr}"),
         otlp_endpoint: format!("http://{otlp_addr}"),
@@ -632,33 +717,21 @@ pub(crate) async fn siem_export(base: &Engine, url: String) -> Outcome {
     }
     let written = e.store.audit_after(head, 100_000).await?;
     let pass = exporter.pass().await?;
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let want: Vec<i64> = written.iter().map(|a| a.id).collect();
+    received(|| lines.lock().unwrap().len(), want.len()).await;
+    received(|| otlp_ids(&bodies.lock().unwrap()).map_or(0, |i| i.len()), want.len()).await;
     let got_lines = lines.lock().unwrap().clone();
     let got_bodies = bodies.lock().unwrap().clone();
     let syslog_ids = external_ids(&got_lines);
-    let mut otlp_ids = vec![];
-    for (_, body) in &got_bodies {
-        let v: serde_json::Value = serde_json::from_str(body)?;
-        for r in v["resourceLogs"][0]["scopeLogs"][0]["logRecords"].as_array().into_iter().flatten() {
-            let id = r["attributes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|a| a["key"] == "memhouse.audit.id")
-                .and_then(|a| a["value"]["intValue"].as_str())
-                .and_then(|s| s.parse::<i64>().ok());
-            otlp_ids.extend(id);
-        }
-    }
+    let otlp_first = otlp_ids(&got_bodies)?;
     // Batches go over separate connections, and a receiver may finish reading a later one
     // first: what is compared is that each event arrived, once.
     let sorted = |mut v: Vec<i64>| {
         v.sort_unstable();
         v
     };
-    if sorted(syslog_ids.clone()) != want || sorted(otlp_ids.clone()) != want || want.len() < 120 {
-        problems.push(format!("{} events written; the syslog receiver has {} and the collector {} (each once expected)", want.len(), syslog_ids.len(), otlp_ids.len()));
+    if sorted(syslog_ids.clone()) != want || sorted(otlp_first.clone()) != want || want.len() < 120 {
+        problems.push(format!("{} events written; the syslog receiver has {} and the collector {} (each once expected)", want.len(), syslog_ids.len(), otlp_first.len()));
     }
     if !got_lines.iter().all(|(_, l)| l.starts_with("<110>1 ") && l.contains("CEF:0|MemHouse|memhouse|")) {
         problems.push("a syslog message is not an RFC 5424 line carrying CEF".into());
@@ -684,8 +757,8 @@ pub(crate) async fn siem_export(base: &Engine, url: String) -> Outcome {
         problems.push("two exporters exported at once".into());
     }
     // The syslog receiver goes down: its events wait, the collector still gets its own.
-    syslog_task.abort();
-    let _ = syslog_task.await;
+    syslog_task.0.abort();
+    let _ = (&mut syslog_task.0).await;
     for i in 0..5 {
         e.remember(remember("siem:s", &format!("{marker} {}", words("siem-down", i)))).await?;
     }
@@ -694,24 +767,63 @@ pub(crate) async fn siem_export(base: &Engine, url: String) -> Outcome {
         problems.push(format!("with the syslog receiver down: sent {:?}, errors {:?}", down.sent, down.errors));
     }
     let syslog = tokio::net::TcpListener::bind(syslog_addr).await?;
-    let syslog_task = tokio::spawn(syslog_sink(syslog, lines.clone()));
+    let _syslog_task = Stop(tokio::spawn(syslog_sink(syslog, lines.clone())));
     let up = exporter.pass().await?;
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let all: Vec<i64> = e.store.audit_after(head, 100_000).await?.iter().map(|a| a.id).collect();
+    received(|| lines.lock().unwrap().len(), all.len()).await;
+    received(|| otlp_ids(&bodies.lock().unwrap()).map_or(0, |i| i.len()), all.len()).await;
     let final_ids = sorted(external_ids(&lines.lock().unwrap()));
-    if final_ids != all || !up.errors.is_empty() {
-        problems.push(format!("after the receiver came back: {} of {} events delivered, errors {:?} (every event once expected)", final_ids.len(), all.len(), up.errors));
+    // The collector too: what it took during and after the outage, each event once.
+    let final_otlp = sorted(otlp_ids(&bodies.lock().unwrap())?);
+    if final_ids != all || final_otlp != all || !up.errors.is_empty() {
+        problems.push(format!(
+            "after the receiver came back: {} of {} events at the syslog receiver and {} at the collector, errors {:?} (every event once at each expected)",
+            final_ids.len(),
+            all.len(),
+            final_otlp.len(),
+            up.errors
+        ));
     }
-    syslog_task.abort();
-    otlp_task.abort();
+    // The collector refuses one event for good (HTTP 400 for any request that holds it): the
+    // batch is split around it, that one event is skipped and named, every other one arrives.
+    for i in 0..9 {
+        e.remember(remember("siem:s", &format!("{marker} {}", words("siem-refused", i)))).await?;
+    }
+    let tail: Vec<i64> = e.store.audit_after(*all.last().unwrap_or(&head), 100_000).await?.iter().map(|a| a.id).collect();
+    let bad = tail.get(tail.len() / 2).copied().unwrap_or(0);
+    *refused.lock().unwrap() = Some(format!("\"intValue\":\"{bad}\""));
+    let split = exporter.pass().await?;
+    *refused.lock().unwrap() = None;
+    let kept: Vec<i64> = tail.iter().copied().filter(|i| *i != bad).collect();
+    received(|| otlp_ids(&bodies.lock().unwrap()).map_or(0, |i| i.len()), all.len() + kept.len()).await;
+    let otlp_tail: Vec<i64> = sorted(otlp_ids(&bodies.lock().unwrap())?).into_iter().filter(|i| tail.contains(i)).collect();
+    let after = exporter.pass().await?;
+    if tail.len() < 9
+        || otlp_tail != kept
+        || split.skipped != 1
+        || !split.errors.iter().any(|x| x.contains(&format!("audit event {bad} ")))
+        || !after.sent.is_empty()
+        || !after.errors.is_empty()
+    {
+        problems.push(format!(
+            "with one event refused by the collector: {} of the {} others arrived, {} skipped, errors {:?}; the next pass sent {:?} (all the others once, one skipped and named, nothing sent again expected)",
+            otlp_tail.len(),
+            kept.len(),
+            split.skipped,
+            split.errors,
+            after.sent
+        ));
+    }
     verdict(
         problems,
         format!(
-            "{} events to syslog (CEF) and OTLP: 100% within 60 s (worst {worst} ms, target 99.9%); {} more after an outage, none lost or repeated",
+            "{} events to syslog (CEF) and OTLP: 100% within 60 s (worst {worst} ms, target 99.9%); {} more after an outage, none lost or repeated; of {} with one the collector refuses, {} arrived and 1 was skipped and named",
             want.len(),
-            all.len() - want.len()
+            all.len() - want.len(),
+            tail.len(),
+            otlp_tail.len()
         ),
-        "each event once at both receivers, read from the log in order, no memory content; one replica exports at a time; a receiver that is down delays its events and loses none",
+        "each event once at both receivers, read from the log in order, no memory content; one replica exports at a time; a receiver that is down delays its events and loses none; an event a collector refuses for good is skipped and named, and does not hold back the ones after it",
     )
 }
 
@@ -901,7 +1013,8 @@ pub(crate) async fn pii_actions(base: &Engine, url: String) -> Outcome {
         problems.push(format!("{false_hits} of 300 benign look-alikes were redacted"));
     }
     // Storage: a sample through the write path; no value is anywhere as written.
-    let sample: Vec<&(&str, String, String)> = items.iter().step_by(10).collect();
+    // Fifty of each category, so each one's values go through the write path.
+    let sample: Vec<&(&str, String, String)> = ["secret", "card", "ssn", "iban"].iter().flat_map(|c| items.iter().filter(move |i| i.0 == *c).take(50)).collect();
     for (i, (_, text, _)) in sample.iter().enumerate() {
         e.remember(remember("pii:set", &format!("{text} ({})", words("pii", i)))).await?;
     }

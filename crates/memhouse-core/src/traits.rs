@@ -579,9 +579,13 @@ pub trait Store: Send + Sync {
     /// once (TR-WF-02). A store with monthly partitions drops a partition whole when every row
     /// in it is due (TR-DB-04).
     async fn purge(&self, tenant: &str, spec: &crate::governance::PurgeSpec) -> anyhow::Result<crate::governance::PurgeOutcome> {
-        match spec.is_plain() {
-            Some(days) => Ok(crate::governance::PurgeOutcome { records: self.purge_older_than(tenant, spec.kind, days).await?, complete: true, ..Default::default() }),
-            None => anyhow::bail!("this store purges by type and age only"),
+        // A store written before G22 keeps working: a type's own rule goes through
+        // `purge_older_than`, and expired working memory stays as `expire_due` left it
+        // (`expired`, never recalled). Only a rule within a scope needs a store that knows scopes.
+        match (spec.is_plain(), spec.age) {
+            (Some(days), _) => Ok(crate::governance::PurgeOutcome { records: self.purge_older_than(tenant, spec.kind, days).await?, complete: true, ..Default::default() }),
+            (None, crate::governance::PurgeAge::Expired) => Ok(crate::governance::PurgeOutcome { complete: true, ..Default::default() }),
+            (None, _) => anyhow::bail!("this store purges by type and age only: it cannot carry out a retention rule for one scope"),
         }
     }
     /// Store a legal hold with its audit event, in one transaction.
@@ -596,6 +600,10 @@ pub trait Store: Send + Sync {
     /// A tenant's holds, newest first; only those not released with `active_only`.
     async fn legal_holds(&self, _tenant: &str, _active_only: bool) -> anyhow::Result<Vec<crate::governance::LegalHold>> {
         Ok(vec![])
+    }
+    /// One hold of the tenant by its id, in any state.
+    async fn legal_hold_get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<crate::governance::LegalHold>> {
+        Ok(self.legal_holds(tenant, false).await?.into_iter().find(|h| h.id == id))
     }
     /// Records a `forget` of this scope matches that an active legal hold keeps. For a record:
     /// the record itself and what was derived or promoted from it.
@@ -613,6 +621,17 @@ pub trait Store: Send + Sync {
     }
     async fn deletion_get(&self, _tenant: &str, _id: Uuid) -> anyhow::Result<Option<crate::governance::DeletionRequest>> {
         Ok(None)
+    }
+    /// Add what one execution deleted to a request that is not completed, atomically (a sum in
+    /// the store, not a value written back), and count the execution. Returns the request as
+    /// it is afterwards; none from a store that keeps no requests.
+    async fn deletion_progress(&self, _tenant: &str, _id: Uuid, _deleted: u64) -> anyhow::Result<Option<crate::governance::DeletionRequest>> {
+        Ok(None)
+    }
+    /// A tenant's requests that are not completed, oldest first, after the keyset position
+    /// `after` (the time and id of the last one of the page before).
+    async fn deletions_open(&self, _tenant: &str, _after: Option<(chrono::DateTime<chrono::Utc>, Uuid)>, _limit: usize) -> anyhow::Result<Vec<crate::governance::DeletionRequest>> {
+        Ok(vec![])
     }
     /// A tenant's deletion requests, newest first, in one state or in any.
     async fn deletions(&self, _tenant: &str, _status: Option<crate::governance::DeletionStatus>, _limit: usize) -> anyhow::Result<Vec<crate::governance::DeletionRequest>> {
@@ -677,7 +696,8 @@ pub trait Store: Send + Sync {
     }
     /// Apply the deletions of `entries` the store's ledger does not have yet, each with the
     /// cascade of the deletion it records, add them to the ledger as they were made, and close
-    /// with a `backup.restore` event of `tenant` carrying `detail`. One transaction: a restored
+    /// with a `backup.restore` event of `tenant` carrying `detail` (a JSON object, or null: anything
+    /// else is refused before any work). One transaction: a restored
     /// database is never seen with half its deletions.
     async fn ledger_apply(
         &self,

@@ -2738,8 +2738,8 @@ hosted checks; what changed:
     with the total. `memhouse retention [--json]`. [policy.md](policy.md#retention-per-type-and-scope).
   - **Decided: the built-in default keeps episodic memory.** The type table's twelve months
     stay a recommendation: a default that purges would make an upgrade delete stored
-    conversations nobody asked it to delete. Nothing is purged until a deployment sets
-    `[governance] episodic_retention_days` or a policy. Checked by `retention_scopes`.
+    conversations nobody asked it to delete. Nothing but expired working memory is purged
+    until a deployment sets `[governance] episodic_retention_days` or a policy. Checked by `retention_scopes`.
   - **Monthly partitions (TR-DB-04, Postgres, opt-in).** `[database] episodic_partitions =
     true` converts `mh_memory` at the next start into a table partitioned by list on a new
     nullable column `epart`: the table as it is becomes the partition of rows without a month
@@ -2838,6 +2838,48 @@ hosted checks; what changed:
   - **Changes for API 1.10 clients** (listed in [api-stability.md](api-stability.md)): a
     forget that meets a legal hold answers `200` with `held`; working memory past its TTL is
     purged instead of staying readable by id as `expired`.
+  - **Review fixes (2026-11-27, pull request 42):** a deletion is completed and certified
+    only after a clean probe (a canary still found leaves it open, `deletion.unverified`, and
+    it is probed again, not carried out again); its count is added to the stored request by
+    every execution, so one that is interrupted or resumed certifies what it deleted in all;
+    recovery pages through every open request, oldest first, one pass per tenant at a time;
+    a hold is looked up by id, and a release reports a failed recovery beside the release.
+    Recall explanations of an erased user, subject or tenant are dropped from memory as well
+    as from the store. A queued write that a changed policy rejects is stored sanitised and
+    rejected instead of being retried into the poison path, and what is set aside as poison
+    is sanitised under the policy in force; a `[MASKED:…]` marker is tightened when its
+    category's action becomes `redact` or `reject`; a category given an action in a policy
+    counts as listed. A deletion that a legal hold cut short writes `record` ledger rows, which
+    a restore re-applies exactly (a kept derived fact or promotion is not taken by the replay);
+    the Postgres replay is one transaction; a restore does not record a database whose audit
+    chain is broken. Hold placement and deletions are serialised on Postgres; a tenant erasure
+    re-checks what is left before removing the tenant's remaining tables; extraction jobs of
+    deleted dependents go with them; imports into a partitioned table are serialised. The
+    restore guard's state is replaced atomically, written at once after a deletion, and an
+    unreadable one stops the start; `memhouse serve` checks the guard before it binds. The
+    evidence export fails on a failed lookup, copies only the known fields of a suite report,
+    and leaves no bundle behind when its audit event fails. A dry run counts a held match
+    under `held` only; the deprecated single-record delete (REST and MCP) no longer reports a
+    held record as deleted; a store without the deletion workflow gives out no deletion id
+    and keeps its pre-G22 retention path. CLI: a certificate is verified before it is
+    written, `audit anchor --verify` conflicts with `--out`, `restore --no-ledger` with
+    `--ledger`. Checks strengthened (`legal_hold`, `deletion_certificate`,
+    `retention_scopes`, `retention_resume` with the unverified case, `rls_bypass` with a
+    retention purge under the policies, `siem_export`, `pii_actions`); still 97. Second batch of the same round: the SIEM export
+    renews its lease before every batch and moves a cursor only from where it left it, follows
+    no redirect, names a receiver by scheme, host and port only (a user, password, query or
+    fragment in `siem.otlp_endpoint` or `siem.syslog` is refused at start), and splits a batch
+    a collector refuses (HTTP 400, 413, 422) down to the one event it will not take, which is
+    skipped, named and counted (`skipped` in the export's status; checked in `siem_export`);
+    retention, anchoring and the export each run on a task of their own; the restore guard's
+    task is awaited before the last write at shutdown; a restore detail that is not an object
+    is an error in both stores. Documents corrected: expired working memory is purged whatever
+    the retention default; anchoring and SIEM export are optional; `restore --no-ledger` is
+    for a backup with no deletion after it; the gap between the last ledger export and a lost
+    database; UDP syslog is best effort; a version 11 build refuses a version 12 database. **Not
+    changed, by decision:** a forget by user, agent or source does not track a held record
+    derived from what it deleted ([governance.md](governance.md#legal-hold)); a keyed retry
+    of a record forget whose first answer was lost still answers `404`, as before G22.
 
 #### G23 — Context-provider plugin system, connectors and importers
 

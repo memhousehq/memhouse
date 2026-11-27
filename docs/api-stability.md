@@ -106,10 +106,10 @@ names a recorded exception, and they are written here so clients are ready for t
 | G20 (1.10) | `/` serves the admin console, which logs in with a session; the Memory Browser page that kept a key in the browser's storage is gone. | Log in to the console with a key ([console.md](console.md)). |
 | G20 (1.10) | Committing a quarantined record with `POST /v1/review` still answers `409`, now with the way out: reject it, or approve another wording with `content`. | Nothing. |
 | G20 (1.10) | The `principal:manage` permission is new, and keys list their permissions: an admin key created before 1.10 cannot manage principals over the API. Bootstrap keys can. | Create a new key for the admin. |
-| G22 (1.11) | A `forget` that meets a [legal hold](governance.md#legal-hold) deletes what no hold keeps and answers `200` with `held` (the records kept back); before 1.11 there were no holds. A forget by `id` of a held record answers `200` with `deleted: 0, held: 1`, not `404`. | Read `held`: when it is not 0 the deletion completes when the hold is released. |
-| G22 (1.11) | A write whose `source` an operator listed in `[governance] untrusted_sources` answers `candidate` and waits for a reviewer. Nothing is listed by default. | Nothing, unless your source is listed: then the write is admitted by a reviewer (`POST /v1/review`). |
+| G22 (1.11) | A `forget` that meets a [legal hold](governance.md#legal-hold) deletes what no hold keeps and answers `200` with `held` (the records kept back); before 1.11 there were no holds. A forget by `id` of a held record answers `200` with `deleted: 0, held: 1`, not `404`. Where several holds apply to a record, it stays until the last of them is released. A dry run counts a held match under `held`, not `deleted`. The deprecated `DELETE /v1/memories/{id}`, whose answer can only say "deleted", answers `409 conflict` for a held record. | Read `held`: when it is not 0 the deletion completes when the holds are released. |
+| G22 (1.11) | A write whose `source` an operator listed in `[governance] untrusted_sources` answers `candidate` and waits for a reviewer when it would otherwise have been admitted; the injection screen still comes first, so such a write can also answer `quarantined`. Nothing is listed by default. | Nothing, unless your source is listed: then the write is admitted by a reviewer (`POST /v1/review`). |
 | G22 (1.11) | A write that holds a category the operator set to `reject` (`[governance] actions`) is refused with `400 invalid_request`. No category is rejected by default. | Remove the value and write again. |
-| G22 (1.11) | Working memory past its TTL is purged by the retention pass; before, it stayed readable by id with status `expired`. | Nothing: it was never recalled. |
+| G22 (1.11) | Working memory past its TTL is purged by the retention pass; before, it stayed readable by id with status `expired` ([recorded exception](#recorded-exception-expired-working-memory-is-purged-111)). | Recall is not affected: it never returned such a record. A client that reads a working note by id after its expiry gets `404` once the pass has run, and should treat it as gone. |
 | G30 | A gRPC binding of the same operations ([ADR 0008](adr/0008-grpc.md)). | Nothing. |
 
 ### Recorded exception: session working memory (1.5)
@@ -188,6 +188,18 @@ behaviour change needs a new major version. It was approved by the maintainer on
 
 No other exception has been made. The compatibility check below compares shapes, not this kind
 of behaviour, so behaviour changes are reviewed against this section by hand.
+
+### Recorded exception: expired working memory is purged (1.11)
+
+- **What changed.** Up to 1.10 a working-memory record past its expiry stayed stored with
+  status `expired`: never recalled, but answered by `GET /v1/memories/{id}`. From 1.11 the
+  hourly retention pass purges it, with its cached vectors, and the same request answers `404`.
+- **Why inside v1.** Retention that leaves expired records in storage does not meet the
+  requirement it implements (GOV-06: nothing expired present after the purge window). The
+  record was already unusable for recall, and its lifetime was always stated as its TTL.
+- **What a client does.** Nothing for recall. A client that reads working notes by id handles
+  `404` for a note past its expiry; one that needs the content longer promotes the note
+  (`POST /v1/promote`) or writes it as another type.
 
 ## Deprecation
 

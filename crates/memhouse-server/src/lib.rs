@@ -361,6 +361,11 @@ pub async fn serve_listener(listener: tokio::net::TcpListener, engine: Engine) -
 /// Serve the API on `[server] bind` with the background workers ([`embedded::Background`]:
 /// enrichment, the write pipeline, retention) until Ctrl-C or, on Unix, SIGTERM.
 pub async fn serve(engine: Engine) -> anyhow::Result<()> {
+    // A database restored from a backup has its deletion ledger re-applied before it serves
+    // (TR-WF-03): checked before the port is taken and before anything is announced. Only
+    // `memhouse serve` keeps the guard's state: the embedded library and the command line
+    // write nothing under MEMHOUSE_HOME for it.
+    governance::check_before_serving(&engine).await?;
     let bind = engine.cfg.server.bind.clone();
     let listener = tokio::net::TcpListener::bind(&bind).await.map_err(|e| anyhow::anyhow!("cannot listen on {bind}: {e}"))?;
     tracing::info!("MemHouse listening on http://{bind}");
@@ -368,12 +373,9 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     if embedded::enrichment_runs(&engine) {
         eprintln!("Enrichment: {} workers, model {}", engine.cfg.enrich.workers, engine.cfg.enrich.llm.model);
     }
-    // A database restored from a backup has its deletion ledger re-applied before it serves
-    // (TR-WF-03). Only `memhouse serve` keeps the guard's state: the embedded library and the
-    // command line write nothing under MEMHOUSE_HOME for it.
-    governance::check_before_serving(&engine).await?;
     let guard = engine.cfg.governance.restore_guard.then(|| {
         let store = engine.store.clone();
+        let deleted = engine.deleted.clone();
         tokio::spawn(async move {
             let home = memhouse_core::config::home_dir();
             let mut warned = false;
@@ -384,8 +386,13 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
                         warned = true;
                     }
                 }
-                // The state is at most this old: a restore to a point after it is not noticed.
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                // Written again every minute, and at once after every deletion this process
+                // carries out: a backup taken before a deletion is then older than the state.
+                // (What other processes delete is covered by the minute.)
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                    _ = deleted.notified() => {}
+                }
             }
         })
     });
@@ -399,6 +406,8 @@ pub async fn serve(engine: Engine) -> anyhow::Result<()> {
     background.stop().await;
     if let Some(guard) = guard {
         guard.abort();
+        // Waited for: a write of its own that had begun must not land after the one below.
+        let _ = guard.await;
         // The last state served, for the next start to compare with.
         let _ = governance::record_watermark(store_at_exit.as_ref(), &memhouse_core::config::home_dir()).await;
     }
@@ -638,7 +647,12 @@ async fn update(Who(c): Who, headers: HeaderMap, PathParam(id): PathParam<Uuid>,
 }
 
 async fn forget_legacy(Who(c): Who, PathParam(id): PathParam<Uuid>) -> ApiResult<serde_json::Value> {
-    c.forget(ForgetRequest { id: Some(id), ..Default::default() }).await?;
+    let r = c.forget(ForgetRequest { id: Some(id), ..Default::default() }).await?;
+    // This route's answer can only say "deleted": a record a legal hold keeps is not, so the
+    // call is refused with what stands in its way (`POST /v1/forget` answers `held` instead).
+    if r.deleted == 0 && r.held > 0 {
+        return Err(ApiError(error::conflict(format!("memory {id} is under a legal hold and was not deleted; the deletion is carried out when the hold is released"))));
+    }
     Ok(Json(json!({ "deleted": id })))
 }
 

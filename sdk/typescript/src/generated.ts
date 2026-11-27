@@ -511,8 +511,9 @@ export interface ForgetRequest {
 
 export interface ForgetResult {
   /**
-   * Records deleted (or, with `dry_run`, that would be). Facts derived from them are deleted
-   * too and are not counted unless they match themselves.
+   * Records deleted (or, with `dry_run`, that would be: a match a legal hold keeps is counted
+   * under `held`, not here). Facts derived from them are deleted too and are not counted
+   * unless they match themselves.
    */
   deleted: number;
   /**
@@ -522,8 +523,9 @@ export interface ForgetResult {
   deletion_id?: string | null;
   dry_run?: boolean;
   /**
-   * Records the request matches that a legal hold keeps (GOV-09): they are deleted when the
-   * hold is released.
+   * Records the request matches that a legal hold keeps (GOV-09). The request stays open
+   * while any hold that applies to them is active, and they are deleted when the last one
+   * is released.
    */
   held?: number;
   scope: ForgetScope;

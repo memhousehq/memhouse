@@ -125,6 +125,32 @@ pub fn same_labels(a: &[String], b: &[String]) -> bool {
     a.iter().all(|l| b.contains(l)) && b.iter().all(|l| a.contains(l))
 }
 
+/// A JSON value with every string run through the deterministic redaction rules.
+pub(crate) fn sanitized(v: &serde_json::Value, rules: &[String]) -> serde_json::Value {
+    match v {
+        serde_json::Value::String(s) => serde_json::Value::String(crate::gate::redact_text(s, rules).0),
+        serde_json::Value::Array(a) => serde_json::Value::Array(a.iter().map(|x| sanitized(x, rules)).collect()),
+        serde_json::Value::Object(o) => serde_json::Value::Object(o.iter().map(|(k, x)| (k.clone(), sanitized(x, rules))).collect()),
+        v => v.clone(),
+    }
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    /// GOV-05: what is set aside as poison is run through the rules of the policy in force,
+    /// in every string of its metadata and structured attributes.
+    #[test]
+    fn every_string_of_a_value_is_sanitised() {
+        let rules = vec!["secret".to_string(), "ssn".to_string(), "card:mask".to_string()];
+        let v = serde_json::json!({ "note": "id 123-45-6789", "list": ["card 4111 1111 1111 1111", 7], "nested": { "ssn": "123-45-6789" }, "n": 3 });
+        let out = super::sanitized(&v, &rules);
+        let text = out.to_string();
+        assert!(!text.contains("123-45-6789") && !text.contains("4111 1111"), "{text}");
+        assert_eq!(out["list"][0], "card [MASKED:card:1111]");
+        assert_eq!((out["list"][1].clone(), out["n"].clone()), (serde_json::json!(7), serde_json::json!(3)));
+    }
+}
+
 /// The write gate's verdict on what the detector found: a category under the `reject` action
 /// refuses the write (GOV-05). The error names the categories, never the values.
 pub(crate) fn refuse_rejected(found: (String, Vec<String>)) -> anyhow::Result<(String, Vec<String>)> {
@@ -450,9 +476,18 @@ impl Engine {
 
     /// Stage 2 for a structured form: every string attribute is redacted like text.
     pub(crate) async fn redact_attrs(&self, policy: &CompiledPolicy, v: &serde_json::Value, found: &mut Vec<String>) -> anyhow::Result<serde_json::Value> {
+        self.redact_value(policy, v, found, false).await
+    }
+
+    /// `redact_attrs`; with `keep_rejected` a category under the `reject` action does not raise:
+    /// its match is taken out and the category is left in `found` with its reject mark, for a
+    /// caller that decides what becomes of the record (a queued write under a policy that
+    /// changed is stored rejected and sanitised, not retried into the poison path).
+    async fn redact_value(&self, policy: &CompiledPolicy, v: &serde_json::Value, found: &mut Vec<String>, keep_rejected: bool) -> anyhow::Result<serde_json::Value> {
         Ok(match v {
             serde_json::Value::String(s) => {
-                let (t, r) = refuse_rejected(self.pii.redact(s, &policy.policy.redaction.rules()).await?)?;
+                let redacted = self.pii.redact(s, &policy.policy.redaction.rules()).await?;
+                let (t, r) = if keep_rejected { redacted } else { refuse_rejected(redacted)? };
                 for c in r {
                     if !found.contains(&c) {
                         found.push(c);
@@ -463,14 +498,14 @@ impl Engine {
             serde_json::Value::Array(a) => {
                 let mut out = Vec::with_capacity(a.len());
                 for x in a {
-                    out.push(Box::pin(self.redact_attrs(policy, x, found)).await?);
+                    out.push(Box::pin(self.redact_value(policy, x, found, keep_rejected)).await?);
                 }
                 serde_json::Value::Array(out)
             }
             serde_json::Value::Object(o) => {
                 let mut out = serde_json::Map::new();
                 for (k, x) in o {
-                    out.insert(k.clone(), Box::pin(self.redact_attrs(policy, x, found)).await?);
+                    out.insert(k.clone(), Box::pin(self.redact_value(policy, x, found, keep_rejected)).await?);
                 }
                 serde_json::Value::Object(out)
             }
@@ -617,8 +652,21 @@ impl Engine {
     async fn quarantine_poison(&self, p: &Proposal, error: &str) -> anyhow::Result<bool> {
         let mut records = vec![];
         let mut audit = vec![];
+        // What is set aside is stored under the policy in force now, not the one it was queued
+        // under: the deterministic rules are applied once more to the text, the metadata and
+        // the structured attributes (a category now rejected is redacted), so a proposal that
+        // failed for any reason never brings back what the policy forbids (GOV-05).
+        let rules: Vec<String> = match self.policy_for(&p.tenant).await {
+            Ok(policy) => policy.policy.redaction.rules(),
+            Err(_) => crate::policy::default_policy(&self.cfg, &p.tenant).policy.redaction.rules(),
+        }
+        .into_iter()
+        .map(|c| c.strip_suffix(crate::gate::REJECT_MARK).map(String::from).unwrap_or(c))
+        .collect();
         for r in &p.records {
             let mut m = r.memory.clone();
+            m.content = crate::gate::redact_text(&m.content, &rules).0;
+            m.metadata = sanitized(&m.metadata, &rules);
             object_metadata(&mut m);
             m.status = MemoryStatus::Quarantined;
             m.metadata["quarantine_reasons"] = json!(["intake_failed"]);
@@ -631,7 +679,7 @@ impl Engine {
                 detail: json!({ "reason": "intake_failed", "proposal": p.id }),
             });
             let mut rec = NewMemory::new(m, r.content_hash.clone());
-            rec.structured = r.structured.clone();
+            rec.structured = r.structured.as_ref().map(|st| Structured { record_type: st.record_type.clone(), attrs: sanitized(&st.attrs, &rules) });
             rec.code_refs = r.code_refs.clone();
             rec.refs_inherited = r.refs_inherited;
             rec.refs_from = r.refs_from;
@@ -795,25 +843,28 @@ impl Engine {
         let m = &mut it.rec.memory;
         // A queued write the policy in force now refuses (a category set to `reject` since it
         // was queued) is stored redacted and rejected, never as written (GOV-05).
+        // Everything is sanitised first and the verdict taken once, over the text, the focus,
+        // the metadata and the structured attributes: a rejection found in any of them must not
+        // raise here, or the proposal would be retried into the poison path with it.
         let (content, more) = self.pii.redact(&m.content, cats).await?;
-        if !crate::gate::rejected(&more).is_empty() {
-            m.status = MemoryStatus::Rejected;
-            it.note = Some(format!("rejected: holds {} data, which the policy refuses to store (GOV-05)", crate::gate::rejected(&more).join(", ")));
-        }
-        let more: Vec<String> = more.into_iter().map(|c| c.strip_suffix(crate::gate::REJECT_MARK).map(String::from).unwrap_or(c)).collect();
         m.content = content;
         found.extend(more);
         if let Some(f) = &it.focus {
             let (f, more) = self.pii.redact(f, cats).await?;
-            let more: Vec<String> = more.into_iter().map(|c| c.strip_suffix(crate::gate::REJECT_MARK).map(String::from).unwrap_or(c)).collect();
             it.focus = Some(f);
             found.extend(more);
         }
-        m.metadata = self.redact_attrs(policy, &m.metadata, &mut found).await?;
+        m.metadata = self.redact_value(policy, &m.metadata, &mut found, true).await?;
         if let Some(st) = &it.rec.structured {
-            let attrs = self.redact_attrs(policy, &st.attrs, &mut found).await?;
+            let attrs = self.redact_value(policy, &st.attrs, &mut found, true).await?;
             it.rec.structured = Some(Structured { attrs, record_type: st.record_type.clone() });
         }
+        let refused: Vec<String> = crate::gate::rejected(&found).into_iter().map(String::from).collect();
+        if !refused.is_empty() {
+            m.status = MemoryStatus::Rejected;
+            it.note = Some(format!("rejected: holds {} data, which the policy refuses to store (GOV-05)", refused.join(", ")));
+        }
+        let mut found: Vec<String> = found.into_iter().map(|c| c.strip_suffix(crate::gate::REJECT_MARK).map(String::from).unwrap_or(c)).collect();
         found.sort();
         found.dedup();
         if found != it.redactions && m.kind == MemoryKind::Episodic {

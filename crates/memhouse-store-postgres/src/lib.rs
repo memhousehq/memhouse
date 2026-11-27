@@ -1298,6 +1298,9 @@ impl PgStore {
         // A partitioned table has no unique index over every partition for `ON CONFLICT (id)`
         // to name: ids already present are left out here, in the same transaction.
         let present: std::collections::HashSet<Uuid> = if skip_existing && partitioned {
+            // One import at a time: nothing but this lock stands between the look and the
+            // insert, since no index covers an id over every partition.
+            sqlx::query("SELECT pg_advisory_xact_lock(7270004)").execute(&mut *tx).await?;
             let ids: Vec<Uuid> = rows.iter().map(|w| w.r.id).collect();
             sqlx::query_scalar("SELECT id FROM mh_memory WHERE id = ANY($1)").bind(&ids).fetch_all(&mut *tx).await?.into_iter().collect()
         } else {
@@ -2267,16 +2270,10 @@ impl Store for PgStore {
         // and removes rows of the content-addressed caches, which no tenant's session can see.
         let mut tx = self.pool.begin().await?;
         // A record under a legal hold stays, and so does a held record derived from it (GOV-09).
-        let Some((subject, _)) = self.delete_in(&mut tx, tenant, id, true, true).await? else {
+        let Some(deleted) = self.delete_in(&mut tx, tenant, id, true, true).await? else {
             return Ok(false);
         };
-        sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) VALUES ($1, $2, $3, 'memory', $4)")
-            .bind(tenant)
-            .bind(&subject)
-            .bind(id)
-            .bind(actor)
-            .execute(&mut *tx)
-            .await?;
+        self.ledger_deleted(&mut tx, tenant, id, &deleted, actor).await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -2297,11 +2294,14 @@ impl Store for PgStore {
             // A legal hold keeps part of the subject (GOV-09): the ledger names what went, record
             // by record, so a restore re-applies exactly that; the subject's own row is written
             // when the erasure completes.
-            sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) SELECT $1, $2, i, 'memory', $3 FROM unnest($4::uuid[]) AS t(i)")
+            // (`record` rows: each is re-applied exactly, without the cascade of a single forget,
+            // and `record-reset` ones leave the caches, as the reset itself did.)
+            sqlx::query("INSERT INTO mh_deletion_ledger (tenant, subject, memory_id, scope, actor) SELECT $1, $2, i, $5, $3 FROM unnest($4::uuid[]) AS t(i)")
                 .bind(tenant)
                 .bind(subject)
                 .bind(actor)
                 .bind(&ids)
+                .bind(if purge_cache { "record" } else { "record-reset" })
                 .execute(&mut *tx)
                 .await?;
         }
@@ -2327,6 +2327,18 @@ impl Store for PgStore {
 
     async fn legal_holds(&self, tenant: &str, active_only: bool) -> anyhow::Result<Vec<memhouse_core::governance::LegalHold>> {
         self.holds(tenant, active_only).await
+    }
+
+    async fn legal_hold_get(&self, tenant: &str, id: Uuid) -> anyhow::Result<Option<memhouse_core::governance::LegalHold>> {
+        self.hold_one(tenant, id).await
+    }
+
+    async fn deletion_progress(&self, tenant: &str, id: Uuid, deleted: u64) -> anyhow::Result<Option<memhouse_core::governance::DeletionRequest>> {
+        self.deletion_add(tenant, id, deleted).await
+    }
+
+    async fn deletions_open(&self, tenant: &str, after: Option<(DateTime<Utc>, Uuid)>, limit: usize) -> anyhow::Result<Vec<memhouse_core::governance::DeletionRequest>> {
+        self.deletion_open(tenant, after, limit).await
     }
 
     async fn held_count(&self, tenant: &str, scope: ForgetScope, value: &str) -> anyhow::Result<u64> {
@@ -2377,7 +2389,8 @@ impl Store for PgStore {
     async fn job_finish(&self, run: Uuid) -> anyhow::Result<()> {
         sqlx::query("UPDATE mh_job_run SET finished_at = now(), updated_at = now() WHERE id = $1 AND finished_at IS NULL").bind(run).execute(&self.pool).await?;
         // Finished runs are a short history, not a log: the audit events are the record.
-        sqlx::query("DELETE FROM mh_job_run WHERE finished_at < now() - interval '30 days'").execute(&self.pool).await?;
+        // Housekeeping: a failure here must not make a finished pass look failed.
+        let _ = sqlx::query("DELETE FROM mh_job_run WHERE finished_at < now() - interval '30 days'").execute(&self.pool).await;
         Ok(())
     }
 
@@ -2395,14 +2408,15 @@ impl Store for PgStore {
     }
 
     async fn audit_find(&self, tenant: &str, action: &str, key: &str, value: &str) -> anyhow::Result<bool> {
-        // `detail` is JSON text written by this service: compared as JSON, not as a substring.
-        Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM mh_audit WHERE tenant = $1 AND action = $2 AND detail::jsonb ->> $3 = $4)")
+        // `detail` is JSON kept as text. It is read here as `audit_log` reads it, by the same
+        // parser, not cast in the database: Postgres' `jsonb` refuses text the writer accepts.
+        let details: Vec<String> = sqlx::query_scalar("SELECT detail FROM mh_audit WHERE tenant = $1 AND action = $2 AND position($3 in detail) > 0")
             .bind(tenant)
             .bind(action)
-            .bind(key)
             .bind(value)
-            .fetch_one(&self.pool)
-            .await?)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(details.iter().any(|d| serde_json::from_str::<serde_json::Value>(d).is_ok_and(|v| v.get(key).and_then(|x| x.as_str()) == Some(value))))
     }
 
     async fn state_get(&self, key: &str) -> anyhow::Result<Option<String>> {
@@ -2848,7 +2862,9 @@ impl Store for PgStore {
             }
         }
         let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mh_memory WHERE tenant = $1").bind(tenant).fetch_one(&self.pool).await?;
-        if held && left > 0 {
+        // Whatever was read before the loop: a hold placed while it ran keeps its records, and
+        // with them the tenant's queue, links and the rest.
+        if left > 0 {
             return Ok(total);
         }
         // What is left without a record: links, remembered responses, queued jobs and writes.

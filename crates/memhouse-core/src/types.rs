@@ -1012,13 +1012,15 @@ pub struct ForgetResult {
     pub scope: ForgetScope,
     /// The id, subject, user, agent, source or tenant named.
     pub value: String,
-    /// Records deleted (or, with `dry_run`, that would be). Facts derived from them are deleted
-    /// too and are not counted unless they match themselves.
+    /// Records deleted (or, with `dry_run`, that would be: a match a legal hold keeps is counted
+    /// under `held`, not here). Facts derived from them are deleted too and are not counted
+    /// unless they match themselves.
     pub deleted: u64,
     #[serde(default)]
     pub dry_run: bool,
-    /// Records the request matches that a legal hold keeps (GOV-09): they are deleted when the
-    /// hold is released.
+    /// Records the request matches that a legal hold keeps (GOV-09). The request stays open
+    /// while any hold that applies to them is active, and they are deleted when the last one
+    /// is released.
     #[serde(default)]
     pub held: u64,
     /// The deletion request (absent for a dry run): `memhouse deletion certificate <id>` prints
